@@ -7,7 +7,8 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
+use escurel_index::Indexer;
 use serde_json::json;
 use thiserror::Error;
 use tokio::net::TcpListener;
@@ -15,6 +16,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::health::{AlwaysReady, ReadinessProbe, ReadinessReport};
+use crate::mcp::mcp;
 
 /// Gateway configuration. Built by the operator (or the test
 /// harness) and consumed by [`serve`].
@@ -29,6 +31,10 @@ pub struct ServerConfig {
     pub version: String,
     /// Probe behind `/readyz`. Defaults to [`AlwaysReady`].
     pub readiness: Arc<dyn ReadinessProbe>,
+    /// Per-tenant indexer. None disables the `/mcp` endpoint
+    /// (useful for health-only deployments). `tools/call` returns
+    /// a JSON-RPC `method not found` when absent.
+    pub indexer: Option<Arc<Indexer>>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -49,6 +55,7 @@ impl ServerConfig {
             listen: "127.0.0.1:0".to_owned(),
             version: "0.0.0-dev".to_owned(),
             readiness: Arc::new(AlwaysReady),
+            indexer: None,
         }
     }
 }
@@ -94,9 +101,10 @@ impl ServerHandle {
 }
 
 #[derive(Clone)]
-struct AppState {
-    version: String,
-    readiness: Arc<dyn ReadinessProbe>,
+pub(crate) struct AppState {
+    pub(crate) version: String,
+    pub(crate) readiness: Arc<dyn ReadinessProbe>,
+    pub(crate) indexer: Option<Arc<Indexer>>,
 }
 
 /// Build the router + bind + spawn the axum server. Returns once
@@ -107,6 +115,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
     let state = AppState {
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
+        indexer: config.indexer.clone(),
     };
 
     let app = Router::new()
@@ -114,6 +123,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         .route("/readyz", get(readyz))
         .route("/version", get(version))
         .route("/metrics", get(metrics))
+        .route("/mcp", post(mcp))
         .with_state(state);
 
     let listener = TcpListener::bind(&config.listen)
