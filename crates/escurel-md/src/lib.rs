@@ -29,6 +29,11 @@
 
 pub mod wikilink;
 
+// Re-export the YAML types we expose in our public API so downstream
+// crates can read parsed frontmatter without having to depend on
+// `serde_yaml_ng` directly.
+pub use serde_yaml_ng::{Mapping as YamlMapping, Value as YamlValue};
+
 use thiserror::Error;
 
 /// The two kinds of pages an Escurel tenant carries.
