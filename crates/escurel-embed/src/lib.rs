@@ -20,9 +20,13 @@
 //! per-tenant embed worker pool (decision 11, planned for M3)
 //! wraps an `Arc<dyn Embedder>` behind a bounded queue.
 
+#[cfg(feature = "gemini")]
+mod gemini;
 mod hash;
 mod zero;
 
+#[cfg(feature = "gemini")]
+pub use gemini::GeminiEmbedder;
 pub use hash::HashEmbedder;
 pub use zero::ZeroEmbedder;
 
