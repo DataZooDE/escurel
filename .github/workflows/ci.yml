@@ -15,21 +15,32 @@ env:
   RUST_BACKTRACE: short
 
 jobs:
-  # PR 0 ships the workflow shape without Rust steps; the workspace
-  # is set up in PR 1 alongside the first crate. See
-  # docs/notes/discovered/2026-05-24-empty-workspace-no-cargo.md
-  # for why we don't materialise Cargo.toml until there's a member.
-  scaffolding:
-    name: scaffolding
+  ci:
+    name: fmt + clippy + test + build
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify scaffolding files exist
+      # rust-toolchain.toml drives the channel + components; rustup
+      # honours it automatically on first invocation.
+      - name: Install Rust toolchain
         run: |
-          test -f CLAUDE.md
-          test -f .editorconfig
-          test -f docs/notes/README.md
-          test -d docs/notes/discovered
-          echo "scaffolding OK"
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add rustfmt clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --all-targets
+
+      - name: cargo build --release
+        run: cargo build --workspace --release
