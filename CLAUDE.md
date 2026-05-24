@@ -8,20 +8,31 @@ The v1 specification lives under [`docs/`](docs/) — start at
 the spec; it captures the engineering principles for how we turn the
 spec into running code.
 
-## Eight principles
+## Nine principles
 
 1. **Red → green TDD.** Every code change starts with a failing test
    that names the target behaviour. No code without a test that would
    have caught its absence. The order is non-negotiable: red first,
    green second, refactor third.
 
-2. **A task is done when a no-mock integration test passes.** Unit
-   tests are fine for the inner loop. The merge gate is an integration
-   test that exercises the *real* component — real filesystem, real
-   DuckDB file, real S3 endpoint (MinIO testcontainer), real network
-   where possible. No `mockall`, no test doubles at the boundary the
-   test exists to cover. If you cannot exercise the real component
-   from a test, the test is not yet finished.
+2. **A task is done when a no-mock integration test passes locally.**
+   Unit tests are fine for the inner loop. The merge gate during
+   rapid bootstrap is an integration test that exercises the *real*
+   component — real filesystem, real DuckDB file, real S3 endpoint
+   (MinIO testcontainer), real network where possible. No `mockall`,
+   no test doubles at the boundary the test exists to cover. If you
+   cannot exercise the real component from a test, the test is not
+   yet finished.
+
+   **CI policy.** GitHub Actions CI is **paused** (`workflow_dispatch`
+   only) during bootstrap. Local `cargo fmt --check`,
+   `cargo clippy --workspace --all-targets -- -D warnings`,
+   `cargo test --workspace --all-targets`, and `cargo build
+   --workspace --release` must all pass before merge. The trade-off:
+   we skip the 20–30 min cold duckdb compile per PR in exchange for
+   trusting the local toolchain. Before declaring v1 stable, uncomment
+   the `pull_request` + `push` triggers in `.github/workflows/ci.yml`
+   so the safety net is back on for any post-v1 work.
 
 3. **12-factor.** Config via `ESCUREL_*` env vars (overriding TOML
    defaults); logs JSON to stdout; processes stateless except for
@@ -46,8 +57,9 @@ spec into running code.
 
 6. **Incremental PRs.** One logical change per PR; target under
    ~400 LOC diff. Each PR independently reviewable; merge only when
-   CI is green. Branch name convention: `bootstrap/<n>-<slug>` for
-   the bootstrap sequence, then `<area>/<short-slug>` afterwards.
+   local checks are green. Branch name convention:
+   `bootstrap/<n>-<slug>` for the bootstrap sequence, then
+   `<area>/<short-slug>` afterwards.
 
 7. **Ask, don't assume.** When the spec is ambiguous, an external
    dependency is missing, or two locked decisions disagree, raise
@@ -63,6 +75,28 @@ spec into running code.
    how to recognise it next time. We don't want to rediscover the
    same problem twice.
 
+9. **Periodic codex reviews.** At natural pause points — a milestone
+   landing, a new crate stabilising, the end of a multi-PR sequence
+   — invoke a second-opinion review via OpenAI Codex CLI focused on
+   **design**, **security**, **stability**, and **missing
+   functions**. The earlier codex caught a path-traversal hole in
+   `escurel-storage` (PR #7) that the merged tests missed; that's
+   the failure mode this principle targets.
+
+   ```bash
+   # Review the diff since a known-good base, prompt via stdin.
+   echo "Focus: design, security, stability, missing functions.
+         Report MUST-FIX / NICE-TO-HAVE / OBSERVATION with file:line
+         refs. Under 600 words." \
+     | codex exec review --base <commit>
+   ```
+
+   Always `git status` after a codex run — `codex exec` runs full-
+   auto by default and may write unrelated files (see
+   [`docs/notes/discovered/2026-05-24-codex-full-auto-writes.md`](docs/notes/discovered/2026-05-24-codex-full-auto-writes.md)).
+   Triage codex findings; the codex output is advisory, not a merge
+   gate.
+
 ## What this looks like in practice
 
 A PR cycle:
@@ -72,22 +106,27 @@ A PR cycle:
    right reason (not a compile error you didn't intend, not a
    missing fixture).
 3. Implement the minimum to turn it green; rerun.
-4. Local pre-push: `cargo fmt --check`,
-   `cargo clippy --workspace --all-targets -- -D warnings`,
-   `cargo test --workspace --all-targets`. All must pass.
+4. Local pre-push — all four must pass:
+   - `cargo fmt --check`
+   - `cargo clippy --workspace --all-targets -- -D warnings`
+   - `cargo test --workspace --all-targets`
+   - `cargo build --workspace --release`
 5. Push the branch; open a PR with **Summary** and **Test plan**
    sections. The test plan names the new integration test(s) by
    file + test function.
-6. Wait for GitHub Actions to report green. Do not merge before.
-7. If the PR fixed a non-obvious problem, drop a note under
+6. If the PR fixed a non-obvious problem, drop a note under
    `docs/notes/discovered/` in the same PR.
-8. Merge with `gh pr merge --squash --delete-branch` once CI is
-   green.
+7. Merge with `gh pr merge --squash --delete-branch`. (CI is
+   paused during bootstrap — see principle 2.)
 
 ## Locked decisions (current bootstrap)
 
-- **PR workflow:** feature branch → GitHub PR against `main` → CI
-  must be green → squash-merge.
+- **PR workflow:** feature branch → GitHub PR against `main` →
+  local checks green → squash-merge. GitHub Actions CI is paused
+  during bootstrap (see principle 2).
+- **`Cargo.lock` is committed.** The workspace has native deps
+  (libduckdb-sys); pinning is the standard recommendation for any
+  workspace that produces binaries or links native libraries.
 - **M1 acceptance:** our own spec-derived integration tests; no
   port of the Python prototype's 28-assertion suite (prototype not
   located at bootstrap time).

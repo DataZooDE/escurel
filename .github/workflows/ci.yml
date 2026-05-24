@@ -1,9 +1,19 @@
 name: CI
 
+# CI is paused during rapid bootstrap. Local `cargo fmt`,
+# `cargo clippy --workspace --all-targets -- -D warnings`,
+# `cargo test --workspace --all-targets`, and `cargo build
+# --workspace --release` are the merge gate (see CLAUDE.md
+# "How we work").
+#
+# Re-enable the `pull_request` + `push` triggers below before
+# declaring v1 stable; the job definition stays intact so that
+# flip is one revert.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  # pull_request:
 
 concurrency:
   group: ci-${{ github.ref }}

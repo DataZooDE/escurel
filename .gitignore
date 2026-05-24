@@ -1,10 +1,10 @@
 # Rust
 /target/
 **/*.rs.bk
-# Library-only workspace today; revisit when first binary lands (planned PR 4).
-# NOTE: gitignore does NOT support inline comments — `#` only starts a comment
-# at column 0. Keep the comment on its own line above the pattern.
-Cargo.lock
+# Cargo.lock is COMMITTED for this workspace (native deps via
+# libduckdb-sys; the workspace produces binaries from M3 onwards).
+# NOTE: gitignore does NOT support inline comments — `#` only starts a
+# comment at column 0. Keep comments on their own line above the pattern.
 
 # IDE / editor
 /.idea/
