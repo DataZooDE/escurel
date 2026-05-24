@@ -21,7 +21,8 @@
 //!   (M5) wires real numbers.
 
 mod health;
+mod mcp;
 mod server;
 
-pub use health::{ReadinessProbe, ReadinessReport};
+pub use health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 pub use server::{ServerConfig, ServerError, ServerHandle, serve};
