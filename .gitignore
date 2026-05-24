@@ -1,0 +1,30 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock           # mixed bin+lib workspace; revisit when first binary lands
+
+# IDE / editor
+/.idea/
+/.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# DuckDB scratch (evaluation harnesses, local runs)
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp
+*.db-shm
+*.db-wal
+
+# Doc build artefacts
+/docs/build/
+/docs/book/
+
+# OS
+Thumbs.db
