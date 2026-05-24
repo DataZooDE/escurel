@@ -140,8 +140,14 @@ impl Indexer {
             tx.execute(
                 "INSERT OR IGNORE INTO links \
                  (src_page, src_anchor, src_field, dst_page, dst_anchor, link_skill, link_version) \
-                 VALUES (?, '', NULL, ?, NULL, ?, ?)",
-                params![page_id, dst_page, link_skill, wl.version.as_deref()],
+                 VALUES (?, '', NULL, ?, ?, ?, ?)",
+                params![
+                    page_id,
+                    dst_page,
+                    wl.anchor.as_deref().unwrap_or(""),
+                    link_skill,
+                    wl.version.as_deref(),
+                ],
             )?;
         }
 
@@ -178,9 +184,22 @@ impl Indexer {
     /// Re-run [`Self::update_page`] for every markdown file the
     /// LaneStore holds for this tenant. Used to recover from a lost
     /// or corrupted DuckDB file — canonical markdown is the source
-    /// of truth.
+    /// of truth, so any rows whose backing markdown is gone must
+    /// also vanish from the index. We truncate the three tables in
+    /// one transaction before re-upserting, so the operation is
+    /// "drop the index, recreate from markdown."
     pub async fn rebuild(&self) -> Result<(), IndexerError> {
         let on_disk = self.list_markdown_paths().await?;
+
+        {
+            let mut conn = self.conn.lock().await;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM blocks", [])?;
+            tx.execute("DELETE FROM links", [])?;
+            tx.execute("DELETE FROM pages", [])?;
+            tx.commit()?;
+        }
+
         for path in on_disk {
             let key = Key::new(self.tenant.as_str(), path.clone())?;
             let body = self.store.read(&key).await?;

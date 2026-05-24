@@ -252,3 +252,114 @@ async fn audit_flags_markdown_not_in_duckdb() {
     );
     assert!(drift.indexed_but_no_markdown.is_empty());
 }
+
+#[tokio::test]
+async fn rebuild_clears_stale_rows_for_deleted_markdown() {
+    // Regression: codex review found rebuild() only upserted current
+    // markdown, leaving pages/links/blocks rows for deleted files
+    // behind. The admin recovery path (docs/spec/storage.md
+    // §Crash recovery) promises rebuild fully reconciles the index
+    // to canonical markdown.
+    let h = fresh_harness();
+
+    // Seed 3 markdowns and index them.
+    write_md(&h.store, SKILL_CUSTOMER.0, SKILL_CUSTOMER.1).await;
+    write_md(&h.store, INSTANCE_ACME.0, INSTANCE_ACME.1).await;
+    write_md(&h.store, INSTANCE_GLOBEX.0, INSTANCE_GLOBEX.1).await;
+    for (path, body) in [SKILL_CUSTOMER, INSTANCE_ACME, INSTANCE_GLOBEX] {
+        h.indexer.update_page(path, body).await.expect("update");
+    }
+    assert_eq!(count_pages(&h.duckdb_path), 3);
+
+    // Delete one markdown file directly from the store.
+    let to_delete = Key::new(TENANT, INSTANCE_GLOBEX.0.to_owned()).expect("valid key");
+    h.store.delete(&to_delete).await.expect("delete");
+
+    // Rebuild against the existing (pre-populated) DuckDB.
+    h.indexer.rebuild().await.expect("rebuild");
+
+    let drift = h.indexer.audit().await.expect("audit after rebuild");
+    assert!(
+        drift.is_clean(),
+        "rebuild against an existing DuckDB must reconcile to canonical \
+         markdown — including dropping stale rows: {drift:?}",
+    );
+    // audit clean already proves the diff side. Cross-check via the
+    // indexer's own connection (not a fresh Connection::open — DuckDB
+    // doesn't make concurrent connections see each other's recent
+    // commits without a CHECKPOINT).
+    let in_db = h
+        .indexer
+        .audit()
+        .await
+        .unwrap()
+        .markdown_not_in_duckdb
+        .len();
+    assert_eq!(in_db, 0);
+    let listed = h
+        .store
+        .list(&Key::new(TENANT, "markdown/").expect("k"))
+        .await
+        .expect("list");
+    assert_eq!(listed.len(), 2, "store has the surviving 2 markdown files",);
+}
+
+#[tokio::test]
+async fn update_page_preserves_wikilink_anchors() {
+    // Regression: codex review found the links INSERT was hard-coding
+    // dst_anchor = NULL even when parse_wikilinks populated wl.anchor.
+    // INSERT OR IGNORE was also collapsing multiple anchors of the
+    // same dst into one (since the PK doesn't include dst_anchor).
+    let h = fresh_harness();
+    let path = "markdown/instances/customer/anchored.md";
+    let body = "---\n\
+                type: instance\n\
+                skill: customer\n\
+                id: anchored\n\
+                ---\n\
+                # Anchored\n\
+                \n\
+                Two anchors of the same page: [[customer::acme-corp#billing]] \
+                and [[customer::acme-corp#renewals]] and one with no anchor: \
+                [[customer::globex-llc]].\n";
+    h.indexer.update_page(path, body).await.expect("update");
+
+    let conn = Connection::open(&h.duckdb_path).expect("open");
+
+    let billing: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM links \
+             WHERE src_page = ? AND dst_page = 'acme-corp' AND dst_anchor = 'billing'",
+            params![path],
+            |row| row.get(0),
+        )
+        .expect("count billing");
+    assert_eq!(billing, 1, "anchor `billing` must be preserved as a row");
+
+    let renewals: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM links \
+             WHERE src_page = ? AND dst_page = 'acme-corp' AND dst_anchor = 'renewals'",
+            params![path],
+            |row| row.get(0),
+        )
+        .expect("count renewals");
+    assert_eq!(
+        renewals, 1,
+        "anchor `renewals` must be preserved as a distinct row"
+    );
+
+    // The bare link records dst_anchor = '' (empty string sentinel —
+    // DuckDB PKs forbid NULL columns, so the schema stores '' for
+    // "no anchor"; readers project it back to None at the API layer
+    // once that layer arrives in M3).
+    let bare: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM links \
+             WHERE src_page = ? AND dst_page = 'globex-llc' AND dst_anchor = ''",
+            params![path],
+            |row| row.get(0),
+        )
+        .expect("count bare");
+    assert_eq!(bare, 1);
+}

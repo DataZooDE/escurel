@@ -24,10 +24,14 @@ CREATE TABLE links (
     src_anchor   VARCHAR,
     src_field    VARCHAR,
     dst_page     VARCHAR NOT NULL,
-    dst_anchor   VARCHAR,
+    -- dst_anchor must NOT be NULL inside the PK (DuckDB primary keys
+    -- forbid NULL columns), so we substitute the empty string for
+    -- "no anchor" at write time; readers project '' back to NULL.
+    -- See docs/notes/discovered/2026-05-24-links-pk-includes-anchor.md.
+    dst_anchor   VARCHAR NOT NULL DEFAULT '',
     link_skill   VARCHAR NOT NULL,
     link_version VARCHAR,
-    PRIMARY KEY (src_page, src_anchor, dst_page, link_skill)
+    PRIMARY KEY (src_page, src_anchor, dst_page, dst_anchor, link_skill)
 );
 CREATE INDEX links_dst_skill ON links (dst_page, link_skill);
 CREATE INDEX links_src_skill ON links (src_page, link_skill);
