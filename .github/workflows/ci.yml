@@ -18,7 +18,11 @@ jobs:
   ci:
     name: fmt + clippy + test + build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Cold duckdb compile is ~15 min in debug and ~10 min in release
+    # (LTO). With both stages running back-to-back on a fresh runner
+    # the job needs >30 min headroom before the cache is primed; once
+    # rust-cache restores libduckdb-sys both stages drop to <1 min.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +36,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace
+          # Save the cache even when a later step fails — without
+          # this, a single test failure throws away the duckdb
+          # compile and every push re-pays the 15-min cold build.
+          cache-on-failure: true
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
