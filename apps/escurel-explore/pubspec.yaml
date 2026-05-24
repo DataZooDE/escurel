@@ -30,5 +30,10 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+  # Used by the FixtureEscurelClient VM test to locate examples/crm-demo/
+  # when the examples branch is merged. Tests gracefully skip the
+  # directory pass when examples/ is absent (stacked PR mode).
+  path: ^1.9.0
+
 flutter:
   uses-material-design: true
