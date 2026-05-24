@@ -1,7 +1,10 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock           # mixed bin+lib workspace; revisit when first binary lands
+# Library-only workspace today; revisit when first binary lands (planned PR 4).
+# NOTE: gitignore does NOT support inline comments — `#` only starts a comment
+# at column 0. Keep the comment on its own line above the pattern.
+Cargo.lock
 
 # IDE / editor
 /.idea/
