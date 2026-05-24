@@ -16,16 +16,29 @@ library;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app.dart';
 import '../client/escurel_client.dart';
 import '../client/fixture_escurel_client.dart';
+import '../client/http_escurel_client.dart';
 import '../client/models.dart';
+import '../config/env.dart';
 
 /// The single source of truth for which backend the editor speaks to.
 ///
-/// Override in `main()` (per build mode) or in tests via
+/// Selects [HttpEscurelClient] when `ESCUREL_EXPLORE_MODE=http` and
+/// a non-empty base URL is provided; otherwise falls back to the
+/// inline-fixture client so the app boots standalone. Override in
+/// tests via
 /// `ProviderScope(overrides: [escurelClientProvider.overrideWithValue(...)])`.
 final escurelClientProvider = Provider<EscurelClient>((ref) {
-  final client = _bootstrapInlineFixture();
+  final env = ref.watch(envProvider);
+  final client = switch (env.mode) {
+    AppMode.http when env.baseUrl.isNotEmpty => HttpEscurelClient(
+        baseUrl: env.baseUrl,
+        bearerToken: env.auth == AuthMode.bearer ? null : null,
+      ),
+    _ => _bootstrapInlineFixture(),
+  };
   ref.onDispose(client.close);
   return client;
 });

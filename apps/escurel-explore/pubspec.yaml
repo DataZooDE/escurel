@@ -25,6 +25,9 @@ dependencies:
   # YAML for frontmatter parsing (mirrors escurel-md's serde_yaml_ng)
   yaml: ^3.1.2
 
+  # HTTP client for the MCP-over-HTTP transport (escurel-server, M3+)
+  dio: ^5.7.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
