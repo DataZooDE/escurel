@@ -15,14 +15,31 @@ default = []
 # default so the bulk of the crate (Embedder trait + ZeroEmbedder
 # + HashEmbedder) stays dep-light.
 gemini = ["dep:reqwest", "dep:serde"]
+# Pulls in candle + tokenizers + hf-hub for the local-model
+# `CandleEmbedder`. Off by default; heavy compile.
+candle = [
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:candle-transformers",
+    "dep:hf-hub",
+    "dep:serde",
+    "dep:tokenizers",
+    "dep:tokio",
+]
 
 [dependencies]
 async-trait = "0.1"
+candle-core = { version = "0.9", optional = true, default-features = false }
+candle-nn = { version = "0.9", optional = true, default-features = false }
+candle-transformers = { version = "0.9", optional = true, default-features = false }
+hf-hub = { version = "0.4", optional = true, default-features = false, features = ["tokio", "rustls-tls"] }
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+tokenizers = { version = "0.22", optional = true, default-features = false, features = ["onig"] }
+tokio = { version = "1", optional = true, default-features = false, features = ["rt"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
