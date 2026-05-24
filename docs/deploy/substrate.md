@@ -13,24 +13,20 @@ operators, etc.) live in sibling `<target>.md` files under
 
 ---
 
-## Naming convention — `KB_*` env vars, `escurel-*` substrate names
+## Naming convention — `escurel` everywhere
 
-The binary's runtime config surface (CLI flags, environment
-variables, TOML keys) is `KB_*` / `kb.*` — these are the
-identifiers the spec README enumerates and the implementation
-locks. The substrate-side names (Vault policies, Consul services,
-Fabio host tags, Tailscale tags, GCS bucket names, Nomad job
-names, placement-group classes) are `escurel-*` / `tag:escurel`
-/ `escurel.<env>.<domain>` — these match the repo and product
-name. The split is intentional:
+Every surface uses the project name. The binary's runtime config
+surface (CLI flags, environment variables, TOML keys) is
+`ESCUREL_*` / `escurel.*` — these are the identifiers the spec
+README enumerates and the implementation locks. The substrate-side
+names (Vault policies, Consul services, Fabio host tags, Tailscale
+tags, GCS bucket names, Nomad job names, placement-group classes)
+are `escurel-*` / `tag:escurel` / `escurel.<env>.<domain>`.
 
-- `KB_*` env vars are the *binary's* surface; renaming them
-  would break every existing tenant's config and CLI muscle
-  memory.
-- `escurel-*` substrate names are the *substrate's* surface;
-  they appear in operator dashboards, Tailscale ACLs, Fabio
-  routing tables, and GCS bucket inventories. Naming them
-  after the repo makes those surfaces self-explanatory.
+One name, one product, one surface. Operator dashboards, Tailscale
+ACLs, Fabio routing tables, GCS bucket inventories, env-var
+stanzas, OTel metric queries, and alert rules all key off the
+same string.
 
 ---
 
@@ -40,7 +36,7 @@ name. The split is intentional:
 |---|---|
 | `auth.oidc_issuer` | `https://oidc.<env>.<domain>/` — substrate-provided. Recommended source: Vault OIDC role (substrate already runs Vault per `SPEC.md §2`). Alternative: Dex/Keycloak Nomad job classified as a pet (substrate v2 SPEC delta `Δ-1`) |
 | `auth.oidc_audience` | `escurel` |
-| `auth.tenant_claim` | `kb_tenant` |
+| `auth.tenant_claim` | `escurel_tenant` |
 | `auth.admin_role_claim` | `roles` |
 | `auth.admin_role_value` | `escurel:admin` |
 | `auth.jwks_refresh_secs` | `300` |
@@ -61,7 +57,7 @@ interchangeable across services.
 | `storage.s3.endpoint` | The Hetzner OS hostname for the env. Used end-to-end (LaneStore config + DuckDB `TYPE s3` secret) per the [`storage.md`](../spec/storage.md#the-lanestore-trait) hostname-equality constraint. No `/etc/hosts` rewrites |
 | `storage.s3.prefix` | `tenants/` |
 | `storage.s3.path_style` | `true` |
-| Bucket lifecycle | no expiry on `markdown/` and `kb.duckdb`; `cache/` and `spool/` never exist on S3 |
+| Bucket lifecycle | no expiry on `markdown/` and `escurel.duckdb`; `cache/` and `spool/` never exist on S3 |
 | Bucket versioning | enabled |
 
 **Operator action required:** bucket provisioning is a
@@ -73,7 +69,7 @@ can deploy to the corresponding env.
 
 ## §3 — Audit collector contract
 
-The substrate ships a Nomad periodic job that tails `kb-server`
+The substrate ships a Nomad periodic job that tails `escurel-server`
 allocation stdout, filters by `level ∈ {info, notice, critical}`,
 and writes one JSON line per record to the GCS audit bucket
 (versioned + retention-locked, `europe-west3`).
@@ -93,7 +89,7 @@ this collector ingests both shapes.
 ## §4 — Backup shipper contract
 
 The substrate ships a tenant-export shipper Nomad periodic job
-that calls `KbAdmin.TenantExport` per active tenant on a
+that calls `EscurelAdmin.TenantExport` per active tenant on a
 configurable cadence, validates the SHA-256 terminator per the
 [`protocol.md` tenant_export contract](../spec/protocol.md#tenant_export-as-the-backup-contract-producer),
 and uploads each tarball to GCS as a single object.
@@ -106,7 +102,7 @@ and uploads each tarball to GCS as a single object.
 | Retention | per substrate backplane policy (`SPEC.md §5`) — never deleted within the window |
 | Audit | one shipment = one audit line with `tool: tenant_export_shipped` |
 
-`kb-server` stays a producer-only; the shipper is the
+`escurel-server` stays a producer-only; the shipper is the
 substrate-side completion of the backup contract.
 
 **Operator action required:** bucket provisioning is a
@@ -139,7 +135,7 @@ The substrate Packer image (`packer/golden.pkr.hcl`) gains:
 - EmbeddingGemma model artefact baked at
   `/opt/escurel/models/embeddinggemma-300m/` (~600 MiB)
 - DuckDB pinned with `vss` + `fts` extensions pre-loaded
-- `kb-server` static Rust binary at `/usr/local/bin/kb-server`
+- `escurel-server` static Rust binary at `/usr/local/bin/escurel-server`
 
 Bake-into-image (not pull-on-start) per the substrate air-gap
 defaults — pulling the model at boot needs egress allowance and
@@ -184,7 +180,7 @@ tailnet-only.
 ## §9 — Substrate dependency matrix
 
 The Escurel binding depends on the following substrate-side
-provisions. Until they land, `kb-server` cannot deploy to
+provisions. Until they land, `escurel-server` cannot deploy to
 substrate `prod`; `nonprod` deployment becomes possible once the
 identity, ingress, lanes bucket, and golden-image entries are
 merged.
@@ -206,7 +202,7 @@ merged.
 
 ## §10 — Acceptance test (per-tenant on substrate `nonprod`)
 
-1. Deploy `kb-server` with one tenant on `nonprod` via
+1. Deploy `escurel-server` with one tenant on `nonprod` via
    `/deploy-green`.
 2. Create a page via `update_page`; assert canonical markdown
    lands at
@@ -216,8 +212,8 @@ merged.
    `gs://datazoode-escurel-backups-nonprod/<tenant>/<ts>.tar`
    within 60 s.
 4. Trigger `/recreate-node` on the `escurel-class` allocation
-   host; assert `kb-server` reconstructs the tenant's
-   `kb.duckdb` from canonical markdown on first request without
+   host; assert `escurel-server` reconstructs the tenant's
+   `escurel.duckdb` from canonical markdown on first request without
    operator action (per
    [`storage.md` HNSW persistence model](../spec/storage.md#hnsw-persistence-model)).
 5. Restore the GCS tarball into a scratch tenant via

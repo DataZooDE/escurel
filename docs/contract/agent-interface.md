@@ -2,10 +2,10 @@
 
 **Date:** 2026-05-17.
 **Status:** Proposal. Open questions at the bottom.
-**Scope:** The contract between an agent (or agent harness) and a
-KB tenant. Defines the tool surface exposed over MCP and CLI, the
-meta-skill that teaches the agent how to use the surface, and the
-behavioural promises both sides depend on.
+**Scope:** The contract between an agent (or agent harness) and an
+Escurel tenant. Defines the tool surface exposed over MCP and CLI,
+the meta-skill that teaches the agent how to use the surface, and
+the behavioural promises both sides depend on.
 
 This document is a design proposal, not a spec. It draws on what
 worked in the real-LLM run (`real-llm-run/results.md`) and on the
@@ -97,11 +97,11 @@ real-LLM run did via `agent_tools.py`).
   scoped to one tenant; cross-tenant federation is a separate
   layer (F1 / G1).
 
-## The meta-skill: `kb` (a.k.a. how to use this KB)
+## The meta-skill: `escurel` (a.k.a. how to use this KB)
 
 Every tenant ships with one mandatory skill page whose id is
-literally `kb`. The agent loads it once per session via the
-same `list_skills` path as any other skill. The skill body
+literally `escurel`. The agent loads it once per session via
+the same `list_skills` path as any other skill. The skill body
 teaches the agent the disclosure model and the tool surface.
 
 Proposed contents:
@@ -109,14 +109,14 @@ Proposed contents:
 ```yaml
 ---
 type: skill
-id: kb
+id: escurel
 description: How this knowledge base is organised and how to navigate
   it. Read this first when entering a new tenant.
 required_frontmatter: []
 optional_frontmatter: []
 ---
 
-# kb — how this knowledge base is organised
+# escurel — how this knowledge base is organised
 
 This tenant follows the skill::instance pattern. Every page is
 either a SKILL (a type declaration) or an INSTANCE (a memory of
@@ -281,7 +281,7 @@ wikilink — the catalogue is itself a `note` instance).
   citation.
 ```
 
-The `kb` skill is **the only mandatory skill** in a tenant. Every
+The `escurel` skill is **the only mandatory skill** in a tenant. Every
 other skill is optional and tenant-specific.
 
 ## How a session unfolds
@@ -337,10 +337,10 @@ real-LLM driver `agent_tools.py`):
 | no `validate` | `validate(content, as_page_id?)` | required for the authoring feedback path (H-AUTHORING-1 engine path); cheap to add |
 | no write path | `open_session`/`apply_op`/`close_session` (live) + `update_page` (fallback) | full CRDT op-stream write per locked decision (1); whole-page fallback for environments without CSP fix |
 | no `run_stored_query` over MCP yet (only Python) | expose it with parameter binding | the origin axis depends on it; parameters per locked decision (2) |
-| no `kb` meta-skill in the corpus | add it, mandatory + auto-shipped | per locked decision (3); the agent has no in-corpus documentation of the tool surface today |
+| no `escurel` meta-skill in the corpus | add it, mandatory + auto-shipped | per locked decision (3); the agent has no in-corpus documentation of the tool surface today |
 | `search` returns blocks only | `search(..., granularity='block'\|'page')` | both granularities exposed per locked decision (4); block remains the default |
 
-None of these are large lifts. The biggest addition is the `kb`
+None of these are large lifts. The biggest addition is the `escurel`
 meta-skill, which is just one markdown file.
 
 ## Decisions locked (2026-05-17)
@@ -362,8 +362,8 @@ session:
    binds parameters safely. See §"Query parameters in detail"
    below.
 
-3. **The `kb` meta-skill is mandatory and auto-shipped.**
-   The indexer ships `skills/kb.md` with every new tenant.
+3. **The `escurel` meta-skill is mandatory and auto-shipped.**
+   The indexer ships `skills/escurel.md` with every new tenant.
    Tenants may extend the page with tenant-specific guidance
    (appended after the standard sections) but cannot delete
    it or remove the standard sections.
@@ -505,9 +505,9 @@ tasks where the agent doesn't need a specific block.
 The choice is recorded in the response so the agent (and any
 caching layer) can tell them apart.
 
-## Tier 1 cost of the auto-shipped `kb` skill
+## Tier 1 cost of the auto-shipped `escurel` skill
 
-The mandatory `kb` skill adds one entry to every tenant's Tier
+The mandatory `escurel` skill adds one entry to every tenant's Tier
 1 catalogue. Measured cost: ~180 tokens for the skill page's
 `(id, description)` line in `list_skills`. The skill body
 (the larger doc, ~6 k tokens) loads on demand via `expand` —

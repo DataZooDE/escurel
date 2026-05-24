@@ -20,18 +20,18 @@ alongside the canonical `pages/` markdown directory.
 The typed-page model the spec rests on is unchanged by this
 decision: skill-instance markdown, typed `[[skill::id]]`
 wikilinks, the four index-time validation checks, the twelve
-agent tools, and the mandatory `kb` meta-skill all carry forward
+agent tools, and the mandatory `escurel` meta-skill all carry forward
 unmodified.
 
 ## Decision
 
-Per-tenant storage is one DuckDB file (`kb.duckdb`) alongside
+Per-tenant storage is one DuckDB file (`escurel.duckdb`) alongside
 the canonical `pages/` markdown directory:
 
 ```
 tenants/<tenant>/
   pages/              # canonical markdown — source of truth
-  kb.duckdb           # pages, links, blocks (body + dense_vec + FTS),
+  escurel.duckdb      # pages, links, blocks (body + dense_vec + FTS),
                       # crdt_ops, frontmatter_index, ACL
   external.ducklake/  # ATTACH point for the origin axis (unchanged)
 ```
@@ -57,7 +57,7 @@ DuckDB owns four concerns:
    Already DuckDB-native; no change required.
 
 The `pages/` directory remains the canonical source of truth.
-Everything in `kb.duckdb` is derivable from `pages/` via
+Everything in `escurel.duckdb` is derivable from `pages/` via
 audit-and-rebuild. Git, tar, rsync, and Obsidian/IDE authoring
 against `pages/` all continue to work; the `.duckdb` file is
 regenerable and does not need to be checked in.

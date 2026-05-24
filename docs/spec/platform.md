@@ -13,10 +13,10 @@ one audience, and a small set of claim names:
 ```toml
 [auth]
 oidc_issuer        = "https://auth.example.com/realms/main"
-oidc_audience      = "kb"
+oidc_audience      = "escurel"
 tenant_claim       = "tenant"          # which claim names the tenant
 admin_role_claim   = "roles"           # which claim lists role memberships
-admin_role_value   = "kb:admin"        # the role that grants admin access
+admin_role_value   = "escurel:admin"   # the role that grants admin access
 jwks_refresh_secs  = 300
 ```
 
@@ -51,7 +51,7 @@ HTTP (header on every request), and gRPC (metadata).
 Two operational notes:
 
 - **No machine-to-machine shortcut.** Even the CLI uses an OIDC
-  token. Operators get one by running `kb login` which uses the
+  token. Operators get one by running `escurel login` which uses the
   device-code flow against the configured issuer.
 - **Admin-on-multiple-tenants.** Admin endpoints take a `tenant`
   field in the request body and ignore the token's tenant claim
@@ -94,8 +94,8 @@ global config is the *default* used when no per-tenant value is set.
 
 | operation | what happens | preconditions |
 |---|---|---|
-| **Create** | `mkdir` tenant dir, write manifest, initialise empty `kb.duckdb` with the `vss` and `fts` extensions loaded and schema applied, drop in the `kb` meta-skill page. ~50 ms. | id is unique; admin role |
-| **List** | enumerate manifests under `${KB_DATA_DIR}/tenants/` | admin role |
+| **Create** | `mkdir` tenant dir, write manifest, initialise empty `escurel.duckdb` with the `vss` and `fts` extensions loaded and schema applied, drop in the `escurel` meta-skill page. ~50 ms. | id is unique; admin role |
+| **List** | enumerate manifests under `${ESCUREL_DATA_DIR}/tenants/` | admin role |
 | **Get** | parse manifest plus runtime status (open sessions, current usage) | admin role |
 | **Update** | rewrite manifest fields under per-tenant write lock; quotas take effect on next request | admin role |
 | **Suspend** | set `status = suspended`; existing connections drained over 30 s | admin role |
@@ -103,7 +103,7 @@ global config is the *default* used when no per-tenant value is set.
 | **Export** | tar the tenant dir minus `cache/`; verified atomic | admin role |
 | **Import** | inverse of export; rejects if id already exists unless `overwrite=true` | admin role |
 
-The `kb` meta-skill is auto-shipped on create. Operators may
+The `escurel` meta-skill is auto-shipped on create. Operators may
 extend the page with tenant-specific guidance (appended after
 the standard sections, in markdown) but cannot delete it or
 remove the standard sections; the indexer enforces this on
@@ -126,7 +126,7 @@ pub struct TenantManager {
 pub struct TenantHandle {
     pub manifest: ArcSwap<TenantManifest>,
     pub lock:     RwLock<TenantWriter>,   // single-writer; many readers
-    pub duck:     DuckdbPool,             // read pool against kb.duckdb; writer is in TenantWriter
+    pub duck:     DuckdbPool,             // read pool against escurel.duckdb; writer is in TenantWriter
     pub live:     LiveSessions,           // open CRDT sessions for this tenant
     pub quota:    QuotaState,             // token-buckets + concurrent counter
 }
@@ -201,10 +201,10 @@ with HTTP 429.
 Quota state is in-memory only — restarting the server zeros all
 buckets. This is intentional: the buckets are a rate-shaping
 device, not a billing system. SaaS deployments running a
-metered-billing layer subscribe to the OTel `kb.tool_calls{...}`
+metered-billing layer subscribe to the OTel `escurel.tool_calls{...}`
 counter and roll their own accounting. Substrate deployments
 treat quotas the same way: durable accounting (billing, audit)
-lives in the OTel pipeline, not in the `kb-server` process.
+lives in the OTel pipeline, not in the `escurel-server` process.
 
 ## Observability
 
@@ -215,11 +215,11 @@ Three streams, all standard.
 Every tool call emits one span at the gateway, with attributes:
 
 ```
-kb.tenant       = "<id>"
-kb.tool         = "search" | "expand" | ...
-kb.transport    = "mcp_http" | "ws" | "grpc"
-kb.role         = "agent" | "admin"
-kb.subject      = "<sub from token>"
+escurel.tenant       = "<id>"
+escurel.tool         = "search" | "expand" | ...
+escurel.transport    = "mcp_http" | "ws" | "grpc"
+escurel.role         = "agent" | "admin"
+escurel.subject      = "<sub from token>"
 ```
 
 Child spans cover storage operations (`duckdb.tx`,
@@ -241,14 +241,14 @@ A small set of OTel-conventional metrics:
 
 | metric | type | labels |
 |---|---|---|
-| `kb.tool_calls` | counter | `tenant`, `tool`, `transport`, `status` (ok/error/quota_exhausted) |
-| `kb.tool_latency_ms` | histogram | `tenant`, `tool`, `transport` |
-| `kb.write_lock_wait_ms` | histogram | `tenant` |
-| `kb.embed_batch_size` | histogram | `tenant` |
-| `kb.embed_queue_depth` | gauge | `tenant` |
-| `kb.live_sessions_open` | gauge | `tenant` |
-| `kb.storage_bytes` | gauge | `tenant`, `lane` (`markdown` / `duckdb` / `external_ducklake`) |
-| `kb.audit_drift` | gauge | `tenant`, `category` (`mn-d` markdown-not-in-duckdb, `i-no-m` indexed-but-no-markdown) |
+| `escurel.tool_calls` | counter | `tenant`, `tool`, `transport`, `status` (ok/error/quota_exhausted) |
+| `escurel.tool_latency_ms` | histogram | `tenant`, `tool`, `transport` |
+| `escurel.write_lock_wait_ms` | histogram | `tenant` |
+| `escurel.embed_batch_size` | histogram | `tenant` |
+| `escurel.embed_queue_depth` | gauge | `tenant` |
+| `escurel.live_sessions_open` | gauge | `tenant` |
+| `escurel.storage_bytes` | gauge | `tenant`, `lane` (`markdown` / `duckdb` / `external_ducklake`) |
+| `escurel.audit_drift` | gauge | `tenant`, `category` (`mn-d` markdown-not-in-duckdb, `i-no-m` indexed-but-no-markdown) |
 
 Exported via OTLP **and** scraped at `/metrics` on a separate
 port (default `:9090`) for Prometheus operators who don't run
@@ -304,7 +304,7 @@ output; useful for local development, not production.
   AND storage is reachable AND OTel exporter has connected (or
   is configured no-op)
 - `GET /metrics` — Prometheus scrape
-- gRPC `KbAdmin.Health` — richer JSON with version, embedding
+- gRPC `EscurelAdmin.Health` — richer JSON with version, embedding
   status, tenant count, lane stats
 
 Substrate orchestrators (Nomad) wire `/readyz` as the
@@ -317,8 +317,8 @@ connected.
 
 | failure | quota effect | observability signal |
 |---|---|---|
-| Embedding model load fail at startup | writes reject with `embedding_unavailable`; reads OK | `/readyz` returns 503; `kb.tool_calls{status=error}` on writes; log at `level: critical` |
-| Storage backend timeout (S3) | writes queue to spool; reads cached | `kb.storage_bytes` gauge stale; log at `level: warning` per retry |
-| Per-tenant lane corruption | tenant auto-suspended | `kb.audit_drift` spikes; log at `level: critical`; other tenants unaffected |
-| Server OOM (large embed batch) | the offending request fails; the runtime continues | OTel error span; `kb.tool_calls{status=error, tool=update_page}` increments |
-| Quota exhausted | request returns 429/RESOURCE_EXHAUSTED with retry hint | `kb.tool_calls{status=quota_exhausted}` increments |
+| Embedding model load fail at startup | writes reject with `embedding_unavailable`; reads OK | `/readyz` returns 503; `escurel.tool_calls{status=error}` on writes; log at `level: critical` |
+| Storage backend timeout (S3) | writes queue to spool; reads cached | `escurel.storage_bytes` gauge stale; log at `level: warning` per retry |
+| Per-tenant lane corruption | tenant auto-suspended | `escurel.audit_drift` spikes; log at `level: critical`; other tenants unaffected |
+| Server OOM (large embed batch) | the offending request fails; the runtime continues | OTel error span; `escurel.tool_calls{status=error, tool=update_page}` increments |
+| Quota exhausted | request returns 429/RESOURCE_EXHAUSTED with retry hint | `escurel.tool_calls{status=quota_exhausted}` increments |
