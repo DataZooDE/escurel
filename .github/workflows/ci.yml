@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: short
+
+jobs:
+  # PR 0 ships the workflow shape without Rust steps; the workspace
+  # is set up in PR 1 alongside the first crate. See
+  # docs/notes/discovered/2026-05-24-empty-workspace-no-cargo.md
+  # for why we don't materialise Cargo.toml until there's a member.
+  scaffolding:
+    name: scaffolding
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify scaffolding files exist
+        run: |
+          test -f CLAUDE.md
+          test -f .editorconfig
+          test -f docs/notes/README.md
+          test -d docs/notes/discovered
+          echo "scaffolding OK"
