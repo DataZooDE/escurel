@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../theme/app_theme.dart';
+import '../editor/catalogue_pane.dart';
+import '../editor/entity_editor.dart';
+import '../editor/right_rail.dart';
 import 'status_bar.dart';
 import 'topbar.dart';
 
@@ -33,76 +35,24 @@ class _WorkspaceRow extends StatelessWidget {
           return const Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SizedBox(width: 280, child: _PanePlaceholder(
-                key: ValueKey('pane.catalogue'),
-                title: 'Catalogue',
-                hint: 'Skills + instances will appear here in PR-4.',
-              )),
+              SizedBox(width: 280, child: CataloguePane()),
               VerticalDivider(width: 1),
-              Expanded(child: _PanePlaceholder(
-                key: ValueKey('pane.editor'),
-                title: 'Entity editor',
-                hint: 'Open a page from the catalogue.',
-              )),
+              Expanded(child: EntityEditor()),
               VerticalDivider(width: 1),
-              SizedBox(width: 320, child: _PanePlaceholder(
-                key: ValueKey('pane.right'),
-                title: 'Backlinks',
-                hint: 'Backlinks, outgoing links, and neighbours land in PR-4.',
-              )),
+              SizedBox(width: 320, child: RightRail()),
             ],
           );
         }
         return const Column(
           children: [
-            Expanded(child: _PanePlaceholder(
-              key: ValueKey('pane.catalogue'),
-              title: 'Catalogue',
-              hint: 'Use a wider window for the full workspace.',
-            )),
+            Expanded(child: CataloguePane()),
             Divider(height: 1),
-            Expanded(child: _PanePlaceholder(
-              key: ValueKey('pane.editor'),
-              title: 'Entity editor',
-              hint: '',
-            )),
+            Expanded(child: EntityEditor()),
             Divider(height: 1),
-            Expanded(child: _PanePlaceholder(
-              key: ValueKey('pane.right'),
-              title: 'Backlinks',
-              hint: '',
-            )),
+            Expanded(child: RightRail()),
           ],
         );
       },
-    );
-  }
-}
-
-class _PanePlaceholder extends StatelessWidget {
-  const _PanePlaceholder({super.key, required this.title, required this.hint});
-
-  final String title;
-  final String hint;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final text = Theme.of(context).textTheme;
-    return Container(
-      color: scheme.surfaceContainerLow,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: text.titleSmall),
-          const SizedBox(height: 6),
-          Text(
-            hint,
-            style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
-          ),
-        ],
-      ),
     );
   }
 }
