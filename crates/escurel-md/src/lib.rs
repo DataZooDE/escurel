@@ -1,8 +1,8 @@
 //! Markdown parser for Escurel.
 //!
-//! Today this crate parses the YAML frontmatter block that every
-//! Escurel page (skill or instance) carries. Body and wikilink
-//! parsing arrive in later PRs.
+//! This crate parses the YAML frontmatter block that every Escurel
+//! page (skill or instance) carries, and extracts typed wikilinks
+//! from page bodies. See the [`wikilink`] module for the latter.
 //!
 //! ## Format
 //!
@@ -26,6 +26,8 @@
 //! The required field is `type:`, which must be `skill` or
 //! `instance`. Everything else is preserved verbatim in
 //! [`Frontmatter::fields`] for the indexer to project as needed.
+
+pub mod wikilink;
 
 use thiserror::Error;
 
