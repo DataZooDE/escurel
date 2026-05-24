@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../app.dart';
 import '../config/env.dart';
@@ -43,11 +44,52 @@ class Topbar extends ConsumerWidget implements PreferredSizeWidget {
           const SizedBox(width: 12),
           _Chip(label: env.version, tone: _Tone.neutral),
           const Spacer(),
+          _InspectorToggle(),
+          const SizedBox(width: 8),
           _Chip(
             label: env.mode.name,
             tone: env.mode == AppMode.fixture ? _Tone.warning : _Tone.success,
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _InspectorToggle extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final location = GoRouterState.of(context).uri.path;
+    final inInspector = location.startsWith('/inspector');
+    return Tooltip(
+      message: inInspector ? 'Back to editor' : 'Open dev inspector',
+      child: InkWell(
+        key: const ValueKey('topbar.inspector_toggle'),
+        borderRadius: BorderRadius.circular(6),
+        onTap: () => GoRouter.of(context).go(inInspector ? '/' : '/inspector'),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: inInspector ? kPrimary : kSurfaceContainerHigh,
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.terminal,
+                size: 14,
+                color: inInspector ? Colors.white : kOnSurface,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                'inspector',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: inInspector ? Colors.white : kOnSurface,
+                    ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
