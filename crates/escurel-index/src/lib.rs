@@ -23,5 +23,7 @@ pub mod read;
 pub mod schema;
 
 pub use indexer::{AuditDrift, Indexer, IndexerError};
-pub use read::{InstanceInfo, OrderDir, SkillInfo};
+pub use read::{
+    BlockInfo, ExpandedPage, InstanceInfo, OrderDir, PageRef, ResolvedWikilink, SkillInfo,
+};
 pub use schema::Migrator;
