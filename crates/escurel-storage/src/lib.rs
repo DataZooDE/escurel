@@ -12,7 +12,7 @@ pub mod fs;
 mod key;
 
 pub use fs::FsStore;
-pub use key::Key;
+pub use key::{Key, KeyError};
 
 use async_trait::async_trait;
 use bytes::Bytes;

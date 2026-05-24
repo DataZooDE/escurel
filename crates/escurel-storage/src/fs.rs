@@ -157,7 +157,14 @@ fn list_under(tenant_root: &Path, tenant: &str, prefix_path: &str) -> Result<Vec
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
         if rel_str.starts_with(prefix_path) {
-            out.push(Key::new(tenant.to_owned(), rel_str));
+            // Defensive: a file on disk with a pathological name
+            // (somebody else's process, a symlink target, …) can
+            // fail `Key::new`'s validation. Skip rather than poison
+            // the whole list — the audit path will surface drift
+            // on the markdown side.
+            if let Ok(key) = Key::new(tenant.to_owned(), rel_str) {
+                out.push(key);
+            }
         }
     }
     Ok(out)
