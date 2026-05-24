@@ -1,0 +1,21 @@
+[package]
+name = "escurel-quota"
+description = "Per-tenant rate-limit + concurrency cap for Escurel."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+dashmap = "6"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

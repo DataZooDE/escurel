@@ -6,6 +6,7 @@ members = [
     "crates/escurel-index",
     "crates/escurel-embed",
     "crates/escurel-auth",
+    "crates/escurel-quota",
 ]
 
 [workspace.package]
