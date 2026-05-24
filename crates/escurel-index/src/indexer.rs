@@ -31,7 +31,7 @@ pub const BLOCKS_DENSE_VEC_DIM: usize = 768;
 /// single-threaded; concurrent async callers serialise through it.
 pub struct Indexer {
     store: Arc<dyn LaneStore>,
-    embedder: Arc<dyn Embedder>,
+    pub(crate) embedder: Arc<dyn Embedder>,
     pub(crate) conn: Mutex<Connection>,
     tenant: String,
 }
@@ -347,7 +347,7 @@ fn mapping_to_json(mapping: &escurel_md::YamlMapping) -> Result<String, IndexerE
 /// statement (no injection surface). Used by the blocks insert,
 /// because duckdb-rs's `params!` doesn't have a direct binding
 /// for fixed-size float arrays.
-fn format_vector_literal(v: &[f32]) -> String {
+pub(crate) fn format_vector_literal(v: &[f32]) -> String {
     let mut out = String::with_capacity(v.len() * 8 + 2);
     out.push('[');
     for (i, x) in v.iter().enumerate() {

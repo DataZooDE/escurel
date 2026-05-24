@@ -563,6 +563,7 @@ name = "escurel-embed"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "sha2",
  "thiserror",
  "tokio",
 ]

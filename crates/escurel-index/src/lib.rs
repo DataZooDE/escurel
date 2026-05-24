@@ -21,6 +21,7 @@
 pub mod indexer;
 pub mod read;
 pub mod schema;
+pub mod search;
 
 pub use indexer::{AuditDrift, Indexer, IndexerError};
 pub use read::{
@@ -28,3 +29,4 @@ pub use read::{
     SkillInfo,
 };
 pub use schema::Migrator;
+pub use search::SearchHit;

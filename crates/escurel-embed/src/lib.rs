@@ -20,8 +20,10 @@
 //! per-tenant embed worker pool (decision 11, planned for M3)
 //! wraps an `Arc<dyn Embedder>` behind a bounded queue.
 
+mod hash;
 mod zero;
 
+pub use hash::HashEmbedder;
 pub use zero::ZeroEmbedder;
 
 use async_trait::async_trait;
