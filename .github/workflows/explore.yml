@@ -1,0 +1,103 @@
+# explore.yml — Flutter web companion app pipeline
+#
+# Independent of the Rust ci.yml (which is paused during bootstrap;
+# see CLAUDE.md principle 2). Scoped via `paths:` so changes outside
+# apps/escurel-explore/ and the example tenant do not trigger
+# Flutter setup.
+#
+# Triggers:
+#   - workflow_dispatch (manual)
+#   - push to main touching the relevant paths → build + push image
+#
+# Image: ghcr.io/<owner>/escurel-explore:sha-<short>
+#        + ghcr.io/<owner>/escurel-explore:latest
+#
+# Operator promotes via the substrate repo's /deploy-green flow.
+# Auto-promotion to Nomad is intentionally deferred until the
+# substrate's API token + workflow are wired up.
+
+name: explore
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/escurel-explore/**'
+      - 'examples/crm-demo/**'
+      - '.github/workflows/explore.yml'
+
+concurrency:
+  group: explore-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/escurel-explore
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter analyze
+        run: flutter analyze
+
+      - name: flutter test
+        run: flutter test --reporter expanded
+
+      - name: flutter build web
+        run: |
+          flutter build web --release \
+            --dart-define=ESCUREL_EXPLORE_MODE=fixture \
+            --dart-define=ESCUREL_EXPLORE_VERSION=${GITHUB_SHA::7}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: docker build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/escurel-explore
+          push: true
+          build-args: |
+            BUILD_VERSION=${{ github.sha }}
+            ESCUREL_EXPLORE_MODE=fixture
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/escurel-explore:sha-${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/escurel-explore:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "## escurel-explore deploy candidate"
+            echo ""
+            echo "Image: \`ghcr.io/${{ github.repository_owner }}/escurel-explore:sha-${GITHUB_SHA::7}\`"
+            echo ""
+            echo "Operator next step:"
+            echo "\`\`\`"
+            echo "/deploy-green dz-escurel-explore ${GITHUB_SHA::7}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"

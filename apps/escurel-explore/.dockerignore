@@ -1,0 +1,12 @@
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.fvm/
+.idea/
+.vscode/
+*.iml
+
+# Don't copy any generated/local cache into the image build context
+.git/
+test/.last_build_id
