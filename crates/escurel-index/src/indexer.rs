@@ -158,10 +158,20 @@ impl Indexer {
         let body_text = parsed.body.to_owned();
         let wikilinks = parse_wikilinks(&body_text);
 
-        // Embed the block body *before* taking the DuckDB mutex, so
-        // a slow embedder doesn't block other connections to this
-        // tenant's DB. The result lands in `dense_vec` inside the
-        // same write transaction as `pages` / `links` / `blocks`.
+        // Take the per-tenant DuckDB mutex BEFORE embedding. A
+        // codex review of M2.1 caught that the obvious "embed
+        // outside the lock" optimisation lets two concurrent
+        // `update_page` calls for the same `page_id` commit out
+        // of order: the slower embed finishes second and
+        // overwrites the newer content. Production avoids this
+        // via the spec's per-tenant write-RwLock in `kb-server`
+        // (`docs/spec/platform.md §Concurrency`); the M2-stage
+        // Indexer's single connection mutex is the only barrier
+        // and must serialise the whole `embed → write`
+        // sequence. See
+        // `docs/notes/discovered/2026-05-24-update-page-embed-order.md`.
+        let mut conn = self.conn.lock().await;
+
         let embeddings = self.embedder.embed(&[body_text.as_str()]).await?;
         let dense_vec = embeddings.into_iter().next().ok_or_else(|| {
             IndexerError::Embed(EmbedError::Backend(
@@ -176,7 +186,6 @@ impl Indexer {
         }
         let dense_vec_sql = format_vector_literal(&dense_vec);
 
-        let mut conn = self.conn.lock().await;
         let tx = conn.transaction()?;
 
         // pages: upsert via DELETE + INSERT to keep semantics
