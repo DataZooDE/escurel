@@ -335,6 +335,151 @@ impl Indexer {
     }
 }
 
+/// Direction filter for [`Indexer::neighbours`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// Only inbound edges (links whose `dst` is the queried page).
+    In,
+    /// Only outbound edges (links whose `src` is the queried page).
+    Out,
+    /// Both directions; output is the union, no de-duplication.
+    Both,
+}
+
+/// One link in the typed graph. The shape matches
+/// `docs/spec/protocol.md §neighbours` minus the `target_frontmatter_excerpt`
+/// (added in a later PR once the read path needs it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edge {
+    /// `pages.page_id` of the link's source.
+    pub src_page: String,
+    /// The wikilink's `id` segment — i.e. the target's `slug`. To
+    /// hop to the resolved target page, call
+    /// [`Indexer::resolve`] with `[[link_skill::dst_page]]`.
+    pub dst_page: String,
+    /// `''` for bare wikilinks, `<skill>` for typed.
+    pub link_skill: String,
+    /// `@version` segment of the wikilink, when present.
+    pub link_version: Option<String>,
+    /// `#anchor` segment of the wikilink, when present. Empty
+    /// string in storage maps back to `None` here.
+    pub dst_anchor: Option<String>,
+}
+
+impl Indexer {
+    /// Return links touching `page_id` in the chosen `direction`,
+    /// optionally filtered to a single `link_skill`.
+    ///
+    /// `direction = Out` queries `WHERE src_page = page_id` —
+    /// fast because that is the most selective index.
+    /// `direction = In` first resolves `page_id` to its
+    /// `(skill, slug)` pair on the `pages` table (since the
+    /// `links` table records `dst_page` as the wikilink id /
+    /// slug, not the canonical `page_id`), then queries
+    /// `WHERE dst_page = slug AND link_skill = skill`.
+    /// `direction = Both` is the union of the two.
+    ///
+    /// Bare-link disambiguation (a `[[acme-corp]]` link could
+    /// point at any `acme-corp`-slugged page) is out of scope here;
+    /// inbound queries today only see links whose `link_skill`
+    /// equals the resolved page's skill.
+    pub async fn neighbours(
+        &self,
+        page_id: &str,
+        direction: Direction,
+        link_skill_filter: Option<&str>,
+    ) -> Result<Vec<Edge>, IndexerError> {
+        let conn = self.conn.lock().await;
+
+        let target = if matches!(direction, Direction::In | Direction::Both) {
+            conn.query_row(
+                "SELECT slug, skill FROM pages WHERE page_id = ?",
+                params![page_id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            )
+            .ok()
+        } else {
+            None
+        };
+
+        let mut edges = Vec::new();
+        let want_out = matches!(direction, Direction::Out | Direction::Both);
+        let want_in = matches!(direction, Direction::In | Direction::Both);
+
+        if want_out {
+            let sql_base = "SELECT src_page, dst_page, dst_anchor, link_skill, link_version \
+                            FROM links WHERE src_page = ?";
+            let (sql, _) = with_link_skill_filter(sql_base, link_skill_filter);
+            let mut stmt = conn.prepare(&sql)?;
+            match link_skill_filter {
+                Some(ls) => {
+                    let rows = stmt.query_map(params![page_id, ls], edge_from_row)?;
+                    for r in rows {
+                        edges.push(r?);
+                    }
+                }
+                None => {
+                    let rows = stmt.query_map(params![page_id], edge_from_row)?;
+                    for r in rows {
+                        edges.push(r?);
+                    }
+                }
+            }
+        }
+
+        if want_in {
+            if let Some((Some(slug), skill)) = target {
+                let mut sql = String::from(
+                    "SELECT src_page, dst_page, dst_anchor, link_skill, link_version \
+                     FROM links WHERE dst_page = ? AND link_skill = ?",
+                );
+                if let Some(ls) = link_skill_filter {
+                    // Filter further if a more specific link_skill was
+                    // requested. `link_skill` here is the dst's own
+                    // skill; the filter only narrows it further.
+                    sql.push_str(" AND link_skill = ?");
+                    let mut stmt = conn.prepare(&sql)?;
+                    let rows = stmt.query_map(params![slug, skill, ls], edge_from_row)?;
+                    for r in rows {
+                        edges.push(r?);
+                    }
+                } else {
+                    let mut stmt = conn.prepare(&sql)?;
+                    let rows = stmt.query_map(params![slug, skill], edge_from_row)?;
+                    for r in rows {
+                        edges.push(r?);
+                    }
+                }
+            }
+        }
+
+        Ok(edges)
+    }
+}
+
+fn with_link_skill_filter(base: &str, link_skill: Option<&str>) -> (String, bool) {
+    match link_skill {
+        Some(_) => (format!("{base} AND link_skill = ?"), true),
+        None => (base.to_owned(), false),
+    }
+}
+
+fn edge_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<Edge> {
+    let dst_anchor: String = row.get(2)?;
+    let dst_anchor = if dst_anchor.is_empty() {
+        None
+    } else {
+        Some(dst_anchor)
+    };
+    Ok(Edge {
+        src_page: row.get(0)?,
+        dst_page: row.get(1)?,
+        dst_anchor,
+        link_skill: row.get(3)?,
+        link_version: row.get(4)?,
+    })
+}
+
 fn page_ref_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<PageRef> {
     let page_id: String = row.get(0)?;
     let slug: Option<String> = row.get(1)?;
