@@ -84,6 +84,42 @@ The CLI also exposes every agent-facing tool, so an operator can
 script the same primitives the agent uses (this is what the
 real-LLM run did via `agent_tools.py`).
 
+### Admin (exposed over MCP, gated by `escurel-admin` role)
+
+Four tools, used by operator UIs (the
+[`escurel-explore`](../../apps/escurel-explore/) editor's Dev
+Inspector drawer in particular) and by tenant migration tooling.
+Distinct from the four CLI ops tools above because:
+
+- They are MCP-served, not CLI-only. An operator can drive them
+  from a browser-side admin client without an ssh hop.
+- They cover *inspection* of lane/index/page state, not
+  destructive operations. Mutation still goes through the
+  agent-facing `update_page` (with the same validation pipeline)
+  or the CLI `rebuild` (for recovery).
+- They require the `escurel-admin` role (an OIDC JWT claim).
+  Without it the dispatcher returns `permission_denied` without
+  revealing whether the tool exists.
+
+| tool | inputs | output | purpose |
+|---|---|---|---|
+| `admin_list_lanes` | — | list of `{name, backend, tenants_present}` | enumerate the LaneStores the server has registered. Tells you whether Fs and S3 are both wired up and which tenants have content in each |
+| `admin_lane_keys` | `lane: str`, `prefix?: str`, `limit: int = 100` | list of `{key, size_bytes, last_modified?}` | list keys under `prefix` in `lane`. What's actually on disk / in S3 for this tenant, ordered by key |
+| `admin_lane_blob` | `lane: str`, `key: str` | binary `{bytes, content_type}` | fetch one blob raw — the Inspector renders bytes hex+text for debug. Subject to a server-side size limit (default 1 MiB) |
+| `admin_index_query` | `table: str`, `filter?: {…}`, `limit?: int` | `{columns, rows, snapshot_version?}` | paginated read of one of the six index tables: `pages`, `links`, `blocks`, `crdt_ops`, `crdt_snapshots`, `frontmatter_index`. Read-only by design |
+
+Scope: today admin tools operate against the **single tenant the
+server instance is scoped to**, identical to the agent surface.
+Once federation lands (F1 / G1) admin tools gain an explicit
+`tenant: str` parameter; cross-tenant calls remain
+`escurel-admin`-gated plus a per-tenant `admin_grant` claim.
+
+`admin_index_query` is the one tool that intentionally exposes raw
+relational reads — it bypasses the `run_stored_query` sandboxing
+because the operator inspecting the index needs to issue ad-hoc
+projections. The `escurel-admin` role is the gate; without it this
+tool is invisible.
+
 ### What the MCP surface deliberately does NOT expose
 
 - **No direct SQL.** Agents reach the relational store only through
