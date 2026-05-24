@@ -577,6 +577,7 @@ dependencies = [
  "escurel-embed",
  "escurel-md",
  "escurel-storage",
+ "regex",
  "serde_json",
  "sha2",
  "tempfile",
