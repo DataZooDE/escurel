@@ -8,7 +8,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use escurel_auth::OidcVerifier;
 use escurel_index::Indexer;
+use escurel_quota::QuotaManager;
 use serde_json::json;
 use thiserror::Error;
 use tokio::net::TcpListener;
@@ -35,6 +37,15 @@ pub struct ServerConfig {
     /// (useful for health-only deployments). `tools/call` returns
     /// a JSON-RPC `method not found` when absent.
     pub indexer: Option<Arc<Indexer>>,
+    /// OIDC verifier. When `Some`, `/mcp` requires a valid
+    /// `Authorization: Bearer <jwt>` header; `None` runs the
+    /// gateway unauthenticated (dev / on-host use).
+    pub verifier: Option<Arc<OidcVerifier>>,
+    /// Per-tenant rate-limit + concurrency cap. When `Some`,
+    /// `/mcp` debits the relevant quota dimension before
+    /// dispatch. Required `verifier` to be set too (the tenant
+    /// id comes from the verified token).
+    pub quota: Option<Arc<QuotaManager>>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -56,6 +67,8 @@ impl ServerConfig {
             version: "0.0.0-dev".to_owned(),
             readiness: Arc::new(AlwaysReady),
             indexer: None,
+            verifier: None,
+            quota: None,
         }
     }
 }
@@ -105,6 +118,8 @@ pub(crate) struct AppState {
     pub(crate) version: String,
     pub(crate) readiness: Arc<dyn ReadinessProbe>,
     pub(crate) indexer: Option<Arc<Indexer>>,
+    pub(crate) verifier: Option<Arc<OidcVerifier>>,
+    pub(crate) quota: Option<Arc<QuotaManager>>,
 }
 
 /// Build the router + bind + spawn the axum server. Returns once
@@ -116,6 +131,8 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
         indexer: config.indexer.clone(),
+        verifier: config.verifier.clone(),
+        quota: config.quota.clone(),
     };
 
     let app = Router::new()

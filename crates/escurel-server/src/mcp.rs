@@ -22,10 +22,12 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_index::{Direction, Indexer, OrderDir};
 use escurel_md::PageType;
+use escurel_quota::{Dimension, QuotaError};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -48,14 +50,48 @@ pub struct ToolsCallParams {
 }
 
 /// MCP entry point: `POST /mcp`. Single-request, single-response
-/// for now; batched and SSE-streamed responses come with the
-/// write-path PR.
+/// for now; batched and SSE-streamed responses come with later
+/// PRs.
+///
+/// When the gateway is configured with an [`OidcVerifier`], the
+/// caller must supply `Authorization: Bearer <jwt>`; missing /
+/// invalid → HTTP 401 (the JSON-RPC error envelope is only used
+/// for *protocol-level* errors, per the JSON-RPC convention
+/// that transport-level auth failures stay at the HTTP layer).
+/// When a [`QuotaManager`] is also configured, the per-tenant
+/// rate budget is debited *before* dispatch; exhaustion returns
+/// HTTP 429 with a `Retry-After-Ms` header and an
+/// `escurel.tool_calls{status=quota_exhausted}` semantic in the
+/// body.
 pub async fn mcp(
     State(state): State<crate::server::AppState>,
+    headers: HeaderMap,
     Json(req): Json<JsonRpcRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     if req.jsonrpc != "2.0" {
         return error_response(req.id, -32600, "invalid jsonrpc version");
+    }
+
+    // Auth gate — only enforced when a verifier is configured.
+    let auth_ctx = match state.verifier.as_ref() {
+        Some(verifier) => match enforce_auth(verifier, &headers).await {
+            Ok(ctx) => Some(ctx),
+            Err(resp) => return resp,
+        },
+        None => None,
+    };
+
+    // Quota gate — only enforced when a quota manager is
+    // configured (and an auth context is available to name the
+    // tenant). The dimension is picked from the tool name; tools
+    // that don't consume any bucket (today: tools/list) skip the
+    // check entirely.
+    if let (Some(quota), Some(ctx)) = (state.quota.as_ref(), auth_ctx.as_ref()) {
+        if let Some(dim) = dimension_for(&req.method, &req.params) {
+            if let Err(err) = quota.try_consume(&ctx.tenant_id, dim) {
+                return quota_response(req.id, &err);
+            }
+        }
     }
 
     let result = match req.method.as_str() {
@@ -83,6 +119,83 @@ pub async fn mcp(
             .into_response(),
         Err(err) => err.into_response(req.id),
     }
+}
+
+async fn enforce_auth(
+    verifier: &OidcVerifier,
+    headers: &HeaderMap,
+) -> Result<AuthContext, axum::response::Response> {
+    let token = match bearer_token(headers) {
+        Some(t) => t,
+        None => return Err(auth_failure("missing Authorization: Bearer header")),
+    };
+    verifier
+        .verify(&token)
+        .await
+        .map_err(|e| auth_failure(format!("token rejected: {e}")))
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get("authorization")?.to_str().ok()?;
+    let prefix = "Bearer ";
+    if let Some(stripped) = raw.strip_prefix(prefix) {
+        return Some(stripped.trim().to_owned());
+    }
+    if let Some(stripped) = raw.strip_prefix("bearer ") {
+        return Some(stripped.trim().to_owned());
+    }
+    None
+}
+
+fn auth_failure(message: impl Into<String>) -> axum::response::Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "error": "unauthorized",
+            "message": message.into(),
+        })),
+    )
+        .into_response()
+}
+
+fn quota_response(id: Value, err: &QuotaError) -> axum::response::Response {
+    let retry = err.retry_after_ms();
+    let dim = match err {
+        QuotaError::Exhausted { dimension, .. } => format!("{dimension:?}").to_lowercase(),
+    };
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32000,
+            "message": format!("quota exhausted on {dim}; retry after {retry} ms"),
+            "data": { "dimension": dim, "retry_after_ms": retry }
+        }
+    });
+    let mut response = (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+    response
+        .headers_mut()
+        .insert("Retry-After-Ms", retry.to_string().parse().unwrap());
+    response
+}
+
+/// Map (method, params) to the quota dimension a request should
+/// debit, if any. Tools/list and unauthenticated discovery don't
+/// consume a bucket.
+fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
+    if method != "tools/call" {
+        return None;
+    }
+    let name = params.get("name").and_then(Value::as_str)?;
+    Some(match name {
+        "update_page" => Dimension::Writes,
+        _ => Dimension::Queries,
+    })
+}
+
+#[allow(dead_code)]
+fn elevated_role(role: Role) -> bool {
+    matches!(role, Role::Admin)
 }
 
 async fn dispatch_tools_call(indexer: &Indexer, params: Value) -> Result<Value, JsonRpcError> {
