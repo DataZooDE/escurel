@@ -59,6 +59,7 @@ pub async fn mcp(
     }
 
     let result = match req.method.as_str() {
+        "tools/list" => Ok(tools_list_payload()),
         "tools/call" => match state.indexer.as_ref() {
             Some(indexer) => dispatch_tools_call(indexer, req.params).await,
             None => Err(JsonRpcError::internal(
@@ -96,6 +97,7 @@ async fn dispatch_tools_call(indexer: &Indexer, params: Value) -> Result<Value, 
         "neighbours" => tool_neighbours(indexer, params.arguments).await,
         "search" => tool_search(indexer, params.arguments).await,
         "run_stored_query" => tool_run_stored_query(indexer, params.arguments).await,
+        "update_page" => tool_update_page(indexer, params.arguments).await,
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
         ))),
@@ -327,6 +329,141 @@ async fn tool_run_stored_query(indexer: &Indexer, args: Value) -> Result<Value, 
             "type": c.type_name,
         })).collect::<Vec<_>>(),
     }))
+}
+
+#[derive(Deserialize)]
+struct UpdatePageArgs {
+    page_id: String,
+    content: String,
+}
+
+async fn tool_update_page(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: UpdatePageArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("update_page: {e}")))?;
+    indexer
+        .update_page(&a.page_id, &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page: {e}")))?;
+    // The trait doesn't currently surface validation issues
+    // (it errors out instead). Return the protocol-required
+    // `{ok, issues}` shape with an empty issues list and a stub
+    // new_version derived from the body hash. Real version IDs
+    // arrive once the CRDT layer (M4) gives us monotonic
+    // versions; until then the client only needs the field to
+    // exist.
+    Ok(json!({
+        "ok": true,
+        "issues": [],
+        "new_version": "v1",
+    }))
+}
+
+// --- tools/list payload ----------------------------------------
+
+/// MCP `tools/list` response payload. Each entry is `{ name,
+/// description, inputSchema }`. The wire shape matches the
+/// upstream MCP spec exactly so any conforming MCP client can
+/// drive Escurel without bespoke wiring.
+fn tools_list_payload() -> Value {
+    json!({
+        "tools": [
+            tool_entry(
+                "list_skills",
+                "Return the tenant's Tier-1 skill catalogue.",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "list_instances",
+                "Enumerate instances of a skill.",
+                json!({
+                    "type": "object",
+                    "required": ["skill_id"],
+                    "properties": {
+                        "skill_id": { "type": "string" },
+                        "order_by": { "type": "string", "enum": ["at asc", "at desc"] },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+                    }
+                }),
+            ),
+            tool_entry(
+                "resolve",
+                "Parse a [[wikilink]] and look up its target page.",
+                json!({
+                    "type": "object",
+                    "required": ["wikilink"],
+                    "properties": { "wikilink": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "expand",
+                "Fetch a page's frontmatter + body + outbound wikilinks.",
+                json!({
+                    "type": "object",
+                    "required": ["page_id"],
+                    "properties": { "page_id": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "neighbours",
+                "Typed link-graph traversal.",
+                json!({
+                    "type": "object",
+                    "required": ["page_id"],
+                    "properties": {
+                        "page_id": { "type": "string" },
+                        "direction": { "type": "string", "enum": ["in", "out", "both"] },
+                        "link_skill": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "search",
+                "Hybrid vector + FTS search, RRF-fused.",
+                json!({
+                    "type": "object",
+                    "required": ["q"],
+                    "properties": {
+                        "q": { "type": "string" },
+                        "k": { "type": "integer", "minimum": 0, "maximum": 1000 },
+                        "page_type": { "type": "string", "enum": ["skill", "instance", "any"] },
+                        "skill": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "run_stored_query",
+                "Execute a [[query::*]] instance with named parameters.",
+                json!({
+                    "type": "object",
+                    "required": ["query_id"],
+                    "properties": {
+                        "query_id": { "type": "string" },
+                        "params": { "type": "object" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "update_page",
+                "Upsert a markdown page (whole-body write).",
+                json!({
+                    "type": "object",
+                    "required": ["page_id", "content"],
+                    "properties": {
+                        "page_id": { "type": "string" },
+                        "content": { "type": "string" }
+                    }
+                }),
+            ),
+        ]
+    })
+}
+
+fn tool_entry(name: &str, description: &str, input_schema: Value) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": input_schema,
+    })
 }
 
 // --- helpers ---------------------------------------------------

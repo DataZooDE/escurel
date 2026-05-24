@@ -297,6 +297,105 @@ async fn unknown_method_returns_jsonrpc_method_not_found() {
 }
 
 #[tokio::test]
+async fn update_page_round_trips_through_http() {
+    let h = start_with_seeded_indexer().await;
+    let body = "---\n\
+                type: instance\n\
+                skill: customer\n\
+                id: brand-new\n\
+                ---\n\
+                # Brand New Customer\n\
+                \n\
+                Created via update_page over MCP.\n";
+
+    let result = call_tool(
+        &h,
+        "update_page",
+        json!({
+            "page_id": "markdown/instances/customer/brand-new.md",
+            "content": body
+        }),
+    )
+    .await;
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["issues"].as_array().unwrap().len(), 0);
+
+    // The new page must now appear in list_instances.
+    let inst = call_tool(&h, "list_instances", json!({ "skill_id": "customer" })).await;
+    let count = inst["instances"].as_array().unwrap().len();
+    assert_eq!(count, 3, "expected the 2 seeded + brand-new = 3");
+
+    h.handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn update_page_propagates_parse_error_as_jsonrpc_internal() {
+    let h = start_with_seeded_indexer().await;
+    let resp = h
+        .client
+        .post(format!("{}/mcp", h.base_url))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "update_page",
+                "arguments": {
+                    "page_id": "x.md",
+                    "content": "no frontmatter at all"
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], -32603, "internal error: {body}");
+    h.handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn tools_list_returns_all_eight_tools_with_schemas() {
+    let h = start_with_seeded_indexer().await;
+    let resp = h
+        .client
+        .post(format!("{}/mcp", h.base_url))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "tools/list",
+        }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    let tools = body["result"]["tools"].as_array().expect("tools array");
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    let expected = [
+        "list_skills",
+        "list_instances",
+        "resolve",
+        "expand",
+        "neighbours",
+        "search",
+        "run_stored_query",
+        "update_page",
+    ];
+    for name in expected {
+        assert!(
+            names.contains(&name),
+            "tools/list missing {name}: {names:?}"
+        );
+    }
+    // Every entry must carry the MCP-shape fields.
+    for t in tools {
+        assert!(t["description"].is_string());
+        assert_eq!(t["inputSchema"]["type"], "object");
+    }
+    h.handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn malformed_jsonrpc_version_returns_invalid_request() {
     let h = start_with_seeded_indexer().await;
     let resp = h
