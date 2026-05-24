@@ -46,6 +46,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ghcr.io rejects uppercase repository paths. github.repository_owner
+      # is "DataZooDE" here; emit a lowercased alias for image tags.
+      - name: derive lowercase owner + short sha
+        id: meta
+        run: |
+          {
+            echo "owner_lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+            echo "sha_short=${GITHUB_SHA::7}"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.0'
@@ -81,11 +91,11 @@ jobs:
           context: apps/escurel-explore
           push: true
           build-args: |
-            BUILD_VERSION=${{ github.sha }}
+            BUILD_VERSION=${{ steps.meta.outputs.sha_short }}
             ESCUREL_EXPLORE_MODE=fixture
           tags: |
-            ghcr.io/${{ github.repository_owner }}/escurel-explore:sha-${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/escurel-explore:latest
+            ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:sha-${{ steps.meta.outputs.sha_short }}
+            ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -94,10 +104,10 @@ jobs:
           {
             echo "## escurel-explore deploy candidate"
             echo ""
-            echo "Image: \`ghcr.io/${{ github.repository_owner }}/escurel-explore:sha-${GITHUB_SHA::7}\`"
+            echo "Image: \`ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:sha-${{ steps.meta.outputs.sha_short }}\`"
             echo ""
             echo "Operator next step:"
             echo "\`\`\`"
-            echo "/deploy-green dz-escurel-explore ${GITHUB_SHA::7}"
+            echo "/deploy-green dz-escurel-explore ${{ steps.meta.outputs.sha_short }}"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
