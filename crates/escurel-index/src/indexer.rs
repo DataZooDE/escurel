@@ -32,7 +32,7 @@ pub const BLOCKS_DENSE_VEC_DIM: usize = 768;
 pub struct Indexer {
     store: Arc<dyn LaneStore>,
     embedder: Arc<dyn Embedder>,
-    conn: Mutex<Connection>,
+    pub(crate) conn: Mutex<Connection>,
     tenant: String,
 }
 

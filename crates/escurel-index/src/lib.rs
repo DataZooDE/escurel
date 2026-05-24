@@ -19,7 +19,9 @@
 //! egress is dev-only.
 
 pub mod indexer;
+pub mod read;
 pub mod schema;
 
 pub use indexer::{AuditDrift, Indexer, IndexerError};
+pub use read::{InstanceInfo, OrderDir, SkillInfo};
 pub use schema::Migrator;
