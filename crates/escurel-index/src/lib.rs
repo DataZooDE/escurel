@@ -18,6 +18,8 @@
 //! golden image (`docs/deploy/substrate.md §6`); the auto-install
 //! egress is dev-only.
 
+pub mod indexer;
 pub mod schema;
 
+pub use indexer::{AuditDrift, Indexer, IndexerError};
 pub use schema::Migrator;
