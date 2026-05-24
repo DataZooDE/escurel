@@ -559,11 +559,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "escurel-embed"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "escurel-index"
 version = "0.0.0"
 dependencies = [
  "bytes",
  "duckdb",
+ "escurel-embed",
  "escurel-md",
  "escurel-storage",
  "serde_json",
