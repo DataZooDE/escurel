@@ -1,0 +1,28 @@
+[package]
+name = "escurel-index"
+description = "DuckDB-backed index for Escurel: relational + vss + fts + CRDT op log."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+# Bundled DuckDB: vendored C++ build, no system libduckdb required.
+# Uses the `cc` backend (cargo-orchestrated parallel compile) — the
+# alternative `bundled-cmake` backend cannot be used from the
+# crates.io release because the release ships only the cc-backend
+# amalgamation, not the CMake source tree. See
+# docs/notes/discovered/2026-05-24-duckdb-bundled-cmake-ninja.md.
+# Cold compile ~2–3 min on a parallel host; cached by
+# Swatinem/rust-cache for ~30s on subsequent CI runs.
+duckdb = { version = "1", features = ["bundled"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
