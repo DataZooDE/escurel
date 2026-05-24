@@ -10,7 +10,7 @@
 // deploying one.**
 //
 // Escurel is a stateful service because each tenant's per-node DuckDB
-// file (`kb.duckdb`) is rebuilt from canonical markdown on the
+// file (`escurel.duckdb`) is rebuilt from canonical markdown on the
 // LaneStore on first request after a node loss. The DuckDB file is
 // cattle (rebuildable from `s3://escurel-lanes-<env>/`); the
 // allocation is pet (one replica per env, host-volume-pinned for
@@ -18,10 +18,10 @@
 // rebuilds from S3 — see `docs/spec/storage.md` HNSW persistence
 // model.
 //
-// Naming: `escurel-*` everywhere on the substrate surface (Consul
-// services, Fabio tags, Tailscale tag, Vault policy, GCS bucket).
-// `KB_*` everywhere in the binary's env vars (locked CLI/config
-// surface from spec/README.md).
+// Naming: `escurel-*` / `ESCUREL_*` everywhere — substrate surface
+// (Consul services, Fabio tags, Tailscale tag, Vault policy, GCS
+// bucket) and binary surface (env vars, TOML, CLI) share the same
+// project name. See `docs/deploy/substrate.md §Naming convention`.
 
 variable "datacenter" {
   type        = string
@@ -35,7 +35,7 @@ variable "version" {
 
 variable "image" {
   type        = string
-  description = "Container image, pinned by SHA or immutable tag. Default golden image bakes kb-server + EmbeddingGemma."
+  description = "Container image, pinned by SHA or immutable tag. Default golden image bakes escurel-server + EmbeddingGemma."
   // Example: "registry.datazoo.internal/escurel:v1.0.0@sha256:..."
 }
 
@@ -58,7 +58,7 @@ variable "oidc_issuer" {
 
 variable "s3_bucket" {
   type        = string
-  description = "Hetzner Object Storage bucket for canonical markdown + kb.duckdb. Convention: escurel-lanes-<env>. Per docs/deploy/substrate.md §2."
+  description = "Hetzner Object Storage bucket for canonical markdown + escurel.duckdb. Convention: escurel-lanes-<env>. Per docs/deploy/substrate.md §2."
   // Example: "escurel-lanes-nonprod"
 }
 
@@ -163,7 +163,7 @@ job "datazoode-escurel" {
       }
     }
 
-    task "kb-server" {
+    task "escurel-server" {
       driver = "docker"
 
       // Vault policy `apps-escurel` grants read access to the OIDC
@@ -186,15 +186,14 @@ job "datazoode-escurel" {
       }
 
       // Vault-templated secrets land in /secrets and are sourced by
-      // the binary at startup. KB_* envs are the binary's locked
-      // config surface (see docs/spec/README.md § Configuration);
-      // they do NOT rename to ESCUREL_*.
+      // the binary at startup. ESCUREL_* envs are the binary's locked
+      // config surface (see docs/spec/README.md § Configuration).
       template {
         destination = "secrets/s3.env"
         env         = true
         data        = <<EOH
-KB_STORAGE_S3_ACCESS_KEY_ID={{ with secret "kv/data/apps/escurel/s3" }}{{ .Data.data.access_key_id }}{{ end }}
-KB_STORAGE_S3_SECRET_ACCESS_KEY={{ with secret "kv/data/apps/escurel/s3" }}{{ .Data.data.secret_access_key }}{{ end }}
+ESCUREL_STORAGE_S3_ACCESS_KEY_ID={{ with secret "kv/data/apps/escurel/s3" }}{{ .Data.data.access_key_id }}{{ end }}
+ESCUREL_STORAGE_S3_SECRET_ACCESS_KEY={{ with secret "kv/data/apps/escurel/s3" }}{{ .Data.data.secret_access_key }}{{ end }}
 EOH
       }
 
@@ -204,43 +203,43 @@ EOH
         VERSION  = "${var.version}"
 
         // Data + cache dirs live on the pinned host volume.
-        KB_SERVER_DATA_DIR = "/data"
-        KB_CONFIG          = "/local/server.toml"
+        ESCUREL_SERVER_DATA_DIR = "/data"
+        ESCUREL_CONFIG          = "/local/server.toml"
 
         // Listen addresses. MCP/WS/REST share the HTTP listener.
-        KB_SERVER_LISTEN_HTTP = "0.0.0.0:8080"
-        KB_SERVER_LISTEN_GRPC = "0.0.0.0:8081"
+        ESCUREL_SERVER_LISTEN_HTTP = "0.0.0.0:8080"
+        ESCUREL_SERVER_LISTEN_GRPC = "0.0.0.0:8081"
 
         // Auth — substrate Vault OIDC role.
-        KB_AUTH_OIDC_ISSUER      = "${var.oidc_issuer}"
-        KB_AUTH_OIDC_AUDIENCE    = "escurel"
-        KB_AUTH_TENANT_CLAIM     = "kb_tenant"
-        KB_AUTH_ADMIN_ROLE_CLAIM = "roles"
-        KB_AUTH_ADMIN_ROLE_VALUE = "escurel:admin"
-        KB_AUTH_JWKS_REFRESH_SECS = "300"
+        ESCUREL_AUTH_OIDC_ISSUER      = "${var.oidc_issuer}"
+        ESCUREL_AUTH_OIDC_AUDIENCE    = "escurel"
+        ESCUREL_AUTH_TENANT_CLAIM     = "escurel_tenant"
+        ESCUREL_AUTH_ADMIN_ROLE_CLAIM = "roles"
+        ESCUREL_AUTH_ADMIN_ROLE_VALUE = "escurel:admin"
+        ESCUREL_AUTH_JWKS_REFRESH_SECS = "300"
 
         // Storage — Hetzner Object Storage. Endpoint hostname MUST
         // match between LaneStore and DuckDB httpfs secret per
         // docs/spec/storage.md hostname-equality constraint.
-        KB_STORAGE_BACKEND       = "s3"
-        KB_STORAGE_S3_BUCKET     = "${var.s3_bucket}"
-        KB_STORAGE_S3_ENDPOINT   = "${var.s3_endpoint}"
-        KB_STORAGE_S3_PREFIX     = "tenants/"
-        KB_STORAGE_S3_PATH_STYLE = "true"
+        ESCUREL_STORAGE_BACKEND       = "s3"
+        ESCUREL_STORAGE_S3_BUCKET     = "${var.s3_bucket}"
+        ESCUREL_STORAGE_S3_ENDPOINT   = "${var.s3_endpoint}"
+        ESCUREL_STORAGE_S3_PREFIX     = "tenants/"
+        ESCUREL_STORAGE_S3_PATH_STYLE = "true"
 
         // Embedding — EmbeddingGemma baked into the golden image at
         // /opt/escurel/models/embeddinggemma-300m/ (per
         // docs/deploy/substrate.md §6).
-        KB_EMBEDDING_PROVIDER = "embeddinggemma"
-        KB_EMBEDDING_MODEL    = "google/embeddinggemma-300m"
-        KB_EMBEDDING_DEVICE   = "cpu"
-        KB_EMBEDDING_DIM      = "768"
+        ESCUREL_EMBEDDING_PROVIDER = "embeddinggemma"
+        ESCUREL_EMBEDDING_MODEL    = "google/embeddinggemma-300m"
+        ESCUREL_EMBEDDING_DEVICE   = "cpu"
+        ESCUREL_EMBEDDING_DIM      = "768"
 
         // Observability — OTLP to substrate collector; Prometheus
         // scrape on :9090.
-        KB_OBSERVABILITY_OTLP_ENDPOINT = "http://otel-collector.service.consul:4317"
-        KB_OBSERVABILITY_METRICS_LISTEN = "0.0.0.0:9090"
-        KB_OBSERVABILITY_LOG_FORMAT     = "json"
+        ESCUREL_OBSERVABILITY_OTLP_ENDPOINT  = "http://otel-collector.service.consul:4317"
+        ESCUREL_OBSERVABILITY_METRICS_LISTEN = "0.0.0.0:9090"
+        ESCUREL_OBSERVABILITY_LOG_FORMAT     = "json"
       }
 
       // Substrate `escurel-class` floors per docs/deploy/substrate.md §5.

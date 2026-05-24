@@ -9,7 +9,7 @@ this directory specifies the implementation.
 The agent ↔ KB contract (see
 [`../contract/agent-interface.md`](../contract/agent-interface.md))
 defines the surface: skill-instance markdown, typed `[[skill::id]]`
-wikilinks, twelve MCP tools, a mandatory `kb` meta-skill, live CRDT
+wikilinks, twelve MCP tools, a mandatory `escurel` meta-skill, live CRDT
 write path plus whole-page fallback. The storage shape behind the
 dispatcher is per-tenant: a single DuckDB file using the `vss` and
 `fts` extensions, with the canonical `pages/` markdown directory on
@@ -32,10 +32,10 @@ cheaply. See [`protocol.md`](protocol.md) for the exact signatures and
 [`storage.md`](storage.md) for the event-index sketch.
 
 This directory specifies the *implementation*: a single Rust binary
-(`kb-server`) and a thin CLI client (`kb`), exposing the agent surface
-over three transports (MCP-over-HTTP, WebSocket, native gRPC), with the
-operator surface mirrored on gRPC. It captures every decision that
-needed to be locked before code can be written.
+(`escurel-server`) and a thin CLI client (`escurel`), exposing the
+agent surface over three transports (MCP-over-HTTP, WebSocket, native
+gRPC), with the operator surface mirrored on gRPC. It captures every
+decision that needed to be locked before code can be written.
 
 ## Document map
 
@@ -59,9 +59,9 @@ are the ones with the largest blast radius if changed later.
 | # | Topic | Decision | Notes |
 |---|---|---|---|
 | **1** | **Language** | **Rust** (stable, edition 2024) | Per-tenant single-writer fits a Tokio runtime cleanly |
-| **2** | **Deployment** | **Single binary `kb-server`, self-hosted; same binary scales to multi-tenant SaaS** | One process per node; multi-tenancy is in-process (see decision 8) |
+| **2** | **Deployment** | **Single binary `escurel-server`, self-hosted; same binary scales to multi-tenant SaaS** | One process per node; multi-tenancy is in-process (see decision 8) |
 | 3 | Auth | Generic OIDC discovery; tenant id is one OIDC claim (`tenant` by default, configurable) | See [`platform.md`](platform.md#auth) |
-| 4 | Embedding model — default | **EmbeddingGemma** (`google/embeddinggemma-300m`), 768d, Matryoshka-trained, multilingual | Open weights; loads on first start, cached under `${KB_DATA_DIR}/cache/models/` |
+| 4 | Embedding model — default | **EmbeddingGemma** (`google/embeddinggemma-300m`), 768d, Matryoshka-trained, multilingual | Open weights; loads on first start, cached under `${ESCUREL_DATA_DIR}/cache/models/` |
 | 4a | Embedding model — optional | Gemini embeddings (`gemini-embedding-001`) over HTTPS, gated by `embedding.provider = gemini` | Bypasses candle; breaks air-gapped use; only enabled if explicitly configured |
 | 5 | Embed/rerank runtime | **candle** (pure Rust) | No external runtime; CUDA/Metal feature flags; sidecar adapter exists as a trait impl for future use |
 | **6** | **Transports** | **MCP-over-HTTP (streaming)** + **WebSocket** (live mode) + **native gRPC** | See [`protocol.md`](protocol.md) for each |
@@ -103,7 +103,7 @@ both about transport efficiency:
                        │       WebSocket + gRPC            │
                        ▼                                   ▼
                 ┌──────────────────────────────────────────────────────┐
-                │                  kb-server (Rust)                    │
+                │                escurel-server (Rust)                 │
                 │  ┌──────────────────────────────────────────────┐    │
                 │  │   gateway: tonic (gRPC) + axum (HTTP/WS)     │    │
                 │  └─────────────────────┬────────────────────────┘    │
@@ -126,7 +126,7 @@ both about transport efficiency:
                 │  ┌──────────────────▼──────────────────┐              │
                 │  │            TenantHandle             │              │
                 │  │     ┌──────────────┐ ┌──────────┐   │              │
-                │  │     │   kb.duckdb  │ │ markdown │   │              │
+                │  │     │escurel.duckdb│ │ markdown │   │              │
                 │  │     │ vss+fts+rel+ │ │  store   │   │              │
                 │  │     │   crdt_ops   │ │ (pages/) │   │              │
                 │  │     └──────┬───────┘ └────┬─────┘   │              │
@@ -191,9 +191,9 @@ latency on writes acceptable.
 - **Embedding model load fail.** Server starts in degraded
   mode: read path works (existing vectors served), `update_page`
   and `apply_op` reject with `embedding_unavailable` until the
-  model loads. Manual `kb-server reload-embedding` retries.
+  model loads. Manual `escurel-server reload-embedding` retries.
 - **S3 backend unavailable.** Server keeps a local write-ahead
-  copy in `${KB_DATA_DIR}/spool/<tenant>/`. Writes queue;
+  copy in `${ESCUREL_DATA_DIR}/spool/<tenant>/`. Writes queue;
   reads fall back to the last cached lane snapshot. Quotas
   apply normally. The spool dir is **host-local** and never
   synced to the LaneStore. On a Nomad reschedule to a new host,
@@ -204,31 +204,31 @@ latency on writes acceptable.
   deployments must size embed throughput and S3 connectivity
   so steady-state spool depth stays bounded.
 - **Per-tenant DuckDB corruption.** Tenant is auto-suspended
-  (`status: suspended_corrupt`); admin must run `kb-admin
+  (`status: suspended_corrupt`); admin must run `escurel-admin
   rebuild --tenant <id>` to recover from canonical markdown.
   Other tenants are unaffected.
 
 ## Crate layout
 
-Workspace at the repo's `kb/` directory (not yet created — this
+Workspace at the repo's `escurel/` directory (not yet created — this
 dir is the *spec* for that). Proposed layout:
 
 ```
-kb/
+escurel/
 ├── Cargo.toml                 # workspace
 ├── crates/
-│   ├── kb-server/             # binary, gateway, dispatcher, tenant manager
-│   ├── kb-cli/                # binary, thin MCP client + admin gRPC client
-│   ├── kb-proto/              # tonic-built gRPC types + MCP JSON schemas
-│   ├── kb-storage/            # LaneStore trait, FS impl, S3 impl
-│   ├── kb-index/              # DuckDB lane logic (relational + vss + fts); indexer; audit/rebuild
-│   ├── kb-md/                 # markdown parser, wikilink parser, frontmatter
-│   ├── kb-crdt/               # Loro adapter, LiveDoc, session manager (persistence via kb-index crdt_ops table)
-│   ├── kb-embed/              # candle EmbeddingGemma; Gemini API adapter;
+│   ├── escurel-server/        # binary, gateway, dispatcher, tenant manager
+│   ├── escurel-cli/           # binary, thin MCP client + admin gRPC client
+│   ├── escurel-proto/         # tonic-built gRPC types + MCP JSON schemas
+│   ├── escurel-storage/       # LaneStore trait, FS impl, S3 impl
+│   ├── escurel-index/         # DuckDB lane logic (relational + vss + fts); indexer; audit/rebuild
+│   ├── escurel-md/            # markdown parser, wikilink parser, frontmatter
+│   ├── escurel-crdt/          # Loro adapter, LiveDoc, session manager (persistence via escurel-index crdt_ops table)
+│   ├── escurel-embed/         # candle EmbeddingGemma; Gemini API adapter;
 │   │                          # trait abstraction (Embedder, Reranker)
-│   ├── kb-auth/               # OIDC verification, tenant resolution
-│   ├── kb-quota/              # token-bucket limiter
-│   └── kb-obs/                # OTel + JSON log layer + /metrics
+│   ├── escurel-auth/          # OIDC verification, tenant resolution
+│   ├── escurel-quota/         # token-bucket limiter
+│   └── escurel-obs/           # OTel + JSON log layer + /metrics
 ├── docs/                      # operator docs (separate from this spec)
 └── examples/
 ```
@@ -241,43 +241,43 @@ touching the gateway code.
 
 Crates that have non-trivial external deps:
 
-- `kb-storage`: `object_store` (Apache-2.0)
-- `kb-index`: `duckdb` (MIT) with the `vss` and `fts` extensions enabled
-- `kb-crdt`: `loro` (MIT)
-- `kb-embed`: `candle-core` + `candle-nn` + `candle-transformers`
+- `escurel-storage`: `object_store` (Apache-2.0)
+- `escurel-index`: `duckdb` (MIT) with the `vss` and `fts` extensions enabled
+- `escurel-crdt`: `loro` (MIT)
+- `escurel-embed`: `candle-core` + `candle-nn` + `candle-transformers`
   (MIT/Apache-2.0); `reqwest` for Gemini adapter
-- `kb-server`: `tonic` (MIT), `axum` (MIT), `tokio` (MIT)
-- `kb-auth`: `jsonwebtoken` (MIT), `reqwest`, `serde_json`
-- `kb-obs`: `opentelemetry-otlp`, `tracing-subscriber`,
+- `escurel-server`: `tonic` (MIT), `axum` (MIT), `tokio` (MIT)
+- `escurel-auth`: `jsonwebtoken` (MIT), `reqwest`, `serde_json`
+- `escurel-obs`: `opentelemetry-otlp`, `tracing-subscriber`,
   `tracing-opentelemetry`, `prometheus`
-- `kb-cli`: `clap`, the MCP client from `kb-proto`
+- `escurel-cli`: `clap`, the MCP client from `escurel-proto`
 
 The full license audit is in [`roadmap.md`](roadmap.md#licenses).
 All deps are MIT or Apache-2.0; no GPL surface.
 
 ## Configuration
 
-One TOML file, default location `${KB_CONFIG:-/etc/kb/server.toml}`.
-Environment variable overrides are `KB_<UPPER_SNAKE>` for any
+One TOML file, default location `${ESCUREL_CONFIG:-/etc/escurel/server.toml}`.
+Environment variable overrides are `ESCUREL_<UPPER_SNAKE>` for any
 field. Example:
 
 ```toml
 [server]
-data_dir = "/var/lib/kb"
+data_dir = "/var/lib/escurel"
 listen_http = "0.0.0.0:8080"
 listen_grpc = "0.0.0.0:8081"
 
 [auth]
 oidc_issuer = "https://auth.example.com/realms/main"
-oidc_audience = "kb"
+oidc_audience = "escurel"
 tenant_claim = "tenant"
 admin_role_claim = "roles"
-admin_role_value = "kb:admin"
+admin_role_value = "escurel:admin"
 
 [storage]
 backend = "fs"                # "fs" or "s3"
 # [storage.s3]
-# bucket = "kb-data"
+# bucket = "escurel-data"
 # region = "eu-central-1"
 # prefix = "tenants/"
 
@@ -302,18 +302,18 @@ metrics_listen = "0.0.0.0:9090"   # /metrics for Prometheus
 log_format = "json"               # "json" or "text"
 ```
 
-Environment variable overrides follow `KB_<UPPER_SNAKE>`
+Environment variable overrides follow `ESCUREL_<UPPER_SNAKE>`
 derived from the TOML key path (e.g. `[server] data_dir` →
-`KB_SERVER_DATA_DIR`). Substrate Nomad jobspecs pin the
+`ESCUREL_SERVER_DATA_DIR`). Substrate Nomad jobspecs pin the
 sizing knobs explicitly so capacity planning is one place:
 
 | env var | TOML | default | what it bounds |
 |---|---|---|---|
-| `KB_TENANT_LRU_CAP` | `[concurrency] tenant_lru_cap` | 64 | TenantHandle LRU; idle eviction after 5 min |
-| `KB_DUCKDB_READ_POOL` | `[concurrency] duckdb_read_pool` | 16 | per-tenant DuckDB read connections |
-| `KB_EMBED_POOL` | `[concurrency] embed_pool` | 32 | per-tenant in-flight embed tasks |
-| `KB_WRITE_LOCK_TIMEOUT_MS` | `[concurrency] write_lock_timeout_ms` | 5000 | per-tenant write-lock acquisition timeout |
-| `KB_SPOOL_FLUSH_INTERVAL_MS` | `[storage] spool_flush_interval_ms` | 1000 | S3 spool flush cadence when LaneStore is reachable |
+| `ESCUREL_TENANT_LRU_CAP` | `[concurrency] tenant_lru_cap` | 64 | TenantHandle LRU; idle eviction after 5 min |
+| `ESCUREL_DUCKDB_READ_POOL` | `[concurrency] duckdb_read_pool` | 16 | per-tenant DuckDB read connections |
+| `ESCUREL_EMBED_POOL` | `[concurrency] embed_pool` | 32 | per-tenant in-flight embed tasks |
+| `ESCUREL_WRITE_LOCK_TIMEOUT_MS` | `[concurrency] write_lock_timeout_ms` | 5000 | per-tenant write-lock acquisition timeout |
+| `ESCUREL_SPOOL_FLUSH_INTERVAL_MS` | `[storage] spool_flush_interval_ms` | 1000 | S3 spool flush cadence when LaneStore is reachable |
 
 Tenant-specific overrides live in the tenant manifest (see
 [`platform.md`](platform.md#tenant-lifecycle)); they can lift or
@@ -336,8 +336,8 @@ The cut line for v1 (the binary you can run in production):
 - Admin API: tenant CRUD + export/import + rebuild + audit +
   attach_external
 - OTel + JSON logs + `/metrics`
-- One client: `kb` CLI (operator + agent-style usage)
-- One mandatory in-corpus skill: `kb` meta-skill, shipped with
+- One client: `escurel` CLI (operator + agent-style usage)
+- One mandatory in-corpus skill: `escurel` meta-skill, shipped with
   every new tenant
 
 What's explicitly **not** v1 (see [`roadmap.md`](roadmap.md)):
@@ -368,5 +368,5 @@ The evidence that bears directly on the Rust shape:
 ## Status
 
 This directory is `spec`, not `code`. Once accepted, the
-implementation begins at `kb-storage` + `kb-md` + `kb-index`
+implementation begins at `escurel-storage` + `escurel-md` + `escurel-index`
 and builds outward to the gateway.

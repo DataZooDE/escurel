@@ -9,7 +9,7 @@ concrete acceptance check.
 
 ### M1 — Storage + indexer (foundation)
 
-Crates: `kb-storage`, `kb-md`, `kb-index`, `kb-embed` (without
+Crates: `escurel-storage`, `escurel-md`, `escurel-index`, `escurel-embed` (without
 runtime — stub embeddings first).
 
 - `LaneStore` trait + `FsStore` implementation (dev-only).
@@ -39,7 +39,7 @@ prototype to Rust. All 28 assertions PASS with timings within
 
 ### M2 — Embedding + retrieval
 
-Crates: `kb-embed` proper, plus `search` / `resolve` / `expand`
+Crates: `escurel-embed` proper, plus `search` / `resolve` / `expand`
 / `neighbours` / `list_skills` / `list_instances` /
 `run_stored_query` over a direct Rust API (no transport yet).
 
@@ -56,7 +56,7 @@ logged but not gating.
 
 ### M3 — Transports + auth + quotas
 
-Crates: `kb-server` gateway, `kb-auth`, `kb-quota`, `kb-proto`.
+Crates: `escurel-server` gateway, `escurel-auth`, `escurel-quota`, `escurel-proto`.
 
 - axum HTTP server with MCP/JSON-RPC framing.
 - tonic gRPC server with the full `Kb` service.
@@ -64,7 +64,7 @@ Crates: `kb-server` gateway, `kb-auth`, `kb-quota`, `kb-proto`.
   and search subscriptions stubbed out).
 - OIDC verification with JWKS caching.
 - Token-bucket quotas wired in.
-- `kb` CLI as a thin MCP/HTTP + gRPC client.
+- `escurel` CLI as a thin MCP/HTTP + gRPC client.
 
 **Acceptance.** Run the cold-start verification through the CLI
 against a real running server. 8/8 queries correct under both
@@ -72,7 +72,7 @@ policies. Validate OIDC against a Keycloak test instance.
 
 ### M4 — Live CRDT mode + admin surface
 
-Crates: `kb-crdt`, plus the admin half of `kb-server`.
+Crates: `escurel-crdt`, plus the admin half of `escurel-server`.
 
 - Loro adapter, `LiveDoc` actor per page, op log + snapshot
   persistence.
@@ -90,7 +90,7 @@ cleanly and the next `apply_op` succeeds.
 
 ### M5 — Observability + substrate deployment readiness + hardening
 
-Crates: `kb-obs`. Plus substrate-binding artefacts ship in this
+Crates: `escurel-obs`. Plus substrate-binding artefacts ship in this
 milestone (`S3Store` has moved to M1).
 
 - OTel traces + metrics + JSON logs wired everywhere.
@@ -138,8 +138,8 @@ In:
   attach_external, embedding_reload, compact_db, quota_get,
   health
 - OTel + JSON logs + `/metrics`
-- `kb` CLI (operator + agent-style)
-- Mandatory `kb` meta-skill shipped with every new tenant
+- `escurel` CLI (operator + agent-style)
+- Mandatory `escurel` meta-skill shipped with every new tenant
 - Event-typed skills supported via existing primitives;
   `at:` denormalised to an indexed column on both the DuckDB
   `pages` and `blocks` tables; `list_instances` accepts
@@ -251,7 +251,7 @@ The shape of the v1.5 / v2 directions:
    geographic distribution; the writer remains single-region.
 8. **Substrate-target package** — Terraform module + Nomad
    jobspec set + Packer image fragment published as release
-   artefacts, so substrate operators consume `kb-server` as a
+   artefacts, so substrate operators consume `escurel-server` as a
    turnkey workload. Per-target binding docs grow as new
    substrate targets are adopted (managed-K8s, single-VM, etc.).
 

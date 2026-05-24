@@ -386,7 +386,7 @@ rebuilds in ~32 s.
 ### `tenant_export` as the backup-contract producer
 
 `tenant_export` is the **only** backup hook exposed by
-`kb-server`. The server never writes to a backup bucket
+`escurel-server`. The server never writes to a backup bucket
 itself; external backup orchestrators (e.g. the substrate's
 tenant-export shipper named in
 [`../deploy/substrate.md §4`](../deploy/substrate.md#4--backup-shipper-contract))
@@ -420,10 +420,10 @@ Contract relied on by orchestrators:
 
 ## gRPC service definition
 
-Sketch (full `.proto` lives in `crates/kb-proto/`):
+Sketch (full `.proto` lives in `crates/escurel-proto/`):
 
 ```proto
-service Kb {
+service Escurel {
   // agent surface (same as MCP)
   rpc Search       (SearchRequest)        returns (SearchResponse);
   rpc Resolve      (ResolveRequest)       returns (ResolveResponse);
@@ -439,7 +439,7 @@ service Kb {
   rpc LiveSession  (stream LiveOp)        returns (stream LiveAck);
 }
 
-service KbAdmin {
+service EscurelAdmin {
   rpc TenantCreate  (TenantCreateRequest)  returns (TenantCreateResponse);
   rpc TenantList    (TenantListRequest)    returns (TenantListResponse);
   rpc TenantGet     (TenantGetRequest)     returns (TenantGetResponse);
@@ -458,7 +458,7 @@ service KbAdmin {
 ```
 
 Authentication metadata: every RPC carries an
-`authorization: Bearer <jwt>` header. `KbAdmin` methods require
+`authorization: Bearer <jwt>` header. `EscurelAdmin` methods require
 the admin role claim.
 
 ## MCP-over-HTTP framing
@@ -514,10 +514,10 @@ in the schema, off behind a feature flag.
 
 ## Versioning
 
-The MCP `serverInfo.version`, gRPC service version (`kb.v1`), and
-WebSocket protocol version (`kb-ws/1`) all start at `1`. Breaking
-changes bump to `kb.v2` / `kb-ws/2`; the server can serve both
+The MCP `serverInfo.version`, gRPC service version (`escurel.v1`), and
+WebSocket protocol version (`escurel-ws/1`) all start at `1`. Breaking
+changes bump to `escurel.v2` / `escurel-ws/2`; the server can serve both
 versions for one major-version overlap.
 
-JSON Schema for MCP and Protobuf for gRPC live in `kb-proto/` and
+JSON Schema for MCP and Protobuf for gRPC live in `escurel-proto/` and
 ship as crates so client implementations can pin to a version.

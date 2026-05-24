@@ -6,7 +6,7 @@ Read it in the order below.
 ## Reading order
 
 1. **[`contract/agent-interface.md`](contract/agent-interface.md)** —
-   the agent ↔ KB contract: twelve MCP tools, the mandatory `kb`
+   the agent ↔ KB contract: twelve MCP tools, the mandatory `escurel`
    meta-skill, and the behavioural promises both sides depend on. The
    spec under `spec/` is the implementation of this contract.
 2. **[`spec/README.md`](spec/README.md)** — architecture overview,
