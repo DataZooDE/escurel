@@ -15,6 +15,7 @@ fn store_and_dir() -> (FsStore, TempDir) {
 
 fn k(tenant: &str, path: &str) -> Key {
     Key::new(tenant.to_owned(), path.to_owned())
+        .unwrap_or_else(|err| panic!("test fixture key ({tenant:?}, {path:?}): {err}"))
 }
 
 #[tokio::test]
