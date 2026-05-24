@@ -1,17 +1,23 @@
 //! Pure-relational read tools on the indexed `pages` table.
 //!
-//! M2.4 ships the two simplest of the agent contract's seven read
-//! tools (`docs/contract/agent-interface.md §The tool surface`):
+//! Four of the seven agent contract read tools
+//! (`docs/contract/agent-interface.md §The tool surface`) ship here:
 //!
-//! - [`Indexer::list_skills`] — the Tier-1 skill catalogue.
+//! - [`Indexer::list_skills`] — Tier-1 skill catalogue.
 //! - [`Indexer::list_instances`] — list a skill's instances, with
 //!   optional `at`-based ordering and a row limit.
+//! - [`Indexer::resolve`] — parse a `[[skill::id]]` wikilink and
+//!   look up its target page.
+//! - [`Indexer::expand`] — fetch a page's full body + frontmatter
+//!   + outbound wikilinks.
 //!
-//! Neither needs the embedder. Full filter expressions (`>=`, `in`,
-//! `null`) and ordering by arbitrary frontmatter fields land in a
-//! later M2 PR, once the `frontmatter_index` table is exercised.
+//! None need the embedder. Full filter expressions (`>=`, `in`,
+//! `null`), ordering by arbitrary frontmatter fields, and
+//! `neighbours` land in later M2 PRs.
 
 use duckdb::params;
+use escurel_md::PageType;
+use escurel_md::wikilink::{WikilinkParsed, parse_wikilinks};
 
 use crate::{Indexer, IndexerError};
 
@@ -151,6 +157,199 @@ impl Indexer {
         }
         Ok(out)
     }
+}
+
+/// Reference to a single page in the index. The shape that
+/// `resolve` / `expand` / `neighbours` return when a page is
+/// known to exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageRef {
+    pub page_id: String,
+    /// Mutable human-friendly id from `frontmatter.id`. `None` for
+    /// pages whose frontmatter doesn't declare one.
+    pub slug: Option<String>,
+    pub skill: String,
+    pub page_type: PageType,
+}
+
+/// Result of [`Indexer::resolve`].
+///
+/// `parsed` is the wikilink decomposed via `escurel-md::wikilink`.
+/// `page` is the resolved target if it exists in the index; `None`
+/// when no page matches the `(skill, id)` pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedWikilink {
+    pub parsed: WikilinkParsed,
+    pub page: Option<PageRef>,
+}
+
+impl ResolvedWikilink {
+    #[must_use]
+    pub fn exists(&self) -> bool {
+        self.page.is_some()
+    }
+}
+
+/// Result of [`Indexer::expand`]: the full page body, its
+/// frontmatter, the page's blocks, and the parsed outbound
+/// wikilinks from the body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpandedPage {
+    pub page: PageRef,
+    pub frontmatter: serde_json::Value,
+    pub body: String,
+    pub blocks: Vec<BlockInfo>,
+    pub wikilinks_out: Vec<WikilinkParsed>,
+}
+
+/// One block inside a page (anchor + content).
+///
+/// Today's indexer writes a single block per page (anchor =
+/// `blk-0`, content = full body). Block-anchor splitting lands
+/// in a later PR; the API shape already supports the multi-block
+/// future.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockInfo {
+    pub anchor: String,
+    pub content: String,
+}
+
+impl Indexer {
+    /// Parse a `[[skill::id]]` wikilink and look up its target.
+    ///
+    /// Returns the parsed wikilink alongside the resolved [`PageRef`]
+    /// if the page exists. A bare `[[id]]` resolves against `slug`
+    /// only (no skill constraint), so it succeeds for any page in
+    /// any skill whose `frontmatter.id` matches.
+    pub async fn resolve(&self, wikilink: &str) -> Result<ResolvedWikilink, IndexerError> {
+        let mut parsed = parse_wikilinks(wikilink);
+        let parsed = parsed
+            .pop()
+            .ok_or_else(|| IndexerError::Md(escurel_md::ParseError::MissingFrontmatter))?;
+        // (We reuse ParseError::MissingFrontmatter as the closest
+        // "input didn't parse" variant; a dedicated WikilinkParseError
+        // can land if/when other callers need to distinguish.)
+
+        let id = match parsed.id.as_deref() {
+            Some(id) if !id.is_empty() => id.to_owned(),
+            _ => {
+                // No id segment — resolution is meaningless.
+                return Ok(ResolvedWikilink { parsed, page: None });
+            }
+        };
+
+        let conn = self.conn.lock().await;
+        let row = match parsed.skill.as_deref() {
+            Some(skill) => conn
+                .query_row(
+                    "SELECT page_id, slug, skill, page_type \
+                     FROM pages WHERE skill = ? AND slug = ? LIMIT 1",
+                    params![skill, id],
+                    page_ref_from_row,
+                )
+                .ok(),
+            None => conn
+                .query_row(
+                    "SELECT page_id, slug, skill, page_type \
+                     FROM pages WHERE slug = ? LIMIT 1",
+                    params![id],
+                    page_ref_from_row,
+                )
+                .ok(),
+        };
+
+        Ok(ResolvedWikilink { parsed, page: row })
+    }
+
+    /// Fetch the full body of `page_id` plus its frontmatter and
+    /// outbound wikilinks. Returns `Ok(None)` when no page with that
+    /// `page_id` is in the index.
+    ///
+    /// The body comes from the `blocks` table (which mirrors the
+    /// parsed markdown body), not from a fresh LaneStore read — this
+    /// keeps `expand` index-served and avoids a second I/O round-trip.
+    pub async fn expand(&self, page_id: &str) -> Result<Option<ExpandedPage>, IndexerError> {
+        let conn = self.conn.lock().await;
+
+        // Page row.
+        let page_with_fm = conn
+            .query_row(
+                "SELECT page_id, slug, skill, page_type, frontmatter::VARCHAR \
+                 FROM pages WHERE page_id = ?",
+                params![page_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .ok();
+        let Some((page_id, slug, skill, page_type_str, fm_json)) = page_with_fm else {
+            return Ok(None);
+        };
+        let page_type = match page_type_str.as_str() {
+            "skill" => PageType::Skill,
+            _ => PageType::Instance,
+        };
+        let frontmatter: serde_json::Value = serde_json::from_str(&fm_json)?;
+
+        // Blocks for the page (single-block-per-page today, but the
+        // shape supports multi-block).
+        let mut stmt =
+            conn.prepare("SELECT anchor, body FROM blocks WHERE page_id = ? ORDER BY ordinal")?;
+        let block_rows = stmt.query_map(params![&page_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                row.get::<_, String>(1)?,
+            ))
+        })?;
+        let mut blocks = Vec::new();
+        let mut body = String::new();
+        for r in block_rows {
+            let (anchor, content) = r?;
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            body.push_str(&content);
+            blocks.push(BlockInfo { anchor, content });
+        }
+
+        let wikilinks_out = parse_wikilinks(&body);
+
+        Ok(Some(ExpandedPage {
+            page: PageRef {
+                page_id,
+                slug,
+                skill,
+                page_type,
+            },
+            frontmatter,
+            body,
+            blocks,
+            wikilinks_out,
+        }))
+    }
+}
+
+fn page_ref_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<PageRef> {
+    let page_id: String = row.get(0)?;
+    let slug: Option<String> = row.get(1)?;
+    let skill: String = row.get(2)?;
+    let page_type_str: String = row.get(3)?;
+    let page_type = match page_type_str.as_str() {
+        "skill" => PageType::Skill,
+        _ => PageType::Instance,
+    };
+    Ok(PageRef {
+        page_id,
+        slug,
+        skill,
+        page_type,
+    })
 }
 
 fn skill_id(fm: &serde_json::Value) -> Option<String> {

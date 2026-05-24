@@ -146,6 +146,15 @@ impl Indexer {
             .get("at")
             .and_then(escurel_md::YamlValue::as_str)
             .map(str::to_owned);
+        // `slug` is the wikilink-target id (e.g. `acme-corp`). Wikilinks
+        // `[[customer::acme-corp]]` resolve via `WHERE skill = ? AND
+        // slug = ?`. Skill pages declare it via the same `id:` field.
+        let slug = parsed
+            .frontmatter
+            .fields
+            .get("id")
+            .and_then(escurel_md::YamlValue::as_str)
+            .map(str::to_owned);
         let body_text = parsed.body.to_owned();
         let wikilinks = parse_wikilinks(&body_text);
 
@@ -177,9 +186,17 @@ impl Indexer {
         tx.execute(
             "INSERT INTO pages \
              (page_id, slug, skill, page_type, frontmatter, body_hash, at_ts, created_at, updated_at) \
-             VALUES (?, NULL, ?, ?, ?::JSON, ?, \
+             VALUES (?, ?, ?, ?, ?::JSON, ?, \
                      TRY_CAST(? AS TIMESTAMP), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-            params![page_id, skill, page_type_str, frontmatter_json, body_hash, at_ts],
+            params![
+                page_id,
+                slug,
+                skill,
+                page_type_str,
+                frontmatter_json,
+                body_hash,
+                at_ts,
+            ],
         )?;
 
         // links: full refresh for this src page.
