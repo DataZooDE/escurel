@@ -19,11 +19,13 @@
 //! egress is dev-only.
 
 pub mod indexer;
+pub mod query;
 pub mod read;
 pub mod schema;
 pub mod search;
 
 pub use indexer::{AuditDrift, Indexer, IndexerError};
+pub use query::{ColumnSchema, QueryError, StoredQueryResult};
 pub use read::{
     BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef, ResolvedWikilink,
     SkillInfo,
