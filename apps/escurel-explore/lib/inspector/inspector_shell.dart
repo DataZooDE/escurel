@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../config/feature_flags.dart';
 import '../shell/status_bar.dart';
 import '../shell/topbar.dart';
 import '../theme/app_theme.dart';
@@ -51,14 +52,14 @@ class InspectorShell extends ConsumerWidget {
                   id: 'lanes',
                   label: 'LaneStore',
                   selected: panelId == 'lanes',
-                  disabled: true,
+                  disabled: !ref.watch(adminEnabledProvider),
                 ),
                 const SizedBox(width: 4),
                 _PanelChip(
                   id: 'index',
                   label: 'Index',
                   selected: panelId == 'index',
-                  disabled: true,
+                  disabled: !ref.watch(adminEnabledProvider),
                 ),
               ],
             ),
