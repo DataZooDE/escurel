@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/escurel-md"]
+members = ["crates/escurel-md", "crates/escurel-storage"]
 
 [workspace.package]
 edition = "2024"
