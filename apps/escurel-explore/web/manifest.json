@@ -1,0 +1,11 @@
+{
+  "name": "escurel-explore",
+  "short_name": "escurel",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#F7F9FF",
+  "theme_color": "#004149",
+  "description": "General editor for escurel.",
+  "orientation": "any",
+  "prefer_related_applications": false
+}
