@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../app.dart';
 import '../config/env.dart';
+import '../config/feature_flags.dart';
 import '../theme/app_theme.dart';
 
 class Topbar extends ConsumerWidget implements PreferredSizeWidget {
@@ -44,6 +45,15 @@ class Topbar extends ConsumerWidget implements PreferredSizeWidget {
           const SizedBox(width: 12),
           _Chip(label: env.version, tone: _Tone.neutral),
           const Spacer(),
+          if (!ref.watch(writeEnabledProvider))
+            const Padding(
+              padding: EdgeInsets.only(right: 8),
+              child: _Chip(
+                key: ValueKey('topbar.read_only_chip'),
+                label: 'read-only',
+                tone: _Tone.warning,
+              ),
+            ),
           _InspectorToggle(),
           const SizedBox(width: 8),
           _Chip(
@@ -98,7 +108,7 @@ class _InspectorToggle extends StatelessWidget {
 enum _Tone { neutral, success, warning }
 
 class _Chip extends StatelessWidget {
-  const _Chip({required this.label, required this.tone});
+  const _Chip({super.key, required this.label, required this.tone});
 
   final String label;
   final _Tone tone;

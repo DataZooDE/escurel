@@ -1,27 +1,42 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../config/feature_flags.dart';
 import '../theme/app_theme.dart';
 
-class StatusBar extends StatelessWidget {
+class StatusBar extends ConsumerWidget {
   const StatusBar({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
+    final async = ref.watch(currentCapabilitiesProvider);
+
+    final (Color dot, String label) = async.when(
+      loading: () => (kOutlineVariant, 'backend: querying…'),
+      error: (e, _) => (kError, 'backend: error · $e'),
+      data: (v) => (
+        kSuccess,
+        'backend: ${v.app} ${v.version} · ${v.capabilities.length} capabilities',
+      ),
+    );
+
     return Container(
       height: 24,
       color: scheme.surfaceContainerLow,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(
         children: [
-          Container(width: 6, height: 6, decoration: const BoxDecoration(
-            color: kOutlineVariant,
-            shape: BoxShape.circle,
-          )),
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
+          ),
           const SizedBox(width: 6),
           Text(
-            'backend: not connected',
+            label,
+            key: const ValueKey('status_bar.backend'),
             style: text.labelSmall?.copyWith(color: kOnSurfaceVariant),
           ),
         ],
