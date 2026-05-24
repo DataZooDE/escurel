@@ -10,12 +10,18 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use duckdb::{Connection, params};
+use escurel_embed::{EmbedError, Embedder};
 use escurel_md::wikilink::parse_wikilinks;
 use escurel_md::{PageType, parse};
 use escurel_storage::{Key, LaneStore};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::Mutex;
+
+/// Hard-coded vector dimension for `blocks.dense_vec` (EmbeddingGemma
+/// default). The schema declares `FLOAT[768]`; any embedder passed to
+/// `Indexer::new` whose `dim()` does not match is rejected.
+pub const BLOCKS_DENSE_VEC_DIM: usize = 768;
 
 /// Per-tenant indexer.
 ///
@@ -25,6 +31,7 @@ use tokio::sync::Mutex;
 /// single-threaded; concurrent async callers serialise through it.
 pub struct Indexer {
     store: Arc<dyn LaneStore>,
+    embedder: Arc<dyn Embedder>,
     conn: Mutex<Connection>,
     tenant: String,
 }
@@ -64,15 +71,43 @@ pub enum IndexerError {
     NotUtf8 { page_id: String },
     #[error("serde_json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("embedder error: {0}")]
+    Embed(#[from] EmbedError),
+    #[error(
+        "embedder dim {got} does not match schema column dim {expected}; \
+         the blocks.dense_vec column is hard-coded to {expected} (EmbeddingGemma default)"
+    )]
+    EmbedderDimMismatch { expected: usize, got: usize },
 }
 
 impl Indexer {
-    pub fn new(store: Arc<dyn LaneStore>, conn: Connection, tenant: impl Into<String>) -> Self {
-        Self {
+    /// Build a per-tenant indexer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexerError::EmbedderDimMismatch`] when the
+    /// supplied `embedder.dim()` does not match
+    /// [`BLOCKS_DENSE_VEC_DIM`]. Mismatches are detected at
+    /// construction time so we never end up writing a wrong-shape
+    /// vector into a typed `FLOAT[768]` column.
+    pub fn new(
+        store: Arc<dyn LaneStore>,
+        embedder: Arc<dyn Embedder>,
+        conn: Connection,
+        tenant: impl Into<String>,
+    ) -> Result<Self, IndexerError> {
+        if embedder.dim() != BLOCKS_DENSE_VEC_DIM {
+            return Err(IndexerError::EmbedderDimMismatch {
+                expected: BLOCKS_DENSE_VEC_DIM,
+                got: embedder.dim(),
+            });
+        }
+        Ok(Self {
             store,
+            embedder,
             conn: Mutex::new(conn),
             tenant: tenant.into(),
-        }
+        })
     }
 
     /// Upsert the page identified by `page_id` from the markdown
@@ -114,6 +149,24 @@ impl Indexer {
         let body_text = parsed.body.to_owned();
         let wikilinks = parse_wikilinks(&body_text);
 
+        // Embed the block body *before* taking the DuckDB mutex, so
+        // a slow embedder doesn't block other connections to this
+        // tenant's DB. The result lands in `dense_vec` inside the
+        // same write transaction as `pages` / `links` / `blocks`.
+        let embeddings = self.embedder.embed(&[body_text.as_str()]).await?;
+        let dense_vec = embeddings.into_iter().next().ok_or_else(|| {
+            IndexerError::Embed(EmbedError::Backend(
+                "embedder returned no vectors for a single-text batch".to_owned(),
+            ))
+        })?;
+        if dense_vec.len() != BLOCKS_DENSE_VEC_DIM {
+            return Err(IndexerError::EmbedderDimMismatch {
+                expected: BLOCKS_DENSE_VEC_DIM,
+                got: dense_vec.len(),
+            });
+        }
+        let dense_vec_sql = format_vector_literal(&dense_vec);
+
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction()?;
 
@@ -151,14 +204,22 @@ impl Indexer {
             )?;
         }
 
-        // blocks: single block per page for now (whole body). Block-
-        // anchor splitting + per-block embeddings land in M2.
+        // blocks: single block per page for now (whole body).
+        // Block-anchor splitting lands in a later M2 PR.
         tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
         let block_id = format!("{page_id}:blk-0");
-        tx.execute(
+        let dense_vec_literal = format!(
+            "{vec}::FLOAT[{dim}]",
+            vec = dense_vec_sql,
+            dim = BLOCKS_DENSE_VEC_DIM,
+        );
+        let block_insert_sql = format!(
             "INSERT INTO blocks \
              (block_id, page_id, anchor, ordinal, body, dense_vec, skill, page_type, at_ts) \
-             VALUES (?, ?, 'blk-0', 0, ?, NULL, ?, ?, TRY_CAST(? AS TIMESTAMP))",
+             VALUES (?, ?, 'blk-0', 0, ?, {dense_vec_literal}, ?, ?, TRY_CAST(? AS TIMESTAMP))",
+        );
+        tx.execute(
+            &block_insert_sql,
             params![block_id, page_id, body_text, skill, page_type_str, at_ts],
         )?;
 
@@ -251,4 +312,24 @@ fn mapping_to_json(mapping: &escurel_md::YamlMapping) -> Result<String, IndexerE
     let value = escurel_md::YamlValue::Mapping(mapping.clone());
     let json = serde_json::to_string(&value)?;
     Ok(json)
+}
+
+/// Format a Vec<f32> as a DuckDB array literal `[x,y,z,...]`.
+///
+/// Safe to splice into SQL via `format!` — the values are `f32`s
+/// rendered with `Display`, so no input strings reach the
+/// statement (no injection surface). Used by the blocks insert,
+/// because duckdb-rs's `params!` doesn't have a direct binding
+/// for fixed-size float arrays.
+fn format_vector_literal(v: &[f32]) -> String {
+    let mut out = String::with_capacity(v.len() * 8 + 2);
+    out.push('[');
+    for (i, x) in v.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!("{x}"));
+    }
+    out.push(']');
+    out
 }

@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use duckdb::{Connection, params};
+use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::{Indexer, Migrator};
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
@@ -67,10 +68,12 @@ fn fresh_harness() -> Harness {
     let duckdb_path = db_dir.path().join("escurel.duckdb");
 
     let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
     let conn = Connection::open(&duckdb_path).expect("open duckdb");
     Migrator::up(&conn).expect("migrate v1 schema");
 
-    let indexer = Indexer::new(Arc::clone(&store), conn, TENANT);
+    let indexer = Indexer::new(Arc::clone(&store), embedder, conn, TENANT)
+        .expect("indexer with 768-dim embedder constructs");
 
     Harness {
         store,
@@ -362,4 +365,65 @@ async fn update_page_preserves_wikilink_anchors() {
         )
         .expect("count bare");
     assert_eq!(bare, 1);
+}
+
+#[tokio::test]
+async fn update_page_populates_dense_vec_with_embedder_output() {
+    // M2.1 contract: blocks.dense_vec is NOT NULL after update_page,
+    // matches the embedder's output shape, and reflects the embedder's
+    // dim() (here 768 from ZeroEmbedder::default).
+    let h = fresh_harness();
+    h.indexer
+        .update_page(SKILL_CUSTOMER.0, SKILL_CUSTOMER.1)
+        .await
+        .expect("update");
+
+    // Read dense_vec back through the indexer's connection (per the
+    // DuckDB second-connection-stale discovered note). We unwrap a
+    // length only — the values are zero from ZeroEmbedder.
+    let conn = Connection::open(&h.duckdb_path).expect("open");
+    let len: i64 = conn
+        .query_row(
+            "SELECT array_length(dense_vec) FROM blocks WHERE page_id = ?",
+            params![SKILL_CUSTOMER.0],
+            |row| row.get(0),
+        )
+        .expect("array_length");
+    assert_eq!(
+        len, 768,
+        "blocks.dense_vec must have the configured 768-dim",
+    );
+
+    // And it must not be NULL.
+    let is_null: bool = conn
+        .query_row(
+            "SELECT dense_vec IS NULL FROM blocks WHERE page_id = ?",
+            params![SKILL_CUSTOMER.0],
+            |row| row.get(0),
+        )
+        .expect("is_null check");
+    assert!(!is_null, "dense_vec must be populated, not NULL");
+}
+
+#[tokio::test]
+async fn indexer_rejects_embedder_with_wrong_dim() {
+    // Schema's blocks.dense_vec is FLOAT[768]; an Indexer built with
+    // a different-dim embedder must fail at construction time.
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::new(384));
+    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    Migrator::up(&conn).unwrap();
+
+    match Indexer::new(store, embedder, conn, TENANT) {
+        Ok(_) => panic!("wrong-dim embedder must be rejected"),
+        Err(err) => {
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("384"),
+                "error must mention the offending dim: {msg}",
+            );
+        }
+    }
 }
