@@ -1,22 +1,31 @@
 -- Stage 1 of the v1 schema migration: enable auto-install for
--- known DuckDB extensions and force-load `vss` + `fts`.
+-- known DuckDB extensions and force-install + force-load
+-- `vss` + `fts`.
 --
--- Why explicit LOAD if autoload is on?
--- `autoload_known_extensions` triggers on function/type
--- references in queries, but `CREATE INDEX ... USING HNSW` is a
--- DDL token, not a function call — the loader is never invoked
--- and the binder reports "Unknown index type: HNSW".
+-- Why explicit INSTALL + LOAD if autoload + autoinstall are on?
 --
--- With `autoinstall_known_extensions = true` set, the explicit
--- LOAD still downloads the binary on first call (no separate
--- INSTALL needed). Substrate deployments pre-bake the binaries
--- in the golden image; this LOAD finds them on disk and no
--- network call happens.
+-- - `autoload_known_extensions` triggers on function/type
+--   references in queries, but `CREATE INDEX ... USING HNSW` is a
+--   DDL token, not a function call — the loader is never invoked
+--   and the binder reports "Unknown index type: HNSW".
+-- - `autoinstall_known_extensions` does not fire on `LOAD`
+--   alone — `LOAD vss` against a host that has never installed
+--   vss errors with "Extension not found. Install it first using
+--   INSTALL vss." (caught on the first CI run; see
+--   discovered/2026-05-24-duckdb-load-needs-install.md).
 --
--- See docs/notes/discovered/2026-05-24-duckdb-vss-fts-autoload.md.
+-- INSTALL is idempotent (no-op if already present), so this works
+-- on both fresh CI runners and laptops with a populated extension
+-- cache. Substrate deployments bake the binaries into the golden
+-- image — both INSTALL and LOAD find them on disk and never
+-- touch the network.
 SET autoinstall_known_extensions = true;
 SET autoload_known_extensions    = true;
+
+INSTALL vss;
 LOAD vss;
+
+INSTALL fts;
 LOAD fts;
 
 -- HNSW persistence is gated behind an "experimental" flag in the
