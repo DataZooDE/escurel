@@ -1,0 +1,32 @@
+[package]
+name = "escurel-proto"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "gRPC Protobuf schema for the Escurel v1 surface (codegen via tonic-build)."
+
+[lints]
+workspace = true
+
+[dependencies]
+prost = "0.13"
+tonic = { version = "0.12", default-features = false, features = [
+    "codegen",
+    "prost",
+    "transport",
+] }
+
+[build-dependencies]
+tonic-build = { version = "0.12", default-features = false, features = [
+    "prost",
+    "transport",
+] }
+
+[dev-dependencies]
+futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["net"] }

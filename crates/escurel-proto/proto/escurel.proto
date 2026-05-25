@@ -1,0 +1,257 @@
+// Escurel v1 gRPC surface. Mirrors the MCP tool surface plus the
+// admin endpoints. Message bodies start minimal (just enough for
+// the spec's signatures) and are fleshed out in subsequent PRs
+// alongside the service implementation in escurel-server.
+//
+// Spec: docs/spec/protocol.md §gRPC service definition
+
+syntax = "proto3";
+
+package escurel.v1;
+
+// --- shared --------------------------------------------------------
+
+message PageRef {
+  string id = 1;
+  string skill = 2;
+  string title = 3;
+  string version = 4;
+  string updated_at = 5;
+}
+
+message WikilinkParsed {
+  string skill = 1;
+  string id = 2;
+  string anchor = 3;
+  string version = 4;
+  string alias = 5;
+}
+
+// --- agent surface (Escurel) --------------------------------------
+
+message SearchRequest {
+  string q = 1;
+  uint32 k = 2;
+  string granularity = 3;
+  string page_type = 4;
+  string skill = 5;
+  string filter_json = 6;
+}
+
+message SearchHit {
+  PageRef page = 1;
+  string block_anchor = 2;
+  double score = 3;
+  string snippet = 4;
+}
+
+message SearchResponse {
+  repeated SearchHit hits = 1;
+  string granularity = 2;
+}
+
+message ResolveRequest { string wikilink = 1; }
+message ResolveResponse {
+  WikilinkParsed parsed = 1;
+  PageRef page = 2;
+  bool exists = 3;
+}
+
+message ExpandRequest {
+  string page_id = 1;
+  string anchor = 2;
+  string version = 3;
+}
+
+message ExpandBlock {
+  string anchor = 1;
+  string content = 2;
+}
+
+message ExpandResponse {
+  PageRef page = 1;
+  string frontmatter_json = 2;
+  string body = 3;
+  repeated ExpandBlock blocks = 4;
+  repeated WikilinkParsed wikilinks_out = 5;
+  string snapshot_version = 6;
+}
+
+message NeighboursRequest {
+  string page_id = 1;
+  string direction = 2;
+  string link_skill = 3;
+  repeated string link_skill_in = 4;
+  string order_by = 5;
+  uint32 limit = 6;
+}
+
+message Edge {
+  PageRef src = 1;
+  PageRef dst = 2;
+  string link_skill = 3;
+  string link_version = 4;
+  string anchor = 5;
+}
+
+message NeighboursResponse { repeated Edge edges = 1; }
+
+message ListSkillsRequest {}
+message Skill {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+}
+message ListSkillsResponse { repeated Skill skills = 1; }
+
+message ListInstancesRequest {
+  string skill = 1;
+  string filter_json = 2;
+  uint32 limit = 3;
+}
+message ListInstancesResponse { repeated PageRef pages = 1; }
+
+message RunStoredQueryRequest {
+  string query_name = 1;
+  string params_json = 2;
+}
+message RunStoredQueryResponse { string rows_json = 1; }
+
+message ValidateRequest {
+  string page_id = 1;
+  string content = 2;
+}
+message ValidationIssue {
+  string code = 1;
+  string message = 2;
+  string anchor = 3;
+}
+message ValidateResponse {
+  bool ok = 1;
+  repeated ValidationIssue issues = 2;
+}
+
+message UpdatePageRequest {
+  string page_id = 1;
+  string content = 2;
+}
+message UpdatePageResponse {
+  PageRef page = 1;
+  repeated ValidationIssue issues = 2;
+}
+
+// Live session bidi stream. Stubbed in M3; comes alive in M4.
+message LiveOp {
+  string session = 1;
+  bytes op = 2;
+}
+message LiveAck {
+  string session = 1;
+  string merged_version = 2;
+  string content = 3;
+  repeated ValidationIssue issues = 4;
+}
+
+service Escurel {
+  rpc Search        (SearchRequest)         returns (SearchResponse);
+  rpc Resolve       (ResolveRequest)        returns (ResolveResponse);
+  rpc Expand        (ExpandRequest)         returns (ExpandResponse);
+  rpc Neighbours    (NeighboursRequest)     returns (NeighboursResponse);
+  rpc ListSkills    (ListSkillsRequest)     returns (ListSkillsResponse);
+  rpc ListInstances (ListInstancesRequest)  returns (ListInstancesResponse);
+  rpc RunStoredQuery(RunStoredQueryRequest) returns (RunStoredQueryResponse);
+  rpc Validate      (ValidateRequest)       returns (ValidateResponse);
+  rpc UpdatePage    (UpdatePageRequest)     returns (UpdatePageResponse);
+
+  rpc LiveSession   (stream LiveOp)         returns (stream LiveAck);
+}
+
+// --- admin surface (EscurelAdmin) ---------------------------------
+
+message TenantSpec {
+  string tenant_id = 1;
+  string display_name = 2;
+}
+
+message TenantCreateRequest  { TenantSpec spec = 1; }
+message TenantCreateResponse { TenantSpec spec = 1; }
+message TenantListRequest    {}
+message TenantListResponse   { repeated TenantSpec tenants = 1; }
+message TenantGetRequest     { string tenant_id = 1; }
+message TenantGetResponse    { TenantSpec spec = 1; }
+message TenantUpdateRequest  { TenantSpec spec = 1; }
+message TenantUpdateResponse { TenantSpec spec = 1; }
+message TenantDeleteRequest  { string tenant_id = 1; }
+message TenantDeleteResponse { bool deleted = 1; }
+
+message TenantExportRequest  { string tenant_id = 1; }
+message TenantExportChunk    { bytes data = 1; }
+
+message TenantImportChunk    {
+  string tenant_id = 1;
+  bytes data = 2;
+}
+message TenantImportResponse { uint64 bytes_imported = 1; }
+
+message AuditRequest         { string tenant_id = 1; string scope = 2; }
+message AuditResponse {
+  repeated string markdown_not_in_duckdb = 1;
+  repeated string indexed_but_no_markdown = 2;
+}
+
+message RebuildRequest       { string tenant_id = 1; string scope = 2; }
+message RebuildProgress      {
+  uint64 done = 1;
+  uint64 total = 2;
+  string current_page = 3;
+}
+
+message AttachExternalRequest {
+  string tenant_id = 1;
+  string source_url = 2;
+}
+message AttachExternalResponse { string source_id = 1; }
+
+message EmbeddingReloadRequest  {}
+message EmbeddingReloadResponse { string model_revision = 1; }
+
+message CompactLanesRequest    { string tenant_id = 1; }
+message CompactProgress {
+  uint64 ops_compacted = 1;
+  uint64 bytes_reclaimed = 2;
+}
+
+message QuotaGetRequest        { string tenant_id = 1; }
+message QuotaGetResponse {
+  uint32 queries_remaining = 1;
+  uint32 writes_remaining = 2;
+  uint32 embeds_remaining = 3;
+  uint32 concurrent_sessions = 4;
+}
+
+message HealthRequest          {}
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+}
+
+service EscurelAdmin {
+  rpc TenantCreate   (TenantCreateRequest)   returns (TenantCreateResponse);
+  rpc TenantList     (TenantListRequest)     returns (TenantListResponse);
+  rpc TenantGet      (TenantGetRequest)      returns (TenantGetResponse);
+  rpc TenantUpdate   (TenantUpdateRequest)   returns (TenantUpdateResponse);
+  rpc TenantDelete   (TenantDeleteRequest)   returns (TenantDeleteResponse);
+
+  rpc TenantExport   (TenantExportRequest)   returns (stream TenantExportChunk);
+  rpc TenantImport   (stream TenantImportChunk) returns (TenantImportResponse);
+
+  rpc Audit          (AuditRequest)          returns (AuditResponse);
+  rpc Rebuild        (RebuildRequest)        returns (stream RebuildProgress);
+
+  rpc AttachExternal (AttachExternalRequest) returns (AttachExternalResponse);
+  rpc EmbeddingReload(EmbeddingReloadRequest) returns (EmbeddingReloadResponse);
+  rpc CompactLanes   (CompactLanesRequest)   returns (stream CompactProgress);
+
+  rpc QuotaGet       (QuotaGetRequest)       returns (QuotaGetResponse);
+  rpc Health         (HealthRequest)         returns (HealthResponse);
+}
