@@ -34,24 +34,28 @@ use std::sync::Arc;
 use escurel_admin::{AdminError, TenantSpec as AdminTenantSpec, TenantStore};
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::Version;
-use escurel_index::{Direction, Indexer, Issue, OrderDir, Severity};
+use escurel_index::{
+    AppendChatMessage, Direction, Indexer, Issue, ListChatMessages, OrderDir, Severity,
+};
 use escurel_md::PageType;
 use escurel_proto::v1::TenantSpec as ProtoTenantSpec;
 use escurel_proto::v1::escurel_admin_server::EscurelAdmin;
 use escurel_proto::v1::escurel_server::Escurel;
 use escurel_proto::v1::{
-    AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
-    CompactLanesRequest, CompactProgress, Edge, EmbeddingReloadRequest, EmbeddingReloadResponse,
-    ExpandBlock, ExpandRequest, ExpandResponse, HealthRequest, HealthResponse, InstanceInfo,
-    ListInstancesRequest, ListInstancesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck,
-    LiveOp, NeighboursRequest, NeighboursResponse, PageRef, QuotaGetRequest, QuotaGetResponse,
-    RebuildProgress, RebuildRequest, ResolveRequest, ResolveResponse, RunStoredQueryRequest,
-    RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
-    TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
-    TenantExportChunk, TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportChunk,
-    TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
-    TenantUpdateResponse, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
-    ValidationIssue, WikilinkParsed,
+    AppendMessageRequest, AppendMessageResponse, AttachExternalRequest, AttachExternalResponse,
+    AuditRequest, AuditResponse, ChatMessage as ProtoChatMessage, CompactLanesRequest,
+    CompactProgress, Edge, EmbeddingReloadRequest, EmbeddingReloadResponse, ExpandBlock,
+    ExpandRequest, ExpandResponse, HealthRequest, HealthResponse, InstanceInfo,
+    ListInstancesRequest, ListInstancesResponse, ListMessagesRequest, ListMessagesResponse,
+    ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse,
+    PageRef, QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest, ResolveRequest,
+    ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest,
+    SearchResponse, Skill, StoredQueryColumn, TenantCreateRequest, TenantCreateResponse,
+    TenantDeleteRequest, TenantDeleteResponse, TenantExportChunk, TenantExportRequest,
+    TenantGetRequest, TenantGetResponse, TenantImportChunk, TenantImportResponse,
+    TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
+    UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse, ValidationIssue,
+    WikilinkParsed,
 };
 use escurel_quota::{Dimension, QuotaError};
 use flate2::Compression;
@@ -382,6 +386,89 @@ impl Escurel for EscurelGrpc {
         Ok(Response::new(ValidateResponse { ok, issues }))
     }
 
+    async fn append_message(
+        &self,
+        req: Request<AppendMessageRequest>,
+    ) -> Result<Response<AppendMessageResponse>, Status> {
+        self.enforce(&req, Some(Dimension::Writes)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+
+        // proto3 strings are non-nullable; empty stands in for unset
+        // (matches the convention used by SearchRequest::skill etc.).
+        let author = (!r.author.is_empty()).then_some(r.author.as_str());
+        let ts = (!r.ts.is_empty()).then_some(r.ts.as_str());
+        let msg_id = (!r.msg_id.is_empty()).then_some(r.msg_id.as_str());
+        let metadata = if r.metadata_json.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str::<serde_json::Value>(&r.metadata_json)
+                    .map_err(|e| Status::invalid_argument(format!("metadata_json: {e}")))?,
+            )
+        };
+
+        let stored = indexer
+            .append_chat_message(AppendChatMessage {
+                chat_group_id: &r.chat_group_id,
+                role: &r.role,
+                content: &r.content,
+                author,
+                ts,
+                metadata,
+                msg_id,
+                embed: r.embed,
+            })
+            .await
+            .map_err(|e| Status::internal(format!("append_message: {e}")))?;
+
+        Ok(Response::new(AppendMessageResponse {
+            msg_id: stored.msg_id,
+            ts: stored.ts,
+        }))
+    }
+
+    async fn list_messages(
+        &self,
+        req: Request<ListMessagesRequest>,
+    ) -> Result<Response<ListMessagesResponse>, Status> {
+        self.enforce(&req, Some(Dimension::Queries)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+
+        let since = (!r.since.is_empty()).then_some(r.since.as_str());
+        let until = (!r.until.is_empty()).then_some(r.until.as_str());
+        let cursor = (!r.cursor.is_empty()).then_some(r.cursor.as_str());
+        let limit = if r.limit == 0 {
+            DEFAULT_CHAT_LIST_LIMIT
+        } else {
+            r.limit as usize
+        };
+        let direction = parse_chat_direction(&r.direction)?;
+
+        let page = indexer
+            .list_chat_messages(ListChatMessages {
+                chat_group_id: &r.chat_group_id,
+                since,
+                until,
+                limit,
+                cursor,
+                direction,
+            })
+            .await
+            .map_err(|e| Status::internal(format!("list_messages: {e}")))?;
+
+        let messages = page
+            .messages
+            .into_iter()
+            .map(chat_message_to_proto)
+            .collect();
+        Ok(Response::new(ListMessagesResponse {
+            messages,
+            next_cursor: page.next_cursor.unwrap_or_default(),
+        }))
+    }
+
     type LiveSessionStream = Pin<Box<dyn Stream<Item = Result<LiveAck, Status>> + Send>>;
     async fn live_session(
         &self,
@@ -613,6 +700,37 @@ fn quota_status(err: QuotaError) -> Status {
 }
 
 // --- proto <-> domain helpers ---------------------------------------
+
+/// Server-side default for `ListMessagesRequest::limit` when the
+/// caller leaves it at zero. Matches the MCP default; the hard cap
+/// at 1000 is enforced inside `Indexer::list_chat_messages`.
+const DEFAULT_CHAT_LIST_LIMIT: usize = 100;
+
+fn parse_chat_direction(raw: &str) -> Result<OrderDir, Status> {
+    match raw.to_ascii_lowercase().as_str() {
+        // Default `desc` matches the typical "give me the most
+        // recent N messages" call site; consumers asking for the
+        // forward log explicitly pass "asc".
+        "" | "desc" => Ok(OrderDir::Desc),
+        "asc" => Ok(OrderDir::Asc),
+        other => Err(Status::invalid_argument(format!(
+            "direction `{other}`; expected asc|desc|<empty>"
+        ))),
+    }
+}
+
+fn chat_message_to_proto(m: escurel_index::ChatMessage) -> ProtoChatMessage {
+    ProtoChatMessage {
+        chat_group_id: m.chat_group_id,
+        msg_id: m.msg_id,
+        ts: m.ts,
+        role: m.role,
+        author: m.author.unwrap_or_default(),
+        content: m.content,
+        metadata_json: m.metadata.map(|v| v.to_string()).unwrap_or_default(),
+        embedded: m.embedded,
+    }
+}
 
 fn page_ref_to_proto(p: &escurel_index::PageRef) -> PageRef {
     PageRef {
