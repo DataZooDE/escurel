@@ -15,9 +15,7 @@ use escurel_auth::{OidcConfig, OidcVerifier};
 use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::{Indexer, Migrator};
 use escurel_proto::v1::escurel_admin_client::EscurelAdminClient;
-use escurel_proto::v1::{
-    AuditRequest, HealthRequest, QuotaGetRequest, TenantListRequest, TenantSpec,
-};
+use escurel_proto::v1::{HealthRequest, QuotaGetRequest, TenantListRequest, TenantSpec};
 use escurel_server::{AlwaysReady, ServerConfig, serve};
 use escurel_storage::{FsStore, Key, LaneStore};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -155,6 +153,7 @@ async fn start() -> Harness {
         indexer: Some(indexer),
         verifier: Some(verifier),
         quota: None,
+        tenant_store: None,
     })
     .await
     .unwrap();
@@ -223,6 +222,7 @@ async fn health_works_without_bearer_when_unauthenticated_dev_mode() {
         indexer: Some(indexer),
         verifier: None,
         quota: None,
+        tenant_store: None,
     })
     .await
     .unwrap();
@@ -268,32 +268,19 @@ async fn admin_rpc_missing_bearer_returns_unauthenticated() {
 }
 
 #[tokio::test]
-async fn tenant_list_returns_unimplemented_with_admin_role_in_m3() {
+async fn tenant_crud_without_tenant_store_returns_failed_precondition() {
+    // `start()` wires no `tenant_store`, so CRUD must surface
+    // `failed_precondition` rather than the M3 `Unimplemented`
+    // sentinel — the server can't perform tenant ops without a
+    // backing store. M4.5 added the implementation; absence of a
+    // store is the explicit "off" knob for health-only deployments.
     let h = start().await;
     let mut client = admin_client(&h).await;
     let status = client
         .tenant_list(req(&admin_bearer(&h), TenantListRequest::default()))
         .await
         .unwrap_err();
-    assert_eq!(status.code(), tonic::Code::Unimplemented);
-    h.handle.shutdown().await;
-}
-
-#[tokio::test]
-async fn audit_returns_unimplemented_in_m3() {
-    let h = start().await;
-    let mut client = admin_client(&h).await;
-    let status = client
-        .audit(req(
-            &admin_bearer(&h),
-            AuditRequest {
-                tenant_id: TENANT.to_owned(),
-                scope: String::new(),
-            },
-        ))
-        .await
-        .unwrap_err();
-    assert_eq!(status.code(), tonic::Code::Unimplemented);
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
     h.handle.shutdown().await;
 }
 

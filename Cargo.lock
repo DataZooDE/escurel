@@ -1320,6 +1320,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d817e038c30374a4bcb22f94d0a8a0e216958d4c3dcde369b1439fec4bdda6e6"
 
 [[package]]
+name = "escurel-admin"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "duckdb",
+ "escurel-index",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "escurel-auth"
 version = "0.0.0"
 dependencies = [
@@ -1451,6 +1465,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "duckdb",
+ "escurel-admin",
  "escurel-auth",
  "escurel-embed",
  "escurel-index",

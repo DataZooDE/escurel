@@ -110,6 +110,12 @@ impl Indexer {
         })
     }
 
+    /// Tenant id this indexer was bound to at construction.
+    #[must_use]
+    pub fn tenant(&self) -> &str {
+        &self.tenant
+    }
+
     /// Upsert the page identified by `page_id` from the markdown
     /// `content` blob, inside a single DuckDB transaction.
     ///

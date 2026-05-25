@@ -12,6 +12,7 @@ homepage.workspace = true
 [dependencies]
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
+escurel-admin = { path = "../escurel-admin" }
 escurel-auth = { path = "../escurel-auth" }
 futures = "0.3"
 escurel-embed = { path = "../escurel-embed" }
@@ -33,6 +34,7 @@ async-trait = "0.1"
 base64 = "0.22"
 bytes = "1"
 duckdb = { version = "1", features = ["bundled"] }
+escurel-admin = { path = "../escurel-admin" }
 escurel-proto = { path = "../escurel-proto" }
 jsonwebtoken = "9"
 rand = "0.8"

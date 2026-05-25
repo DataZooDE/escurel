@@ -202,6 +202,7 @@ async fn start(quota: Option<Arc<QuotaManager>>) -> Harness {
         indexer: Some(indexer),
         verifier: Some(verifier),
         quota,
+        tenant_store: None,
     })
     .await
     .unwrap();
