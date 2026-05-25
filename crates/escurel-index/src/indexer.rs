@@ -36,6 +36,17 @@ pub struct Indexer {
     tenant: String,
 }
 
+/// Per-page progress event emitted by
+/// [`Indexer::rebuild_with_progress`]. Borrowed so the callback
+/// can receive a `&str` without forcing an allocation per page;
+/// gRPC handlers copy it into the proto message at the boundary.
+#[derive(Debug)]
+pub struct RebuildProgress<'a> {
+    pub done: u64,
+    pub total: u64,
+    pub current_page: &'a str,
+}
+
 /// Two-way drift between canonical markdown and the DuckDB index.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct AuditDrift {
@@ -282,7 +293,25 @@ impl Indexer {
     /// one transaction before re-upserting, so the operation is
     /// "drop the index, recreate from markdown."
     pub async fn rebuild(&self) -> Result<(), IndexerError> {
+        self.rebuild_with_progress(|_| {}).await
+    }
+
+    /// Like [`Self::rebuild`], but invokes `on_progress` once per
+    /// page reindexed with the running `(done, total, page_id)`
+    /// tuple. Used by `EscurelAdmin.Rebuild` to stream
+    /// `RebuildProgress` chunks to the caller. `done` is `1` on
+    /// the first emission and equal to `total` on the last.
+    pub async fn rebuild_with_progress<F>(&self, mut on_progress: F) -> Result<(), IndexerError>
+    where
+        F: FnMut(RebuildProgress<'_>),
+    {
         let on_disk = self.list_markdown_paths().await?;
+        let mut sorted: Vec<String> = on_disk.into_iter().collect();
+        // Sort so the progress stream is deterministic; callers
+        // that compare chunk lists across runs (tests, audit
+        // tooling) rely on this.
+        sorted.sort();
+        let total = sorted.len() as u64;
 
         {
             let mut conn = self.conn.lock().await;
@@ -293,13 +322,18 @@ impl Indexer {
             tx.commit()?;
         }
 
-        for path in on_disk {
+        for (idx, path) in sorted.into_iter().enumerate() {
             let key = Key::new(self.tenant.as_str(), path.clone())?;
             let body = self.store.read(&key).await?;
             let content = std::str::from_utf8(&body).map_err(|_| IndexerError::NotUtf8 {
                 page_id: path.clone(),
             })?;
             self.update_page(&path, content).await?;
+            on_progress(RebuildProgress {
+                done: (idx as u64) + 1,
+                total,
+                current_page: &path,
+            });
         }
         Ok(())
     }

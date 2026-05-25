@@ -26,6 +26,7 @@
 // module scope.
 #![allow(clippy::result_large_err)]
 
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -51,7 +52,11 @@ use escurel_proto::v1::{
     WikilinkParsed,
 };
 use escurel_quota::{Dimension, QuotaError};
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use futures::Stream;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::server::AppState;
@@ -615,7 +620,39 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<TenantExportRequest>,
     ) -> Result<Response<Self::TenantExportStream>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — tenant export"))
+        let store = self.tenant_store()?.clone();
+        let tenant_id = req.into_inner().tenant_id;
+        let tenant_dir = store
+            .tenant_dir(&tenant_id)
+            .ok_or_else(|| Status::failed_precondition("tenant store has no on-disk path"))?;
+        // Spec (storage.md L320–327): only canonical markdown is
+        // exported. CRDT state + DuckDB are runtime concerns, not
+        // corpus artefacts.
+        let markdown_dir = tenant_dir.join("markdown");
+        if !tokio::fs::try_exists(&markdown_dir).await.unwrap_or(false) {
+            return Err(Status::not_found(format!("tenant `{tenant_id}` not found")));
+        }
+
+        // Build the tar+gz on a blocking thread (file I/O + zlib),
+        // pumping fixed-size chunks through an mpsc into a tonic
+        // server-stream. Chunk size is the gRPC default-friendly
+        // 64 KiB so the server doesn't have to fight max-message
+        // limits for the typical tenant.
+        const CHUNK: usize = 64 * 1024;
+        let (tx, rx) = mpsc::channel::<Result<TenantExportChunk, Status>>(4);
+        tokio::task::spawn_blocking(move || {
+            let res = tar_gz_into_chunks(&markdown_dir, CHUNK, |chunk| {
+                tx.blocking_send(Ok(TenantExportChunk { data: chunk }))
+                    .map_err(|_| std::io::Error::other("client closed export stream"))
+            });
+            if let Err(e) = res {
+                // Best-effort: surface the error on the stream
+                // before the sender drops.
+                let _ = tx.blocking_send(Err(Status::internal(format!("tenant_export: {e}"))));
+            }
+        });
+        let stream: Self::TenantExportStream = Box::pin(ReceiverStream::new(rx));
+        Ok(Response::new(stream))
     }
 
     async fn tenant_import(
@@ -623,7 +660,51 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<Streaming<TenantImportChunk>>,
     ) -> Result<Response<TenantImportResponse>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — tenant import"))
+        let store = self.tenant_store()?.clone();
+        let mut stream = req.into_inner();
+
+        // Tenant id is carried on every chunk per the proto;
+        // realistically the client sets it once. Pull the first
+        // chunk to learn the target tenant, refuse if it doesn't
+        // exist, then drain the rest into an in-memory buffer.
+        let mut tenant_id: Option<String> = None;
+        let mut buffer: Vec<u8> = Vec::new();
+        while let Some(chunk) = stream.message().await? {
+            if tenant_id.is_none() {
+                if chunk.tenant_id.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "first TenantImportChunk must carry tenant_id",
+                    ));
+                }
+                // Validate existence up-front so a megabyte of
+                // bytes don't get buffered before the rejection.
+                if store
+                    .get(&chunk.tenant_id)
+                    .await
+                    .map_err(admin_status)?
+                    .is_none()
+                {
+                    return Err(Status::not_found(format!(
+                        "tenant `{}` not found",
+                        chunk.tenant_id
+                    )));
+                }
+                tenant_id = Some(chunk.tenant_id.clone());
+            }
+            buffer.extend_from_slice(&chunk.data);
+        }
+        let tenant_id =
+            tenant_id.ok_or_else(|| Status::invalid_argument("import stream had no chunks"))?;
+        let tenant_dir = store
+            .tenant_dir(&tenant_id)
+            .ok_or_else(|| Status::failed_precondition("tenant store has no on-disk path"))?;
+        let markdown_dir = tenant_dir.join("markdown");
+        let bytes_imported = buffer.len() as u64;
+        tokio::task::spawn_blocking(move || untar_gz_into(&buffer, &markdown_dir))
+            .await
+            .map_err(|e| Status::internal(format!("tenant_import join error: {e}")))?
+            .map_err(|e| Status::internal(format!("tenant_import: {e}")))?;
+        Ok(Response::new(TenantImportResponse { bytes_imported }))
     }
 
     async fn audit(&self, req: Request<AuditRequest>) -> Result<Response<AuditResponse>, Status> {
@@ -661,15 +742,65 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<RebuildRequest>,
     ) -> Result<Response<Self::RebuildStream>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — rebuild streaming"))
+        let indexer = self
+            .state
+            .indexer
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("server has no indexer wired"))?
+            .clone();
+        let r = req.into_inner();
+        // Single-tenant routing today: the indexer is bound to
+        // exactly one tenant at startup. Calls for any other
+        // tenant are a programmer mistake, mirrored from `audit`.
+        if r.tenant_id != indexer.tenant() {
+            return Err(Status::failed_precondition(format!(
+                "rebuild tenant `{}` does not match indexer tenant `{}`",
+                r.tenant_id,
+                indexer.tenant()
+            )));
+        }
+
+        // Unbounded so the sync callback inside
+        // `rebuild_with_progress` never has to drop chunks when
+        // the consumer briefly stalls. Progress events are ~64
+        // bytes each; even a 1 M-page rebuild (spec's headline
+        // ceiling) is bounded to ~64 MB worst case.
+        let (tx, rx) = mpsc::unbounded_channel::<Result<RebuildProgress, Status>>();
+        tokio::spawn(async move {
+            let progress_tx = tx.clone();
+            let result = indexer
+                .rebuild_with_progress(|p| {
+                    // `send` on an unbounded channel only fails
+                    // when the receiver is closed — i.e. the
+                    // client hung up. We let the rebuild keep
+                    // running, mirroring the spec's "rebuild is
+                    // idempotent" stance.
+                    let _ = progress_tx.send(Ok(RebuildProgress {
+                        done: p.done,
+                        total: p.total,
+                        current_page: p.current_page.to_owned(),
+                    }));
+                })
+                .await;
+            if let Err(e) = result {
+                let _ = tx.send(Err(Status::internal(format!("rebuild: {e}"))));
+            }
+        });
+        let stream: Self::RebuildStream = Box::pin(UnboundedReceiverStream::new(rx));
+        Ok(Response::new(stream))
     }
 
     async fn attach_external(
         &self,
         req: Request<AttachExternalRequest>,
     ) -> Result<Response<AttachExternalResponse>, Status> {
+        // Auth gate stays wired so the role boundary is correct
+        // on the wire; the body lands in M4.6 alongside the
+        // two-stage reconciler.
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — external lane attach"))
+        Err(Status::unimplemented(
+            "attach_external lands in M4.6 alongside the two-stage reconciler",
+        ))
     }
 
     async fn embedding_reload(
@@ -677,7 +808,12 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<EmbeddingReloadRequest>,
     ) -> Result<Response<EmbeddingReloadResponse>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M5 — embedder hot reload"))
+        // Placeholder until the embedder hot-reload path lands
+        // in M5; the gate is wired so the surface matches the
+        // proto.
+        Ok(Response::new(EmbeddingReloadResponse {
+            model_revision: "M5".to_owned(),
+        }))
     }
 
     type CompactLanesStream = StreamOf<CompactProgress>;
@@ -685,8 +821,10 @@ impl EscurelAdmin for EscurelAdminGrpc {
         &self,
         req: Request<CompactLanesRequest>,
     ) -> Result<Response<Self::CompactLanesStream>, Status> {
+        // Auth gate stays wired so the role boundary is correct;
+        // the body lands post-M5 with the CRDT compaction path.
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — lane compaction"))
+        Err(Status::unimplemented("compaction lands post-M5"))
     }
 
     async fn quota_get(
@@ -694,12 +832,107 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<QuotaGetRequest>,
     ) -> Result<Response<QuotaGetResponse>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        // Real impl lands once `QuotaManager` exposes a snapshot
-        // method (`remaining(tenant) -> {queries, writes, embeds,
-        // sessions}`). Today the manager only exposes
-        // `try_consume`, so we'd be guessing.
-        Err(Status::unimplemented(
-            "M4 — quota snapshot once QuotaManager exposes it",
-        ))
+        let quota = self
+            .state
+            .quota
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("server has no quota manager wired"))?;
+        let snap = quota.snapshot(&req.into_inner().tenant_id);
+        Ok(Response::new(QuotaGetResponse {
+            queries_remaining: snap.queries_remaining,
+            writes_remaining: snap.writes_remaining,
+            embeds_remaining: snap.embeds_remaining,
+            // Proto field name is `concurrent_sessions`; we
+            // surface the *in-use* count because the cap itself
+            // is reported once via config and the value that
+            // actually changes hour-to-hour is occupancy.
+            concurrent_sessions: snap.concurrent_sessions_in_use,
+        }))
     }
+}
+
+// --- tar+gz helpers -------------------------------------------------
+
+/// Build a gzip-framed tar of `root`'s contents and feed it through
+/// `sink` in `chunk` byte slices. Runs synchronously — the caller
+/// hosts it on a blocking thread.
+///
+/// `sink` returns `Err` when the consumer has hung up; we surface
+/// that as `io::Error` to abort the tar stream.
+fn tar_gz_into_chunks(
+    root: &Path,
+    chunk: usize,
+    mut sink: impl FnMut(Vec<u8>) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let writer = ChunkSink {
+        chunk,
+        buf: Vec::with_capacity(chunk),
+        emit: &mut sink,
+    };
+    let gz = GzEncoder::new(writer, Compression::default());
+    let mut tar = tar::Builder::new(gz);
+    // Append everything under `root` as the archive root — i.e.
+    // entries are stored as their path *relative to* `root`. On
+    // import the consumer extracts back into another `root`, so
+    // names round-trip without nesting.
+    tar.append_dir_all(".", root)?;
+    let gz = tar.into_inner()?;
+    let mut writer = gz.finish()?;
+    writer.flush_remaining()
+}
+
+/// Sink used by [`tar_gz_into_chunks`] — accumulates writes into a
+/// reusable buffer and forwards full `chunk`-byte slices through
+/// `emit`. The trailing fragment is emitted by `flush_remaining`.
+struct ChunkSink<'a> {
+    chunk: usize,
+    buf: Vec<u8>,
+    emit: &'a mut dyn FnMut(Vec<u8>) -> std::io::Result<()>,
+}
+
+impl ChunkSink<'_> {
+    fn flush_remaining(&mut self) -> std::io::Result<()> {
+        if !self.buf.is_empty() {
+            let out = std::mem::take(&mut self.buf);
+            (self.emit)(out)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::io::Write for ChunkSink<'_> {
+    fn write(&mut self, mut data: &[u8]) -> std::io::Result<usize> {
+        let total = data.len();
+        while !data.is_empty() {
+            let want = self.chunk - self.buf.len();
+            let take = data.len().min(want);
+            self.buf.extend_from_slice(&data[..take]);
+            data = &data[take..];
+            if self.buf.len() >= self.chunk {
+                let out = std::mem::take(&mut self.buf);
+                self.buf.reserve(self.chunk);
+                (self.emit)(out)?;
+            }
+        }
+        Ok(total)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Inverse of [`tar_gz_into_chunks`]: decode `bytes` as gzip+tar
+/// and extract every entry under `dest`. Runs synchronously — the
+/// caller hosts it on a blocking thread.
+///
+/// `tar::Archive::unpack` rejects entries containing `..` segments
+/// by default, so the path-traversal surface mirrors the rest of
+/// the admin layer (see [`escurel_admin::validate_tenant_id`] for
+/// the tenant-id half of the same defence).
+fn untar_gz_into(bytes: &[u8], dest: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    let gz = flate2::read::GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(gz);
+    archive.unpack(dest)
 }

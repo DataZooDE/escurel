@@ -51,6 +51,7 @@ pub enum Dimension {
 
 /// Per-tenant quota state.
 struct TenantQuota {
+    cfg: QuotaConfig,
     queries: TokenBucket,
     writes: TokenBucket,
     embeds: TokenBucket,
@@ -60,6 +61,7 @@ struct TenantQuota {
 impl TenantQuota {
     fn from_config(cfg: QuotaConfig) -> Self {
         Self {
+            cfg,
             queries: TokenBucket::per_minute(cfg.queries_per_minute),
             writes: TokenBucket::per_minute(cfg.writes_per_minute),
             embeds: TokenBucket::per_minute(cfg.embeds_per_minute),
@@ -74,6 +76,22 @@ impl TenantQuota {
             Dimension::Embeds => &self.embeds,
         }
     }
+}
+
+/// Snapshot of a tenant's remaining quota at a single instant.
+///
+/// `queries_remaining` / `writes_remaining` / `embeds_remaining`
+/// are the integer floors of the three buckets' current
+/// token counts (rounded down so a partial token reads as
+/// "none of it yet"). `concurrent_sessions_in_use` is the count
+/// of session slots currently held by live [`SessionGuard`]s —
+/// i.e. `configured_cap − available_permits`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuotaSnapshot {
+    pub queries_remaining: u32,
+    pub writes_remaining: u32,
+    pub embeds_remaining: u32,
+    pub concurrent_sessions_in_use: u32,
 }
 
 /// Per-tenant quota manager. Lazy-creates a [`TenantQuota`] from
@@ -131,6 +149,36 @@ impl QuotaManager {
                 dimension: dim,
                 retry_after_ms: e.retry_after_ms,
             })
+    }
+
+    /// Read the current remaining-token counts (floored to whole
+    /// tokens) for `tenant`, plus the in-use session-slot count.
+    /// Lazy-creates the tenant's buckets if it has never been
+    /// debited — the snapshot of a brand-new tenant returns the
+    /// configured caps for the three rate dimensions and `0` for
+    /// the in-use sessions. Used by `EscurelAdmin.quota_get`.
+    #[must_use]
+    pub fn snapshot(&self, tenant: &str) -> QuotaSnapshot {
+        let t = self.tenant(tenant);
+        // `available()` returns f64 because the bucket refills
+        // continuously; the spec exposes a whole-token count so we
+        // floor.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "snapshot reports integer-floored token counts"
+        )]
+        let to_u32 = |x: f64| x.floor().max(0.0).min(f64::from(u32::MAX)) as u32;
+        let in_use = t
+            .cfg
+            .concurrent_sessions
+            .saturating_sub(t.sessions.available_permits() as u32);
+        QuotaSnapshot {
+            queries_remaining: to_u32(t.queries.available()),
+            writes_remaining: to_u32(t.writes.available()),
+            embeds_remaining: to_u32(t.embeds.available()),
+            concurrent_sessions_in_use: in_use,
+        }
     }
 
     /// Try to acquire a session permit without blocking. Returns

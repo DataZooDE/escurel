@@ -287,10 +287,12 @@ async fn tenant_crud_without_tenant_store_returns_failed_precondition() {
 }
 
 #[tokio::test]
-async fn quota_get_returns_unimplemented_in_m3() {
-    // Real impl lands once the QuotaManager surfaces a snapshot
-    // method. For now the gRPC method exists and the auth gate is
-    // wired; everything else returns Unimplemented.
+async fn quota_get_without_quota_returns_failed_precondition() {
+    // `start()` wires no quota manager, so the M4.5b
+    // `quota_get` surface must surface `failed_precondition`
+    // rather than the old `Unimplemented` sentinel. The role
+    // gate still applies — coverage for the implementation
+    // path lives in `grpc_admin_streaming.rs`.
     let h = start().await;
     let mut client = admin_client(&h).await;
     let status = client
@@ -302,7 +304,7 @@ async fn quota_get_returns_unimplemented_in_m3() {
         ))
         .await
         .unwrap_err();
-    assert_eq!(status.code(), tonic::Code::Unimplemented);
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
     h.handle.shutdown().await;
 }
 

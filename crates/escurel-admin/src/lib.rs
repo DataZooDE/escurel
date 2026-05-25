@@ -112,6 +112,15 @@ pub trait TenantStore: Send + Sync + 'static {
     /// the tenant did not exist (idempotent), `Ok(true)` when a
     /// real directory was removed.
     async fn delete(&self, tenant_id: &str) -> Result<bool, AdminError>;
+
+    /// Filesystem path of the tenant's root directory. Required by
+    /// `tenant_export` / `tenant_import`, which tar+gz the
+    /// `markdown/` subtree directly. The default implementation
+    /// returns `None` for stores that have no on-disk
+    /// representation (a future S3-backed store, for instance).
+    fn tenant_dir(&self, _tenant_id: &str) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// Filesystem-backed [`TenantStore`]. All tenant dirs live as
@@ -129,12 +138,12 @@ impl FsTenantStore {
         Self { root: root.into() }
     }
 
-    fn tenant_dir(&self, tenant_id: &str) -> PathBuf {
+    fn tenant_dir_path(&self, tenant_id: &str) -> PathBuf {
         self.root.join(tenant_id)
     }
 
     fn spec_path(&self, tenant_id: &str) -> PathBuf {
-        self.tenant_dir(tenant_id).join("tenant.json")
+        self.tenant_dir_path(tenant_id).join("tenant.json")
     }
 }
 
@@ -212,7 +221,7 @@ impl TenantStore for FsTenantStore {
 
     async fn create(&self, spec: &TenantSpec) -> Result<(), AdminError> {
         validate_tenant_id(&spec.tenant_id)?;
-        let dir = self.tenant_dir(&spec.tenant_id);
+        let dir = self.tenant_dir_path(&spec.tenant_id);
         if tokio::fs::try_exists(&dir).await.unwrap_or(false) {
             return Err(AdminError::AlreadyExists(spec.tenant_id.clone()));
         }
@@ -256,7 +265,7 @@ impl TenantStore for FsTenantStore {
 
     async fn get(&self, tenant_id: &str) -> Result<Option<TenantSpec>, AdminError> {
         validate_tenant_id(tenant_id)?;
-        let dir = self.tenant_dir(tenant_id);
+        let dir = self.tenant_dir_path(tenant_id);
         if !tokio::fs::try_exists(&dir).await.unwrap_or(false) {
             return Ok(None);
         }
@@ -266,7 +275,7 @@ impl TenantStore for FsTenantStore {
 
     async fn update(&self, spec: &TenantSpec) -> Result<(), AdminError> {
         validate_tenant_id(&spec.tenant_id)?;
-        let dir = self.tenant_dir(&spec.tenant_id);
+        let dir = self.tenant_dir_path(&spec.tenant_id);
         if !tokio::fs::try_exists(&dir).await.unwrap_or(false) {
             return Err(AdminError::Io {
                 path: dir,
@@ -281,12 +290,16 @@ impl TenantStore for FsTenantStore {
 
     async fn delete(&self, tenant_id: &str) -> Result<bool, AdminError> {
         validate_tenant_id(tenant_id)?;
-        let dir = self.tenant_dir(tenant_id);
+        let dir = self.tenant_dir_path(tenant_id);
         match tokio::fs::remove_dir_all(&dir).await {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(source) => Err(AdminError::Io { path: dir, source }),
         }
+    }
+
+    fn tenant_dir(&self, tenant_id: &str) -> Option<PathBuf> {
+        Some(self.tenant_dir_path(tenant_id))
     }
 }
 

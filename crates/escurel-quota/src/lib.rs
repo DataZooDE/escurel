@@ -18,5 +18,5 @@
 mod manager;
 mod token_bucket;
 
-pub use manager::{Dimension, QuotaConfig, QuotaError, QuotaManager, SessionGuard};
+pub use manager::{Dimension, QuotaConfig, QuotaError, QuotaManager, QuotaSnapshot, SessionGuard};
 pub use token_bucket::{QuotaExhausted, TokenBucket};
