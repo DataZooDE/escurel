@@ -125,6 +125,8 @@ async fn start_with_seeded_indexer() -> Harness {
         version: "1.0.0-test".to_owned(),
         readiness: Arc::new(AlwaysReady),
         indexer: Some(indexer),
+        verifier: None,
+        quota: None,
     };
     let handle = serve(cfg).await.expect("server starts");
     let base_url = format!("http://{}", handle.local_addr);

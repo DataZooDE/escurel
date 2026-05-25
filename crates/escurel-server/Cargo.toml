@@ -12,9 +12,11 @@ homepage.workspace = true
 [dependencies]
 async-trait = "0.1"
 axum = "0.8"
+escurel-auth = { path = "../escurel-auth" }
 escurel-embed = { path = "../escurel-embed" }
 escurel-index = { path = "../escurel-index" }
 escurel-md = { path = "../escurel-md" }
+escurel-quota = { path = "../escurel-quota" }
 escurel-storage = { path = "../escurel-storage" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,11 +26,16 @@ tower = "0.5"
 
 [dev-dependencies]
 async-trait = "0.1"
+base64 = "0.22"
 bytes = "1"
 duckdb = { version = "1", features = ["bundled"] }
+jsonwebtoken = "9"
+rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rsa = { version = "0.9", features = ["pem"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
 
 [lints]
 workspace = true

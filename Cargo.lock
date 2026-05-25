@@ -1097,19 +1097,26 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "duckdb",
+ "escurel-auth",
  "escurel-embed",
  "escurel-index",
  "escurel-md",
+ "escurel-quota",
  "escurel-storage",
+ "jsonwebtoken",
+ "rand 0.8.6",
  "reqwest",
+ "rsa",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tower",
+ "wiremock",
 ]
 
 [[package]]

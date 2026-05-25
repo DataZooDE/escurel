@@ -38,6 +38,8 @@ async fn start(readiness: Arc<dyn ReadinessProbe>) -> escurel_server::ServerHand
         version: "1.2.3-test".to_owned(),
         readiness,
         indexer: None,
+        verifier: None,
+        quota: None,
     };
     serve(cfg).await.expect("server starts")
 }
