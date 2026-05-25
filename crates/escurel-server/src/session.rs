@@ -215,24 +215,26 @@ impl SessionManager {
 
     /// Look up the `page_id` an open session is attached to. Used
     /// by the live transports (WS, gRPC bidi) to authorise ops
-    /// without round-tripping through the indexer. The HTTP MCP
-    /// dispatcher doesn't call this directly today — it is part
-    /// of the M4.2 API surface for M4.3+ transports — so it
-    /// reads as dead code in the lib build.
+    /// without round-tripping through the indexer. M4.4 wires
+    /// the WS attach path through this accessor; the HTTP MCP
+    /// dispatcher doesn't call it directly.
     #[must_use]
-    #[allow(dead_code)] // M4.4 WS attach consumer.
     pub fn page_id_of(&self, session_id: &str) -> Option<String> {
         self.entries.get(session_id).map(|e| e.page_id.clone())
     }
 
     /// Read the current text content of an open session. Used by
-    /// the live transports (gRPC bidi attach in M4.3, WS attach in
-    /// M4.4) to populate the `content` field of an `attach` ack
+    /// the live transports (gRPC bidi attach in M4.3, WS attach +
+    /// `op_ack` replies in M4.4) to populate the `content` field
     /// without forcing the caller to keep a parallel mirror of the
     /// doc.
     ///
     /// Returns `None` when the session id is unknown — the caller
-    /// surfaces that as the spec's `unknown_session` issue.
+    /// surfaces that as the spec's `unknown_session` issue. When
+    /// the session is open but the underlying actor returned the
+    /// empty string (e.g. just opened, never written), we still
+    /// return `Some("")` to match the spec's `content: String`
+    /// shape.
     pub async fn current_content(&self, session_id: &str) -> Option<String> {
         let doc = {
             let entry = self.entries.get(session_id)?;
@@ -296,5 +298,17 @@ mod tests {
         // After close, a second open is allowed again.
         let _ = sm.close(&sid_a, false).await.unwrap();
         let _ = sm.open(b, "page-x", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn current_content_round_trips() {
+        let (_dir, b) = backend();
+        let sm = SessionManager::new();
+        let (sid, _) = sm.open(b, "page-content", None).await.unwrap();
+        // Empty doc → empty content.
+        assert_eq!(sm.current_content(&sid).await.as_deref(), Some(""));
+        // Unknown id → None.
+        assert!(sm.current_content("sess_nope").await.is_none());
+        let _ = sm.close(&sid, false).await.unwrap();
     }
 }
