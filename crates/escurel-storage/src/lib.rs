@@ -3,16 +3,20 @@
 //! Every tenant's bytes live behind one trait, [`LaneStore`], so the
 //! filesystem-backed default and the S3-backed variant share the
 //! upper layers verbatim. This crate ships [`FsStore`] for dev /
-//! tests; the S3 implementation lives in a sibling crate (planned
-//! PR 6+).
+//! tests and [`S3Store`] (behind the `s3` feature) for the
+//! production / substrate target.
 //!
 //! See `docs/spec/storage.md §The LaneStore trait` for the contract.
 
 pub mod fs;
 mod key;
+#[cfg(feature = "s3")]
+pub mod s3;
 
 pub use fs::FsStore;
 pub use key::{Key, KeyError};
+#[cfg(feature = "s3")]
+pub use s3::{S3Store, S3StoreConfig};
 
 use async_trait::async_trait;
 use bytes::Bytes;
