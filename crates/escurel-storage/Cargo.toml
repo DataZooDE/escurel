@@ -9,6 +9,12 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+# S3-backed LaneStore. Gated behind a feature so the dev/test default
+# (`FsStore`) need not pull the AWS SDK + its transitive deps. The
+# substrate deployment target builds with `--features s3`.
+s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:aws-credential-types"]
+
 [dependencies]
 async-trait = "0.1"
 bytes = "1"
@@ -17,9 +23,18 @@ tokio = { version = "1", features = ["fs", "io-util", "rt"] }
 url = "2"
 walkdir = "2"
 
+# S3 backend (feature `s3`). The official AWS SDK speaks plain S3 and
+# works against MinIO / Hetzner Object Storage via a custom endpoint
+# URL + path-style addressing.
+aws-config = { version = "1", optional = true }
+aws-sdk-s3 = { version = "1", optional = true }
+aws-credential-types = { version = "1", optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Real MinIO container for the S3 integration test (feature `s3`).
+testcontainers-modules = { version = "0.15", features = ["minio"] }
 
 [lints]
 workspace = true
