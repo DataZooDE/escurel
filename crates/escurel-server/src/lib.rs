@@ -20,6 +20,7 @@
 //!   minimal `# HELP` / `# TYPE` shell; the OTel metric exporter
 //!   (M5) wires real numbers.
 
+mod grpc;
 mod health;
 mod mcp;
 mod server;

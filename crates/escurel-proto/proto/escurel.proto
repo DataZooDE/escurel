@@ -11,14 +11,18 @@ package escurel.v1;
 
 // --- shared --------------------------------------------------------
 
+// Matches escurel-index `PageRef`. Empty string sentinels stand
+// in for proto3's missing optional support: `slug = ""` ⇔ no slug,
+// `page_type` is always one of "skill" | "instance".
 message PageRef {
-  string id = 1;
-  string skill = 2;
-  string title = 3;
-  string version = 4;
-  string updated_at = 5;
+  string page_id = 1;
+  string slug = 2;
+  string skill = 3;
+  string page_type = 4;
 }
 
+// Each segment is empty-string-as-null. A bare `[[id]]` arrives as
+// `{ id = "id" }`; the parser fills the rest.
 message WikilinkParsed {
   string skill = 1;
   string id = 2;
@@ -99,17 +103,27 @@ message NeighboursResponse { repeated Edge edges = 1; }
 message ListSkillsRequest {}
 message Skill {
   string id = 1;
-  string title = 2;
-  string description = 3;
+  string description = 2;
+  repeated string required_frontmatter = 3;
+  repeated string optional_frontmatter = 4;
+  bool is_event_typed = 5;
 }
 message ListSkillsResponse { repeated Skill skills = 1; }
 
+// `order_by_at` is "asc", "desc", or "" (none); `limit = 0` means
+// no limit. The dispatcher caps internally at 10000.
 message ListInstancesRequest {
   string skill = 1;
-  string filter_json = 2;
+  string order_by_at = 2;
   uint32 limit = 3;
 }
-message ListInstancesResponse { repeated PageRef pages = 1; }
+message InstanceInfo {
+  string page_id = 1;
+  string skill = 2;
+  string frontmatter_json = 3;
+  string at = 4;
+}
+message ListInstancesResponse { repeated InstanceInfo instances = 1; }
 
 message RunStoredQueryRequest {
   string query_name = 1;
