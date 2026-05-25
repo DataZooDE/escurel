@@ -28,10 +28,12 @@
 pub mod backend;
 pub mod error;
 pub mod livedoc;
+pub mod reconciler;
 
 pub use backend::{CrdtBackend, DuckdbCrdtBackend};
 pub use error::Error;
 pub use livedoc::LiveDoc;
+pub use reconciler::{CitationLookup, Decision, ExternalEditReconciler};
 
 /// Raw Loro op bytes — the wire payload that
 /// `apply_op` / `open_session` shuttle around. Opaque from this

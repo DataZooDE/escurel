@@ -18,12 +18,14 @@
 //! golden image (`docs/deploy/substrate.md §6`); the auto-install
 //! egress is dev-only.
 
+pub mod citation;
 pub mod indexer;
 pub mod query;
 pub mod read;
 pub mod schema;
 pub mod search;
 
+pub use citation::IndexerCitationLookup;
 pub use indexer::{AuditDrift, Indexer, IndexerError, RebuildProgress};
 pub use query::{ColumnSchema, QueryError, StoredQueryResult};
 pub use read::{

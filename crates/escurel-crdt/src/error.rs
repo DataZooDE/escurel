@@ -21,6 +21,21 @@ pub enum Error {
     /// panicked. Callers should re-open the page.
     #[error("livedoc actor is closed")]
     Closed,
+
+    /// Reading the canonical markdown from the [`escurel_storage::LaneStore`]
+    /// failed for a reason other than "not found". Used only by the
+    /// external-edit reconciler — wrapped as `String` to keep the
+    /// storage crate out of this crate's public error vocabulary.
+    #[error("storage error: {0}")]
+    Storage(String),
+
+    /// The [`crate::reconciler::CitationLookup`] impl returned an
+    /// error. Wrapped as `String` because the trait returns
+    /// `anyhow::Error`, which is not `Sync` enough for `thiserror`'s
+    /// `#[from]` and would force every consumer to bring `anyhow`
+    /// into its public types.
+    #[error("citation lookup error: {0}")]
+    Citation(String),
 }
 
 impl From<loro::LoroError> for Error {

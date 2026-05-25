@@ -20,11 +20,17 @@ loro = "1.12"
 # `docs/notes/discovered/2026-05-24-duckdb-second-connection-stale.md`).
 duckdb = { version = "1", features = ["bundled"] }
 async-trait = "0.1"
+anyhow = "1"
+# `escurel-storage::LaneStore` is the boundary the reconciler reads
+# canonical markdown through. Pulled in as a regular dep (not just
+# dev) because the M4.6 `ExternalEditReconciler` lives here and its
+# public API takes `Arc<dyn LaneStore>`.
+escurel-storage = { path = "../escurel-storage" }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
 
 [dev-dependencies]
-anyhow = "1"
+bytes = "1"
 escurel-index = { path = "../escurel-index" }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
