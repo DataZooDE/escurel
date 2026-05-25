@@ -1037,10 +1037,56 @@ impl EscurelAdmin for EscurelAdminGrpc {
         &self,
         req: Request<CompactLanesRequest>,
     ) -> Result<Response<Self::CompactLanesStream>, Status> {
-        // Auth gate stays wired so the role boundary is correct;
-        // the body lands post-M5 with the CRDT compaction path.
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("compaction lands post-M5"))
+        let tenant_id = req.into_inner().tenant_id;
+        // Validate up front — mirrors the `tenant_export` defence
+        // (codex P2 on PR M4.5b): admin RPCs that take a tenant id
+        // never trust it raw. Today the CRDT backend is bound to a
+        // single tenant at startup so the id only ever filters the
+        // surface; this still pins the contract for the per-tenant
+        // routing that lands later.
+        escurel_admin::validate_tenant_id(&tenant_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        let backend = self
+            .state
+            .crdt_backend
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("server has no crdt_backend wired"))?
+            .clone();
+
+        // Pull the page list up front so the streaming task has a
+        // bounded amount of work and a single backend failure
+        // surfaces as a status before we open the response stream.
+        let pages = backend
+            .pages_with_snapshots()
+            .await
+            .map_err(|e| Status::internal(format!("compact_lanes: list pages: {e}")))?;
+
+        // Bounded channel so a slow consumer back-pressures the
+        // sweep instead of buffering an unbounded number of
+        // progress events.
+        let (tx, rx) = mpsc::channel::<Result<CompactProgress, Status>>(4);
+        tokio::spawn(async move {
+            for page_id in pages {
+                let msg = match backend.compact_subsumed_ops(&page_id).await {
+                    Ok((ops, bytes)) => Ok(CompactProgress {
+                        ops_compacted: ops,
+                        bytes_reclaimed: bytes,
+                    }),
+                    Err(e) => Err(Status::internal(format!(
+                        "compact_lanes: page `{page_id}`: {e}"
+                    ))),
+                };
+                // If the client hung up we stop early — the rest of
+                // the sweep is irrelevant work.
+                if tx.send(msg).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let stream: Self::CompactLanesStream = Box::pin(ReceiverStream::new(rx));
+        Ok(Response::new(stream))
     }
 
     async fn quota_get(

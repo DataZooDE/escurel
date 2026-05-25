@@ -56,6 +56,27 @@ pub trait CrdtBackend: Send + Sync + 'static {
     /// op-count after a reopen, so a new op never reuses an
     /// existing `(page_id, op_id)` primary key.
     async fn max_hlc(&self, page_id: &str) -> Result<i64, Error>;
+
+    /// Every `page_id` that has at least one row in
+    /// `crdt_snapshots`. Used by the admin `compact_lanes` sweep
+    /// to enumerate compaction-eligible pages — pages with no
+    /// snapshot have nothing to compact (the spec says ops are
+    /// only eligible once `hlc <= snapshot.snapshot_hlc`, so a
+    /// page with zero snapshots has zero subsumed ops by
+    /// construction).
+    async fn pages_with_snapshots(&self) -> Result<Vec<String>, Error>;
+
+    /// Delete `crdt_ops` rows whose `hlc <= latest_snapshot_hlc`
+    /// for `page_id`. Returns `(ops_compacted, bytes_reclaimed)`,
+    /// where `bytes_reclaimed` is the sum of `LENGTH(op_bytes)`
+    /// over the deleted rows. Returns `(0, 0)` when the page has
+    /// no snapshot or no eligible ops.
+    ///
+    /// The byte sum and the delete must run inside the same
+    /// transaction so a partial failure rolls back cleanly
+    /// (otherwise the reported bytes wouldn't match the rows that
+    /// actually went away).
+    async fn compact_subsumed_ops(&self, page_id: &str) -> Result<(u64, u64), Error>;
 }
 
 /// DuckDB-backed [`CrdtBackend`] over a shared
@@ -171,5 +192,64 @@ impl CrdtBackend for DuckdbCrdtBackend {
             )
             .ok();
         Ok(max_op.unwrap_or(0).max(max_snap.unwrap_or(0)))
+    }
+
+    async fn pages_with_snapshots(&self) -> Result<Vec<String>, Error> {
+        let guard = self.conn.lock().await;
+        let mut stmt =
+            guard.prepare("SELECT DISTINCT page_id FROM crdt_snapshots ORDER BY page_id ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    async fn compact_subsumed_ops(&self, page_id: &str) -> Result<(u64, u64), Error> {
+        let mut guard = self.conn.lock().await;
+        // Resolve the snapshot floor outside the txn — if there is
+        // no snapshot, nothing is eligible and we return early
+        // without touching the table at all.
+        let floor: Option<i64> = guard
+            .query_row(
+                "SELECT max(snapshot_hlc) FROM crdt_snapshots WHERE page_id = ?",
+                params![page_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        let Some(floor) = floor else {
+            return Ok((0, 0));
+        };
+
+        // Measure + delete in one transaction so the reported
+        // bytes always describe the rows that actually disappeared.
+        // `transaction()` requires `&mut Connection`, which is why
+        // the lock above is mutable.
+        let tx = guard.transaction()?;
+        // DuckDB's `SUM(LENGTH(blob))` returns a HUGEINT (decimal-
+        // wrapped) which doesn't fit a plain `i64` getter and would
+        // silently surface as 0 via unwrap_or. Cast explicitly to
+        // BIGINT so the column type matches the binding.
+        let bytes: i64 = tx
+            .query_row(
+                "SELECT CAST(COALESCE(SUM(OCTET_LENGTH(op_bytes)), 0) AS BIGINT) \
+                 FROM crdt_ops WHERE page_id = ? AND hlc <= ?",
+                params![page_id, floor],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let deleted = tx.execute(
+            "DELETE FROM crdt_ops WHERE page_id = ? AND hlc <= ?",
+            params![page_id, floor],
+        )?;
+        tx.commit()?;
+
+        // Clamp negatives that an absurd `LENGTH()` answer could
+        // produce; both fields are u64 on the wire.
+        let bytes_u64 = u64::try_from(bytes).unwrap_or(0);
+        let deleted_u64 = u64::try_from(deleted).unwrap_or(0);
+        Ok((deleted_u64, bytes_u64))
     }
 }
