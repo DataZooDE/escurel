@@ -35,18 +35,30 @@ message WikilinkParsed {
 
 message SearchRequest {
   string q = 1;
+  // `k = 0` → server default of 10.
   uint32 k = 2;
+  // `granularity` reserved for future page-level results; today
+  // search is block-only and the response always reports "block".
   string granularity = 3;
+  // "skill", "instance", "any", or empty (treated as "any").
   string page_type = 4;
   string skill = 5;
+  // Reserved for the post-filter; not honoured yet.
   string filter_json = 6;
 }
 
+// One block-granularity hit. Mirrors escurel-index `SearchHit`.
 message SearchHit {
-  PageRef page = 1;
-  string block_anchor = 2;
-  double score = 3;
-  string snippet = 4;
+  string page_id = 1;
+  string slug = 2;
+  string skill = 3;
+  string page_type = 4;
+  string anchor = 5;
+  string snippet = 6;
+  // RRF-fused score.
+  double score = 7;
+  // Frontmatter projected as a JSON object string.
+  string frontmatter_excerpt_json = 8;
 }
 
 message SearchResponse {
@@ -83,19 +95,24 @@ message ExpandResponse {
 
 message NeighboursRequest {
   string page_id = 1;
+  // "in", "out", or "both" (empty = "both").
   string direction = 2;
   string link_skill = 3;
+  // Reserved; not honoured by today's indexer.
   repeated string link_skill_in = 4;
   string order_by = 5;
   uint32 limit = 6;
 }
 
+// One edge. Mirrors escurel-index `Edge`: src/dst are the
+// stored ids (slugs), not full PageRefs. Empty `dst_anchor` /
+// `link_version` mean "absent" (proto3 has no nullable strings).
 message Edge {
-  PageRef src = 1;
-  PageRef dst = 2;
+  string src_page = 1;
+  string dst_page = 2;
   string link_skill = 3;
   string link_version = 4;
-  string anchor = 5;
+  string dst_anchor = 5;
 }
 
 message NeighboursResponse { repeated Edge edges = 1; }
@@ -126,10 +143,21 @@ message InstanceInfo {
 message ListInstancesResponse { repeated InstanceInfo instances = 1; }
 
 message RunStoredQueryRequest {
-  string query_name = 1;
+  // `query_id` matches `[[query::<id>]]` in the spec.
+  string query_id = 1;
+  // JSON object {param_name: value, ...}; values are passed
+  // through to DuckDB's typed binding.
   string params_json = 2;
 }
-message RunStoredQueryResponse { string rows_json = 1; }
+message StoredQueryColumn {
+  string name = 1;
+  string type_name = 2;
+}
+message RunStoredQueryResponse {
+  // JSON array of row objects.
+  string rows_json = 1;
+  repeated StoredQueryColumn schema = 2;
+}
 
 message ValidateRequest {
   string page_id = 1;
@@ -146,12 +174,19 @@ message ValidateResponse {
 }
 
 message UpdatePageRequest {
+  // Repository-relative path under the tenant's lane, e.g.
+  // `markdown/instances/customer/acme.md`. Doubles as the page
+  // identity in the indexer today.
   string page_id = 1;
   string content = 2;
 }
 message UpdatePageResponse {
-  PageRef page = 1;
+  bool ok = 1;
+  // Empty until the M4 validate layer lands.
   repeated ValidationIssue issues = 2;
+  // Stub version (`"v1"`) until the CRDT layer assigns monotonic
+  // versions.
+  string new_version = 3;
 }
 
 // Live session bidi stream. Stubbed in M3; comes alive in M4.

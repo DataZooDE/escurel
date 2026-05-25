@@ -2,10 +2,12 @@
 //! as the HTTP gateway so OIDC verification + quota debits behave
 //! identically to `POST /mcp`.
 //!
-//! Today the four pure-relational read tools are wired
-//! (`list_skills` / `list_instances` / `resolve` / `expand`); the
-//! remaining read tools, write tools, live session, and admin
-//! surface land in subsequent M3.5 PRs.
+//! Today eight of the nine Escurel RPCs are wired
+//! (`list_skills` / `list_instances` / `resolve` / `expand` /
+//! `search` / `neighbours` / `run_stored_query` / `update_page`).
+//! `validate` returns `Unimplemented` until the standalone
+//! validator lands; `live_session` is reserved for M4. The
+//! `EscurelAdmin` service is similarly stubbed in M3.5d.
 //!
 //! Auth + quota live in [`Self::enforce`], called from every
 //! handler. We don't use a tonic `Interceptor` here because tonic
@@ -28,15 +30,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use escurel_auth::{AuthContext, OidcVerifier};
-use escurel_index::{Indexer, OrderDir};
+use escurel_index::{Direction, Indexer, OrderDir};
 use escurel_md::PageType;
 use escurel_proto::v1::escurel_server::Escurel;
 use escurel_proto::v1::{
     Edge, ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, ListInstancesRequest,
     ListInstancesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp,
     NeighboursRequest, NeighboursResponse, PageRef, ResolveRequest, ResolveResponse,
-    RunStoredQueryRequest, RunStoredQueryResponse, SearchRequest, SearchResponse, Skill,
-    UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse, WikilinkParsed,
+    RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill,
+    StoredQueryColumn, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
+    WikilinkParsed,
 };
 use escurel_quota::{Dimension, QuotaError};
 use futures::Stream;
@@ -193,41 +196,161 @@ impl Escurel for EscurelGrpc {
         }
     }
 
-    // --- not yet implemented ---------------------------------------
-
     async fn search(
         &self,
-        _req: Request<SearchRequest>,
+        req: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
-        Err(Status::unimplemented("M3.5c"))
+        self.enforce(&req, Some(Dimension::Queries)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+        let pt = match r.page_type.as_str() {
+            "" | "any" => None,
+            "skill" => Some(PageType::Skill),
+            "instance" => Some(PageType::Instance),
+            other => {
+                return Err(Status::invalid_argument(format!(
+                    "search page_type `{other}`; expected skill|instance|any"
+                )));
+            }
+        };
+        let skill = if r.skill.is_empty() {
+            None
+        } else {
+            Some(r.skill.as_str())
+        };
+        let k = if r.k == 0 { 10 } else { r.k as usize };
+        let hits = indexer
+            .search(&r.q, k, pt, skill)
+            .await
+            .map_err(|e| Status::internal(format!("search: {e}")))?;
+        let hits = hits
+            .into_iter()
+            .map(|h| SearchHit {
+                page_id: h.page_id,
+                slug: h.slug.unwrap_or_default(),
+                skill: h.skill,
+                page_type: match h.page_type {
+                    PageType::Skill => "skill".to_owned(),
+                    PageType::Instance => "instance".to_owned(),
+                },
+                anchor: h.anchor.unwrap_or_default(),
+                snippet: h.snippet,
+                score: h.score,
+                frontmatter_excerpt_json: h.frontmatter_excerpt.to_string(),
+            })
+            .collect();
+        Ok(Response::new(SearchResponse {
+            hits,
+            granularity: "block".to_owned(),
+        }))
     }
 
     async fn neighbours(
         &self,
-        _req: Request<NeighboursRequest>,
+        req: Request<NeighboursRequest>,
     ) -> Result<Response<NeighboursResponse>, Status> {
-        Err(Status::unimplemented("M3.5c"))
+        self.enforce(&req, Some(Dimension::Queries)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+        let dir = match r.direction.as_str() {
+            "" | "both" => Direction::Both,
+            "in" => Direction::In,
+            "out" => Direction::Out,
+            other => {
+                return Err(Status::invalid_argument(format!(
+                    "direction `{other}`; expected in|out|both"
+                )));
+            }
+        };
+        let link_skill = if r.link_skill.is_empty() {
+            None
+        } else {
+            Some(r.link_skill.as_str())
+        };
+        let edges = indexer
+            .neighbours(&r.page_id, dir, link_skill)
+            .await
+            .map_err(|e| Status::internal(format!("neighbours: {e}")))?;
+        let edges = edges
+            .into_iter()
+            .map(|e| Edge {
+                src_page: e.src_page,
+                dst_page: e.dst_page,
+                link_skill: e.link_skill,
+                link_version: e.link_version.unwrap_or_default(),
+                dst_anchor: e.dst_anchor.unwrap_or_default(),
+            })
+            .collect();
+        Ok(Response::new(NeighboursResponse { edges }))
     }
 
     async fn run_stored_query(
         &self,
-        _req: Request<RunStoredQueryRequest>,
+        req: Request<RunStoredQueryRequest>,
     ) -> Result<Response<RunStoredQueryResponse>, Status> {
-        Err(Status::unimplemented("M3.5c"))
+        self.enforce(&req, Some(Dimension::Queries)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+        let params: serde_json::Map<String, serde_json::Value> = if r.params_json.is_empty() {
+            serde_json::Map::new()
+        } else {
+            serde_json::from_str(&r.params_json).map_err(|e| {
+                Status::invalid_argument(format!("params_json must be a JSON object: {e}"))
+            })?
+        };
+        let out = indexer
+            .run_stored_query(&r.query_id, &params)
+            .await
+            .map_err(|e| Status::internal(format!("run_stored_query: {e}")))?;
+        let rows_json = serde_json::Value::Array(
+            out.rows
+                .into_iter()
+                .map(serde_json::Value::Object)
+                .collect(),
+        )
+        .to_string();
+        let schema = out
+            .schema
+            .into_iter()
+            .map(|c| StoredQueryColumn {
+                name: c.name,
+                type_name: c.type_name,
+            })
+            .collect();
+        Ok(Response::new(RunStoredQueryResponse { rows_json, schema }))
+    }
+
+    async fn update_page(
+        &self,
+        req: Request<UpdatePageRequest>,
+    ) -> Result<Response<UpdatePageResponse>, Status> {
+        self.enforce(&req, Some(Dimension::Writes)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+        indexer
+            .update_page(&r.page_id, &r.content)
+            .await
+            .map_err(|e| Status::internal(format!("update_page: {e}")))?;
+        Ok(Response::new(UpdatePageResponse {
+            ok: true,
+            issues: Vec::new(),
+            // Stub until the CRDT version layer lands in M4. The
+            // HTTP MCP dispatcher returns the same sentinel.
+            new_version: "v1".to_owned(),
+        }))
     }
 
     async fn validate(
         &self,
         _req: Request<ValidateRequest>,
     ) -> Result<Response<ValidateResponse>, Status> {
-        Err(Status::unimplemented("M3.5c"))
-    }
-
-    async fn update_page(
-        &self,
-        _req: Request<UpdatePageRequest>,
-    ) -> Result<Response<UpdatePageResponse>, Status> {
-        Err(Status::unimplemented("M3.5c"))
+        // Validate lands once the structured frontmatter / wikilink
+        // validator (today implicit inside update_page) is split out
+        // into a standalone path. The HTTP MCP dispatcher likewise
+        // doesn't expose `validate` yet.
+        Err(Status::unimplemented(
+            "validate lands once the standalone validator is built",
+        ))
     }
 
     type LiveSessionStream = Pin<Box<dyn Stream<Item = Result<LiveAck, Status>> + Send>>;
@@ -294,24 +417,5 @@ fn wikilink_to_proto(w: &escurel_md::wikilink::WikilinkParsed) -> WikilinkParsed
         anchor: w.anchor.clone().unwrap_or_default(),
         version: w.version.clone().unwrap_or_default(),
         alias: w.alias.clone().unwrap_or_default(),
-    }
-}
-
-/// Build a gRPC `Edge` from an indexer edge plus its endpoints.
-/// Kept at module scope so the grpc module owns proto mapping
-/// end to end; today only used by the (yet-to-wire) neighbours
-/// path that lands in M3.5c.
-#[allow(dead_code)]
-pub(crate) fn edge_to_proto(
-    src: &escurel_index::PageRef,
-    dst: &escurel_index::PageRef,
-    e: &escurel_index::Edge,
-) -> Edge {
-    Edge {
-        src: Some(page_ref_to_proto(src)),
-        dst: Some(page_ref_to_proto(dst)),
-        link_skill: e.link_skill.clone(),
-        link_version: e.link_version.clone().unwrap_or_default(),
-        anchor: e.dst_anchor.clone().unwrap_or_default(),
     }
 }
