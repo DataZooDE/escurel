@@ -1,12 +1,9 @@
 //! End-to-end tests for the M4.5b streaming + small admin RPCs.
 //!
 //! Exercised against a real tonic server, a real `OidcVerifier`
-//! plus wiremock JWKS, real RSA keys, real `Indexer` over a real
-//! DuckDB file, and a real `FsTenantStore` backing the export /
-//! import bytes. The harness is intentionally copy-pasted from
-//! `grpc_admin_crud.rs` rather than shared via `mod common` —
-//! integration test binaries compile independently and the shared
-//! module pattern fires "module compiled twice" warning chains.
+//! against the in-process JWKS the support crate stands up, a real
+//! `Indexer` over a real DuckDB file, and a real `FsTenantStore`
+//! backing the export / import bytes.
 //!
 //! Covered surface:
 //!
@@ -22,12 +19,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bytes::Bytes;
-use duckdb::Connection;
 use escurel_admin::{FsTenantStore, TenantSpec as AdminTenantSpec, TenantStore};
-use escurel_auth::{OidcConfig, OidcVerifier};
-use escurel_embed::{Embedder, ZeroEmbedder};
-use escurel_index::{Indexer, Migrator};
 use escurel_proto::v1::escurel_admin_client::EscurelAdminClient;
 use escurel_proto::v1::escurel_client::EscurelClient;
 use escurel_proto::v1::{
@@ -35,26 +27,14 @@ use escurel_proto::v1::{
     TenantCreateRequest, TenantExportRequest, TenantImportChunk, TenantSpec,
 };
 use escurel_quota::{QuotaConfig, QuotaManager};
-use escurel_server::{AlwaysReady, ServerConfig, ServerHandle, serve};
-use escurel_storage::{FsStore, Key, LaneStore};
-use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-use rsa::pkcs1::EncodeRsaPrivateKey;
-use rsa::traits::PublicKeyParts;
-use rsa::{RsaPrivateKey, RsaPublicKey};
-use serde_json::json;
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
 use tempfile::TempDir;
 use tokio_stream::StreamExt;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TENANT: &str = "acme";
-const AUDIENCE: &str = "escurel";
-const KID: &str = "test-kid";
-const ISSUER_PATH: &str = "/realms/test";
-const ADMIN_ROLE: &str = "escurel:admin";
 
 const PAGES: &[(&str, &str)] = &[
     (
@@ -71,130 +51,29 @@ const PAGES: &[(&str, &str)] = &[
     ),
 ];
 
-struct Keys {
-    private_pem: Vec<u8>,
-    n_b64: String,
-    e_b64: String,
+struct Harness {
+    process: EscurelProcess,
+    tenants_root: PathBuf,
+    _tenants_dir: TempDir,
 }
 
-fn keys() -> Keys {
-    let mut rng = rand::thread_rng();
-    let private = RsaPrivateKey::new(&mut rng, 2048).unwrap();
-    let public = RsaPublicKey::from(&private);
-    let private_pem = private
-        .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
-        .unwrap()
-        .as_bytes()
-        .to_vec();
-    Keys {
-        private_pem,
-        n_b64: b64url(&public.n().to_bytes_be()),
-        e_b64: b64url(&public.e().to_bytes_be()),
-    }
-}
-
-fn b64url(b: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
-}
-
-fn now() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
-async fn jwks_mock(server: &MockServer, k: &Keys) {
-    let jwks = json!({
-        "keys": [{
-            "kid": KID, "kty": "RSA", "alg": "RS256", "use": "sig",
-            "n": k.n_b64, "e": k.e_b64,
-        }]
-    });
-    Mock::given(method("GET"))
-        .and(path(format!("{ISSUER_PATH}/protocol/openid-connect/certs")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(jwks))
-        .mount(server)
-        .await;
-}
-
-fn token(keys: &Keys, issuer: &str, tenant: &str, roles: &[&str]) -> String {
-    let now = now();
-    let mut claims = json!({
-        "iss": issuer,
-        "aud": AUDIENCE,
-        "sub": "user-1",
-        "tenant": tenant,
-        "iat": now,
-        "exp": now + 600,
-    });
-    if !roles.is_empty() {
-        claims["roles"] = json!(roles);
-    }
-    let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some(KID.to_owned());
-    let key = EncodingKey::from_rsa_pem(&keys.private_pem).unwrap();
-    encode(&header, &claims, &key).unwrap()
-}
-
-/// Seed a multi-page tenant: writes both the markdown files (via
-/// LaneStore, which is what `Indexer::rebuild` walks) and the
-/// `<tenants_root>/<TENANT>/markdown/...` files on disk (which is
-/// what `tenant_export` walks). The two trees deliberately mirror
-/// each other so the rebuild and export surfaces see the same set
-/// of pages.
-async fn seed_tenant(
-    tenants_root: &std::path::Path,
-    store: &Arc<dyn LaneStore>,
-    indexer: &Indexer,
-) {
+/// Mirror every seeded markdown body into
+/// `<tenants_root>/<TENANT>/markdown/...`. The `tenant_export`
+/// RPC walks that tree to build the tarball, so the support
+/// crate's fixture seed (which only fills the LaneStore +
+/// indexer) needs a companion here.
+async fn mirror_to_tenants_root(tenants_root: &std::path::Path) {
     let md_root = tenants_root.join(TENANT).join("markdown");
     for (path, body) in PAGES {
-        let key = Key::new(TENANT, (*path).to_owned()).unwrap();
-        store
-            .write(&key, Bytes::from_static(body.as_bytes()))
-            .await
-            .unwrap();
         let abs = md_root.join(path.strip_prefix("markdown/").unwrap());
         if let Some(parent) = abs.parent() {
             tokio::fs::create_dir_all(parent).await.unwrap();
         }
         tokio::fs::write(&abs, body).await.unwrap();
-        indexer.update_page(path, body).await.unwrap();
     }
 }
 
-struct Harness {
-    handle: ServerHandle,
-    grpc_addr: std::net::SocketAddr,
-    issuer: String,
-    keys: Keys,
-    tenants_root: PathBuf,
-    _tenants_dir: TempDir,
-    _store_dir: TempDir,
-    _db_dir: TempDir,
-    _wm: MockServer,
-}
-
 async fn start() -> Harness {
-    let wm = MockServer::start().await;
-    let keys = keys();
-    jwks_mock(&wm, &keys).await;
-    let issuer = format!("{}{ISSUER_PATH}", wm.uri());
-    let cfg = OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
-        .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"));
-    let verifier = Arc::new(OidcVerifier::new(cfg));
-
-    let store_dir = TempDir::new().unwrap();
-    let db_dir = TempDir::new().unwrap();
-    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
-    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
-    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
-    Migrator::up(&conn).unwrap();
-    let indexer = Arc::new(Indexer::new(Arc::clone(&store), embedder, conn, TENANT).unwrap());
-
     let tenants_dir = TempDir::new().unwrap();
     let tenants_root = tenants_dir.path().to_path_buf();
     let tenant_store: Arc<dyn TenantStore> = Arc::new(FsTenantStore::new(tenants_root.clone()));
@@ -207,34 +86,29 @@ async fn start() -> Harness {
         })
         .await
         .unwrap();
-    seed_tenant(&tenants_root, &store, &indexer).await;
+    mirror_to_tenants_root(&tenants_root).await;
 
+    let mut fixtures = FixtureBuilder::new().tenant(TENANT);
+    for (path, body) in PAGES {
+        fixtures = fixtures.page(path, *body);
+    }
     let quota = Arc::new(QuotaManager::new(QuotaConfig::defaults()));
 
-    let handle = serve(ServerConfig {
-        listen: "127.0.0.1:0".to_owned(),
-        grpc_listen: Some("127.0.0.1:0".to_owned()),
-        version: "1.0.0-test".to_owned(),
-        readiness: Arc::new(AlwaysReady),
-        indexer: Some(indexer),
-        verifier: Some(verifier),
-        quota: Some(quota),
-        tenant_store: Some(tenant_store),
-        crdt_backend: None,
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(fixtures.done()),
+        config_overrides: ConfigOverrides {
+            gateway_version: Some("1.0.0-test".to_owned()),
+            quota: Some(quota),
+            tenant_store: Some(tenant_store),
+            ..Default::default()
+        },
     })
-    .await
-    .unwrap();
-    let grpc_addr = handle.grpc_addr.expect("grpc listener bound");
+    .await;
     Harness {
-        handle,
-        grpc_addr,
-        issuer,
-        keys,
+        process,
         tenants_root,
         _tenants_dir: tenants_dir,
-        _store_dir: store_dir,
-        _db_dir: db_dir,
-        _wm: wm,
     }
 }
 
@@ -245,7 +119,8 @@ fn req<T>(bearer: &MetadataValue<tonic::metadata::Ascii>, body: T) -> Request<T>
 }
 
 async fn admin_client(h: &Harness) -> EscurelAdminClient<Channel> {
-    let channel = Channel::from_shared(format!("http://{}", h.grpc_addr))
+    let endpoint = h.process.grpc_endpoint().expect("grpc endpoint").to_owned();
+    let channel = Channel::from_shared(endpoint)
         .unwrap()
         .connect()
         .await
@@ -254,7 +129,8 @@ async fn admin_client(h: &Harness) -> EscurelAdminClient<Channel> {
 }
 
 async fn agent_client(h: &Harness) -> EscurelClient<Channel> {
-    let channel = Channel::from_shared(format!("http://{}", h.grpc_addr))
+    let endpoint = h.process.grpc_endpoint().expect("grpc endpoint").to_owned();
+    let channel = Channel::from_shared(endpoint)
         .unwrap()
         .connect()
         .await
@@ -263,12 +139,12 @@ async fn agent_client(h: &Harness) -> EscurelClient<Channel> {
 }
 
 fn admin_bearer(h: &Harness) -> MetadataValue<tonic::metadata::Ascii> {
-    let t = token(&h.keys, &h.issuer, TENANT, &[ADMIN_ROLE]);
+    let t = h.process.mint_token(TENANT, Role::Admin);
     format!("Bearer {t}").parse().unwrap()
 }
 
 fn agent_bearer(h: &Harness) -> MetadataValue<tonic::metadata::Ascii> {
-    let t = token(&h.keys, &h.issuer, TENANT, &[]);
+    let t = h.process.mint_token(TENANT, Role::Agent);
     format!("Bearer {t}").parse().unwrap()
 }
 
@@ -298,7 +174,7 @@ async fn rebuild_streams_one_progress_chunk_per_page() {
         PAGES.len(),
         "expected one progress chunk per page; got {chunks:?}"
     );
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -327,7 +203,7 @@ async fn rebuild_emits_final_chunk_with_done_equal_total() {
         !last.current_page.is_empty(),
         "current_page must be set on every chunk"
     );
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 // --- export / import -----------------------------------------------
@@ -367,7 +243,7 @@ async fn tenant_export_streams_tarball_chunks() {
         b"\x1f\x8b",
         "exported stream must be gzip-framed"
     );
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -415,7 +291,7 @@ async fn tenant_export_round_trips_through_tenant_import() {
         let abs = h.tenants_root.join(target).join("markdown").join(rel);
         assert!(abs.is_file(), "import did not restore `{}`", abs.display());
     }
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 /// Codex P2 (PR M4.5b): `tenant_export` skipped tenant_id
@@ -437,7 +313,7 @@ async fn tenant_export_rejects_path_traversal_tenant_id() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -453,7 +329,7 @@ async fn tenant_import_rejects_unknown_tenant() {
         .await
         .unwrap_err();
     assert_eq!(status.code(), tonic::Code::NotFound);
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 // --- quota_get ------------------------------------------------------
@@ -480,7 +356,7 @@ async fn quota_get_returns_remaining_tokens() {
     // semantics we ship are "currently occupied" so the
     // baseline reads as zero.
     assert_eq!(resp.concurrent_sessions, 0);
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -515,7 +391,7 @@ async fn quota_get_reflects_recent_debits() {
         "expected at least 3 tokens consumed; got {}",
         resp.queries_remaining
     );
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 // --- embedding_reload placeholder ----------------------------------
@@ -530,7 +406,7 @@ async fn embedding_reload_returns_placeholder_revision() {
         .unwrap()
         .into_inner();
     assert_eq!(resp.model_revision, "M5");
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 // --- role gate ------------------------------------------------------
@@ -550,5 +426,5 @@ async fn streaming_admin_rpcs_still_require_admin_role() {
         .await
         .unwrap_err();
     assert_eq!(status.code(), tonic::Code::PermissionDenied);
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }

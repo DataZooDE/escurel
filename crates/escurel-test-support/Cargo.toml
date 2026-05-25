@@ -13,11 +13,14 @@ homepage.workspace = true
 base64 = "0.22"
 bytes = "1"
 duckdb = { version = "1", features = ["bundled"] }
+escurel-admin = { path = "../escurel-admin" }
 escurel-auth = { path = "../escurel-auth" }
 escurel-client = { path = "../escurel-client" }
+escurel-crdt = { path = "../escurel-crdt" }
 escurel-embed = { path = "../escurel-embed" }
 escurel-index = { path = "../escurel-index" }
 escurel-proto = { path = "../escurel-proto" }
+escurel-quota = { path = "../escurel-quota" }
 escurel-server = { path = "../escurel-server" }
 escurel-storage = { path = "../escurel-storage" }
 jsonwebtoken = "9"

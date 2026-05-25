@@ -1,11 +1,9 @@
 //! End-to-end tests for the M4.2 live-CRDT MCP tools:
 //! `open_session`, `apply_op`, `close_session`.
 //!
-//! Real running gateway, real Indexer (DuckDB + FsStore +
-//! ZeroEmbedder), real `LiveDoc` actor over a real
-//! `DuckdbCrdtBackend` sharing the indexer's DB connection. Op
-//! bytes are produced by a real Loro `Client` peer (the same shape
-//! described in
+//! Real running gateway, real `LiveDoc` actor over a real
+//! `DuckdbCrdtBackend`. Op bytes are produced by a real Loro
+//! `Client` peer (the same shape described in
 //! `docs/notes/discovered/2026-05-25-loro-incremental-updates-need-persistent-client.md`)
 //! and shuttled as base64 over JSON-RPC — no mocks at the
 //! `LiveDoc`/backend boundary.
@@ -30,7 +28,7 @@ use duckdb::Connection;
 use escurel_crdt::{CrdtBackend, DuckdbCrdtBackend};
 use escurel_index::Migrator;
 use escurel_quota::{QuotaConfig, QuotaManager};
-use escurel_server::{AlwaysReady, ServerConfig, serve};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts};
 use loro::{ExportMode, LoroDoc};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -67,9 +65,8 @@ impl Client {
 }
 
 struct Harness {
-    handle: escurel_server::ServerHandle,
-    client: reqwest::Client,
-    base_url: String,
+    process: EscurelProcess,
+    http: reqwest::Client,
     /// Direct handle on the shared DuckDB connection, for asserting
     /// snapshot rows from the test side.
     conn: Arc<Mutex<Connection>>,
@@ -100,23 +97,21 @@ async fn start(quota: Option<Arc<QuotaManager>>, with_crdt: bool) -> Harness {
         None
     };
 
-    let cfg = ServerConfig {
-        listen: "127.0.0.1:0".to_owned(),
-        grpc_listen: None,
-        version: "1.0.0-test".to_owned(),
-        readiness: Arc::new(AlwaysReady),
-        indexer: None,
-        verifier: None,
-        quota,
-        tenant_store: None,
-        crdt_backend,
-    };
-    let handle = serve(cfg).await.expect("server starts");
-    let base_url = format!("http://{}", handle.local_addr);
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        fixtures: None,
+        config_overrides: ConfigOverrides {
+            quota,
+            crdt_backend,
+            disable_indexer: true,
+            disable_grpc: true,
+            ..Default::default()
+        },
+    })
+    .await;
     Harness {
-        handle,
-        client: reqwest::Client::new(),
-        base_url,
+        process,
+        http: reqwest::Client::new(),
         conn: shared,
         _db_dir: db_dir,
     }
@@ -125,8 +120,8 @@ async fn start(quota: Option<Arc<QuotaManager>>, with_crdt: bool) -> Harness {
 /// Issue a JSON-RPC `tools/call` and return the raw response body.
 async fn call_raw(h: &Harness, id: u64, name: &str, args: Value) -> Value {
     let resp = h
-        .client
-        .post(format!("{}/mcp", h.base_url))
+        .http
+        .post(h.process.mcp_url())
         .json(&json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -165,7 +160,7 @@ async fn open_session_returns_session_id_and_head_version() {
             .unwrap_or(false),
         "ws_url should advertise /ws: {result}"
     );
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -199,7 +194,7 @@ async fn apply_op_to_open_session_updates_doc() {
     .await;
     assert_eq!(result2["merged_version"], "v2");
 
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -240,7 +235,7 @@ async fn close_session_persists_snapshot() {
     drop(guard);
     assert_eq!(count, 1, "snapshot must be persisted on commit=true");
 
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -279,7 +274,7 @@ async fn close_session_with_commit_false_does_not_snapshot() {
     drop(guard);
     assert_eq!(count, 0, "snapshot must NOT be persisted on commit=false");
 
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -293,7 +288,7 @@ async fn open_session_without_crdt_backend_returns_jsonrpc_error() {
         msg.contains("live CRDT"),
         "message should mention live CRDT mode: {msg}"
     );
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -308,7 +303,7 @@ async fn apply_op_with_unknown_session_returns_jsonrpc_error() {
     .await;
     let err = body.get("error").expect("error envelope");
     assert_eq!(err["code"], -32603, "internal: {body}");
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -326,15 +321,15 @@ async fn apply_op_with_malformed_base64_returns_invalid_params() {
     .await;
     let err = body.get("error").expect("error envelope");
     assert_eq!(err["code"], -32602, "invalid_params: {body}");
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
 async fn tools_list_now_advertises_open_apply_close() {
     let h = start(None, true).await;
     let resp = h
-        .client
-        .post(format!("{}/mcp", h.base_url))
+        .http
+        .post(h.process.mcp_url())
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 100,
@@ -352,7 +347,7 @@ async fn tools_list_now_advertises_open_apply_close() {
             "tools/list missing {name}: {names:?}"
         );
     }
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -397,5 +392,5 @@ async fn quota_caps_concurrent_sessions() {
     let third = call_ok(&h, 4, "open_session", json!({ "page_id": "page-c" })).await;
     assert!(third["session"].as_str().unwrap().starts_with("sess_"));
 
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }

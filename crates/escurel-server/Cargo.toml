@@ -38,21 +38,19 @@ ulid = "1"
 [dev-dependencies]
 async-trait = "0.1"
 base64 = "0.22"
-bytes = "1"
 duckdb = { version = "1", features = ["bundled"] }
 escurel-admin = { path = "../escurel-admin" }
 escurel-crdt = { path = "../escurel-crdt" }
 escurel-proto = { path = "../escurel-proto" }
-jsonwebtoken = "9"
+escurel-test-support = { path = "../escurel-test-support" }
+futures = "0.3"
 loro = "1.12"
-rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rsa = { version = "0.9", features = ["pem"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-stream = "0.1"
 tokio-tungstenite = "0.24"
 tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
-wiremock = "0.6"
 
 [lints]
 workspace = true

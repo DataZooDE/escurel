@@ -1,9 +1,10 @@
 //! End-to-end tests for the M4.4 WebSocket attach-to-session path.
 //!
 //! Real axum gateway, real `SessionManager` + `LiveDoc` actor over
-//! a real `DuckdbCrdtBackend`, real `OidcVerifier` against a
-//! wiremock JWKS, real `tokio-tungstenite` client. Loro ops are
-//! produced by a persistent `Client` peer per
+//! a real `DuckdbCrdtBackend`, real `OidcVerifier` against the
+//! in-process JWKS the support crate stands up, real
+//! `tokio-tungstenite` client. Loro ops are produced by a
+//! persistent `Client` peer per
 //! `docs/notes/discovered/2026-05-25-loro-incremental-updates-need-persistent-client.md`.
 //!
 //! Each test opens a session over HTTP `POST /mcp` (the M4.2 path)
@@ -21,97 +22,20 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use duckdb::Connection;
-use escurel_auth::{OidcConfig, OidcVerifier};
 use escurel_crdt::{CrdtBackend, DuckdbCrdtBackend};
 use escurel_index::Migrator;
 use escurel_quota::{QuotaConfig, QuotaManager};
-use escurel_server::{AlwaysReady, ServerConfig, serve};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts, Role};
 use futures::{SinkExt, StreamExt};
-use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use loro::{ExportMode, LoroDoc};
-use rsa::pkcs1::EncodeRsaPrivateKey;
-use rsa::traits::PublicKeyParts;
-use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request as WsRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TENANT: &str = "acme";
-const AUDIENCE: &str = "escurel";
-const KID: &str = "test-kid";
-const ISSUER_PATH: &str = "/realms/test";
-
-// --- crypto fixtures (mirrors tests/ws.rs) ---------------------
-
-struct Keys {
-    private_pem: Vec<u8>,
-    n_b64: String,
-    e_b64: String,
-}
-
-fn keys() -> Keys {
-    let mut rng = rand::thread_rng();
-    let private = RsaPrivateKey::new(&mut rng, 2048).unwrap();
-    let public = RsaPublicKey::from(&private);
-    let private_pem = private
-        .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
-        .unwrap()
-        .as_bytes()
-        .to_vec();
-    Keys {
-        private_pem,
-        n_b64: b64url(&public.n().to_bytes_be()),
-        e_b64: b64url(&public.e().to_bytes_be()),
-    }
-}
-
-fn b64url(b: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
-}
-
-fn now() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
-async fn jwks_mock(server: &MockServer, k: &Keys) {
-    let jwks = json!({
-        "keys": [{
-            "kid": KID, "kty": "RSA", "alg": "RS256", "use": "sig",
-            "n": k.n_b64, "e": k.e_b64,
-        }]
-    });
-    Mock::given(method("GET"))
-        .and(path(format!("{ISSUER_PATH}/protocol/openid-connect/certs")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(jwks))
-        .mount(server)
-        .await;
-}
-
-fn token(keys: &Keys, issuer: &str, tenant: &str) -> String {
-    let now = now();
-    let claims = json!({
-        "iss": issuer,
-        "aud": AUDIENCE,
-        "sub": "user-1",
-        "tenant": tenant,
-        "iat": now,
-        "exp": now + 600,
-    });
-    let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some(KID.to_owned());
-    let key = EncodingKey::from_rsa_pem(&keys.private_pem).unwrap();
-    encode(&header, &claims, &key).unwrap()
-}
 
 // --- Loro client peer (mirrors mcp_session_tools.rs) -----------
 
@@ -143,55 +67,34 @@ impl Client {
 // --- harness ---------------------------------------------------
 
 struct Harness {
-    handle: escurel_server::ServerHandle,
+    process: EscurelProcess,
     http: reqwest::Client,
-    base_http_url: String,
-    base_ws_url: String,
-    issuer: String,
-    keys: Keys,
     _db_dir: TempDir,
-    _wm: MockServer,
 }
 
 async fn start_authed(quota: Option<Arc<QuotaManager>>) -> Harness {
-    let wm = MockServer::start().await;
-    let keys = keys();
-    jwks_mock(&wm, &keys).await;
-    let issuer = format!("{}{ISSUER_PATH}", wm.uri());
-    let cfg = OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
-        .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"));
-    let verifier = Arc::new(OidcVerifier::new(cfg));
-
     let db_dir = TempDir::new().unwrap();
     let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
     Migrator::up(&conn).unwrap();
     let shared = Arc::new(Mutex::new(conn));
     let crdt_backend: Arc<dyn CrdtBackend> = Arc::new(DuckdbCrdtBackend::new(Arc::clone(&shared)));
 
-    let handle = serve(ServerConfig {
-        listen: "127.0.0.1:0".to_owned(),
-        grpc_listen: None,
-        version: "1.0.0-test".to_owned(),
-        readiness: Arc::new(AlwaysReady),
-        indexer: None,
-        verifier: Some(verifier),
-        quota,
-        tenant_store: None,
-        crdt_backend: Some(crdt_backend),
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: None,
+        config_overrides: ConfigOverrides {
+            quota,
+            crdt_backend: Some(crdt_backend),
+            disable_indexer: true,
+            disable_grpc: true,
+            ..Default::default()
+        },
     })
-    .await
-    .unwrap();
-    let base_http_url = format!("http://{}", handle.local_addr);
-    let base_ws_url = format!("ws://{}/ws", handle.local_addr);
+    .await;
     Harness {
-        handle,
+        process,
         http: reqwest::Client::new(),
-        base_http_url,
-        base_ws_url,
-        issuer,
-        keys,
         _db_dir: db_dir,
-        _wm: wm,
     }
 }
 
@@ -232,7 +135,7 @@ async fn send_json(
 async fn call_ok(h: &Harness, bearer: &str, id: u64, name: &str, args: Value) -> Value {
     let resp = h
         .http
-        .post(format!("{}/mcp", h.base_http_url))
+        .post(h.process.mcp_url())
         .bearer_auth(bearer)
         .json(&json!({
             "jsonrpc": "2.0",
@@ -252,7 +155,7 @@ async fn call_ok(h: &Harness, bearer: &str, id: u64, name: &str, args: Value) ->
 async fn call_raw(h: &Harness, bearer: &str, id: u64, name: &str, args: Value) -> Value {
     let resp = h
         .http
-        .post(format!("{}/mcp", h.base_http_url))
+        .post(h.process.mcp_url())
         .bearer_auth(bearer)
         .json(&json!({
             "jsonrpc": "2.0",
@@ -277,10 +180,10 @@ async fn open_session(h: &Harness, bearer: &str, page_id: &str) -> String {
 #[tokio::test]
 async fn attach_to_session_via_hello_keeps_connection_open() {
     let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
+    let t = h.process.mint_token(TENANT, Role::Agent);
     let session = open_session(&h, &t, "page-attach").await;
 
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, &t))
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.process.ws_url(), &t))
         .await
         .expect("ws connect");
     send_json(&mut sock, json!({ "type": "hello", "session": session })).await;
@@ -302,16 +205,16 @@ async fn attach_to_session_via_hello_keeps_connection_open() {
     assert_eq!(echo["session"], session);
 
     sock.close(None).await.ok();
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
 async fn op_via_ws_updates_doc_and_replies_with_op_ack() {
     let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
+    let t = h.process.mint_token(TENANT, Role::Agent);
     let session = open_session(&h, &t, "page-op-ws").await;
 
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, &t))
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.process.ws_url(), &t))
         .await
         .unwrap();
     send_json(&mut sock, json!({ "type": "hello", "session": session })).await;
@@ -352,14 +255,14 @@ async fn op_via_ws_updates_doc_and_replies_with_op_ack() {
     assert_eq!(ack2["content"], "hello world");
 
     sock.close(None).await.ok();
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
 async fn unknown_session_id_returns_error_and_closes() {
     let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, &t))
+    let t = h.process.mint_token(TENANT, Role::Agent);
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.process.ws_url(), &t))
         .await
         .unwrap();
 
@@ -381,16 +284,16 @@ async fn unknown_session_id_returns_error_and_closes() {
         Ok(Some(Err(_))) => {}
         Err(_) => panic!("server did not close after unknown_session error"),
     }
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
 async fn close_frame_persists_and_closes_session() {
     let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
+    let t = h.process.mint_token(TENANT, Role::Agent);
     let session = open_session(&h, &t, "page-ws-close").await;
 
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, &t))
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.process.ws_url(), &t))
         .await
         .unwrap();
     send_json(&mut sock, json!({ "type": "hello", "session": session })).await;
@@ -443,16 +346,16 @@ async fn close_frame_persists_and_closes_session() {
         "second close should error; got {body}"
     );
 
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
 async fn disconnect_without_close_keeps_session_alive() {
     let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
+    let t = h.process.mint_token(TENANT, Role::Agent);
     let session = open_session(&h, &t, "page-no-close").await;
 
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, &t))
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.process.ws_url(), &t))
         .await
         .unwrap();
     send_json(&mut sock, json!({ "type": "hello", "session": session })).await;
@@ -483,16 +386,16 @@ async fn disconnect_without_close_keeps_session_alive() {
     .await;
     assert_eq!(result["ok"], true);
 
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
 async fn presence_frame_round_trips_in_session_mode() {
     let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
+    let t = h.process.mint_token(TENANT, Role::Agent);
     let session = open_session(&h, &t, "page-presence").await;
 
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, &t))
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.process.ws_url(), &t))
         .await
         .unwrap();
     send_json(&mut sock, json!({ "type": "hello", "session": session })).await;
@@ -514,7 +417,7 @@ async fn presence_frame_round_trips_in_session_mode() {
     assert_eq!(echo["anchor"], "#section-1");
 
     sock.close(None).await.ok();
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -530,10 +433,10 @@ async fn op_debits_writes_quota() {
         concurrent_sessions: 8,
     };
     let h = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
+    let t = h.process.mint_token(TENANT, Role::Agent);
     let session = open_session(&h, &t, "page-quota-ws").await;
 
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, &t))
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.process.ws_url(), &t))
         .await
         .unwrap();
     send_json(&mut sock, json!({ "type": "hello", "session": session })).await;
@@ -568,5 +471,5 @@ async fn op_debits_writes_quota() {
     assert_eq!(err["code"], "quota_exhausted");
 
     sock.close(None).await.ok();
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
