@@ -1,4 +1,4 @@
-// datazoode-escurel — single-replica stateful service on the DataZoo
+// dz-escurel — single-replica stateful service on the DataZoo
 // substrate.
 //
 // ⚠️  PET WARNING — READ BEFORE FORKING ⚠️
@@ -12,16 +12,19 @@
 // Escurel is a stateful service because each tenant's per-node DuckDB
 // file (`escurel.duckdb`) is rebuilt from canonical markdown on the
 // LaneStore on first request after a node loss. The DuckDB file is
-// cattle (rebuildable from `s3://escurel-lanes-<env>/`); the
+// cattle (rebuildable from `s3://datazoo-substrate-app-<env>/dz/escurel/lanes/`); the
 // allocation is pet (one replica per env, host-volume-pinned for
 // warm-cache performance). On `/recreate-node` the next allocation
 // rebuilds from S3 — see `docs/spec/storage.md` HNSW persistence
 // model.
 //
-// Naming: `escurel-*` / `ESCUREL_*` everywhere — substrate surface
-// (Consul services, Fabio tags, Tailscale tag, Vault policy, GCS
-// bucket) and binary surface (env vars, TOML, CLI) share the same
-// project name. See `docs/deploy/substrate.md §Naming convention`.
+// Naming: substrate surface uses the substrate-platform skill's
+// shared convention — `dz-escurel` (Nomad job + Consul service),
+// `apps-dz` (Vault policy), `datazoo-substrate-app-<env>/dz/escurel/`
+// (S3 + GCS prefix under the shared substrate bucket). The binary
+// surface keeps `ESCUREL_*` envs and `escurel.toml` config — those
+// are the application's identity, not the substrate's. See
+// `docs/deploy/substrate.md §Naming convention`.
 
 variable "datacenter" {
   type        = string
@@ -58,8 +61,8 @@ variable "oidc_issuer" {
 
 variable "s3_bucket" {
   type        = string
-  description = "Hetzner Object Storage bucket for canonical markdown + escurel.duckdb. Convention: escurel-lanes-<env>. Per docs/deploy/substrate.md §2."
-  // Example: "escurel-lanes-nonprod"
+  description = "Hetzner Object Storage bucket — substrate-shared `datazoo-substrate-app-<env>`, with escurel's content under the prefix `dz/escurel/lanes/`. Per docs/deploy/substrate.md §2."
+  // Example: "datazoo-substrate-app-nonprod"
 }
 
 variable "s3_endpoint" {
@@ -67,7 +70,7 @@ variable "s3_endpoint" {
   description = "Hetzner OS endpoint hostname. Used end-to-end (LaneStore config + DuckDB httpfs secret) per the hostname-equality constraint in docs/spec/storage.md."
 }
 
-job "datazoode-escurel" {
+job "dz-escurel" {
   type        = "service"
   datacenters = [var.datacenter]
 
@@ -166,12 +169,12 @@ job "datazoode-escurel" {
     task "escurel-server" {
       driver = "docker"
 
-      // Vault policy `apps-escurel` grants read access to the OIDC
+      // Vault policy `apps-dz` grants read access to the OIDC
       // signing key, the S3 access key for the lanes bucket, and the
       // (optional) Gemini embeddings API key. Policy lives in the
       // substrate repo; rotation is operator-controlled.
       vault {
-        policies = ["apps-escurel"]
+        policies = ["apps-dz"]
       }
 
       volume_mount {
@@ -198,7 +201,7 @@ EOH
       }
 
       env {
-        APP      = "datazoode-escurel"
+        APP      = "dz-escurel"
         ENV      = "${var.datacenter}"
         VERSION  = "${var.version}"
 

@@ -13,20 +13,35 @@ operators, etc.) live in sibling `<target>.md` files under
 
 ---
 
-## Naming convention — `escurel` everywhere
+## Naming convention
 
-Every surface uses the project name. The binary's runtime config
-surface (CLI flags, environment variables, TOML keys) is
-`ESCUREL_*` / `escurel.*` — these are the identifiers the spec
-README enumerates and the implementation locks. The substrate-side
-names (Vault policies, Consul services, Fabio host tags, Tailscale
-tags, GCS bucket names, Nomad job names, placement-group classes)
-are `escurel-*` / `tag:escurel` / `escurel.<env>.<domain>`.
+Two surfaces, two conventions, both load-bearing.
 
-One name, one product, one surface. Operator dashboards, Tailscale
-ACLs, Fabio routing tables, GCS bucket inventories, env-var
-stanzas, OTel metric queries, and alert rules all key off the
-same string.
+**Binary surface — `ESCUREL_*` / `escurel.*`.** The runtime config
+(CLI flags, environment variables, TOML keys) keeps the project
+name. These are the identifiers the spec README enumerates and the
+implementation locks. They don't change when the deployment
+substrate changes.
+
+**Substrate surface — the substrate-platform skill's shared
+convention.** Vault policy, Nomad job, Consul service, object-
+storage prefix all use the substrate skill's shared naming so the
+substrate's tooling (`/promote`, `/recreate-node`, deploy
+dashboards) sees one product across all DataZoo apps:
+
+| Substrate surface | Value |
+|---|---|
+| Nomad job + Consul service | `dz-escurel` |
+| Vault policy | `apps-dz` |
+| Tailscale tag | `tag:dz-escurel` |
+| Fabio host tag | `escurel.<env>.<domain>` (DNS-shaped; routes still use the product name) |
+| S3 prefix (Hetzner OS) | `datazoo-substrate-app-<env>/dz/escurel/lanes/` |
+| GCS prefix (backups) | `datazoo-substrate-app-<env>/dz/escurel/backups/` |
+
+Operator dashboards, Tailscale ACLs, Fabio routing tables, env-var
+stanzas, OTel metric queries, and alert rules all key off these.
+The binary surface (`ESCUREL_*` / `escurel.*`) is the *application's*
+identity; the substrate surface is the *deployment's*.
 
 ---
 
@@ -52,7 +67,7 @@ interchangeable across services.
 | Knob | Value |
 |---|---|
 | `storage.backend` | `s3` |
-| `storage.s3.bucket` | `escurel-lanes-<env>` (one bucket per env; `prevent_destroy = true` per substrate `SPEC.md §9`) |
+| `storage.s3.bucket` | `datazoo-substrate-app-<env>/dz/escurel/lanes` (one bucket per env; `prevent_destroy = true` per substrate `SPEC.md §9`) |
 | `storage.s3.region` | Hetzner Object Storage region for the single German location (substrate `SPEC.md §2`) |
 | `storage.s3.endpoint` | The Hetzner OS hostname for the env. Used end-to-end (LaneStore config + DuckDB `TYPE s3` secret) per the [`storage.md`](../spec/storage.md#the-lanestore-trait) hostname-equality constraint. No `/etc/hosts` rewrites |
 | `storage.s3.prefix` | `tenants/` |
@@ -97,7 +112,7 @@ and uploads each tarball to GCS as a single object.
 | Knob | Value |
 |---|---|
 | Cadence | 1×/24 h per active tenant; per-tenant override via shipper config |
-| Target bucket | `gs://datazoode-escurel-backups-<env>/` (versioned + retention-locked) |
+| Target bucket | `gs://datazoo-substrate-app-<env>/dz/escurel/backups/` (versioned + retention-locked) |
 | Key format | `<tenant_id>/<YYYY>-<MM>-<DD>T<HH><MM><SS>Z.tar` |
 | Retention | per substrate backplane policy (`SPEC.md §5`) — never deleted within the window |
 | Audit | one shipment = one audit line with `tool: tenant_export_shipped` |
@@ -190,8 +205,8 @@ merged.
 | Shared OIDC issuer (Vault role or Dex/Keycloak job) | §1 |
 | Fabio as ingress router | §8 |
 | Audit-log collector → GCS audit bucket | §3 |
-| `escurel-lanes-<env>` bucket on Hetzner OS | §2 |
-| `datazoode-escurel-backups-<env>` GCS bucket | §4 |
+| `datazoo-substrate-app-<env>/dz/escurel/lanes` bucket on Hetzner OS | §2 |
+| `datazoo-substrate-app-<env>/dz/escurel/backups` GCS bucket | §4 |
 | Tenant-export shipper periodic job | §4 |
 | Tailscale `tag:escurel` ACL | §7 |
 | EmbeddingGemma + candle baked into golden image | §6 |
@@ -206,10 +221,10 @@ merged.
    `/deploy-green`.
 2. Create a page via `update_page`; assert canonical markdown
    lands at
-   `s3://escurel-lanes-nonprod/tenants/<tenant>/markdown/...`
+   `s3://datazoo-substrate-app-nonprod/dz/escurel/lanes/tenants/<tenant>/markdown/...`
    on Hetzner OS.
 3. Call `tenant_export`; assert the tarball lands in
-   `gs://datazoode-escurel-backups-nonprod/<tenant>/<ts>.tar`
+   `gs://datazoo-substrate-app-nonprod/dz/escurel/backups/<tenant>/<ts>.tar`
    within 60 s.
 4. Trigger `/recreate-node` on the `escurel-class` allocation
    host; assert `escurel-server` reconstructs the tenant's
