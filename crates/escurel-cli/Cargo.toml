@@ -1,0 +1,43 @@
+[package]
+name = "escurel-cli"
+description = "Operator + agent-style CLI for the Escurel gateway (thin gRPC client)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "escurel"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+escurel-proto = { path = "../escurel-proto" }
+serde_json = "1"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "io-std", "io-util", "sync", "time"] }
+tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+base64 = "0.22"
+bytes = "1"
+duckdb = { version = "1", features = ["bundled"] }
+escurel-auth = { path = "../escurel-auth" }
+escurel-embed = { path = "../escurel-embed" }
+escurel-index = { path = "../escurel-index" }
+escurel-server = { path = "../escurel-server" }
+escurel-storage = { path = "../escurel-storage" }
+jsonwebtoken = "9"
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+
+[lints]
+workspace = true
