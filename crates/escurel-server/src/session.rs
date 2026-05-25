@@ -60,6 +60,11 @@ struct Entry {
 #[derive(Default)]
 pub struct SessionManager {
     entries: DashMap<String, Entry>,
+    /// Reverse lookup `page_id → session_id` so [`Self::open`] can
+    /// enforce one session per page (the spec's "one LiveDoc actor
+    /// per page" rule). Kept in sync with `entries` under each
+    /// mutating call.
+    pages: DashMap<String, String>,
 }
 
 impl std::fmt::Debug for SessionManager {
@@ -78,6 +83,18 @@ pub enum SessionError {
     /// already been closed (and the slot released).
     #[error("unknown session: {0}")]
     UnknownSession(String),
+
+    /// `open` was called on a `page_id` that already has a live
+    /// session. The spec's `LiveDoc` actor is one-per-page (see
+    /// `docs/spec/storage.md` §The Loro engine); a second
+    /// independent actor for the same page would write ops with
+    /// HLCs that collide on `(page_id, op_id)` and would not
+    /// converge (Loro ops are peer-anchored). M4.4 will add WS
+    /// "attach to open session by id" so multiple clients can
+    /// share one actor; HTTP MCP requires exclusive ownership
+    /// today (codex review on PR M4.5b).
+    #[error("page `{0}` already has an open session")]
+    AlreadyOpen(String),
 
     /// `close` couldn't reclaim sole ownership of the `LiveDoc`
     /// — another transport leaked an `Arc<LiveDoc>` clone past
@@ -111,13 +128,38 @@ impl SessionManager {
         page_id: &str,
         guard: Option<SessionGuard>,
     ) -> Result<(String, Version), SessionError> {
-        let doc = LiveDoc::open(backend, page_id).await?;
+        // One session per page (see [`SessionError::AlreadyOpen`]).
+        // The DashMap `entry` API holds a shard write lock for the
+        // duration of the check + reservation, so two concurrent
+        // open() calls on the same page can't both win the race.
+        // We reserve with a placeholder session_id and overwrite
+        // once the LiveDoc opens; on LiveDoc::open failure we drop
+        // the reservation. Note: dropping `guard` here releases the
+        // quota slot the caller acquired — correct, because the
+        // request did not actually open a session.
+        let reservation = self.pages.entry(page_id.to_owned());
+        if let dashmap::mapref::entry::Entry::Occupied(_) = reservation {
+            return Err(SessionError::AlreadyOpen(page_id.to_owned()));
+        }
+        let session_id = format!("sess_{}", Ulid::new());
+        reservation.or_insert_with(|| session_id.clone());
+
+        // Open outside the shard lock — LiveDoc::open touches DuckDB
+        // and could otherwise hold the lock across IO.
+        let doc = match LiveDoc::open(backend, page_id).await {
+            Ok(d) => d,
+            Err(e) => {
+                // Roll the reservation back; otherwise the page
+                // would be wedged.
+                self.pages.remove(page_id);
+                return Err(SessionError::from(e));
+            }
+        };
         // `current_content` forces the actor to drain its replay
         // buffer; we ignore the value but the call guarantees the
         // doc is ready to accept ops before we return.
         let _ = doc.current_content().await;
 
-        let session_id = format!("sess_{}", Ulid::new());
         self.entries.insert(
             session_id.clone(),
             Entry {
@@ -158,6 +200,9 @@ impl SessionManager {
             .remove(session_id)
             .map(|(_, e)| e)
             .ok_or_else(|| SessionError::UnknownSession(session_id.to_owned()))?;
+        // Release the page reservation so a subsequent open() on
+        // the same page can succeed.
+        self.pages.remove(&entry.page_id);
         // `LiveDoc::close` consumes `self`, so we need sole
         // ownership of the Arc. Under normal use (HTTP MCP only)
         // the entry holds the only strong count.
@@ -223,5 +268,17 @@ mod tests {
         let sm = SessionManager::new();
         let err = sm.close("sess_does-not-exist", false).await.unwrap_err();
         assert!(matches!(err, SessionError::UnknownSession(_)));
+    }
+
+    #[tokio::test]
+    async fn second_open_on_same_page_rejected() {
+        let (_dir, b) = backend();
+        let sm = SessionManager::new();
+        let (sid_a, _) = sm.open(Arc::clone(&b), "page-x", None).await.unwrap();
+        let err = sm.open(Arc::clone(&b), "page-x", None).await.unwrap_err();
+        assert!(matches!(err, SessionError::AlreadyOpen(_)));
+        // After close, a second open is allowed again.
+        let _ = sm.close(&sid_a, false).await.unwrap();
+        let _ = sm.open(b, "page-x", None).await.unwrap();
     }
 }

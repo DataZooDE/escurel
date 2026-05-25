@@ -418,6 +418,28 @@ async fn tenant_export_round_trips_through_tenant_import() {
     h.handle.shutdown().await;
 }
 
+/// Codex P2 (PR M4.5b): `tenant_export` skipped tenant_id
+/// validation before invoking `TenantStore::tenant_dir`, which is
+/// `root.join(tenant_id)`. A crafted `../other` would have walked
+/// up into a sibling tenant's markdown tree. Fix validates ids up
+/// front; this test pins the gate.
+#[tokio::test]
+async fn tenant_export_rejects_path_traversal_tenant_id() {
+    let h = start().await;
+    let mut client = admin_client(&h).await;
+    let err = client
+        .tenant_export(req(
+            &admin_bearer(&h),
+            TenantExportRequest {
+                tenant_id: format!("../{TENANT}"),
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    h.handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn tenant_import_rejects_unknown_tenant() {
     let h = start().await;

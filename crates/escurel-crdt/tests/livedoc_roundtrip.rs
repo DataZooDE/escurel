@@ -253,3 +253,35 @@ async fn empty_page_open_returns_empty_doc() -> Result<()> {
     assert_eq!(doc.current_content().await, "");
     Ok(())
 }
+
+/// Codex P2 (PR M4.5b): reopening an already-snapshotted page and
+/// closing immediately with commit=true used to dup-PK on
+/// `crdt_snapshots(page_id, snapshot_hlc)`. The fix: skip the
+/// snapshot when no ops were applied during the session.
+#[tokio::test]
+async fn close_commit_after_reopen_without_ops_does_not_dup_snapshot() -> Result<()> {
+    let (_dir, conn) = fresh_db()?;
+    let backend: Arc<dyn CrdtBackend> = Arc::new(DuckdbCrdtBackend::new(Arc::clone(&conn)));
+
+    // Phase 1: write one op, close with commit=true → snapshot at hlc=1.
+    let mut client = Client::new();
+    let doc = LiveDoc::open(backend.clone(), "page-rg").await?;
+    let op1 = client.insert(0, "x");
+    doc.apply_op(op1).await?;
+    let _ = doc.close(true).await?;
+
+    // Phase 2: reopen and immediately close with commit=true — no
+    // ops applied this session. Must succeed without trying to
+    // insert a second snapshot at the same hlc.
+    let doc2 = LiveDoc::open(backend.clone(), "page-rg").await?;
+    let _ = doc2.close(true).await?;
+
+    // Confirm exactly one snapshot row remains.
+    let n: i64 = conn.lock().await.query_row(
+        "SELECT count(*) FROM crdt_snapshots WHERE page_id = ?",
+        ["page-rg"],
+        |row| row.get(0),
+    )?;
+    assert_eq!(n, 1, "snapshot must not be duplicated on no-op close");
+    Ok(())
+}
