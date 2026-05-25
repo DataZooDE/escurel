@@ -2003,6 +2003,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-app"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "axum 0.8.9",
+ "escurel-client",
+ "escurel-test-support",
+ "reqwest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -201,6 +201,16 @@ impl EscurelProcess {
         format!("{}/mcp", self.base_url)
     }
 
+    /// `http://127.0.0.1:<port>` — the gRPC endpoint, ready to be
+    /// passed to [`escurel_client::Client::connect`]. The contract
+    /// in `docs/spec/dx.md` §"Test-process façade" promises the
+    /// listener is bound when [`Self::spawn`] returns, so this URL
+    /// is always dial-able.
+    #[must_use]
+    pub fn grpc_endpoint(&self) -> &str {
+        &self.grpc_endpoint
+    }
+
     /// Mint a fresh bearer token for `tenant` with `role`. Only
     /// valid when [`AuthMode::TestIssuer`] is selected — other
     /// modes panic, because the caller has no business asking the
