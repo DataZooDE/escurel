@@ -1,174 +1,41 @@
 //! End-to-end tests for the WebSocket scaffolding on `/ws`.
 //!
-//! Real axum gateway, real OidcVerifier against a wiremock JWKS
-//! endpoint with a freshly-generated 2048-bit RSA pair, real signed
-//! JWTs, real WebSocket client (`tokio-tungstenite`). The only
-//! "fake" is the wiremock JWKS server that feeds the verifier —
-//! identical to the pattern in `auth_quota.rs`.
+//! Real axum gateway, real OidcVerifier against the in-process
+//! JWKS the support crate stands up, real signed JWTs, real
+//! WebSocket client (`tokio-tungstenite`).
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
-use duckdb::Connection;
-use escurel_auth::{OidcConfig, OidcVerifier};
-use escurel_embed::{Embedder, ZeroEmbedder};
-use escurel_index::{Indexer, Migrator};
 use escurel_quota::{QuotaConfig, QuotaManager};
-use escurel_server::{AlwaysReady, ServerConfig, serve};
-use escurel_storage::{FsStore, Key, LaneStore};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
 use futures::{SinkExt, StreamExt};
-use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-use rsa::pkcs1::EncodeRsaPrivateKey;
-use rsa::traits::PublicKeyParts;
-use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde_json::{Value, json};
-use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::tungstenite::{self, handshake::client::Request as WsRequest};
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TENANT: &str = "acme";
-const AUDIENCE: &str = "escurel";
-const KID: &str = "test-kid";
-const ISSUER_PATH: &str = "/realms/test";
 
-struct Keys {
-    private_pem: Vec<u8>,
-    n_b64: String,
-    e_b64: String,
-}
+const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
 
-fn keys() -> Keys {
-    let mut rng = rand::thread_rng();
-    let private = RsaPrivateKey::new(&mut rng, 2048).unwrap();
-    let public = RsaPublicKey::from(&private);
-    let private_pem = private
-        .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
-        .unwrap()
-        .as_bytes()
-        .to_vec();
-    Keys {
-        private_pem,
-        n_b64: b64url(&public.n().to_bytes_be()),
-        e_b64: b64url(&public.e().to_bytes_be()),
-    }
-}
-
-fn b64url(b: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
-}
-
-fn now() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
-async fn jwks_mock(server: &MockServer, k: &Keys) {
-    let jwks = json!({
-        "keys": [{
-            "kid": KID, "kty": "RSA", "alg": "RS256", "use": "sig",
-            "n": k.n_b64, "e": k.e_b64,
-        }]
-    });
-    Mock::given(method("GET"))
-        .and(path(format!("{ISSUER_PATH}/protocol/openid-connect/certs")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(jwks))
-        .mount(server)
-        .await;
-}
-
-fn token(keys: &Keys, issuer: &str, tenant: &str) -> String {
-    let now = now();
-    let claims = json!({
-        "iss": issuer,
-        "aud": AUDIENCE,
-        "sub": "user-1",
-        "tenant": tenant,
-        "iat": now,
-        "exp": now + 600,
-    });
-    let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some(KID.to_owned());
-    let key = EncodingKey::from_rsa_pem(&keys.private_pem).unwrap();
-    encode(&header, &claims, &key).unwrap()
-}
-
-async fn make_indexer() -> (Arc<Indexer>, TempDir, TempDir) {
-    let store_dir = TempDir::new().unwrap();
-    let db_dir = TempDir::new().unwrap();
-    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
-    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
-    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
-    Migrator::up(&conn).unwrap();
-    let indexer = Arc::new(Indexer::new(Arc::clone(&store), embedder, conn, TENANT).unwrap());
-
-    // Minimal seed so list_skills returns something.
-    let body = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
-    let key = Key::new(TENANT, "markdown/skills/customer.md".to_owned()).unwrap();
-    store
-        .write(&key, Bytes::from_static(body.as_bytes()))
-        .await
-        .unwrap();
-    indexer
-        .update_page("markdown/skills/customer.md", body)
-        .await
-        .unwrap();
-
-    (indexer, store_dir, db_dir)
-}
-
-struct Harness {
-    handle: escurel_server::ServerHandle,
-    base_ws_url: String,
-    issuer: String,
-    keys: Keys,
-    _store_dir: TempDir,
-    _db_dir: TempDir,
-    _wm: MockServer,
-}
-
-async fn start_authed(quota: Option<Arc<QuotaManager>>) -> Harness {
-    let wm = MockServer::start().await;
-    let keys = keys();
-    jwks_mock(&wm, &keys).await;
-    let issuer = format!("{}{ISSUER_PATH}", wm.uri());
-    let cfg = OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
-        .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"));
-    let verifier = Arc::new(OidcVerifier::new(cfg));
-
-    let (indexer, store_dir, db_dir) = make_indexer().await;
-
-    let handle = serve(ServerConfig {
-        listen: "127.0.0.1:0".to_owned(),
-        grpc_listen: None,
-        version: "1.0.0-test".to_owned(),
-        readiness: Arc::new(AlwaysReady),
-        indexer: Some(indexer),
-        verifier: Some(verifier),
-        quota,
-        tenant_store: None,
-        crdt_backend: None,
+async fn start_authed(quota: Option<Arc<QuotaManager>>) -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("customer", CUSTOMER_SKILL)
+                .done(),
+        ),
+        config_overrides: ConfigOverrides {
+            quota,
+            disable_grpc: true,
+            ..Default::default()
+        },
     })
     .await
-    .unwrap();
-    let base_ws_url = format!("ws://{}/ws", handle.local_addr);
-    Harness {
-        handle,
-        base_ws_url,
-        issuer,
-        keys,
-        _store_dir: store_dir,
-        _db_dir: db_dir,
-        _wm: wm,
-    }
 }
 
 fn ws_request(url: &str, bearer: Option<&str>) -> WsRequest {
@@ -209,9 +76,9 @@ async fn send_json(
 
 #[tokio::test]
 async fn presence_only_hello_keeps_connection_open() {
-    let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
-    let (mut sock, _resp) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, Some(&t)))
+    let p = start_authed(None).await;
+    let t = p.mint_token(TENANT, Role::Agent);
+    let (mut sock, _resp) = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some(&t)))
         .await
         .expect("ws connect");
 
@@ -234,14 +101,14 @@ async fn presence_only_hello_keeps_connection_open() {
     assert_eq!(echo["session"], "s1");
 
     sock.close(None).await.ok();
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn presence_frame_round_trips() {
-    let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, Some(&t)))
+    let p = start_authed(None).await;
+    let t = p.mint_token(TENANT, Role::Agent);
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some(&t)))
         .await
         .unwrap();
 
@@ -264,14 +131,14 @@ async fn presence_frame_round_trips() {
     assert_eq!(echo["anchor"], "#section-1");
 
     sock.close(None).await.ok();
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn search_subscribe_acks_with_empty_event_in_m3() {
-    let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, Some(&t)))
+    let p = start_authed(None).await;
+    let t = p.mint_token(TENANT, Role::Agent);
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some(&t)))
         .await
         .unwrap();
 
@@ -296,13 +163,13 @@ async fn search_subscribe_acks_with_empty_event_in_m3() {
     );
 
     sock.close(None).await.ok();
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn missing_bearer_rejects_upgrade() {
-    let h = start_authed(None).await;
-    let result = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, None)).await;
+    let p = start_authed(None).await;
+    let result = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), None)).await;
     let err = result.expect_err("upgrade without bearer must fail");
     match err {
         tungstenite::Error::Http(resp) => {
@@ -310,14 +177,14 @@ async fn missing_bearer_rejects_upgrade() {
         }
         other => panic!("expected HTTP 401 rejection, got {other:?}"),
     }
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn invalid_token_rejects_upgrade() {
-    let h = start_authed(None).await;
+    let p = start_authed(None).await;
     let result =
-        tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, Some("not.a.real.jwt"))).await;
+        tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some("not.a.real.jwt"))).await;
     let err = result.expect_err("upgrade with bad token must fail");
     match err {
         tungstenite::Error::Http(resp) => {
@@ -325,7 +192,7 @@ async fn invalid_token_rejects_upgrade() {
         }
         other => panic!("expected HTTP 401 rejection, got {other:?}"),
     }
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
@@ -336,9 +203,9 @@ async fn session_hello_with_unknown_id_returns_unknown_session_error() {
     // The end-to-end attach happy path lives in `tests/ws_session.rs`;
     // this M3-era harness has no `crdt_backend` wired and so can
     // only exercise the negative path.
-    let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, Some(&t)))
+    let p = start_authed(None).await;
+    let t = p.mint_token(TENANT, Role::Agent);
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some(&t)))
         .await
         .unwrap();
 
@@ -357,7 +224,7 @@ async fn session_hello_with_unknown_id_returns_unknown_session_error() {
         Ok(Some(Err(_))) => {}
         Err(_) => panic!("server did not close after unknown_session error"),
     }
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
@@ -368,11 +235,11 @@ async fn concurrent_session_quota_caps_open_connections() {
         embeds_per_minute: 300,
         concurrent_sessions: 1,
     };
-    let h = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
+    let p = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
+    let t = p.mint_token(TENANT, Role::Agent);
 
     // First connection: occupies the only session slot.
-    let (mut sock1, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, Some(&t)))
+    let (mut sock1, _) = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some(&t)))
         .await
         .expect("first ws connect must succeed");
     send_json(
@@ -392,7 +259,7 @@ async fn concurrent_session_quota_caps_open_connections() {
     let _ = recv_json(&mut sock1).await;
 
     // Second connection: must be refused with HTTP 429.
-    let result = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, Some(&t))).await;
+    let result = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some(&t))).await;
     let err = result.expect_err("second upgrade must be rejected on session-cap");
     match err {
         tungstenite::Error::Http(resp) => {
@@ -407,7 +274,7 @@ async fn concurrent_session_quota_caps_open_connections() {
     drop(sock1);
     // Give the server a moment to release the permit.
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let (mut sock2, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, Some(&t)))
+    let (mut sock2, _) = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some(&t)))
         .await
         .expect("third ws connect must succeed after first drops");
     send_json(
@@ -417,14 +284,14 @@ async fn concurrent_session_quota_caps_open_connections() {
     .await;
     sock2.close(None).await.ok();
 
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn unknown_frame_returns_error_but_keeps_connection_open() {
-    let h = start_authed(None).await;
-    let t = token(&h.keys, &h.issuer, TENANT);
-    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, Some(&t)))
+    let p = start_authed(None).await;
+    let t = p.mint_token(TENANT, Role::Agent);
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some(&t)))
         .await
         .unwrap();
 
@@ -451,5 +318,5 @@ async fn unknown_frame_returns_error_but_keeps_connection_open() {
     assert_eq!(echo["type"], "presence");
 
     sock.close(None).await.ok();
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }

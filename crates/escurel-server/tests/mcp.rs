@@ -5,76 +5,51 @@
 //! from raw JSON-RPC over HTTP all the way down to DuckDB and
 //! back, exactly as a production agent would.
 
-use std::sync::Arc;
-
-use bytes::Bytes;
-use duckdb::Connection;
-use escurel_embed::{Embedder, ZeroEmbedder};
-use escurel_index::{Indexer, Migrator};
-use escurel_server::{AlwaysReady, ServerConfig, serve};
-use escurel_storage::{FsStore, Key, LaneStore};
+use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts};
 use serde_json::{Value, json};
-use tempfile::TempDir;
 
-const TENANT: &str = "acme";
-
-const SKILL_CUSTOMER: (&str, &str) = (
-    "markdown/skills/customer.md",
-    "---\n\
+const SKILL_CUSTOMER_ID: &str = "customer";
+const SKILL_CUSTOMER_BODY: &str = "---\n\
      type: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      ---\n\
-     # customer\n",
-);
+     # customer\n";
 
-const SKILL_MEETING: (&str, &str) = (
-    "markdown/skills/meeting.md",
-    "---\n\
+const SKILL_MEETING_BODY: &str = "---\n\
      type: skill\n\
      id: meeting\n\
      description: An in-person or remote meeting.\n\
      required_frontmatter:\n\
        - at\n\
      ---\n\
-     # meeting\n",
-);
+     # meeting\n";
 
-const SKILL_QUERY: (&str, &str) = (
-    "markdown/skills/query.md",
-    "---\n\
+const SKILL_QUERY_BODY: &str = "---\n\
      type: skill\n\
      id: query\n\
      description: SQL view over the indexed corpus.\n\
      ---\n\
-     # query\n",
-);
+     # query\n";
 
-const INSTANCE_ACME: (&str, &str) = (
-    "markdown/instances/customer/acme-corp.md",
-    "---\n\
+const INSTANCE_ACME_PATH: &str = "markdown/instances/customer/acme-corp.md";
+const INSTANCE_ACME_BODY: &str = "---\n\
      type: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      ---\n\
      # Acme Corp\n\
      \n\
-     Comparable: [[customer::globex-llc]].\n",
-);
+     Comparable: [[customer::globex-llc]].\n";
 
-const INSTANCE_GLOBEX: (&str, &str) = (
-    "markdown/instances/customer/globex-llc.md",
-    "---\n\
+const INSTANCE_GLOBEX_BODY: &str = "---\n\
      type: instance\n\
      skill: customer\n\
      id: globex-llc\n\
      ---\n\
-     # Globex\n",
-);
+     # Globex\n";
 
-const QUERY_COUNT: (&str, &str) = (
-    "markdown/instances/query/count-by-skill.md",
-    "---\n\
+const QUERY_COUNT_BODY: &str = "---\n\
      type: instance\n\
      skill: query\n\
      id: count-by-skill\n\
@@ -83,69 +58,30 @@ const QUERY_COUNT: (&str, &str) = (
        - {name: skill, type: text, required: true}\n\
      sql: \"SELECT count(*) AS n FROM pages WHERE skill = :skill AND page_type = 'instance'\"\n\
      ---\n\
-     # count-by-skill\n",
-);
+     # count-by-skill\n";
 
-struct Harness {
-    handle: escurel_server::ServerHandle,
-    client: reqwest::Client,
-    base_url: String,
-    _store_dir: TempDir,
-    _db_dir: TempDir,
+async fn start_with_seeded_indexer() -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant("acme")
+                .skill(SKILL_CUSTOMER_ID, SKILL_CUSTOMER_BODY)
+                .skill("meeting", SKILL_MEETING_BODY)
+                .skill("query", SKILL_QUERY_BODY)
+                .instance("customer", "acme-corp", INSTANCE_ACME_BODY)
+                .instance("customer", "globex-llc", INSTANCE_GLOBEX_BODY)
+                .instance("query", "count-by-skill", QUERY_COUNT_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await
 }
 
-async fn start_with_seeded_indexer() -> Harness {
-    let store_dir = TempDir::new().unwrap();
-    let db_dir = TempDir::new().unwrap();
-    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
-    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
-    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
-    Migrator::up(&conn).unwrap();
-    let indexer = Arc::new(Indexer::new(Arc::clone(&store), embedder, conn, TENANT).unwrap());
-
-    for (path, body) in [
-        SKILL_CUSTOMER,
-        SKILL_MEETING,
-        SKILL_QUERY,
-        INSTANCE_ACME,
-        INSTANCE_GLOBEX,
-        QUERY_COUNT,
-    ] {
-        let key = Key::new(TENANT, path.to_owned()).unwrap();
-        store
-            .write(&key, Bytes::from_static(body.as_bytes()))
-            .await
-            .unwrap();
-        indexer.update_page(path, body).await.unwrap();
-    }
-    indexer.refresh_fts().await.unwrap();
-
-    let cfg = ServerConfig {
-        listen: "127.0.0.1:0".to_owned(),
-        grpc_listen: None,
-        version: "1.0.0-test".to_owned(),
-        readiness: Arc::new(AlwaysReady),
-        indexer: Some(indexer),
-        verifier: None,
-        quota: None,
-        tenant_store: None,
-        crdt_backend: None,
-    };
-    let handle = serve(cfg).await.expect("server starts");
-    let base_url = format!("http://{}", handle.local_addr);
-    Harness {
-        handle,
-        client: reqwest::Client::new(),
-        base_url,
-        _store_dir: store_dir,
-        _db_dir: db_dir,
-    }
-}
-
-async fn call_tool(h: &Harness, name: &str, args: Value) -> Value {
-    let resp = h
-        .client
-        .post(format!("{}/mcp", h.base_url))
+async fn call_tool(p: &EscurelProcess, name: &str, args: Value) -> Value {
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -167,32 +103,32 @@ async fn call_tool(h: &Harness, name: &str, args: Value) -> Value {
 
 #[tokio::test]
 async fn list_skills_returns_three_skills() {
-    let h = start_with_seeded_indexer().await;
-    let result = call_tool(&h, "list_skills", json!({})).await;
+    let p = start_with_seeded_indexer().await;
+    let result = call_tool(&p, "list_skills", json!({})).await;
     let skills = result["skills"].as_array().expect("skills array");
     let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
     assert_eq!(ids.len(), 3);
     assert!(ids.contains(&"customer"));
     assert!(ids.contains(&"meeting"));
     assert!(ids.contains(&"query"));
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn list_instances_returns_filtered_by_skill() {
-    let h = start_with_seeded_indexer().await;
-    let result = call_tool(&h, "list_instances", json!({ "skill_id": "customer" })).await;
+    let p = start_with_seeded_indexer().await;
+    let result = call_tool(&p, "list_instances", json!({ "skill_id": "customer" })).await;
     let inst = result["instances"].as_array().unwrap();
     assert_eq!(inst.len(), 2);
     assert!(inst.iter().all(|i| i["skill"] == "customer"));
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn resolve_round_trips_through_http() {
-    let h = start_with_seeded_indexer().await;
+    let p = start_with_seeded_indexer().await;
     let result = call_tool(
-        &h,
+        &p,
         "resolve",
         json!({ "wikilink": "[[customer::acme-corp]]" }),
     )
@@ -200,26 +136,26 @@ async fn resolve_round_trips_through_http() {
     assert_eq!(result["exists"], true);
     assert_eq!(result["page"]["skill"], "customer");
     assert_eq!(result["page"]["slug"], "acme-corp");
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn expand_returns_page_body_and_wikilinks() {
-    let h = start_with_seeded_indexer().await;
-    let result = call_tool(&h, "expand", json!({ "page_id": INSTANCE_ACME.0 })).await;
+    let p = start_with_seeded_indexer().await;
+    let result = call_tool(&p, "expand", json!({ "page_id": INSTANCE_ACME_PATH })).await;
     assert!(result["body"].as_str().unwrap().contains("Acme Corp"));
     let wls = result["wikilinks_out"].as_array().unwrap();
     assert!(wls.iter().any(|w| w["id"] == "globex-llc"));
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn neighbours_returns_outbound_links() {
-    let h = start_with_seeded_indexer().await;
+    let p = start_with_seeded_indexer().await;
     let result = call_tool(
-        &h,
+        &p,
         "neighbours",
-        json!({ "page_id": INSTANCE_ACME.0, "direction": "out" }),
+        json!({ "page_id": INSTANCE_ACME_PATH, "direction": "out" }),
     )
     .await;
     let edges = result["edges"].as_array().unwrap();
@@ -228,24 +164,24 @@ async fn neighbours_returns_outbound_links() {
         .filter_map(|e| e["dst_page"].as_str())
         .collect();
     assert!(dst_pages.contains(&"globex-llc"));
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn search_returns_hits_for_query() {
-    let h = start_with_seeded_indexer().await;
-    let result = call_tool(&h, "search", json!({ "q": "Acme", "k": 5 })).await;
+    let p = start_with_seeded_indexer().await;
+    let result = call_tool(&p, "search", json!({ "q": "Acme", "k": 5 })).await;
     let hits = result["hits"].as_array().unwrap();
     assert!(!hits.is_empty());
     assert_eq!(result["granularity"], "block");
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn run_stored_query_routes_through_http() {
-    let h = start_with_seeded_indexer().await;
+    let p = start_with_seeded_indexer().await;
     let result = call_tool(
-        &h,
+        &p,
         "run_stored_query",
         json!({
             "query_id": "count-by-skill",
@@ -256,15 +192,14 @@ async fn run_stored_query_routes_through_http() {
     let rows = result["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["n"], 2);
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn unknown_tool_returns_jsonrpc_method_not_found() {
-    let h = start_with_seeded_indexer().await;
-    let resp = h
-        .client
-        .post(format!("{}/mcp", h.base_url))
+    let p = start_with_seeded_indexer().await;
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 7,
@@ -278,15 +213,14 @@ async fn unknown_tool_returns_jsonrpc_method_not_found() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["code"], -32601);
     assert_eq!(body["id"], 7);
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn unknown_method_returns_jsonrpc_method_not_found() {
-    let h = start_with_seeded_indexer().await;
-    let resp = h
-        .client
-        .post(format!("{}/mcp", h.base_url))
+    let p = start_with_seeded_indexer().await;
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 8,
@@ -298,12 +232,12 @@ async fn unknown_method_returns_jsonrpc_method_not_found() {
         .unwrap();
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["code"], -32601);
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn update_page_round_trips_through_http() {
-    let h = start_with_seeded_indexer().await;
+    let p = start_with_seeded_indexer().await;
     let body = "---\n\
                 type: instance\n\
                 skill: customer\n\
@@ -314,7 +248,7 @@ async fn update_page_round_trips_through_http() {
                 Created via update_page over MCP.\n";
 
     let result = call_tool(
-        &h,
+        &p,
         "update_page",
         json!({
             "page_id": "markdown/instances/customer/brand-new.md",
@@ -326,19 +260,18 @@ async fn update_page_round_trips_through_http() {
     assert_eq!(result["issues"].as_array().unwrap().len(), 0);
 
     // The new page must now appear in list_instances.
-    let inst = call_tool(&h, "list_instances", json!({ "skill_id": "customer" })).await;
+    let inst = call_tool(&p, "list_instances", json!({ "skill_id": "customer" })).await;
     let count = inst["instances"].as_array().unwrap().len();
     assert_eq!(count, 3, "expected the 2 seeded + brand-new = 3");
 
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn update_page_propagates_parse_error_as_jsonrpc_internal() {
-    let h = start_with_seeded_indexer().await;
-    let resp = h
-        .client
-        .post(format!("{}/mcp", h.base_url))
+    let p = start_with_seeded_indexer().await;
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 99,
@@ -356,15 +289,14 @@ async fn update_page_propagates_parse_error_as_jsonrpc_internal() {
         .unwrap();
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["code"], -32603, "internal error: {body}");
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn tools_list_returns_all_eight_tools_with_schemas() {
-    let h = start_with_seeded_indexer().await;
-    let resp = h
-        .client
-        .post(format!("{}/mcp", h.base_url))
+    let p = start_with_seeded_indexer().await;
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 100,
@@ -397,15 +329,14 @@ async fn tools_list_returns_all_eight_tools_with_schemas() {
         assert!(t["description"].is_string());
         assert_eq!(t["inputSchema"]["type"], "object");
     }
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn malformed_jsonrpc_version_returns_invalid_request() {
-    let h = start_with_seeded_indexer().await;
-    let resp = h
-        .client
-        .post(format!("{}/mcp", h.base_url))
+    let p = start_with_seeded_indexer().await;
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
         .json(&json!({
             "jsonrpc": "1.0",
             "id": 9,
@@ -417,5 +348,5 @@ async fn malformed_jsonrpc_version_returns_invalid_request() {
         .unwrap();
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["code"], -32600);
-    h.handle.shutdown().await;
+    p.shutdown().await;
 }

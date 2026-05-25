@@ -4,8 +4,9 @@
 //! Real running gateway (axum HTTP + tonic gRPC sharing one
 //! `AppState`), real `LiveDoc` actor over a real `DuckdbCrdtBackend`
 //! sharing the DuckDB connection used by the HTTP `open_session` /
-//! `close_session` tools, real `OidcVerifier` + wiremock JWKS, real
-//! Loro `Client` peer producing incremental update bytes per
+//! `close_session` tools, real `OidcVerifier` against the
+//! in-process JWKS the support crate stands up, real Loro
+//! `Client` peer producing incremental update bytes per
 //! `docs/notes/discovered/2026-05-25-loro-incremental-updates-need-persistent-client.md`.
 //!
 //! Covered surface:
@@ -30,18 +31,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use duckdb::Connection;
-use escurel_auth::{OidcConfig, OidcVerifier};
 use escurel_crdt::{CrdtBackend, DuckdbCrdtBackend};
 use escurel_index::Migrator;
 use escurel_proto::v1::escurel_client::EscurelClient;
 use escurel_proto::v1::{LiveAck, LiveOp};
 use escurel_quota::{QuotaConfig, QuotaManager};
-use escurel_server::{AlwaysReady, ServerConfig, ServerHandle, serve};
-use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts, Role};
 use loro::{ExportMode, LoroDoc};
-use rsa::pkcs1::EncodeRsaPrivateKey;
-use rsa::traits::PublicKeyParts;
-use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -51,82 +47,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TENANT: &str = "acme";
-const AUDIENCE: &str = "escurel";
-const KID: &str = "test-kid";
-const ISSUER_PATH: &str = "/realms/test";
-
-// --- key + JWT helpers (copied from grpc_write_tools.rs; integration
-// test binaries compile independently so the duplication is local
-// rather than fed through a shared `mod common`) -----------------
-
-struct Keys {
-    private_pem: Vec<u8>,
-    n_b64: String,
-    e_b64: String,
-}
-
-fn keys() -> Keys {
-    let mut rng = rand::thread_rng();
-    let private = RsaPrivateKey::new(&mut rng, 2048).unwrap();
-    let public = RsaPublicKey::from(&private);
-    let private_pem = private
-        .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
-        .unwrap()
-        .as_bytes()
-        .to_vec();
-    Keys {
-        private_pem,
-        n_b64: b64url(&public.n().to_bytes_be()),
-        e_b64: b64url(&public.e().to_bytes_be()),
-    }
-}
-
-fn b64url(b: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
-}
-
-fn now() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
-async fn jwks_mock(server: &MockServer, k: &Keys) {
-    let jwks = json!({
-        "keys": [{
-            "kid": KID, "kty": "RSA", "alg": "RS256", "use": "sig",
-            "n": k.n_b64, "e": k.e_b64,
-        }]
-    });
-    Mock::given(method("GET"))
-        .and(path(format!("{ISSUER_PATH}/protocol/openid-connect/certs")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(jwks))
-        .mount(server)
-        .await;
-}
-
-fn token(keys: &Keys, issuer: &str, tenant: &str) -> String {
-    let now = now();
-    let claims = json!({
-        "iss": issuer,
-        "aud": AUDIENCE,
-        "sub": "user-1",
-        "tenant": tenant,
-        "iat": now,
-        "exp": now + 600,
-    });
-    let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some(KID.to_owned());
-    let key = EncodingKey::from_rsa_pem(&keys.private_pem).unwrap();
-    encode(&header, &claims, &key).unwrap()
-}
 
 // --- Loro client peer (persistent so incremental updates are
 // anchored to ids the server's actor has already seen — see the
@@ -160,63 +82,44 @@ impl LoroClient {
 // --- harness ----------------------------------------------------
 
 struct Harness {
-    handle: ServerHandle,
-    grpc_addr: std::net::SocketAddr,
-    http_base_url: String,
-    keys: Keys,
-    issuer: String,
+    process: EscurelProcess,
+    http: reqwest::Client,
     _db_dir: TempDir,
-    _wm: MockServer,
 }
 
 async fn start(quota: Option<Arc<QuotaManager>>) -> Harness {
-    let wm = MockServer::start().await;
-    let k = keys();
-    jwks_mock(&wm, &k).await;
-    let issuer = format!("{}{ISSUER_PATH}", wm.uri());
-    let cfg = OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
-        .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"));
-    let verifier = Arc::new(OidcVerifier::new(cfg));
-
     let db_dir = TempDir::new().unwrap();
     let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
     Migrator::up(&conn).unwrap();
     let shared = Arc::new(Mutex::new(conn));
     let crdt_backend: Arc<dyn CrdtBackend> = Arc::new(DuckdbCrdtBackend::new(Arc::clone(&shared)));
 
-    let handle = serve(ServerConfig {
-        listen: "127.0.0.1:0".to_owned(),
-        grpc_listen: Some("127.0.0.1:0".to_owned()),
-        version: "1.0.0-test".to_owned(),
-        readiness: Arc::new(AlwaysReady),
-        indexer: None,
-        verifier: Some(verifier),
-        quota,
-        tenant_store: None,
-        crdt_backend: Some(crdt_backend),
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: None,
+        config_overrides: ConfigOverrides {
+            quota,
+            crdt_backend: Some(crdt_backend),
+            disable_indexer: true,
+            ..Default::default()
+        },
     })
-    .await
-    .unwrap();
-    let grpc_addr = handle.grpc_addr.expect("grpc listener bound");
-    let http_base_url = format!("http://{}", handle.local_addr);
+    .await;
     Harness {
-        handle,
-        grpc_addr,
-        http_base_url,
-        keys: k,
-        issuer,
+        process,
+        http: reqwest::Client::new(),
         _db_dir: db_dir,
-        _wm: wm,
     }
 }
 
 fn bearer(h: &Harness) -> MetadataValue<tonic::metadata::Ascii> {
-    let t = token(&h.keys, &h.issuer, TENANT);
+    let t = h.process.mint_token(TENANT, Role::Agent);
     format!("Bearer {t}").parse().unwrap()
 }
 
 async fn grpc_client(h: &Harness) -> EscurelClient<Channel> {
-    let channel = Channel::from_shared(format!("http://{}", h.grpc_addr))
+    let endpoint = h.process.grpc_endpoint().expect("grpc endpoint").to_owned();
+    let channel = Channel::from_shared(endpoint)
         .unwrap()
         .connect()
         .await
@@ -227,10 +130,10 @@ async fn grpc_client(h: &Harness) -> EscurelClient<Channel> {
 /// POST a JSON-RPC call to `POST /mcp` and assert HTTP 200 + no
 /// `error` envelope. Returns the `result` value.
 async fn http_call_ok(h: &Harness, name: &str, args: Value) -> Value {
-    let http = reqwest::Client::new();
-    let bearer = format!("Bearer {}", token(&h.keys, &h.issuer, TENANT));
-    let body = http
-        .post(format!("{}/mcp", h.http_base_url))
+    let bearer = format!("Bearer {}", h.process.mint_token(TENANT, Role::Agent));
+    let body = h
+        .http
+        .post(h.process.mcp_url())
         .header("authorization", bearer)
         .json(&json!({
             "jsonrpc": "2.0",
@@ -277,8 +180,8 @@ async fn start_live_session(
 /// reads otherwise hang forever if the server forgot to reply.
 async fn next_ack(stream: &mut tonic::Streaming<LiveAck>) -> LiveAck {
     let next = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
-    let ack = next.expect("ack within 5s").expect("stream not ended");
-    ack.expect("ack ok")
+    let next = next.expect("ack within 5s");
+    next.expect("ack within 5s").expect("stream not ended")
 }
 
 // --- tests ----------------------------------------------------------
@@ -303,7 +206,7 @@ async fn attach_to_session_emits_initial_ack_with_head_version() {
     assert!(ack.issues.is_empty(), "issues should be empty on attach");
 
     drop(tx);
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -335,7 +238,7 @@ async fn apply_op_via_bidi_updates_doc_and_acks_with_new_version() {
     assert!(ack.issues.is_empty());
 
     drop(tx);
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -372,7 +275,7 @@ async fn multiple_ops_round_trip_in_one_stream() {
     // After three ops the assembled content matches the client's
     // local string.
     drop(tx);
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -404,7 +307,7 @@ async fn unknown_session_emits_issue_ack_and_closes() {
     assert!(end.is_none(), "stream must end after unknown_session ack");
 
     drop(tx);
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -412,7 +315,7 @@ async fn missing_bearer_returns_unauthenticated_before_stream_open() {
     let h = start(None).await;
     let err = start_live_session(&h, None).await.unwrap_err();
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -469,7 +372,7 @@ async fn op_via_bidi_debits_writes_quota() {
     assert_eq!(status.code(), tonic::Code::ResourceExhausted);
 
     drop(tx);
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }
 
 #[tokio::test]
@@ -520,5 +423,5 @@ async fn client_closes_stream_does_not_close_session() {
     .await;
     assert_eq!(closed["ok"], true);
 
-    h.handle.shutdown().await;
+    h.process.shutdown().await;
 }

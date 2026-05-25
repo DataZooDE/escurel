@@ -1,11 +1,12 @@
 //! End-to-end tests for the gateway's health surface. Spins up
-//! the real server on a random port, dials back with a real
-//! reqwest client. No mocks.
+//! the real server on a random port through `escurel-test-support`
+//! and dials back with a real reqwest client. No mocks.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use escurel_server::{ReadinessProbe, ReadinessReport, ServerConfig, serve};
+use escurel_server::{ReadinessProbe, ReadinessReport};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts};
 
 struct StaticReport(ReadinessReport);
 
@@ -32,72 +33,72 @@ fn ready_one_down() -> Arc<dyn ReadinessProbe> {
     }))
 }
 
-async fn start(readiness: Arc<dyn ReadinessProbe>) -> escurel_server::ServerHandle {
-    let cfg = ServerConfig {
-        listen: "127.0.0.1:0".to_owned(),
-        grpc_listen: None,
-        version: "1.2.3-test".to_owned(),
-        readiness,
-        indexer: None,
-        verifier: None,
-        quota: None,
-        tenant_store: None,
-        crdt_backend: None,
-    };
-    serve(cfg).await.expect("server starts")
+async fn start(readiness: Arc<dyn ReadinessProbe>, version: &str) -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        fixtures: None,
+        config_overrides: ConfigOverrides {
+            gateway_version: Some(version.to_owned()),
+            readiness: Some(readiness),
+            disable_grpc: true,
+            disable_indexer: true,
+            ..Default::default()
+        },
+    })
+    .await
 }
 
-fn url(h: &escurel_server::ServerHandle, path: &str) -> String {
-    format!("http://{}{path}", h.local_addr)
+fn url(p: &EscurelProcess, path: &str) -> String {
+    format!("{}{path}", p.base_url())
 }
 
 #[tokio::test]
 async fn healthz_is_always_ok() {
-    let h = start(ready_one_down()).await; // even when other probes are down
-    let resp = reqwest::get(url(&h, "/healthz")).await.unwrap();
+    let p = start(ready_one_down(), "1.2.3-test").await; // even when other probes are down
+    let resp = reqwest::get(url(&p, "/healthz")).await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "OK");
-    h.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn readyz_returns_200_when_all_up() {
-    let h = start(ready_all_up()).await;
-    let resp = reqwest::get(url(&h, "/readyz")).await.unwrap();
+    let p = start(ready_all_up(), "1.2.3-test").await;
+    let resp = reqwest::get(url(&p, "/readyz")).await.unwrap();
     assert_eq!(resp.status(), 200);
-    h.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn readyz_returns_503_with_component_report_when_any_down() {
-    let h = start(ready_one_down()).await;
-    let resp = reqwest::get(url(&h, "/readyz")).await.unwrap();
+    let p = start(ready_one_down(), "1.2.3-test").await;
+    let resp = reqwest::get(url(&p, "/readyz")).await.unwrap();
     assert_eq!(resp.status(), 503);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["ready"], false);
     assert_eq!(body["components"]["lane_store"], true);
     assert_eq!(body["components"]["indexer"], false);
     assert_eq!(body["components"]["embedder"], true);
-    h.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn version_returns_configured_version() {
-    let h = start(ready_all_up()).await;
-    let body = reqwest::get(url(&h, "/version"))
+    let p = start(ready_all_up(), "1.2.3-test").await;
+    let body = reqwest::get(url(&p, "/version"))
         .await
         .unwrap()
         .text()
         .await
         .unwrap();
     assert_eq!(body, "1.2.3-test");
-    h.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn metrics_returns_prometheus_text() {
-    let h = start(ready_all_up()).await;
-    let resp = reqwest::get(url(&h, "/metrics")).await.unwrap();
+    let p = start(ready_all_up(), "1.2.3-test").await;
+    let resp = reqwest::get(url(&p, "/metrics")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let ct = resp
         .headers()
@@ -111,13 +112,13 @@ async fn metrics_returns_prometheus_text() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("# HELP"));
     assert!(body.contains("escurel_up 1"));
-    h.shutdown().await;
+    p.shutdown().await;
 }
 
 #[tokio::test]
 async fn unknown_path_returns_404() {
-    let h = start(ready_all_up()).await;
-    let resp = reqwest::get(url(&h, "/does-not-exist")).await.unwrap();
+    let p = start(ready_all_up(), "1.2.3-test").await;
+    let resp = reqwest::get(url(&p, "/does-not-exist")).await.unwrap();
     assert_eq!(resp.status(), 404);
-    h.shutdown().await;
+    p.shutdown().await;
 }
