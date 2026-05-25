@@ -13,6 +13,7 @@ members = [
     "crates/escurel-cli",
     "crates/escurel-client",
     "crates/escurel-crdt",
+    "crates/escurel-test-support",
 ]
 
 [workspace.package]
