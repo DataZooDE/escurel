@@ -34,7 +34,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
-use escurel_index::{Direction, Indexer, OrderDir};
+use escurel_index::{Direction, Indexer, Issue, OrderDir};
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
 use serde::Deserialize;
@@ -273,6 +273,7 @@ async fn dispatch_tools_call(
         "neighbours" => tool_neighbours(indexer, params.arguments).await,
         "search" => tool_search(indexer, params.arguments).await,
         "run_stored_query" => tool_run_stored_query(indexer, params.arguments).await,
+        "validate" => tool_validate(indexer, params.arguments).await,
         "update_page" => tool_update_page(indexer, params.arguments).await,
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
@@ -505,6 +506,40 @@ async fn tool_run_stored_query(indexer: &Indexer, args: Value) -> Result<Value, 
             "type": c.type_name,
         })).collect::<Vec<_>>(),
     }))
+}
+
+#[derive(Deserialize)]
+struct ValidateArgs {
+    content: String,
+    #[serde(default)]
+    as_page_id: Option<String>,
+}
+
+async fn tool_validate(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: ValidateArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("validate: {e}")))?;
+    let issues = indexer
+        .validate(a.as_page_id.as_deref(), &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("validate: {e}")))?;
+    Ok(json!({
+        "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
+    }))
+}
+
+/// Map a domain [`Issue`] to the MCP JSON shape from
+/// `docs/spec/protocol.md §Issue`.
+fn issue_to_json(issue: &Issue) -> Value {
+    let mut obj = json!({
+        "severity": issue.severity.as_str(),
+        "code": issue.code,
+        "location": issue.location,
+        "message": issue.message,
+    });
+    if let Some(s) = &issue.suggestion {
+        obj["suggestion"] = json!(s);
+    }
+    obj
 }
 
 #[derive(Deserialize)]
@@ -743,6 +778,19 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "query_id": { "type": "string" },
                         "params": { "type": "object" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "validate",
+                "Dry-run the indexer's checks on a draft; returns the same issue list \
+                 as update_page but commits nothing.",
+                json!({
+                    "type": "object",
+                    "required": ["content"],
+                    "properties": {
+                        "content": { "type": "string" },
+                        "as_page_id": { "type": "string" }
                     }
                 }),
             ),

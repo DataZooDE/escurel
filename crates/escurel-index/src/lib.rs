@@ -24,6 +24,7 @@ pub mod query;
 pub mod read;
 pub mod schema;
 pub mod search;
+pub mod validate;
 
 pub use citation::IndexerCitationLookup;
 pub use indexer::{AuditDrift, Indexer, IndexerError, RebuildProgress};
@@ -34,3 +35,4 @@ pub use read::{
 };
 pub use schema::Migrator;
 pub use search::SearchHit;
+pub use validate::{Issue, Severity};

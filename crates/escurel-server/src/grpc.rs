@@ -2,12 +2,13 @@
 //! as the HTTP gateway so OIDC verification + quota debits behave
 //! identically to `POST /mcp`.
 //!
-//! Today eight of the nine Escurel RPCs are wired
-//! (`list_skills` / `list_instances` / `resolve` / `expand` /
-//! `search` / `neighbours` / `run_stored_query` / `update_page`).
-//! `validate` returns `Unimplemented` until the standalone
-//! validator lands; `live_session` is reserved for M4. The
-//! `EscurelAdmin` service is similarly stubbed in M3.5d.
+//! All nine unary Escurel RPCs are wired (`list_skills` /
+//! `list_instances` / `resolve` / `expand` / `search` /
+//! `neighbours` / `run_stored_query` / `validate` / `update_page`),
+//! plus the `live_session` bidi stream. `validate` is the dry-run
+//! authoring-feedback path: it runs the same frontmatter +
+//! wikilink checks as `update_page` against the indexer but commits
+//! nothing. The `EscurelAdmin` service is partly stubbed.
 //!
 //! Auth + quota live in [`Self::enforce`], called from every
 //! handler. We don't use a tonic `Interceptor` here because tonic
@@ -33,7 +34,7 @@ use std::sync::Arc;
 use escurel_admin::{AdminError, TenantSpec as AdminTenantSpec, TenantStore};
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::Version;
-use escurel_index::{Direction, Indexer, OrderDir};
+use escurel_index::{Direction, Indexer, Issue, OrderDir, Severity};
 use escurel_md::PageType;
 use escurel_proto::v1::TenantSpec as ProtoTenantSpec;
 use escurel_proto::v1::escurel_admin_server::EscurelAdmin;
@@ -357,15 +358,28 @@ impl Escurel for EscurelGrpc {
 
     async fn validate(
         &self,
-        _req: Request<ValidateRequest>,
+        req: Request<ValidateRequest>,
     ) -> Result<Response<ValidateResponse>, Status> {
-        // Validate lands once the structured frontmatter / wikilink
-        // validator (today implicit inside update_page) is split out
-        // into a standalone path. The HTTP MCP dispatcher likewise
-        // doesn't expose `validate` yet.
-        Err(Status::unimplemented(
-            "validate lands once the standalone validator is built",
-        ))
+        // A dry run debits the read (`Queries`) bucket: it does the
+        // same parse + skill-lookup work as a read tool and commits
+        // nothing, so it should not consume the write budget.
+        self.enforce(&req, Some(Dimension::Queries)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+        let page_id = if r.page_id.is_empty() {
+            None
+        } else {
+            Some(r.page_id.as_str())
+        };
+        let issues = indexer
+            .validate(page_id, &r.content)
+            .await
+            .map_err(|e| Status::internal(format!("validate: {e}")))?;
+        // `ok` is false iff any issue is error-severity, mirroring
+        // the live-write contract (an error rejects the write).
+        let ok = !issues.iter().any(|i| i.severity == Severity::Error);
+        let issues = issues.iter().map(issue_to_proto).collect();
+        Ok(Response::new(ValidateResponse { ok, issues }))
     }
 
     type LiveSessionStream = Pin<Box<dyn Stream<Item = Result<LiveAck, Status>> + Send>>;
@@ -619,6 +633,20 @@ fn wikilink_to_proto(w: &escurel_md::wikilink::WikilinkParsed) -> WikilinkParsed
         anchor: w.anchor.clone().unwrap_or_default(),
         version: w.version.clone().unwrap_or_default(),
         alias: w.alias.clone().unwrap_or_default(),
+    }
+}
+
+/// Map a domain [`Issue`] to the proto [`ValidationIssue`]. The
+/// proto carries `code` / `message` / `anchor`; we fold the
+/// domain's richer `severity` + `location` into the wire by
+/// prefixing the message with the severity (so a gRPC client still
+/// sees error-vs-warning) and routing `location` into the `anchor`
+/// field, which already names "where" for the live-CRDT acks.
+fn issue_to_proto(issue: &Issue) -> ValidationIssue {
+    ValidationIssue {
+        code: issue.code.clone(),
+        message: format!("[{}] {}", issue.severity.as_str(), issue.message),
+        anchor: issue.location.clone(),
     }
 }
 
