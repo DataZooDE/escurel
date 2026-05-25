@@ -32,6 +32,7 @@ use std::sync::Arc;
 
 use escurel_admin::{AdminError, TenantSpec as AdminTenantSpec, TenantStore};
 use escurel_auth::{AuthContext, OidcVerifier, Role};
+use escurel_crdt::Version;
 use escurel_index::{Direction, Indexer, OrderDir};
 use escurel_md::PageType;
 use escurel_proto::v1::TenantSpec as ProtoTenantSpec;
@@ -49,7 +50,7 @@ use escurel_proto::v1::{
     TenantExportChunk, TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportChunk,
     TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
     TenantUpdateResponse, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
-    WikilinkParsed,
+    ValidationIssue, WikilinkParsed,
 };
 use escurel_quota::{Dimension, QuotaError};
 use flate2::Compression;
@@ -370,9 +371,189 @@ impl Escurel for EscurelGrpc {
     type LiveSessionStream = Pin<Box<dyn Stream<Item = Result<LiveAck, Status>> + Send>>;
     async fn live_session(
         &self,
-        _req: Request<Streaming<LiveOp>>,
+        req: Request<Streaming<LiveOp>>,
     ) -> Result<Response<Self::LiveSessionStream>, Status> {
-        Err(Status::unimplemented("M4 — live CRDT mode"))
+        // Auth gates the stream open — same shape as unary RPCs.
+        // We cannot reuse `Self::enforce` here because it borrows
+        // the whole `Request<R>` across the JWKS-fetch `.await`;
+        // `Streaming<LiveOp>` isn't `Sync`, so a `&Request<…>`
+        // makes the handler future non-`Send`. Mirror
+        // `EscurelAdminGrpc::enforce_admin` and pull the token out
+        // before awaiting. The stream itself does not debit a
+        // quota dimension; each op debits `Writes` inside the
+        // inbound loop (mirroring the HTTP MCP `apply_op` policy
+        // in `dimension_for`).
+        let tenant_id = if let Some(v) = self.state.verifier.as_ref() {
+            let token = extract_bearer(req.metadata())?.to_owned();
+            v.verify(&token)
+                .await
+                .map_err(|e| Status::unauthenticated(format!("token rejected: {e}")))?
+                .tenant_id
+        } else {
+            // Dev mode (no verifier) — mirror `mcp.rs`'s sentinel
+            // so the per-tenant quota bucket is shared across
+            // transports.
+            "default".to_owned()
+        };
+        let sessions = Arc::clone(&self.state.sessions);
+        let quota = self.state.quota.clone();
+        let mut inbound = req.into_inner();
+
+        // Outbound channel for `LiveAck`s. A small buffer keeps a
+        // burst of acks in flight without unbounded growth — apply
+        // is synchronous-per-op anyway, so the dispatcher rarely
+        // gets ahead by more than one.
+        let (tx, rx) = mpsc::channel::<Result<LiveAck, Status>>(8);
+
+        tokio::spawn(async move {
+            // First inbound frame is the attach.
+            let Some(first) = (match inbound.message().await {
+                Ok(v) => v,
+                Err(status) => {
+                    let _ = tx.send(Err(status)).await;
+                    return;
+                }
+            }) else {
+                // Client closed before sending anything; nothing to ack.
+                return;
+            };
+
+            let session_id = first.session.clone();
+            // The attach frame's `op` must be empty per the spec.
+            // We do not enforce this strictly: clients that send a
+            // first frame with a non-empty `op` are treated as if
+            // the attach came on a separate frame and the op was
+            // the first payload — but they still need to be
+            // attached to a known session first, so the session
+            // lookup below is the actual gate.
+            let content = match sessions.current_content(&session_id).await {
+                Some(c) => c,
+                None => {
+                    let _ = tx
+                        .send(Ok(LiveAck {
+                            session: session_id.clone(),
+                            merged_version: String::new(),
+                            content: String::new(),
+                            issues: vec![ValidationIssue {
+                                code: "unknown_session".to_owned(),
+                                message: format!("session `{session_id}` not open"),
+                                anchor: String::new(),
+                            }],
+                        }))
+                        .await;
+                    return;
+                }
+            };
+            // Attach ack: report the *current* head + content. v1
+            // always opens at v0 (see `SessionManager::open`); ops
+            // applied before the attach (e.g. via HTTP `apply_op`
+            // on another transport) advance the head, and we
+            // surface that via the doc's content rather than
+            // re-deriving the version string.
+            if tx
+                .send(Ok(LiveAck {
+                    session: session_id.clone(),
+                    merged_version: Version::from_op_count(0).as_str().to_owned(),
+                    content,
+                    issues: Vec::new(),
+                }))
+                .await
+                .is_err()
+            {
+                return;
+            }
+
+            // If the attach frame carried an op blob, apply it.
+            if !first.op.is_empty()
+                && !dispatch_op(&sessions, &quota, &tenant_id, &session_id, first.op, &tx).await
+            {
+                return;
+            }
+
+            // Subsequent frames are ops on the attached session.
+            loop {
+                let next = match inbound.message().await {
+                    Ok(Some(msg)) => msg,
+                    Ok(None) => break,
+                    Err(_) => break,
+                };
+                let target = if next.session.is_empty() {
+                    session_id.clone()
+                } else {
+                    next.session.clone()
+                };
+                if !dispatch_op(&sessions, &quota, &tenant_id, &target, next.op, &tx).await {
+                    return;
+                }
+            }
+        });
+
+        let stream: Self::LiveSessionStream = Box::pin(ReceiverStream::new(rx));
+        Ok(Response::new(stream))
+    }
+}
+
+/// Apply a single op on `session_id` and send back the resulting
+/// `LiveAck`. Returns `false` when the loop should stop —
+/// `unknown_session` ack delivered, quota exhausted, or the
+/// outbound channel closed.
+async fn dispatch_op(
+    sessions: &Arc<crate::session::SessionManager>,
+    quota: &Option<Arc<escurel_quota::QuotaManager>>,
+    tenant_id: &str,
+    session_id: &str,
+    op_bytes: Vec<u8>,
+    tx: &mpsc::Sender<Result<LiveAck, Status>>,
+) -> bool {
+    // Per-op writes debit — mirrors the HTTP `apply_op` policy in
+    // `dimension_for`. Tenant id falls back to `"default"` in dev
+    // mode; the quota manager's bucket map is keyed by tenant so
+    // the dev fallback shares one bucket per process, matching
+    // `mcp.rs`.
+    if let Some(q) = quota.as_ref() {
+        if let Err(err) = q.try_consume(tenant_id, Dimension::Writes) {
+            let _ = tx.send(Err(quota_status(err))).await;
+            return false;
+        }
+    }
+    match sessions
+        .apply(session_id, escurel_crdt::Op::new(op_bytes))
+        .await
+    {
+        Ok(version) => {
+            let content = sessions
+                .current_content(session_id)
+                .await
+                .unwrap_or_default();
+            let ack = LiveAck {
+                session: session_id.to_owned(),
+                merged_version: version.as_str().to_owned(),
+                content,
+                issues: Vec::new(),
+            };
+            tx.send(Ok(ack)).await.is_ok()
+        }
+        Err(crate::session::SessionError::UnknownSession(_)) => {
+            let _ = tx
+                .send(Ok(LiveAck {
+                    session: session_id.to_owned(),
+                    merged_version: String::new(),
+                    content: String::new(),
+                    issues: vec![ValidationIssue {
+                        code: "unknown_session".to_owned(),
+                        message: format!("session `{session_id}` not open"),
+                        anchor: String::new(),
+                    }],
+                }))
+                .await;
+            false
+        }
+        Err(e) => {
+            let _ = tx
+                .send(Err(Status::internal(format!("live_session: {e}"))))
+                .await;
+            false
+        }
     }
 }
 
