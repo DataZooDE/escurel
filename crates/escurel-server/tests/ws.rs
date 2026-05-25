@@ -329,7 +329,13 @@ async fn invalid_token_rejects_upgrade() {
 }
 
 #[tokio::test]
-async fn session_hello_returns_live_session_unavailable_error_in_m3() {
+async fn session_hello_with_unknown_id_returns_unknown_session_error() {
+    // M4.4 wires WS attach to an open `SessionManager` entry; a
+    // `hello.session = <id>` for an id the registry doesn't know
+    // is rejected with `unknown_session` and the socket closes.
+    // The end-to-end attach happy path lives in `tests/ws_session.rs`;
+    // this M3-era harness has no `crdt_backend` wired and so can
+    // only exercise the negative path.
     let h = start_authed(None).await;
     let t = token(&h.keys, &h.issuer, TENANT);
     let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.base_ws_url, Some(&t)))
@@ -340,7 +346,7 @@ async fn session_hello_returns_live_session_unavailable_error_in_m3() {
 
     let err = recv_json(&mut sock).await;
     assert_eq!(err["type"], "error");
-    assert_eq!(err["code"], "live_session_unavailable");
+    assert_eq!(err["code"], "unknown_session");
 
     // Server should close the socket after the error.
     // We tolerate either a Close frame or a clean stream-end.
@@ -349,7 +355,7 @@ async fn session_hello_returns_live_session_unavailable_error_in_m3() {
         Ok(Some(Ok(Message::Close(_)))) | Ok(None) => {}
         Ok(Some(Ok(other))) => panic!("expected close, got {other:?}"),
         Ok(Some(Err(_))) => {}
-        Err(_) => panic!("server did not close after session hello in M3"),
+        Err(_) => panic!("server did not close after unknown_session error"),
     }
     h.handle.shutdown().await;
 }
