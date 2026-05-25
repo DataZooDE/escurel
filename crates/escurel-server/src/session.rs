@@ -220,9 +220,25 @@ impl SessionManager {
     /// of the M4.2 API surface for M4.3+ transports — so it
     /// reads as dead code in the lib build.
     #[must_use]
-    #[allow(dead_code)] // M4.3 WS / gRPC bidi consumer.
+    #[allow(dead_code)] // M4.4 WS attach consumer.
     pub fn page_id_of(&self, session_id: &str) -> Option<String> {
         self.entries.get(session_id).map(|e| e.page_id.clone())
+    }
+
+    /// Read the current text content of an open session. Used by
+    /// the live transports (gRPC bidi attach in M4.3, WS attach in
+    /// M4.4) to populate the `content` field of an `attach` ack
+    /// without forcing the caller to keep a parallel mirror of the
+    /// doc.
+    ///
+    /// Returns `None` when the session id is unknown — the caller
+    /// surfaces that as the spec's `unknown_session` issue.
+    pub async fn current_content(&self, session_id: &str) -> Option<String> {
+        let doc = {
+            let entry = self.entries.get(session_id)?;
+            Arc::clone(&entry.doc)
+        };
+        Some(doc.current_content().await)
     }
 }
 
