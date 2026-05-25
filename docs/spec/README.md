@@ -46,6 +46,7 @@ decision that needed to be locked before code can be written.
 | [`storage.md`](storage.md) | Per-tenant FS layout, single DuckDB store (relational + `vss` + `fts` + CRDT op log), markdown source of truth, S3 driver, audit/rebuild |
 | [`platform.md`](platform.md) | OIDC auth, tenancy resolution, admin & lifecycle API, quotas, observability |
 | [`roadmap.md`](roadmap.md) | Milestones, v1 cut-line, deferred items, license audit recap |
+| [`dx.md`](dx.md) | Downstream-app integration contract: `EscurelProcess`, `escurel-client`, `AuthMode`, fixture seeding, the `escurel → app → triton → frontend` chaining recipe |
 
 Read this README first for shape; the four siblings are the
 detail one layer down. Cross-references from this file to
@@ -339,6 +340,11 @@ The cut line for v1 (the binary you can run in production):
 - One client: `escurel` CLI (operator + agent-style usage)
 - One mandatory in-corpus skill: `escurel` meta-skill, shipped with
   every new tenant
+- Downstream-app integration contract ([`dx.md`](dx.md)): `escurel-client`
+  + `escurel-test-support` (`EscurelProcess`, `AuthMode::TestIssuer`,
+  `FixtureBuilder`, `McpTestClient`) so new applications can wire
+  escurel into their integration tests without copying plumbing out of
+  this repo's crate tests
 
 What's explicitly **not** v1 (see [`roadmap.md`](roadmap.md)):
 
