@@ -11,6 +11,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use escurel_admin::TenantStore;
 use escurel_auth::OidcVerifier;
 use escurel_index::Indexer;
 use escurel_proto::v1::escurel_admin_server::EscurelAdminServer;
@@ -56,6 +57,13 @@ pub struct ServerConfig {
     /// dispatch. Required `verifier` to be set too (the tenant
     /// id comes from the verified token).
     pub quota: Option<Arc<QuotaManager>>,
+    /// Backing store for the admin tenant-CRUD RPCs. `None`
+    /// means every tenant CRUD RPC returns
+    /// `Status::failed_precondition` — useful for health-only
+    /// deployments and for the M3 grpc_admin stubs test (which
+    /// keeps proving the role-gate without exercising the new
+    /// implementation surface).
+    pub tenant_store: Option<Arc<dyn TenantStore>>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -81,6 +89,7 @@ impl ServerConfig {
             indexer: None,
             verifier: None,
             quota: None,
+            tenant_store: None,
         }
     }
 }
@@ -143,6 +152,7 @@ pub(crate) struct AppState {
     pub(crate) indexer: Option<Arc<Indexer>>,
     pub(crate) verifier: Option<Arc<OidcVerifier>>,
     pub(crate) quota: Option<Arc<QuotaManager>>,
+    pub(crate) tenant_store: Option<Arc<dyn TenantStore>>,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -156,6 +166,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         indexer: config.indexer.clone(),
         verifier: config.verifier.clone(),
         quota: config.quota.clone(),
+        tenant_store: config.tenant_store.clone(),
     };
 
     let app = Router::new()

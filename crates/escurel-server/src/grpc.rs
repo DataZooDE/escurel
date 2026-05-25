@@ -29,9 +29,11 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use escurel_admin::{AdminError, TenantSpec as AdminTenantSpec, TenantStore};
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_index::{Direction, Indexer, OrderDir};
 use escurel_md::PageType;
+use escurel_proto::v1::TenantSpec as ProtoTenantSpec;
 use escurel_proto::v1::escurel_admin_server::EscurelAdmin;
 use escurel_proto::v1::escurel_server::Escurel;
 use escurel_proto::v1::{
@@ -434,6 +436,41 @@ fn wikilink_to_proto(w: &escurel_md::wikilink::WikilinkParsed) -> WikilinkParsed
     }
 }
 
+fn proto_to_admin_spec(spec: Option<ProtoTenantSpec>) -> Result<AdminTenantSpec, Status> {
+    let s = spec.ok_or_else(|| Status::invalid_argument("missing TenantSpec"))?;
+    Ok(AdminTenantSpec {
+        tenant_id: s.tenant_id,
+        display_name: s.display_name,
+    })
+}
+
+fn admin_to_proto_spec(s: &AdminTenantSpec) -> ProtoTenantSpec {
+    ProtoTenantSpec {
+        tenant_id: s.tenant_id.clone(),
+        display_name: s.display_name.clone(),
+    }
+}
+
+/// Translate an [`AdminError`] into a `tonic::Status` for the
+/// admin RPCs. The error→code mapping is the same shape the spec
+/// describes for admin endpoints in `docs/spec/protocol.md
+/// §Admin surface`: invalid input → `invalid_argument`,
+/// duplicate create → `already_exists`, missing tenant on update
+/// → `not_found`, real I/O / corruption failures → `internal`.
+fn admin_status(err: AdminError) -> Status {
+    match err {
+        AdminError::InvalidTenantId(_) => Status::invalid_argument(err.to_string()),
+        AdminError::AlreadyExists(_) => Status::already_exists(err.to_string()),
+        AdminError::Io { ref source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
+            Status::not_found(err.to_string())
+        }
+        AdminError::Io { .. }
+        | AdminError::Duckdb { .. }
+        | AdminError::Migration { .. }
+        | AdminError::Malformed { .. } => Status::internal(err.to_string()),
+    }
+}
+
 // ====================================================================
 // EscurelAdmin
 // ====================================================================
@@ -482,6 +519,13 @@ impl EscurelAdminGrpc {
         }
         Ok(ctx)
     }
+
+    fn tenant_store(&self) -> Result<&Arc<dyn TenantStore>, Status> {
+        self.state
+            .tenant_store
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("server has no tenant_store wired"))
+    }
 }
 
 type StreamOf<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
@@ -506,7 +550,12 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<TenantCreateRequest>,
     ) -> Result<Response<TenantCreateResponse>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — tenant CRUD"))
+        let store = self.tenant_store()?.clone();
+        let spec = proto_to_admin_spec(req.into_inner().spec)?;
+        store.create(&spec).await.map_err(admin_status)?;
+        Ok(Response::new(TenantCreateResponse {
+            spec: Some(admin_to_proto_spec(&spec)),
+        }))
     }
 
     async fn tenant_list(
@@ -514,7 +563,11 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<TenantListRequest>,
     ) -> Result<Response<TenantListResponse>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — tenant CRUD"))
+        let store = self.tenant_store()?.clone();
+        let specs = store.list().await.map_err(admin_status)?;
+        Ok(Response::new(TenantListResponse {
+            tenants: specs.iter().map(admin_to_proto_spec).collect(),
+        }))
     }
 
     async fn tenant_get(
@@ -522,7 +575,14 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<TenantGetRequest>,
     ) -> Result<Response<TenantGetResponse>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — tenant CRUD"))
+        let store = self.tenant_store()?.clone();
+        let id = req.into_inner().tenant_id;
+        match store.get(&id).await.map_err(admin_status)? {
+            None => Err(Status::not_found(format!("tenant `{id}` not found"))),
+            Some(spec) => Ok(Response::new(TenantGetResponse {
+                spec: Some(admin_to_proto_spec(&spec)),
+            })),
+        }
     }
 
     async fn tenant_update(
@@ -530,7 +590,12 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<TenantUpdateRequest>,
     ) -> Result<Response<TenantUpdateResponse>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — tenant CRUD"))
+        let store = self.tenant_store()?.clone();
+        let spec = proto_to_admin_spec(req.into_inner().spec)?;
+        store.update(&spec).await.map_err(admin_status)?;
+        Ok(Response::new(TenantUpdateResponse {
+            spec: Some(admin_to_proto_spec(&spec)),
+        }))
     }
 
     async fn tenant_delete(
@@ -538,7 +603,10 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<TenantDeleteRequest>,
     ) -> Result<Response<TenantDeleteResponse>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — tenant CRUD"))
+        let store = self.tenant_store()?.clone();
+        let id = req.into_inner().tenant_id;
+        let deleted = store.delete(&id).await.map_err(admin_status)?;
+        Ok(Response::new(TenantDeleteResponse { deleted }))
     }
 
     type TenantExportStream = StreamOf<TenantExportChunk>;
@@ -560,7 +628,31 @@ impl EscurelAdmin for EscurelAdminGrpc {
 
     async fn audit(&self, req: Request<AuditRequest>) -> Result<Response<AuditResponse>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented("M4 — audit streaming"))
+        let indexer = self
+            .state
+            .indexer
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("server has no indexer wired"))?;
+        let r = req.into_inner();
+        // Multi-tenant routing lands later — for now the audited
+        // tenant must match the indexer's. Calling for any other
+        // tenant is a programmer mistake, not a runtime condition,
+        // so we surface it as `failed_precondition`.
+        if r.tenant_id != indexer.tenant() {
+            return Err(Status::failed_precondition(format!(
+                "audit tenant `{}` does not match indexer tenant `{}`",
+                r.tenant_id,
+                indexer.tenant()
+            )));
+        }
+        let drift = indexer
+            .audit()
+            .await
+            .map_err(|e| Status::internal(format!("audit: {e}")))?;
+        Ok(Response::new(AuditResponse {
+            markdown_not_in_duckdb: drift.markdown_not_in_duckdb,
+            indexed_but_no_markdown: drift.indexed_but_no_markdown,
+        }))
     }
 
     type RebuildStream = StreamOf<RebuildProgress>;
