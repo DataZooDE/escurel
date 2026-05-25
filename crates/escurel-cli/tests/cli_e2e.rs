@@ -315,8 +315,52 @@ async fn update_page_via_stdin_round_trips() {
     h.handle.shutdown().await;
 }
 
+/// When the server is configured without an OidcVerifier (dev /
+/// on-host mode), the CLI must still work without a token —
+/// don't gate on `ESCUREL_TOKEN` before even attempting the call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn missing_token_returns_unauthenticated_error() {
+async fn unauthenticated_mode_works_without_token() {
+    // Bring up a gateway with no verifier wired.
+    let (indexer, store_dir, db_dir) = make_indexer().await;
+    let handle = serve(ServerConfig {
+        listen: "127.0.0.1:0".to_owned(),
+        grpc_listen: Some("127.0.0.1:0".to_owned()),
+        version: "1.0.0-test".to_owned(),
+        readiness: Arc::new(AlwaysReady),
+        indexer: Some(indexer),
+        verifier: None,
+        quota: None,
+    })
+    .await
+    .unwrap();
+    let grpc_addr = handle.grpc_addr.unwrap();
+
+    let assert = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("escurel")
+            .unwrap()
+            .env("ESCUREL_SERVER", format!("http://{grpc_addr}"))
+            .env_remove("ESCUREL_TOKEN")
+            .args(["list-skills"])
+            .assert()
+            .success()
+    })
+    .await
+    .unwrap();
+    let out: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert!(
+        out["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == "customer")
+    );
+    handle.shutdown().await;
+    drop(store_dir);
+    drop(db_dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_token_against_authed_server_returns_unauthenticated() {
     let h = start().await;
     let output = tokio::task::spawn_blocking({
         let h_addr = h.grpc_addr;

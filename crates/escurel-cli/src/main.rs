@@ -107,13 +107,18 @@ struct RunStoredQueryArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let token = cli
-        .token
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("ESCUREL_TOKEN not set (use --token or env)"))?;
-    let bearer: MetadataValue<_> = format!("Bearer {token}")
-        .parse()
-        .context("token contains characters invalid in an HTTP header")?;
+    // The verifier on the server is optional (dev / on-host mode
+    // runs unauthenticated), so the CLI mirrors that: when no
+    // token is configured, send the RPC without an `authorization`
+    // metadata header and let the server enforce its own policy.
+    let bearer: Option<MetadataValue<tonic::metadata::Ascii>> = match cli.token.as_deref() {
+        Some(t) if !t.is_empty() => Some(
+            format!("Bearer {t}")
+                .parse()
+                .context("token contains characters invalid in an HTTP header")?,
+        ),
+        _ => None,
+    };
 
     let channel = Channel::from_shared(cli.server.clone())
         .with_context(|| format!("invalid --server URL `{}`", cli.server))?
@@ -336,9 +341,11 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn authed<T>(body: T, bearer: &MetadataValue<tonic::metadata::Ascii>) -> tonic::Request<T> {
+fn authed<T>(body: T, bearer: &Option<MetadataValue<tonic::metadata::Ascii>>) -> tonic::Request<T> {
     let mut req = tonic::Request::new(body);
-    req.metadata_mut().insert("authorization", bearer.clone());
+    if let Some(b) = bearer {
+        req.metadata_mut().insert("authorization", b.clone());
+    }
     req
 }
 
