@@ -42,6 +42,7 @@ async fn start(readiness: Arc<dyn ReadinessProbe>) -> escurel_server::ServerHand
         verifier: None,
         quota: None,
         tenant_store: None,
+        crdt_backend: None,
     };
     serve(cfg).await.expect("server starts")
 }

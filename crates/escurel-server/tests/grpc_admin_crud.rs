@@ -169,6 +169,7 @@ async fn start() -> Harness {
         verifier: Some(verifier),
         quota: None,
         tenant_store: Some(tenant_store),
+        crdt_backend: None,
     })
     .await
     .unwrap();

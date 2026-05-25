@@ -31,6 +31,7 @@ mod grpc;
 mod health;
 mod mcp;
 mod server;
+mod session;
 mod ws;
 
 pub use health::{AlwaysReady, ReadinessProbe, ReadinessReport};

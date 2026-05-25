@@ -173,6 +173,7 @@ async fn start() -> Harness {
         verifier: Some(verifier),
         quota: None,
         tenant_store: None,
+        crdt_backend: None,
     })
     .await
     .unwrap();
@@ -332,6 +333,7 @@ async fn unauthenticated_mode_works_without_token() {
         verifier: None,
         quota: None,
         tenant_store: None,
+        crdt_backend: None,
     })
     .await
     .unwrap();

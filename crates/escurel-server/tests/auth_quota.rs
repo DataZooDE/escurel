@@ -152,6 +152,7 @@ async fn start_authed(quota: Option<Arc<QuotaManager>>) -> Harness {
         verifier: Some(verifier),
         quota,
         tenant_store: None,
+        crdt_backend: None,
     })
     .await
     .unwrap();
