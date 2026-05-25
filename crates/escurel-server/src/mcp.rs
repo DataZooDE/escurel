@@ -34,7 +34,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
-use escurel_index::{Direction, Indexer, Issue, OrderDir};
+use escurel_index::{
+    AppendChatMessage, ChatMessage, Direction, Indexer, Issue, ListChatMessages, OrderDir,
+};
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
 use serde::Deserialize;
@@ -273,7 +275,7 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         // `apply_op` is a write; `open_session` debits a session
         // slot (semaphore, not a token bucket) inside the tool
         // body; `close_session` is a cleanup and does not debit.
-        "update_page" | "apply_op" => Dimension::Writes,
+        "update_page" | "apply_op" | "append_message" => Dimension::Writes,
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -338,6 +340,8 @@ async fn dispatch_tools_call(
         "run_stored_query" => tool_run_stored_query(indexer, params.arguments).await,
         "validate" => tool_validate(indexer, params.arguments).await,
         "update_page" => tool_update_page(indexer, params.arguments).await,
+        "append_message" => tool_append_message(indexer, params.arguments).await,
+        "list_messages" => tool_list_messages(indexer, params.arguments).await,
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
         ))),
@@ -632,6 +636,126 @@ async fn tool_update_page(indexer: &Indexer, args: Value) -> Result<Value, JsonR
     }))
 }
 
+// --- chat tools (M-Chat, issue #63) -----------------------------
+
+#[derive(Deserialize)]
+struct AppendMessageArgs {
+    chat_group_id: String,
+    role: String,
+    content: String,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    ts: Option<String>,
+    #[serde(default)]
+    metadata: Option<Value>,
+    #[serde(default)]
+    msg_id: Option<String>,
+    #[serde(default = "default_embed")]
+    embed: bool,
+}
+
+fn default_embed() -> bool {
+    true
+}
+
+async fn tool_append_message(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: AppendMessageArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("append_message: {e}")))?;
+    let stored = indexer
+        .append_chat_message(AppendChatMessage {
+            chat_group_id: &a.chat_group_id,
+            role: &a.role,
+            content: &a.content,
+            author: a.author.as_deref(),
+            ts: a.ts.as_deref(),
+            metadata: a.metadata,
+            msg_id: a.msg_id.as_deref(),
+            embed: a.embed,
+        })
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("append_message: {e}")))?;
+    Ok(json!({
+        "msg_id": stored.msg_id,
+        "ts": stored.ts,
+    }))
+}
+
+#[derive(Deserialize)]
+struct ListMessagesArgs {
+    chat_group_id: String,
+    #[serde(default)]
+    since: Option<String>,
+    #[serde(default)]
+    until: Option<String>,
+    #[serde(default = "default_chat_limit")]
+    limit: usize,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    direction: Option<String>,
+}
+
+fn default_chat_limit() -> usize {
+    100
+}
+
+async fn tool_list_messages(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: ListMessagesArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("list_messages: {e}")))?;
+    // Default to descending — typical "give me the most recent N"
+    // call site. Consumers paging the forward log pass "asc".
+    let direction = match a
+        .direction
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        None | Some("") | Some("desc") => OrderDir::Desc,
+        Some("asc") => OrderDir::Asc,
+        Some(other) => {
+            return Err(JsonRpcError::invalid_params(format!(
+                "list_messages: direction `{other}`; expected asc|desc",
+            )));
+        }
+    };
+    let page = indexer
+        .list_chat_messages(ListChatMessages {
+            chat_group_id: &a.chat_group_id,
+            since: a.since.as_deref(),
+            until: a.until.as_deref(),
+            limit: a.limit,
+            cursor: a.cursor.as_deref(),
+            direction,
+        })
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_messages: {e}")))?;
+    let messages: Vec<Value> = page.messages.iter().map(chat_message_to_json).collect();
+    let mut out = json!({ "messages": messages });
+    if let Some(c) = page.next_cursor {
+        out["next_cursor"] = json!(c);
+    }
+    Ok(out)
+}
+
+fn chat_message_to_json(m: &ChatMessage) -> Value {
+    let mut out = json!({
+        "chat_group_id": m.chat_group_id,
+        "msg_id": m.msg_id,
+        "ts": m.ts,
+        "role": m.role,
+        "content": m.content,
+        "embedded": m.embedded,
+    });
+    if let Some(author) = &m.author {
+        out["author"] = json!(author);
+    }
+    if let Some(meta) = &m.metadata {
+        out["metadata"] = meta.clone();
+    }
+    out
+}
+
 // --- session tools (M4.2) --------------------------------------
 
 #[derive(Deserialize)]
@@ -866,6 +990,64 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "page_id": { "type": "string" },
                         "content": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "append_message",
+                "Append a message to a chat-group's conversation history. \
+                 `chat_group_id` is opaque to escurel; consumers own the \
+                 identifier scheme. `embed` defaults to true; set false to \
+                 skip the embedding cost for high-volume sources.",
+                json!({
+                    "type": "object",
+                    "required": ["chat_group_id", "role", "content"],
+                    "properties": {
+                        "chat_group_id": { "type": "string" },
+                        "role": {
+                            "type": "string",
+                            "enum": ["user", "assistant", "system", "tool"]
+                        },
+                        "content": { "type": "string" },
+                        "author": { "type": "string" },
+                        "ts": {
+                            "type": "string",
+                            "description": "RFC-3339 UTC; server stamps CURRENT_TIMESTAMP when absent"
+                        },
+                        "metadata": { "type": "object" },
+                        "msg_id": {
+                            "type": "string",
+                            "description": "Caller-supplied id; server generates a ULID when absent"
+                        },
+                        "embed": { "type": "boolean", "default": true }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_messages",
+                "Read back a chat-group's conversation history time-ordered. \
+                 `since` is inclusive, `until` is exclusive. `direction` \
+                 defaults to `desc` (most recent first). Use `next_cursor` \
+                 to page.",
+                json!({
+                    "type": "object",
+                    "required": ["chat_group_id"],
+                    "properties": {
+                        "chat_group_id": { "type": "string" },
+                        "since": { "type": "string" },
+                        "until": { "type": "string" },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000,
+                            "default": 100
+                        },
+                        "cursor": { "type": "string" },
+                        "direction": {
+                            "type": "string",
+                            "enum": ["asc", "desc"],
+                            "default": "desc"
+                        }
                     }
                 }),
             ),
