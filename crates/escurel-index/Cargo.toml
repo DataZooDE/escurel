@@ -19,6 +19,14 @@ homepage.workspace = true
 # Cold compile ~2–3 min on a parallel host; cached by
 # Swatinem/rust-cache for ~30s on subsequent CI runs.
 duckdb = { version = "1", features = ["bundled"] }
+anyhow = "1"
+async-trait = "0.1"
+# `escurel-crdt` is pulled in solely so we can implement its
+# `CitationLookup` trait on top of the `Indexer`'s DuckDB
+# connection (see `citation.rs`). This is the only escurel-crdt
+# surface we touch — the dep is one-way and does NOT create a
+# cycle (escurel-crdt does not depend on escurel-index).
+escurel-crdt = { path = "../escurel-crdt" }
 escurel-embed = { path = "../escurel-embed" }
 escurel-md = { path = "../escurel-md" }
 escurel-storage = { path = "../escurel-storage" }
