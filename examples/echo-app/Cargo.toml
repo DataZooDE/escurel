@@ -1,0 +1,30 @@
+[package]
+name = "echo-app"
+description = "Minimal demonstration that the escurel-client + escurel-test-support contract holds end-to-end: an axum backend that reads a wikilink-named page from escurel and renders it over HTTP. See docs/spec/dx.md §\"Chaining recipe\"."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+escurel-client = { path = "../../crates/escurel-client" }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+escurel-test-support = { path = "../../crates/escurel-test-support" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
