@@ -79,7 +79,7 @@ impl LiveDoc {
         // window; tune later if profiling shows starvation.
         let (tx, rx) = mpsc::channel::<Command>(64);
         let page_id = page_id.to_owned();
-        tokio::spawn(actor_loop(doc, backend, page_id, op_count, rx));
+        tokio::spawn(actor_loop(doc, backend, page_id, op_count, op_count, rx));
 
         Ok(Self { tx })
     }
@@ -131,6 +131,7 @@ async fn actor_loop(
     doc: LoroDoc,
     backend: Arc<dyn CrdtBackend>,
     page_id: String,
+    initial_op_count: u64,
     mut op_count: u64,
     mut rx: mpsc::Receiver<Command>,
 ) {
@@ -144,7 +145,9 @@ async fn actor_loop(
                 let _ = reply.send(read_body(&doc));
             }
             Command::Close(commit, reply) => {
-                let result = handle_close(&doc, &backend, &page_id, op_count, commit).await;
+                let result =
+                    handle_close(&doc, &backend, &page_id, initial_op_count, op_count, commit)
+                        .await;
                 let _ = reply.send(result);
                 break;
             }
@@ -175,10 +178,16 @@ async fn handle_close(
     doc: &LoroDoc,
     backend: &Arc<dyn CrdtBackend>,
     page_id: &str,
+    initial_op_count: u64,
     op_count: u64,
     commit: bool,
 ) -> Result<Version, Error> {
-    if commit {
+    // Skip the snapshot when no ops were applied this session: the
+    // current in-memory state matches what we loaded from disk, so
+    // a fresh snapshot at the same hlc would either be redundant
+    // or collide on `(page_id, snapshot_hlc)` PK (codex review on
+    // PR M4.5b).
+    if commit && op_count > initial_op_count {
         let bytes = doc.export(ExportMode::Snapshot)?;
         let hlc = i64::try_from(op_count).unwrap_or(i64::MAX);
         backend

@@ -622,6 +622,13 @@ impl EscurelAdmin for EscurelAdminGrpc {
         self.enforce_admin(req.metadata()).await?;
         let store = self.tenant_store()?.clone();
         let tenant_id = req.into_inner().tenant_id;
+        // Validate before constructing on-disk paths — `tenant_dir`
+        // is filesystem-direct (`root.join(tenant_id)`) and would
+        // happily resolve `../other`. CRUD/import paths route
+        // through `validate_tenant_id`; export bypasses them
+        // (codex review on PR M4.5b).
+        escurel_admin::validate_tenant_id(&tenant_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let tenant_dir = store
             .tenant_dir(&tenant_id)
             .ok_or_else(|| Status::failed_precondition("tenant store has no on-disk path"))?;
