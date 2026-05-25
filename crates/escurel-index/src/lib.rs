@@ -18,6 +18,7 @@
 //! golden image (`docs/deploy/substrate.md §6`); the auto-install
 //! egress is dev-only.
 
+pub mod chat;
 pub mod citation;
 pub mod indexer;
 pub mod query;
@@ -26,6 +27,7 @@ pub mod schema;
 pub mod search;
 pub mod validate;
 
+pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
 pub use indexer::{
     AuditDrift, Indexer, IndexerError, RebuildProgress, derive_attach_alias, is_safe_attach_source,
