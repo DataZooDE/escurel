@@ -1,10 +1,17 @@
 //! HTTP gateway for Escurel.
 //!
-//! Today the gateway ships only the substrate-aligned health
-//! surface — `/healthz`, `/readyz`, `/version`, `/metrics` —
-//! plus the test-driven `serve_on` entry point. The
-//! MCP-over-HTTP tool dispatcher and WebSocket endpoint land in
-//! follow-up PRs (M3.4b onwards).
+//! The gateway ships the substrate-aligned health surface —
+//! `/healthz`, `/readyz`, `/version`, `/metrics` — the
+//! MCP-over-HTTP dispatcher on `POST /mcp`, the optional gRPC
+//! mirror on `:8081`, and the WebSocket scaffolding on `GET /ws`.
+//! The WS endpoint authenticates the upgrade with the same
+//! [`OidcVerifier`][escurel_auth::OidcVerifier] used by HTTP and
+//! gRPC, occupies a session slot on the per-tenant
+//! [`QuotaManager`][escurel_quota::QuotaManager], and dispatches
+//! the presence + search-subscribe frames defined in
+//! `docs/spec/protocol.md §WebSocket framing`. The live CRDT
+//! frames (`hello`/`session`, `op`/`op_ack`) are stubbed with a
+//! typed error and land in M4.
 //!
 //! All four endpoints match the substrate-platform skill's
 //! runtime contract verbatim:
@@ -24,6 +31,7 @@ mod grpc;
 mod health;
 mod mcp;
 mod server;
+mod ws;
 
 pub use health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 pub use server::{ServerConfig, ServerError, ServerHandle, serve};
