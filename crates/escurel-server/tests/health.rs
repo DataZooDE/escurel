@@ -35,6 +35,7 @@ fn ready_one_down() -> Arc<dyn ReadinessProbe> {
 async fn start(readiness: Arc<dyn ReadinessProbe>) -> escurel_server::ServerHandle {
     let cfg = ServerConfig {
         listen: "127.0.0.1:0".to_owned(),
+        grpc_listen: None,
         version: "1.2.3-test".to_owned(),
         readiness,
         indexer: None,

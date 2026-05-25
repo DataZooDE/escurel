@@ -122,6 +122,7 @@ async fn start_with_seeded_indexer() -> Harness {
 
     let cfg = ServerConfig {
         listen: "127.0.0.1:0".to_owned(),
+        grpc_listen: None,
         version: "1.0.0-test".to_owned(),
         readiness: Arc::new(AlwaysReady),
         indexer: Some(indexer),
