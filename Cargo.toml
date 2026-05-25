@@ -9,6 +9,7 @@ members = [
     "crates/escurel-quota",
     "crates/escurel-proto",
     "crates/escurel-server",
+    "crates/escurel-cli",
 ]
 
 [workspace.package]
