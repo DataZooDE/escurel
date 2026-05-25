@@ -23,9 +23,13 @@
 //!   UNAVAILABLE` otherwise.
 //! - `/version` — `200 OK`, body = the `VERSION` env var at
 //!   process start.
-//! - `/metrics` — Prometheus text exposition. Today returns the
-//!   minimal `# HELP` / `# TYPE` shell; the OTel metric exporter
-//!   (M5) wires real numbers.
+//! - `/metrics` — Prometheus text exposition. Wired through
+//!   `escurel-obs::Metrics` (PR M5.1b): the dispatcher debits
+//!   `escurel_requests_total{route, status}` on every accepted
+//!   request, the latency histogram is observed in the same
+//!   place, and `escurel_up` flips to `1` at `serve()` start.
+//!   The OTLP trace exporter is opt-in via
+//!   `ESCUREL_OTLP_ENDPOINT`; when unset traces are a no-op.
 
 mod grpc;
 mod health;

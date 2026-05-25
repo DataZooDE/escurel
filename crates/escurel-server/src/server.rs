@@ -15,6 +15,7 @@ use escurel_admin::TenantStore;
 use escurel_auth::OidcVerifier;
 use escurel_crdt::CrdtBackend;
 use escurel_index::Indexer;
+use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
 use escurel_proto::v1::escurel_admin_server::EscurelAdminServer;
 use escurel_proto::v1::escurel_server::EscurelServer;
 use escurel_quota::QuotaManager;
@@ -23,6 +24,7 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+use tower_http::trace::TraceLayer;
 
 use crate::grpc::{EscurelAdminGrpc, EscurelGrpc};
 use crate::health::{AlwaysReady, ReadinessProbe, ReadinessReport};
@@ -125,6 +127,12 @@ pub struct ServerHandle {
     grpc_shutdown_tx: Option<oneshot::Sender<()>>,
     join: JoinHandle<()>,
     grpc_join: Option<JoinHandle<()>>,
+    /// Telemetry guard. `Some` when this `serve()` call was the
+    /// one that installed the global subscriber; `None` when a
+    /// pre-existing subscriber (e.g. a test's) was already
+    /// installed. Held for the lifetime of the server so the OTLP
+    /// exporter (when configured) flushes on shutdown.
+    _telemetry: Option<escurel_obs::TelemetryGuard>,
 }
 
 impl std::fmt::Debug for ServerHandle {
@@ -166,6 +174,10 @@ pub(crate) struct AppState {
     /// Always present. Operations no-op (return a JSON-RPC error)
     /// when `crdt_backend` is `None`.
     pub(crate) sessions: Arc<SessionManager>,
+    /// Per-process metrics registry. Handlers debit it on the
+    /// `(route, status)` axis; `/metrics` renders it as the
+    /// Prometheus text exposition body.
+    pub(crate) metrics: Arc<Metrics>,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -173,6 +185,20 @@ pub(crate) struct AppState {
 /// can read back the local addresses. Both background tasks run
 /// until [`ServerHandle::shutdown`] fires or the process exits.
 pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
+    // Install the global JSON tracing subscriber once per process.
+    // Tests install their own subscriber up front (a scoped one
+    // pointing at a buffer) and the `AlreadyInstalled` error is
+    // ignored — `init_telemetry` is idempotent from the caller's
+    // perspective. The returned `TelemetryGuard` is parked on the
+    // server handle so the OTLP exporter (when configured) flushes
+    // on shutdown.
+    let telemetry_guard = install_telemetry(&config);
+    let metrics_registry = Arc::new(Metrics::new());
+    // The gateway is "up" the moment we build state — flip the
+    // liveness gauge before binding the listener so a /metrics
+    // scrape that races the first request still sees `escurel_up
+    // 1` as soon as the route is wired.
+    metrics_registry.set_up(true);
     let state = AppState {
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
@@ -182,6 +208,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         tenant_store: config.tenant_store.clone(),
         crdt_backend: config.crdt_backend.clone(),
         sessions: Arc::new(SessionManager::new()),
+        metrics: metrics_registry,
     };
 
     let app = Router::new()
@@ -191,7 +218,12 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         .route("/metrics", get(metrics))
         .route("/mcp", post(mcp))
         .route("/ws", get(ws_upgrade))
-        .with_state(state.clone());
+        .with_state(state.clone())
+        // tower-http's TraceLayer opens one span per request
+        // (`http.request`) and emits a record at completion with
+        // status + latency. Layered after `with_state` so it sees
+        // every route uniformly.
+        .layer(TraceLayer::new_for_http());
 
     let listener = TcpListener::bind(&config.listen)
         .await
@@ -225,7 +257,27 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         grpc_shutdown_tx,
         join,
         grpc_join,
+        _telemetry: telemetry_guard,
     })
+}
+
+/// Install the process-global JSON tracing subscriber. Errors
+/// returned by `init_telemetry` (notably `AlreadyInstalled`) are
+/// swallowed: tests pre-install their own subscriber, and a
+/// second `serve()` call in the same process must not panic. The
+/// production path's first call gets the real installer; every
+/// later call (or a test's `serve()` after the test installed its
+/// own subscriber) silently keeps the existing global.
+fn install_telemetry(config: &ServerConfig) -> Option<escurel_obs::TelemetryGuard> {
+    let env = std::env::var("ESCUREL_ENV").unwrap_or_else(|_| "dev".to_owned());
+    let cfg = TelemetryConfig {
+        app: "escurel".to_owned(),
+        env,
+        version: config.version.clone(),
+        otlp_endpoint: std::env::var("ESCUREL_OTLP_ENDPOINT").ok(),
+        json_logs: true,
+    };
+    init_telemetry(cfg).ok()
 }
 
 async fn spawn_grpc(
@@ -247,6 +299,11 @@ async fn spawn_grpc(
     let (tx, rx) = oneshot::channel();
     let join = tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
+            // Open a span per RPC. tonic 0.12 honours the Tower
+            // `trace` layer through `Server::layer`. Records emit
+            // a structured `http.request` span with method + uri
+            // and a completion event at the end.
+            .layer(TraceLayer::new_for_grpc())
             .add_service(agent_svc)
             .add_service(admin_svc)
             .serve_with_incoming_shutdown(incoming, async move {
@@ -280,10 +337,8 @@ async fn version(State(state): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, state.version.clone())
 }
 
-async fn metrics() -> impl IntoResponse {
-    let body = "# HELP escurel_up The gateway is alive.\n\
-                # TYPE escurel_up gauge\n\
-                escurel_up 1\n";
+async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    let body = state.metrics.render_prometheus();
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],

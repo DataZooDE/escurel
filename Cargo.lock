@@ -2312,6 +2312,7 @@ dependencies = [
  "escurel-embed",
  "escurel-index",
  "escurel-md",
+ "escurel-obs",
  "escurel-proto",
  "escurel-quota",
  "escurel-storage",
@@ -2330,6 +2331,9 @@ dependencies = [
  "tokio-tungstenite 0.24.0",
  "tonic 0.12.3",
  "tower 0.5.3",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
  "ulid",
 ]
 
@@ -6483,6 +6487,7 @@ dependencies = [
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
+ "tracing",
  "url",
 ]
 

@@ -39,6 +39,7 @@ use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tracing::Instrument;
 
 use crate::session::{SessionError, SessionManager};
 
@@ -79,6 +80,40 @@ pub async fn mcp(
     headers: HeaderMap,
     Json(req): Json<JsonRpcRequest>,
 ) -> axum::response::Response {
+    // Every accepted /mcp request bumps the request counter so the
+    // /metrics scrape reflects real traffic. Status is recorded as
+    // 200 here (the JSON-RPC envelope carries any error inside a
+    // 200 body); transport-level failures (auth 401, quota 429)
+    // are bumped separately at their own return points.
+    state.metrics.inc_request("/mcp", 200);
+
+    // Per-request span: every record emitted while the dispatcher
+    // runs carries `request_id` + `method` + `tool` (when
+    // applicable) hoisted to the top level by escurel-obs's JSON
+    // formatter. Substrate audit collectors key off `request_id`,
+    // and the operator dashboards group by `tool`. We instrument
+    // an inner async block (not `span.enter()`) so the span guard
+    // doesn't cross an `.await` — the classic async-tracing
+    // footgun where a thread-local guard leaks into the next
+    // poll's task.
+    let request_id = request_id_from(&headers);
+    let tool_name = tool_name_from(&req.method, &req.params).unwrap_or_default();
+    let span = tracing::info_span!(
+        "mcp.request",
+        request_id = %request_id,
+        method = %req.method,
+        tool = %tool_name,
+    );
+    mcp_inner(state, headers, req).instrument(span).await
+}
+
+async fn mcp_inner(
+    state: crate::server::AppState,
+    headers: HeaderMap,
+    req: JsonRpcRequest,
+) -> axum::response::Response {
+    tracing::info!(msg = "mcp.request.start", "mcp.request.start");
+
     if req.jsonrpc != "2.0" {
         return error_response(req.id, -32600, "invalid jsonrpc version");
     }
@@ -152,6 +187,34 @@ async fn enforce_auth(
         .verify(&token)
         .await
         .map_err(|e| auth_failure(format!("token rejected: {e}")))
+}
+
+/// Read `X-Request-Id` from `headers` if present and non-empty;
+/// otherwise mint a fresh ULID. Substrate audit collectors key
+/// off `request_id`, and tests pin a known value through the
+/// header to assert end-to-end propagation.
+fn request_id_from(headers: &HeaderMap) -> String {
+    if let Some(raw) = headers.get("x-request-id").and_then(|v| v.to_str().ok()) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_owned();
+        }
+    }
+    ulid::Ulid::new().to_string()
+}
+
+/// Extract the tool name from a JSON-RPC `tools/call` request so
+/// we can stamp it on the request span. Returns `None` for other
+/// methods (e.g. `tools/list`); the span then carries an empty
+/// `tool` field rather than `Optional`.
+fn tool_name_from(method: &str, params: &Value) -> Option<String> {
+    if method != "tools/call" {
+        return None;
+    }
+    params
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
