@@ -29,16 +29,23 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use escurel_auth::{AuthContext, OidcVerifier};
+use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_index::{Direction, Indexer, OrderDir};
 use escurel_md::PageType;
+use escurel_proto::v1::escurel_admin_server::EscurelAdmin;
 use escurel_proto::v1::escurel_server::Escurel;
 use escurel_proto::v1::{
-    Edge, ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, ListInstancesRequest,
-    ListInstancesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp,
-    NeighboursRequest, NeighboursResponse, PageRef, ResolveRequest, ResolveResponse,
-    RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill,
-    StoredQueryColumn, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
+    AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
+    CompactLanesRequest, CompactProgress, Edge, EmbeddingReloadRequest, EmbeddingReloadResponse,
+    ExpandBlock, ExpandRequest, ExpandResponse, HealthRequest, HealthResponse, InstanceInfo,
+    ListInstancesRequest, ListInstancesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck,
+    LiveOp, NeighboursRequest, NeighboursResponse, PageRef, QuotaGetRequest, QuotaGetResponse,
+    RebuildProgress, RebuildRequest, ResolveRequest, ResolveResponse, RunStoredQueryRequest,
+    RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
+    TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
+    TenantExportChunk, TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportChunk,
+    TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
+    TenantUpdateResponse, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
     WikilinkParsed,
 };
 use escurel_quota::{Dimension, QuotaError};
@@ -368,17 +375,24 @@ async fn enforce_auth_grpc<R>(
     verifier: &OidcVerifier,
     req: &Request<R>,
 ) -> Result<AuthContext, Status> {
-    let raw = req
-        .metadata()
+    // Pull the token out of the metadata *before* the await so we
+    // don't borrow the request across it. Request bodies like
+    // `Streaming<T>` aren't `Sync`, which would otherwise make the
+    // returned future non-Send.
+    let token = extract_bearer(req.metadata())?.to_owned();
+    verifier
+        .verify(&token)
+        .await
+        .map_err(|e| Status::unauthenticated(format!("token rejected: {e}")))
+}
+
+fn extract_bearer(md: &tonic::metadata::MetadataMap) -> Result<&str, Status> {
+    let raw = md
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| Status::unauthenticated("missing authorization metadata"))?;
-    let token = strip_bearer(raw)
-        .ok_or_else(|| Status::unauthenticated("authorization must start with `Bearer `"))?;
-    verifier
-        .verify(token)
-        .await
-        .map_err(|e| Status::unauthenticated(format!("token rejected: {e}")))
+    strip_bearer(raw)
+        .ok_or_else(|| Status::unauthenticated("authorization must start with `Bearer `"))
 }
 
 fn strip_bearer(raw: &str) -> Option<&str> {
@@ -417,5 +431,183 @@ fn wikilink_to_proto(w: &escurel_md::wikilink::WikilinkParsed) -> WikilinkParsed
         anchor: w.anchor.clone().unwrap_or_default(),
         version: w.version.clone().unwrap_or_default(),
         alias: w.alias.clone().unwrap_or_default(),
+    }
+}
+
+// ====================================================================
+// EscurelAdmin
+// ====================================================================
+//
+// Stubs for the admin surface. `Health` returns the configured
+// version and works without auth (substrate liveness probe). Every
+// other RPC requires `Admin` role on the bearer JWT and returns
+// `Status::unimplemented` until the M4 admin endpoints land.
+
+pub(crate) struct EscurelAdminGrpc {
+    state: AppState,
+}
+
+impl EscurelAdminGrpc {
+    pub(crate) fn new(state: AppState) -> Self {
+        Self { state }
+    }
+
+    /// Enforce admin-role auth. Returns `Status::unauthenticated`
+    /// on missing/invalid token; `Status::permission_denied` when
+    /// the token verified but the caller is only `Role::Agent`.
+    ///
+    /// Takes only the `MetadataMap` — never the whole `Request<R>`
+    /// — because some admin RPCs accept `Streaming<T>` request
+    /// bodies, which aren't `Sync`, so borrowing the whole request
+    /// across the JWKS-fetch `.await` makes the handler future
+    /// non-`Send`.
+    async fn enforce_admin(
+        &self,
+        md: &tonic::metadata::MetadataMap,
+    ) -> Result<AuthContext, Status> {
+        let verifier = self
+            .state
+            .verifier
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("server has no verifier wired"))?;
+        let token = extract_bearer(md)?.to_owned();
+        let ctx = verifier
+            .verify(&token)
+            .await
+            .map_err(|e| Status::unauthenticated(format!("token rejected: {e}")))?;
+        if !matches!(ctx.role, Role::Admin) {
+            return Err(Status::permission_denied(
+                "admin role required (token has agent role only)",
+            ));
+        }
+        Ok(ctx)
+    }
+}
+
+type StreamOf<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
+
+#[tonic::async_trait]
+impl EscurelAdmin for EscurelAdminGrpc {
+    async fn health(
+        &self,
+        _req: Request<HealthRequest>,
+    ) -> Result<Response<HealthResponse>, Status> {
+        // Health is dependency-free auth-wise: substrate liveness
+        // probe must work with or without a token. The version
+        // field is the source of truth for which build is running.
+        Ok(Response::new(HealthResponse {
+            status: "ok".to_owned(),
+            version: self.state.version.clone(),
+        }))
+    }
+
+    async fn tenant_create(
+        &self,
+        req: Request<TenantCreateRequest>,
+    ) -> Result<Response<TenantCreateResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — tenant CRUD"))
+    }
+
+    async fn tenant_list(
+        &self,
+        req: Request<TenantListRequest>,
+    ) -> Result<Response<TenantListResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — tenant CRUD"))
+    }
+
+    async fn tenant_get(
+        &self,
+        req: Request<TenantGetRequest>,
+    ) -> Result<Response<TenantGetResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — tenant CRUD"))
+    }
+
+    async fn tenant_update(
+        &self,
+        req: Request<TenantUpdateRequest>,
+    ) -> Result<Response<TenantUpdateResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — tenant CRUD"))
+    }
+
+    async fn tenant_delete(
+        &self,
+        req: Request<TenantDeleteRequest>,
+    ) -> Result<Response<TenantDeleteResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — tenant CRUD"))
+    }
+
+    type TenantExportStream = StreamOf<TenantExportChunk>;
+    async fn tenant_export(
+        &self,
+        req: Request<TenantExportRequest>,
+    ) -> Result<Response<Self::TenantExportStream>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — tenant export"))
+    }
+
+    async fn tenant_import(
+        &self,
+        req: Request<Streaming<TenantImportChunk>>,
+    ) -> Result<Response<TenantImportResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — tenant import"))
+    }
+
+    async fn audit(&self, req: Request<AuditRequest>) -> Result<Response<AuditResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — audit streaming"))
+    }
+
+    type RebuildStream = StreamOf<RebuildProgress>;
+    async fn rebuild(
+        &self,
+        req: Request<RebuildRequest>,
+    ) -> Result<Response<Self::RebuildStream>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — rebuild streaming"))
+    }
+
+    async fn attach_external(
+        &self,
+        req: Request<AttachExternalRequest>,
+    ) -> Result<Response<AttachExternalResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — external lane attach"))
+    }
+
+    async fn embedding_reload(
+        &self,
+        req: Request<EmbeddingReloadRequest>,
+    ) -> Result<Response<EmbeddingReloadResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M5 — embedder hot reload"))
+    }
+
+    type CompactLanesStream = StreamOf<CompactProgress>;
+    async fn compact_lanes(
+        &self,
+        req: Request<CompactLanesRequest>,
+    ) -> Result<Response<Self::CompactLanesStream>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        Err(Status::unimplemented("M4 — lane compaction"))
+    }
+
+    async fn quota_get(
+        &self,
+        req: Request<QuotaGetRequest>,
+    ) -> Result<Response<QuotaGetResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        // Real impl lands once `QuotaManager` exposes a snapshot
+        // method (`remaining(tenant) -> {queries, writes, embeds,
+        // sessions}`). Today the manager only exposes
+        // `try_consume`, so we'd be guessing.
+        Err(Status::unimplemented(
+            "M4 — quota snapshot once QuotaManager exposes it",
+        ))
     }
 }
