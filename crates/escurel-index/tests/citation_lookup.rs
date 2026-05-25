@@ -40,6 +40,25 @@ fn fresh_harness() -> Harness {
     }
 }
 
+/// Build an Indexer over a fresh DuckDB connection where the
+/// migrator has NOT been applied — there is no `links` table.
+/// Any query against it must surface as an error, never as a
+/// silently-false `is_cited` result.
+fn harness_without_links_table() -> Harness {
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+    // Note: NO Migrator::up — the `links` table simply does not exist.
+    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    let indexer = Arc::new(Indexer::new(store, embedder, conn, TENANT).unwrap());
+    Harness {
+        indexer,
+        _store_dir: store_dir,
+        _db_dir: db_dir,
+    }
+}
+
 const SKILL_CUSTOMER: &str = "---\n\
      type: skill\n\
      id: customer\n\
@@ -74,6 +93,23 @@ async fn is_cited_returns_false_on_empty_links_table() {
 
     let cited = lookup.is_cited(TENANT, "anything").await.unwrap();
     assert!(!cited);
+}
+
+/// Codex P2: pre-fix, `is_cited` swallowed any DuckDB error with
+/// `.ok()` and returned `Ok(false)`. That made the reconciler
+/// silently overwrite cited snapshots whenever the index was
+/// broken. After the fix, only `QueryReturnedNoRows` returns
+/// `Ok(false)`; every other error propagates as `Err`.
+#[tokio::test]
+async fn is_cited_propagates_duckdb_errors_instead_of_returning_false() {
+    let h = harness_without_links_table();
+    let lookup = IndexerCitationLookup::new(h.indexer.clone());
+    let err = lookup.is_cited(TENANT, "anything").await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("citation lookup failed"),
+        "error must carry the context; got: {msg}",
+    );
 }
 
 #[tokio::test]

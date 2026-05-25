@@ -54,14 +54,22 @@ impl CitationLookup for IndexerCitationLookup {
         // `links_dst_skill` index gives us an O(log N) seek) and
         // matches the row-shape contract of `query_row` without
         // forcing a scalar cast on the result.
+        //
+        // Only `QueryReturnedNoRows` legitimately means "uncited";
+        // every other error (missing/corrupt table, connection
+        // lost, schema drift) must propagate. Swallowing them
+        // with `.ok()` would make the reconciler treat a DuckDB
+        // failure as "uncited" and overwrite cited snapshots at
+        // the very moment the index is broken (codex review).
         let conn = self.indexer.conn.lock().await;
-        let row: Option<i32> = conn
-            .query_row(
-                "SELECT 1 FROM links WHERE dst_page = ? LIMIT 1",
-                params![page_id],
-                |row| row.get(0),
-            )
-            .ok();
-        Ok(row.is_some())
+        match conn.query_row(
+            "SELECT 1 FROM links WHERE dst_page = ? LIMIT 1",
+            params![page_id],
+            |row| row.get::<_, i32>(0),
+        ) {
+            Ok(_) => Ok(true),
+            Err(duckdb::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(anyhow::Error::from(e).context("citation lookup failed")),
+        }
     }
 }

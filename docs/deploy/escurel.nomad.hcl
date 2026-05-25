@@ -227,7 +227,12 @@ EOH
         ESCUREL_STORAGE_BACKEND       = "s3"
         ESCUREL_STORAGE_S3_BUCKET     = "${var.s3_bucket}"
         ESCUREL_STORAGE_S3_ENDPOINT   = "${var.s3_endpoint}"
-        ESCUREL_STORAGE_S3_PREFIX     = "tenants/"
+        // Escurel's content sits under the substrate-shared bucket
+        // at `dz/escurel/lanes/` (per docs/deploy/substrate.md §2's
+        // naming convention). `tenants/` is the per-app subkey
+        // inside that, so the full path is
+        // `s3://<bucket>/dz/escurel/lanes/tenants/<tenant>/...`.
+        ESCUREL_STORAGE_S3_PREFIX     = "dz/escurel/lanes/tenants/"
         ESCUREL_STORAGE_S3_PATH_STYLE = "true"
 
         // Embedding — EmbeddingGemma baked into the golden image at
