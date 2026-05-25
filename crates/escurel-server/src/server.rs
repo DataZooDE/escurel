@@ -25,6 +25,7 @@ use tokio::task::JoinHandle;
 use crate::grpc::{EscurelAdminGrpc, EscurelGrpc};
 use crate::health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 use crate::mcp::mcp;
+use crate::ws::ws_upgrade;
 
 /// Gateway configuration. Built by the operator (or the test
 /// harness) and consumed by [`serve`].
@@ -163,6 +164,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         .route("/version", get(version))
         .route("/metrics", get(metrics))
         .route("/mcp", post(mcp))
+        .route("/ws", get(ws_upgrade))
         .with_state(state.clone());
 
     let listener = TcpListener::bind(&config.listen)
