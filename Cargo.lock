@@ -1475,6 +1475,7 @@ dependencies = [
  "escurel-proto",
  "escurel-quota",
  "escurel-storage",
+ "flate2",
  "futures",
  "jsonwebtoken",
  "loro",
@@ -1483,6 +1484,7 @@ dependencies = [
  "rsa",
  "serde",
  "serde_json",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4607,6 +4609,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
