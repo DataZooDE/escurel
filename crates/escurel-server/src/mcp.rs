@@ -15,21 +15,32 @@
 //! { "jsonrpc": "2.0", "id": 1, "error": { "code": -32602, "message": "..." } }
 //! ```
 //!
-//! Today the seven read tools are wired
-//! (`list_skills` / `list_instances` / `resolve` / `expand` /
-//! `neighbours` / `search` / `run_stored_query`); the write tools
-//! and the MCP `tools/list` discovery call land in follow-ups.
+//! Today the seven read tools, `update_page`, the three live-CRDT
+//! session tools (`open_session` / `apply_op` / `close_session`),
+//! and the MCP `tools/list` discovery call are all wired. The
+//! session tools land in M4.2 against the freshly-merged
+//! `escurel-crdt` `LiveDoc` actor; their wire shape matches
+//! `docs/spec/protocol.md §Write tools` verbatim. The bidi-stream
+//! / WebSocket transports for the same CRDT session arrive in
+//! M4.3 and M4.4 respectively.
+
+use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
 use escurel_auth::{AuthContext, OidcVerifier, Role};
+use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{Direction, Indexer, OrderDir};
 use escurel_md::PageType;
-use escurel_quota::{Dimension, QuotaError};
+use escurel_quota::{Dimension, QuotaError, QuotaManager};
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use crate::session::{SessionError, SessionManager};
 
 /// JSON-RPC 2.0 request envelope.
 #[derive(Debug, Deserialize)]
@@ -84,8 +95,13 @@ pub async fn mcp(
     // Quota gate — only enforced when a quota manager is
     // configured (and an auth context is available to name the
     // tenant). The dimension is picked from the tool name; tools
-    // that don't consume any bucket (today: tools/list) skip the
-    // check entirely.
+    // that don't consume any bucket (today: tools/list and
+    // `close_session`) skip the check entirely. `open_session`
+    // doesn't debit a rate-limit dimension here either — it
+    // acquires a `SessionGuard` from the session-cap semaphore
+    // inside the tool body, so over-cap returns the
+    // `session_cap_reached` JSON-RPC error rather than a
+    // `429` from this middleware.
     if let (Some(quota), Some(ctx)) = (state.quota.as_ref(), auth_ctx.as_ref()) {
         if let Some(dim) = dimension_for(&req.method, &req.params) {
             if let Err(err) = quota.try_consume(&ctx.tenant_id, dim) {
@@ -94,14 +110,17 @@ pub async fn mcp(
         }
     }
 
+    // Tenant id for tools that consume per-tenant resources
+    // (session slots, in M4.2). Falls back to a deterministic
+    // sentinel when no verifier is wired — dev / on-host mode.
+    let tenant_id = auth_ctx
+        .as_ref()
+        .map(|c| c.tenant_id.clone())
+        .unwrap_or_else(|| "default".to_owned());
+
     let result = match req.method.as_str() {
         "tools/list" => Ok(tools_list_payload()),
-        "tools/call" => match state.indexer.as_ref() {
-            Some(indexer) => dispatch_tools_call(indexer, req.params).await,
-            None => Err(JsonRpcError::internal(
-                "server has no indexer wired; tools/call is unavailable",
-            )),
-        },
+        "tools/call" => dispatch_tools_call(&state, &tenant_id, req.params).await,
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown method `{other}`"
         ))),
@@ -181,14 +200,18 @@ fn quota_response(id: Value, err: &QuotaError) -> axum::response::Response {
 
 /// Map (method, params) to the quota dimension a request should
 /// debit, if any. Tools/list and unauthenticated discovery don't
-/// consume a bucket.
+/// consume a bucket; session-tools are special-cased.
 fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
     if method != "tools/call" {
         return None;
     }
     let name = params.get("name").and_then(Value::as_str)?;
     Some(match name {
-        "update_page" => Dimension::Writes,
+        // `apply_op` is a write; `open_session` debits a session
+        // slot (semaphore, not a token bucket) inside the tool
+        // body; `close_session` is a cleanup and does not debit.
+        "update_page" | "apply_op" => Dimension::Writes,
+        "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
 }
@@ -198,9 +221,49 @@ fn elevated_role(role: Role) -> bool {
     matches!(role, Role::Admin)
 }
 
-async fn dispatch_tools_call(indexer: &Indexer, params: Value) -> Result<Value, JsonRpcError> {
+async fn dispatch_tools_call(
+    state: &crate::server::AppState,
+    tenant_id: &str,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
         .map_err(|e| JsonRpcError::invalid_params(format!("tools/call params: {e}")))?;
+
+    // Session tools depend on `crdt_backend` + `sessions`, not on
+    // the indexer. Route them before the indexer gate.
+    match params.name.as_str() {
+        "open_session" => {
+            return tool_open_session(
+                state.crdt_backend.as_ref(),
+                Arc::clone(&state.sessions),
+                state.quota.as_ref(),
+                tenant_id,
+                params.arguments,
+            )
+            .await;
+        }
+        "apply_op" => {
+            return tool_apply_op(
+                state.crdt_backend.as_ref(),
+                Arc::clone(&state.sessions),
+                params.arguments,
+            )
+            .await;
+        }
+        "close_session" => {
+            return tool_close_session(
+                state.crdt_backend.as_ref(),
+                Arc::clone(&state.sessions),
+                params.arguments,
+            )
+            .await;
+        }
+        _ => {}
+    }
+
+    let indexer = state.indexer.as_ref().ok_or_else(|| {
+        JsonRpcError::internal("server has no indexer wired; tools/call is unavailable")
+    })?;
 
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer).await,
@@ -471,6 +534,134 @@ async fn tool_update_page(indexer: &Indexer, args: Value) -> Result<Value, JsonR
     }))
 }
 
+// --- session tools (M4.2) --------------------------------------
+
+#[derive(Deserialize)]
+struct OpenSessionArgs {
+    page_id: String,
+}
+
+async fn tool_open_session(
+    backend: Option<&Arc<dyn CrdtBackend>>,
+    sessions: Arc<SessionManager>,
+    quota: Option<&Arc<QuotaManager>>,
+    tenant_id: &str,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: OpenSessionArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("open_session: {e}")))?;
+    let backend = backend
+        .ok_or_else(|| JsonRpcError::internal("live CRDT mode not enabled on this server"))?;
+
+    // Acquire a session-cap permit if quota is configured.
+    // Failure → JSON-RPC `-32000` quota error (mirrors the
+    // existing rate-limit response shape).
+    let guard = if let Some(q) = quota {
+        match q.try_acquire_session(tenant_id) {
+            Some(g) => Some(g),
+            None => {
+                return Err(JsonRpcError {
+                    code: -32000,
+                    message: format!(
+                        "session_cap_reached: tenant `{tenant_id}` is at its concurrent_sessions cap"
+                    ),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
+    let (session_id, head) = sessions
+        .open(Arc::clone(backend), &a.page_id, guard)
+        .await
+        .map_err(|e| session_error_to_jsonrpc(&e, "open_session"))?;
+
+    Ok(json!({
+        "session": session_id,
+        "head_version": head.as_str(),
+        // Advisory: clients with WS support should switch to the
+        // WS channel after this call. The host/scheme are not
+        // injected here (the gateway doesn't know its public
+        // origin); the relative path is canonical.
+        "ws_url": "/ws",
+    }))
+}
+
+#[derive(Deserialize)]
+struct ApplyOpArgs {
+    session: String,
+    op: String,
+}
+
+async fn tool_apply_op(
+    backend: Option<&Arc<dyn CrdtBackend>>,
+    sessions: Arc<SessionManager>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: ApplyOpArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("apply_op: {e}")))?;
+    if backend.is_none() {
+        return Err(JsonRpcError::internal(
+            "live CRDT mode not enabled on this server",
+        ));
+    }
+
+    let op_bytes = B64
+        .decode(a.op.as_bytes())
+        .map_err(|e| JsonRpcError::invalid_params(format!("apply_op `op` is not base64: {e}")))?;
+    let merged = sessions
+        .apply(&a.session, Op::new(op_bytes))
+        .await
+        .map_err(|e| session_error_to_jsonrpc(&e, "apply_op"))?;
+    Ok(json!({
+        "ok": true,
+        "merged_version": merged.as_str(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct CloseSessionArgs {
+    session: String,
+    #[serde(default = "default_commit")]
+    commit: bool,
+}
+
+fn default_commit() -> bool {
+    true
+}
+
+async fn tool_close_session(
+    backend: Option<&Arc<dyn CrdtBackend>>,
+    sessions: Arc<SessionManager>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: CloseSessionArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("close_session: {e}")))?;
+    if backend.is_none() {
+        return Err(JsonRpcError::internal(
+            "live CRDT mode not enabled on this server",
+        ));
+    }
+    let final_v = sessions
+        .close(&a.session, a.commit)
+        .await
+        .map_err(|e| session_error_to_jsonrpc(&e, "close_session"))?;
+    Ok(json!({
+        "ok": true,
+        "final_version": final_v.as_str(),
+        "issues": [],
+    }))
+}
+
+/// Map a [`SessionError`] to the JSON-RPC error envelope.
+/// `UnknownSession` and the underlying LiveDoc errors both surface
+/// as `-32603 internal` per the spec (the wire shape doesn't
+/// have a distinct "not found" code for tools).
+fn session_error_to_jsonrpc(err: &SessionError, tool: &str) -> JsonRpcError {
+    JsonRpcError::internal(format!("{tool}: {err}"))
+}
+
 // --- tools/list payload ----------------------------------------
 
 /// MCP `tools/list` response payload. Each entry is `{ name,
@@ -564,6 +755,41 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "page_id": { "type": "string" },
                         "content": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "open_session",
+                "Open a live CRDT session on a page; returns a session id and the WS upgrade URL.",
+                json!({
+                    "type": "object",
+                    "required": ["page_id"],
+                    "properties": {
+                        "page_id": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "apply_op",
+                "Apply a base64-encoded Loro op blob to an open session.",
+                json!({
+                    "type": "object",
+                    "required": ["session", "op"],
+                    "properties": {
+                        "session": { "type": "string" },
+                        "op": { "type": "string", "description": "base64-encoded Loro op bytes" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "close_session",
+                "Close a session; optionally snapshot the doc (commit=true).",
+                json!({
+                    "type": "object",
+                    "required": ["session"],
+                    "properties": {
+                        "session": { "type": "string" },
+                        "commit": { "type": "boolean", "default": true }
                     }
                 }),
             ),

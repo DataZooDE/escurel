@@ -13,6 +13,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use escurel_admin::TenantStore;
 use escurel_auth::OidcVerifier;
+use escurel_crdt::CrdtBackend;
 use escurel_index::Indexer;
 use escurel_proto::v1::escurel_admin_server::EscurelAdminServer;
 use escurel_proto::v1::escurel_server::EscurelServer;
@@ -26,6 +27,7 @@ use tokio::task::JoinHandle;
 use crate::grpc::{EscurelAdminGrpc, EscurelGrpc};
 use crate::health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 use crate::mcp::mcp;
+use crate::session::SessionManager;
 use crate::ws::ws_upgrade;
 
 /// Gateway configuration. Built by the operator (or the test
@@ -64,6 +66,12 @@ pub struct ServerConfig {
     /// keeps proving the role-gate without exercising the new
     /// implementation surface).
     pub tenant_store: Option<Arc<dyn TenantStore>>,
+    /// Live-CRDT backend powering the `open_session` / `apply_op`
+    /// / `close_session` MCP tools (and, later, the WS / gRPC bidi
+    /// live channels). `None` disables live mode — the session
+    /// tools return a JSON-RPC `-32603 internal` error with
+    /// `"live CRDT mode not enabled on this server"`.
+    pub crdt_backend: Option<Arc<dyn CrdtBackend>>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -90,6 +98,7 @@ impl ServerConfig {
             verifier: None,
             quota: None,
             tenant_store: None,
+            crdt_backend: None,
         }
     }
 }
@@ -153,6 +162,10 @@ pub(crate) struct AppState {
     pub(crate) verifier: Option<Arc<OidcVerifier>>,
     pub(crate) quota: Option<Arc<QuotaManager>>,
     pub(crate) tenant_store: Option<Arc<dyn TenantStore>>,
+    pub(crate) crdt_backend: Option<Arc<dyn CrdtBackend>>,
+    /// Always present. Operations no-op (return a JSON-RPC error)
+    /// when `crdt_backend` is `None`.
+    pub(crate) sessions: Arc<SessionManager>,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -167,6 +180,8 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         verifier: config.verifier.clone(),
         quota: config.quota.clone(),
         tenant_store: config.tenant_store.clone(),
+        crdt_backend: config.crdt_backend.clone(),
+        sessions: Arc::new(SessionManager::new()),
     };
 
     let app = Router::new()

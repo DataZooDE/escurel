@@ -154,6 +154,7 @@ async fn start() -> Harness {
         verifier: Some(verifier),
         quota: None,
         tenant_store: None,
+        crdt_backend: None,
     })
     .await
     .unwrap();
@@ -223,6 +224,7 @@ async fn health_works_without_bearer_when_unauthenticated_dev_mode() {
         verifier: None,
         quota: None,
         tenant_store: None,
+        crdt_backend: None,
     })
     .await
     .unwrap();

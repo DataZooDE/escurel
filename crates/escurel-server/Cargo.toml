@@ -12,8 +12,11 @@ homepage.workspace = true
 [dependencies]
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+dashmap = "6"
 escurel-admin = { path = "../escurel-admin" }
 escurel-auth = { path = "../escurel-auth" }
+escurel-crdt = { path = "../escurel-crdt" }
 futures = "0.3"
 escurel-embed = { path = "../escurel-embed" }
 escurel-index = { path = "../escurel-index" }
@@ -28,6 +31,7 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
 tower = "0.5"
+ulid = "1"
 
 [dev-dependencies]
 async-trait = "0.1"
@@ -35,8 +39,10 @@ base64 = "0.22"
 bytes = "1"
 duckdb = { version = "1", features = ["bundled"] }
 escurel-admin = { path = "../escurel-admin" }
+escurel-crdt = { path = "../escurel-crdt" }
 escurel-proto = { path = "../escurel-proto" }
 jsonwebtoken = "9"
+loro = "1.12"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rsa = { version = "0.9", features = ["pem"] }

@@ -129,6 +129,7 @@ async fn start_with_seeded_indexer() -> Harness {
         verifier: None,
         quota: None,
         tenant_store: None,
+        crdt_backend: None,
     };
     let handle = serve(cfg).await.expect("server starts");
     let base_url = format!("http://{}", handle.local_addr);
