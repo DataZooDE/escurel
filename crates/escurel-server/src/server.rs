@@ -13,6 +13,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use escurel_auth::OidcVerifier;
 use escurel_index::Indexer;
+use escurel_proto::v1::escurel_admin_server::EscurelAdminServer;
 use escurel_proto::v1::escurel_server::EscurelServer;
 use escurel_quota::QuotaManager;
 use serde_json::json;
@@ -21,7 +22,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::grpc::EscurelGrpc;
+use crate::grpc::{EscurelAdminGrpc, EscurelGrpc};
 use crate::health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 use crate::mcp::mcp;
 
@@ -212,12 +213,14 @@ async fn spawn_grpc(
     let local_addr = listener.local_addr().map_err(ServerError::Serve)?;
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
-    let service = EscurelServer::new(EscurelGrpc::new(state));
+    let agent_svc = EscurelServer::new(EscurelGrpc::new(state.clone()));
+    let admin_svc = EscurelAdminServer::new(EscurelAdminGrpc::new(state));
 
     let (tx, rx) = oneshot::channel();
     let join = tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
-            .add_service(service)
+            .add_service(agent_svc)
+            .add_service(admin_svc)
             .serve_with_incoming_shutdown(incoming, async move {
                 let _ = rx.await;
             })
