@@ -1540,6 +1540,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "escurel-test-support"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "duckdb",
+ "escurel-auth",
+ "escurel-client",
+ "escurel-embed",
+ "escurel-index",
+ "escurel-proto",
+ "escurel-server",
+ "escurel-storage",
+ "jsonwebtoken",
+ "rand 0.8.6",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,38 @@
+[package]
+name = "escurel-test-support"
+description = "Test-process façade for downstream applications that depend on Escurel. Spawns an in-process gateway with an ephemeral OIDC issuer, fixture-builder seeding, and typed gRPC + MCP-over-HTTP clients."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+base64 = "0.22"
+bytes = "1"
+duckdb = { version = "1", features = ["bundled"] }
+escurel-auth = { path = "../escurel-auth" }
+escurel-client = { path = "../escurel-client" }
+escurel-embed = { path = "../escurel-embed" }
+escurel-index = { path = "../escurel-index" }
+escurel-proto = { path = "../escurel-proto" }
+escurel-server = { path = "../escurel-server" }
+escurel-storage = { path = "../escurel-storage" }
+jsonwebtoken = "9"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rsa = { version = "0.9", features = ["pem"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time"] }
+wiremock = "0.6"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
