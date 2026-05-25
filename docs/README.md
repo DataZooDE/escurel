@@ -22,11 +22,14 @@ Read it in the order below.
    resolution, admin & lifecycle API, quotas, observability.
 6. **[`spec/roadmap.md`](spec/roadmap.md)** — milestones, v1 cut-line,
    deferred items, dependency license audit.
-7. **[`adr/0001-duckdb-only-storage.md`](adr/0001-duckdb-only-storage.md)** —
+7. **[`spec/dx.md`](spec/dx.md)** — downstream-app integration contract.
+   Read this if you are *consuming* escurel from another application and
+   need to wire it (plus, optionally, triton) into your test harness.
+8. **[`adr/0001-duckdb-only-storage.md`](adr/0001-duckdb-only-storage.md)** —
    the single architectural decision the v1 storage shape rests on,
    plus the pre-deployment empirical gate that must pass before any
    production rollout.
-8. **[`deploy/substrate.md`](deploy/substrate.md)** — deployment
+9. **[`deploy/substrate.md`](deploy/substrate.md)** — deployment
    binding for the DataZoo Hetzner agent substrate; paired with
    **[`deploy/escurel.nomad.hcl`](deploy/escurel.nomad.hcl)** as a
    concrete Nomad jobspec.
