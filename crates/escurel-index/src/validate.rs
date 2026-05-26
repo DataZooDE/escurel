@@ -118,7 +118,11 @@ impl Indexer {
                 // A parse failure short-circuits: there is no
                 // frontmatter / body to run the remaining checks
                 // against. One structured error rather than a panic.
-                return Ok(vec![Issue::error("frontmatter_parse", "frontmatter", e.to_string())]);
+                return Ok(vec![Issue::error(
+                    "frontmatter_parse",
+                    "frontmatter",
+                    e.to_string(),
+                )]);
             }
         };
 
