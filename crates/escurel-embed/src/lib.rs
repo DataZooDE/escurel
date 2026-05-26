@@ -25,6 +25,7 @@ mod candle;
 #[cfg(feature = "gemini")]
 mod gemini;
 mod hash;
+mod reloadable;
 mod zero;
 
 #[cfg(feature = "candle")]
@@ -32,6 +33,7 @@ pub use crate::candle::CandleEmbedder;
 #[cfg(feature = "gemini")]
 pub use gemini::GeminiEmbedder;
 pub use hash::HashEmbedder;
+pub use reloadable::ReloadableEmbedder;
 pub use zero::ZeroEmbedder;
 
 use async_trait::async_trait;

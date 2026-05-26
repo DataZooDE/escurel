@@ -9,11 +9,31 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+# Library + the deployable server binary. `main.rs` reads the
+# `ESCUREL_*` config surface from the environment (optionally over a
+# TOML base file at `$ESCUREL_CONFIG`), builds the real backends, and
+# calls `serve`.
+[[bin]]
+name = "escurel-server"
+path = "src/main.rs"
+
+[features]
+# Opt-in production backends. Off by default so the dev / test build
+# (FsStore + ZeroEmbedder) stays light and the cold-compile cost of
+# the AWS SDK / candle is only paid by release / substrate builds.
+#   --features s3            → S3-backed LaneStore (Hetzner OS / MinIO)
+#   --features gemini        → Gemini HTTP embedder
+#   --features embeddinggemma → local candle EmbeddingGemma embedder
+s3 = ["escurel-storage/s3"]
+gemini = ["escurel-embed/gemini"]
+embeddinggemma = ["escurel-embed/candle"]
+
 [dependencies]
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 dashmap = "6"
+duckdb = { version = "1", features = ["bundled"] }
 escurel-admin = { path = "../escurel-admin" }
 escurel-auth = { path = "../escurel-auth" }
 escurel-crdt = { path = "../escurel-crdt" }
@@ -30,6 +50,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tar = "0.4"
 thiserror = "2"
+toml = "0.8"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
@@ -39,6 +60,7 @@ tracing = "0.1"
 ulid = "1"
 
 [dev-dependencies]
+assert_cmd = "2"
 async-trait = "0.1"
 base64 = "0.22"
 duckdb = { version = "1", features = ["bundled"] }
