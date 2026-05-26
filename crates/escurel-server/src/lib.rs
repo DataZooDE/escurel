@@ -31,6 +31,8 @@
 //!   The OTLP trace exporter is opt-in via
 //!   `ESCUREL_OTLP_ENDPOINT`; when unset traces are a no-op.
 
+pub mod config;
+mod config_probe;
 mod grpc;
 mod health;
 mod mcp;
@@ -38,5 +40,6 @@ mod server;
 mod session;
 mod ws;
 
+pub use config::{BootedServer, ConfigError, EscurelConfig};
 pub use health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 pub use server::{ServerConfig, ServerError, ServerHandle, serve};

@@ -28,6 +28,7 @@ candle = [
 ]
 
 [dependencies]
+arc-swap = "1"
 async-trait = "0.1"
 candle-core = { version = "0.9", optional = true, default-features = false }
 candle-nn = { version = "0.9", optional = true, default-features = false }

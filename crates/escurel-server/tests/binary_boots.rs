@@ -1,0 +1,262 @@
+//! Integration tests for the deployable `escurel-server` binary and
+//! its `EscurelConfig` surface.
+//!
+//! Two layers, no mocks:
+//!
+//! * `EscurelConfig::from_source` over an in-memory env map — the
+//!   12-factor mapping from `ESCUREL_*` vars to resolved config. Uses
+//!   an injected map rather than `std::env::set_var` (process-global,
+//!   races concurrent test threads).
+//! * A real spawned `escurel-server` child process bound to a random
+//!   loopback port over a real on-disk DuckDB + FsStore, dialled back
+//!   with a real reqwest client — the "single-binary on a laptop"
+//!   acceptance.
+//! * An in-process `config.build()` exercising the degraded-embedder
+//!   start: the test binary lacks the `gemini` feature, so selecting
+//!   `provider=gemini` degrades to a `ZeroEmbedder` placeholder and
+//!   `/readyz` must report `embedder: false` while `/healthz` stays
+//!   `200`.
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use escurel_server::EscurelConfig;
+use escurel_server::config::{EmbeddingProvider, StorageBackend};
+use tempfile::TempDir;
+
+/// Build an `EnvSource` closure from a map of overrides.
+fn env_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect()
+}
+
+fn source(map: HashMap<String, String>) -> impl Fn(&str) -> Option<String> {
+    move |k: &str| map.get(k).cloned()
+}
+
+#[test]
+fn from_env_builds_fs_config_with_defaults() {
+    // Empty environment → all documented defaults.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[]))).unwrap();
+    assert_eq!(cfg.storage_backend, StorageBackend::Fs);
+    assert!(cfg.s3.is_none());
+    assert_eq!(cfg.data_dir.to_str().unwrap(), "/data");
+    assert_eq!(cfg.listen_http, "0.0.0.0:8080");
+    assert_eq!(cfg.listen_grpc.as_deref(), Some("0.0.0.0:8081"));
+    assert_eq!(cfg.tenant, "default");
+    assert_eq!(cfg.version, "0.0.0-dev");
+    assert_eq!(cfg.embedding_provider, EmbeddingProvider::Zero);
+    assert_eq!(cfg.embedding_dim, 768);
+    assert!(cfg.auth.is_none());
+}
+
+#[test]
+fn from_env_selects_s3_backend_when_configured() {
+    // The exact var names the substrate Nomad jobspec pins.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_STORAGE_BACKEND", "s3"),
+        ("ESCUREL_STORAGE_S3_BUCKET", "datazoo-substrate-app-nonprod"),
+        ("ESCUREL_STORAGE_S3_ENDPOINT", "https://s3.example.com"),
+        ("ESCUREL_STORAGE_S3_PREFIX", "dz/escurel/lanes/tenants/"),
+        ("ESCUREL_STORAGE_S3_PATH_STYLE", "true"),
+        ("ESCUREL_STORAGE_S3_ACCESS_KEY_ID", "ak"),
+        ("ESCUREL_STORAGE_S3_SECRET_ACCESS_KEY", "sk"),
+    ])))
+    .unwrap();
+    assert_eq!(cfg.storage_backend, StorageBackend::S3);
+    let s3 = cfg.s3.expect("s3 config present");
+    assert_eq!(s3.bucket, "datazoo-substrate-app-nonprod");
+    assert_eq!(s3.endpoint, "https://s3.example.com");
+    assert_eq!(s3.prefix, "dz/escurel/lanes/tenants/");
+    assert_eq!(s3.access_key_id, "ak");
+    assert_eq!(s3.secret_access_key, "sk");
+}
+
+#[test]
+fn from_env_missing_s3_bucket_is_an_error() {
+    let err = EscurelConfig::from_source(&source(env_map(&[("ESCUREL_STORAGE_BACKEND", "s3")])))
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("ESCUREL_STORAGE_S3_BUCKET"),
+        "error should name the missing var: {err}"
+    );
+}
+
+#[test]
+fn from_env_unauthenticated_when_no_oidc_issuer() {
+    // No issuer → dev mode, verifier disabled.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[]))).unwrap();
+    assert!(cfg.auth.is_none(), "no issuer → unauthenticated");
+
+    // Issuer present → auth config populated with jobspec claim names.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        (
+            "ESCUREL_AUTH_OIDC_ISSUER",
+            "https://auth.example.com/realms/main",
+        ),
+        ("ESCUREL_AUTH_OIDC_AUDIENCE", "escurel"),
+        ("ESCUREL_AUTH_TENANT_CLAIM", "escurel_tenant"),
+        ("ESCUREL_AUTH_ADMIN_ROLE_CLAIM", "roles"),
+        ("ESCUREL_AUTH_ADMIN_ROLE_VALUE", "escurel:admin"),
+        ("ESCUREL_AUTH_JWKS_REFRESH_SECS", "120"),
+    ])))
+    .unwrap();
+    let auth = cfg.auth.expect("auth config present");
+    assert_eq!(auth.issuer, "https://auth.example.com/realms/main");
+    assert_eq!(auth.tenant_claim, "escurel_tenant");
+    assert_eq!(auth.admin_role_value, "escurel:admin");
+    assert_eq!(auth.jwks_refresh, Duration::from_secs(120));
+}
+
+/// Boot the real binary, dial `/healthz`, then `/version`, then stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_boots_and_serves_healthz() {
+    let data_dir = TempDir::new().unwrap();
+
+    let mut child = cargo_bin("escurel-server")
+        .env("ESCUREL_SERVER_DATA_DIR", data_dir.path())
+        // Random loopback port; the binary prints the resolved addr.
+        .env("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0")
+        // Disable the gRPC mirror to keep the boot lean.
+        .env("ESCUREL_SERVER_LISTEN_GRPC", "")
+        .env("VERSION", "9.9.9-bin")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn escurel-server");
+
+    // Read the bound HTTP address off stdout.
+    let addr = read_listen_addr(&mut child);
+    let base = format!("http://{addr}");
+
+    let client = reqwest::Client::new();
+    let health = client
+        .get(format!("{base}/healthz"))
+        .send()
+        .await
+        .expect("GET /healthz");
+    assert_eq!(health.status(), 200);
+    assert_eq!(health.text().await.unwrap(), "OK");
+
+    let version = client
+        .get(format!("{base}/version"))
+        .send()
+        .await
+        .expect("GET /version");
+    assert_eq!(version.text().await.unwrap(), "9.9.9-bin");
+
+    terminate(child);
+}
+
+/// Degraded embedder start: select a provider whose feature this
+/// build lacks; the server must still serve `/healthz` 200 and report
+/// `embedder: false` on `/readyz`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn degraded_embedder_start_boots_with_readyz_false() {
+    let data_dir = TempDir::new().unwrap();
+    // gemini provider with no `gemini` feature compiled into the test
+    // build → load fails → degraded ZeroEmbedder, embedder=false.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_SERVER_LISTEN_GRPC", ""),
+        ("ESCUREL_EMBEDDING_PROVIDER", "gemini"),
+    ])))
+    .unwrap();
+
+    let booted = cfg.build().await.expect("server boots degraded");
+    assert!(
+        !booted.embedder.is_loaded(),
+        "embedder should be degraded (not loaded)"
+    );
+    let base = format!("http://{}", booted.handle.local_addr);
+
+    let client = reqwest::Client::new();
+    // Liveness is dependency-free → always 200.
+    let health = client.get(format!("{base}/healthz")).send().await.unwrap();
+    assert_eq!(health.status(), 200);
+
+    // Readiness reflects the degraded embedder → 503 + embedder=false.
+    let ready = client.get(format!("{base}/readyz")).send().await.unwrap();
+    assert_eq!(ready.status(), 503);
+    let body: serde_json::Value = ready.json().await.unwrap();
+    assert_eq!(body["ready"], false);
+    assert_eq!(body["components"]["embedder"], false);
+    assert_eq!(
+        body["components"]["lane_store"], true,
+        "FsStore should be reachable"
+    );
+
+    booted.handle.shutdown().await;
+}
+
+// --- helpers ---------------------------------------------------
+
+/// `assert_cmd`'s `cargo_bin`, wrapped so the binary-spawn test does
+/// not depend on the workspace target layout.
+fn cargo_bin(name: &str) -> Command {
+    use assert_cmd::cargo::CommandCargoExt as _;
+    Command::cargo_bin(name).expect("locate escurel-server binary")
+}
+
+/// Read the `escurel-server listening http=<addr>` line off the
+/// child's stdout and return the parsed address. Panics if the child
+/// exits before printing it (its stderr is inherited for diagnosis).
+fn read_listen_addr(child: &mut std::process::Child) -> String {
+    let stdout = child.stdout.take().expect("child stdout piped");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).expect("read child stdout");
+        assert!(
+            n != 0,
+            "escurel-server exited before printing its listen address"
+        );
+        if let Some(rest) = line.trim().strip_prefix("escurel-server listening http=") {
+            return rest.to_owned();
+        }
+    }
+}
+
+/// Send SIGTERM and reap, asserting a clean (0) exit within a grace
+/// window. Falls back to `kill` if the graceful path stalls.
+fn terminate(mut child: std::process::Child) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        // SIGTERM via libc-free path: `nix`-free, use kill(2) through
+        // std by re-spawning `kill`? Simpler: send SIGTERM with the
+        // raw syscall via `libc` is unavailable, so use the `kill`
+        // command which every CI image ships.
+        let pid = child.id();
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
+        // Give graceful shutdown a moment.
+        for _ in 0..50 {
+            match child.try_wait().expect("try_wait") {
+                Some(status) => {
+                    assert!(
+                        status.success() || status.signal() == Some(15),
+                        "escurel-server exited uncleanly: {status:?}"
+                    );
+                    return;
+                }
+                None => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
