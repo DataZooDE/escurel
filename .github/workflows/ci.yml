@@ -1,19 +1,16 @@
 name: CI
 
-# CI is paused during rapid bootstrap. Local `cargo fmt`,
-# `cargo clippy --workspace --all-targets -- -D warnings`,
-# `cargo test --workspace --all-targets`, and `cargo build
-# --workspace --release` are the merge gate (see CLAUDE.md
-# "How we work").
-#
-# Re-enable the `pull_request` + `push` triggers below before
-# declaring v1 stable; the job definition stays intact so that
-# flip is one revert.
+# Re-enabled at v1.0.0 (M6). During bootstrap CI was paused
+# (`workflow_dispatch` only) and the local four-command gate
+# (`cargo fmt` / `clippy -D warnings` / `test` / `build --release`)
+# was the merge gate per CLAUDE.md "How we work". With the workspace
+# stabilised at v1 the GitHub Actions safety net is back on for
+# every push to main and every PR.
 on:
   workflow_dispatch:
-  # push:
-  #   branches: [main]
-  # pull_request:
+  push:
+    branches: [main]
+  pull_request:
 
 concurrency:
   group: ci-${{ github.ref }}
