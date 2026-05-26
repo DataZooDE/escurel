@@ -344,6 +344,20 @@ message CompactProgress {
   uint64 bytes_reclaimed = 2;
 }
 
+// Operator-only purge for the M-Chat conversation log (issue #63).
+// Both `chat_group_id` and `before_ts` are optional (empty string
+// means "no filter"); the combinations cover GDPR right-to-erasure
+// (`chat_group_id` set, `before_ts` empty), 30-day retention prune
+// (`before_ts` set), and full-tenant chat wipe (both empty).
+message DeleteChatHistoryRequest {
+  string tenant_id     = 1;
+  string chat_group_id = 2;
+  string before_ts     = 3;
+}
+message DeleteChatHistoryResponse {
+  uint64 deleted = 1;
+}
+
 message QuotaGetRequest        { string tenant_id = 1; }
 message QuotaGetResponse {
   uint32 queries_remaining = 1;
@@ -374,6 +388,8 @@ service EscurelAdmin {
   rpc AttachExternal (AttachExternalRequest) returns (AttachExternalResponse);
   rpc EmbeddingReload(EmbeddingReloadRequest) returns (EmbeddingReloadResponse);
   rpc CompactLanes   (CompactLanesRequest)   returns (stream CompactProgress);
+
+  rpc DeleteChatHistory (DeleteChatHistoryRequest) returns (DeleteChatHistoryResponse);
 
   rpc QuotaGet       (QuotaGetRequest)       returns (QuotaGetResponse);
   rpc Health         (HealthRequest)         returns (HealthResponse);

@@ -203,6 +203,89 @@ async fn update_page_via_stdin_round_trips() {
     h.process.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_append_then_list_round_trips() {
+    let h = start().await;
+
+    // Append two messages via `chat append` with explicit timestamps.
+    for (ts, content) in [
+        ("2026-05-26T10:00:00Z", "hi"),
+        ("2026-05-26T10:00:05Z", "there"),
+    ] {
+        tokio::task::spawn_blocking({
+            let mut c = cli(&h);
+            c.args([
+                "chat",
+                "append",
+                "--group",
+                "room-1",
+                "--role",
+                "user",
+                "--content",
+                content,
+                "--ts",
+                ts,
+            ]);
+            move || c.assert().success()
+        })
+        .await
+        .unwrap();
+    }
+
+    // List them back.
+    let assert = tokio::task::spawn_blocking({
+        let mut c = cli(&h);
+        c.args(["chat", "list", "--group", "room-1", "--direction", "asc"]);
+        move || c.assert().success()
+    })
+    .await
+    .unwrap();
+    let out: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    let bodies: Vec<&str> = out["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, vec!["hi", "there"]);
+    h.process.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_append_reads_content_from_stdin_when_flag_omitted() {
+    let h = start().await;
+    let assert = tokio::task::spawn_blocking({
+        let mut c = cli(&h);
+        c.args([
+            "chat",
+            "append",
+            "--group",
+            "room-1",
+            "--role",
+            "user",
+            "--ts",
+            "2026-05-26T10:00:00Z",
+        ]);
+        c.write_stdin("piped body");
+        move || c.assert().success()
+    })
+    .await
+    .unwrap();
+    let out: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert!(out["msg_id"].as_str().unwrap().len() == 26, "server ULID");
+
+    let list = tokio::task::spawn_blocking({
+        let mut c = cli(&h);
+        c.args(["chat", "list", "--group", "room-1", "--direction", "asc"]);
+        move || c.assert().success()
+    })
+    .await
+    .unwrap();
+    let list_out: Value = serde_json::from_slice(&list.get_output().stdout).unwrap();
+    assert_eq!(list_out["messages"][0]["content"], "piped body");
+    h.process.shutdown().await;
+}
+
 /// When the server is configured without an OidcVerifier (dev /
 /// on-host mode), the CLI must still work without a token —
 /// don't gate on `ESCUREL_TOKEN` before even attempting the call.

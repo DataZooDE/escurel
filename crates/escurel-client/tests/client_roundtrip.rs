@@ -6,8 +6,8 @@
 //! mocks at the boundary the test exercises (CLAUDE principle 2).
 
 use escurel_client::{
-    Client, ExpandRequest, ListSkillsRequest, ResolveRequest, SearchRequest, SecretString,
-    UpdatePageRequest,
+    AppendMessageRequest, Client, ExpandRequest, ListMessagesRequest, ListSkillsRequest,
+    ResolveRequest, SearchRequest, SecretString, UpdatePageRequest,
 };
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
 
@@ -203,6 +203,48 @@ async fn missing_token_surfaces_unauthenticated_error() {
         }
         other => panic!("expected Error::Rpc(Unauthenticated), got {other:?}"),
     }
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn append_then_list_messages_round_trip() {
+    let p = start().await;
+    let client = authed_client(&p).await;
+
+    for (ts, content) in [
+        ("2026-05-26T09:00:00Z", "hello"),
+        ("2026-05-26T09:00:05Z", "world"),
+    ] {
+        let ack = client
+            .append_message(AppendMessageRequest {
+                chat_group_id: "room-1".to_owned(),
+                role: "user".to_owned(),
+                content: content.to_owned(),
+                author: String::new(),
+                ts: ts.to_owned(),
+                metadata_json: String::new(),
+                msg_id: String::new(),
+                embed: true,
+            })
+            .await
+            .unwrap();
+        assert!(!ack.msg_id.is_empty());
+        assert!(!ack.ts.is_empty());
+    }
+
+    let resp = client
+        .list_messages(ListMessagesRequest {
+            chat_group_id: "room-1".to_owned(),
+            since: String::new(),
+            until: String::new(),
+            limit: 0,
+            cursor: String::new(),
+            direction: "asc".to_owned(),
+        })
+        .await
+        .unwrap();
+    let bodies: Vec<&str> = resp.messages.iter().map(|m| m.content.as_str()).collect();
+    assert_eq!(bodies, vec!["hello", "world"]);
     p.shutdown().await;
 }
 
