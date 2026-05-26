@@ -201,6 +201,77 @@ message LiveAck {
   repeated ValidationIssue issues = 4;
 }
 
+// --- chat-history (M-Chat, issue #63) ----------------------------
+//
+// `append_message` + `list_messages` write/read an append-mostly
+// per-chat-group conversation log distinct from the typed-instance
+// KB. Optional embedding via `embed` lets high-volume sources skip
+// the cost. `chat_group_id` is opaque to escurel — consumers
+// (e.g. Carl) own the identifier scheme.
+
+message ChatMessage {
+  string chat_group_id = 1;
+  string msg_id        = 2;
+  // RFC-3339 in UTC, e.g. `2026-05-25T10:00:00Z`.
+  string ts            = 3;
+  // `user` | `assistant` | `system` | `tool`.
+  string role          = 4;
+  // Empty string when not set (proto3 has no nullable string).
+  string author        = 5;
+  string content       = 6;
+  // Empty string when the row carries no metadata; otherwise a JSON
+  // object encoded as a string (mirrors `frontmatter_excerpt_json`
+  // on `SearchHit`).
+  string metadata_json = 7;
+  bool   embedded      = 8;
+}
+
+message AppendMessageRequest {
+  string chat_group_id = 1;
+  string role          = 2;
+  string content       = 3;
+  // Empty string means unset.
+  string author        = 4;
+  // Empty string means "stamp at insert time".
+  string ts            = 5;
+  // JSON object string, or empty.
+  string metadata_json = 6;
+  // Empty string means "server-generated ULID".
+  string msg_id        = 7;
+  // Whether to embed the content. The HTTP MCP transport models
+  // this as an optional `embed` field defaulting to `true`; the
+  // proto needs an explicit boolean.
+  bool   embed         = 8;
+}
+
+message AppendMessageResponse {
+  // The resolved msg_id (server-generated when the request omitted
+  // it) and timestamp (server CURRENT_TIMESTAMP when the request
+  // omitted it). Mirrors the MCP `{msg_id, ts}` ack envelope.
+  string msg_id = 1;
+  string ts     = 2;
+}
+
+message ListMessagesRequest {
+  string chat_group_id = 1;
+  // Inclusive lower bound; empty string disables.
+  string since         = 2;
+  // Exclusive upper bound; empty string disables.
+  string until         = 3;
+  // `0` → server default (100); hard cap is 1000.
+  uint32 limit         = 4;
+  // Opaque cursor from a prior `next_cursor`; empty string is "start".
+  string cursor        = 5;
+  // `asc` (default) | `desc`. Empty → `desc` to match the MCP default.
+  string direction     = 6;
+}
+
+message ListMessagesResponse {
+  repeated ChatMessage messages = 1;
+  // Empty string means "no further pages".
+  string next_cursor = 2;
+}
+
 service Escurel {
   rpc Search        (SearchRequest)         returns (SearchResponse);
   rpc Resolve       (ResolveRequest)        returns (ResolveResponse);
@@ -211,6 +282,9 @@ service Escurel {
   rpc RunStoredQuery(RunStoredQueryRequest) returns (RunStoredQueryResponse);
   rpc Validate      (ValidateRequest)       returns (ValidateResponse);
   rpc UpdatePage    (UpdatePageRequest)     returns (UpdatePageResponse);
+
+  rpc AppendMessage (AppendMessageRequest)  returns (AppendMessageResponse);
+  rpc ListMessages  (ListMessagesRequest)   returns (ListMessagesResponse);
 
   rpc LiveSession   (stream LiveOp)         returns (stream LiveAck);
 }

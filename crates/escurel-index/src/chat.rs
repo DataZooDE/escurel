@@ -266,7 +266,7 @@ impl Indexer {
         };
 
         let mut where_clauses = vec!["chat_group_id = ?".to_owned()];
-        let mut bindings: Vec<Box<dyn duckdb::ToSql>> =
+        let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> =
             vec![Box::new(input.chat_group_id.to_owned())];
 
         if let Some(since) = input.since {
@@ -299,7 +299,10 @@ impl Indexer {
 
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn duckdb::ToSql> = bindings.iter().map(|b| b.as_ref()).collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> = bindings
+            .iter()
+            .map(|b| b.as_ref() as &dyn duckdb::ToSql)
+            .collect();
         let mut rows = stmt.query(param_refs.as_slice())?;
 
         let mut messages = Vec::with_capacity(limit + 1);
@@ -371,7 +374,7 @@ impl Indexer {
         before_ts: Option<&str>,
     ) -> Result<usize, IndexerError> {
         let mut where_clauses: Vec<&str> = Vec::new();
-        let mut bindings: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+        let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> = Vec::new();
 
         if let Some(g) = chat_group_id {
             where_clauses.push("chat_group_id = ?");
@@ -392,7 +395,10 @@ impl Indexer {
         };
 
         let conn = self.conn.lock().await;
-        let param_refs: Vec<&dyn duckdb::ToSql> = bindings.iter().map(|b| b.as_ref()).collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> = bindings
+            .iter()
+            .map(|b| b.as_ref() as &dyn duckdb::ToSql)
+            .collect();
         let n = conn.execute(&sql, param_refs.as_slice())?;
         Ok(n)
     }
