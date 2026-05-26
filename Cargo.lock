@@ -2013,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "echo-app"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -2147,7 +2147,7 @@ checksum = "d817e038c30374a4bcb22f94d0a8a0e216958d4c3dcde369b1439fec4bdda6e6"
 
 [[package]]
 name = "escurel-admin"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "duckdb",
@@ -2161,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-auth"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2178,7 +2178,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-cli"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2192,7 +2192,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-client"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "escurel-proto",
  "escurel-test-support",
@@ -2204,7 +2204,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-crdt"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2220,7 +2220,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-embed"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-index"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-md"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "regex",
  "serde_yaml_ng",
@@ -2269,7 +2269,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-obs"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -2288,7 +2288,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-proto"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "futures",
  "prost 0.13.5",
@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-quota"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "dashmap",
  "thiserror 2.0.18",
@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-server"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-storage"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "escurel-test-support"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
