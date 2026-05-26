@@ -76,6 +76,10 @@ async fn mirror_to_tenants_root(tenants_root: &std::path::Path) {
 }
 
 async fn start() -> Harness {
+    start_with_quota(QuotaConfig::defaults()).await
+}
+
+async fn start_with_quota(quota_cfg: QuotaConfig) -> Harness {
     let tenants_dir = TempDir::new().unwrap();
     let tenants_root = tenants_dir.path().to_path_buf();
     let tenant_store: Arc<dyn TenantStore> = Arc::new(FsTenantStore::new(tenants_root.clone()));
@@ -94,7 +98,7 @@ async fn start() -> Harness {
     for (path, body) in PAGES {
         fixtures = fixtures.page(path, *body);
     }
-    let quota = Arc::new(QuotaManager::new(QuotaConfig::defaults()));
+    let quota = Arc::new(QuotaManager::new(quota_cfg));
 
     let process = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -363,11 +367,24 @@ async fn quota_get_returns_remaining_tokens() {
 
 #[tokio::test]
 async fn quota_get_reflects_recent_debits() {
-    let h = start().await;
+    // Use a deliberately *low* per-minute rate so the token bucket
+    // barely refills during the test window. With the production
+    // default (600/min = 10 tokens/sec) the 3 burned tokens refill
+    // within ~0.3 s, so the snapshot races the refill and the
+    // assertion flakes under load (it did, on CI's 2-core runner).
+    // At 6/min = 0.1 tokens/sec, no whole token refills for 10 s —
+    // far longer than this test takes even when contended — so the
+    // floored `queries_remaining` deterministically reflects the
+    // debits.
+    let quota_cfg = QuotaConfig {
+        queries_per_minute: 6,
+        ..QuotaConfig::defaults()
+    };
+    let h = start_with_quota(quota_cfg).await;
     let mut agent = agent_client(&h).await;
-    // Burn a few `queries`-bucket tokens via the real agent
-    // surface. The agent client carries a tenant-claim that
-    // matches the quota manager's tenant key.
+    // Burn 3 `queries`-bucket tokens via the real agent surface.
+    // The agent client carries a tenant-claim matching the quota
+    // manager's tenant key.
     let agent_bearer_md = agent_bearer(&h);
     for _ in 0..3_u32 {
         let mut r = Request::new(ListSkillsRequest::default());
@@ -387,10 +404,11 @@ async fn quota_get_reflects_recent_debits() {
         .await
         .unwrap()
         .into_inner();
-    let defaults = QuotaConfig::defaults();
+    // 6 capacity − 3 consumed = 3, ± negligible refill (<1 whole
+    // token over the test window).
     assert!(
-        resp.queries_remaining <= defaults.queries_per_minute - 3,
-        "expected at least 3 tokens consumed; got {}",
+        resp.queries_remaining <= 3,
+        "expected at least 3 of 6 tokens consumed; got {}",
         resp.queries_remaining
     );
     h.process.shutdown().await;
