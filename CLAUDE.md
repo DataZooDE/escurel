@@ -127,6 +127,11 @@ A PR cycle:
 - **`Cargo.lock` is committed.** The workspace has native deps
   (libduckdb-sys); pinning is the standard recommendation for any
   workspace that produces binaries or links native libraries.
+- **License + advisory audit via `cargo deny check`** against the
+  root `deny.toml` (permissive allow-list per
+  [`docs/spec/roadmap.md § Licenses`](docs/spec/roadmap.md#licenses)).
+  Run at milestones / dep freezes, not per-PR. See
+  [`docs/deploy/README.md § License + advisory audit`](docs/deploy/README.md).
 - **M1 acceptance:** our own spec-derived integration tests; no
   port of the Python prototype's 28-assertion suite (prototype not
   located at bootstrap time).
