@@ -194,6 +194,86 @@ async fn degraded_embedder_start_boots_with_readyz_false() {
     booted.handle.shutdown().await;
 }
 
+/// codex pre-v1 review (P2): a configured tenant with a path
+/// separator must be rejected before it is joined into a
+/// filesystem path, not silently used to escape the tenant root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn build_rejects_path_traversal_tenant() {
+    let data_dir = TempDir::new().unwrap();
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_SERVER_LISTEN_GRPC", ""),
+        ("ESCUREL_TENANT", "../escape"),
+    ])))
+    .unwrap();
+    let err = match cfg.build().await {
+        Ok(_) => panic!("must reject bad tenant id"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("ESCUREL_TENANT"),
+        "error must name ESCUREL_TENANT; got: {err}"
+    );
+}
+
+/// codex pre-v1 review (P1): on a fresh DuckDB whose LaneStore
+/// already holds canonical markdown (cattle-node-loss / wiped
+/// volume), the boot path must rebuild the index from that
+/// markdown rather than serving an empty corpus.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fresh_duckdb_rebuilds_index_from_surviving_markdown() {
+    let data_dir = TempDir::new().unwrap();
+    // Seed canonical markdown into the FsStore lane the way a
+    // surviving host volume would have it: {root}/tenants/{tenant}/markdown/...
+    let md = data_dir
+        .path()
+        .join("tenants")
+        .join("default")
+        .join("markdown")
+        .join("skills");
+    std::fs::create_dir_all(&md).unwrap();
+    std::fs::write(
+        md.join("customer.md"),
+        "---\ntype: skill\nid: customer\ndescription: a buyer\n---\n# customer\n",
+    )
+    .unwrap();
+
+    // No DuckDB file exists yet → `fresh` boot → must rebuild.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_SERVER_LISTEN_GRPC", ""),
+    ])))
+    .unwrap();
+    let booted = cfg.build().await.expect("server boots");
+    let base = format!("http://{}", booted.handle.local_addr);
+
+    // Unauthenticated (no OIDC issuer configured) → /mcp is open.
+    // list_skills must show the rebuilt-from-markdown skill.
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "list_skills", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let skills = body["result"]["skills"].as_array().expect("skills array");
+    assert!(
+        skills.iter().any(|s| s["id"] == "customer"),
+        "fresh boot must rebuild the seeded skill from markdown; got: {body}"
+    );
+
+    booted.handle.shutdown().await;
+}
+
 // --- helpers ---------------------------------------------------
 
 /// `assert_cmd`'s `cargo_bin`, wrapped so the binary-spawn test does

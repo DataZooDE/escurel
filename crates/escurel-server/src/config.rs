@@ -524,6 +524,18 @@ impl EscurelConfig {
         //    stale-read trap in the second-connection note does not
         //    apply here — see
         //    docs/notes/discovered/2026-05-26-server-binary-crdt-second-connection.md).
+        // Validate the configured tenant id before it is joined into
+        // a filesystem path. `ESCUREL_TENANT=../other` would
+        // otherwise escape the tenant root and open a DuckDB file
+        // outside it. The admin RPCs already gate tenant ids; the
+        // binary's own configured tenant needs the same guard
+        // (codex pre-v1 review).
+        escurel_admin::validate_tenant_id(&self.tenant).map_err(|_| ConfigError::InvalidValue {
+            var: "ESCUREL_TENANT",
+            value: self.tenant.clone(),
+            reason: "invalid tenant id (must be lowercase ascii / digit / '-' / '_', 1-64 chars)",
+        })?;
+
         let tenant_dir = self.data_dir.join("tenants").join(&self.tenant);
         std::fs::create_dir_all(&tenant_dir).map_err(|source| ConfigError::DataDir {
             path: tenant_dir.display().to_string(),
@@ -545,6 +557,19 @@ impl EscurelConfig {
             conn,
             self.tenant.clone(),
         )?);
+
+        // Cattle-node-loss recovery: when the DuckDB file was just
+        // created but the LaneStore still holds canonical markdown
+        // (fresh host / wiped local volume), rebuild the index from
+        // that markdown so the server doesn't serve an empty corpus
+        // until an operator runs the admin rebuild. On a genuine
+        // first boot the store is empty and this is a fast no-op.
+        // (codex pre-v1 review — the binary boot path must honour the
+        // crash-recovery contract in docs/spec/storage.md, not just
+        // the admin RPC.)
+        if fresh {
+            indexer.rebuild().await?;
+        }
 
         // CRDT backend over a second connection to the same file.
         let crdt_conn = Connection::open(&db_path).map_err(|source| ConfigError::DuckdbOpen {
