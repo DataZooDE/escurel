@@ -66,7 +66,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::config_probe::DependencyProbe;
-use crate::{ServerConfig, serve};
+use crate::{EmbedderFactory, ServerConfig, serve};
 
 /// Default vector dimension (EmbeddingGemma 768).
 const DEFAULT_DIM: usize = 768;
@@ -578,6 +578,13 @@ impl EscurelConfig {
             quota,
             tenant_store: Some(tenant_store),
             crdt_backend: Some(crdt_backend),
+            // Hot-reload seam: the live embedder plus a factory that
+            // rebuilds it from this config on demand. The
+            // `embedding_reload` admin RPC retries a degraded-start
+            // model load by calling the factory and swapping the
+            // result into `embedder`.
+            embedder_reload: Some(Arc::clone(&embedder)),
+            embedder_factory: Some(self.embedder_factory()),
         };
 
         let handle = serve(server_config)
@@ -643,6 +650,38 @@ impl EscurelConfig {
                 );
                 ReloadableEmbedder::degraded(self.embedding_dim)
             }
+        }
+    }
+
+    /// Build the on-demand rebuild closure the `embedding_reload`
+    /// admin RPC invokes. It captures a clone of this config so the
+    /// gRPC layer never has to own the original `EscurelConfig`;
+    /// each call re-attempts [`load_real_embedder`](Self::load_real_embedder)
+    /// and, on success, returns the real embedder plus a revision
+    /// label (the model id / path, falling back to the provider
+    /// name) so the admin response can name which model is live.
+    fn embedder_factory(&self) -> EmbedderFactory {
+        let cfg = self.clone();
+        Arc::new(move || {
+            let cfg = cfg.clone();
+            Box::pin(async move {
+                let embedder = cfg.load_real_embedder().await.map_err(|e| e.to_string())?;
+                Ok((embedder, cfg.embedder_revision()))
+            })
+        })
+    }
+
+    /// A short label naming the model that would load — the model
+    /// id / path when set, otherwise the provider name. Surfaced as
+    /// `EmbeddingReloadResponse.model_revision`.
+    fn embedder_revision(&self) -> String {
+        if let Some(model) = self.embedding_model.as_ref().filter(|m| !m.is_empty()) {
+            return model.clone();
+        }
+        match self.embedding_provider {
+            EmbeddingProvider::Zero => "zero".to_owned(),
+            EmbeddingProvider::Gemini => "gemini".to_owned(),
+            EmbeddingProvider::EmbeddingGemma => "embeddinggemma".to_owned(),
         }
     }
 

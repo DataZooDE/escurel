@@ -34,7 +34,9 @@ use std::sync::Arc;
 use escurel_admin::{AdminError, TenantSpec as AdminTenantSpec, TenantStore};
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::Version;
-use escurel_index::{Direction, Indexer, Issue, OrderDir, Severity};
+use escurel_index::{
+    Direction, Indexer, Issue, OrderDir, Severity, derive_attach_alias, is_safe_attach_source,
+};
 use escurel_md::PageType;
 use escurel_proto::v1::TenantSpec as ProtoTenantSpec;
 use escurel_proto::v1::escurel_admin_server::EscurelAdmin;
@@ -1010,13 +1012,45 @@ impl EscurelAdmin for EscurelAdminGrpc {
         &self,
         req: Request<AttachExternalRequest>,
     ) -> Result<Response<AttachExternalResponse>, Status> {
-        // Auth gate stays wired so the role boundary is correct
-        // on the wire; the body lands in M4.6 alongside the
-        // two-stage reconciler.
         self.enforce_admin(req.metadata()).await?;
-        Err(Status::unimplemented(
-            "attach_external lands in M4.6 alongside the two-stage reconciler",
-        ))
+        let indexer = self
+            .state
+            .indexer
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("server has no indexer wired"))?
+            .clone();
+        let r = req.into_inner();
+        // Validate the tenant id up front — mirrors the
+        // `tenant_export` / `compact_lanes` defence (admin RPCs that
+        // take a tenant id never trust it raw). Single-tenant
+        // routing today: the indexer is bound to one tenant at
+        // startup, so the id must match it.
+        escurel_admin::validate_tenant_id(&r.tenant_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        if r.tenant_id != indexer.tenant() {
+            return Err(Status::failed_precondition(format!(
+                "attach_external tenant `{}` does not match indexer tenant `{}`",
+                r.tenant_id,
+                indexer.tenant()
+            )));
+        }
+        // Reject an unsafe source before it reaches the ATTACH SQL.
+        // DuckDB has no parameter binding for ATTACH, so this is the
+        // injection boundary (the indexer re-checks defensively).
+        if !is_safe_attach_source(&r.source_url) {
+            return Err(Status::invalid_argument(
+                "source_url contains an unsafe character (quote, backslash, semicolon, \
+                 or control char) or is empty",
+            ));
+        }
+        let alias = derive_attach_alias(&r.source_url).ok_or_else(|| {
+            Status::invalid_argument("could not derive a catalog alias from source_url")
+        })?;
+        indexer
+            .attach_external(&alias, &r.source_url)
+            .await
+            .map_err(|e| Status::internal(format!("attach_external: {e}")))?;
+        Ok(Response::new(AttachExternalResponse { source_id: alias }))
     }
 
     async fn embedding_reload(
@@ -1024,12 +1058,28 @@ impl EscurelAdmin for EscurelAdminGrpc {
         req: Request<EmbeddingReloadRequest>,
     ) -> Result<Response<EmbeddingReloadResponse>, Status> {
         self.enforce_admin(req.metadata()).await?;
-        // Placeholder until the embedder hot-reload path lands
-        // in M5; the gate is wired so the surface matches the
-        // proto.
-        Ok(Response::new(EmbeddingReloadResponse {
-            model_revision: "M5".to_owned(),
-        }))
+        // The reloadable seam + the rebuild factory are wired
+        // together: the binary captures the embedding config in the
+        // factory closure so the gRPC layer never has to own the
+        // original `EscurelConfig`. Without both, there is nothing
+        // to reload.
+        let (reload, factory) = match (&self.state.embedder_reload, &self.state.embedder_factory) {
+            (Some(r), Some(f)) => (r, f),
+            _ => {
+                return Err(Status::failed_precondition(
+                    "no reloadable embedder configured",
+                ));
+            }
+        };
+        // Rebuild the real embedder from the captured config. On
+        // failure the server stays degraded and the caller can
+        // retry — this is the "retry model load after a degraded
+        // start" path (docs/spec/protocol.md L377).
+        let (embedder, model_revision) = factory()
+            .await
+            .map_err(|e| Status::internal(format!("embedding_reload: model load failed: {e}")))?;
+        reload.reload(embedder);
+        Ok(Response::new(EmbeddingReloadResponse { model_revision }))
     }
 
     type CompactLanesStream = StreamOf<CompactProgress>;
