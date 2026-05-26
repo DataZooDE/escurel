@@ -1,0 +1,69 @@
+// escurel — Tailscale ACL FRAGMENT (forward-looking).
+//
+// This is a fragment of the substrate's tailnet policy file, NOT a
+// standalone ACL. The operator folds these entries into the substrate
+// repo's Tailscale policy (an `infra/modules/tailscale/` PR per
+// substrate-platform skill ref 06). Inventing a tag here does nothing
+// until that PR lands and the module mints auth keys carrying the tag.
+//
+// IMPORTANT — current substrate reality (skill ref 06): app workloads
+// do NOT yet have per-app tailnet identities. escurel allocations run
+// on cli nodes carrying `tag:cli`; "tailnet-only" today means "no
+// urlprefix- Fabio tag, reachable via Consul DNS over the node-level
+// tailnet." The `tag:dz-escurel` rows below are FORWARD-LOOKING: they
+// describe the intended per-app isolation once the per-app-tag module
+// ships. Until then, the effective policy is the substrate default
+// (`tag:ops -> tag:cli`, inter-node traffic on the private network).
+//
+// Tag name reconciliation: substrate.md §7 prose uses `tag:escurel`;
+// the substrate.md § Naming-convention table (the authoritative,
+// post-PR-#61 source) uses `tag:dz-escurel`. This fragment uses
+// `tag:dz-escurel` to match the shared substrate naming convention.
+//
+// Access pattern (substrate.md §7):
+//   - tag:dz-escurel reaches tag:srv ONLY for the Vault template
+//     (secret fetch at task start). It does NOT initiate to
+//     tag:agents — escurel is not behind Triton.
+//   - tag:ops (operators + CI ops identity) may reach escurel's gRPC
+//     admin surface :8081 over the tailnet for admin tooling and the
+//     export shipper.
+//   - tag:agents (the agent pool) does NOT reach escurel directly;
+//     only Triton (on tag:cli) does, and that is over Fabio /
+//     Consul-routed HTTP, not a tailnet ACL grant.
+{
+  "tagOwners": {
+    // Operator-only: a substrate PR allocates the auth-key binding.
+    "tag:dz-escurel": ["autogroup:admin"]
+  },
+
+  "acls": [
+    // Operators + CI ops identity reach escurel's tailnet-only
+    // surfaces: gRPC admin :8081 and Prometheus /metrics :9090.
+    {
+      "action": "accept",
+      "src": ["tag:ops"],
+      "dst": ["tag:dz-escurel:8081", "tag:dz-escurel:9090"]
+    },
+
+    // escurel reaches the Vault/Consul/Nomad servers ONLY for the
+    // Vault secret template + Consul service registration. Vault is
+    // :8200; Consul DNS/HTTP :8500/:8600 are node-level and already
+    // covered by the substrate default, listed here for intent.
+    {
+      "action": "accept",
+      "src": ["tag:dz-escurel"],
+      "dst": ["tag:srv:8200"]
+    }
+
+    // NO rule granting tag:dz-escurel -> tag:agents. escurel is a
+    // knowledge-base data store, not a Triton upstream; it must not
+    // initiate to the agent pool (substrate.md §7).
+  ],
+
+  // Operator note: public MCP/WS/REST ingress is NOT a tailnet ACL
+  // concern — it flows internet -> Hetzner LB :443 -> Fabio (on cli)
+  // -> Consul-routed -> escurel alloc (skill ref 03 + substrate.md §8).
+  // The tailnet ACL governs only the tailnet-only surfaces (gRPC,
+  // metrics) and the Vault secret fetch.
+  "ssh": []
+}
