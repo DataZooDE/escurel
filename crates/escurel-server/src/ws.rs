@@ -385,10 +385,10 @@ async fn handle_op(
 ) -> Result<(), axum::Error> {
     // Quota first — mirrors the HTTP `apply_op` ordering in
     // `mcp.rs`: refuse before doing any work.
-    if let Some(q) = state.quota.as_ref() {
-        if let Err(err) = q.try_consume(tenant_id, Dimension::Writes) {
-            return send_json(socket, quota_error_frame(session_id, &err)).await;
-        }
+    if let Some(q) = state.quota.as_ref()
+        && let Err(err) = q.try_consume(tenant_id, Dimension::Writes)
+    {
+        return send_json(socket, quota_error_frame(session_id, &err)).await;
     }
 
     let op_b64 = match frame.get("op").and_then(Value::as_str) {

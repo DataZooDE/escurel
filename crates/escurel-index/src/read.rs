@@ -427,28 +427,26 @@ impl Indexer {
             }
         }
 
-        if want_in {
-            if let Some((Some(slug), skill)) = target {
-                let mut sql = String::from(
-                    "SELECT src_page, dst_page, dst_anchor, link_skill, link_version \
-                     FROM links WHERE dst_page = ? AND link_skill = ?",
-                );
-                if let Some(ls) = link_skill_filter {
-                    // Filter further if a more specific link_skill was
-                    // requested. `link_skill` here is the dst's own
-                    // skill; the filter only narrows it further.
-                    sql.push_str(" AND link_skill = ?");
-                    let mut stmt = conn.prepare(&sql)?;
-                    let rows = stmt.query_map(params![slug, skill, ls], edge_from_row)?;
-                    for r in rows {
-                        edges.push(r?);
-                    }
-                } else {
-                    let mut stmt = conn.prepare(&sql)?;
-                    let rows = stmt.query_map(params![slug, skill], edge_from_row)?;
-                    for r in rows {
-                        edges.push(r?);
-                    }
+        if want_in && let Some((Some(slug), skill)) = target {
+            let mut sql = String::from(
+                "SELECT src_page, dst_page, dst_anchor, link_skill, link_version \
+                 FROM links WHERE dst_page = ? AND link_skill = ?",
+            );
+            if let Some(ls) = link_skill_filter {
+                // Filter further if a more specific link_skill was
+                // requested. `link_skill` here is the dst's own
+                // skill; the filter only narrows it further.
+                sql.push_str(" AND link_skill = ?");
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(params![slug, skill, ls], edge_from_row)?;
+                for r in rows {
+                    edges.push(r?);
+                }
+            } else {
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(params![slug, skill], edge_from_row)?;
+                for r in rows {
+                    edges.push(r?);
                 }
             }
         }
