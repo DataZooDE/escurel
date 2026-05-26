@@ -20,18 +20,36 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
   RUST_BACKTRACE: short
+  # The workspace statically links libduckdb into ~15 test
+  # binaries. Linking them with full debuginfo, in parallel, blows
+  # past the 7 GB on a GitHub-hosted runner — the first re-enabled
+  # CI run got SIGTERM'd (exit 143) mid-link before any test ran.
+  # Drop test/dev debuginfo (duckdb's is enormous) and serialise
+  # build jobs to cap peak link memory. CI-only; the committed
+  # profiles and local dev builds are untouched.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_BUILD_JOBS: "1"
 
 jobs:
   ci:
     name: fmt + clippy + test + build
     runs-on: ubuntu-latest
-    # Cold duckdb compile is ~15 min in debug and ~10 min in release
-    # (LTO). With both stages running back-to-back on a fresh runner
-    # the job needs >30 min headroom before the cache is primed; once
-    # rust-cache restores libduckdb-sys both stages drop to <1 min.
-    timeout-minutes: 60
+    # Cold duckdb compile is ~15 min debug + ~10 min release (LTO),
+    # and `CARGO_BUILD_JOBS=1` (the link-memory cap, see env above)
+    # serialises the rest, so a cold run needs generous headroom;
+    # once rust-cache restores libduckdb-sys both stages drop to
+    # <1 min and the cap is moot.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      # `escurel-proto`'s build.rs runs prost/tonic codegen, which
+      # shells out to `protoc`. The runner image doesn't ship it.
+      # (`unsafe_code = "forbid"` rules out setting PROTOC to a
+      # vendored binary from the build script in edition 2024.)
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       # rust-toolchain.toml drives the channel + components; rustup
       # honours it automatically on first invocation.

@@ -20,7 +20,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.86"
+rust-version = "1.88"
 version = "1.0.0"
 license = "BUSL-1.1"
 authors = ["DataZoo GmbH <hello@data-zoo.de>"]
