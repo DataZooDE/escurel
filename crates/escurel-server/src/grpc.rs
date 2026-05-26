@@ -45,18 +45,18 @@ use escurel_proto::v1::escurel_server::Escurel;
 use escurel_proto::v1::{
     AppendMessageRequest, AppendMessageResponse, AttachExternalRequest, AttachExternalResponse,
     AuditRequest, AuditResponse, ChatMessage as ProtoChatMessage, CompactLanesRequest,
-    CompactProgress, Edge, EmbeddingReloadRequest, EmbeddingReloadResponse, ExpandBlock,
-    ExpandRequest, ExpandResponse, HealthRequest, HealthResponse, InstanceInfo,
-    ListInstancesRequest, ListInstancesResponse, ListMessagesRequest, ListMessagesResponse,
-    ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse,
-    PageRef, QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest, ResolveRequest,
-    ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest,
-    SearchResponse, Skill, StoredQueryColumn, TenantCreateRequest, TenantCreateResponse,
-    TenantDeleteRequest, TenantDeleteResponse, TenantExportChunk, TenantExportRequest,
-    TenantGetRequest, TenantGetResponse, TenantImportChunk, TenantImportResponse,
-    TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
-    UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse, ValidationIssue,
-    WikilinkParsed,
+    CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse, Edge,
+    EmbeddingReloadRequest, EmbeddingReloadResponse, ExpandBlock, ExpandRequest, ExpandResponse,
+    HealthRequest, HealthResponse, InstanceInfo, ListInstancesRequest, ListInstancesResponse,
+    ListMessagesRequest, ListMessagesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck,
+    LiveOp, NeighboursRequest, NeighboursResponse, PageRef, QuotaGetRequest, QuotaGetResponse,
+    RebuildProgress, RebuildRequest, ResolveRequest, ResolveResponse, RunStoredQueryRequest,
+    RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
+    TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
+    TenantExportChunk, TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportChunk,
+    TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
+    TenantUpdateResponse, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
+    ValidationIssue, WikilinkParsed,
 };
 use escurel_quota::{Dimension, QuotaError};
 use flate2::Compression;
@@ -1254,6 +1254,38 @@ impl EscurelAdmin for EscurelAdminGrpc {
         });
         let stream: Self::CompactLanesStream = Box::pin(ReceiverStream::new(rx));
         Ok(Response::new(stream))
+    }
+
+    async fn delete_chat_history(
+        &self,
+        req: Request<DeleteChatHistoryRequest>,
+    ) -> Result<Response<DeleteChatHistoryResponse>, Status> {
+        // Admin-only: the agent surface intentionally has no delete
+        // tool. GDPR right-to-erasure + retention pruning are
+        // operator concerns (issue #63).
+        self.enforce_admin(req.metadata()).await?;
+        let indexer = self
+            .state
+            .indexer
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("server has no indexer wired"))?;
+        let r = req.into_inner();
+        // Validate the tenant id even though the indexer is shared
+        // today — when per-tenant indexer routing lands this is the
+        // hook that gates the wrong-tenant case.
+        if !r.tenant_id.is_empty() {
+            escurel_admin::validate_tenant_id(&r.tenant_id)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        }
+        let group = (!r.chat_group_id.is_empty()).then_some(r.chat_group_id.as_str());
+        let before = (!r.before_ts.is_empty()).then_some(r.before_ts.as_str());
+        let deleted = indexer
+            .delete_chat_history(group, before)
+            .await
+            .map_err(|e| Status::internal(format!("delete_chat_history: {e}")))?;
+        Ok(Response::new(DeleteChatHistoryResponse {
+            deleted: deleted as u64,
+        }))
     }
 
     async fn quota_get(

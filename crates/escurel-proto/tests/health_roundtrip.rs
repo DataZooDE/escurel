@@ -14,12 +14,13 @@ use std::time::Duration;
 use escurel_proto::v1::escurel_admin_server::{EscurelAdmin, EscurelAdminServer};
 use escurel_proto::v1::{
     AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
-    CompactLanesRequest, CompactProgress, EmbeddingReloadRequest, EmbeddingReloadResponse,
-    HealthRequest, HealthResponse, QuotaGetRequest, QuotaGetResponse, RebuildProgress,
-    RebuildRequest, TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest,
-    TenantDeleteResponse, TenantExportChunk, TenantExportRequest, TenantGetRequest,
-    TenantGetResponse, TenantImportChunk, TenantImportResponse, TenantListRequest,
-    TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
+    CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
+    EmbeddingReloadRequest, EmbeddingReloadResponse, HealthRequest, HealthResponse,
+    QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest,
+    TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse, TenantExportChunk,
+    TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportChunk,
+    TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
+    TenantUpdateResponse,
 };
 use futures::Stream;
 use tokio::net::TcpListener;
@@ -126,6 +127,13 @@ impl EscurelAdmin for StaticAdmin {
         _req: Request<QuotaGetRequest>,
     ) -> Result<Response<QuotaGetResponse>, Status> {
         Err(Status::unimplemented("M3.5c"))
+    }
+
+    async fn delete_chat_history(
+        &self,
+        _req: Request<DeleteChatHistoryRequest>,
+    ) -> Result<Response<DeleteChatHistoryResponse>, Status> {
+        Err(Status::unimplemented("M-Chat.3"))
     }
 }
 
