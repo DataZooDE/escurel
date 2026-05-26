@@ -6,8 +6,8 @@
 //! `EscurelClient`). `validate` is a dry run — it must produce the
 //! same issue list `update_page` would, but commit nothing.
 
-use escurel_proto::v1::escurel_client::EscurelClient;
 use escurel_proto::v1::ValidateRequest;
+use escurel_proto::v1::escurel_client::EscurelClient;
 use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
 use serde_json::{Value, json};
 use tonic::Request;
@@ -76,7 +76,12 @@ async fn validate_mcp(p: &EscurelProcess, content: &str, as_page_id: Option<&str
     body["result"].clone()
 }
 
-async fn grpc_client(p: &EscurelProcess) -> (EscurelClient<Channel>, MetadataValue<tonic::metadata::Ascii>) {
+async fn grpc_client(
+    p: &EscurelProcess,
+) -> (
+    EscurelClient<Channel>,
+    MetadataValue<tonic::metadata::Ascii>,
+) {
     let endpoint = p.grpc_endpoint().expect("grpc endpoint");
     let channel = Channel::from_shared(endpoint.to_owned())
         .unwrap()
