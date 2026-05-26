@@ -14,8 +14,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use escurel_proto::v1::escurel_client::EscurelClient;
 use escurel_proto::v1::{
-    ExpandRequest, ListInstancesRequest, ListSkillsRequest, NeighboursRequest, ResolveRequest,
-    RunStoredQueryRequest, SearchRequest, UpdatePageRequest,
+    AppendMessageRequest, ExpandRequest, ListInstancesRequest, ListMessagesRequest,
+    ListSkillsRequest, NeighboursRequest, ResolveRequest, RunStoredQueryRequest, SearchRequest,
+    UpdatePageRequest,
 };
 use serde_json::{Value, json};
 use tonic::metadata::MetadataValue;
@@ -53,6 +54,69 @@ enum Command {
     RunStoredQuery(RunStoredQueryArgs),
     /// Upsert a markdown page. Body is read from stdin.
     UpdatePage { page_id: String },
+    /// Per-chat-group conversation log (M-Chat, issue #63).
+    #[command(subcommand)]
+    Chat(ChatCommand),
+}
+
+#[derive(Subcommand, Debug)]
+enum ChatCommand {
+    /// Append a message to a chat group. Content is read from
+    /// stdin unless `--content` is provided.
+    Append(ChatAppendArgs),
+    /// Read back a chat group's history.
+    List(ChatListArgs),
+}
+
+#[derive(Args, Debug)]
+struct ChatAppendArgs {
+    /// Opaque chat-group id (consumer-defined).
+    #[arg(long, short = 'g')]
+    group: String,
+    /// `user` | `assistant` | `system` | `tool`.
+    #[arg(long, default_value = "user")]
+    role: String,
+    /// Message content. If absent, read from stdin.
+    #[arg(long)]
+    content: Option<String>,
+    /// Opaque author handle.
+    #[arg(long)]
+    author: Option<String>,
+    /// Event time (RFC-3339 UTC). Server stamps `CURRENT_TIMESTAMP`
+    /// when absent.
+    #[arg(long)]
+    ts: Option<String>,
+    /// Inline JSON metadata, e.g. `'{"thread":"t-42"}'`.
+    #[arg(long)]
+    metadata: Option<String>,
+    /// Caller-supplied message id. Server generates a ULID when
+    /// absent.
+    #[arg(long)]
+    msg_id: Option<String>,
+    /// Skip embedding (cheap insert for high-volume sources).
+    #[arg(long)]
+    no_embed: bool,
+}
+
+#[derive(Args, Debug)]
+struct ChatListArgs {
+    #[arg(long, short = 'g')]
+    group: String,
+    /// Inclusive lower bound (RFC-3339).
+    #[arg(long)]
+    since: Option<String>,
+    /// Exclusive upper bound (RFC-3339).
+    #[arg(long)]
+    until: Option<String>,
+    /// 0 → server default (100); hard cap 1000.
+    #[arg(long, default_value_t = 0)]
+    limit: u32,
+    /// Opaque cursor from a previous `next_cursor`.
+    #[arg(long)]
+    cursor: Option<String>,
+    /// `asc` | `desc` (default `desc`).
+    #[arg(long, default_value = "desc")]
+    direction: String,
 }
 
 #[derive(Args, Debug)]
@@ -333,6 +397,69 @@ async fn main() -> Result<()> {
                     "anchor": optional_string(&i.anchor),
                 })).collect::<Vec<_>>(),
                 "new_version": optional_string(&resp.new_version),
+            })
+        }
+
+        Command::Chat(ChatCommand::Append(a)) => {
+            let content = match a.content {
+                Some(c) => c,
+                None => {
+                    let mut buf = String::new();
+                    std::io::stdin()
+                        .read_to_string(&mut buf)
+                        .context("read message content from stdin")?;
+                    if buf.is_empty() {
+                        bail!("--content empty and stdin is empty");
+                    }
+                    buf
+                }
+            };
+            let resp = client
+                .append_message(authed(
+                    AppendMessageRequest {
+                        chat_group_id: a.group,
+                        role: a.role,
+                        content,
+                        author: a.author.unwrap_or_default(),
+                        ts: a.ts.unwrap_or_default(),
+                        metadata_json: a.metadata.unwrap_or_default(),
+                        msg_id: a.msg_id.unwrap_or_default(),
+                        embed: !a.no_embed,
+                    },
+                    &bearer,
+                ))
+                .await?
+                .into_inner();
+            json!({ "msg_id": resp.msg_id, "ts": resp.ts })
+        }
+
+        Command::Chat(ChatCommand::List(a)) => {
+            let resp = client
+                .list_messages(authed(
+                    ListMessagesRequest {
+                        chat_group_id: a.group,
+                        since: a.since.unwrap_or_default(),
+                        until: a.until.unwrap_or_default(),
+                        limit: a.limit,
+                        cursor: a.cursor.unwrap_or_default(),
+                        direction: a.direction,
+                    },
+                    &bearer,
+                ))
+                .await?
+                .into_inner();
+            json!({
+                "messages": resp.messages.into_iter().map(|m| json!({
+                    "chat_group_id": m.chat_group_id,
+                    "msg_id": m.msg_id,
+                    "ts": m.ts,
+                    "role": m.role,
+                    "author": optional_string(&m.author),
+                    "content": m.content,
+                    "metadata": json_or_null(&m.metadata_json),
+                    "embedded": m.embedded,
+                })).collect::<Vec<_>>(),
+                "next_cursor": optional_string(&resp.next_cursor),
             })
         }
     };

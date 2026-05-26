@@ -50,9 +50,12 @@ The design follows from the paper:
 
 ### Agent-facing (exposed over MCP)
 
-Twelve tools, grouped by axis. The four write tools split between
+Fourteen tools, grouped by axis. The four write tools split between
 "live" (CRDT op stream) and "fallback" (whole-page submission) — see
-§"Write path in detail" below.
+§"Write path in detail" below. The two append-mostly chat tools
+(M-Chat, [ADR-0002](../adr/0002-chat-message-surface.md)) sit
+alongside the typed KB; conversation history is not embedded into
+the skill/instance model.
 
 | tool | inputs | output | axis | notes |
 |---|---|---|---|---|
@@ -68,6 +71,8 @@ Twelve tools, grouped by axis. The four write tools split between
 | `apply_op` | `session: str`, `op: CRDTOp` | `{ok, conflicts?: [...]}` | write (live) | apply a single CRDT op; concurrent merges are handled by Loro |
 | `close_session` | `session: str`, `commit: bool = true` | `{final_version, issues}` | write (live) | materialise the CRDT state to canonical markdown |
 | `update_page` | `page_id: str`, `content: str`, `base_version?: str` | `{ok, issues, new_version}` | write (fallback) | whole-page write for environments without CRDT op stream support (no CSP fix); server diffs against current CRDT state and applies as ops |
+| `append_message` | `chat_group_id: str`, `role: str`, `content: str`, `author?: str`, `ts?: str`, `metadata?: object`, `msg_id?: str`, `embed: bool = true` | `{msg_id, ts}` | chat (append) | append-mostly conversation log; `chat_group_id` is opaque to escurel; embedding is opt-out per call. Distinct from `update_page` — does not rewrite a page. See [ADR-0002](../adr/0002-chat-message-surface.md). |
+| `list_messages` | `chat_group_id: str`, `since?: str`, `until?: str`, `limit: int = 100`, `cursor?: str`, `direction: 'asc'\|'desc' = 'desc'` | `{messages: [...], next_cursor?}` | chat (read) | time-ordered read; `since` inclusive, `until` exclusive; cursor over `(ts, msg_id)`. No embedding lookup on the read path. |
 
 ### Ops / debugging (CLI-only, not exposed over MCP)
 
@@ -106,7 +111,8 @@ Distinct from the four CLI ops tools above because:
 | `admin_list_lanes` | — | list of `{name, backend, tenants_present}` | enumerate the LaneStores the server has registered. Tells you whether Fs and S3 are both wired up and which tenants have content in each |
 | `admin_lane_keys` | `lane: str`, `prefix?: str`, `limit: int = 100` | list of `{key, size_bytes, last_modified?}` | list keys under `prefix` in `lane`. What's actually on disk / in S3 for this tenant, ordered by key |
 | `admin_lane_blob` | `lane: str`, `key: str` | binary `{bytes, content_type}` | fetch one blob raw — the Inspector renders bytes hex+text for debug. Subject to a server-side size limit (default 1 MiB) |
-| `admin_index_query` | `table: str`, `filter?: {…}`, `limit?: int` | `{columns, rows, snapshot_version?}` | paginated read of one of the six index tables: `pages`, `links`, `blocks`, `crdt_ops`, `crdt_snapshots`, `frontmatter_index`. Read-only by design |
+| `admin_index_query` | `table: str`, `filter?: {…}`, `limit?: int` | `{columns, rows, snapshot_version?}` | paginated read of one of the index tables (`pages`, `links`, `blocks`, `crdt_ops`, `crdt_snapshots`, `frontmatter_index`, `chat_messages`). Read-only by design |
+| `delete_chat_history` (gRPC: `EscurelAdmin.DeleteChatHistory`) | `tenant_id: str`, `chat_group_id?: str`, `before_ts?: str` | `{deleted}` | destructive purge for the M-Chat conversation log. Both filters optional; combinations cover GDPR right-to-erasure (`chat_group_id` set), retention pruning (`before_ts` set), per-group pruning (both set), and full-tenant wipe (both unset). The agent surface has no chat-delete tool by design — erasure is operator-controlled. See [ADR-0002](../adr/0002-chat-message-surface.md) |
 
 Scope: today admin tools operate against the **single tenant the
 server instance is scoped to**, identical to the agent surface.

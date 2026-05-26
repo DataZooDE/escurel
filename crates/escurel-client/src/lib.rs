@@ -47,8 +47,9 @@ pub use error::Error;
 // signature list in `docs/spec/dx.md` §"Client crate for the app's
 // backend" one-to-one.
 pub use escurel_proto::v1::{
-    Edge, ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, ListInstancesRequest,
-    ListInstancesResponse, ListSkillsRequest, ListSkillsResponse, NeighboursRequest,
+    AppendMessageRequest, AppendMessageResponse, ChatMessage, Edge, ExpandBlock, ExpandRequest,
+    ExpandResponse, InstanceInfo, ListInstancesRequest, ListInstancesResponse, ListMessagesRequest,
+    ListMessagesResponse, ListSkillsRequest, ListSkillsResponse, NeighboursRequest,
     NeighboursResponse, PageRef, ResolveRequest, ResolveResponse, RunStoredQueryRequest,
     RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
     UpdatePageRequest, UpdatePageResponse, ValidationIssue, WikilinkParsed,
@@ -174,6 +175,29 @@ impl Client {
     pub async fn update_page(&self, req: UpdatePageRequest) -> Result<UpdatePageResponse, Error> {
         let mut client = self.inner.clone();
         Ok(client.update_page(self.authed(req)).await?.into_inner())
+    }
+
+    /// Append a message to a chat-group's conversation history
+    /// (M-Chat, issue #63). `chat_group_id` is opaque to escurel —
+    /// the consumer owns the identifier scheme.
+    pub async fn append_message(
+        &self,
+        req: AppendMessageRequest,
+    ) -> Result<AppendMessageResponse, Error> {
+        let mut client = self.inner.clone();
+        Ok(client.append_message(self.authed(req)).await?.into_inner())
+    }
+
+    /// Read back a chat-group's history time-ordered. `since` is
+    /// inclusive, `until` is exclusive; `direction` defaults to
+    /// `desc` (newest first) when omitted. Pass `next_cursor` from
+    /// the previous response to continue paging.
+    pub async fn list_messages(
+        &self,
+        req: ListMessagesRequest,
+    ) -> Result<ListMessagesResponse, Error> {
+        let mut client = self.inner.clone();
+        Ok(client.list_messages(self.authed(req)).await?.into_inner())
     }
 
     /// Wrap a request body in a tonic `Request<T>` with the bearer
