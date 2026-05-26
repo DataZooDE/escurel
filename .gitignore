@@ -31,3 +31,14 @@
 
 # OS
 Thumbs.db
+
+# Claude Code harness local state. We *do* track the
+# escurel-platform skill (it is part of the consumer contract — see
+# .claude/skills/escurel-platform/SKILL.md and CHANGELOG.md), but
+# everything else under .claude/ is local to the developer's
+# machine (per-agent worktrees, scheduled-task locks, transient
+# logs). Whitelist the skill directory via a re-include.
+/.claude/*
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/escurel-platform/
