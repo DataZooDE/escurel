@@ -18,6 +18,11 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+// Re-export the chat-history surface so consumers and tests can
+// import the input/output types from the same module path as
+// `Indexer` itself.
+pub use crate::chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
+
 /// Hard-coded vector dimension for `blocks.dense_vec` (EmbeddingGemma
 /// default). The schema declares `FLOAT[768]`; any embedder passed to
 /// `Indexer::new` whose `dim()` does not match is rejected.
@@ -91,6 +96,8 @@ pub enum IndexerError {
     EmbedderDimMismatch { expected: usize, got: usize },
     #[error("invalid external source for attach: {reason}")]
     InvalidExternalSource { reason: &'static str },
+    #[error("invalid chat list cursor: {0}")]
+    InvalidCursor(String),
 }
 
 impl Indexer {

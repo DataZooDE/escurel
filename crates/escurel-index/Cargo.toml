@@ -35,6 +35,12 @@ serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync"] }
+# ULID for server-generated chat_messages.msg_id when the caller
+# omits it. Crockford base32, 26 chars, lexicographically sortable
+# by encoded timestamp.
+ulid = "1"
+# Base64 cursor encoding for list_chat_messages pagination.
+base64 = "0.22"
 
 [dev-dependencies]
 bytes = "1"

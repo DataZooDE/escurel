@@ -2244,6 +2244,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "duckdb",
  "escurel-crdt",
@@ -2256,6 +2257,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "ulid",
 ]
 
 [[package]]
