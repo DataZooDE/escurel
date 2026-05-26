@@ -1,0 +1,121 @@
+# cargo-deny configuration for the escurel workspace.
+#
+# Run the audit with:
+#   cargo deny check
+#
+# The authoritative license allow-list is docs/spec/roadmap.md § Licenses
+# ("Permissive across the board. No GPL surface."). This file encodes that
+# decision so the dependency tree is enforced, not just documented.
+#
+# Schema targets cargo-deny >= 0.16.
+
+[graph]
+# Audit every target so a platform-specific dep can't smuggle in a bad
+# license. all-features keeps the graph aligned with the merge gate
+# (`cargo clippy --all-features`).
+all-features = true
+
+# ---------------------------------------------------------------------------
+# Licenses — allow-list of SPDX identifiers sanctioned by the roadmap.
+# ---------------------------------------------------------------------------
+[licenses]
+# How sure the SPDX scanner must be before it trusts a detected license.
+confidence-threshold = 0.8
+
+# Permissive set, sourced from the roadmap dependency table plus the
+# transitive deps the workspace actually pulls in. No copyleft surface
+# beyond weak-copyleft MPL-2.0 (file-level, ships fine in a closed-source
+# SaaS) and the workspace's own BUSL-1.1 source-available members.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",       # Boost Software License — permissive (xxhash-rust).
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    # CA root store metadata under the Community Data License Agreement —
+    # Permissive 2.0. No source-disclosure obligation; permissive data
+    # license (webpki-roots, pulled in transitively by rustls/reqwest).
+    "CDLA-Permissive-2.0",
+    # The workspace's own crates ship under BUSL-1.1 (source-available).
+    "BUSL-1.1",
+]
+
+# ---------------------------------------------------------------------------
+# Advisories — RustSec DB. Deny yanked crates; surface vulns.
+# ---------------------------------------------------------------------------
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Refuse any dependency that has been yanked from crates.io.
+yanked = "deny"
+# "unmaintained" advisories are a maintenance signal, not a vulnerability.
+# Flag them only for crates the workspace depends on *directly* (where we
+# can act); silence the noise from deep-transitive unmaintained crates we
+# don't control (paste via candle/gemm, number_prefix via indicatif,
+# atomic-polyfill). Vulnerabilities are always flagged regardless.
+unmaintained = "workspace"
+# Each ignore MUST carry a date + rationale. Re-evaluate at every dep freeze.
+ignore = [
+    # --- rustls-webpki 0.101.7 (rustls 0.21 line), added 2026-05-26 ---
+    # RUSTSEC-2026-0104 (CRL parse panic), RUSTSEC-2026-0098 and
+    # RUSTSEC-2026-0099 (name-constraint checks incorrectly accepted) all
+    # live in the vulnerable rustls 0.21 / webpki 0.101 line. That line is
+    # pulled ONLY under an optional feature of aws-smithy-http-client that
+    # escurel never enables: `cargo tree -i rustls@0.21.12` (default
+    # features) returns "did not match any packages" — it surfaces only
+    # under this audit's `all-features = true`. The shipped binary uses
+    # rustls 0.23 / webpki 0.103.13 (already patched). No in-semver upgrade
+    # path: aws-smithy-http-client 1.1.12 is the latest compatible release
+    # and still vendors the rustls 0.21 feature path. Recheck when the AWS
+    # SDK drops it.
+    "RUSTSEC-2026-0104",
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    # RUSTSEC-2023-0071 (added 2026-05-26): Marvin timing sidechannel in
+    # rsa 0.9.x. rsa is a *dev-dependency only* (test fixtures via
+    # escurel-test-support; `cargo tree -i rsa` shows only [dev-dependencies]
+    # paths) — it is not in the shipped binary. Upstream marks "No safe
+    # upgrade available"; there is no fixed rsa release to move to. Recheck
+    # when rsa ships a constant-time fix.
+    "RUSTSEC-2023-0071",
+]
+
+# ---------------------------------------------------------------------------
+# Bans — duplicate versions and version wildcards.
+# ---------------------------------------------------------------------------
+[bans]
+# The workspace links native deps (libduckdb-sys, candle, ring); duplicate
+# transitive versions are common and unavoidable in the short term. Warn so
+# we can see the churn without blocking merges.
+multiple-versions = "warn"
+# Wildcard ("*") version requirements break the committed-Cargo.lock freeze
+# contract and should never appear for external crates. The ONLY wildcards
+# in this tree today are the workspace's own intra-workspace path deps
+# (`escurel-index = { path = "../escurel-index" }`), which carry no version
+# requirement and read as wildcards — there are zero external wildcard deps
+# (verified with `cargo deny check bans`).
+#
+# `allow-wildcard-paths` is meant to exempt exactly those path deps, but it
+# only applies to crates marked `publish = false`; the workspace members are
+# not (they inherit `version = "0.0.0"` and crates.io would reject path
+# deps, so cargo-deny treats them as publishable). Marking each member
+# `publish = false` is the proper fix and is the recommended follow-up;
+# until then we keep this at `warn` (the audit gate accepts bans as
+# warn-clean-or-acknowledged) so the internal path deps surface as warnings
+# rather than blocking, while any *external* `*` requirement still shows up
+# loudly in the report.
+wildcards = "warn"
+allow-wildcard-paths = true
+
+# ---------------------------------------------------------------------------
+# Sources — only crates.io. No unknown registries or git deps.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

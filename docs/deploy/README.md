@@ -12,6 +12,7 @@ agnostic; the files here bind it to concrete targets.
 | [`escurel-export-shipper.nomad.hcl`](escurel-export-shipper.nomad.hcl) | Periodic tenant-export shipper — the substrate-side half of the backup contract. |
 | [`escurel.tailscale-acl.json`](escurel.tailscale-acl.json) | Tailscale ACL fragment (forward-looking per-app tag). |
 | [`escurel-explore.nomad.hcl`](escurel-explore.nomad.hcl) | The Flutter editor companion app (separate workload). |
+| [`../../deny.toml`](../../deny.toml) | `cargo-deny` config — the machine-enforced license + advisory + source gate. See [§ License + advisory audit](#license--advisory-audit-cargo-deny). |
 
 > **Two naming surfaces.** The **binary surface** keeps the project
 > name: `ESCUREL_*` env vars, `escurel.toml`. The **substrate surface**
@@ -194,7 +195,58 @@ Distinctive behaviours of this target (vs A/B):
 - **Backups.** The [`escurel-export-shipper`](escurel-export-shipper.nomad.hcl)
   periodic job ships per-tenant `tenant_export` tarballs to GCS.
 
-### Placeholders you (or the operator) must fill
+## License + advisory audit (`cargo deny`)
+
+The dependency tree is gated by [`cargo-deny`](https://embarkstudios.github.io/cargo-deny/)
+against the root [`deny.toml`](../../deny.toml). The allow-list there is
+the machine-enforced form of [`../spec/roadmap.md § Licenses`](../spec/roadmap.md#licenses)
+("Permissive across the board. No GPL surface."). M5 re-runs this audit and
+freezes the dep set.
+
+```sh
+# One-time: install the tool.
+cargo install cargo-deny --locked
+
+# Run all four checks (licenses, advisories, bans, sources).
+cargo deny check
+
+# Or scope to one section while iterating.
+cargo deny check licenses
+cargo deny check advisories
+```
+
+What each section enforces:
+
+- **`licenses`** — every crate's SPDX license must be on the permissive
+  allow-list (MIT / Apache-2.0 / BSD / ISC / Unicode / Zlib / MPL-2.0,
+  plus the workspace's own `BUSL-1.1`). A new dep with a copyleft or
+  unknown license fails here.
+- **`advisories`** — checks the RustSec DB; **yanked crates are denied**.
+  `unmaintained` advisories are scoped to direct workspace deps
+  (`unmaintained = "workspace"`) so deep-transitive maintenance noise
+  doesn't block. Four advisories are explicitly ignored with dated
+  rationales in `deny.toml` (see the `[advisories].ignore` comments): the
+  three `rustls-webpki 0.101.7` issues (RUSTSEC-2026-0098/0099/0104) sit on
+  the legacy `rustls 0.21` feature path that escurel never compiles — the
+  shipped binary uses the patched `rustls 0.23` / `webpki 0.103.13` — and
+  the rsa Marvin sidechannel (RUSTSEC-2023-0071) is dev-dependency-only.
+  None has an in-semver upgrade path. A *new* vuln with a fix should be
+  bumped, not ignored.
+- **`bans`** — duplicate versions **warn** (native deps pull in dupes);
+  wildcard (`*`) version requirements **warn** today. The only wildcards in
+  the tree are the workspace's own intra-workspace path deps; there are
+  zero external wildcards. To flip this back to `deny` (the intended
+  setting), mark each workspace member `publish = false` so
+  `allow-wildcard-paths` exempts the path deps — tracked as a follow-up.
+- **`sources`** — only crates.io; unknown registries and git deps are
+  **denied**.
+
+Deps are frozen via the committed `Cargo.lock` (a locked decision in
+`CLAUDE.md`). Do not run a blanket `cargo update`; if the audit forces a
+specific bump, change that one crate in `Cargo.toml` and `cargo update -p
+<crate>` only.
+
+## Placeholders you (or the operator) must fill
 
 | Placeholder | Who supplies it | Where |
 |---|---|---|
