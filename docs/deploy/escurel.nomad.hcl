@@ -75,7 +75,7 @@ job "dz-escurel" {
   datacenters = [var.datacenter]
 
   update {
-    canary            = 0          // no canary — only one replica
+    canary            = 0 // no canary — only one replica
     auto_promote      = false
     auto_revert       = true
     max_parallel      = 1
@@ -87,22 +87,50 @@ job "dz-escurel" {
   group "escurel" {
     count = 1
 
+    // Pin to the `escurel-class` placement group (substrate adds this
+    // Nomad client class in `infra/modules/nodes` per
+    // docs/deploy/substrate.md §5: ≥ 8 GiB RAM, ≥ 4 vCPU, CCX-class).
+    // Without it Nomad may place the alloc on a default cli node that
+    // cannot hold EmbeddingGemma + the per-tenant HNSW working set.
+    constraint {
+      attribute = "${node.class}"
+      value     = "escurel-class"
+    }
+
+    // Spread allocations across distinct hosts where the env has the
+    // capacity (substrate.md §5: "Spread placement preserved for HA").
+    // On the 2-cli nonprod/prod clusters this is a soft preference; it
+    // costs nothing here because escurel is count = 1.
+    spread {
+      attribute = "${node.unique.id}"
+    }
+
     // Pin to the node that hosts the volume. The substrate operator
-    // pre-allocates this host volume via the substrate repo.
+    // pre-allocates this host volume via the substrate repo. NOTE:
+    // the substrate-platform skill now treats CSI (Hetzner Cloud
+    // Volumes via `csi.hetzner.cloud`) as the PRIMARY stateful
+    // template (skill v2.2.0 / ADR-0003) and deprecates host_volume.
+    // Escurel stays on host_volume deliberately for warm-cache
+    // locality of `escurel.duckdb`; the DuckDB file is rebuildable
+    // from the LaneStore so the durability the CSI detach/reattach
+    // buys is not load-bearing here. See substrate skill ref 12 for
+    // the migration path if this trade-off changes.
     volume "tenants" {
       type      = "host"
       source    = var.host_volume_name
       read_only = false
     }
 
-    // Four named ports, one per transport. Fabio routes the first
-    // three by `urlprefix-` tag; gRPC is tailnet-only (no Fabio tag).
+    // Named ports. The HTTP listener (8080) carries MCP, WS, REST,
+    // /healthz, /readyz; Fabio routes mcp/ws/rest by `urlprefix-` tag.
+    // gRPC (8081) and metrics (9090) are tailnet-only (no Fabio tag).
     network {
       mode = "bridge"
-      port "mcp"  { to = 8080 }     // MCP-over-HTTP
-      port "ws"   { to = 8080 }     // WebSocket on the same listener
-      port "rest" { to = 8080 }     // /healthz, /readyz, /metrics
-      port "grpc" { to = 8081 }     // gRPC admin surface
+      port "mcp" { to = 8080 }     // MCP-over-HTTP
+      port "ws" { to = 8080 }      // WebSocket on the same listener
+      port "rest" { to = 8080 }    // /healthz, /readyz
+      port "grpc" { to = 8081 }    // gRPC admin surface
+      port "metrics" { to = 9090 } // Prometheus /metrics
     }
 
     // -------- MCP-over-HTTP (public via Fabio) --------
@@ -166,13 +194,43 @@ job "dz-escurel" {
       }
     }
 
+    // -------- Prometheus /metrics (tailnet-only; no Fabio tag) --------
+    // The `metrics`-prefixed tag is the convention the substrate's
+    // (Phase 6+) Prometheus scraper keys off; until it ships this is a
+    // no-op (substrate skill ref 07). Scraped over the tailnet at
+    // escurel-metrics.service.consul:<port>/metrics.
+    service {
+      name     = "escurel-metrics"
+      port     = "metrics"
+      provider = "consul"
+      tags     = ["metrics", "metrics-path-/metrics"]
+
+      check {
+        type     = "http"
+        path     = "/metrics"
+        interval = "30s"
+        timeout  = "5s"
+      }
+    }
+
     task "escurel-server" {
       driver = "docker"
+
+      // Graceful shutdown: on a `/recreate-node` drain (or a normal
+      // deploy) Nomad sends SIGTERM, then SIGKILL after kill_timeout.
+      // escurel-server flushes the per-tenant S3 spool, releases the
+      // per-tenant write locks, and closes DuckDB cleanly inside this
+      // window. 12-factor principle 3 (graceful SIGTERM) +
+      // CLAUDE.md §4.
+      kill_signal  = "SIGTERM"
+      kill_timeout = "30s"
 
       // Vault policy `apps-dz` grants read access to the OIDC
       // signing key, the S3 access key for the lanes bucket, and the
       // (optional) Gemini embeddings API key. Policy lives in the
-      // substrate repo; rotation is operator-controlled.
+      // substrate repo; rotation is operator-controlled. The role
+      // accepts any `dz-*` job id, so dz-escurel → apps-dz (substrate
+      // skill ref 02).
       vault {
         policies = ["apps-dz"]
       }
@@ -185,25 +243,63 @@ job "dz-escurel" {
 
       config {
         image = var.image
-        ports = ["mcp", "ws", "rest", "grpc"]
+        ports = ["mcp", "ws", "rest", "grpc", "metrics"]
       }
 
       // Vault-templated secrets land in /secrets and are sourced by
       // the binary at startup. ESCUREL_* envs are the binary's locked
       // config surface (see docs/spec/README.md § Configuration).
+      //
+      // Path convention is `kv/data/apps/<co>/<app>/<env>/<leaf>`
+      // (substrate skill refs 02 + 04); `{{ env "NOMAD_DC" }}` resolves
+      // to nonprod|prod at render time so one HCL serves both envs. The
+      // operator writes the secret value (key shape: access_key_id /
+      // secret_access_key); rotation re-renders + restarts the task.
       template {
         destination = "secrets/s3.env"
         env         = true
+        change_mode = "restart"
         data        = <<EOH
-ESCUREL_STORAGE_S3_ACCESS_KEY_ID={{ with secret "kv/data/apps/escurel/s3" }}{{ .Data.data.access_key_id }}{{ end }}
-ESCUREL_STORAGE_S3_SECRET_ACCESS_KEY={{ with secret "kv/data/apps/escurel/s3" }}{{ .Data.data.secret_access_key }}{{ end }}
+{{ with secret (printf "kv/data/apps/dz/escurel/%s/objstore" (env "NOMAD_DC")) -}}
+ESCUREL_STORAGE_S3_ACCESS_KEY_ID={{ .Data.data.access_key_id }}
+ESCUREL_STORAGE_S3_SECRET_ACCESS_KEY={{ .Data.data.secret_access_key }}
+{{- end }}
+EOH
+      }
+
+      // Minimal base config file. Every value here is also pinned via
+      // ESCUREL_* env below (which override any TOML field per
+      // docs/spec/README.md § Configuration); this file exists so the
+      // binary's `${ESCUREL_CONFIG}` load has a real target rather than
+      // relying on the env-only path. The sizing knobs live here so
+      // capacity planning is one place (spec README sizing table).
+      template {
+        destination = "local/server.toml"
+        change_mode = "restart"
+        data        = <<EOH
+[server]
+data_dir = "/data"
+
+[storage]
+backend = "s3"
+
+[embedding]
+provider = "embeddinggemma"
+device   = "cpu"
+dim      = 768
+
+[concurrency]
+tenant_lru_cap        = 64
+duckdb_read_pool      = 16
+embed_pool            = 32
+write_lock_timeout_ms = 5000
 EOH
       }
 
       env {
-        APP      = "dz-escurel"
-        ENV      = "${var.datacenter}"
-        VERSION  = "${var.version}"
+        APP     = "dz-escurel"
+        ENV     = "${var.datacenter}"
+        VERSION = "${var.version}"
 
         // Data + cache dirs live on the pinned host volume.
         ESCUREL_SERVER_DATA_DIR = "/data"
@@ -214,19 +310,19 @@ EOH
         ESCUREL_SERVER_LISTEN_GRPC = "0.0.0.0:8081"
 
         // Auth — substrate Vault OIDC role.
-        ESCUREL_AUTH_OIDC_ISSUER      = "${var.oidc_issuer}"
-        ESCUREL_AUTH_OIDC_AUDIENCE    = "escurel"
-        ESCUREL_AUTH_TENANT_CLAIM     = "escurel_tenant"
-        ESCUREL_AUTH_ADMIN_ROLE_CLAIM = "roles"
-        ESCUREL_AUTH_ADMIN_ROLE_VALUE = "escurel:admin"
+        ESCUREL_AUTH_OIDC_ISSUER       = "${var.oidc_issuer}"
+        ESCUREL_AUTH_OIDC_AUDIENCE     = "escurel"
+        ESCUREL_AUTH_TENANT_CLAIM      = "escurel_tenant"
+        ESCUREL_AUTH_ADMIN_ROLE_CLAIM  = "roles"
+        ESCUREL_AUTH_ADMIN_ROLE_VALUE  = "escurel:admin"
         ESCUREL_AUTH_JWKS_REFRESH_SECS = "300"
 
         // Storage — Hetzner Object Storage. Endpoint hostname MUST
         // match between LaneStore and DuckDB httpfs secret per
         // docs/spec/storage.md hostname-equality constraint.
-        ESCUREL_STORAGE_BACKEND       = "s3"
-        ESCUREL_STORAGE_S3_BUCKET     = "${var.s3_bucket}"
-        ESCUREL_STORAGE_S3_ENDPOINT   = "${var.s3_endpoint}"
+        ESCUREL_STORAGE_BACKEND     = "s3"
+        ESCUREL_STORAGE_S3_BUCKET   = "${var.s3_bucket}"
+        ESCUREL_STORAGE_S3_ENDPOINT = "${var.s3_endpoint}"
         // Escurel's content sits under the substrate-shared bucket
         // at `dz/escurel/lanes/` (per docs/deploy/substrate.md §2's
         // naming convention). `tenants/` is the per-app subkey
@@ -237,9 +333,13 @@ EOH
 
         // Embedding — EmbeddingGemma baked into the golden image at
         // /opt/escurel/models/embeddinggemma-300m/ (per
-        // docs/deploy/substrate.md §6).
+        // docs/deploy/substrate.md §6 + escurel.pkr.hcl). ESCUREL_EMBEDDING_MODEL
+        // is an ABSOLUTE LOCAL PATH on substrate, not a HF repo id —
+        // the binary loads via CandleEmbedder::from_local so no network
+        // egress happens at runtime (air-gap default, substrate SPEC §6).
+        // The directory holds config.json + tokenizer.json + model.safetensors.
         ESCUREL_EMBEDDING_PROVIDER = "embeddinggemma"
-        ESCUREL_EMBEDDING_MODEL    = "google/embeddinggemma-300m"
+        ESCUREL_EMBEDDING_MODEL    = "/opt/escurel/models/embeddinggemma-300m"
         ESCUREL_EMBEDDING_DEVICE   = "cpu"
         ESCUREL_EMBEDDING_DIM      = "768"
 
@@ -254,8 +354,8 @@ EOH
       // CPU is MHz; the candle CPU path is the dominant consumer during
       // index rebuild and embedding.
       resources {
-        cpu    = 4000   // MHz; ≥ 4 vCPU
-        memory = 8192   // MiB; ≥ 8 GiB
+        cpu    = 4000 // MHz; ≥ 4 vCPU
+        memory = 8192 // MiB; ≥ 8 GiB
       }
     }
   }
