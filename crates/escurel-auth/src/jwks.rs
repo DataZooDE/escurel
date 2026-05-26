@@ -89,12 +89,11 @@ impl JwksCache {
         // Fast path: TTL-fresh cached lookup.
         {
             let state = self.state.read().await;
-            if let Some(fetched_at) = state.fetched_at {
-                if fetched_at.elapsed() < self.ttl {
-                    if let Some(k) = state.keys.get(kid) {
-                        return Ok(k.clone());
-                    }
-                }
+            if let Some(fetched_at) = state.fetched_at
+                && fetched_at.elapsed() < self.ttl
+                && let Some(k) = state.keys.get(kid)
+            {
+                return Ok(k.clone());
             }
         }
         // Slow path: refresh, then look up.

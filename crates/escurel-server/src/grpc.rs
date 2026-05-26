@@ -526,11 +526,11 @@ async fn dispatch_op(
     // mode; the quota manager's bucket map is keyed by tenant so
     // the dev fallback shares one bucket per process, matching
     // `mcp.rs`.
-    if let Some(q) = quota.as_ref() {
-        if let Err(err) = q.try_consume(tenant_id, Dimension::Writes) {
-            let _ = tx.send(Err(quota_status(err))).await;
-            return false;
-        }
+    if let Some(q) = quota.as_ref()
+        && let Err(err) = q.try_consume(tenant_id, Dimension::Writes)
+    {
+        let _ = tx.send(Err(quota_status(err))).await;
+        return false;
     }
     match sessions
         .apply(session_id, escurel_crdt::Op::new(op_bytes))

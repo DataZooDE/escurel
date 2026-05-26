@@ -137,12 +137,11 @@ async fn mcp_inner(
     // inside the tool body, so over-cap returns the
     // `session_cap_reached` JSON-RPC error rather than a
     // `429` from this middleware.
-    if let (Some(quota), Some(ctx)) = (state.quota.as_ref(), auth_ctx.as_ref()) {
-        if let Some(dim) = dimension_for(&req.method, &req.params) {
-            if let Err(err) = quota.try_consume(&ctx.tenant_id, dim) {
-                return quota_response(req.id, &err);
-            }
-        }
+    if let (Some(quota), Some(ctx)) = (state.quota.as_ref(), auth_ctx.as_ref())
+        && let Some(dim) = dimension_for(&req.method, &req.params)
+        && let Err(err) = quota.try_consume(&ctx.tenant_id, dim)
+    {
+        return quota_response(req.id, &err);
     }
 
     // Tenant id for tools that consume per-tenant resources

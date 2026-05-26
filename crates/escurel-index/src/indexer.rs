@@ -253,11 +253,7 @@ impl Indexer {
         // Block-anchor splitting lands in a later M2 PR.
         tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
         let block_id = format!("{page_id}:blk-0");
-        let dense_vec_literal = format!(
-            "{vec}::FLOAT[{dim}]",
-            vec = dense_vec_sql,
-            dim = BLOCKS_DENSE_VEC_DIM,
-        );
+        let dense_vec_literal = format!("{dense_vec_sql}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]");
         let block_insert_sql = format!(
             "INSERT INTO blocks \
              (block_id, page_id, anchor, ordinal, body, dense_vec, skill, page_type, at_ts) \
