@@ -13,7 +13,9 @@
 //!   tar+gz frames over the wire.
 //! * `quota_get` — bucket-floor remaining tokens reflect recent
 //!   debits.
-//! * `embedding_reload` — placeholder revision string for M5.
+//! * `embedding_reload` — `failed_precondition` when no reloadable
+//!   embedder is wired (the recovery path lives in
+//!   `grpc_admin_external_reload.rs`).
 //! * Role gate — agent-role token cannot drive Rebuild.
 
 use std::path::PathBuf;
@@ -394,18 +396,21 @@ async fn quota_get_reflects_recent_debits() {
     h.process.shutdown().await;
 }
 
-// --- embedding_reload placeholder ----------------------------------
+// --- embedding_reload ----------------------------------------------
 
+/// With no reloadable embedder wired (this harness does not install
+/// one), `embedding_reload` reports `failed_precondition`. The
+/// degraded-start recovery path is covered in
+/// `grpc_admin_external_reload.rs`.
 #[tokio::test]
-async fn embedding_reload_returns_placeholder_revision() {
+async fn embedding_reload_without_reloadable_is_failed_precondition() {
     let h = start().await;
     let mut client = admin_client(&h).await;
-    let resp = client
+    let err = client
         .embedding_reload(req(&admin_bearer(&h), EmbeddingReloadRequest::default()))
         .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(resp.model_revision, "M5");
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
     h.process.shutdown().await;
 }
 

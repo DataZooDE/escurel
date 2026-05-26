@@ -89,6 +89,8 @@ pub enum IndexerError {
          the blocks.dense_vec column is hard-coded to {expected} (EmbeddingGemma default)"
     )]
     EmbedderDimMismatch { expected: usize, got: usize },
+    #[error("invalid external source for attach: {reason}")]
+    InvalidExternalSource { reason: &'static str },
 }
 
 impl Indexer {
@@ -354,6 +356,123 @@ impl Indexer {
         }
         Ok(out)
     }
+
+    /// Attach an external read-only DuckDB catalog onto this
+    /// indexer's live connection so `[[query::*]]` stored queries
+    /// (and any `[[table::ext.*]]` surface built on them) can read
+    /// it via `<alias>.<table>`.
+    ///
+    /// Uses DuckDB's *native* `ATTACH` (no DuckLake extension for
+    /// v1): `ATTACH '<source>' AS <alias> (READ_ONLY)`. The catalog
+    /// is attached read-only — escurel never writes through an
+    /// external lane.
+    ///
+    /// ## Injection defence
+    ///
+    /// DuckDB does not support parameter binding for `ATTACH`
+    /// path/alias positions, so both are spliced into the SQL as
+    /// literals. `attach_external` is admin-only, but we still
+    /// validate strictly: `alias` is constrained to
+    /// `[A-Za-z0-9_]+` by the caller (it is derived, not
+    /// user-supplied), and `source` is rejected if it contains any
+    /// character that could break out of the single-quoted string
+    /// literal or stack a second statement (quotes, backslashes,
+    /// semicolons, control characters). Callers should pre-validate
+    /// via [`sanitize_attach_source`] / [`derive_attach_alias`];
+    /// this method re-checks defensively so a future caller can't
+    /// regress the boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexerError::InvalidExternalSource`] when `source`
+    /// or `alias` fails validation, and [`IndexerError::Duckdb`]
+    /// when DuckDB rejects the attach (e.g. the file is not a
+    /// readable database).
+    pub async fn attach_external(&self, alias: &str, source: &str) -> Result<(), IndexerError> {
+        if !is_valid_attach_alias(alias) {
+            return Err(IndexerError::InvalidExternalSource {
+                reason: "derived alias must be a non-empty [A-Za-z0-9_] identifier",
+            });
+        }
+        if !is_safe_attach_source(source) {
+            return Err(IndexerError::InvalidExternalSource {
+                reason: "source path/uri contains an unsafe character \
+                         (quote, backslash, semicolon, or control char)",
+            });
+        }
+        let sql = format!("ATTACH '{source}' AS {alias} (READ_ONLY)");
+        let conn = self.conn.lock().await;
+        conn.execute_batch(&sql)?;
+        Ok(())
+    }
+}
+
+/// Derive a DuckDB catalog alias from an external `source` path/uri:
+/// the file stem (last path segment, sans extension), lower-cased,
+/// with any non-`[A-Za-z0-9_]` run collapsed to a single `_`.
+///
+/// Returns `None` when nothing usable can be derived (empty source,
+/// or a stem that is all separators).
+#[must_use]
+pub fn derive_attach_alias(source: &str) -> Option<String> {
+    // Last path segment (works for both `/` paths and bare names;
+    // `s3://bucket/key.duckdb` keys also split on `/`).
+    let last = source.rsplit(['/', '\\']).next().unwrap_or(source).trim();
+    // Drop a single trailing extension if present.
+    let stem = last.rsplit_once('.').map_or(last, |(s, _ext)| s);
+    let mut out = String::with_capacity(stem.len());
+    let mut prev_us = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+            prev_us = false;
+        } else if !prev_us && !out.is_empty() {
+            out.push('_');
+            prev_us = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    if out.is_empty()
+        || !out
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        // DuckDB identifiers must not start with a digit when used
+        // unquoted; prefix when needed rather than failing outright.
+        if out.is_empty() {
+            return None;
+        }
+        return Some(format!("ext_{out}"));
+    }
+    Some(out)
+}
+
+/// Whether `alias` is a safe unquoted DuckDB identifier to splice
+/// into the `ATTACH ... AS <alias>` position.
+#[must_use]
+pub fn is_valid_attach_alias(alias: &str) -> bool {
+    !alias.is_empty()
+        && alias
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Whether `source` is safe to splice into a single-quoted SQL
+/// string literal in the `ATTACH '<source>'` position. Rejects any
+/// quote, backslash, semicolon, or control character — the
+/// characters that could close the literal, stack a statement, or
+/// smuggle an escape.
+#[must_use]
+pub fn is_safe_attach_source(source: &str) -> bool {
+    !source.is_empty()
+        && !source
+            .chars()
+            .any(|c| c == '\'' || c == '"' || c == '\\' || c == ';' || c == '`' || c.is_control())
 }
 
 fn hash_body(content: &str) -> String {

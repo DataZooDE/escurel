@@ -15,10 +15,13 @@ use escurel_admin::TenantStore;
 use escurel_auth::{OidcConfig, OidcVerifier};
 use escurel_client::{Client, SecretString, UpdatePageRequest};
 use escurel_crdt::CrdtBackend;
+use escurel_embed::ReloadableEmbedder;
 use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::{Indexer, Migrator};
 use escurel_quota::QuotaManager;
-use escurel_server::{AlwaysReady, ReadinessProbe, ServerConfig, ServerHandle, serve};
+use escurel_server::{
+    AlwaysReady, EmbedderFactory, ReadinessProbe, ServerConfig, ServerHandle, serve,
+};
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
 
@@ -70,6 +73,16 @@ pub struct ConfigOverrides {
     /// HTTP surfaces set this to true to skip the gRPC client
     /// connect dance at `spawn` time.
     pub disable_grpc: bool,
+    /// Install a hot-swappable embedder seam wired to the
+    /// `embedding_reload` admin RPC. Paired with `embedder_factory`
+    /// — both must be `Some` for the RPC to do anything other than
+    /// return `failed_precondition`. Tests for the degraded-start /
+    /// reload path pass a real `ReloadableEmbedder` (typically built
+    /// via `ReloadableEmbedder::degraded(dim)`) plus a factory.
+    pub embedder_reload: Option<Arc<ReloadableEmbedder>>,
+    /// On-demand rebuild closure for the `embedding_reload` admin
+    /// RPC. See [`EmbedderFactory`]; paired with `embedder_reload`.
+    pub embedder_factory: Option<EmbedderFactory>,
 }
 
 impl std::fmt::Debug for ConfigOverrides {
@@ -83,6 +96,14 @@ impl std::fmt::Debug for ConfigOverrides {
             .field("indexer_overridden", &self.indexer.is_some())
             .field("disable_indexer", &self.disable_indexer)
             .field("disable_grpc", &self.disable_grpc)
+            .field(
+                "embedder_reload_overridden",
+                &self.embedder_reload.is_some(),
+            )
+            .field(
+                "embedder_factory_overridden",
+                &self.embedder_factory.is_some(),
+            )
             .finish()
     }
 }
@@ -249,6 +270,8 @@ impl EscurelProcess {
             quota: overrides.quota.clone(),
             tenant_store: overrides.tenant_store.clone(),
             crdt_backend: overrides.crdt_backend.clone(),
+            embedder_reload: overrides.embedder_reload.clone(),
+            embedder_factory: overrides.embedder_factory.clone(),
         };
         let handle = serve(cfg)
             .await

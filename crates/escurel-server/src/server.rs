@@ -3,7 +3,9 @@
 //! and quota policies enforced on `POST /mcp` are mirrored 1:1 by
 //! the gRPC interceptors.
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::Router;
@@ -14,6 +16,7 @@ use axum::routing::{get, post};
 use escurel_admin::TenantStore;
 use escurel_auth::OidcVerifier;
 use escurel_crdt::CrdtBackend;
+use escurel_embed::{Embedder, ReloadableEmbedder};
 use escurel_index::Indexer;
 use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
 use escurel_proto::v1::escurel_admin_server::EscurelAdminServer;
@@ -31,6 +34,25 @@ use crate::health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 use crate::mcp::mcp;
 use crate::session::SessionManager;
 use crate::ws::ws_upgrade;
+
+/// Async factory that rebuilds the real embedder from the same
+/// config the binary booted with. The `embedding_reload` admin RPC
+/// calls it on demand: on `Ok((embedder, revision))` the freshly-
+/// built embedder is swapped into the live [`ReloadableEmbedder`]
+/// seam and `revision` is returned to the caller; on `Err` the RPC
+/// returns `Status::internal` and the server stays degraded.
+///
+/// The factory owns (captures) the embedding config — the gRPC layer
+/// never sees the original [`EscurelConfig`](crate::EscurelConfig),
+/// keeping the handler thin and the config out of `AppState`. The
+/// `revision` is the model id / path (or any short label the binary
+/// chooses) so the admin response names *which* model is now live
+/// without the `Embedder` trait having to carry a revision method.
+pub type EmbedderFactory = Arc<
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<(Arc<dyn Embedder>, String), String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Gateway configuration. Built by the operator (or the test
 /// harness) and consumed by [`serve`].
@@ -74,6 +96,17 @@ pub struct ServerConfig {
     /// tools return a JSON-RPC `-32603 internal` error with
     /// `"live CRDT mode not enabled on this server"`.
     pub crdt_backend: Option<Arc<dyn CrdtBackend>>,
+    /// The hot-swappable embedder seam. `Some` when the binary
+    /// booted the embedder behind a [`ReloadableEmbedder`] (always,
+    /// in production); the `embedding_reload` admin RPC swaps a
+    /// freshly-built model in here. `None` → the RPC returns
+    /// `Status::failed_precondition`.
+    pub embedder_reload: Option<Arc<ReloadableEmbedder>>,
+    /// Rebuilds the real embedder on demand for `embedding_reload`.
+    /// Paired with `embedder_reload`: when both are `Some`, the RPC
+    /// calls the factory and (on success) reloads the seam. `None`
+    /// → the RPC returns `Status::failed_precondition`.
+    pub embedder_factory: Option<EmbedderFactory>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -101,6 +134,8 @@ impl ServerConfig {
             quota: None,
             tenant_store: None,
             crdt_backend: None,
+            embedder_reload: None,
+            embedder_factory: None,
         }
     }
 }
@@ -171,6 +206,12 @@ pub(crate) struct AppState {
     pub(crate) quota: Option<Arc<QuotaManager>>,
     pub(crate) tenant_store: Option<Arc<dyn TenantStore>>,
     pub(crate) crdt_backend: Option<Arc<dyn CrdtBackend>>,
+    /// Live embedder seam swapped by `embedding_reload`. `None`
+    /// when no reloadable embedder is wired.
+    pub(crate) embedder_reload: Option<Arc<ReloadableEmbedder>>,
+    /// On-demand rebuild closure for `embedding_reload`. `None`
+    /// when no factory is wired.
+    pub(crate) embedder_factory: Option<EmbedderFactory>,
     /// Always present. Operations no-op (return a JSON-RPC error)
     /// when `crdt_backend` is `None`.
     pub(crate) sessions: Arc<SessionManager>,
@@ -207,6 +248,8 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         quota: config.quota.clone(),
         tenant_store: config.tenant_store.clone(),
         crdt_backend: config.crdt_backend.clone(),
+        embedder_reload: config.embedder_reload.clone(),
+        embedder_factory: config.embedder_factory.clone(),
         sessions: Arc::new(SessionManager::new()),
         metrics: metrics_registry,
     };

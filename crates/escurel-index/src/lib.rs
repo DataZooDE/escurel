@@ -27,7 +27,10 @@ pub mod search;
 pub mod validate;
 
 pub use citation::IndexerCitationLookup;
-pub use indexer::{AuditDrift, Indexer, IndexerError, RebuildProgress};
+pub use indexer::{
+    AuditDrift, Indexer, IndexerError, RebuildProgress, derive_attach_alias, is_safe_attach_source,
+    is_valid_attach_alias,
+};
 pub use query::{ColumnSchema, QueryError, StoredQueryResult};
 pub use read::{
     BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef, ResolvedWikilink,
