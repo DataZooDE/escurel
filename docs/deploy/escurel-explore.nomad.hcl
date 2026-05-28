@@ -93,7 +93,7 @@ job "dz-escurel-explore" {
     }
 
     service {
-      name     = "escurel-explore"     // → escurel-explore.service.consul
+      name     = "escurel-explore" // → escurel-explore.service.consul
       port     = "http"
       provider = "consul"
 
@@ -121,18 +121,18 @@ job "dz-escurel-explore" {
       }
 
       env {
-        APP                    = "dz-escurel-explore"
-        ENV                    = "${var.datacenter}"
-        VERSION                = "${var.version}"
-        ESCUREL_EXPLORE_MODE   = "${var.mode}"
+        APP                  = "dz-escurel-explore"
+        ENV                  = "${var.datacenter}"
+        VERSION              = "${var.version}"
+        ESCUREL_EXPLORE_MODE = "${var.mode}"
         // ESCUREL_EXPLORE_BASE_URL is baked into the bundle at
         // `flutter build web --dart-define=...`; no env wiring needed
         // here in fixture mode.
       }
 
       resources {
-        cpu    = 100  // MHz — nginx + tiny Flutter bundle is light
-        memory = 64   // MiB
+        cpu    = 100 // MHz — nginx + tiny Flutter bundle is light
+        memory = 64  // MiB
       }
     }
   }
