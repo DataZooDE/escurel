@@ -1,25 +1,29 @@
-// dz-escurel-explore — tailnet-only Flutter editor for escurel.
+// dz-escurel-explore — internal (tailnet-only) Flutter editor for escurel.
 //
-// Forked from substrate-platform skill `web-service.nomad.hcl`.
-// Diverges in two ways from the public-web template:
+// Forked from substrate-platform skill `web-service.nomad.hcl` and aligned
+// with the auth-portal exposure pattern (ADR-0010 / ref 15-exposure-and-
+// ingress, internal-ingress.md):
 //
-//   1. Single replica (count = 1, canary = 1). The editor has no
-//      durable state — restart wipes nothing — so blue/green is
-//      sufficient and the second replica would just be load-balanced
-//      noise on a tailnet-internal tool.
+//   1. Single replica (count = 1). The editor has no durable state —
+//      restart wipes nothing — so a plain rolling update is sufficient
+//      and a second replica would just be load-balanced noise on a
+//      tailnet-internal tool.
 //
-//   2. **No `urlprefix-*` Fabio tag.** The service is reachable only
-//      via Consul DNS at `escurel-explore.service.consul`. From a
-//      tailnet-joined laptop with MagicDNS this is the path; Fabio
-//      never sees this service. Per substrate skill reference 03.
+//   2. `meta.exposure = "internal"` + `intprefix-` tag → routed by
+//      **fabio-internal** at `https://escurel-explore.<env>.int.data-zoo.de`
+//      (tailnet:443, wildcard cert). NEVER on the public LB. Enforced by
+//      `check-exposure.sh` at `/deploy-base` time.
 //
-// Naming uses the post-M5 `dz-` prefix from day one so this job
-// does not need a rename when the rest of escurel reconciles to
-// the substrate naming convention.
+// Naming uses the `dz-` prefix from day one for the Nomad job ID, but the
+// Consul service name is the bare `escurel-explore` so its FQDN under the
+// substrate's internal-ingress convention stays clean.
 //
 // Deploy (operator-side, from the substrate repo):
-//   /deploy-green dz-escurel-explore <version>
-//   /promote dz-escurel-explore
+//   /release-app escurel-explore <env>     # nonprod or prod
+// `/release-app` resolves the latest `:main` SHA in GAR, opens a
+// bump PR against `ops/base-jobs.manifest`, dispatches /deploy-base
+// on merge, and probes /healthz. See references/18-app-image-pipeline.md
+// in the substrate-platform skill.
 
 variable "datacenter" {
   type        = string
@@ -33,8 +37,13 @@ variable "version" {
 
 variable "image" {
   type        = string
-  description = "Container image, pinned by digest. NEVER :latest in prod."
-  // Example: "ghcr.io/datazoode/escurel-explore@sha256:abc..."
+  description = "Container image, pinned by SHA tag or digest. NEVER :latest in prod."
+  // Example (substrate GAR, pinned by 12-char SHA — matches the tag scheme
+  // emitted by .github/workflows/explore.yml and the substrate's
+  // build-app-image.yml; see references/18-app-image-pipeline.md):
+  //   "europe-west3-docker.pkg.dev/hetzner-agent-backplane/substrate/escurel-explore:abc123def456"
+  // For prod, prefer a digest-pinned ref:
+  //   "europe-west3-docker.pkg.dev/hetzner-agent-backplane/substrate/escurel-explore@sha256:..."
 }
 
 variable "mode" {
@@ -43,17 +52,33 @@ variable "mode" {
   description = "ESCUREL_EXPLORE_MODE — fixture | http. Stays fixture until escurel-server M3 ships."
 }
 
+locals {
+  // exposure = internal (ADR-0010): served by fabio-internal at this
+  // name via the intprefix- route tag below; the *.<env>.int.data-zoo.de
+  // wildcard cert covers it.
+  fqdn = "escurel-explore.${var.datacenter}.int.data-zoo.de"
+}
+
 job "dz-escurel-explore" {
   type        = "service"
   datacenters = [var.datacenter]
+  namespace   = "default"
 
+  meta {
+    env = var.datacenter
+    // exposure = internal (ADR-0010): routed by fabio-internal via the
+    // intprefix- tag below; NEVER on the public LB. Enforced by
+    // check-exposure.sh.
+    exposure = "internal"
+  }
+
+  // No canary/promote: internal app has no public-vs-canary traffic
+  // split (never on the public LB), so a plain rolling update is right.
   update {
-    canary            = 1
-    auto_promote      = false
     auto_revert       = true
     max_parallel      = 1
-    min_healthy_time  = "10s"
-    healthy_deadline  = "2m"
+    min_healthy_time  = "20s"
+    healthy_deadline  = "3m"
     progress_deadline = "5m"
   }
 
@@ -72,11 +97,12 @@ job "dz-escurel-explore" {
       port     = "http"
       provider = "consul"
 
-      // Tailnet-only: no Fabio routing. Peers find this service via
-      // Consul DNS only. To make it publicly reachable, add a
-      // `urlprefix-<fqdn>` tag here (and pick an fqdn).
-      tags        = []
-      canary_tags = []
+      // exposure=internal: the `intprefix-` tag makes fabio-internal route
+      // https://escurel-explore.<env>.int.data-zoo.de to this service
+      // (tailnet-only). NO `urlprefix-` tag, so the public Fabio never
+      // routes it. Peers may also bypass fabio-internal and dial
+      // `escurel-explore.service.consul:<port>` directly.
+      tags = ["intprefix-${local.fqdn}"]
 
       check {
         type     = "http"

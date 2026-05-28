@@ -1,22 +1,28 @@
-# explore.yml — Flutter web companion app pipeline
+name: explore
+
+# explore.yml — Flutter web companion app pipeline (escurel-explore).
 #
-# Independent of the Rust ci.yml (which is paused during bootstrap;
-# see CLAUDE.md principle 2). Scoped via `paths:` so changes outside
-# apps/escurel-explore/ and the example tenant do not trigger
+# Independent of the Rust ci.yml (paused during bootstrap; see CLAUDE.md
+# principle 2). Scoped via `paths:` so unrelated changes don't trigger
 # Flutter setup.
 #
-# Triggers:
-#   - workflow_dispatch (manual)
-#   - push to main touching the relevant paths → build + push image
+# Image: europe-west3-docker.pkg.dev/hetzner-agent-backplane/substrate/escurel-explore
 #
-# Image: ghcr.io/<owner>/escurel-explore:sha-<short>
-#        + ghcr.io/<owner>/escurel-explore:latest
+# Auth: GitHub OIDC → GCP Workload Identity Federation → GAR push.
+# No static cloud keys (substrate locked decision). Mirrors the
+# substrate-side `build-app-image.yml` pattern (ref-18-app-image-pipeline.md)
+# but lives here because the source code lives here. The substrate's WIF
+# binding must trust this repo (DataZooDE/escurel) in addition to the
+# substrate repo — see bootstrap/main.tf attribute_condition.
 #
-# Operator promotes via the substrate repo's /deploy-green flow.
-# Auto-promotion to Nomad is intentionally deferred until the
-# substrate's API token + workflow are wired up.
-
-name: explore
+# Tag scheme (same as substrate-side):
+#   :<12-char-sha>   — always pushed; what ops/base-jobs.manifest pins.
+#   :main            — moving pointer; pushed on a push to main branch only.
+#   :vX.Y.Z          — pushed on a `v*` git tag push.
+#
+# No :latest; no auto-PR manifest bump (cross-repo PR is operator-driven for
+# now — the operator updates ops/base-jobs.manifest in the substrate repo
+# after this workflow pushes a new SHA, then runs /release-app from there).
 
 on:
   workflow_dispatch:
@@ -26,6 +32,8 @@ on:
       - 'apps/escurel-explore/**'
       - 'examples/crm-demo/**'
       - '.github/workflows/explore.yml'
+    tags:
+      - 'v*'
 
 concurrency:
   group: explore-${{ github.ref }}
@@ -33,28 +41,18 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
+  id-token: write       # WIF auth to GCP
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: apps/escurel-explore
 
     steps:
-      - uses: actions/checkout@v4
-
-      # ghcr.io rejects uppercase repository paths. github.repository_owner
-      # is "DataZooDE" here; emit a lowercased alias for image tags.
-      - name: derive lowercase owner + short sha
-        id: meta
-        run: |
-          {
-            echo "owner_lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-            echo "sha_short=${GITHUB_SHA::7}"
-          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
 
       - uses: subosito/flutter-action@v2
         with:
@@ -62,6 +60,11 @@ jobs:
           channel: stable
           cache: true
 
+      # `flutter pub get` also generates pubspec.lock in the working tree,
+      # which the Dockerfile COPYs (the lockfile is .gitignored; the build
+      # context must produce it). See docs/notes/discovered/
+      # 2026-05-28-nginx-log-format-in-server.md for the parallel runtime
+      # gotcha that lives in this same image.
       - name: flutter pub get
         run: flutter pub get
 
@@ -75,39 +78,68 @@ jobs:
         run: |
           flutter build web --release \
             --dart-define=ESCUREL_EXPLORE_MODE=fixture \
-            --dart-define=ESCUREL_EXPLORE_VERSION=${GITHUB_SHA::7}
+            --dart-define=ESCUREL_EXPLORE_VERSION=${GITHUB_SHA::12}
+
+      # WIF auth to GCP — substrate's `tf-bootstrap` SA (impersonated by
+      # GitHub Actions). Vars are set on this repo via `gh variable set`;
+      # the WIF binding in substrate bootstrap/main.tf must include this
+      # repo for impersonation to succeed.
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker europe-west3-docker.pkg.dev --quiet
 
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute tags
+        id: tags
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          GAR="europe-west3-docker.pkg.dev/hetzner-agent-backplane/substrate/escurel-explore"
+          SHORT="${GITHUB_SHA::12}"
+          TAGS="${GAR}:${SHORT}"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            TAGS="${TAGS},${GAR}:main"
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAGS="${TAGS},${GAR}:${GITHUB_REF_NAME}"
+          fi
+          echo "tags=$TAGS"        >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT"  >> "$GITHUB_OUTPUT"
+          echo "image_full=${GAR}:${SHORT}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Image tags::$TAGS"
 
-      - name: docker build + push
+      - name: Build + push to GAR
         uses: docker/build-push-action@v6
         with:
           context: apps/escurel-explore
           push: true
           build-args: |
-            BUILD_VERSION=${{ steps.meta.outputs.sha_short }}
+            BUILD_VERSION=${{ steps.tags.outputs.short_sha }}
             ESCUREL_EXPLORE_MODE=fixture
-          tags: |
-            ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:sha-${{ steps.meta.outputs.sha_short }}
-            ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:latest
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Summary
+        working-directory: ${{ github.workspace }}
         run: |
           {
-            echo "## escurel-explore deploy candidate"
+            echo "## escurel-explore image"
             echo ""
-            echo "Image: \`ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:sha-${{ steps.meta.outputs.sha_short }}\`"
+            echo "Pushed: \`${{ steps.tags.outputs.image_full }}\`"
             echo ""
-            echo "Operator next step:"
-            echo "\`\`\`"
-            echo "/deploy-green dz-escurel-explore ${{ steps.meta.outputs.sha_short }}"
-            echo "\`\`\`"
+            echo "### Operator next steps (substrate repo)"
+            echo ""
+            echo "1. Bump \`ops/base-jobs.manifest\` line for \`escurel-explore.nomad.hcl\`"
+            echo "   to pin \`:${{ steps.tags.outputs.short_sha }}\`."
+            echo "2. \`/release-app escurel-explore nonprod\`"
           } >> "$GITHUB_STEP_SUMMARY"
