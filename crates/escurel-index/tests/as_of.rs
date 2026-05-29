@@ -143,14 +143,26 @@ async fn expand_as_of_returns_none_for_unborn_page() {
     let h = fresh_harness();
     seed_all(&h).await;
 
-    let late = h.indexer.expand(DOC_LATE.0, Some(CUT_MID)).await.unwrap();
+    let late = h
+        .indexer
+        .expand(DOC_LATE.0, Some(CUT_MID), None)
+        .await
+        .unwrap();
     assert!(late.is_none(), "late doc is not born yet at the cut");
 
-    let early = h.indexer.expand(DOC_EARLY.0, Some(CUT_MID)).await.unwrap();
+    let early = h
+        .indexer
+        .expand(DOC_EARLY.0, Some(CUT_MID), None)
+        .await
+        .unwrap();
     assert!(early.is_some(), "early doc predates the cut");
 
     // After both → late resolves again.
-    let late_after = h.indexer.expand(DOC_LATE.0, Some(CUT_AFTER)).await.unwrap();
+    let late_after = h
+        .indexer
+        .expand(DOC_LATE.0, Some(CUT_AFTER), None)
+        .await
+        .unwrap();
     assert!(late_after.is_some());
 }
 
@@ -158,7 +170,11 @@ async fn expand_as_of_returns_none_for_unborn_page() {
 async fn expand_as_of_keeps_untimed_skill_pages() {
     let h = fresh_harness();
     seed_all(&h).await;
-    let skill = h.indexer.expand(SKILL_DOC.0, Some(CUT_MID)).await.unwrap();
+    let skill = h
+        .indexer
+        .expand(SKILL_DOC.0, Some(CUT_MID), None)
+        .await
+        .unwrap();
     assert!(skill.is_some(), "skill pages are untimed and never vanish");
 }
 
@@ -173,21 +189,21 @@ async fn neighbours_as_of_hides_edges_from_unborn_sources() {
     // (born 2026-02-01).
     let without_cut = h
         .indexer
-        .neighbours(DOC_EARLY.0, Direction::In, None, None)
+        .neighbours(DOC_EARLY.0, Direction::In, None, None, None)
         .await
         .unwrap();
     assert_eq!(without_cut.len(), 1, "the late→early edge exists");
 
     let mid = h
         .indexer
-        .neighbours(DOC_EARLY.0, Direction::In, None, Some(CUT_MID))
+        .neighbours(DOC_EARLY.0, Direction::In, None, Some(CUT_MID), None)
         .await
         .unwrap();
     assert!(mid.is_empty(), "source `late` is not born yet at the cut");
 
     let after = h
         .indexer
-        .neighbours(DOC_EARLY.0, Direction::In, None, Some(CUT_AFTER))
+        .neighbours(DOC_EARLY.0, Direction::In, None, Some(CUT_AFTER), None)
         .await
         .unwrap();
     assert_eq!(after.len(), 1, "edge reappears once the source is born");
@@ -205,7 +221,7 @@ async fn search_as_of_excludes_later_blocks() {
     // filter must drop the late doc's block from both search halves.
     let all = h
         .indexer
-        .search("zeppelin", 10, None, None, None)
+        .search("zeppelin", 10, None, None, None, None)
         .await
         .unwrap();
     let pages: Vec<String> = all.iter().map(|h| h.page_id.clone()).collect();
@@ -217,7 +233,7 @@ async fn search_as_of_excludes_later_blocks() {
 
     let cut = h
         .indexer
-        .search("zeppelin", 10, None, None, Some(CUT_MID))
+        .search("zeppelin", 10, None, None, Some(CUT_MID), None)
         .await
         .unwrap();
     let cut_pages: Vec<String> = cut.iter().map(|h| h.page_id.clone()).collect();

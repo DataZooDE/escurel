@@ -70,7 +70,7 @@ class _StubClient implements EscurelClient {
   Future<ResolveResult> resolve(String wikilink, {String? scenario}) async => throw notYetImplemented('resolve');
 
   @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf}) async =>
+  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf, String? scenario}) async =>
       throw notYetImplemented('expand');
 
   @override

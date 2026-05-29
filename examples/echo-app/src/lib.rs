@@ -161,7 +161,14 @@ async fn healthz() -> impl IntoResponse {
 async fn get_page(State(state): State<AppState>, Path(slug): Path<String>) -> Response {
     let wikilink = format!("[[customer::{slug}]]");
 
-    let resolved = match state.escurel.resolve(ResolveRequest { wikilink }).await {
+    let resolved = match state
+        .escurel
+        .resolve(ResolveRequest {
+            wikilink,
+            ..Default::default()
+        })
+        .await
+    {
         Ok(r) => r,
         Err(e) => return upstream_error("resolve", &e.to_string()),
     };
@@ -180,6 +187,7 @@ async fn get_page(State(state): State<AppState>, Path(slug): Path<String>) -> Re
             page_id: page.page_id.clone(),
             anchor: String::new(),
             version: String::new(),
+            ..Default::default()
         })
         .await
     {

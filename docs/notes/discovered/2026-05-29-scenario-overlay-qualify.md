@@ -37,9 +37,20 @@ Reads take an optional `scenario`:
   overlay rows too. A test that counts instances of a skill must expect
   base + overlay rows once any overlay is seeded (this bit the
   `run_stored_query` count test when a scenario-B fixture was added).
-- **neighbours / search / expand** do not yet take a scenario in the
-  first cut (PR-9 wired `list_instances` + `resolve`, which the demo's
-  scenario switch needs). Threading the rest is a mechanical follow-up.
+- **neighbours / search / expand** now also take `scenario` (and
+  `as_of` was already there). They share `list_instances`/`resolve`
+  semantics — base-only when `None`, base ∪ overlay when `Some`:
+  - `expand` gates the page row (`scenario = ? OR scenario IS NULL`),
+    so a B page is invisible in base view;
+  - `search` gates blocks the same way on both the vector and FTS halves;
+  - `neighbours` gates by the **source** page's scenario via an `EXISTS`
+    (mirroring its `as_of` clause), so overlay-sourced edges are hidden
+    in base view. **Consequence:** because `None` is strict-base, the
+    frontend wheel/reader must pass the active scenario into
+    `neighbours`/`expand` — otherwise a B-focused page's edges/body
+    vanish under scenario B. (The CRM providers do this.)
+- All four read tools + `resolve` are wired through **gRPC** too
+  (`as_of`/`scenario` proto fields; empty string = `None` via `opt()`).
 
 ## How to recognise it next time
 

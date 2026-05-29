@@ -15,7 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 class _StubClient implements EscurelClient {
   @override
   Future<List<Neighbour>> neighbours(String pageId,
-          {LinkDirection direction = LinkDirection.both, String? linkSkill, String? asOf}) async =>
+          {LinkDirection direction = LinkDirection.both, String? linkSkill, String? asOf, String? scenario}) async =>
       const [
         Neighbour(src: 'p', dst: 'hoffmann-followup', linkSkill: 'lead'),
         Neighbour(src: 'p', dst: 'hoffmann-pilot', linkSkill: 'opportunity'),
@@ -23,7 +23,7 @@ class _StubClient implements EscurelClient {
       ];
 
   @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf}) async =>
+  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf, String? scenario}) async =>
       const ExpandResult(
         pageId: 'markdown/instances/engagement__hoffmann-spine.md',
         skill: 'engagement',

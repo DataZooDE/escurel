@@ -243,7 +243,13 @@ async fn main() -> Result<()> {
 
         Command::Resolve { wikilink } => {
             let resp = client
-                .resolve(authed(ResolveRequest { wikilink }, &bearer))
+                .resolve(authed(
+                    ResolveRequest {
+                        wikilink,
+                        ..Default::default()
+                    },
+                    &bearer,
+                ))
                 .await?
                 .into_inner();
             json!({
@@ -266,6 +272,7 @@ async fn main() -> Result<()> {
                         page_id,
                         anchor: String::new(),
                         version: String::new(),
+                        ..Default::default()
                     },
                     &bearer,
                 ))
@@ -300,6 +307,7 @@ async fn main() -> Result<()> {
                         link_skill_in: Vec::new(),
                         order_by: String::new(),
                         limit: a.limit,
+                        ..Default::default()
                     },
                     &bearer,
                 ))
@@ -331,6 +339,7 @@ async fn main() -> Result<()> {
                         page_type: a.page_type,
                         skill: a.skill.unwrap_or_default(),
                         filter_json: String::new(),
+                        ..Default::default()
                     },
                     &bearer,
                 ))

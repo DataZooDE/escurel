@@ -136,12 +136,14 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf}) async {
+  Future<ExpandResult> expand(String pageId,
+      {String? anchor, String? version, String? asOf, String? scenario}) async {
     final result = await _call('expand', {
       'page_id': pageId,
       'anchor': ?anchor,
       'version': ?version,
       'as_of': ?asOf,
+      'scenario': ?scenario,
     });
     // The server nests page identity under `page`, which is null when an
     // `as_of` cut puts the page before its birth. Surface that as an
@@ -183,12 +185,14 @@ class HttpEscurelClient implements EscurelClient {
     LinkDirection direction = LinkDirection.both,
     String? linkSkill,
     String? asOf,
+    String? scenario,
   }) async {
     final result = await _call('neighbours', {
       'page_id': pageId,
       'direction': direction.name,
       'link_skill': ?linkSkill,
       'as_of': ?asOf,
+      'scenario': ?scenario,
     });
     return (result['edges'] as List? ?? const [])
         .cast<Map<String, dynamic>>()

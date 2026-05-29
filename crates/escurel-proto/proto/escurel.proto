@@ -45,6 +45,10 @@ message SearchRequest {
   string skill = 5;
   // Reserved for the post-filter; not honoured yet.
   string filter_json = 6;
+  // Optional RFC 3339 time-travel cut (empty = present).
+  string as_of = 7;
+  // Optional what-if scenario overlay (empty = base only).
+  string scenario = 8;
 }
 
 // One block-granularity hit. Mirrors escurel-index `SearchHit`.
@@ -66,7 +70,11 @@ message SearchResponse {
   string granularity = 2;
 }
 
-message ResolveRequest { string wikilink = 1; }
+message ResolveRequest {
+  string wikilink = 1;
+  // Optional what-if scenario overlay (empty = base only).
+  string scenario = 2;
+}
 message ResolveResponse {
   WikilinkParsed parsed = 1;
   PageRef page = 2;
@@ -77,6 +85,10 @@ message ExpandRequest {
   string page_id = 1;
   string anchor = 2;
   string version = 3;
+  // Optional RFC 3339 time-travel cut (empty = present).
+  string as_of = 4;
+  // Optional what-if scenario overlay (empty = base only).
+  string scenario = 5;
 }
 
 message ExpandBlock {
@@ -102,6 +114,10 @@ message NeighboursRequest {
   repeated string link_skill_in = 4;
   string order_by = 5;
   uint32 limit = 6;
+  // Optional RFC 3339 time-travel cut (empty = present).
+  string as_of = 7;
+  // Optional what-if scenario overlay (empty = base only).
+  string scenario = 8;
 }
 
 // One edge. Mirrors escurel-index `Edge`: src/dst are the
@@ -137,6 +153,10 @@ message ListInstancesRequest {
   // filter; key set => match `frontmatter.<key> == value`.
   string frontmatter_key = 4;
   string frontmatter_value = 5;
+  // Optional RFC 3339 time-travel cut (empty = present).
+  string as_of = 6;
+  // Optional what-if scenario overlay (empty = base only).
+  string scenario = 7;
 }
 message InstanceInfo {
   string page_id = 1;

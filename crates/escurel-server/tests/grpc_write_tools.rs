@@ -126,6 +126,7 @@ async fn search_returns_hits_for_query() {
             page_type: String::new(),
             skill: String::new(),
             filter_json: String::new(),
+            ..Default::default()
         }))
         .await
         .unwrap()
@@ -149,6 +150,7 @@ async fn neighbours_returns_outbound_edges() {
             link_skill_in: Vec::new(),
             order_by: String::new(),
             limit: 0,
+            ..Default::default()
         }))
         .await
         .unwrap()
@@ -252,6 +254,7 @@ async fn update_page_debits_writes_dimension_independently() {
             link_skill_in: Vec::new(),
             order_by: String::new(),
             limit: 0,
+            ..Default::default()
         }))
         .await
         .unwrap();
@@ -271,6 +274,7 @@ async fn search_rejects_invalid_page_type() {
             page_type: "bogus".to_owned(),
             skill: String::new(),
             filter_json: String::new(),
+            ..Default::default()
         }))
         .await
         .unwrap_err();

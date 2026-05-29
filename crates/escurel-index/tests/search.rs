@@ -111,7 +111,7 @@ async fn search_with_k_zero_returns_empty() {
     seed(&h, &[SKILL_CUSTOMER, ACME]).await;
     let hits = h
         .indexer
-        .search("anything", 0, None, None, None)
+        .search("anything", 0, None, None, None, None)
         .await
         .unwrap();
     assert!(hits.is_empty());
@@ -126,7 +126,7 @@ async fn search_on_empty_index_returns_empty() {
     h.indexer.refresh_fts().await.unwrap();
     let hits = h
         .indexer
-        .search("acme", 10, None, None, None)
+        .search("acme", 10, None, None, None, None)
         .await
         .unwrap();
     assert!(hits.is_empty());
@@ -137,7 +137,11 @@ async fn search_returns_top_k_blocks_with_metadata() {
     let h = fresh_harness();
     seed(&h, &[SKILL_CUSTOMER, ACME, GLOBEX, MEETING]).await;
 
-    let hits = h.indexer.search("Acme", 3, None, None, None).await.unwrap();
+    let hits = h
+        .indexer
+        .search("Acme", 3, None, None, None, None)
+        .await
+        .unwrap();
     assert!(!hits.is_empty(), "search must return at least one hit");
     assert!(hits.len() <= 3, "must respect k = 3");
 
@@ -159,7 +163,7 @@ async fn search_fts_ranks_keyword_match_above_unrelated() {
     // contributing, Acme should land in the top-2.
     let hits = h
         .indexer
-        .search("manufacturing", 4, None, None, None)
+        .search("manufacturing", 4, None, None, None, None)
         .await
         .unwrap();
     let top_pages: Vec<_> = hits.iter().map(|h| h.page_id.as_str()).collect();
@@ -176,7 +180,7 @@ async fn search_filters_by_page_type() {
 
     let only_skills = h
         .indexer
-        .search("customer", 10, Some(PageType::Skill), None, None)
+        .search("customer", 10, Some(PageType::Skill), None, None, None)
         .await
         .unwrap();
     for hit in &only_skills {
@@ -185,7 +189,7 @@ async fn search_filters_by_page_type() {
 
     let only_instances = h
         .indexer
-        .search("customer", 10, Some(PageType::Instance), None, None)
+        .search("customer", 10, Some(PageType::Instance), None, None, None)
         .await
         .unwrap();
     for hit in &only_instances {
@@ -195,7 +199,7 @@ async fn search_filters_by_page_type() {
     // And the two together cover what the unfiltered call returns.
     let unfiltered = h
         .indexer
-        .search("customer", 10, None, None, None)
+        .search("customer", 10, None, None, None, None)
         .await
         .unwrap();
     let unfiltered_pages: std::collections::HashSet<_> =
@@ -218,7 +222,7 @@ async fn search_filters_by_skill() {
 
     let only_meetings = h
         .indexer
-        .search("Acme", 10, None, Some("meeting"), None)
+        .search("Acme", 10, None, Some("meeting"), None, None)
         .await
         .unwrap();
     for hit in &only_meetings {
@@ -232,7 +236,11 @@ async fn search_filters_by_skill() {
 async fn search_hits_carry_frontmatter_excerpt() {
     let h = fresh_harness();
     seed(&h, &[SKILL_CUSTOMER, ACME]).await;
-    let hits = h.indexer.search("Acme", 5, None, None, None).await.unwrap();
+    let hits = h
+        .indexer
+        .search("Acme", 5, None, None, None, None)
+        .await
+        .unwrap();
     let acme_hit = hits
         .iter()
         .find(|h| h.page_id == ACME.0)
@@ -253,7 +261,7 @@ async fn search_scores_are_monotonic_decreasing() {
     seed(&h, &[SKILL_CUSTOMER, ACME, GLOBEX, MEETING]).await;
     let hits = h
         .indexer
-        .search("Stuttgart", 4, None, None, None)
+        .search("Stuttgart", 4, None, None, None, None)
         .await
         .unwrap();
     for w in hits.windows(2) {

@@ -236,7 +236,7 @@ class FixtureEscurelClient implements EscurelClient {
 
   @override
   Future<ExpandResult> expand(String pageId,
-      {String? anchor, String? version, String? asOf}) async {
+      {String? anchor, String? version, String? asOf, String? scenario}) async {
     final p = _pages[pageId] ?? (throw EscurelToolException(
       'page $pageId not found',
       code: 'fixture.no_such_page',
@@ -258,6 +258,7 @@ class FixtureEscurelClient implements EscurelClient {
     LinkDirection direction = LinkDirection.both,
     String? linkSkill,
     String? asOf, // ignored in fixture mode; honoured by the HTTP backend
+    String? scenario, // ignored in fixture mode; honoured by the HTTP backend
   }) async {
     final out = <Neighbour>[];
 
