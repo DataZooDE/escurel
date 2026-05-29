@@ -23,3 +23,22 @@ final allInstancesProvider = FutureProvider<List<InstanceSummary>>((ref) async {
   }
   return out;
 });
+
+/// Both-direction typed neighbours of the focused entity — the source
+/// data for the radial skill-wheel and the lineage rail. Empty when no
+/// entity is focused.
+final currentNeighboursProvider = FutureProvider<List<Neighbour>>((ref) async {
+  final id = ref.watch(currentPageIdProvider);
+  if (id == null) return const <Neighbour>[];
+  return ref.watch(escurelClientProvider).neighbours(id, direction: LinkDirection.both);
+});
+
+/// Resolve a typed `[[skill::slug]]` reference to its page id and focus
+/// it — used by the wheel/lineage nodes (neighbours return slugs, the
+/// editor navigates by page id).
+Future<void> focusWikilink(WidgetRef ref, String linkSkill, String slug) async {
+  final resolved = await ref.read(escurelClientProvider).resolve('[[$linkSkill::$slug]]');
+  if (resolved.exists && resolved.pageId.isNotEmpty) {
+    ref.read(currentPageIdProvider.notifier).state = resolved.pageId;
+  }
+}

@@ -14,16 +14,43 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../editor/catalogue_pane.dart';
 import '../editor/entity_editor.dart';
-import '../editor/right_rail.dart';
 import '../theme/app_theme.dart';
+import '../state/providers.dart';
 import 'command_bar.dart';
 import 'crm_breadcrumb.dart';
+import 'crm_providers.dart';
+import 'lineage_rail.dart';
+import 'skill_wheel.dart';
 
-class CrmWorkspace extends ConsumerWidget {
+class CrmWorkspace extends ConsumerStatefulWidget {
   const CrmWorkspace({super.key});
+  @override
+  ConsumerState<CrmWorkspace> createState() => _CrmWorkspaceState();
+}
+
+class _CrmWorkspaceState extends ConsumerState<CrmWorkspace> {
+  bool _autoFocused = false;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
+    // Land on a populated view (like the mock) — auto-focus the
+    // engagement spine, else the first instance, once on first load.
+    if (!_autoFocused && ref.watch(currentPageIdProvider) == null) {
+      ref.watch(allInstancesProvider).whenData((all) {
+        if (_autoFocused || all.isEmpty) return;
+        _autoFocused = true;
+        final pick = all.firstWhere(
+          (i) => i.skill == 'engagement' && i.id.contains('spine'),
+          orElse: () => all.first,
+        );
+        // InstanceSummary.id is the page_id (the open handle) — focus
+        // it directly; no wikilink resolution needed.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) ref.read(currentPageIdProvider.notifier).state = pick.id;
+        });
+      });
+    }
+
     return const Scaffold(
       backgroundColor: kSurface,
       appBar: CrmBreadcrumb(),
@@ -54,7 +81,7 @@ class _WorkspaceRow extends StatelessWidget {
               VerticalDivider(width: 1),
               Expanded(child: _Region(label: 'entity', child: EntityEditor())),
               VerticalDivider(width: 1),
-              SizedBox(width: 340, child: _Region(label: 'detail', child: RightRail())),
+              SizedBox(width: 360, child: _Region(label: 'detail', child: _DetailColumn())),
             ],
           );
         }
@@ -68,6 +95,20 @@ class _WorkspaceRow extends StatelessWidget {
       },
     );
   }
+}
+
+/// The right detail column: the radial skill-wheel over the lineage /
+/// links rail. Both read the focused entity's `neighbours`.
+class _DetailColumn extends StatelessWidget {
+  const _DetailColumn();
+  @override
+  Widget build(BuildContext context) => const Column(
+        children: [
+          Expanded(flex: 5, child: SkillWheel()),
+          Divider(height: 1),
+          Expanded(flex: 4, child: LineageRail()),
+        ],
+      );
 }
 
 /// Names a workspace region in the semantics tree so the rodney

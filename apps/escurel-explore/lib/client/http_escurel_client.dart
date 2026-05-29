@@ -117,10 +117,13 @@ class HttpEscurelClient implements EscurelClient {
   @override
   Future<ResolveResult> resolve(String wikilink) async {
     final result = await _call('resolve', {'wikilink': wikilink});
+    // The target page is nested under `page` (server shape); tolerate a
+    // flat shape too.
+    final page = result['page'] as Map<String, dynamic>?;
     return ResolveResult(
-      pageId: (result['page_id'] as String?) ?? '',
-      skill: (result['skill'] as String?) ?? '',
-      pageType: _pageTypeFromString(result['page_type'] as String?),
+      pageId: (page?['page_id'] as String?) ?? (result['page_id'] as String?) ?? '',
+      skill: (page?['skill'] as String?) ?? (result['skill'] as String?) ?? '',
+      pageType: _pageTypeFromString((page?['page_type'] ?? result['page_type']) as String?),
       exists: (result['exists'] as bool?) ?? false,
       description: result['description'] as String?,
       error: result['error'] as String?,
@@ -166,11 +169,13 @@ class HttpEscurelClient implements EscurelClient {
     });
     return (result['edges'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
+        // Server emits src_page / dst_page / dst_anchor; tolerate the
+        // older src / dst / anchor shape too.
         .map((e) => Neighbour(
-              src: (e['src'] as String?) ?? '',
-              dst: (e['dst'] as String?) ?? '',
+              src: (e['src_page'] as String?) ?? (e['src'] as String?) ?? '',
+              dst: (e['dst_page'] as String?) ?? (e['dst'] as String?) ?? '',
               linkSkill: (e['link_skill'] as String?) ?? '',
-              anchor: e['anchor'] as String?,
+              anchor: (e['dst_anchor'] as String?) ?? (e['anchor'] as String?),
               linkVersion: e['link_version'] as String?,
             ))
         .toList();
@@ -205,8 +210,12 @@ class HttpEscurelClient implements EscurelClient {
     });
     return (result['instances'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
+        // `id` is the instance's open handle == its page_id. The server
+        // returns `page_id`; older shapes used `id`. CataloguePane and
+        // the CRM workspace set `currentPageIdProvider` from this, so it
+        // must be the page_id, not the slug.
         .map((i) => InstanceSummary(
-              id: (i['id'] as String?) ?? '',
+              id: (i['page_id'] as String?) ?? (i['id'] as String?) ?? '',
               skill: (i['skill'] as String?) ?? skillId,
               frontmatter: Map<String, dynamic>.from(i['frontmatter'] as Map? ?? const {}),
             ))
