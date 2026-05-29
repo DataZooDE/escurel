@@ -71,12 +71,13 @@ class DemoScreen extends StatelessWidget {
   }
 }
 
-/// A labelled control: wraps [child] in a Semantics node whose
-/// accessible name is [label] so rodney's `ax-find --name` reaches it.
+/// A labelled, read-only control: wraps [child] in a Semantics node
+/// whose accessible name is [label] so rodney's `ax-find --name`
+/// reaches it. Use for inputs (the inner <input> carries the label)
+/// and status/result text. NOT for buttons — see [_ActionButton].
 class _Labelled extends StatelessWidget {
-  const _Labelled({required this.label, required this.child, this.button = false, this.textField = false});
+  const _Labelled({required this.label, required this.child, this.textField = false});
   final String label;
-  final bool button;
   final bool textField;
   final Widget child;
 
@@ -84,12 +85,46 @@ class _Labelled extends StatelessWidget {
   Widget build(BuildContext context) {
     return Semantics(
       label: label,
-      button: button,
       textField: textField,
       identifier: label,
       container: true,
       explicitChildNodes: true,
       child: child,
+    );
+  }
+}
+
+/// An action button with a STABLE semantics identifier/label AND its
+/// own `onTap` wired to the same callback. The own-`onTap` is the
+/// crucial bit: Flutter web turns it into an actionable semantics
+/// node, so a screen-reader / rodney tap (`flt-semantics[...] click`)
+/// actually fires [onTap]. `excludeSemantics` collapses the visual
+/// button's intrinsic semantics into this one node, so there's
+/// exactly one actionable node named [label].
+class _ActionButton extends StatelessWidget {
+  const _ActionButton({
+    required this.label,
+    required this.text,
+    required this.onTap,
+    this.filled = true,
+  });
+  final String label;
+  final String text;
+  final VoidCallback onTap;
+  final bool filled;
+
+  @override
+  Widget build(BuildContext context) {
+    final button = filled
+        ? ElevatedButton(onPressed: onTap, child: Text(text))
+        : OutlinedButton(onPressed: onTap, child: Text(text));
+    return Semantics(
+      identifier: label,
+      label: label,
+      button: true,
+      onTap: onTap,
+      excludeSemantics: true,
+      child: button,
     );
   }
 }
@@ -137,11 +172,7 @@ class _SearchPanelState extends ConsumerState<_SearchPanel> {
             ),
           ),
           const SizedBox(height: 8),
-          _Labelled(
-            label: DemoKeys.searchSubmit,
-            button: true,
-            child: ElevatedButton(onPressed: _run, child: const Text('Search')),
-          ),
+          _ActionButton(label: DemoKeys.searchSubmit, text: 'Search', onTap: _run),
           const SizedBox(height: 8),
           Semantics(label: 'search-status', child: Text(_status)),
           const Divider(),
@@ -222,17 +253,9 @@ class _AuthorPanelState extends ConsumerState<_AuthorPanel> {
           ),
           const SizedBox(height: 8),
           Row(children: [
-            _Labelled(
-              label: DemoKeys.authorValidate,
-              button: true,
-              child: OutlinedButton(onPressed: _validate, child: const Text('Validate')),
-            ),
+            _ActionButton(label: DemoKeys.authorValidate, text: 'Validate', onTap: _validate, filled: false),
             const SizedBox(width: 8),
-            _Labelled(
-              label: DemoKeys.authorSave,
-              button: true,
-              child: ElevatedButton(onPressed: _save, child: const Text('Save (update_page)')),
-            ),
+            _ActionButton(label: DemoKeys.authorSave, text: 'Save (update_page)', onTap: _save),
           ]),
           const SizedBox(height: 12),
           _Labelled(label: DemoKeys.authorResult, child: Text(_result)),
@@ -304,17 +327,9 @@ class _ChatPanelState extends ConsumerState<_ChatPanel> {
               ),
             ),
             const SizedBox(width: 8),
-            _Labelled(
-              label: DemoKeys.chatAppend,
-              button: true,
-              child: ElevatedButton(onPressed: _append, child: const Text('Append')),
-            ),
+            _ActionButton(label: DemoKeys.chatAppend, text: 'Append', onTap: _append),
             const SizedBox(width: 8),
-            _Labelled(
-              label: DemoKeys.chatList,
-              button: true,
-              child: OutlinedButton(onPressed: _list, child: const Text('Refresh')),
-            ),
+            _ActionButton(label: DemoKeys.chatList, text: 'Refresh', onTap: _list, filled: false),
           ]),
           const SizedBox(height: 8),
           Semantics(label: 'chat-status', child: Text(_status)),
@@ -380,11 +395,7 @@ class _OpsPanelState extends ConsumerState<_OpsPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _Labelled(
-            label: DemoKeys.opsRefresh,
-            button: true,
-            child: ElevatedButton(onPressed: _refresh, child: const Text('Load ops (admin)')),
-          ),
+          _ActionButton(label: DemoKeys.opsRefresh, text: 'Load ops (admin)', onTap: _refresh),
           const SizedBox(height: 8),
           Semantics(label: 'ops-status', child: Text(_status)),
           const SizedBox(height: 12),

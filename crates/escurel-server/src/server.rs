@@ -27,6 +27,7 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
@@ -283,6 +284,13 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         let index = dir.join("index.html");
         let serve_dir = ServeDir::new(dir).fallback(ServeFile::new(index));
         app = app.fallback_service(serve_dir);
+        // Demo mode also relaxes CORS so a cross-origin demo client
+        // can call `/mcp` — the production bundle served at `/` is
+        // same-origin and doesn't need this, but the `flutter drive`
+        // integration-test harness serves the app from its own
+        // web-server origin. Scoped to demo mode + a tailnet-only
+        // gateway, allow-any is acceptable.
+        app = app.layer(CorsLayer::very_permissive());
     }
 
     // tower-http's TraceLayer opens one span per request

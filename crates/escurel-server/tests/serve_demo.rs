@@ -103,6 +103,26 @@ async fn api_routes_keep_precedence_over_demo() {
 }
 
 #[tokio::test]
+async fn demo_mode_sets_permissive_cors() {
+    // The flutter-drive integration harness calls /mcp from its own
+    // web-server origin, so demo mode must relax CORS.
+    let demo = demo_bundle();
+    let p = start(&demo).await;
+    let resp = reqwest::Client::new()
+        .get(url(&p, "/healthz"))
+        .header("Origin", "http://localhost:12345")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(
+        resp.headers().contains_key("access-control-allow-origin"),
+        "demo mode must emit an Access-Control-Allow-Origin header",
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn no_demo_dir_means_unknown_path_is_404() {
     // Default (no demo_dir) keeps the bare-API behaviour: unknown
     // paths are 404, not an SPA fallback.
