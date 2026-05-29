@@ -114,6 +114,50 @@ class _CapStubClient implements EscurelClient {
   Stream<AwarenessEvent> awareness(String pageId) => inner.awareness(pageId);
 
   @override
+  Future<AppendedMessage> appendMessage({
+    required String chatGroupId,
+    required String role,
+    required String content,
+    String? author,
+    String? ts,
+    Map<String, Object?>? metadata,
+    String? msgId,
+    bool embed = true,
+  }) =>
+      inner.appendMessage(
+        chatGroupId: chatGroupId,
+        role: role,
+        content: content,
+        author: author,
+        ts: ts,
+        metadata: metadata,
+        msgId: msgId,
+        embed: embed,
+      );
+
+  @override
+  Future<ChatPage> listMessages(
+    String chatGroupId, {
+    String? since,
+    String? until,
+    int limit = 100,
+    String? cursor,
+    String direction = 'desc',
+  }) =>
+      inner.listMessages(chatGroupId,
+          since: since, until: until, limit: limit, cursor: cursor, direction: direction);
+
+  @override
+  Future<QuotaSnapshot> adminQuota() => inner.adminQuota();
+
+  @override
+  Future<AuditDrift> adminAudit() => inner.adminAudit();
+
+  @override
+  Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs}) =>
+      inner.adminDeleteChatHistory(chatGroupId: chatGroupId, beforeTs: beforeTs);
+
+  @override
   Future<List<LaneSummary>> adminListLanes() => inner.adminListLanes();
 
   @override

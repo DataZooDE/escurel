@@ -118,6 +118,38 @@ class _StubClient implements EscurelClient {
   }
 
   @override
+  Future<AppendedMessage> appendMessage({
+    required String chatGroupId,
+    required String role,
+    required String content,
+    String? author,
+    String? ts,
+    Map<String, Object?>? metadata,
+    String? msgId,
+    bool embed = true,
+  }) async => throw notYetImplemented('append_message');
+
+  @override
+  Future<ChatPage> listMessages(
+    String chatGroupId, {
+    String? since,
+    String? until,
+    int limit = 100,
+    String? cursor,
+    String direction = 'desc',
+  }) async => throw notYetImplemented('list_messages');
+
+  @override
+  Future<QuotaSnapshot> adminQuota() async => throw notYetImplemented('admin_quota');
+
+  @override
+  Future<AuditDrift> adminAudit() async => throw notYetImplemented('admin_audit');
+
+  @override
+  Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs}) async =>
+      throw notYetImplemented('admin_delete_chat_history');
+
+  @override
   Future<List<LaneSummary>> adminListLanes() async => throw notYetImplemented('admin_list_lanes');
 
   @override
