@@ -164,6 +164,7 @@ class FixtureEscurelClient implements EscurelClient {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
+    String? asOf, // ignored in fixture mode; honoured by the HTTP backend
   }) async {
     var instances = _pages.values
         .where((p) => p.pageType == md.PageType.instance && p.skill == skillId)
@@ -233,7 +234,8 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version}) async {
+  Future<ExpandResult> expand(String pageId,
+      {String? anchor, String? version, String? asOf}) async {
     final p = _pages[pageId] ?? (throw EscurelToolException(
       'page $pageId not found',
       code: 'fixture.no_such_page',
@@ -254,6 +256,7 @@ class FixtureEscurelClient implements EscurelClient {
     String pageId, {
     LinkDirection direction = LinkDirection.both,
     String? linkSkill,
+    String? asOf, // ignored in fixture mode; honoured by the HTTP backend
   }) async {
     final out = <Neighbour>[];
 
@@ -290,6 +293,7 @@ class FixtureEscurelClient implements EscurelClient {
     SearchGranularity granularity = SearchGranularity.block,
     PageTypeFilter pageType = PageTypeFilter.any,
     String? skill,
+    String? asOf, // ignored in fixture mode; honoured by the HTTP backend
   }) async {
     // Fixture search: case-insensitive substring over title + body
     // + skill name. Good enough for offline demo; the real ranking

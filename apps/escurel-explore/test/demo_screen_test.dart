@@ -108,6 +108,7 @@ class _RecordingClient implements EscurelClient {
     SearchGranularity granularity = SearchGranularity.block,
     PageTypeFilter pageType = PageTypeFilter.any,
     String? skill,
+    String? asOf,
   }) async {
     searchedQueries.add(q);
     return const SearchResult(hits: [], granularity: SearchGranularity.block);

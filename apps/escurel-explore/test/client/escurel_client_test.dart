@@ -62,13 +62,14 @@ class _StubClient implements EscurelClient {
     SearchGranularity granularity = SearchGranularity.block,
     PageTypeFilter pageType = PageTypeFilter.any,
     String? skill,
+    String? asOf,
   }) async => throw notYetImplemented('search');
 
   @override
   Future<ResolveResult> resolve(String wikilink) async => throw notYetImplemented('resolve');
 
   @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version}) async =>
+  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf}) async =>
       throw notYetImplemented('expand');
 
   @override
@@ -76,6 +77,7 @@ class _StubClient implements EscurelClient {
     String pageId, {
     LinkDirection direction = LinkDirection.both,
     String? linkSkill,
+    String? asOf,
   }) async => throw notYetImplemented('neighbours');
 
   @override
@@ -87,6 +89,7 @@ class _StubClient implements EscurelClient {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
+    String? asOf,
   }) async => throw notYetImplemented('list_instances');
 
   @override
@@ -161,7 +164,7 @@ class _StubClient implements EscurelClient {
       throw notYetImplemented('admin_lane_blob');
 
   @override
-  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit}) async =>
+  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit, String? asOf}) async =>
       throw notYetImplemented('admin_index_query');
 
   @override

@@ -52,6 +52,19 @@ final escurelClientProvider = Provider<EscurelClient>((ref) {
 /// opened (initial state).
 final currentPageIdProvider = StateProvider<String?>((ref) => null);
 
+/// Global time-travel cut. `null` = the present (no cut); otherwise the
+/// time scrubber's selected instant. Every read provider passes it down
+/// as the backend `as_of`, so scrubbing reshapes the whole workspace at
+/// once with no per-widget plumbing.
+final asOfProvider = StateProvider<DateTime?>((ref) => null);
+
+/// The [asOfProvider] cut rendered as the RFC 3339 string the backend
+/// expects, or null when at the present.
+final asOfStringProvider = Provider<String?>((ref) {
+  final at = ref.watch(asOfProvider);
+  return at?.toUtc().toIso8601String();
+});
+
 /// Catalogue (skills + their instance counts).
 final skillsCatalogueProvider = FutureProvider<List<SkillSummary>>((ref) {
   return ref.watch(escurelClientProvider).listSkills();
@@ -62,18 +75,27 @@ final instancesProvider = FutureProvider.family<List<InstanceSummary>, String>((
   return ref.watch(escurelClientProvider).listInstances(skillId);
 });
 
-/// The expanded current page, or null if nothing focused.
+/// The expanded current page, or null if nothing focused. Time-travels
+/// with [asOfStringProvider]: a page born after the cut comes back with
+/// an empty `pageId`, which the reader renders as a "not yet" placeholder.
 final currentPageProvider = FutureProvider<ExpandResult?>((ref) async {
   final id = ref.watch(currentPageIdProvider);
   if (id == null) return null;
-  return ref.watch(escurelClientProvider).expand(id);
+  final asOf = ref.watch(asOfStringProvider);
+  final page = await ref.watch(escurelClientProvider).expand(id, asOf: asOf);
+  // A time-cut page comes back with an empty pageId — treat it as "not
+  // focused" so the reader falls back to its empty state.
+  return page.pageId.isEmpty ? null : page;
 });
 
 /// Backlinks (incoming neighbours) for the current page.
 final currentBacklinksProvider = FutureProvider<List<Neighbour>>((ref) async {
   final id = ref.watch(currentPageIdProvider);
   if (id == null) return const <Neighbour>[];
-  return ref.watch(escurelClientProvider).neighbours(id, direction: LinkDirection.incoming);
+  final asOf = ref.watch(asOfStringProvider);
+  return ref
+      .watch(escurelClientProvider)
+      .neighbours(id, direction: LinkDirection.incoming, asOf: asOf);
 });
 
 /// The inline boot corpus is intentionally small — two skills + two

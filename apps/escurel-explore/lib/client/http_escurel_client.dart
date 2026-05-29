@@ -91,6 +91,7 @@ class HttpEscurelClient implements EscurelClient {
     SearchGranularity granularity = SearchGranularity.block,
     PageTypeFilter pageType = PageTypeFilter.any,
     String? skill,
+    String? asOf,
   }) async {
     final result = await _call('search', {
       'q': q,
@@ -98,6 +99,7 @@ class HttpEscurelClient implements EscurelClient {
       'granularity': granularity.name,
       'page_type': pageType.name,
       'skill': ?skill,
+      'as_of': ?asOf,
     });
     final hits = (result['hits'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
@@ -131,12 +133,28 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version}) async {
+  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf}) async {
     final result = await _call('expand', {
       'page_id': pageId,
       'anchor': ?anchor,
       'version': ?version,
+      'as_of': ?asOf,
     });
+    // The server nests page identity under `page`, which is null when an
+    // `as_of` cut puts the page before its birth. Surface that as an
+    // empty-pageId result so the reader can show a "not yet" placeholder.
+    final page = result['page'] as Map<String, dynamic>?;
+    if (result.containsKey('page') && page == null) {
+      return ExpandResult(
+        pageId: '',
+        skill: '',
+        pageType: _pageTypeFromString(null),
+        frontmatter: const {},
+        body: '',
+        blocks: const [],
+        wikilinksOut: const [],
+      );
+    }
     final blocks = (result['blocks'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
         .map((b) => Block(
@@ -145,9 +163,9 @@ class HttpEscurelClient implements EscurelClient {
             ))
         .toList();
     return ExpandResult(
-      pageId: (result['page_id'] as String?) ?? pageId,
-      skill: (result['skill'] as String?) ?? '',
-      pageType: _pageTypeFromString(result['page_type'] as String?),
+      pageId: (page?['page_id'] as String?) ?? (result['page_id'] as String?) ?? pageId,
+      skill: (page?['skill'] as String?) ?? (result['skill'] as String?) ?? '',
+      pageType: _pageTypeFromString((page?['page_type'] ?? result['page_type']) as String?),
       frontmatter: Map<String, dynamic>.from(result['frontmatter'] as Map? ?? const {}),
       body: (result['body'] as String?) ?? '',
       blocks: blocks,
@@ -161,11 +179,13 @@ class HttpEscurelClient implements EscurelClient {
     String pageId, {
     LinkDirection direction = LinkDirection.both,
     String? linkSkill,
+    String? asOf,
   }) async {
     final result = await _call('neighbours', {
       'page_id': pageId,
       'direction': direction.name,
       'link_skill': ?linkSkill,
+      'as_of': ?asOf,
     });
     return (result['edges'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
@@ -201,6 +221,7 @@ class HttpEscurelClient implements EscurelClient {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
+    String? asOf,
   }) async {
     // The server takes a single frontmatter equality filter as a
     // (frontmatter_key, frontmatter_value) pair (PR-5). Translate the
@@ -212,6 +233,7 @@ class HttpEscurelClient implements EscurelClient {
       'frontmatter_value': ?fmEntry?.value?.toString(),
       'order_by': ?orderBy,
       'limit': ?limit,
+      'as_of': ?asOf,
     });
     return (result['instances'] as List? ?? const [])
         .cast<Map<String, dynamic>>()

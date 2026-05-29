@@ -29,6 +29,7 @@ class _StubClient implements EscurelClient {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
+    String? asOf,
   }) async {
     switch (skillId) {
       case 'email':
