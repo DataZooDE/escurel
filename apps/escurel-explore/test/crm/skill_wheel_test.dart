@@ -35,7 +35,7 @@ class _StubClient implements EscurelClient {
       );
 
   @override
-  Future<ResolveResult> resolve(String wikilink) async => const ResolveResult(
+  Future<ResolveResult> resolve(String wikilink, {String? scenario}) async => const ResolveResult(
         pageId: 'markdown/x.md',
         skill: 'lead',
         pageType: PageType.instance,

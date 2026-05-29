@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
 import 'crm_providers.dart';
+import 'scenario_switch.dart';
 
 class CrmBreadcrumb extends ConsumerWidget implements PreferredSizeWidget {
   const CrmBreadcrumb({super.key});
@@ -69,6 +70,10 @@ class CrmBreadcrumb extends ConsumerWidget implements PreferredSizeWidget {
           ],
         ],
       ),
+      actions: const [
+        ScenarioSwitch(),
+        SizedBox(width: 16),
+      ],
     );
   }
 
