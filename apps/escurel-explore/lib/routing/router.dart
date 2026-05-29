@@ -17,6 +17,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../app.dart';
+import '../crm/crm_workspace.dart';
 import '../demo/demo_screen.dart';
 import '../inspector/inspector_shell.dart';
 import '../shell/app_shell.dart';
@@ -40,6 +41,10 @@ final List<RouteBase> appRoutes = [
   GoRoute(
     path: '/demo',
     builder: (context, state) => const DemoScreen(),
+  ),
+  GoRoute(
+    path: '/crm',
+    builder: (context, state) => const CrmWorkspace(),
   ),
   GoRoute(
     path: '/inspector',
