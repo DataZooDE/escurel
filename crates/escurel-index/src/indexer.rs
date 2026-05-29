@@ -7,8 +7,10 @@
 //! atomically rolled back, matching the spec README's failure model.
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use duckdb::{Connection, params};
 use escurel_embed::{EmbedError, Embedder};
 use escurel_md::wikilink::parse_wikilinks;
@@ -98,6 +100,12 @@ pub enum IndexerError {
     InvalidExternalSource { reason: &'static str },
     #[error("invalid chat list cursor: {0}")]
     InvalidCursor(String),
+    #[error("seed io error at {path}: {source}")]
+    SeedIo {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl Indexer {
@@ -343,6 +351,39 @@ impl Indexer {
         Ok(())
     }
 
+    /// Seed the tenant from an external directory of markdown files
+    /// (e.g. `examples/crm-demo`). For each `*.md` found recursively:
+    /// write it into the canonical LaneStore under
+    /// `markdown/<relpath>` and index it via [`Self::update_page`],
+    /// skills first so wikilink targets are present, then refresh the
+    /// FTS index over the populated blocks. Returns the number of
+    /// files seeded.
+    ///
+    /// Idempotent: re-seeding the same content upserts in place (same
+    /// `body_hash`), leaving no drift. Distinct from [`Self::rebuild`],
+    /// which re-indexes markdown the LaneStore *already* holds —
+    /// `seed_from_dir` *imports* markdown from outside the tenant lane.
+    /// The page_id equals the lane key (`markdown/<relpath>`) so
+    /// [`Self::audit`] stays clean.
+    pub async fn seed_from_dir(&self, dir: &Path) -> Result<usize, IndexerError> {
+        let mut files: Vec<(String, String)> = Vec::new();
+        collect_md(dir, dir, &mut files)?;
+        // Skills before instances so links resolve at index time;
+        // stable path order within each group for deterministic seeds.
+        files.sort_by(|a, b| (!is_skill(&a.1), a.0.as_str()).cmp(&(!is_skill(&b.1), b.0.as_str())));
+
+        for (relpath, content) in &files {
+            let page_id = format!("markdown/{relpath}");
+            let key = Key::new(self.tenant.as_str(), page_id.clone())?;
+            self.store.write(&key, Bytes::from(content.clone())).await?;
+            self.update_page(&page_id, content).await?;
+        }
+        // FTS has no incremental refresh PRAGMA; rebuild it over the
+        // now-populated blocks (see search.rs / discovered notes).
+        self.refresh_fts().await?;
+        Ok(files.len())
+    }
+
     async fn list_markdown_paths(&self) -> Result<HashSet<String>, IndexerError> {
         let prefix = Key::new(self.tenant.as_str(), "markdown/")?;
         let keys = self.store.list(&prefix).await?;
@@ -476,6 +517,55 @@ pub fn is_safe_attach_source(source: &str) -> bool {
         && !source
             .chars()
             .any(|c| c == '\'' || c == '"' || c == '\\' || c == ';' || c == '`' || c.is_control())
+}
+
+/// Recursively collect `(relpath, content)` for every `*.md` under
+/// `root`. `relpath` is `dir`-relative with forward slashes (the lane
+/// key convention).
+fn collect_md(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, String)>,
+) -> Result<(), IndexerError> {
+    let entries = std::fs::read_dir(dir).map_err(|source| IndexerError::SeedIo {
+        path: dir.display().to_string(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| IndexerError::SeedIo {
+            path: dir.display().to_string(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_md(root, &path, out)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let content =
+                std::fs::read_to_string(&path).map_err(|source| IndexerError::SeedIo {
+                    path: path.display().to_string(),
+                    source,
+                })?;
+            // Skip non-page markdown (e.g. a corpus README): an escurel
+            // page always opens with a `---` frontmatter fence.
+            if !content.trim_start().starts_with("---") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push((rel, content));
+        }
+    }
+    Ok(())
+}
+
+/// True if the markdown declares `type: skill` in its frontmatter.
+/// Cheap scan of the leading lines — enough to order skills before
+/// instances during a seed.
+fn is_skill(content: &str) -> bool {
+    content.lines().take(40).any(|l| l.trim() == "type: skill")
 }
 
 fn hash_body(content: &str) -> String {

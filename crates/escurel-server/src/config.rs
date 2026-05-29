@@ -26,6 +26,7 @@
 //! | `VERSION` / `ESCUREL_VERSION` | `0.0.0-dev` | body of `GET /version` |
 //! | `ENV` / `ESCUREL_ENV` | `dev` | log field `env` |
 //! | `ESCUREL_SERVER_DATA_DIR` | `/data` | host-volume root for DuckDB + FsStore + tenants |
+//! | `ESCUREL_SEED_DIR` | — | markdown corpus seeded into the tenant at boot (idempotent), e.g. `examples/crm-demo` |
 //! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
 //! | `ESCUREL_SERVER_LISTEN_GRPC` | `0.0.0.0:8081` | gRPC listener; empty disables gRPC |
 //! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
@@ -239,6 +240,10 @@ pub struct EscurelConfig {
     /// at `/`. `None` → no static serving. Set from
     /// `ESCUREL_SERVE_DEMO_DIR`.
     pub demo_dir: Option<PathBuf>,
+    /// Optional directory of markdown to seed into the tenant at boot
+    /// (e.g. `examples/crm-demo`). `None` → no seeding. Idempotent.
+    /// Set from `ESCUREL_SEED_DIR`.
+    pub seed_dir: Option<PathBuf>,
 }
 
 /// Source of an environment lookup — abstracted so `from_env` is
@@ -327,6 +332,11 @@ impl EscurelConfig {
         // no static serving (the gateway stays bare-API).
         let demo_dir = env
             .get("ESCUREL_SERVE_DEMO_DIR")
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from);
+        // Optional markdown corpus seeded into the tenant at boot.
+        let seed_dir = env
+            .get("ESCUREL_SEED_DIR")
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from);
         let listen_http = pick(
@@ -475,6 +485,7 @@ impl EscurelConfig {
             embedding_dim,
             gemini_api_key,
             demo_dir,
+            seed_dir,
         })
     }
 }
@@ -580,6 +591,14 @@ impl EscurelConfig {
         // the admin RPC.)
         if fresh {
             indexer.rebuild().await?;
+        }
+
+        // Optional seed: import a directory of markdown (e.g.
+        // `examples/crm-demo`) into this tenant at boot. Idempotent
+        // (upsert by body_hash), so it's safe to leave set across
+        // restarts; powers the HTTP demo without manual fs placement.
+        if let Some(dir) = self.seed_dir.as_ref() {
+            indexer.seed_from_dir(dir).await?;
         }
 
         // CRDT backend over a second connection to the same file.
