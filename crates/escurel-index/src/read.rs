@@ -95,19 +95,26 @@ impl Indexer {
         Ok(out)
     }
 
-    /// Return instances of `skill`, optionally ordered by `at_ts`
-    /// and capped at `limit` rows.
+    /// Return instances of `skill`, optionally ordered by `at_ts`,
+    /// filtered by a single frontmatter `(key, value)`, and capped
+    /// at `limit` rows.
     ///
     /// Ordering uses the denormalised `at_ts` column on `pages`
     /// (mirrored from `frontmatter.at` at write time), so the
-    /// event-log scan `list_instances('meeting', Some(Desc),
-    /// Some(50))` is index-served by the `pages_skill_at`
-    /// composite index.
+    /// event-log scan `list_instances('meeting', Some(Desc), …)`
+    /// is index-served by the `pages_skill_at` composite index.
+    ///
+    /// `filter` matches a top-level frontmatter field by its string
+    /// value, e.g. `Some(("source", "gmail"))` for the source-inbox
+    /// view. It compares `json_extract_string(frontmatter, '$.<key>')`
+    /// directly against the canonical stored frontmatter — there is no
+    /// separate `frontmatter_index` to keep in sync.
     pub async fn list_instances(
         &self,
         skill: &str,
         order_by_at: Option<OrderDir>,
         limit: Option<usize>,
+        filter: Option<(&str, &str)>,
     ) -> Result<Vec<InstanceInfo>, IndexerError> {
         let order_sql = match order_by_at {
             Some(OrderDir::Asc) => " ORDER BY at_ts ASC NULLS LAST, page_id ASC",
@@ -120,15 +127,28 @@ impl Indexer {
         let limit_sql = limit
             .map(|n| format!(" LIMIT {}", n.min(10_000)))
             .unwrap_or_default();
+        let filter_sql = if filter.is_some() {
+            " AND json_extract_string(frontmatter, ?) = ?"
+        } else {
+            ""
+        };
         let sql = format!(
             "SELECT page_id, skill, frontmatter::VARCHAR \
              FROM pages \
-             WHERE page_type = 'instance' AND skill = ?{order_sql}{limit_sql}",
+             WHERE page_type = 'instance' AND skill = ?{filter_sql}{order_sql}{limit_sql}",
         );
+
+        // Bind order matches the `?` order in `sql`: skill, then the
+        // filter path + value when present.
+        let mut binds: Vec<String> = vec![skill.to_owned()];
+        if let Some((key, value)) = filter {
+            binds.push(format!("$.{key}"));
+            binds.push(value.to_owned());
+        }
 
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![skill], |row| {
+        let rows = stmt.query_map(duckdb::params_from_iter(binds.iter()), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,

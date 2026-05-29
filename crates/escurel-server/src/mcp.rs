@@ -408,6 +408,13 @@ struct ListInstancesArgs {
     order_by: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
+    /// Optional single frontmatter equality filter, e.g.
+    /// `{"frontmatter_key": "source", "frontmatter_value": "gmail"}`
+    /// for the source-inbox view. Both must be present to apply.
+    #[serde(default)]
+    frontmatter_key: Option<String>,
+    #[serde(default)]
+    frontmatter_value: Option<String>,
 }
 
 async fn tool_list_instances(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
@@ -421,8 +428,12 @@ async fn tool_list_instances(indexer: &Indexer, args: Value) -> Result<Value, Js
         },
         None => None,
     };
+    let filter = match (a.frontmatter_key.as_deref(), a.frontmatter_value.as_deref()) {
+        (Some(k), Some(v)) if !k.is_empty() => Some((k, v)),
+        _ => None,
+    };
     let out = indexer
-        .list_instances(&a.skill_id, order, a.limit)
+        .list_instances(&a.skill_id, order, a.limit, filter)
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_instances: {e}")))?;
     Ok(json!({
@@ -1019,14 +1030,16 @@ fn tools_list_payload() -> Value {
             ),
             tool_entry(
                 "list_instances",
-                "Enumerate instances of a skill.",
+                "Enumerate instances of a skill, optionally filtered by a frontmatter field.",
                 json!({
                     "type": "object",
                     "required": ["skill_id"],
                     "properties": {
                         "skill_id": { "type": "string" },
                         "order_by": { "type": "string", "enum": ["at asc", "at desc"] },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                        "frontmatter_key": { "type": "string", "description": "Frontmatter field to filter on (with frontmatter_value)." },
+                        "frontmatter_value": { "type": "string", "description": "Required value of frontmatter_key." }
                     }
                 }),
             ),

@@ -152,8 +152,13 @@ impl Escurel for EscurelGrpc {
         } else {
             Some(r.limit as usize)
         };
+        let filter = if r.frontmatter_key.is_empty() {
+            None
+        } else {
+            Some((r.frontmatter_key.as_str(), r.frontmatter_value.as_str()))
+        };
         let rows = indexer
-            .list_instances(&r.skill, order, limit)
+            .list_instances(&r.skill, order, limit, filter)
             .await
             .map_err(|e| Status::internal(format!("list_instances: {e}")))?;
         let instances = rows
