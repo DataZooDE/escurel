@@ -142,6 +142,35 @@ A PR cycle:
   still reflect the old names today; do not propagate them to new
   code.
 
+## Demo app + browser verification (rodney)
+
+The demo/companion app is `apps/escurel-explore` (Flutter web). It
+**tracks every backend capability** as it lands — when you add a tool
+or surface to the server, wire it into escurel-explore in the same
+sequence. The `escurel-server` binary can serve the built bundle at
+`/` (set `ESCUREL_SERVE_DEMO_DIR=apps/escurel-explore/build/web`), so
+the whole demo runs as one process alongside `/mcp`, `/ws`, `/metrics`.
+
+Browser verification uses **[rodney](https://github.com/simonw/rodney)**
+— a Go Chrome-automation CLI. Build it once
+(`git clone https://github.com/simonw/rodney && cd rodney &&
+go build -o ~/.local/bin/rodney .`; needs Go ≥ 1.21 + Chrome, both
+present here as `google-chrome-stable` / `chromium`).
+
+**Critical:** Flutter web renders to a CanvasKit `<canvas>` — there is
+**no CSS-selectable DOM** for the app's widgets, so rodney's
+`click "#id"` / `text "h1"` selector commands do **not** reach them.
+Drive the app through Flutter's **semantics (accessibility) tree**
+instead, via rodney's `ax-find --role <r> --name <label>` and
+`ax-node` commands (proven working here: `ax-find --role button`
+returns the node). For this to work the demo build force-enables
+semantics at startup (`SemanticsBinding.instance.ensureSemantics()`)
+and every interactive widget carries a **stable `Semantics(label: …)`**
+— those labels are the selector contract; don't rename them casually.
+The canonical end-to-end check is `scripts/verify-demo.sh` (builds the
+web bundle, starts the gateway serving it, drives each panel with
+rodney, exit-code gated).
+
 ## Reading order
 
 If you are new to the codebase:

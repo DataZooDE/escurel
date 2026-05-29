@@ -54,6 +54,8 @@ class Topbar extends ConsumerWidget implements PreferredSizeWidget {
                 tone: _Tone.warning,
               ),
             ),
+          _DemoLink(),
+          const SizedBox(width: 8),
           _InspectorToggle(),
           const SizedBox(width: 8),
           _Chip(
@@ -98,6 +100,41 @@ class _InspectorToggle extends StatelessWidget {
                     ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DemoLink extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Open the capability demo',
+      child: InkWell(
+        key: const ValueKey('topbar.demo_link'),
+        borderRadius: BorderRadius.circular(6),
+        onTap: () => GoRouter.of(context).go('/demo'),
+        child: Semantics(
+          label: 'open-demo',
+          button: true,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: kSurfaceContainerHigh,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.widgets_outlined, size: 14, color: kOnSurface),
+                const SizedBox(width: 4),
+                Text(
+                  'demo',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(color: kOnSurface),
+                ),
+              ],
+            ),
           ),
         ),
       ),

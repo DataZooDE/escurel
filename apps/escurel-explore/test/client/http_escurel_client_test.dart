@@ -278,17 +278,22 @@ void main() {
   });
 
   group('not-yet-implemented surfaces', () {
-    test('write tools throw EscurelUnsupportedException', () async {
-      await expectLater(
-        client.updatePage('x', 'body'),
-        throwsA(isA<EscurelUnsupportedException>()),
-      );
-      await expectLater(
-        client.openSession('x'),
-        throwsA(isA<EscurelUnsupportedException>()),
-      );
+    // Write, chat, session, and the implemented admin ops tools now
+    // round-trip over /mcp (covered by the no-mock integration tests
+    // in escurel-server). The LaneStore inspection tools have no
+    // server-side MCP implementation yet, so they remain the only
+    // surfaces that throw EscurelUnsupportedException.
+    test('lane inspection tools throw EscurelUnsupportedException', () async {
       await expectLater(
         client.adminListLanes(),
+        throwsA(isA<EscurelUnsupportedException>()),
+      );
+      await expectLater(
+        client.adminLaneKeys('fs'),
+        throwsA(isA<EscurelUnsupportedException>()),
+      );
+      await expectLater(
+        client.adminLaneBlob('fs', 'k'),
         throwsA(isA<EscurelUnsupportedException>()),
       );
     });

@@ -90,7 +90,46 @@ abstract class EscurelClient {
   /// Drains when the underlying socket closes.
   Stream<AwarenessEvent> awareness(String pageId);
 
+  // ── chat history (M-Chat, issue #63) ────────────────────────
+
+  /// Append one message to a chat group's conversation log. The
+  /// server stamps `ts`/`msgId` when omitted and returns the
+  /// resolved values. `embed = false` skips the embedding cost.
+  Future<AppendedMessage> appendMessage({
+    required String chatGroupId,
+    required String role,
+    required String content,
+    String? author,
+    String? ts,
+    Map<String, Object?>? metadata,
+    String? msgId,
+    bool embed = true,
+  });
+
+  /// Read a chat group's history time-ordered. `since` is inclusive,
+  /// `until` exclusive; `direction` defaults to newest-first. Pass a
+  /// prior page's `nextCursor` to continue.
+  Future<ChatPage> listMessages(
+    String chatGroupId, {
+    String? since,
+    String? until,
+    int limit = 100,
+    String? cursor,
+    String direction = 'desc',
+  });
+
   // ── admin MCP tools (require escurel-admin role) ────────────
+
+  /// Per-tenant quota snapshot (`admin_quota`).
+  Future<QuotaSnapshot> adminQuota();
+
+  /// Markdown ⟷ DuckDB drift (`admin_audit`).
+  Future<AuditDrift> adminAudit();
+
+  /// Purge chat history (`admin_delete_chat_history`). GDPR erasure
+  /// (group set), retention prune (beforeTs set), or both. Returns
+  /// the number of rows removed.
+  Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs});
 
   /// Enumerate the LaneStores the server has registered.
   Future<List<LaneSummary>> adminListLanes();

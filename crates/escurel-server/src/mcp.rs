@@ -154,9 +154,14 @@ async fn mcp_inner(
         .map(|c| c.tenant_id.clone())
         .unwrap_or_else(|| "default".to_owned());
 
+    // Caller role for the admin-tool gate. `None` when no verifier
+    // is wired (dev / on-host mode) — the gateway is open, so admin
+    // tools are allowed (the local demo runs without a token).
+    let role = auth_ctx.as_ref().map(|c| c.role);
+
     let result = match req.method.as_str() {
         "tools/list" => Ok(tools_list_payload()),
-        "tools/call" => dispatch_tools_call(&state, &tenant_id, req.params).await,
+        "tools/call" => dispatch_tools_call(&state, &tenant_id, role, req.params).await,
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown method `{other}`"
         ))),
@@ -280,14 +285,27 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
     })
 }
 
-#[allow(dead_code)]
-fn elevated_role(role: Role) -> bool {
-    matches!(role, Role::Admin)
+/// Gate the admin-only MCP tools. The caller's `role` is `None` only
+/// when no OIDC verifier is wired (dev / on-host mode), in which case
+/// the gateway is unauthenticated and everything — including the
+/// admin tools — is open, so the local demo works without a token.
+/// When a verifier *is* configured, the JWT must carry the admin
+/// role; an agent-role caller gets a JSON-RPC error (it never reveals
+/// more than "admin role required").
+fn require_admin(role: Option<Role>) -> Result<(), JsonRpcError> {
+    match role {
+        None | Some(Role::Admin) => Ok(()),
+        Some(_) => Err(JsonRpcError {
+            code: -32001,
+            message: "admin role required for this tool".to_owned(),
+        }),
+    }
 }
 
 async fn dispatch_tools_call(
     state: &crate::server::AppState,
     tenant_id: &str,
+    role: Option<Role>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -341,6 +359,24 @@ async fn dispatch_tools_call(
         "update_page" => tool_update_page(indexer, params.arguments).await,
         "append_message" => tool_append_message(indexer, params.arguments).await,
         "list_messages" => tool_list_messages(indexer, params.arguments).await,
+        // Admin-gated ops tools (mirror the documented MCP admin
+        // surface; delegate to the same logic as EscurelAdmin gRPC).
+        "admin_quota" => {
+            require_admin(role)?;
+            tool_admin_quota(state, tenant_id)
+        }
+        "admin_audit" => {
+            require_admin(role)?;
+            tool_admin_audit(indexer).await
+        }
+        "admin_index_query" => {
+            require_admin(role)?;
+            tool_admin_index_query(indexer, params.arguments).await
+        }
+        "admin_delete_chat_history" => {
+            require_admin(role)?;
+            tool_admin_delete_chat_history(indexer, params.arguments).await
+        }
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
         ))),
@@ -755,6 +791,90 @@ fn chat_message_to_json(m: &ChatMessage) -> Value {
     out
 }
 
+// --- admin ops tools (admin-role gated) ------------------------
+//
+// These mirror the documented MCP admin surface and delegate to the
+// same logic the gRPC `EscurelAdmin` service uses. The role gate is
+// applied by the dispatcher (`require_admin`) before these run.
+
+fn tool_admin_quota(
+    state: &crate::server::AppState,
+    tenant_id: &str,
+) -> Result<Value, JsonRpcError> {
+    let quota = state
+        .quota
+        .as_ref()
+        .ok_or_else(|| JsonRpcError::internal("no quota manager wired on this server"))?;
+    let s = quota.snapshot(tenant_id);
+    Ok(json!({
+        "queries_remaining": s.queries_remaining,
+        "writes_remaining": s.writes_remaining,
+        "embeds_remaining": s.embeds_remaining,
+        "concurrent_sessions_in_use": s.concurrent_sessions_in_use,
+    }))
+}
+
+async fn tool_admin_audit(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+    let drift = indexer
+        .audit()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("admin_audit: {e}")))?;
+    Ok(json!({
+        "markdown_not_in_duckdb": drift.markdown_not_in_duckdb,
+        "indexed_but_no_markdown": drift.indexed_but_no_markdown,
+    }))
+}
+
+#[derive(Deserialize)]
+struct AdminIndexQueryArgs {
+    table: String,
+    #[serde(default = "default_inspect_limit")]
+    limit: usize,
+}
+
+fn default_inspect_limit() -> usize {
+    100
+}
+
+async fn tool_admin_index_query(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: AdminIndexQueryArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("admin_index_query: {e}")))?;
+    let res = indexer
+        .inspect_table(&a.table, a.limit)
+        .await
+        // Unknown-table / bad-arg errors are caller errors, not server
+        // faults — surface as invalid_params.
+        .map_err(|e| JsonRpcError::invalid_params(format!("admin_index_query: {e}")))?;
+    Ok(json!({
+        "rows": res.rows,
+        "schema": res.schema.iter().map(|c| json!({
+            "name": c.name,
+            "type": c.type_name,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct AdminDeleteChatHistoryArgs {
+    #[serde(default)]
+    chat_group_id: Option<String>,
+    #[serde(default)]
+    before_ts: Option<String>,
+}
+
+async fn tool_admin_delete_chat_history(
+    indexer: &Indexer,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: AdminDeleteChatHistoryArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("admin_delete_chat_history: {e}")))?;
+    let deleted = indexer
+        .delete_chat_history(a.chat_group_id.as_deref(), a.before_ts.as_deref())
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("admin_delete_chat_history: {e}")))?;
+    Ok(json!({ "deleted": deleted }))
+}
+
 // --- session tools (M4.2) --------------------------------------
 
 #[derive(Deserialize)]
@@ -1082,6 +1202,51 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "session": { "type": "string" },
                         "commit": { "type": "boolean", "default": true }
+                    }
+                }),
+            ),
+            // Admin-gated ops tools. Visible in tools/list, but the
+            // dispatcher rejects non-admin callers (see require_admin).
+            tool_entry(
+                "admin_quota",
+                "Admin: per-tenant quota snapshot (remaining query/write/embed \
+                 budget + concurrent sessions in use).",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "admin_audit",
+                "Admin: drift between canonical markdown and the DuckDB index \
+                 (markdown_not_in_duckdb / indexed_but_no_markdown).",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "admin_index_query",
+                "Admin: read up to `limit` rows from an allow-listed index table \
+                 (pages, blocks, links, frontmatter_index, crdt_ops, crdt_snapshots, \
+                 chat_messages). Not arbitrary SQL.",
+                json!({
+                    "type": "object",
+                    "required": ["table"],
+                    "properties": {
+                        "table": {
+                            "type": "string",
+                            "enum": ["pages", "blocks", "links", "frontmatter_index",
+                                     "crdt_ops", "crdt_snapshots", "chat_messages"]
+                        },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 }
+                    }
+                }),
+            ),
+            tool_entry(
+                "admin_delete_chat_history",
+                "Admin: purge chat history. GDPR erasure (chat_group_id set), \
+                 retention prune (before_ts set), or both. MCP twin of the gRPC \
+                 EscurelAdmin.DeleteChatHistory.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_group_id": { "type": "string" },
+                        "before_ts": { "type": "string" }
                     }
                 }),
             ),

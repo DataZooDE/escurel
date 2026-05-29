@@ -31,6 +31,14 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  # Real-browser behavioral verification of the capability demo:
+  # `flutter drive` runs integration_test/demo_test.dart in Chrome
+  # (via chromedriver) and drives the widgets through Flutter's own
+  # gesture system. rodney covers presence + screenshots only —
+  # CanvasKit doesn't deliver DOM events to the gesture arena. See
+  # scripts/drive-demo.sh and CLAUDE.md §"Demo app + browser verification".
+  integration_test:
+    sdk: flutter
   flutter_lints: ^6.0.0
 
   # Used by the FixtureEscurelClient VM test to locate examples/crm-demo/

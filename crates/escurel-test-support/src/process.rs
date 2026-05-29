@@ -83,6 +83,11 @@ pub struct ConfigOverrides {
     /// On-demand rebuild closure for the `embedding_reload` admin
     /// RPC. See [`EmbedderFactory`]; paired with `embedder_reload`.
     pub embedder_factory: Option<EmbedderFactory>,
+    /// Serve a built static demo bundle at `/` (Flutter web
+    /// `build/web`). `Some` exercises the gateway's `ServeDir`
+    /// fallback + SPA index routing; `None` (default) keeps the
+    /// bare-API behaviour (unknown path → 404).
+    pub demo_dir: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for ConfigOverrides {
@@ -272,6 +277,7 @@ impl EscurelProcess {
             crdt_backend: overrides.crdt_backend.clone(),
             embedder_reload: overrides.embedder_reload.clone(),
             embedder_factory: overrides.embedder_factory.clone(),
+            demo_dir: overrides.demo_dir.clone(),
         };
         let handle = serve(cfg)
             .await

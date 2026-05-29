@@ -17,6 +17,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../app.dart';
+import '../demo/demo_screen.dart';
 import '../inspector/inspector_shell.dart';
 import '../shell/app_shell.dart';
 import '../state/providers.dart';
@@ -35,6 +36,10 @@ final List<RouteBase> appRoutes = [
       pageId: state.pathParameters['pageId']!,
       child: const AppShell(),
     ),
+  ),
+  GoRoute(
+    path: '/demo',
+    builder: (context, state) => const DemoScreen(),
   ),
   GoRoute(
     path: '/inspector',

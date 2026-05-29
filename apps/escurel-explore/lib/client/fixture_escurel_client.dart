@@ -347,6 +347,76 @@ class FixtureEscurelClient implements EscurelClient {
     throw notYetImplemented('awareness');
   }
 
+  // ── chat history (in-memory; offline-demo parity) ───────────
+
+  final Map<String, List<ChatMessage>> _chat = {};
+  int _chatSeq = 0;
+
+  @override
+  Future<AppendedMessage> appendMessage({
+    required String chatGroupId,
+    required String role,
+    required String content,
+    String? author,
+    String? ts,
+    Map<String, Object?>? metadata,
+    String? msgId,
+    bool embed = true,
+  }) async {
+    final id = msgId ?? 'fixture-${_chatSeq++}';
+    final stamp = ts ?? DateTime.now().toUtc().toIso8601String();
+    _chat.putIfAbsent(chatGroupId, () => []).add(ChatMessage(
+          chatGroupId: chatGroupId,
+          msgId: id,
+          ts: stamp,
+          role: role,
+          content: content,
+          embedded: embed,
+          author: author,
+          metadata: metadata,
+        ));
+    return AppendedMessage(msgId: id, ts: stamp);
+  }
+
+  @override
+  Future<ChatPage> listMessages(
+    String chatGroupId, {
+    String? since,
+    String? until,
+    int limit = 100,
+    String? cursor,
+    String direction = 'desc',
+  }) async {
+    final all = [...?_chat[chatGroupId]]..sort((a, b) => a.ts.compareTo(b.ts));
+    final ordered = direction == 'asc' ? all : all.reversed.toList();
+    return ChatPage(messages: ordered.take(limit).toList());
+  }
+
+  // ── admin ops (synthetic offline values) ────────────────────
+
+  @override
+  Future<QuotaSnapshot> adminQuota() async => const QuotaSnapshot(
+        queriesRemaining: 60,
+        writesRemaining: 30,
+        embedsRemaining: 60,
+        concurrentSessionsInUse: 0,
+      );
+
+  @override
+  Future<AuditDrift> adminAudit() async =>
+      const AuditDrift(markdownNotInDuckdb: [], indexedButNoMarkdown: []);
+
+  @override
+  Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs}) async {
+    if (chatGroupId == null) {
+      final n = _chat.values.fold<int>(0, (a, l) => a + l.length);
+      _chat.clear();
+      return n;
+    }
+    final removed = _chat.remove(chatGroupId)?.length ?? 0;
+    return removed;
+  }
+
   @override
   Future<List<LaneSummary>> adminListLanes() async => throw notYetImplemented('admin_list_lanes');
 
