@@ -33,11 +33,16 @@ import '../config/env.dart';
 final escurelClientProvider = Provider<EscurelClient>((ref) {
   final env = ref.watch(envProvider);
   final client = switch (env.mode) {
-    AppMode.http when env.baseUrl.isNotEmpty => HttpEscurelClient(
-        baseUrl: env.baseUrl,
+    // In HTTP mode, an explicit base URL wins; otherwise talk to the
+    // origin we were served from. This is what makes the gateway's
+    // `ESCUREL_SERVE_DEMO_DIR` bundle hit its own `/mcp` with no
+    // build-time URL baked in (CLAUDE.md: demo runs as one process
+    // alongside `/mcp`).
+    AppMode.http => HttpEscurelClient(
+        baseUrl: env.baseUrl.isNotEmpty ? env.baseUrl : Uri.base.origin,
         bearerToken: env.auth == AuthMode.bearer ? null : null,
       ),
-    _ => _bootstrapInlineFixture(),
+    AppMode.fixture => _bootstrapInlineFixture(),
   };
   ref.onDispose(client.close);
   return client;
