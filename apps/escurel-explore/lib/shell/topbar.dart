@@ -54,7 +54,7 @@ class Topbar extends ConsumerWidget implements PreferredSizeWidget {
                 tone: _Tone.warning,
               ),
             ),
-          _DemoLink(),
+          const _NavLink(label: 'CRM', icon: Icons.account_tree_outlined, to: '/crm', semantics: 'open-crm'),
           const SizedBox(width: 8),
           _InspectorToggle(),
           const SizedBox(width: 8),
@@ -107,17 +107,21 @@ class _InspectorToggle extends StatelessWidget {
   }
 }
 
-class _DemoLink extends StatelessWidget {
+class _NavLink extends StatelessWidget {
+  const _NavLink({required this.label, required this.icon, required this.to, required this.semantics});
+  final String label;
+  final IconData icon;
+  final String to;
+  final String semantics;
   @override
   Widget build(BuildContext context) {
     return Tooltip(
-      message: 'Open the capability demo',
+      message: 'Open $label',
       child: InkWell(
-        key: const ValueKey('topbar.demo_link'),
         borderRadius: BorderRadius.circular(6),
-        onTap: () => GoRouter.of(context).go('/demo'),
+        onTap: () => GoRouter.of(context).go(to),
         child: Semantics(
-          label: 'open-demo',
+          label: semantics,
           button: true,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -127,12 +131,9 @@ class _DemoLink extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const Icon(Icons.widgets_outlined, size: 14, color: kOnSurface),
+                Icon(icon, size: 14, color: kOnSurface),
                 const SizedBox(width: 4),
-                Text(
-                  'demo',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(color: kOnSurface),
-                ),
+                Text(label, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: kOnSurface)),
               ],
             ),
           ),
