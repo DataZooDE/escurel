@@ -233,30 +233,168 @@ class HttpEscurelClient implements EscurelClient {
     );
   }
 
-  // ── write / live / admin — not yet implemented over HTTP ────
+  // ── write tools ─────────────────────────────────────────────
 
   @override
-  Future<ValidationResult> validate(String content, {String? asPageId}) async =>
-      throw notYetImplemented('validate (http)');
+  Future<ValidationResult> validate(String content, {String? asPageId}) async {
+    final result = await _call('validate', {
+      'content': content,
+      'as_page_id': ?asPageId,
+    });
+    return ValidationResult(issues: _issuesFromJson(result['issues']));
+  }
 
   @override
-  Future<UpdateResult> updatePage(String pageId, String content, {String? baseVersion}) async =>
-      throw notYetImplemented('update_page (http)');
+  Future<UpdateResult> updatePage(String pageId, String content, {String? baseVersion}) async {
+    final result = await _call('update_page', {
+      'page_id': pageId,
+      'content': content,
+      'base_version': ?baseVersion,
+    });
+    return UpdateResult(
+      ok: (result['ok'] as bool?) ?? true,
+      issues: _issuesFromJson(result['issues']),
+      newVersion: result['new_version'] as String?,
+    );
+  }
+
+  // ── chat history (M-Chat) ───────────────────────────────────
 
   @override
-  Future<Session> openSession(String pageId) async => throw notYetImplemented('open_session (http)');
+  Future<AppendedMessage> appendMessage({
+    required String chatGroupId,
+    required String role,
+    required String content,
+    String? author,
+    String? ts,
+    Map<String, Object?>? metadata,
+    String? msgId,
+    bool embed = true,
+  }) async {
+    final result = await _call('append_message', {
+      'chat_group_id': chatGroupId,
+      'role': role,
+      'content': content,
+      'author': ?author,
+      'ts': ?ts,
+      'metadata': ?metadata,
+      'msg_id': ?msgId,
+      'embed': embed,
+    });
+    return AppendedMessage(
+      msgId: (result['msg_id'] as String?) ?? '',
+      ts: (result['ts'] as String?) ?? '',
+    );
+  }
 
   @override
-  Future<ApplyOpResult> applyOp(String session, CrdtOp op) async =>
-      throw notYetImplemented('apply_op (http)');
+  Future<ChatPage> listMessages(
+    String chatGroupId, {
+    String? since,
+    String? until,
+    int limit = 100,
+    String? cursor,
+    String direction = 'desc',
+  }) async {
+    final result = await _call('list_messages', {
+      'chat_group_id': chatGroupId,
+      'since': ?since,
+      'until': ?until,
+      'limit': limit,
+      'cursor': ?cursor,
+      'direction': direction,
+    });
+    final messages = (result['messages'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(_chatMessageFromJson)
+        .toList();
+    return ChatPage(messages: messages, nextCursor: result['next_cursor'] as String?);
+  }
+
+  ChatMessage _chatMessageFromJson(Map<String, dynamic> j) => ChatMessage(
+        chatGroupId: (j['chat_group_id'] as String?) ?? '',
+        msgId: (j['msg_id'] as String?) ?? '',
+        ts: (j['ts'] as String?) ?? '',
+        role: (j['role'] as String?) ?? '',
+        content: (j['content'] as String?) ?? '',
+        embedded: (j['embedded'] as bool?) ?? false,
+        author: j['author'] as String?,
+        metadata: (j['metadata'] as Map?)?.cast<String, Object?>(),
+      );
+
+  // ── live mode — handled by LiveSession over /ws (see editor) ──
 
   @override
-  Future<CloseResult> closeSession(String session, {bool commit = true}) async =>
-      throw notYetImplemented('close_session (http)');
+  Future<Session> openSession(String pageId) async {
+    final result = await _call('open_session', {'page_id': pageId});
+    return Session(
+      id: (result['session'] as String?) ?? '',
+      pageId: pageId,
+      headVersion: (result['head_version'] as String?) ?? '',
+      content: (result['content'] as String?) ?? '',
+    );
+  }
+
+  @override
+  Future<ApplyOpResult> applyOp(String session, CrdtOp op) async {
+    // The HTTP `apply_op` tool expects a base64 Loro op blob in
+    // `op`. The browser live-edit path drives ops over `/ws`
+    // instead (see the Live panel); this HTTP method is kept for
+    // completeness / non-CRDT callers.
+    final result = await _call('apply_op', {
+      'session': session,
+      'op': op.payload['base64'] ?? '',
+    });
+    return ApplyOpResult(ok: (result['ok'] as bool?) ?? true);
+  }
+
+  @override
+  Future<CloseResult> closeSession(String session, {bool commit = true}) async {
+    final result = await _call('close_session', {'session': session, 'commit': commit});
+    return CloseResult(
+      finalVersion: (result['merged_version'] as String?) ??
+          (result['final_version'] as String?) ??
+          '',
+      issues: _issuesFromJson(result['issues']),
+    );
+  }
 
   @override
   Stream<AwarenessEvent> awareness(String pageId) async* {
     throw notYetImplemented('awareness (ws)');
+  }
+
+  // ── admin ops tools (escurel-admin role) ────────────────────
+
+  @override
+  Future<QuotaSnapshot> adminQuota() async {
+    final r = await _call('admin_quota', const {});
+    return QuotaSnapshot(
+      queriesRemaining: (r['queries_remaining'] as num?)?.toInt() ?? 0,
+      writesRemaining: (r['writes_remaining'] as num?)?.toInt() ?? 0,
+      embedsRemaining: (r['embeds_remaining'] as num?)?.toInt() ?? 0,
+      concurrentSessionsInUse: (r['concurrent_sessions_in_use'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  @override
+  Future<AuditDrift> adminAudit() async {
+    final r = await _call('admin_audit', const {});
+    return AuditDrift(
+      markdownNotInDuckdb:
+          (r['markdown_not_in_duckdb'] as List? ?? const []).map((e) => e.toString()).toList(),
+      indexedButNoMarkdown:
+          (r['indexed_but_no_markdown'] as List? ?? const []).map((e) => e.toString()).toList(),
+    );
+  }
+
+  @override
+  Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs}) async {
+    final r = await _call('admin_delete_chat_history', {
+      'chat_group_id': ?chatGroupId,
+      'before_ts': ?beforeTs,
+    });
+    return (r['deleted'] as num?)?.toInt() ?? 0;
   }
 
   @override
@@ -271,8 +409,39 @@ class HttpEscurelClient implements EscurelClient {
       throw notYetImplemented('admin_lane_blob (http)');
 
   @override
-  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit}) async =>
-      throw notYetImplemented('admin_index_query (http)');
+  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit}) async {
+    final result = await _call('admin_index_query', {
+      'table': table,
+      'limit': ?limit,
+    });
+    final columns = (result['schema'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map((c) => QueryColumn(name: (c['name'] as String?) ?? '', dartType: (c['type'] as String?) ?? 'dynamic'))
+        .toList();
+    final rows = (result['rows'] as List? ?? const []).cast<Map<String, dynamic>>().toList();
+    return QueryResult(columns: columns, rows: rows);
+  }
+
+  List<Issue> _issuesFromJson(Object? raw) =>
+      (raw as List? ?? const []).cast<Map<String, dynamic>>().map((j) {
+        final sev = switch (j['severity'] as String?) {
+          'error' => IssueSeverity.error,
+          'warning' => IssueSeverity.warning,
+          _ => IssueSeverity.info,
+        };
+        return Issue(
+          severity: sev,
+          code: (j['code'] as String?) ?? '',
+          // The server carries `location` (an anchor/path string); fold
+          // it into the message so the UI shows where without a schema
+          // change to the line/column ints.
+          message: [
+            (j['message'] as String?) ?? '',
+            if ((j['location'] as String?)?.isNotEmpty ?? false) '(${j['location']})',
+            if ((j['suggestion'] as String?)?.isNotEmpty ?? false) '— ${j['suggestion']}',
+          ].where((s) => s.isNotEmpty).join(' '),
+        );
+      }).toList();
 
   // ── substrate health (not MCP — plain HTTP) ─────────────────
 

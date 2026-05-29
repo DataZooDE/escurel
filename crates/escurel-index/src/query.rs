@@ -82,6 +82,9 @@ pub enum QueryError {
     #[error("[[query::{id}]] declares db = {db:?} but only 'relational' is supported today")]
     UnsupportedDb { id: String, db: String },
 
+    #[error("table {table:?} is not inspectable; allowed: {allowed}")]
+    UnknownTable { table: String, allowed: String },
+
     #[error("duckdb error: {0}")]
     Duckdb(#[from] duckdb::Error),
 
@@ -232,7 +235,86 @@ impl Indexer {
 
         Ok(StoredQueryResult { rows, schema })
     }
+
+    /// Read up to `limit` rows from an allow-listed index table for
+    /// operator inspection (the `admin_index_query` admin tool).
+    ///
+    /// This is deliberately **not** arbitrary SQL: `table` must be one
+    /// of [`INSPECTABLE_TABLES`] (the name is spliced as a literal only
+    /// after that check, so there is no injection surface), and `limit`
+    /// is clamped to `[1, 1000]`. The heavy `dense_vec FLOAT[768]`
+    /// column is excluded from the vector-bearing tables so the JSON
+    /// projection stays small. Returns the same shape as
+    /// [`Self::run_stored_query`].
+    pub async fn inspect_table(
+        &self,
+        table: &str,
+        limit: usize,
+    ) -> Result<StoredQueryResult, QueryError> {
+        if !INSPECTABLE_TABLES.contains(&table) {
+            return Err(QueryError::UnknownTable {
+                table: table.to_owned(),
+                allowed: INSPECTABLE_TABLES.join(", "),
+            });
+        }
+        let limit = limit.clamp(1, 1000);
+        // `dense_vec` is a 768-float array; exclude it from the
+        // tables that carry it so an inspector row isn't ~6 KB of
+        // numbers. Table name is allow-listed above, so this literal
+        // splice is safe.
+        let projection = if matches!(table, "blocks" | "chat_messages") {
+            "* EXCLUDE (dense_vec)"
+        } else {
+            "*"
+        };
+        let sql = format!("SELECT {projection} FROM {table} LIMIT {limit}");
+
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows_iter = stmt.query([])?;
+
+        let (col_names, schema): (Vec<String>, Vec<ColumnSchema>) = match rows_iter.as_ref() {
+            None => (Vec::new(), Vec::new()),
+            Some(s) => {
+                let n = s.column_count();
+                let names: Vec<String> = (0..n)
+                    .map(|i| s.column_name(i).map(ToOwned::to_owned).unwrap_or_default())
+                    .collect();
+                let schema = (0..n)
+                    .map(|i| ColumnSchema {
+                        name: names[i].clone(),
+                        type_name: format!("{:?}", s.column_type(i)),
+                    })
+                    .collect();
+                (names, schema)
+            }
+        };
+
+        let mut rows = Vec::new();
+        while let Some(row) = rows_iter.next()? {
+            let mut obj = serde_json::Map::new();
+            for (i, name) in col_names.iter().enumerate() {
+                let v: DuckValue = row.get(i)?;
+                obj.insert(name.clone(), duck_to_json(v));
+            }
+            rows.push(obj);
+        }
+        Ok(StoredQueryResult { rows, schema })
+    }
 }
+
+/// Index tables an operator may read via `admin_index_query`. No
+/// arbitrary SQL — [`Indexer::inspect_table`] matches against this
+/// fixed set before touching the database.
+pub const INSPECTABLE_TABLES: &[&str] = &[
+    "pages",
+    "blocks",
+    "links",
+    "frontmatter_index",
+    "crdt_ops",
+    "crdt_snapshots",
+    "chat_messages",
+];
 
 #[derive(Debug, Clone)]
 struct DeclaredParam {

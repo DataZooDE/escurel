@@ -27,6 +27,7 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::grpc::{EscurelAdminGrpc, EscurelGrpc};
@@ -107,6 +108,15 @@ pub struct ServerConfig {
     /// calls the factory and (on success) reloads the seam. `None`
     /// → the RPC returns `Status::failed_precondition`.
     pub embedder_factory: Option<EmbedderFactory>,
+    /// Directory of a built static demo bundle (Flutter web
+    /// `build/web`) to serve at `/`. `Some` → the router mounts a
+    /// `ServeDir` fallback so the gateway and the demo run as one
+    /// process; explicit API routes (`/mcp`, `/ws`, `/healthz`, …)
+    /// keep precedence, and unknown paths fall back to `index.html`
+    /// for SPA client-side routing. `None` (default) → no static
+    /// serving; unknown paths are 404. Set from
+    /// `ESCUREL_SERVE_DEMO_DIR` by the binary.
+    pub demo_dir: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -136,6 +146,7 @@ impl ServerConfig {
             crdt_backend: None,
             embedder_reload: None,
             embedder_factory: None,
+            demo_dir: None,
         }
     }
 }
@@ -254,19 +265,31 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         metrics: metrics_registry,
     };
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/version", get(version))
         .route("/metrics", get(metrics))
         .route("/mcp", post(mcp))
         .route("/ws", get(ws_upgrade))
-        .with_state(state.clone())
-        // tower-http's TraceLayer opens one span per request
-        // (`http.request`) and emits a record at completion with
-        // status + latency. Layered after `with_state` so it sees
-        // every route uniformly.
-        .layer(TraceLayer::new_for_http());
+        .with_state(state.clone());
+
+    // Optional static demo bundle at `/`. Mounted as a fallback so
+    // the explicit API routes above always win; `ServeDir` with a
+    // `ServeFile` not-found handler gives SPA routing — an unknown
+    // path (a Flutter client-side route) serves `index.html` so the
+    // in-app router takes over. `serve.dart` etc. resolve as assets.
+    if let Some(dir) = config.demo_dir.as_ref() {
+        let index = dir.join("index.html");
+        let serve_dir = ServeDir::new(dir).fallback(ServeFile::new(index));
+        app = app.fallback_service(serve_dir);
+    }
+
+    // tower-http's TraceLayer opens one span per request
+    // (`http.request`) and emits a record at completion with
+    // status + latency. Layered last so it sees every route +
+    // the static fallback uniformly.
+    let app = app.layer(TraceLayer::new_for_http());
 
     let listener = TcpListener::bind(&config.listen)
         .await

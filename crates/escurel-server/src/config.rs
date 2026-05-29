@@ -235,6 +235,10 @@ pub struct EscurelConfig {
     pub embedding_device: String,
     pub embedding_dim: usize,
     pub gemini_api_key: Option<String>,
+    /// Optional built demo bundle (Flutter web `build/web`) to serve
+    /// at `/`. `None` → no static serving. Set from
+    /// `ESCUREL_SERVE_DEMO_DIR`.
+    pub demo_dir: Option<PathBuf>,
 }
 
 /// Source of an environment lookup — abstracted so `from_env` is
@@ -319,6 +323,12 @@ impl EscurelConfig {
             toml_cfg.server.data_dir,
             "/data",
         ));
+        // Optional static demo bundle served at `/`. Empty / unset →
+        // no static serving (the gateway stays bare-API).
+        let demo_dir = env
+            .get("ESCUREL_SERVE_DEMO_DIR")
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from);
         let listen_http = pick(
             "ESCUREL_SERVER_LISTEN_HTTP",
             toml_cfg.server.listen_http,
@@ -464,6 +474,7 @@ impl EscurelConfig {
             embedding_device,
             embedding_dim,
             gemini_api_key,
+            demo_dir,
         })
     }
 }
@@ -610,6 +621,7 @@ impl EscurelConfig {
             // result into `embedder`.
             embedder_reload: Some(Arc::clone(&embedder)),
             embedder_factory: Some(self.embedder_factory()),
+            demo_dir: self.demo_dir.clone(),
         };
 
         let handle = serve(server_config)

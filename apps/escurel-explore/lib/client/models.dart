@@ -293,3 +293,83 @@ class VersionInfo {
   final String gitSha;
   final Set<BackendCapability> capabilities;
 }
+
+// ── chat history (M-Chat, issue #63) ────────────────────────────
+
+/// One message in a per-chat-group conversation log. Distinct from
+/// the typed-instance KB — an append-mostly row keyed by an opaque
+/// `chatGroupId` (the consumer owns the id scheme).
+class ChatMessage {
+  const ChatMessage({
+    required this.chatGroupId,
+    required this.msgId,
+    required this.ts,
+    required this.role,
+    required this.content,
+    required this.embedded,
+    this.author,
+    this.metadata,
+  });
+
+  final String chatGroupId;
+  final String msgId;
+
+  /// RFC-3339 UTC, e.g. `2026-05-26T10:00:00Z`.
+  final String ts;
+
+  /// `user` | `assistant` | `system` | `tool`.
+  final String role;
+  final String content;
+
+  /// Whether this row carries a dense embedding (server `embed` flag).
+  final bool embedded;
+  final String? author;
+  final Map<String, Object?>? metadata;
+}
+
+/// One page of [ChatMessage]s plus an opaque cursor for the next page
+/// (`null` when the history is exhausted).
+class ChatPage {
+  const ChatPage({required this.messages, this.nextCursor});
+  final List<ChatMessage> messages;
+  final String? nextCursor;
+}
+
+/// Result of `append_message` — the resolved id + timestamp the
+/// server persisted (it stamps both when the caller omits them).
+class AppendedMessage {
+  const AppendedMessage({required this.msgId, required this.ts});
+  final String msgId;
+  final String ts;
+}
+
+// ── admin ops tools (escurel-admin role) ────────────────────────
+
+/// Per-tenant rate / concurrency budget snapshot (`admin_quota`).
+class QuotaSnapshot {
+  const QuotaSnapshot({
+    required this.queriesRemaining,
+    required this.writesRemaining,
+    required this.embedsRemaining,
+    required this.concurrentSessionsInUse,
+  });
+
+  final int queriesRemaining;
+  final int writesRemaining;
+  final int embedsRemaining;
+  final int concurrentSessionsInUse;
+}
+
+/// Drift between canonical markdown and the DuckDB index
+/// (`admin_audit`).
+class AuditDrift {
+  const AuditDrift({
+    required this.markdownNotInDuckdb,
+    required this.indexedButNoMarkdown,
+  });
+
+  final List<String> markdownNotInDuckdb;
+  final List<String> indexedButNoMarkdown;
+
+  bool get isClean => markdownNotInDuckdb.isEmpty && indexedButNoMarkdown.isEmpty;
+}
