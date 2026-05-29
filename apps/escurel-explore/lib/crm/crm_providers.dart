@@ -112,7 +112,10 @@ final currentNeighboursProvider = FutureProvider<List<Neighbour>>((ref) async {
   final id = ref.watch(currentPageIdProvider);
   if (id == null) return const <Neighbour>[];
   final asOf = ref.watch(asOfStringProvider);
-  return ref.watch(escurelClientProvider).neighbours(id, direction: LinkDirection.both, asOf: asOf);
+  final scenario = ref.watch(scenarioProvider);
+  return ref
+      .watch(escurelClientProvider)
+      .neighbours(id, direction: LinkDirection.both, asOf: asOf, scenario: scenario);
 });
 
 /// The corpus's event time-span — the min/max `at` across all artifact

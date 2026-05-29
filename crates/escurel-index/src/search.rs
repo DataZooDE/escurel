@@ -100,6 +100,7 @@ impl Indexer {
         page_type: Option<PageType>,
         skill: Option<&str>,
         as_of: Option<&str>,
+        scenario: Option<&str>,
     ) -> Result<Vec<SearchHit>, IndexerError> {
         if k == 0 {
             return Ok(Vec::new());
@@ -122,7 +123,7 @@ impl Indexer {
         let q_lit = crate::indexer::format_vector_literal(&q_vec);
 
         // 2. Build filter SQL + params shared by both halves.
-        let (filter_sql, filter_params) = build_filters(page_type, skill, as_of);
+        let (filter_sql, filter_params) = build_filters(page_type, skill, as_of, scenario);
         let n_candidates = candidate_pool(k);
 
         let conn = self.conn.lock().await;
@@ -168,14 +169,17 @@ impl Indexer {
     }
 }
 
-/// Build the shared `WHERE` tail (page-type, skill, and `as_of`) plus
-/// the bind params in `?` order. `as_of` keeps blocks born at or before
-/// the cut (`blocks.at_ts <= ?`); untimed blocks (`at_ts IS NULL`) stay
-/// visible so skills and non-event pages never drop out of search.
+/// Build the shared `WHERE` tail (page-type, skill, `as_of`, and
+/// `scenario`) plus the bind params in `?` order. `as_of` keeps blocks
+/// born at or before the cut (`blocks.at_ts <= ?`); untimed blocks
+/// (`at_ts IS NULL`) stay visible so skills and non-event pages never
+/// drop out of search. `scenario` keeps base blocks (and the overlay's
+/// when set); base-only when `None`.
 fn build_filters(
     page_type: Option<PageType>,
     skill: Option<&str>,
     as_of: Option<&str>,
+    scenario: Option<&str>,
 ) -> (String, Vec<String>) {
     let mut sql = String::new();
     let mut params = Vec::new();
@@ -196,6 +200,13 @@ fn build_filters(
     if let Some(ts) = as_of {
         sql.push_str(" AND (blocks.at_ts <= ? OR blocks.at_ts IS NULL)");
         params.push(ts.to_owned());
+    }
+    match scenario {
+        Some(sc) => {
+            sql.push_str(" AND (blocks.scenario = ? OR blocks.scenario IS NULL)");
+            params.push(sc.to_owned());
+        }
+        None => sql.push_str(" AND blocks.scenario IS NULL"),
     }
     (sql, params)
 }

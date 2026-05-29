@@ -42,6 +42,16 @@ name: Initech\n\
 ---\n\
 # Initech\n";
 
+// Scenario-B-only customer: hidden in base, visible under scenario B.
+const FUTURE_B_INSTANCE: &str = "---\n\
+type: instance\n\
+skill: customer\n\
+id: future\n\
+name: Future Corp\n\
+scenario: B\n\
+---\n\
+# Future Corp\n";
+
 async fn start(quota: Option<Arc<QuotaManager>>) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -51,6 +61,7 @@ async fn start(quota: Option<Arc<QuotaManager>>) -> EscurelProcess {
                 .skill("customer", CUSTOMER_SKILL)
                 .instance("customer", "acme", ACME_INSTANCE)
                 .instance("customer", "initech", INITECH_INSTANCE)
+                .instance("customer", "future", FUTURE_B_INSTANCE)
                 .done(),
         ),
         config_overrides: ConfigOverrides {
@@ -137,6 +148,43 @@ async fn list_instances_returns_seeded_instances() {
 }
 
 #[tokio::test]
+async fn list_instances_scenario_overlay_through_grpc() {
+    let p = start(None).await;
+    let mut a = authed_client(&p).await;
+
+    // Base view (scenario empty) hides the B-only customer.
+    let base = a
+        .client
+        .list_instances(a.req(ListInstancesRequest {
+            skill: "customer".to_owned(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(base.instances.len(), 2, "base view is base-only over gRPC");
+
+    // scenario = "B" adds the overlay-only instance — proving the proto
+    // field round-trips through the gRPC handler to the indexer.
+    let b = a
+        .client
+        .list_instances(a.req(ListInstancesRequest {
+            skill: "customer".to_owned(),
+            scenario: "B".to_owned(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        b.instances.len(),
+        3,
+        "scenario B = base ∪ overlay over gRPC"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn resolve_returns_existing_page() {
     let p = start(None).await;
     let mut a = authed_client(&p).await;
@@ -144,6 +192,7 @@ async fn resolve_returns_existing_page() {
         .client
         .resolve(a.req(ResolveRequest {
             wikilink: "[[customer::acme]]".to_owned(),
+            ..Default::default()
         }))
         .await
         .unwrap()
@@ -167,6 +216,7 @@ async fn expand_returns_body_and_outbound_wikilinks() {
         .client
         .resolve(a.req(ResolveRequest {
             wikilink: "[[customer::acme]]".to_owned(),
+            ..Default::default()
         }))
         .await
         .unwrap()
@@ -178,6 +228,7 @@ async fn expand_returns_body_and_outbound_wikilinks() {
             page_id,
             anchor: String::new(),
             version: String::new(),
+            ..Default::default()
         }))
         .await
         .unwrap()

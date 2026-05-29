@@ -75,12 +75,12 @@ class _CapStubClient implements EscurelClient {
   Future<ResolveResult> resolve(String wikilink, {String? scenario}) => inner.resolve(wikilink, scenario: scenario);
 
   @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf}) =>
-      inner.expand(pageId, anchor: anchor, version: version, asOf: asOf);
+  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf, String? scenario}) =>
+      inner.expand(pageId, anchor: anchor, version: version, asOf: asOf, scenario: scenario);
 
   @override
-  Future<List<Neighbour>> neighbours(String pageId, {LinkDirection direction = LinkDirection.both, String? linkSkill, String? asOf}) =>
-      inner.neighbours(pageId, direction: direction, linkSkill: linkSkill, asOf: asOf);
+  Future<List<Neighbour>> neighbours(String pageId, {LinkDirection direction = LinkDirection.both, String? linkSkill, String? asOf, String? scenario}) =>
+      inner.neighbours(pageId, direction: direction, linkSkill: linkSkill, asOf: asOf, scenario: scenario);
 
   @override
   Future<List<SkillSummary>> listSkills() => inner.listSkills();

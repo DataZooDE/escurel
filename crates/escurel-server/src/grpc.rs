@@ -158,7 +158,14 @@ impl Escurel for EscurelGrpc {
             Some((r.frontmatter_key.as_str(), r.frontmatter_value.as_str()))
         };
         let rows = indexer
-            .list_instances(&r.skill, order, limit, filter, None, None)
+            .list_instances(
+                &r.skill,
+                order,
+                limit,
+                filter,
+                opt(&r.as_of),
+                opt(&r.scenario),
+            )
             .await
             .map_err(|e| Status::internal(format!("list_instances: {e}")))?;
         let instances = rows
@@ -179,8 +186,9 @@ impl Escurel for EscurelGrpc {
     ) -> Result<Response<ResolveResponse>, Status> {
         self.enforce(&req, Some(Dimension::Queries)).await?;
         let indexer = self.indexer()?;
+        let r = req.into_inner();
         let resolved = indexer
-            .resolve(&req.into_inner().wikilink, None)
+            .resolve(&r.wikilink, opt(&r.scenario))
             .await
             .map_err(|e| Status::internal(format!("resolve: {e}")))?;
         let exists = resolved.exists();
@@ -197,9 +205,10 @@ impl Escurel for EscurelGrpc {
     ) -> Result<Response<ExpandResponse>, Status> {
         self.enforce(&req, Some(Dimension::Queries)).await?;
         let indexer = self.indexer()?;
-        let page_id = req.into_inner().page_id;
+        let r = req.into_inner();
+        let page_id = r.page_id;
         let expanded = indexer
-            .expand(&page_id, None)
+            .expand(&page_id, opt(&r.as_of), opt(&r.scenario))
             .await
             .map_err(|e| Status::internal(format!("expand: {e}")))?;
         match expanded {
@@ -246,7 +255,7 @@ impl Escurel for EscurelGrpc {
         };
         let k = if r.k == 0 { 10 } else { r.k as usize };
         let hits = indexer
-            .search(&r.q, k, pt, skill, None)
+            .search(&r.q, k, pt, skill, opt(&r.as_of), opt(&r.scenario))
             .await
             .map_err(|e| Status::internal(format!("search: {e}")))?;
         let hits = hits
@@ -294,7 +303,7 @@ impl Escurel for EscurelGrpc {
             Some(r.link_skill.as_str())
         };
         let edges = indexer
-            .neighbours(&r.page_id, dir, link_skill, None)
+            .neighbours(&r.page_id, dir, link_skill, opt(&r.as_of), opt(&r.scenario))
             .await
             .map_err(|e| Status::internal(format!("neighbours: {e}")))?;
         let edges = edges
@@ -694,6 +703,12 @@ fn strip_bearer(raw: &str) -> Option<&str> {
     raw.strip_prefix("Bearer ")
         .or_else(|| raw.strip_prefix("bearer "))
         .map(str::trim)
+}
+
+/// proto3 has no nullable strings: an empty string means "absent".
+/// Maps it to `None` for the indexer's `Option<&str>` read params.
+fn opt(s: &str) -> Option<&str> {
+    if s.is_empty() { None } else { Some(s) }
 }
 
 fn quota_status(err: QuotaError) -> Status {

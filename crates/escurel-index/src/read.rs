@@ -341,6 +341,7 @@ impl Indexer {
         &self,
         page_id: &str,
         as_of: Option<&str>,
+        scenario: Option<&str>,
     ) -> Result<Option<ExpandedPage>, IndexerError> {
         let conn = self.conn.lock().await;
 
@@ -352,13 +353,23 @@ impl Indexer {
         } else {
             ""
         };
+        // Scenario gate, consistent with list_instances/resolve: base
+        // only when None; base ∪ overlay when Some.
+        let scenario_sql = if scenario.is_some() {
+            " AND (scenario = ? OR scenario IS NULL)"
+        } else {
+            " AND scenario IS NULL"
+        };
         let page_sql = format!(
             "SELECT page_id, slug, skill, page_type, frontmatter::VARCHAR \
-             FROM pages WHERE page_id = ?{as_of_sql}"
+             FROM pages WHERE page_id = ?{as_of_sql}{scenario_sql}"
         );
         let mut page_binds: Vec<String> = vec![page_id.to_owned()];
         if let Some(ts) = as_of {
             page_binds.push(ts.to_owned());
+        }
+        if let Some(sc) = scenario {
+            page_binds.push(sc.to_owned());
         }
         let page_with_fm = conn
             .query_row(
@@ -476,12 +487,18 @@ impl Indexer {
     /// (`src.at_ts <= as_of`, or the source is untimed). Inbound edges
     /// from pages not yet born are thus hidden, so the link graph
     /// reflects what existed at that instant.
+    ///
+    /// `scenario` filters edges by their **source** page's scenario,
+    /// mirroring the other read tools: `None` keeps only base-sourced
+    /// edges (`src.scenario IS NULL`); `Some("B")` also keeps edges
+    /// whose source is on the B overlay.
     pub async fn neighbours(
         &self,
         page_id: &str,
         direction: Direction,
         link_skill_filter: Option<&str>,
         as_of: Option<&str>,
+        scenario: Option<&str>,
     ) -> Result<Vec<Edge>, IndexerError> {
         let conn = self.conn.lock().await;
 
@@ -506,6 +523,18 @@ impl Indexer {
         // never shifts.
         let as_of_exists = " AND EXISTS (SELECT 1 FROM pages p \
              WHERE p.page_id = l.src_page AND (p.at_ts <= ? OR p.at_ts IS NULL))";
+        // Scenario gate on the source page (base-only when None). Always
+        // applied so base reads can't see overlay-sourced edges.
+        let scenario_exists = match scenario {
+            Some(_) => {
+                " AND EXISTS (SELECT 1 FROM pages p \
+                  WHERE p.page_id = l.src_page AND (p.scenario = ? OR p.scenario IS NULL))"
+            }
+            None => {
+                " AND EXISTS (SELECT 1 FROM pages p \
+                  WHERE p.page_id = l.src_page AND p.scenario IS NULL)"
+            }
+        };
 
         if want_out {
             let mut sql = String::from(
@@ -520,6 +549,10 @@ impl Indexer {
             if let Some(ts) = as_of {
                 sql.push_str(as_of_exists);
                 binds.push(ts.to_owned());
+            }
+            sql.push_str(scenario_exists);
+            if let Some(sc) = scenario {
+                binds.push(sc.to_owned());
             }
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(duckdb::params_from_iter(binds.iter()), edge_from_row)?;
@@ -544,6 +577,10 @@ impl Indexer {
             if let Some(ts) = as_of {
                 sql.push_str(as_of_exists);
                 binds.push(ts.to_owned());
+            }
+            sql.push_str(scenario_exists);
+            if let Some(sc) = scenario {
+                binds.push(sc.to_owned());
             }
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(duckdb::params_from_iter(binds.iter()), edge_from_row)?;

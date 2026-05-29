@@ -503,13 +503,16 @@ struct ExpandArgs {
     /// RFC 3339 time-travel cut; the page resolves to null if born after it.
     #[serde(default)]
     as_of: Option<String>,
+    /// Scenario overlay to read against; null/absent = base only.
+    #[serde(default)]
+    scenario: Option<String>,
 }
 
 async fn tool_expand(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
     let a: ExpandArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("expand: {e}")))?;
     let out = indexer
-        .expand(&a.page_id, a.as_of.as_deref())
+        .expand(&a.page_id, a.as_of.as_deref(), a.scenario.as_deref())
         .await
         .map_err(|e| JsonRpcError::internal(format!("expand: {e}")))?;
     match out {
@@ -545,6 +548,9 @@ struct NeighboursArgs {
     /// RFC 3339 time-travel cut; edges from sources born after it are hidden.
     #[serde(default)]
     as_of: Option<String>,
+    /// Scenario overlay; edges are filtered by their source page's scenario.
+    #[serde(default)]
+    scenario: Option<String>,
 }
 
 async fn tool_neighbours(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
@@ -561,7 +567,13 @@ async fn tool_neighbours(indexer: &Indexer, args: Value) -> Result<Value, JsonRp
         }
     };
     let edges = indexer
-        .neighbours(&a.page_id, dir, a.link_skill.as_deref(), a.as_of.as_deref())
+        .neighbours(
+            &a.page_id,
+            dir,
+            a.link_skill.as_deref(),
+            a.as_of.as_deref(),
+            a.scenario.as_deref(),
+        )
         .await
         .map_err(|e| JsonRpcError::internal(format!("neighbours: {e}")))?;
     Ok(json!({
@@ -587,6 +599,9 @@ struct SearchArgs {
     /// RFC 3339 time-travel cut; blocks born after it are excluded.
     #[serde(default)]
     as_of: Option<String>,
+    /// Scenario overlay; base-only when null/absent.
+    #[serde(default)]
+    scenario: Option<String>,
 }
 
 fn default_k() -> usize {
@@ -607,7 +622,14 @@ async fn tool_search(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcErr
         }
     };
     let hits = indexer
-        .search(&a.q, a.k, pt, a.skill.as_deref(), a.as_of.as_deref())
+        .search(
+            &a.q,
+            a.k,
+            pt,
+            a.skill.as_deref(),
+            a.as_of.as_deref(),
+            a.scenario.as_deref(),
+        )
         .await
         .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
     Ok(json!({
@@ -1092,7 +1114,8 @@ fn tools_list_payload() -> Value {
                     "required": ["page_id"],
                     "properties": {
                         "page_id": { "type": "string" },
-                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." }
+                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." },
+                        "scenario": { "type": "string", "description": "What-if overlay to read against; absent = base only." }
                     }
                 }),
             ),
@@ -1106,7 +1129,8 @@ fn tools_list_payload() -> Value {
                         "page_id": { "type": "string" },
                         "direction": { "type": "string", "enum": ["in", "out", "both"] },
                         "link_skill": { "type": "string" },
-                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; edges from sources born after it are hidden." }
+                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; edges from sources born after it are hidden." },
+                        "scenario": { "type": "string", "description": "What-if overlay; edges filtered by their source page's scenario." }
                     }
                 }),
             ),
@@ -1121,7 +1145,8 @@ fn tools_list_payload() -> Value {
                         "k": { "type": "integer", "minimum": 0, "maximum": 1000 },
                         "page_type": { "type": "string", "enum": ["skill", "instance", "any"] },
                         "skill": { "type": "string" },
-                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; blocks born after it are excluded." }
+                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; blocks born after it are excluded." },
+                        "scenario": { "type": "string", "description": "What-if overlay; base-only when absent." }
                     }
                 }),
             ),

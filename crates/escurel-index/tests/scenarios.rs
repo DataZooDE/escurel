@@ -10,7 +10,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use duckdb::Connection;
 use escurel_embed::{Embedder, ZeroEmbedder};
-use escurel_index::{Indexer, Migrator};
+use escurel_index::{Direction, Indexer, Migrator};
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
 
@@ -31,10 +31,12 @@ const ENG_B: (&str, &str) = (
     "markdown/instances/engagement/spine.b.md",
     "---\ntype: instance\nskill: engagement\nid: hoffmann-spine\nscenario: B\ncontract_value: \"500k\"\n---\n# Spine (scenario B)\n",
 );
-// B-only instance (no base twin).
+// B-only instance (no base twin). Its body carries a unique search
+// term and an outbound link to the base spine, so it exercises the
+// scenario filter on search + neighbours too.
 const ENG_B_ONLY: (&str, &str) = (
     "markdown/instances/engagement/expansion.b.md",
-    "---\ntype: instance\nskill: engagement\nid: expansion\nscenario: B\ncontract_value: \"120k\"\n---\n# Expansion (B-only)\n",
+    "---\ntype: instance\nskill: engagement\nid: expansion\nscenario: B\ncontract_value: \"120k\"\n---\n# Expansion (B-only)\n\nThe zeppelin expansion case for [[engagement::hoffmann-spine]].\n",
 );
 
 struct Harness {
@@ -166,4 +168,95 @@ async fn resolve_base_does_not_see_b_only() {
         .await
         .unwrap();
     assert!(b.page.is_some(), "visible under scenario B");
+}
+
+// --- expand / neighbours / search scenario gating -----------------
+
+#[tokio::test]
+async fn expand_base_hides_overlay_pages() {
+    let h = fresh_harness();
+    seed_all(&h).await;
+
+    // The B-only page is invisible in base view, visible under B.
+    assert!(
+        h.indexer
+            .expand(ENG_B_ONLY.0, None, None)
+            .await
+            .unwrap()
+            .is_none(),
+        "B-only page hidden in base",
+    );
+    assert!(
+        h.indexer
+            .expand(ENG_B_ONLY.0, None, Some("B"))
+            .await
+            .unwrap()
+            .is_some(),
+        "B-only page visible under scenario B",
+    );
+    // Base pages stay visible in base view.
+    assert!(
+        h.indexer
+            .expand(ENG_BASE.0, None, None)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn neighbours_filters_edges_by_source_scenario() {
+    let h = fresh_harness();
+    seed_all(&h).await;
+
+    // The expansion (B) page links to the base spine. That inbound edge
+    // is sourced from a B page, so it's hidden in base view…
+    let base = h
+        .indexer
+        .neighbours(ENG_BASE.0, Direction::In, None, None, None)
+        .await
+        .unwrap();
+    assert!(
+        !base.iter().any(|e| e.src_page == ENG_B_ONLY.0),
+        "overlay-sourced edge hidden in base",
+    );
+
+    // …and present under scenario B.
+    let b = h
+        .indexer
+        .neighbours(ENG_BASE.0, Direction::In, None, None, Some("B"))
+        .await
+        .unwrap();
+    assert!(
+        b.iter().any(|e| e.src_page == ENG_B_ONLY.0),
+        "overlay-sourced edge visible under scenario B",
+    );
+}
+
+#[tokio::test]
+async fn search_filters_blocks_by_scenario() {
+    let h = fresh_harness();
+    seed_all(&h).await;
+    h.indexer.refresh_fts().await.unwrap();
+
+    // "zeppelin" lives only in the B-only page's body.
+    let base = h
+        .indexer
+        .search("zeppelin", 10, None, None, None, None)
+        .await
+        .unwrap();
+    assert!(
+        !base.iter().any(|hit| hit.page_id == ENG_B_ONLY.0),
+        "B-only block excluded from base search",
+    );
+
+    let b = h
+        .indexer
+        .search("zeppelin", 10, None, None, None, Some("B"))
+        .await
+        .unwrap();
+    assert!(
+        b.iter().any(|hit| hit.page_id == ENG_B_ONLY.0),
+        "B-only block included under scenario B",
+    );
 }

@@ -87,7 +87,8 @@ final currentPageProvider = FutureProvider<ExpandResult?>((ref) async {
   final id = ref.watch(currentPageIdProvider);
   if (id == null) return null;
   final asOf = ref.watch(asOfStringProvider);
-  final page = await ref.watch(escurelClientProvider).expand(id, asOf: asOf);
+  final scenario = ref.watch(scenarioProvider);
+  final page = await ref.watch(escurelClientProvider).expand(id, asOf: asOf, scenario: scenario);
   // A time-cut page comes back with an empty pageId — treat it as "not
   // focused" so the reader falls back to its empty state.
   return page.pageId.isEmpty ? null : page;
@@ -98,9 +99,10 @@ final currentBacklinksProvider = FutureProvider<List<Neighbour>>((ref) async {
   final id = ref.watch(currentPageIdProvider);
   if (id == null) return const <Neighbour>[];
   final asOf = ref.watch(asOfStringProvider);
+  final scenario = ref.watch(scenarioProvider);
   return ref
       .watch(escurelClientProvider)
-      .neighbours(id, direction: LinkDirection.incoming, asOf: asOf);
+      .neighbours(id, direction: LinkDirection.incoming, asOf: asOf, scenario: scenario);
 });
 
 /// The inline boot corpus is intentionally small — two skills + two

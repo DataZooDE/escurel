@@ -42,18 +42,22 @@ abstract class EscurelClient {
 
   /// Fetch the body (and blocks + outgoing wikilinks) for one page.
   /// `asOf` time-travels the read: a page born after the cut resolves
-  /// to a not-found result.
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf});
+  /// to a not-found result. `scenario` reads against a what-if overlay
+  /// (base only when null).
+  Future<ExpandResult> expand(String pageId,
+      {String? anchor, String? version, String? asOf, String? scenario});
 
   /// The link-graph primitive: backlinks (`incoming`), forward-links
   /// (`outgoing`), or both. `linkSkill` filters by the typed link
   /// skill (e.g. `prev_review`). `asOf` hides edges whose source page
-  /// was born after the cut.
+  /// was born after the cut; `scenario` filters edges by their source
+  /// page's overlay (base only when null).
   Future<List<Neighbour>> neighbours(
     String pageId, {
     LinkDirection direction = LinkDirection.both,
     String? linkSkill,
     String? asOf,
+    String? scenario,
   });
 
   /// Catalogue of skills the tenant declares.

@@ -126,6 +126,7 @@ async fn fixture_builder_seeds_skills_and_instances_via_update_page() {
     let resolved = client
         .resolve(ResolveRequest {
             wikilink: "[[customer::acme]]".to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -171,6 +172,7 @@ async fn client_and_mcp_client_both_round_trip_search() {
     let resolved = mcp
         .resolve(McpResolveRequest {
             wikilink: "[[customer::acme]]".to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();

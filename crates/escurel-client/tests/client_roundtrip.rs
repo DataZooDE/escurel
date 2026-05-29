@@ -100,6 +100,7 @@ async fn resolve_round_trips() {
     let resp = client
         .resolve(ResolveRequest {
             wikilink: "[[customer::acme]]".to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -117,6 +118,7 @@ async fn expand_round_trips() {
     let resolved = client
         .resolve(ResolveRequest {
             wikilink: "[[customer::acme]]".to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -126,6 +128,7 @@ async fn expand_round_trips() {
             page_id,
             anchor: String::new(),
             version: String::new(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -147,6 +150,7 @@ async fn search_round_trips() {
             page_type: String::new(),
             skill: String::new(),
             filter_json: String::new(),
+            ..Default::default()
         })
         .await
         .unwrap();
