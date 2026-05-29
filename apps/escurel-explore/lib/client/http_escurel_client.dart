@@ -202,9 +202,14 @@ class HttpEscurelClient implements EscurelClient {
     String? orderBy,
     int? limit,
   }) async {
+    // The server takes a single frontmatter equality filter as a
+    // (frontmatter_key, frontmatter_value) pair (PR-5). Translate the
+    // first entry of `filter` into that shape; ignore the rest.
+    final fmEntry = (filter == null || filter.isEmpty) ? null : filter.entries.first;
     final result = await _call('list_instances', {
       'skill_id': skillId,
-      'filter': ?filter,
+      'frontmatter_key': ?fmEntry?.key,
+      'frontmatter_value': ?fmEntry?.value?.toString(),
       'order_by': ?orderBy,
       'limit': ?limit,
     });
