@@ -120,6 +120,7 @@ async fn list_instances_returns_seeded_instances() {
             skill: "customer".to_owned(),
             order_by_at: String::new(),
             limit: 0,
+            ..Default::default()
         }))
         .await
         .unwrap()

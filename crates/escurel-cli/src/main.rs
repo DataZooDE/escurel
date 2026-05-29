@@ -220,6 +220,7 @@ async fn main() -> Result<()> {
                         skill: a.skill,
                         order_by_at: a.order_by_at,
                         limit: a.limit,
+                        ..Default::default()
                     },
                     &bearer,
                 ))

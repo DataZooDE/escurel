@@ -125,6 +125,30 @@ async fn list_instances_returns_filtered_by_skill() {
 }
 
 #[tokio::test]
+async fn list_instances_frontmatter_filter_selects_subset() {
+    let p = start_with_seeded_indexer().await;
+    // Both customers without a filter…
+    let all = call_tool(&p, "list_instances", json!({ "skill_id": "customer" })).await;
+    assert_eq!(all["instances"].as_array().unwrap().len(), 2);
+
+    // …narrowed to one by a frontmatter equality filter.
+    let filtered = call_tool(
+        &p,
+        "list_instances",
+        json!({
+            "skill_id": "customer",
+            "frontmatter_key": "id",
+            "frontmatter_value": "acme-corp",
+        }),
+    )
+    .await;
+    let inst = filtered["instances"].as_array().unwrap();
+    assert_eq!(inst.len(), 1);
+    assert_eq!(inst[0]["frontmatter"]["id"], "acme-corp");
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn resolve_round_trips_through_http() {
     let p = start_with_seeded_indexer().await;
     let result = call_tool(
