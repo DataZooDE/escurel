@@ -158,7 +158,7 @@ impl Escurel for EscurelGrpc {
             Some((r.frontmatter_key.as_str(), r.frontmatter_value.as_str()))
         };
         let rows = indexer
-            .list_instances(&r.skill, order, limit, filter)
+            .list_instances(&r.skill, order, limit, filter, None)
             .await
             .map_err(|e| Status::internal(format!("list_instances: {e}")))?;
         let instances = rows
@@ -199,7 +199,7 @@ impl Escurel for EscurelGrpc {
         let indexer = self.indexer()?;
         let page_id = req.into_inner().page_id;
         let expanded = indexer
-            .expand(&page_id)
+            .expand(&page_id, None)
             .await
             .map_err(|e| Status::internal(format!("expand: {e}")))?;
         match expanded {
@@ -246,7 +246,7 @@ impl Escurel for EscurelGrpc {
         };
         let k = if r.k == 0 { 10 } else { r.k as usize };
         let hits = indexer
-            .search(&r.q, k, pt, skill)
+            .search(&r.q, k, pt, skill, None)
             .await
             .map_err(|e| Status::internal(format!("search: {e}")))?;
         let hits = hits
@@ -294,7 +294,7 @@ impl Escurel for EscurelGrpc {
             Some(r.link_skill.as_str())
         };
         let edges = indexer
-            .neighbours(&r.page_id, dir, link_skill)
+            .neighbours(&r.page_id, dir, link_skill, None)
             .await
             .map_err(|e| Status::internal(format!("neighbours: {e}")))?;
         let edges = edges

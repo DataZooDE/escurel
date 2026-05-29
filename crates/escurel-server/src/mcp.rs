@@ -415,6 +415,10 @@ struct ListInstancesArgs {
     frontmatter_key: Option<String>,
     #[serde(default)]
     frontmatter_value: Option<String>,
+    /// RFC 3339 time-travel cut; instances born after it are excluded
+    /// (untimed instances always remain).
+    #[serde(default)]
+    as_of: Option<String>,
 }
 
 async fn tool_list_instances(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
@@ -433,7 +437,7 @@ async fn tool_list_instances(indexer: &Indexer, args: Value) -> Result<Value, Js
         _ => None,
     };
     let out = indexer
-        .list_instances(&a.skill_id, order, a.limit, filter)
+        .list_instances(&a.skill_id, order, a.limit, filter, a.as_of.as_deref())
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_instances: {e}")))?;
     Ok(json!({
@@ -482,13 +486,16 @@ async fn tool_resolve(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcEr
 #[derive(Deserialize)]
 struct ExpandArgs {
     page_id: String,
+    /// RFC 3339 time-travel cut; the page resolves to null if born after it.
+    #[serde(default)]
+    as_of: Option<String>,
 }
 
 async fn tool_expand(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
     let a: ExpandArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("expand: {e}")))?;
     let out = indexer
-        .expand(&a.page_id)
+        .expand(&a.page_id, a.as_of.as_deref())
         .await
         .map_err(|e| JsonRpcError::internal(format!("expand: {e}")))?;
     match out {
@@ -521,6 +528,9 @@ struct NeighboursArgs {
     direction: Option<String>,
     #[serde(default)]
     link_skill: Option<String>,
+    /// RFC 3339 time-travel cut; edges from sources born after it are hidden.
+    #[serde(default)]
+    as_of: Option<String>,
 }
 
 async fn tool_neighbours(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
@@ -537,7 +547,7 @@ async fn tool_neighbours(indexer: &Indexer, args: Value) -> Result<Value, JsonRp
         }
     };
     let edges = indexer
-        .neighbours(&a.page_id, dir, a.link_skill.as_deref())
+        .neighbours(&a.page_id, dir, a.link_skill.as_deref(), a.as_of.as_deref())
         .await
         .map_err(|e| JsonRpcError::internal(format!("neighbours: {e}")))?;
     Ok(json!({
@@ -560,6 +570,9 @@ struct SearchArgs {
     page_type: Option<String>,
     #[serde(default)]
     skill: Option<String>,
+    /// RFC 3339 time-travel cut; blocks born after it are excluded.
+    #[serde(default)]
+    as_of: Option<String>,
 }
 
 fn default_k() -> usize {
@@ -580,7 +593,7 @@ async fn tool_search(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcErr
         }
     };
     let hits = indexer
-        .search(&a.q, a.k, pt, a.skill.as_deref())
+        .search(&a.q, a.k, pt, a.skill.as_deref(), a.as_of.as_deref())
         .await
         .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
     Ok(json!({
@@ -1039,7 +1052,8 @@ fn tools_list_payload() -> Value {
                         "order_by": { "type": "string", "enum": ["at asc", "at desc"] },
                         "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
                         "frontmatter_key": { "type": "string", "description": "Frontmatter field to filter on (with frontmatter_value)." },
-                        "frontmatter_value": { "type": "string", "description": "Required value of frontmatter_key." }
+                        "frontmatter_value": { "type": "string", "description": "Required value of frontmatter_key." },
+                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; instances born after it are excluded (untimed always remain)." }
                     }
                 }),
             ),
@@ -1058,7 +1072,10 @@ fn tools_list_payload() -> Value {
                 json!({
                     "type": "object",
                     "required": ["page_id"],
-                    "properties": { "page_id": { "type": "string" } }
+                    "properties": {
+                        "page_id": { "type": "string" },
+                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." }
+                    }
                 }),
             ),
             tool_entry(
@@ -1070,7 +1087,8 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "page_id": { "type": "string" },
                         "direction": { "type": "string", "enum": ["in", "out", "both"] },
-                        "link_skill": { "type": "string" }
+                        "link_skill": { "type": "string" },
+                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; edges from sources born after it are hidden." }
                     }
                 }),
             ),
@@ -1084,7 +1102,8 @@ fn tools_list_payload() -> Value {
                         "q": { "type": "string" },
                         "k": { "type": "integer", "minimum": 0, "maximum": 1000 },
                         "page_type": { "type": "string", "enum": ["skill", "instance", "any"] },
-                        "skill": { "type": "string" }
+                        "skill": { "type": "string" },
+                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; blocks born after it are excluded." }
                     }
                 }),
             ),

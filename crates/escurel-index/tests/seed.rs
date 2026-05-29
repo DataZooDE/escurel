@@ -52,7 +52,7 @@ async fn seed_from_dir_indexes_crm_demo() {
 
     // The Hoffmann customer instance is indexed and listable.
     let customers = indexer
-        .list_instances("customer", Some(OrderDir::Asc), None)
+        .list_instances("customer", Some(OrderDir::Asc), None, None, None)
         .await
         .expect("list_instances customer");
     assert!(

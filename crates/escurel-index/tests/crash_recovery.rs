@@ -199,18 +199,18 @@ async fn observe(indexer: &Indexer) -> ObservableState {
 
     let skills = indexer.list_skills().await.expect("list_skills");
     let instances = indexer
-        .list_instances("customer", None, None)
+        .list_instances("customer", None, None, None, None)
         .await
         .expect("list_instances");
     let acme_out_edges = indexer
-        .neighbours(INSTANCE_ACME.0, Direction::Out, None)
+        .neighbours(INSTANCE_ACME.0, Direction::Out, None, None)
         .await
         .expect("neighbours out");
 
     // Block inventory per page, via expand (index-served from blocks).
     let mut page_blocks = Vec::new();
     for (path, _) in ALL_MARKDOWN {
-        if let Some(expanded) = indexer.expand(path).await.expect("expand") {
+        if let Some(expanded) = indexer.expand(path, None).await.expect("expand") {
             let bodies = expanded
                 .blocks
                 .iter()
@@ -518,7 +518,7 @@ async fn shared_connection_sees_writes_second_connection_would_miss() {
 
     let instances = h
         .indexer
-        .list_instances("customer", None, None)
+        .list_instances("customer", None, None, None, None)
         .await
         .expect("list_instances");
     assert_eq!(
@@ -531,7 +531,7 @@ async fn shared_connection_sees_writes_second_connection_would_miss() {
     // see the freshly committed blocks and links.
     let acme = h
         .indexer
-        .expand(INSTANCE_ACME.0)
+        .expand(INSTANCE_ACME.0, None)
         .await
         .expect("expand")
         .expect("acme page present");

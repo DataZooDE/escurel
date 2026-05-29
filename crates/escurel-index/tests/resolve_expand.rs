@@ -159,7 +159,7 @@ async fn resolve_skill_only_no_id_returns_no_target() {
 #[tokio::test]
 async fn expand_unknown_page_returns_none() {
     let h = fresh_harness();
-    let out = h.indexer.expand("does/not/exist.md").await.unwrap();
+    let out = h.indexer.expand("does/not/exist.md", None).await.unwrap();
     assert!(out.is_none());
 }
 
@@ -170,7 +170,7 @@ async fn expand_returns_full_body_and_wikilinks() {
 
     let out = h
         .indexer
-        .expand(INSTANCE_ACME.0)
+        .expand(INSTANCE_ACME.0, None)
         .await
         .unwrap()
         .expect("acme page expands");
