@@ -80,12 +80,13 @@ String _slug(String pageId) {
 /// merges the per-skill feeds into one timeline.
 final inboxArtifactsProvider = FutureProvider<List<Artifact>>((ref) async {
   final client = ref.watch(escurelClientProvider);
+  final asOf = ref.watch(asOfStringProvider);
   final available = await ref.watch(skillsCatalogueProvider.future);
   final ids = available.map((s) => s.id).toSet();
   final out = <Artifact>[];
   for (final skill in kArtifactSkills) {
     if (!ids.contains(skill)) continue;
-    final rows = await client.listInstances(skill, orderBy: 'at desc');
+    final rows = await client.listInstances(skill, orderBy: 'at desc', asOf: asOf);
     out.addAll(rows.map(Artifact.fromInstance));
   }
   // Newest first across the merged feed; undated sink to the bottom.
@@ -104,7 +105,31 @@ final inboxArtifactsProvider = FutureProvider<List<Artifact>>((ref) async {
 final currentNeighboursProvider = FutureProvider<List<Neighbour>>((ref) async {
   final id = ref.watch(currentPageIdProvider);
   if (id == null) return const <Neighbour>[];
-  return ref.watch(escurelClientProvider).neighbours(id, direction: LinkDirection.both);
+  final asOf = ref.watch(asOfStringProvider);
+  return ref.watch(escurelClientProvider).neighbours(id, direction: LinkDirection.both, asOf: asOf);
+});
+
+/// The corpus's event time-span — the min/max `at` across all artifact
+/// instances — used by the time scrubber to map slider position to an
+/// `as_of` instant. Computed **without** an `as_of` cut so the scrubber's
+/// own range never shrinks as you scrub. Null when no artifact is dated.
+final corpusRangeProvider = FutureProvider<({DateTime start, DateTime end})?>((ref) async {
+  final client = ref.watch(escurelClientProvider);
+  final available = await ref.watch(skillsCatalogueProvider.future);
+  final ids = available.map((s) => s.id).toSet();
+  DateTime? lo;
+  DateTime? hi;
+  for (final skill in kArtifactSkills) {
+    if (!ids.contains(skill)) continue;
+    for (final i in await client.listInstances(skill)) {
+      final at = DateTime.tryParse((i.frontmatter['at'] as String?) ?? '');
+      if (at == null) continue;
+      if (lo == null || at.isBefore(lo)) lo = at;
+      if (hi == null || at.isAfter(hi)) hi = at;
+    }
+  }
+  if (lo == null || hi == null || !lo.isBefore(hi)) return null;
+  return (start: lo, end: hi);
 });
 
 /// Resolve a typed `[[skill::slug]]` reference to its page id and focus

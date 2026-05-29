@@ -31,6 +31,7 @@ abstract class EscurelClient {
     SearchGranularity granularity = SearchGranularity.block,
     PageTypeFilter pageType = PageTypeFilter.any,
     String? skill,
+    String? asOf,
   });
 
   /// Parse and validate a `[[skill::id]]` reference without
@@ -39,26 +40,32 @@ abstract class EscurelClient {
   Future<ResolveResult> resolve(String wikilink);
 
   /// Fetch the body (and blocks + outgoing wikilinks) for one page.
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version});
+  /// `asOf` time-travels the read: a page born after the cut resolves
+  /// to a not-found result.
+  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf});
 
   /// The link-graph primitive: backlinks (`incoming`), forward-links
   /// (`outgoing`), or both. `linkSkill` filters by the typed link
-  /// skill (e.g. `prev_review`).
+  /// skill (e.g. `prev_review`). `asOf` hides edges whose source page
+  /// was born after the cut.
   Future<List<Neighbour>> neighbours(
     String pageId, {
     LinkDirection direction = LinkDirection.both,
     String? linkSkill,
+    String? asOf,
   });
 
   /// Catalogue of skills the tenant declares.
   Future<List<SkillSummary>> listSkills();
 
-  /// Instances of [skillId], optionally filtered + ordered.
+  /// Instances of [skillId], optionally filtered + ordered. `asOf`
+  /// excludes instances born after the cut (untimed always remain).
   Future<List<InstanceSummary>> listInstances(
     String skillId, {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
+    String? asOf,
   });
 
   /// Execute a `[[query::*]]` stored query with bound parameters.

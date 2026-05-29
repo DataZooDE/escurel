@@ -67,26 +67,27 @@ class _CapStubClient implements EscurelClient {
     SearchGranularity granularity = SearchGranularity.block,
     PageTypeFilter pageType = PageTypeFilter.any,
     String? skill,
+    String? asOf,
   }) =>
-      inner.search(q: q, k: k, granularity: granularity, pageType: pageType, skill: skill);
+      inner.search(q: q, k: k, granularity: granularity, pageType: pageType, skill: skill, asOf: asOf);
 
   @override
   Future<ResolveResult> resolve(String wikilink) => inner.resolve(wikilink);
 
   @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version}) =>
-      inner.expand(pageId, anchor: anchor, version: version);
+  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf}) =>
+      inner.expand(pageId, anchor: anchor, version: version, asOf: asOf);
 
   @override
-  Future<List<Neighbour>> neighbours(String pageId, {LinkDirection direction = LinkDirection.both, String? linkSkill}) =>
-      inner.neighbours(pageId, direction: direction, linkSkill: linkSkill);
+  Future<List<Neighbour>> neighbours(String pageId, {LinkDirection direction = LinkDirection.both, String? linkSkill, String? asOf}) =>
+      inner.neighbours(pageId, direction: direction, linkSkill: linkSkill, asOf: asOf);
 
   @override
   Future<List<SkillSummary>> listSkills() => inner.listSkills();
 
   @override
-  Future<List<InstanceSummary>> listInstances(String skillId, {Map<String, Object?>? filter, String? orderBy, int? limit}) =>
-      inner.listInstances(skillId, filter: filter, orderBy: orderBy, limit: limit);
+  Future<List<InstanceSummary>> listInstances(String skillId, {Map<String, Object?>? filter, String? orderBy, int? limit, String? asOf}) =>
+      inner.listInstances(skillId, filter: filter, orderBy: orderBy, limit: limit, asOf: asOf);
 
   @override
   Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}}) =>
@@ -168,7 +169,7 @@ class _CapStubClient implements EscurelClient {
   Future<LaneBlob> adminLaneBlob(String lane, String key) => inner.adminLaneBlob(lane, key);
 
   @override
-  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit}) =>
+  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit, String? asOf}) =>
       inner.adminIndexQuery(table, filter: filter, limit: limit);
 
   @override

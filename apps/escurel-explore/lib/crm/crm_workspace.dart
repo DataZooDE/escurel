@@ -21,6 +21,7 @@ import 'crm_providers.dart';
 import 'inbox.dart';
 import 'lineage_rail.dart';
 import 'skill_wheel.dart';
+import 'time_scrubber.dart';
 
 class CrmWorkspace extends ConsumerStatefulWidget {
   const CrmWorkspace({super.key});
@@ -57,6 +58,7 @@ class _CrmWorkspaceState extends ConsumerState<CrmWorkspace> {
       body: Column(
         children: [
           Expanded(child: _WorkspaceRow()),
+          TimeScrubber(),
           CommandBar(),
         ],
       ),
