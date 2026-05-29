@@ -114,7 +114,7 @@ impl Indexer {
     ) -> Result<StoredQueryResult, QueryError> {
         // 1. Resolve the query page.
         let resolved = self
-            .resolve(&format!("[[query::{query_id}]]"))
+            .resolve(&format!("[[query::{query_id}]]"), None)
             .await
             .map_err(|err| QueryError::Indexer(Box::new(err)))?;
         let page = resolved.page.ok_or_else(|| QueryError::NotFound {

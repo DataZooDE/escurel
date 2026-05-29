@@ -114,6 +114,12 @@ impl Indexer {
     /// at or before that RFC 3339 instant are returned
     /// (`at_ts <= as_of`). Untimed instances (`at_ts IS NULL`) are
     /// always present — they are not events on the timeline.
+    ///
+    /// `scenario` selects a what-if overlay. `None` returns only the
+    /// shared base (`scenario IS NULL`). `Some("B")` returns base ∪ the
+    /// `B` overlay, and where both carry the same `slug` the overlay
+    /// wins (`QUALIFY ROW_NUMBER() … ORDER BY scenario NULLS LAST = 1`),
+    /// so a B-overlay overrides its base twin and B-only instances appear.
     pub async fn list_instances(
         &self,
         skill: &str,
@@ -121,6 +127,7 @@ impl Indexer {
         limit: Option<usize>,
         filter: Option<(&str, &str)>,
         as_of: Option<&str>,
+        scenario: Option<&str>,
     ) -> Result<Vec<InstanceInfo>, IndexerError> {
         let order_sql = match order_by_at {
             Some(OrderDir::Asc) => " ORDER BY at_ts ASC NULLS LAST, page_id ASC",
@@ -143,14 +150,24 @@ impl Indexer {
         } else {
             ""
         };
+        // Scenario overlay: base-only when None; base ∪ overlay with a
+        // per-slug override (overlay wins) when Some.
+        let (scenario_sql, qualify_sql) = if scenario.is_some() {
+            (
+                " AND (scenario = ? OR scenario IS NULL)",
+                " QUALIFY ROW_NUMBER() OVER (PARTITION BY slug ORDER BY scenario NULLS LAST, page_id) = 1",
+            )
+        } else {
+            (" AND scenario IS NULL", "")
+        };
         let sql = format!(
             "SELECT page_id, skill, frontmatter::VARCHAR \
              FROM pages \
-             WHERE page_type = 'instance' AND skill = ?{filter_sql}{as_of_sql}{order_sql}{limit_sql}",
+             WHERE page_type = 'instance' AND skill = ?{filter_sql}{as_of_sql}{scenario_sql}{qualify_sql}{order_sql}{limit_sql}",
         );
 
-        // Bind order matches the `?` order in `sql`: skill, then the
-        // filter path + value, then the as_of cut.
+        // Bind order matches the `?` order in `sql`: skill, filter path +
+        // value, as_of cut, then the scenario overlay.
         let mut binds: Vec<String> = vec![skill.to_owned()];
         if let Some((key, value)) = filter {
             binds.push(format!("$.{key}"));
@@ -158,6 +175,9 @@ impl Indexer {
         }
         if let Some(ts) = as_of {
             binds.push(ts.to_owned());
+        }
+        if let Some(sc) = scenario {
+            binds.push(sc.to_owned());
         }
 
         let conn = self.conn.lock().await;
@@ -255,7 +275,16 @@ impl Indexer {
     /// if the page exists. A bare `[[id]]` resolves against `slug`
     /// only (no skill constraint), so it succeeds for any page in
     /// any skill whose `frontmatter.id` matches.
-    pub async fn resolve(&self, wikilink: &str) -> Result<ResolvedWikilink, IndexerError> {
+    ///
+    /// `scenario` mirrors [`Self::list_instances`]: `None` resolves
+    /// against the base only; `Some("B")` prefers the `B` overlay over
+    /// its base twin (`ORDER BY scenario NULLS LAST`), so a typed link
+    /// re-centres on the overlay page when one exists.
+    pub async fn resolve(
+        &self,
+        wikilink: &str,
+        scenario: Option<&str>,
+    ) -> Result<ResolvedWikilink, IndexerError> {
         let mut parsed = parse_wikilinks(wikilink);
         let parsed = parsed
             .pop()
@@ -272,25 +301,31 @@ impl Indexer {
             }
         };
 
+        let mut sql =
+            String::from("SELECT page_id, slug, skill, page_type FROM pages WHERE slug = ?");
+        let mut binds: Vec<String> = vec![id];
+        if let Some(skill) = parsed.skill.as_deref() {
+            sql.push_str(" AND skill = ?");
+            binds.push(skill.to_owned());
+        }
+        // Scenario overlay wins over base for the same slug; without a
+        // scenario, resolve only the shared base.
+        if let Some(sc) = scenario {
+            sql.push_str(" AND (scenario = ? OR scenario IS NULL) ORDER BY scenario NULLS LAST");
+            binds.push(sc.to_owned());
+        } else {
+            sql.push_str(" AND scenario IS NULL");
+        }
+        sql.push_str(" LIMIT 1");
+
         let conn = self.conn.lock().await;
-        let row = match parsed.skill.as_deref() {
-            Some(skill) => conn
-                .query_row(
-                    "SELECT page_id, slug, skill, page_type \
-                     FROM pages WHERE skill = ? AND slug = ? LIMIT 1",
-                    params![skill, id],
-                    page_ref_from_row,
-                )
-                .ok(),
-            None => conn
-                .query_row(
-                    "SELECT page_id, slug, skill, page_type \
-                     FROM pages WHERE slug = ? LIMIT 1",
-                    params![id],
-                    page_ref_from_row,
-                )
-                .ok(),
-        };
+        let row = conn
+            .query_row(
+                &sql,
+                duckdb::params_from_iter(binds.iter()),
+                page_ref_from_row,
+            )
+            .ok();
 
         Ok(ResolvedWikilink { parsed, page: row })
     }

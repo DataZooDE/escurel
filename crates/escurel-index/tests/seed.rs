@@ -52,7 +52,7 @@ async fn seed_from_dir_indexes_crm_demo() {
 
     // The Hoffmann customer instance is indexed and listable.
     let customers = indexer
-        .list_instances("customer", Some(OrderDir::Asc), None, None, None)
+        .list_instances("customer", Some(OrderDir::Asc), None, None, None, None)
         .await
         .expect("list_instances customer");
     assert!(
@@ -65,7 +65,7 @@ async fn seed_from_dir_indexes_crm_demo() {
 
     // A typed wikilink resolves (contact → customer back-reference exists).
     let resolved = indexer
-        .resolve("[[customer::muenchner-pharma]]")
+        .resolve("[[customer::muenchner-pharma]]", None)
         .await
         .expect("resolve");
     assert!(

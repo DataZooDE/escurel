@@ -419,6 +419,10 @@ struct ListInstancesArgs {
     /// (untimed instances always remain).
     #[serde(default)]
     as_of: Option<String>,
+    /// Scenario overlay; null/absent = base only, else base ∪ overlay
+    /// with the overlay winning per slug.
+    #[serde(default)]
+    scenario: Option<String>,
 }
 
 async fn tool_list_instances(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
@@ -437,7 +441,14 @@ async fn tool_list_instances(indexer: &Indexer, args: Value) -> Result<Value, Js
         _ => None,
     };
     let out = indexer
-        .list_instances(&a.skill_id, order, a.limit, filter, a.as_of.as_deref())
+        .list_instances(
+            &a.skill_id,
+            order,
+            a.limit,
+            filter,
+            a.as_of.as_deref(),
+            a.scenario.as_deref(),
+        )
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_instances: {e}")))?;
     Ok(json!({
@@ -454,13 +465,16 @@ async fn tool_list_instances(indexer: &Indexer, args: Value) -> Result<Value, Js
 #[derive(Deserialize)]
 struct ResolveArgs {
     wikilink: String,
+    /// Scenario overlay to resolve against; null/absent = base only.
+    #[serde(default)]
+    scenario: Option<String>,
 }
 
 async fn tool_resolve(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
     let a: ResolveArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("resolve: {e}")))?;
     let resolved = indexer
-        .resolve(&a.wikilink)
+        .resolve(&a.wikilink, a.scenario.as_deref())
         .await
         .map_err(|e| JsonRpcError::internal(format!("resolve: {e}")))?;
     let exists = resolved.exists();
@@ -1053,7 +1067,8 @@ fn tools_list_payload() -> Value {
                         "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
                         "frontmatter_key": { "type": "string", "description": "Frontmatter field to filter on (with frontmatter_value)." },
                         "frontmatter_value": { "type": "string", "description": "Required value of frontmatter_key." },
-                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; instances born after it are excluded (untimed always remain)." }
+                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; instances born after it are excluded (untimed always remain)." },
+                        "scenario": { "type": "string", "description": "What-if overlay; absent = base only, else base ∪ overlay (overlay wins per slug)." }
                     }
                 }),
             ),
@@ -1063,7 +1078,10 @@ fn tools_list_payload() -> Value {
                 json!({
                     "type": "object",
                     "required": ["wikilink"],
-                    "properties": { "wikilink": { "type": "string" } }
+                    "properties": {
+                        "wikilink": { "type": "string" },
+                        "scenario": { "type": "string", "description": "What-if overlay to resolve against; absent = base only." }
+                    }
                 }),
             ),
             tool_entry(

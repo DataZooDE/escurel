@@ -91,7 +91,11 @@ async fn resolve_typed_wikilink_to_known_page() {
     let h = fresh_harness();
     seed(&h, &[SKILL_CUSTOMER, INSTANCE_ACME]).await;
 
-    let r = h.indexer.resolve("[[customer::acme-corp]]").await.unwrap();
+    let r = h
+        .indexer
+        .resolve("[[customer::acme-corp]]", None)
+        .await
+        .unwrap();
     assert!(r.exists());
     let page = r.page.unwrap();
     assert_eq!(page.skill, "customer");
@@ -108,7 +112,7 @@ async fn resolve_typed_wikilink_with_anchor_and_version_keeps_segments() {
 
     let r = h
         .indexer
-        .resolve("[[customer::acme-corp#billing@v3|Acme]]")
+        .resolve("[[customer::acme-corp#billing@v3|Acme]]", None)
         .await
         .unwrap();
     assert!(r.exists(), "anchor + version don't affect target lookup");
@@ -124,7 +128,7 @@ async fn resolve_unknown_target_returns_exists_false() {
 
     let r = h
         .indexer
-        .resolve("[[customer::no-such-thing]]")
+        .resolve("[[customer::no-such-thing]]", None)
         .await
         .unwrap();
     assert!(!r.exists());
@@ -137,7 +141,7 @@ async fn resolve_bare_wikilink_matches_on_slug_alone() {
     let h = fresh_harness();
     seed(&h, &[SKILL_CUSTOMER, INSTANCE_ACME]).await;
 
-    let r = h.indexer.resolve("[[acme-corp]]").await.unwrap();
+    let r = h.indexer.resolve("[[acme-corp]]", None).await.unwrap();
     assert!(r.exists());
     assert_eq!(r.parsed.skill, None);
     assert_eq!(r.parsed.id.as_deref(), Some("acme-corp"));
@@ -150,7 +154,7 @@ async fn resolve_skill_only_no_id_returns_no_target() {
     seed(&h, &[SKILL_CUSTOMER]).await;
 
     // `[[customer::]]` has empty id segment — parser yields id=None.
-    let r = h.indexer.resolve("[[customer::]]").await.unwrap();
+    let r = h.indexer.resolve("[[customer::]]", None).await.unwrap();
     assert!(!r.exists());
 }
 

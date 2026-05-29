@@ -199,7 +199,7 @@ async fn observe(indexer: &Indexer) -> ObservableState {
 
     let skills = indexer.list_skills().await.expect("list_skills");
     let instances = indexer
-        .list_instances("customer", None, None, None, None)
+        .list_instances("customer", None, None, None, None, None)
         .await
         .expect("list_instances");
     let acme_out_edges = indexer
@@ -518,7 +518,7 @@ async fn shared_connection_sees_writes_second_connection_would_miss() {
 
     let instances = h
         .indexer
-        .list_instances("customer", None, None, None, None)
+        .list_instances("customer", None, None, None, None, None)
         .await
         .expect("list_instances");
     assert_eq!(
