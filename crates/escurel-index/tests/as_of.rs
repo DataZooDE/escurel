@@ -104,14 +104,14 @@ async fn list_instances_as_of_excludes_later_events() {
 
     let all = h
         .indexer
-        .list_instances("doc", Some(OrderDir::Desc), None, None, None)
+        .list_instances("doc", Some(OrderDir::Desc), None, None, None, None)
         .await
         .unwrap();
     assert_eq!(all.len(), 2, "both docs without a cut");
 
     let cut = h
         .indexer
-        .list_instances("doc", Some(OrderDir::Desc), None, None, Some(CUT_MID))
+        .list_instances("doc", Some(OrderDir::Desc), None, None, Some(CUT_MID), None)
         .await
         .unwrap();
     assert_eq!(cut.len(), 1, "late doc is not born yet at the cut");
@@ -126,7 +126,7 @@ async fn list_instances_as_of_keeps_untimed_instances() {
     // The untimed customer survives even a cut before its file existed.
     let cut = h
         .indexer
-        .list_instances("customer", None, None, None, Some(CUT_MID))
+        .list_instances("customer", None, None, None, Some(CUT_MID), None)
         .await
         .unwrap();
     assert_eq!(cut.len(), 1, "untimed instance must always remain");

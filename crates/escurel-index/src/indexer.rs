@@ -180,6 +180,14 @@ impl Indexer {
             .get("at")
             .and_then(escurel_md::YamlValue::as_str)
             .map(str::to_owned);
+        // Mirror frontmatter `scenario:` into the column. NULL (absent)
+        // = the shared base timeline; a value marks a what-if overlay.
+        let scenario = parsed
+            .frontmatter
+            .fields
+            .get("scenario")
+            .and_then(escurel_md::YamlValue::as_str)
+            .map(str::to_owned);
         // `slug` is the wikilink-target id (e.g. `acme-corp`). Wikilinks
         // `[[customer::acme-corp]]` resolve via `WHERE skill = ? AND
         // slug = ?`. Skill pages declare it via the same `id:` field.
@@ -228,9 +236,9 @@ impl Indexer {
         tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
         tx.execute(
             "INSERT INTO pages \
-             (page_id, slug, skill, page_type, frontmatter, body_hash, at_ts, created_at, updated_at) \
+             (page_id, slug, skill, page_type, frontmatter, body_hash, at_ts, scenario, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?::JSON, ?, \
-                     TRY_CAST(? AS TIMESTAMP), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                     TRY_CAST(? AS TIMESTAMP), ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
             params![
                 page_id,
                 slug,
@@ -239,6 +247,7 @@ impl Indexer {
                 frontmatter_json,
                 body_hash,
                 at_ts,
+                scenario,
             ],
         )?;
 
@@ -271,12 +280,20 @@ impl Indexer {
         let dense_vec_literal = format!("{dense_vec_sql}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]");
         let block_insert_sql = format!(
             "INSERT INTO blocks \
-             (block_id, page_id, anchor, ordinal, body, dense_vec, skill, page_type, at_ts) \
-             VALUES (?, ?, 'blk-0', 0, ?, {dense_vec_literal}, ?, ?, TRY_CAST(? AS TIMESTAMP))",
+             (block_id, page_id, anchor, ordinal, body, dense_vec, skill, page_type, at_ts, scenario) \
+             VALUES (?, ?, 'blk-0', 0, ?, {dense_vec_literal}, ?, ?, TRY_CAST(? AS TIMESTAMP), ?)",
         );
         tx.execute(
             &block_insert_sql,
-            params![block_id, page_id, body_text, skill, page_type_str, at_ts],
+            params![
+                block_id,
+                page_id,
+                body_text,
+                skill,
+                page_type_str,
+                at_ts,
+                scenario
+            ],
         )?;
 
         tx.commit()?;

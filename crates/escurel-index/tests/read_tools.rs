@@ -230,7 +230,7 @@ async fn list_instances_filters_by_skill() {
 
     let customers = h
         .indexer
-        .list_instances("customer", None, None, None, None)
+        .list_instances("customer", None, None, None, None, None)
         .await
         .unwrap();
     assert_eq!(customers.len(), 2);
@@ -238,7 +238,7 @@ async fn list_instances_filters_by_skill() {
 
     let meetings = h
         .indexer
-        .list_instances("meeting", None, None, None, None)
+        .list_instances("meeting", None, None, None, None, None)
         .await
         .unwrap();
     assert_eq!(meetings.len(), 1);
@@ -251,7 +251,7 @@ async fn list_instances_for_unknown_skill_returns_empty() {
     seed(&h, &[SKILL_CUSTOMER, INSTANCE_ACME]).await;
     let out = h
         .indexer
-        .list_instances("does-not-exist", None, None, None, None)
+        .list_instances("does-not-exist", None, None, None, None, None)
         .await
         .unwrap();
     assert!(out.is_empty());
@@ -264,7 +264,7 @@ async fn list_instances_order_by_at_desc_is_chronological_reverse() {
 
     let out = h
         .indexer
-        .list_instances("meeting", Some(OrderDir::Desc), None, None, None)
+        .list_instances("meeting", Some(OrderDir::Desc), None, None, None, None)
         .await
         .unwrap();
     assert_eq!(out.len(), 2);
@@ -279,7 +279,7 @@ async fn list_instances_order_by_at_asc_is_chronological_forward() {
 
     let out = h
         .indexer
-        .list_instances("meeting", Some(OrderDir::Asc), None, None, None)
+        .list_instances("meeting", Some(OrderDir::Asc), None, None, None, None)
         .await
         .unwrap();
     assert_eq!(out[0].at.as_deref(), Some("2026-04-12T10:00:00+02:00"));
@@ -293,7 +293,7 @@ async fn list_instances_respects_limit() {
 
     let out = h
         .indexer
-        .list_instances("meeting", Some(OrderDir::Desc), Some(1), None, None)
+        .list_instances("meeting", Some(OrderDir::Desc), Some(1), None, None, None)
         .await
         .unwrap();
     assert_eq!(out.len(), 1);
@@ -308,7 +308,7 @@ async fn list_instances_filter_selects_matching_frontmatter() {
     // No filter → both emails.
     let all = h
         .indexer
-        .list_instances("email", Some(OrderDir::Desc), None, None, None)
+        .list_instances("email", Some(OrderDir::Desc), None, None, None, None)
         .await
         .unwrap();
     assert_eq!(all.len(), 2);
@@ -321,6 +321,7 @@ async fn list_instances_filter_selects_matching_frontmatter() {
             Some(OrderDir::Desc),
             None,
             Some(("source", "gmail")),
+            None,
             None,
         )
         .await
@@ -349,6 +350,7 @@ async fn list_instances_filter_with_no_match_returns_empty() {
             None,
             Some(("source", "carrier-pigeon")),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -362,7 +364,7 @@ async fn list_instances_surfaces_full_frontmatter_as_json() {
 
     let out = h
         .indexer
-        .list_instances("customer", None, None, None, None)
+        .list_instances("customer", None, None, None, None, None)
         .await
         .unwrap();
     assert_eq!(out.len(), 1);

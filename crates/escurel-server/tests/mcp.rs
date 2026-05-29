@@ -47,6 +47,15 @@ const MEETING_NEW_BODY: &str = "---\n\
      ---\n\
      # QBR\n";
 
+// A scenario-B-only customer: hidden in the base view, visible under B.
+const INSTANCE_FUTURE_B_BODY: &str = "---\n\
+     type: instance\n\
+     skill: customer\n\
+     id: future-corp\n\
+     scenario: B\n\
+     ---\n\
+     # Future Corp (scenario B)\n";
+
 const INSTANCE_ACME_PATH: &str = "markdown/instances/customer/acme-corp.md";
 const INSTANCE_ACME_BODY: &str = "---\n\
      type: instance\n\
@@ -89,6 +98,7 @@ async fn start_with_seeded_indexer() -> EscurelProcess {
                 .instance("query", "count-by-skill", QUERY_COUNT_BODY)
                 .instance("meeting", "kickoff", MEETING_OLD_BODY)
                 .instance("meeting", "qbr", MEETING_NEW_BODY)
+                .instance("customer", "future-corp", INSTANCE_FUTURE_B_BODY)
                 .done(),
         ),
         ..Default::default()
@@ -186,6 +196,34 @@ async fn list_instances_as_of_time_travels_through_http() {
 }
 
 #[tokio::test]
+async fn list_instances_scenario_overlay_through_http() {
+    let p = start_with_seeded_indexer().await;
+    // Base view: the scenario-B customer is hidden.
+    let base = call_tool(&p, "list_instances", json!({ "skill_id": "customer" })).await;
+    assert_eq!(base["instances"].as_array().unwrap().len(), 2);
+
+    // Scenario B: the B-only customer appears (base ∪ overlay).
+    let b = call_tool(
+        &p,
+        "list_instances",
+        json!({ "skill_id": "customer", "scenario": "B" }),
+    )
+    .await;
+    let ids: Vec<&str> = b["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["frontmatter"]["id"].as_str())
+        .collect();
+    assert_eq!(ids.len(), 3);
+    assert!(
+        ids.contains(&"future-corp"),
+        "B-only instance visible under scenario B"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn resolve_round_trips_through_http() {
     let p = start_with_seeded_indexer().await;
     let result = call_tool(
@@ -252,7 +290,9 @@ async fn run_stored_query_routes_through_http() {
     .await;
     let rows = result["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["n"], 2);
+    // Raw stored queries are scenario-agnostic: they see every page,
+    // including the scenario-B future-corp customer (3 total).
+    assert_eq!(rows[0]["n"], 3);
     p.shutdown().await;
 }
 

@@ -158,7 +158,7 @@ impl Escurel for EscurelGrpc {
             Some((r.frontmatter_key.as_str(), r.frontmatter_value.as_str()))
         };
         let rows = indexer
-            .list_instances(&r.skill, order, limit, filter, None)
+            .list_instances(&r.skill, order, limit, filter, None, None)
             .await
             .map_err(|e| Status::internal(format!("list_instances: {e}")))?;
         let instances = rows
@@ -180,7 +180,7 @@ impl Escurel for EscurelGrpc {
         self.enforce(&req, Some(Dimension::Queries)).await?;
         let indexer = self.indexer()?;
         let resolved = indexer
-            .resolve(&req.into_inner().wikilink)
+            .resolve(&req.into_inner().wikilink, None)
             .await
             .map_err(|e| Status::internal(format!("resolve: {e}")))?;
         let exists = resolved.exists();
