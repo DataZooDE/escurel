@@ -117,8 +117,11 @@ class HttpEscurelClient implements EscurelClient {
       );
 
   @override
-  Future<ResolveResult> resolve(String wikilink) async {
-    final result = await _call('resolve', {'wikilink': wikilink});
+  Future<ResolveResult> resolve(String wikilink, {String? scenario}) async {
+    final result = await _call('resolve', {
+      'wikilink': wikilink,
+      'scenario': ?scenario,
+    });
     // The target page is nested under `page` (server shape); tolerate a
     // flat shape too.
     final page = result['page'] as Map<String, dynamic>?;
@@ -222,6 +225,7 @@ class HttpEscurelClient implements EscurelClient {
     String? orderBy,
     int? limit,
     String? asOf,
+    String? scenario,
   }) async {
     // The server takes a single frontmatter equality filter as a
     // (frontmatter_key, frontmatter_value) pair (PR-5). Translate the
@@ -234,6 +238,7 @@ class HttpEscurelClient implements EscurelClient {
       'order_by': ?orderBy,
       'limit': ?limit,
       'as_of': ?asOf,
+      'scenario': ?scenario,
     });
     return (result['instances'] as List? ?? const [])
         .cast<Map<String, dynamic>>()

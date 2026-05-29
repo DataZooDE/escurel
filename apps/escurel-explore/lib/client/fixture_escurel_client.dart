@@ -165,6 +165,7 @@ class FixtureEscurelClient implements EscurelClient {
     String? orderBy,
     int? limit,
     String? asOf, // ignored in fixture mode; honoured by the HTTP backend
+    String? scenario, // ignored in fixture mode; honoured by the HTTP backend
   }) async {
     var instances = _pages.values
         .where((p) => p.pageType == md.PageType.instance && p.skill == skillId)
@@ -197,7 +198,7 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<ResolveResult> resolve(String wikilink) async {
+  Future<ResolveResult> resolve(String wikilink, {String? scenario}) async {
     final refs = parseWikilinks(wikilink);
     if (refs.isEmpty || refs.first.id == null) {
       return const ResolveResult(

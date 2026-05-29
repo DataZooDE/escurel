@@ -28,6 +28,7 @@ class _StubClient implements EscurelClient {
     String? orderBy,
     int? limit,
     String? asOf,
+    String? scenario,
   }) async {
     if (skillId == 'email') {
       return const [

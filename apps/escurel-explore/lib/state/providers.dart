@@ -65,6 +65,11 @@ final asOfStringProvider = Provider<String?>((ref) {
   return at?.toUtc().toIso8601String();
 });
 
+/// Active what-if scenario overlay. `null` = the shared base timeline;
+/// a value (e.g. "A"/"B"/"C") is passed to every scenario-aware read so
+/// the scenario switch reshapes the projection without per-widget wiring.
+final scenarioProvider = StateProvider<String?>((ref) => null);
+
 /// Catalogue (skills + their instance counts).
 final skillsCatalogueProvider = FutureProvider<List<SkillSummary>>((ref) {
   return ref.watch(escurelClientProvider).listSkills();

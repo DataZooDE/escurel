@@ -81,12 +81,18 @@ String _slug(String pageId) {
 final inboxArtifactsProvider = FutureProvider<List<Artifact>>((ref) async {
   final client = ref.watch(escurelClientProvider);
   final asOf = ref.watch(asOfStringProvider);
+  final scenario = ref.watch(scenarioProvider);
   final available = await ref.watch(skillsCatalogueProvider.future);
   final ids = available.map((s) => s.id).toSet();
   final out = <Artifact>[];
   for (final skill in kArtifactSkills) {
     if (!ids.contains(skill)) continue;
-    final rows = await client.listInstances(skill, orderBy: 'at desc', asOf: asOf);
+    final rows = await client.listInstances(
+      skill,
+      orderBy: 'at desc',
+      asOf: asOf,
+      scenario: scenario,
+    );
     out.addAll(rows.map(Artifact.fromInstance));
   }
   // Newest first across the merged feed; undated sink to the bottom.
@@ -136,7 +142,10 @@ final corpusRangeProvider = FutureProvider<({DateTime start, DateTime end})?>((r
 /// it — used by the wheel/lineage nodes (neighbours return slugs, the
 /// editor navigates by page id).
 Future<void> focusWikilink(WidgetRef ref, String linkSkill, String slug) async {
-  final resolved = await ref.read(escurelClientProvider).resolve('[[$linkSkill::$slug]]');
+  final scenario = ref.read(scenarioProvider);
+  final resolved = await ref
+      .read(escurelClientProvider)
+      .resolve('[[$linkSkill::$slug]]', scenario: scenario);
   if (resolved.exists && resolved.pageId.isNotEmpty) {
     ref.read(currentPageIdProvider.notifier).state = resolved.pageId;
   }
