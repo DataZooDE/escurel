@@ -32,6 +32,21 @@ const SKILL_QUERY_BODY: &str = "---\n\
      ---\n\
      # query\n";
 
+const MEETING_OLD_BODY: &str = "---\n\
+     type: instance\n\
+     skill: meeting\n\
+     id: kickoff\n\
+     at: 2026-01-10T10:00:00Z\n\
+     ---\n\
+     # Kickoff\n";
+const MEETING_NEW_BODY: &str = "---\n\
+     type: instance\n\
+     skill: meeting\n\
+     id: qbr\n\
+     at: 2026-04-12T10:00:00Z\n\
+     ---\n\
+     # QBR\n";
+
 const INSTANCE_ACME_PATH: &str = "markdown/instances/customer/acme-corp.md";
 const INSTANCE_ACME_BODY: &str = "---\n\
      type: instance\n\
@@ -72,6 +87,8 @@ async fn start_with_seeded_indexer() -> EscurelProcess {
                 .instance("customer", "acme-corp", INSTANCE_ACME_BODY)
                 .instance("customer", "globex-llc", INSTANCE_GLOBEX_BODY)
                 .instance("query", "count-by-skill", QUERY_COUNT_BODY)
+                .instance("meeting", "kickoff", MEETING_OLD_BODY)
+                .instance("meeting", "qbr", MEETING_NEW_BODY)
                 .done(),
         ),
         ..Default::default()
@@ -145,6 +162,26 @@ async fn list_instances_frontmatter_filter_selects_subset() {
     let inst = filtered["instances"].as_array().unwrap();
     assert_eq!(inst.len(), 1);
     assert_eq!(inst[0]["frontmatter"]["id"], "acme-corp");
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn list_instances_as_of_time_travels_through_http() {
+    let p = start_with_seeded_indexer().await;
+    // Both meetings without a cut…
+    let all = call_tool(&p, "list_instances", json!({ "skill_id": "meeting" })).await;
+    assert_eq!(all["instances"].as_array().unwrap().len(), 2);
+
+    // …a cut between them hides the April QBR.
+    let cut = call_tool(
+        &p,
+        "list_instances",
+        json!({ "skill_id": "meeting", "as_of": "2026-02-01T00:00:00Z" }),
+    )
+    .await;
+    let inst = cut["instances"].as_array().unwrap();
+    assert_eq!(inst.len(), 1);
+    assert_eq!(inst[0]["frontmatter"]["id"], "kickoff");
     p.shutdown().await;
 }
 

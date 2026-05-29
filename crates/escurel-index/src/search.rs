@@ -99,6 +99,7 @@ impl Indexer {
         k: usize,
         page_type: Option<PageType>,
         skill: Option<&str>,
+        as_of: Option<&str>,
     ) -> Result<Vec<SearchHit>, IndexerError> {
         if k == 0 {
             return Ok(Vec::new());
@@ -121,7 +122,7 @@ impl Indexer {
         let q_lit = crate::indexer::format_vector_literal(&q_vec);
 
         // 2. Build filter SQL + params shared by both halves.
-        let (filter_sql, filter_pt, filter_skill) = build_filters(page_type, skill);
+        let (filter_sql, filter_params) = build_filters(page_type, skill, as_of);
         let n_candidates = candidate_pool(k);
 
         let conn = self.conn.lock().await;
@@ -133,7 +134,7 @@ impl Indexer {
              ORDER BY array_cosine_distance(dense_vec, {q_lit}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]) \
              LIMIT {n_candidates}",
         );
-        let vec_ranked = run_ranking(&conn, &vec_sql, &filter_pt, &filter_skill)?;
+        let vec_ranked = run_ranking(&conn, &vec_sql, &filter_params)?;
 
         // 4. FTS candidates.
         let fts_sql = format!(
@@ -142,7 +143,7 @@ impl Indexer {
              ORDER BY fts_main_blocks.match_bm25(block_id, ?) DESC \
              LIMIT {n_candidates}",
         );
-        let fts_ranked = run_fts_ranking(&conn, &fts_sql, q, &filter_pt, &filter_skill)?;
+        let fts_ranked = run_fts_ranking(&conn, &fts_sql, q, &filter_params)?;
 
         // 5. RRF fusion.
         let mut scores: HashMap<String, f64> = HashMap::new();
@@ -167,56 +168,67 @@ impl Indexer {
     }
 }
 
+/// Build the shared `WHERE` tail (page-type, skill, and `as_of`) plus
+/// the bind params in `?` order. `as_of` keeps blocks born at or before
+/// the cut (`blocks.at_ts <= ?`); untimed blocks (`at_ts IS NULL`) stay
+/// visible so skills and non-event pages never drop out of search.
 fn build_filters(
     page_type: Option<PageType>,
     skill: Option<&str>,
-) -> (String, Option<&'static str>, Option<String>) {
+    as_of: Option<&str>,
+) -> (String, Vec<String>) {
     let mut sql = String::new();
-    let pt_param = page_type.map(|pt| match pt {
-        PageType::Skill => "skill",
-        PageType::Instance => "instance",
-    });
-    let skill_param = skill.map(str::to_owned);
-    if pt_param.is_some() {
+    let mut params = Vec::new();
+    if let Some(pt) = page_type {
         sql.push_str(" AND blocks.page_type = ?");
+        params.push(
+            match pt {
+                PageType::Skill => "skill",
+                PageType::Instance => "instance",
+            }
+            .to_owned(),
+        );
     }
-    if skill_param.is_some() {
+    if let Some(s) = skill {
         sql.push_str(" AND blocks.skill = ?");
+        params.push(s.to_owned());
     }
-    (sql, pt_param, skill_param)
+    if let Some(ts) = as_of {
+        sql.push_str(" AND (blocks.at_ts <= ? OR blocks.at_ts IS NULL)");
+        params.push(ts.to_owned());
+    }
+    (sql, params)
 }
 
 fn run_ranking(
     conn: &duckdb::Connection,
     sql: &str,
-    pt: &Option<&'static str>,
-    skill: &Option<String>,
+    filter_params: &[String],
 ) -> Result<Vec<String>, IndexerError> {
     let mut stmt = conn.prepare(sql)?;
-    let block_ids: Vec<String> = match (pt, skill) {
-        (Some(p), Some(s)) => collect(stmt.query_map(params![p, s], |r| r.get(0))?),
-        (Some(p), None) => collect(stmt.query_map(params![p], |r| r.get(0))?),
-        (None, Some(s)) => collect(stmt.query_map(params![s], |r| r.get(0))?),
-        (None, None) => collect(stmt.query_map([], |r| r.get(0))?),
-    };
-    Ok(block_ids)
+    Ok(collect(stmt.query_map(
+        duckdb::params_from_iter(filter_params.iter()),
+        |r| r.get(0),
+    )?))
 }
 
 fn run_fts_ranking(
     conn: &duckdb::Connection,
     sql: &str,
     q: &str,
-    pt: &Option<&'static str>,
-    skill: &Option<String>,
+    filter_params: &[String],
 ) -> Result<Vec<String>, IndexerError> {
+    // Param order mirrors the SQL: the match_bm25 query term, then the
+    // shared filter binds, then the match_bm25 term again for ORDER BY.
+    let mut binds: Vec<String> = Vec::with_capacity(filter_params.len() + 2);
+    binds.push(q.to_owned());
+    binds.extend_from_slice(filter_params);
+    binds.push(q.to_owned());
     let mut stmt = conn.prepare(sql)?;
-    let block_ids: Vec<String> = match (pt, skill) {
-        (Some(p), Some(s)) => collect(stmt.query_map(params![q, p, s, q], |r| r.get(0))?),
-        (Some(p), None) => collect(stmt.query_map(params![q, p, q], |r| r.get(0))?),
-        (None, Some(s)) => collect(stmt.query_map(params![q, s, q], |r| r.get(0))?),
-        (None, None) => collect(stmt.query_map(params![q, q], |r| r.get(0))?),
-    };
-    Ok(block_ids)
+    Ok(collect(stmt.query_map(
+        duckdb::params_from_iter(binds.iter()),
+        |r| r.get(0),
+    )?))
 }
 
 fn collect<I, T>(rows: I) -> Vec<T>
