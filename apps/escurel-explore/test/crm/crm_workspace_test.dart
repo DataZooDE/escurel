@@ -50,8 +50,8 @@ void main() {
 
   testWidgets('renders the three workspace regions + command bar', (tester) async {
     await _pump(tester);
-    expect(find.bySemanticsLabel('region-navigator'), findsOneWidget);
-    expect(find.bySemanticsLabel('region-entity'), findsOneWidget);
+    expect(find.bySemanticsLabel('region-inbox'), findsOneWidget);
+    expect(find.bySemanticsLabel('region-reader'), findsOneWidget);
     // Right detail region only at wide widths; the test surface is wide.
     expect(find.bySemanticsLabel('region-detail'), findsOneWidget);
     expect(find.bySemanticsLabel('command-input'), findsOneWidget);

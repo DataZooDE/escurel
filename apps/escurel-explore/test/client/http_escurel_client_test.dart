@@ -213,7 +213,7 @@ void main() {
       expect(r.single.requiredFrontmatter, ['at', 'with', 'channel']);
     });
 
-    test('list_instances passes filter + order_by + limit through the envelope', () async {
+    test('list_instances maps filter to frontmatter_key/value + order_by + limit', () async {
       Map<String, dynamic>? receivedArgs;
       mock.toolHandlers['list_instances'] = (args) {
         receivedArgs = args;
@@ -225,9 +225,12 @@ void main() {
         orderBy: 'opened desc',
         limit: 10,
       );
+      // The single-entry filter map becomes the server's
+      // (frontmatter_key, frontmatter_value) pair (PR-5).
       expect(receivedArgs, {
         'skill_id': 'lead',
-        'filter': {'status': 'qualified'},
+        'frontmatter_key': 'status',
+        'frontmatter_value': 'qualified',
         'order_by': 'opened desc',
         'limit': 10,
       });

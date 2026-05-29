@@ -12,13 +12,13 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../editor/catalogue_pane.dart';
 import '../editor/entity_editor.dart';
 import '../theme/app_theme.dart';
 import '../state/providers.dart';
 import 'command_bar.dart';
 import 'crm_breadcrumb.dart';
 import 'crm_providers.dart';
+import 'inbox.dart';
 import 'lineage_rail.dart';
 import 'skill_wheel.dart';
 
@@ -77,9 +77,9 @@ class _WorkspaceRow extends StatelessWidget {
           return const Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SizedBox(width: 300, child: _Region(label: 'navigator', child: CataloguePane())),
+              SizedBox(width: 300, child: _Region(label: 'inbox', child: InboxList())),
               VerticalDivider(width: 1),
-              Expanded(child: _Region(label: 'entity', child: EntityEditor())),
+              Expanded(child: _Region(label: 'reader', child: EntityEditor())),
               VerticalDivider(width: 1),
               SizedBox(width: 360, child: _Region(label: 'detail', child: _DetailColumn())),
             ],
@@ -87,9 +87,9 @@ class _WorkspaceRow extends StatelessWidget {
         }
         return const Column(
           children: [
-            Expanded(child: _Region(label: 'navigator', child: CataloguePane())),
+            Expanded(child: _Region(label: 'inbox', child: InboxList())),
             Divider(height: 1),
-            Expanded(child: _Region(label: 'entity', child: EntityEditor())),
+            Expanded(child: _Region(label: 'reader', child: EntityEditor())),
           ],
         );
       },
