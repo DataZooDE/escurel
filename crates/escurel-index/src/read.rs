@@ -109,12 +109,18 @@ impl Indexer {
     /// view. It compares `json_extract_string(frontmatter, '$.<key>')`
     /// directly against the canonical stored frontmatter — there is no
     /// separate `frontmatter_index` to keep in sync.
+    ///
+    /// `as_of` is the time-travel cut: when `Some`, only instances born
+    /// at or before that RFC 3339 instant are returned
+    /// (`at_ts <= as_of`). Untimed instances (`at_ts IS NULL`) are
+    /// always present — they are not events on the timeline.
     pub async fn list_instances(
         &self,
         skill: &str,
         order_by_at: Option<OrderDir>,
         limit: Option<usize>,
         filter: Option<(&str, &str)>,
+        as_of: Option<&str>,
     ) -> Result<Vec<InstanceInfo>, IndexerError> {
         let order_sql = match order_by_at {
             Some(OrderDir::Asc) => " ORDER BY at_ts ASC NULLS LAST, page_id ASC",
@@ -132,18 +138,26 @@ impl Indexer {
         } else {
             ""
         };
+        let as_of_sql = if as_of.is_some() {
+            " AND (at_ts <= ? OR at_ts IS NULL)"
+        } else {
+            ""
+        };
         let sql = format!(
             "SELECT page_id, skill, frontmatter::VARCHAR \
              FROM pages \
-             WHERE page_type = 'instance' AND skill = ?{filter_sql}{order_sql}{limit_sql}",
+             WHERE page_type = 'instance' AND skill = ?{filter_sql}{as_of_sql}{order_sql}{limit_sql}",
         );
 
         // Bind order matches the `?` order in `sql`: skill, then the
-        // filter path + value when present.
+        // filter path + value, then the as_of cut.
         let mut binds: Vec<String> = vec![skill.to_owned()];
         if let Some((key, value)) = filter {
             binds.push(format!("$.{key}"));
             binds.push(value.to_owned());
+        }
+        if let Some(ts) = as_of {
+            binds.push(ts.to_owned());
         }
 
         let conn = self.conn.lock().await;
@@ -288,15 +302,33 @@ impl Indexer {
     /// The body comes from the `blocks` table (which mirrors the
     /// parsed markdown body), not from a fresh LaneStore read — this
     /// keeps `expand` index-served and avoids a second I/O round-trip.
-    pub async fn expand(&self, page_id: &str) -> Result<Option<ExpandedPage>, IndexerError> {
+    pub async fn expand(
+        &self,
+        page_id: &str,
+        as_of: Option<&str>,
+    ) -> Result<Option<ExpandedPage>, IndexerError> {
         let conn = self.conn.lock().await;
 
-        // Page row.
+        // Page row. With an `as_of` cut, a page whose `at_ts` is after
+        // the cut is "not born yet" and resolves to None; untimed pages
+        // (skills, non-event instances) stay visible.
+        let as_of_sql = if as_of.is_some() {
+            " AND (at_ts <= ? OR at_ts IS NULL)"
+        } else {
+            ""
+        };
+        let page_sql = format!(
+            "SELECT page_id, slug, skill, page_type, frontmatter::VARCHAR \
+             FROM pages WHERE page_id = ?{as_of_sql}"
+        );
+        let mut page_binds: Vec<String> = vec![page_id.to_owned()];
+        if let Some(ts) = as_of {
+            page_binds.push(ts.to_owned());
+        }
         let page_with_fm = conn
             .query_row(
-                "SELECT page_id, slug, skill, page_type, frontmatter::VARCHAR \
-                 FROM pages WHERE page_id = ?",
-                params![page_id],
+                &page_sql,
+                duckdb::params_from_iter(page_binds.iter()),
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -403,11 +435,18 @@ impl Indexer {
     /// point at any `acme-corp`-slugged page) is out of scope here;
     /// inbound queries today only see links whose `link_skill`
     /// equals the resolved page's skill.
+    ///
+    /// `as_of` time-travels the graph: an edge is only visible when its
+    /// **source** page was born at or before the cut
+    /// (`src.at_ts <= as_of`, or the source is untimed). Inbound edges
+    /// from pages not yet born are thus hidden, so the link graph
+    /// reflects what existed at that instant.
     pub async fn neighbours(
         &self,
         page_id: &str,
         direction: Direction,
         link_skill_filter: Option<&str>,
+        as_of: Option<&str>,
     ) -> Result<Vec<Edge>, IndexerError> {
         let conn = self.conn.lock().await;
 
@@ -426,59 +465,59 @@ impl Indexer {
         let want_out = matches!(direction, Direction::Out | Direction::Both);
         let want_in = matches!(direction, Direction::In | Direction::Both);
 
+        // The as_of cut keeps only links whose source page existed at
+        // the instant — `src.at_ts <= as_of` or untimed. Expressed as an
+        // EXISTS so the SELECT column order (read by `edge_from_row`)
+        // never shifts.
+        let as_of_exists = " AND EXISTS (SELECT 1 FROM pages p \
+             WHERE p.page_id = l.src_page AND (p.at_ts <= ? OR p.at_ts IS NULL))";
+
         if want_out {
-            let sql_base = "SELECT src_page, dst_page, dst_anchor, link_skill, link_version \
-                            FROM links WHERE src_page = ?";
-            let (sql, _) = with_link_skill_filter(sql_base, link_skill_filter);
+            let mut sql = String::from(
+                "SELECT l.src_page, l.dst_page, l.dst_anchor, l.link_skill, l.link_version \
+                 FROM links l WHERE l.src_page = ?",
+            );
+            let mut binds: Vec<String> = vec![page_id.to_owned()];
+            if let Some(ls) = link_skill_filter {
+                sql.push_str(" AND l.link_skill = ?");
+                binds.push(ls.to_owned());
+            }
+            if let Some(ts) = as_of {
+                sql.push_str(as_of_exists);
+                binds.push(ts.to_owned());
+            }
             let mut stmt = conn.prepare(&sql)?;
-            match link_skill_filter {
-                Some(ls) => {
-                    let rows = stmt.query_map(params![page_id, ls], edge_from_row)?;
-                    for r in rows {
-                        edges.push(r?);
-                    }
-                }
-                None => {
-                    let rows = stmt.query_map(params![page_id], edge_from_row)?;
-                    for r in rows {
-                        edges.push(r?);
-                    }
-                }
+            let rows = stmt.query_map(duckdb::params_from_iter(binds.iter()), edge_from_row)?;
+            for r in rows {
+                edges.push(r?);
             }
         }
 
         if want_in && let Some((Some(slug), skill)) = target {
             let mut sql = String::from(
-                "SELECT src_page, dst_page, dst_anchor, link_skill, link_version \
-                 FROM links WHERE dst_page = ? AND link_skill = ?",
+                "SELECT l.src_page, l.dst_page, l.dst_anchor, l.link_skill, l.link_version \
+                 FROM links l WHERE l.dst_page = ? AND l.link_skill = ?",
             );
+            let mut binds: Vec<String> = vec![slug, skill];
             if let Some(ls) = link_skill_filter {
                 // Filter further if a more specific link_skill was
                 // requested. `link_skill` here is the dst's own
                 // skill; the filter only narrows it further.
-                sql.push_str(" AND link_skill = ?");
-                let mut stmt = conn.prepare(&sql)?;
-                let rows = stmt.query_map(params![slug, skill, ls], edge_from_row)?;
-                for r in rows {
-                    edges.push(r?);
-                }
-            } else {
-                let mut stmt = conn.prepare(&sql)?;
-                let rows = stmt.query_map(params![slug, skill], edge_from_row)?;
-                for r in rows {
-                    edges.push(r?);
-                }
+                sql.push_str(" AND l.link_skill = ?");
+                binds.push(ls.to_owned());
+            }
+            if let Some(ts) = as_of {
+                sql.push_str(as_of_exists);
+                binds.push(ts.to_owned());
+            }
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(duckdb::params_from_iter(binds.iter()), edge_from_row)?;
+            for r in rows {
+                edges.push(r?);
             }
         }
 
         Ok(edges)
-    }
-}
-
-fn with_link_skill_filter(base: &str, link_skill: Option<&str>) -> (String, bool) {
-    match link_skill {
-        Some(_) => (format!("{base} AND link_skill = ?"), true),
-        None => (base.to_owned(), false),
     }
 }
 

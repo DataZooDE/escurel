@@ -115,7 +115,7 @@ async fn outbound_lists_links_from_page() {
 
     let out = h
         .indexer
-        .neighbours(ACME.0, Direction::Out, None)
+        .neighbours(ACME.0, Direction::Out, None, None)
         .await
         .unwrap();
 
@@ -136,7 +136,7 @@ async fn outbound_filters_by_link_skill() {
 
     let only_customer = h
         .indexer
-        .neighbours(ACME.0, Direction::Out, Some("customer"))
+        .neighbours(ACME.0, Direction::Out, Some("customer"), None)
         .await
         .unwrap();
     assert_eq!(only_customer.len(), 1);
@@ -145,7 +145,7 @@ async fn outbound_filters_by_link_skill() {
 
     let only_meeting = h
         .indexer
-        .neighbours(ACME.0, Direction::Out, Some("meeting"))
+        .neighbours(ACME.0, Direction::Out, Some("meeting"), None)
         .await
         .unwrap();
     assert_eq!(only_meeting.len(), 1);
@@ -168,7 +168,7 @@ async fn inbound_lists_links_to_page() {
 
     let inbound = h
         .indexer
-        .neighbours(ACME.0, Direction::In, None)
+        .neighbours(ACME.0, Direction::In, None, None)
         .await
         .unwrap();
 
@@ -200,7 +200,7 @@ async fn inbound_filters_by_link_skill() {
     // QBR×1), all with link_skill = 'customer'.
     let inbound = h
         .indexer
-        .neighbours(ACME.0, Direction::In, Some("customer"))
+        .neighbours(ACME.0, Direction::In, Some("customer"), None)
         .await
         .unwrap();
     assert!(!inbound.is_empty());
@@ -218,17 +218,17 @@ async fn both_returns_union_in_and_out() {
 
     let out_only = h
         .indexer
-        .neighbours(ACME.0, Direction::Out, None)
+        .neighbours(ACME.0, Direction::Out, None, None)
         .await
         .unwrap();
     let in_only = h
         .indexer
-        .neighbours(ACME.0, Direction::In, None)
+        .neighbours(ACME.0, Direction::In, None, None)
         .await
         .unwrap();
     let both = h
         .indexer
-        .neighbours(ACME.0, Direction::Both, None)
+        .neighbours(ACME.0, Direction::Both, None, None)
         .await
         .unwrap();
     assert_eq!(
@@ -248,7 +248,7 @@ async fn neighbours_of_unknown_page_returns_empty_or_only_outbound_zero() {
 
     let inbound = h
         .indexer
-        .neighbours("markdown/does/not/exist.md", Direction::In, None)
+        .neighbours("markdown/does/not/exist.md", Direction::In, None, None)
         .await
         .unwrap();
     assert!(
@@ -258,7 +258,7 @@ async fn neighbours_of_unknown_page_returns_empty_or_only_outbound_zero() {
 
     let outbound = h
         .indexer
-        .neighbours("markdown/does/not/exist.md", Direction::Out, None)
+        .neighbours("markdown/does/not/exist.md", Direction::Out, None, None)
         .await
         .unwrap();
     assert!(
