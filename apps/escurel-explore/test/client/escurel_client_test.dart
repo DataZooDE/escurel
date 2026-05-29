@@ -63,10 +63,11 @@ class _StubClient implements EscurelClient {
     PageTypeFilter pageType = PageTypeFilter.any,
     String? skill,
     String? asOf,
+    String? scenario,
   }) async => throw notYetImplemented('search');
 
   @override
-  Future<ResolveResult> resolve(String wikilink) async => throw notYetImplemented('resolve');
+  Future<ResolveResult> resolve(String wikilink, {String? scenario}) async => throw notYetImplemented('resolve');
 
   @override
   Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf}) async =>
@@ -78,6 +79,7 @@ class _StubClient implements EscurelClient {
     LinkDirection direction = LinkDirection.both,
     String? linkSkill,
     String? asOf,
+    String? scenario,
   }) async => throw notYetImplemented('neighbours');
 
   @override
@@ -90,6 +92,7 @@ class _StubClient implements EscurelClient {
     String? orderBy,
     int? limit,
     String? asOf,
+    String? scenario,
   }) async => throw notYetImplemented('list_instances');
 
   @override

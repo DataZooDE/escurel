@@ -72,7 +72,7 @@ class _CapStubClient implements EscurelClient {
       inner.search(q: q, k: k, granularity: granularity, pageType: pageType, skill: skill, asOf: asOf);
 
   @override
-  Future<ResolveResult> resolve(String wikilink) => inner.resolve(wikilink);
+  Future<ResolveResult> resolve(String wikilink, {String? scenario}) => inner.resolve(wikilink, scenario: scenario);
 
   @override
   Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf}) =>
@@ -86,8 +86,8 @@ class _CapStubClient implements EscurelClient {
   Future<List<SkillSummary>> listSkills() => inner.listSkills();
 
   @override
-  Future<List<InstanceSummary>> listInstances(String skillId, {Map<String, Object?>? filter, String? orderBy, int? limit, String? asOf}) =>
-      inner.listInstances(skillId, filter: filter, orderBy: orderBy, limit: limit, asOf: asOf);
+  Future<List<InstanceSummary>> listInstances(String skillId, {Map<String, Object?>? filter, String? orderBy, int? limit, String? asOf, String? scenario}) =>
+      inner.listInstances(skillId, filter: filter, orderBy: orderBy, limit: limit, asOf: asOf, scenario: scenario);
 
   @override
   Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}}) =>

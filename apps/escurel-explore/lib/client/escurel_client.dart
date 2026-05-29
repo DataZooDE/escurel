@@ -36,8 +36,9 @@ abstract class EscurelClient {
 
   /// Parse and validate a `[[skill::id]]` reference without
   /// fetching the body. Reports `exists: false` for dangling links
-  /// rather than raising.
-  Future<ResolveResult> resolve(String wikilink);
+  /// rather than raising. `scenario` resolves against a what-if
+  /// overlay (the overlay page wins over its base twin).
+  Future<ResolveResult> resolve(String wikilink, {String? scenario});
 
   /// Fetch the body (and blocks + outgoing wikilinks) for one page.
   /// `asOf` time-travels the read: a page born after the cut resolves
@@ -60,12 +61,15 @@ abstract class EscurelClient {
 
   /// Instances of [skillId], optionally filtered + ordered. `asOf`
   /// excludes instances born after the cut (untimed always remain).
+  /// `scenario` selects a what-if overlay (base ∪ overlay, overlay
+  /// wins per slug); null returns the shared base only.
   Future<List<InstanceSummary>> listInstances(
     String skillId, {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
     String? asOf,
+    String? scenario,
   });
 
   /// Execute a `[[query::*]]` stored query with bound parameters.
