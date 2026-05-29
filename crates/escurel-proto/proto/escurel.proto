@@ -133,6 +133,10 @@ message ListInstancesRequest {
   string skill = 1;
   string order_by_at = 2;
   uint32 limit = 3;
+  // Optional single frontmatter equality filter. Both empty => no
+  // filter; key set => match `frontmatter.<key> == value`.
+  string frontmatter_key = 4;
+  string frontmatter_value = 5;
 }
 message InstanceInfo {
   string page_id = 1;

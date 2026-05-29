@@ -87,6 +87,43 @@ const MEETING_MAY: (&str, &str) = (
      # Globex renewal\n",
 );
 
+const SKILL_EMAIL: (&str, &str) = (
+    "markdown/skills/email.md",
+    "---\n\
+     type: skill\n\
+     id: email\n\
+     description: An email artifact.\n\
+     required_frontmatter:\n\
+       - at\n\
+       - source\n\
+     ---\n\
+     # email (event-typed)\n",
+);
+
+const EMAIL_GMAIL: (&str, &str) = (
+    "markdown/instances/email/proposal.md",
+    "---\n\
+     type: instance\n\
+     skill: email\n\
+     id: proposal\n\
+     at: 2026-04-02T09:00:00Z\n\
+     source: gmail\n\
+     ---\n\
+     # Proposal\n",
+);
+
+const EMAIL_FORM: (&str, &str) = (
+    "markdown/instances/email/contact-form.md",
+    "---\n\
+     type: instance\n\
+     skill: email\n\
+     id: contact-form\n\
+     at: 2026-03-15T12:00:00Z\n\
+     source: webform\n\
+     ---\n\
+     # Contact form\n",
+);
+
 struct Harness {
     store: Arc<dyn LaneStore>,
     indexer: Indexer,
@@ -193,7 +230,7 @@ async fn list_instances_filters_by_skill() {
 
     let customers = h
         .indexer
-        .list_instances("customer", None, None)
+        .list_instances("customer", None, None, None)
         .await
         .unwrap();
     assert_eq!(customers.len(), 2);
@@ -201,7 +238,7 @@ async fn list_instances_filters_by_skill() {
 
     let meetings = h
         .indexer
-        .list_instances("meeting", None, None)
+        .list_instances("meeting", None, None, None)
         .await
         .unwrap();
     assert_eq!(meetings.len(), 1);
@@ -214,7 +251,7 @@ async fn list_instances_for_unknown_skill_returns_empty() {
     seed(&h, &[SKILL_CUSTOMER, INSTANCE_ACME]).await;
     let out = h
         .indexer
-        .list_instances("does-not-exist", None, None)
+        .list_instances("does-not-exist", None, None, None)
         .await
         .unwrap();
     assert!(out.is_empty());
@@ -227,7 +264,7 @@ async fn list_instances_order_by_at_desc_is_chronological_reverse() {
 
     let out = h
         .indexer
-        .list_instances("meeting", Some(OrderDir::Desc), None)
+        .list_instances("meeting", Some(OrderDir::Desc), None, None)
         .await
         .unwrap();
     assert_eq!(out.len(), 2);
@@ -242,7 +279,7 @@ async fn list_instances_order_by_at_asc_is_chronological_forward() {
 
     let out = h
         .indexer
-        .list_instances("meeting", Some(OrderDir::Asc), None)
+        .list_instances("meeting", Some(OrderDir::Asc), None, None)
         .await
         .unwrap();
     assert_eq!(out[0].at.as_deref(), Some("2026-04-12T10:00:00+02:00"));
@@ -256,11 +293,59 @@ async fn list_instances_respects_limit() {
 
     let out = h
         .indexer
-        .list_instances("meeting", Some(OrderDir::Desc), Some(1))
+        .list_instances("meeting", Some(OrderDir::Desc), Some(1), None)
         .await
         .unwrap();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].at.as_deref(), Some("2026-05-18T14:30:00+02:00"));
+}
+
+#[tokio::test]
+async fn list_instances_filter_selects_matching_frontmatter() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_EMAIL, EMAIL_GMAIL, EMAIL_FORM]).await;
+
+    // No filter → both emails.
+    let all = h
+        .indexer
+        .list_instances("email", Some(OrderDir::Desc), None, None)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2);
+
+    // Filter by source=gmail → only the gmail one.
+    let gmail = h
+        .indexer
+        .list_instances(
+            "email",
+            Some(OrderDir::Desc),
+            None,
+            Some(("source", "gmail")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(gmail.len(), 1);
+    assert_eq!(
+        gmail[0].frontmatter.get("id").and_then(|v| v.as_str()),
+        Some("proposal"),
+    );
+    assert_eq!(
+        gmail[0].frontmatter.get("source").and_then(|v| v.as_str()),
+        Some("gmail"),
+    );
+}
+
+#[tokio::test]
+async fn list_instances_filter_with_no_match_returns_empty() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_EMAIL, EMAIL_GMAIL, EMAIL_FORM]).await;
+
+    let out = h
+        .indexer
+        .list_instances("email", None, None, Some(("source", "carrier-pigeon")))
+        .await
+        .unwrap();
+    assert!(out.is_empty());
 }
 
 #[tokio::test]
@@ -270,7 +355,7 @@ async fn list_instances_surfaces_full_frontmatter_as_json() {
 
     let out = h
         .indexer
-        .list_instances("customer", None, None)
+        .list_instances("customer", None, None, None)
         .await
         .unwrap();
     assert_eq!(out.len(), 1);
