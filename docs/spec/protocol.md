@@ -161,7 +161,7 @@ Returns the parsed link plus the resolved page metadata.
 
 ```jsonc
 // request
-{ "page_id": "01HXMQ...", "anchor": null, "version": null }
+{ "page_id": "01HXMQ...", "anchor": null, "version": null, "as_of": null }
 // response
 {
   "page": PageRef,
@@ -169,9 +169,19 @@ Returns the parsed link plus the resolved page metadata.
   "body":   "...markdown body...",
   "blocks": [ { "anchor": "blk-acme-signals", "content": "..." }, ... ],
   "wikilinks_out": [ WikilinkParsed, ... ],
-  "snapshot_version": "v14"        // populated only when version was honoured
+  "snapshot_version": "v14"        // populated only when version/as_of replayed a snapshot
 }
 ```
+
+**Historical state (M7).** `as_of = T` (RFC 3339) reconstructs the
+instance **as it was at T**: when the page has a CRDT snapshot taken
+at-or-before T, that snapshot is materialized + re-parsed (so the
+returned `frontmatter`/`body` are the historical values — the
+projection of its events up to T). A page with no snapshot history at-
+or-before T falls through to the `at_ts` birth filter (returns the page
+when born, `null` when not). This extends the v1 rule that markdown
+instances ignore `@version` silently — markdown instances with a
+seeded snapshot history now honour the time cut.
 
 For events: `expand` returns the full body of an event instance
 including any narrative text and follow-up links. Anchor support

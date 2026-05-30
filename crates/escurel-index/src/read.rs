@@ -345,6 +345,19 @@ impl Indexer {
     ) -> Result<Option<ExpandedPage>, IndexerError> {
         let conn = self.conn.lock().await;
 
+        // Historical replay: when an `as_of` cut is given and the page
+        // has a CRDT snapshot at-or-before that instant, materialize it
+        // — the instance's frontmatter+body *as it was* at T (the
+        // projection of its events up to T). Pages with no such snapshot
+        // fall through to the current-state path below.
+        if let Some(ts) = as_of
+            && let Some(snap) = crate::crdt_history::load_snapshot_at(&conn, page_id, ts)?
+        {
+            return Ok(Some(crate::crdt_history::materialize_snapshot(
+                page_id, &snap,
+            )?));
+        }
+
         // Page row. With an `as_of` cut, a page whose `at_ts` is after
         // the cut is "not born yet" and resolves to None; untimed pages
         // (skills, non-event instances) stay visible.
