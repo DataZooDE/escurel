@@ -7,8 +7,11 @@
 //! No mocks: real Prometheus registry rendered through the real
 //! `axum` route.
 
-use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts};
 use serde_json::json;
+
+const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\n\
+description: A buyer.\nrequired_frontmatter: [id]\n---\n# customer\n";
 
 #[tokio::test]
 async fn metrics_counts_real_mcp_requests() {
@@ -101,6 +104,73 @@ async fn metrics_counts_real_mcp_requests() {
     assert!(
         body.contains("escurel_up 1"),
         "expected escurel_up 1 in metrics body:\n{body}"
+    );
+
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn per_tool_metrics_record_calls_and_latency() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant("acme")
+                .skill("customer", CUSTOMER_SKILL)
+                .done(),
+        ),
+        config_overrides: ConfigOverrides {
+            disable_grpc: true,
+            ..Default::default()
+        },
+    })
+    .await;
+
+    // Drive a real tool call (list_skills) over MCP.
+    let http = reqwest::Client::new();
+    let resp = http
+        .post(p.mcp_url())
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "list_skills", "arguments": {} }
+        }))
+        .send()
+        .await
+        .expect("tools/call");
+    assert_eq!(resp.status(), 200);
+
+    let body = http
+        .get(p.metrics_url().expect("metrics listener"))
+        .send()
+        .await
+        .expect("metrics")
+        .text()
+        .await
+        .expect("metrics body");
+
+    // escurel_tool_calls is labelled by tenant/tool/transport/status.
+    assert!(
+        body.lines().any(|l| l.starts_with("escurel_tool_calls{")
+            && l.contains(r#"tool="list_skills""#)
+            && l.contains(r#"transport="mcp_http""#)
+            && l.contains(r#"status="ok""#)),
+        "missing escurel_tool_calls sample for list_skills:\n{body}"
+    );
+    // The latency histogram family is present and observed.
+    assert!(
+        body.contains("# TYPE escurel_tool_latency_ms histogram"),
+        "missing escurel_tool_latency_ms histogram:\n{body}"
+    );
+    assert!(
+        body.lines()
+            .any(|l| l.starts_with("escurel_tool_latency_ms_count{")
+                && l.contains(r#"tool="list_skills""#)),
+        "missing escurel_tool_latency_ms count for list_skills:\n{body}"
+    );
+    // The live-sessions gauge is exported (zero here).
+    assert!(
+        body.contains("escurel_live_sessions_open 0"),
+        "missing escurel_live_sessions_open gauge:\n{body}"
     );
 
     p.shutdown().await;

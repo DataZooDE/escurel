@@ -163,7 +163,27 @@ async fn mcp_inner(
 
     let result = match req.method.as_str() {
         "tools/list" => Ok(tools_list_payload()),
-        "tools/call" => dispatch_tools_call(&state, &tenant_id, role, req.params).await,
+        "tools/call" => {
+            // Per-tool metrics (escurel_tool_calls / _latency_ms):
+            // name the tool, time the dispatch, record on completion.
+            let tool = req
+                .params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let started = std::time::Instant::now();
+            let r = dispatch_tools_call(&state, &tenant_id, role, req.params).await;
+            let status = if r.is_ok() { "ok" } else { "error" };
+            state.metrics.record_tool_call(
+                &tenant_id,
+                &tool,
+                "mcp_http",
+                status,
+                started.elapsed().as_secs_f64() * 1000.0,
+            );
+            r
+        }
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown method `{other}`"
         ))),
