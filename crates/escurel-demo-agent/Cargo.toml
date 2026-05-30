@@ -1,0 +1,33 @@
+[package]
+name = "escurel-demo-agent"
+description = "Simulated external processing agent for the M7 event-sourcing demo: folds inbox events into instance state over MCP-over-HTTP."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+# Library (the fold logic, unit/integration-tested) plus a thin binary
+# that polls the inbox on an interval. The agent is *external* to the
+# gateway by design (the server stays automation-free); this crate just
+# makes that external processor concrete for the demo.
+[[bin]]
+name = "escurel-demo-agent"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+[dev-dependencies]
+escurel-test-support = { path = "../escurel-test-support" }
+
+[lints]
+workspace = true

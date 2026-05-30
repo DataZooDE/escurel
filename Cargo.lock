@@ -2219,6 +2219,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "escurel-demo-agent"
+version = "1.0.0"
+dependencies = [
+ "escurel-test-support",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "escurel-embed"
 version = "1.0.0"
 dependencies = [
