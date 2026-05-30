@@ -102,9 +102,19 @@ pub async fn mcp(
     // poll's task.
     let request_id = request_id_from(&headers);
     let tool_name = tool_name_from(&req.method, &req.params).unwrap_or_default();
+    // Per-record audit fields per `platform.md §Observability`:
+    // `transport` + `trace_id` are known up front; `tenant` + `subject`
+    // are filled in (`span.record`) once auth resolves. The JSON
+    // formatter hoists all span fields onto every record emitted
+    // inside the span, so the `tool.completed` event below carries the
+    // full contract set (tenant/tool/transport/subject/trace_id/
+    // duration_ms). `trace_id` mirrors the gateway `request_id` when no
+    // OTel trace context is active.
     let span = tracing::info_span!(
         "mcp.request",
         request_id = %request_id,
+        trace_id = %request_id,
+        transport = "mcp_http",
         method = %req.method,
         tool = %tool_name,
     );
@@ -161,6 +171,14 @@ async fn mcp_inner(
     // tools are allowed (the local demo runs without a token).
     let role = auth_ctx.as_ref().map(|c| c.role);
 
+    // Auth-derived audit fields for the `tool.completed` record.
+    // `subject` is the token `sub` claim; `anonymous` in
+    // unauthenticated dev mode.
+    let subject = auth_ctx
+        .as_ref()
+        .map(|c| c.subject.clone())
+        .unwrap_or_else(|| "anonymous".to_owned());
+
     let result = match req.method.as_str() {
         "tools/list" => Ok(tools_list_payload()),
         "tools/call" => {
@@ -175,12 +193,23 @@ async fn mcp_inner(
             let started = std::time::Instant::now();
             let r = dispatch_tools_call(&state, &tenant_id, role, req.params).await;
             let status = if r.is_ok() { "ok" } else { "error" };
-            state.metrics.record_tool_call(
-                &tenant_id,
-                &tool,
-                "mcp_http",
+            let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+            state
+                .metrics
+                .record_tool_call(&tenant_id, &tool, "mcp_http", status, duration_ms);
+            // Audit record carrying the full per-record contract set
+            // (platform.md §Observability). transport/trace_id/request_id
+            // are hoisted from the span; tenant/subject/tool/duration are
+            // on the event (the obs layer captures span fields at
+            // creation, so auth-derived values must ride the event).
+            tracing::info!(
+                tenant = %tenant_id,
+                subject = %subject,
+                tool = %tool,
                 status,
-                started.elapsed().as_secs_f64() * 1000.0,
+                duration_ms,
+                msg = "tool.completed",
+                "tool.completed"
             );
             r
         }
