@@ -8,8 +8,11 @@
 #   1. asserts (exit-code-gated) that each CRM region's semantics label
 #      exists in the accessibility tree, and
 #   2. drives the *real backend* via in-page POST /mcp probes — proving
-#      seed + frontmatter filter + as_of time-travel + scenario overlay
-#      all resolve end-to-end — and captures a screenshot.
+#      seed + as_of time-travel + scenario overlay + the event/inbox
+#      tools resolve end-to-end, and
+#   3. runs the *real* escurel-demo-agent for one pass to prove the full
+#      M7 loop: capture → inbox → agent fold → instance event history.
+#      Captures a screenshot.
 #
 # SCOPE — read this before extending:
 #   Flutter web renders to a CanvasKit <canvas>. Its semantics tree is
@@ -160,6 +163,41 @@ name_early=$(mcp_int expand "{\"page_id\":\"$spine_id\",\"as_of\":\"2026-03-13T0
 [[ -n "$name_now" && -n "$name_early" && "$name_now" != "$name_early" ]] \
   || fail "expand(as_of) did not show a different historical phase (now='$name_now', early='$name_early')"
 note "probe ok: spine phase now='$name_now', as_of(T)='$name_early'"
+
+# --- live loop: capture → inbox → escurel-demo-agent → instance ------
+# The full M7 vision end-to-end: capture an event pre-flagged for the
+# spine (so it lands in the inbox), run the *real* external agent for a
+# single pass against this gateway, and assert it folded the event into
+# the spine's history (out of the inbox, into list_events).
+note "probe: live capture → agent fold loop"
+events_before=$(mcp_int list_events "{\"instance_page_id\":\"$spine_id\"}" 'r.events.length')
+inbox_pre=$(mcp_int list_inbox '{}' 'r.events.length')
+cap_live=$(mcp_int capture_event \
+  "{\"source\":\"gmail\",\"mime\":\"message/rfc822\",\"label_skill\":\"gmail\",\"instance_page_id\":\"$spine_id\",\"title\":\"live-loop probe\",\"body\":\"live-loop probe\"}" \
+  "(r.status||'')")
+[[ "$cap_live" == "inbox" ]] || fail "live capture did not land in the inbox (got '$cap_live')"
+inbox_mid=$(mcp_int list_inbox '{}' 'r.events.length')
+[[ "$inbox_mid" -gt "$inbox_pre" ]] || fail "inbox did not grow after live capture ($inbox_mid !> $inbox_pre)"
+
+note "building escurel-demo-agent"
+cargo build -q -p escurel-demo-agent || fail "cargo build escurel-demo-agent"
+AGENT_BIN="$ROOT/target/debug/escurel-demo-agent"
+[[ -x "$AGENT_BIN" ]] || fail "agent binary not found at $AGENT_BIN"
+
+note "running one agent pass (ESCUREL_AGENT_ONCE=1)"
+ESCUREL_AGENT_MCP_URL="$BASE/mcp" \
+ESCUREL_AGENT_TOKEN="demo" \
+ESCUREL_AGENT_ONCE="1" \
+  "$AGENT_BIN" >"$ROOT/target/escurel-demo-agent.log" 2>&1 \
+  || fail "agent single pass failed (see target/escurel-demo-agent.log)"
+
+events_after=$(mcp_int list_events "{\"instance_page_id\":\"$spine_id\"}" 'r.events.length')
+inbox_post=$(mcp_int list_inbox '{}' 'r.events.length')
+[[ "$events_after" -gt "$events_before" ]] \
+  || fail "agent did not fold the event into the spine ($events_after !> $events_before)"
+[[ "$inbox_post" -lt "$inbox_mid" ]] \
+  || fail "agent did not drain the captured event from the inbox ($inbox_post !< $inbox_mid)"
+note "probe ok: live loop — spine events $events_before → $events_after, inbox $inbox_mid → $inbox_post"
 
 "$RODNEY" screenshot "$SHOTS/crm.png" >/dev/null 2>&1 || true
 
