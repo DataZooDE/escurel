@@ -175,10 +175,12 @@ async fn rebuild_streams_one_progress_chunk_per_page() {
     while let Some(msg) = stream.next().await {
         chunks.push(msg.unwrap());
     }
+    // +1 for the mandatory `escurel` meta-skill every tenant ships
+    // (locked decision 3) — rebuild re-indexes it alongside PAGES.
     assert_eq!(
         chunks.len(),
-        PAGES.len(),
-        "expected one progress chunk per page; got {chunks:?}"
+        PAGES.len() + 1,
+        "expected one progress chunk per page (incl. meta-skill); got {chunks:?}"
     );
     h.process.shutdown().await;
 }
@@ -203,7 +205,8 @@ async fn rebuild_emits_final_chunk_with_done_equal_total() {
         last = Some(msg.unwrap());
     }
     let last = last.expect("at least one progress chunk");
-    assert_eq!(last.total, PAGES.len() as u64);
+    // +1 for the mandatory `escurel` meta-skill (locked decision 3).
+    assert_eq!(last.total, PAGES.len() as u64 + 1);
     assert_eq!(last.done, last.total);
     assert!(
         !last.current_page.is_empty(),

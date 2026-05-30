@@ -611,6 +611,12 @@ impl EscurelConfig {
             indexer.seed_from_dir(dir).await?;
         }
 
+        // Every served tenant ships the mandatory `escurel` meta-skill
+        // — the agent's in-corpus navigation doc (locked decision 3,
+        // docs/contract/agent-interface.md). Idempotent: a no-op when
+        // the tenant already carries an `escurel` skill page.
+        indexer.ensure_meta_skill().await?;
+
         // CRDT backend over a second connection to the same file.
         let crdt_conn = Connection::open(&db_path).map_err(|source| ConfigError::DuckdbOpen {
             path: db_path.display().to_string(),

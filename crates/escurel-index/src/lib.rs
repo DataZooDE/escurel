@@ -23,6 +23,7 @@ pub mod citation;
 pub mod crdt_history;
 pub mod events;
 pub mod indexer;
+pub mod meta_skill;
 pub mod query;
 pub mod read;
 pub mod schema;
@@ -36,6 +37,7 @@ pub use indexer::{
     AuditDrift, Indexer, IndexerError, RebuildProgress, derive_attach_alias, is_safe_attach_source,
     is_valid_attach_alias,
 };
+pub use meta_skill::{META_SKILL_ID, META_SKILL_MD, META_SKILL_PAGE_ID};
 pub use query::{ColumnSchema, INSPECTABLE_TABLES, QueryError, StoredQueryResult};
 pub use read::{
     BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef, ResolvedWikilink,

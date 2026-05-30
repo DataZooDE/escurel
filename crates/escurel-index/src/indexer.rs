@@ -108,6 +108,8 @@ pub enum IndexerError {
         #[source]
         source: std::io::Error,
     },
+    #[error("meta-skill protected: {reason}")]
+    MetaSkillProtected { reason: String },
 }
 
 impl Indexer {
@@ -154,6 +156,33 @@ impl Indexer {
     /// within the tenant (e.g. `markdown/skills/customer.md`).
     /// ULID + slug semantics arrive in a later PR.
     pub async fn update_page(&self, page_id: &str, content: &str) -> Result<(), IndexerError> {
+        // The mandatory `escurel` meta-skill is protected: a write that
+        // drops its skill identity or one of its established sections is
+        // rejected (operators may append, never remove). See
+        // `docs/contract/agent-interface.md` locked decision 3. The
+        // baseline is whatever the meta-skill currently carries — empty
+        // on first write, so the initial shape (canonical or a tenant's
+        // own) is free.
+        if crate::meta_skill::is_meta_skill_page(page_id) {
+            let existing_body: Option<String> = {
+                let conn = self.conn.lock().await;
+                conn.query_row(
+                    "SELECT body FROM blocks WHERE page_id = ?",
+                    params![page_id],
+                    |row| row.get(0),
+                )
+                .ok()
+            };
+            let existing_sections = existing_body
+                .as_deref()
+                .map(crate::meta_skill::section_headers)
+                .unwrap_or_default();
+            if let Some(reason) =
+                crate::meta_skill::meta_skill_violation(content, &existing_sections)
+            {
+                return Err(IndexerError::MetaSkillProtected { reason });
+            }
+        }
         let parsed = parse(content)?;
         let frontmatter_json = mapping_to_json(&parsed.frontmatter.fields)?;
         let body_hash = hash_body(content);
@@ -329,6 +358,49 @@ impl Indexer {
         )?;
 
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Idempotently ensure the mandatory `escurel` meta-skill page is
+    /// present and indexed. No-op when a skill page named `escurel`
+    /// already exists — operators may ship their own extended version
+    /// (with appended sections), and re-opening an existing tenant
+    /// must not clobber it.
+    ///
+    /// Called at indexer open (binary boot and the test harness) so
+    /// every *served* tenant exposes the navigation doc the agent
+    /// contract promises (`docs/contract/agent-interface.md` locked
+    /// decision 3). Writes the canonical markdown to the LaneStore
+    /// (keeping `audit` clean) and indexes it.
+    pub async fn ensure_meta_skill(&self) -> Result<(), IndexerError> {
+        {
+            let conn = self.conn.lock().await;
+            let n: i64 = conn.query_row(
+                "SELECT count(*) FROM pages WHERE page_type = 'skill' AND slug = ?",
+                params![crate::meta_skill::META_SKILL_ID],
+                |row| row.get(0),
+            )?;
+            if n > 0 {
+                return Ok(());
+            }
+        }
+        let key = Key::new(
+            self.tenant.as_str(),
+            crate::meta_skill::META_SKILL_PAGE_ID.to_owned(),
+        )?;
+        self.store
+            .write(
+                &key,
+                Bytes::from_static(crate::meta_skill::META_SKILL_MD.as_bytes()),
+            )
+            .await?;
+        self.update_page(
+            crate::meta_skill::META_SKILL_PAGE_ID,
+            crate::meta_skill::META_SKILL_MD,
+        )
+        .await?;
+        // Make the new block searchable (FTS has no incremental refresh).
+        self.refresh_fts().await?;
         Ok(())
     }
 

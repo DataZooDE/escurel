@@ -87,9 +87,15 @@ async fn list_skills_round_trips() {
         .list_skills(ListSkillsRequest::default())
         .await
         .unwrap();
-    assert_eq!(resp.skills.len(), 1);
-    assert_eq!(resp.skills[0].id, "customer");
-    assert_eq!(resp.skills[0].description, "A buying organisation.");
+    // Every tenant ships the mandatory `escurel` meta-skill alongside
+    // the seeded `customer` (locked decision 3).
+    assert!(resp.skills.iter().any(|s| s.id == "escurel"));
+    let customer = resp
+        .skills
+        .iter()
+        .find(|s| s.id == "customer")
+        .expect("seeded customer skill present");
+    assert_eq!(customer.description, "A buying organisation.");
     p.shutdown().await;
 }
 
