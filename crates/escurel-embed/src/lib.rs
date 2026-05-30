@@ -10,6 +10,9 @@
 //!   development without a model, and as the default while the
 //!   real candle-backed `EmbeddingGemma` impl (M2.2) and Gemini
 //!   API impl (M2.3) are wired in.
+//! - [`Reranker`] trait + [`NoopReranker`] — the second-stage
+//!   cross-encoder seam (spec decision 5). The Noop default
+//!   preserves first-stage order until a real CE head lands.
 //!
 //! ## Why a trait
 //!
@@ -26,6 +29,7 @@ mod candle;
 mod gemini;
 mod hash;
 mod reloadable;
+mod reranker;
 mod zero;
 
 #[cfg(feature = "candle")]
@@ -34,6 +38,7 @@ pub use crate::candle::CandleEmbedder;
 pub use gemini::GeminiEmbedder;
 pub use hash::HashEmbedder;
 pub use reloadable::ReloadableEmbedder;
+pub use reranker::{Candidate, NoopReranker, Ranked, Reranker};
 pub use zero::ZeroEmbedder;
 
 use async_trait::async_trait;
