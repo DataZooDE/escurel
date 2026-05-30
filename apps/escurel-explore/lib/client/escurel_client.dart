@@ -76,6 +76,28 @@ abstract class EscurelClient {
     String? scenario,
   });
 
+  // ── events / inbox (M7) ──────────────────────────────────────
+
+  /// Unprocessed events (the inbox), newest first.
+  Future<List<Event>> listInbox({int? limit});
+
+  /// An instance's processed event history (the event sequence whose
+  /// projection is its state), oldest first.
+  Future<List<Event>> listEvents(String instancePageId, {int? limit});
+
+  /// Capture a new event into the inbox. `instancePageId` only
+  /// pre-flags a candidate; an external agent assigns + processes it.
+  Future<Event> captureEvent({
+    String? at,
+    String source = '',
+    String mime = '',
+    String labelSkill = '',
+    String? instancePageId,
+    String title = '',
+    String body = '',
+    Map<String, dynamic>? provenance,
+  });
+
   /// Execute a `[[query::*]]` stored query with bound parameters.
   Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}});
 

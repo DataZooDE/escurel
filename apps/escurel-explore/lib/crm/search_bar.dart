@@ -1,7 +1,7 @@
-/// Bottom command bar for the CRM workspace. Mirrors the mockup's
-/// "TEXT  type, or capture from voice / image / live → send". For now
-/// it runs a hybrid search and focuses the top hit; voice/image/live
-/// are visual affordances pending backend support.
+/// TOP bar (M7) — hybrid `search` pinned above both views. On submit it
+/// runs the real `search` tool and pins the top hit as the focused
+/// entity (right pane). Distinct from `capture` (bottom): search *finds*
+/// an existing memory, capture *appends* a new event.
 library;
 
 import 'package:flutter/material.dart';
@@ -10,13 +10,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
 
-class CommandBar extends ConsumerStatefulWidget {
-  const CommandBar({super.key});
+class WorkspaceSearchBar extends ConsumerStatefulWidget {
+  const WorkspaceSearchBar({super.key});
   @override
-  ConsumerState<CommandBar> createState() => _CommandBarState();
+  ConsumerState<WorkspaceSearchBar> createState() => _SearchBarState();
 }
 
-class _CommandBarState extends ConsumerState<CommandBar> {
+class _SearchBarState extends ConsumerState<WorkspaceSearchBar> {
   final _controller = TextEditingController();
   String _status = '';
 
@@ -49,16 +49,16 @@ class _CommandBarState extends ConsumerState<CommandBar> {
     return Container(
       decoration: const BoxDecoration(
         color: kSurfaceContainerLowest,
-        border: Border(top: BorderSide(color: kOutlineVariant)),
+        border: Border(bottom: BorderSide(color: kOutlineVariant)),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: [
-          Text('TEXT', style: text.labelSmall?.copyWith(color: kOutline)),
-          const SizedBox(width: 12),
+          const Icon(Icons.search, size: 18, color: kOutline),
+          const SizedBox(width: 10),
           Expanded(
             child: Semantics(
-              label: 'command-input',
+              label: 'search-input',
               textField: true,
               container: true,
               explicitChildNodes: true,
@@ -68,50 +68,31 @@ class _CommandBarState extends ConsumerState<CommandBar> {
                 decoration: const InputDecoration(
                   isDense: true,
                   border: InputBorder.none,
-                  hintText: 'type, or capture from voice / image / live →',
+                  hintText: 'search memory…',
                 ),
               ),
             ),
           ),
           if (_status.isNotEmpty) ...[
             Semantics(
-              label: 'command-status',
+              label: 'search-status',
               child: Text(_status, style: text.labelSmall?.copyWith(color: kOutline)),
             ),
             const SizedBox(width: 12),
           ],
-          for (final cap in const ['voice', 'image', 'live'])
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: _Pill(label: cap),
-            ),
           Semantics(
-            label: 'command-send',
+            label: 'search-send',
             button: true,
             onTap: _send,
             excludeSemantics: true,
-            child: FilledButton.icon(
+            child: FilledButton(
               onPressed: _send,
-              icon: const Icon(Icons.send, size: 16),
-              label: const Text('send'),
+              style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+              child: const Text('search'),
             ),
           ),
         ],
       ),
     );
   }
-}
-
-class _Pill extends StatelessWidget {
-  const _Pill({required this.label});
-  final String label;
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: kSurfaceContainer,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Text(label, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: kOnSurfaceVariant)),
-      );
 }

@@ -259,6 +259,51 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<List<Event>> listInbox({int? limit}) async {
+    final result = await _call('list_inbox', {'limit': ?limit});
+    return (result['events'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(Event.fromJson)
+        .toList();
+  }
+
+  @override
+  Future<List<Event>> listEvents(String instancePageId, {int? limit}) async {
+    final result = await _call('list_events', {
+      'instance_page_id': instancePageId,
+      'limit': ?limit,
+    });
+    return (result['events'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(Event.fromJson)
+        .toList();
+  }
+
+  @override
+  Future<Event> captureEvent({
+    String? at,
+    String source = '',
+    String mime = '',
+    String labelSkill = '',
+    String? instancePageId,
+    String title = '',
+    String body = '',
+    Map<String, dynamic>? provenance,
+  }) async {
+    final result = await _call('capture_event', {
+      'at': ?at,
+      'source': source,
+      'mime': mime,
+      'label_skill': labelSkill,
+      'instance_page_id': ?instancePageId,
+      'title': title,
+      'body': body,
+      'provenance': ?provenance,
+    });
+    return Event.fromJson(result);
+  }
+
+  @override
   Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}}) async {
     final result = await _call('run_stored_query', {
       'query_id': queryId,

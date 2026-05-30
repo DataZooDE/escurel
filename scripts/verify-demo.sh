@@ -92,10 +92,18 @@ wait_label() {
 }
 present() { wait_label "$1" || fail "region semantics not found: $1"; note "present: $1"; }
 
-# Wait for the workspace to boot + auto-focus, then assert the regions.
+# Wait for the workspace to boot + auto-focus, then assert the container
+# regions of the M7 two-view workspace: the event view (left) with its
+# inbox, the instance view (right) with its skill-wheel, and the scrubber.
+# (Search/capture are TextField nodes that don't reliably materialise in
+# the static semantics DOM — see SCOPE; they're covered by the flutter
+# widget tests + the capture_event /mcp probe below.)
 present brand
-present region-inbox
-present region-reader
+present region-events
+present event-pane
+present inbox
+present region-instance
+present instance-pane
 present skill-wheel
 present time-scrubber
 present scenario-switch
@@ -119,24 +127,38 @@ eng=$(mcp_int list_instances '{"skill_id":"engagement"}' 'r.instances.length')
 [[ "$eng" =~ ^[1-9] ]] || fail "no engagement instances seeded (got '$eng')"
 note "probe ok: engagement instances = $eng"
 
-note "probe: as_of time-travel (email inbox shrinks before the corpus)"
-email_now=$(mcp_int list_instances '{"skill_id":"email","order_by":"at desc"}' 'r.instances.length')
-email_early=$(mcp_int list_instances '{"skill_id":"email","order_by":"at desc","as_of":"2026-03-13T00:00:00Z"}' 'r.instances.length')
-[[ "$email_now" =~ ^[1-9] ]] || fail "no emails seeded (got '$email_now')"
-[[ "$email_early" -lt "$email_now" ]] || fail "as_of did not shrink the email feed ($email_early !< $email_now)"
-note "probe ok: emails now=$email_now, as_of(T+1d)=$email_early"
-
-note "probe: scenario overlay (doc inbox grows under B)"
-doc_base=$(mcp_int list_instances '{"skill_id":"doc","order_by":"at desc"}' 'r.instances.length')
-doc_b=$(mcp_int list_instances '{"skill_id":"doc","order_by":"at desc","scenario":"B"}' 'r.instances.length')
-[[ "$doc_b" -gt "$doc_base" ]] || fail "scenario B did not add a doc ($doc_b !> $doc_base)"
-note "probe ok: docs base=$doc_base, scenario B=$doc_b"
+# (The recast crm-demo corpus carries emails/meetings/docs as *events*,
+# not instances — the old per-skill instance-feed time-travel + doc-overlay
+# probes are superseded by the event/inbox + expand(as_of) probes below.)
 
 note "probe: resolve picks the scenario-B overlay page"
 spine_base=$(mcp_int resolve '{"wikilink":"[[engagement::hoffmann-spine]]"}' "(r.page&&r.page.page_id||'').split('/').pop()")
 spine_b=$(mcp_int resolve '{"wikilink":"[[engagement::hoffmann-spine]]","scenario":"B"}' "(r.page&&r.page.page_id||'').split('/').pop()")
 [[ "$spine_base" != "$spine_b" && -n "$spine_b" ]] || fail "scenario B did not override resolve ($spine_base vs $spine_b)"
 note "probe ok: resolve base=$spine_base, scenario B=$spine_b"
+
+note "probe: event history bound to the engagement spine"
+spine_id=$(mcp_int resolve '{"wikilink":"[[engagement::hoffmann-spine]]"}' "(r.page&&r.page.page_id||'')")
+[[ -n "$spine_id" && "$spine_id" != "ERR" ]] || fail "could not resolve spine page id (got '$spine_id')"
+spine_events=$(mcp_int list_events "{\"instance_page_id\":\"$spine_id\"}" 'r.events.length')
+[[ "$spine_events" =~ ^[1-9] ]] || fail "no events bound to the spine (got '$spine_events')"
+note "probe ok: spine events = $spine_events"
+
+note "probe: capture_event appends to the inbox"
+inbox_before=$(mcp_int list_inbox '{}' 'r.events.length')
+[[ "$inbox_before" =~ ^[0-9] ]] || fail "list_inbox failed (got '$inbox_before')"
+cap_ok=$(mcp_int capture_event '{"source":"manual","mime":"text/plain","label_skill":"note","title":"e2e probe","body":"e2e probe"}' "(r.status||'')")
+[[ "$cap_ok" == "inbox" ]] || fail "capture_event did not return an inbox event (got '$cap_ok')"
+inbox_after=$(mcp_int list_inbox '{}' 'r.events.length')
+[[ "$inbox_after" -gt "$inbox_before" ]] || fail "inbox did not grow after capture ($inbox_after !> $inbox_before)"
+note "probe ok: inbox $inbox_before → $inbox_after after capture"
+
+note "probe: expand(as_of) re-materialises the spine's state at T"
+name_now=$(mcp_int expand "{\"page_id\":\"$spine_id\"}" "(r.frontmatter&&r.frontmatter.phase||'')")
+name_early=$(mcp_int expand "{\"page_id\":\"$spine_id\",\"as_of\":\"2026-03-13T00:00:00Z\"}" "(r.frontmatter&&r.frontmatter.phase||'')")
+[[ -n "$name_now" && -n "$name_early" && "$name_now" != "$name_early" ]] \
+  || fail "expand(as_of) did not show a different historical phase (now='$name_now', early='$name_early')"
+note "probe ok: spine phase now='$name_now', as_of(T)='$name_early'"
 
 "$RODNEY" screenshot "$SHOTS/crm.png" >/dev/null 2>&1 || true
 

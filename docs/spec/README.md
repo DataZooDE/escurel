@@ -31,6 +31,22 @@ filter={at: '>= 2026-04-01'}, order_by='at desc')`) is expressible
 cheaply. See [`protocol.md`](protocol.md) for the exact signatures and
 [`storage.md`](storage.md) for the event-index sketch.
 
+Conceptually escurel models memory as a **triad — Events · Skills ·
+Instances** — bound by skills: an instance's current state **is the
+projection of its event sequence, mediated by the skills** that describe
+how to process each event (the durable "how"). v1 realises the Skills and
+Instances legs and the event log *via the existing instance primitives
+above*; the dedicated **Event** leg (a real `events`/inbox store, each
+event's `label_skill` pointing at its processing skill, historical
+`expand(as_of=T)`, an outbound webhook, and the external-agent fold) lands
+in **M7 — Event-sourcing surface** (see
+[`roadmap.md § M7`](roadmap.md)), which deliberately extends this v1
+contract. The `escurel-explore` workspace renders the triad as **two
+views of one memory**: the *event view* (the events that produced a
+memory, plus the general inbox) on the left and the *instance view* (the
+materialized state, its skill connections, and its state over time) on the
+right.
+
 This directory specifies the *implementation*: a single Rust binary
 (`escurel-server`) and a thin CLI client (`escurel`), exposing the
 agent surface over three transports (MCP-over-HTTP, WebSocket, native

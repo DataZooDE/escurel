@@ -94,6 +94,33 @@ class _CapStubClient implements EscurelClient {
       inner.runStoredQuery(queryId, params: params);
 
   @override
+  Future<List<Event>> listInbox({int? limit}) => inner.listInbox(limit: limit);
+  @override
+  Future<List<Event>> listEvents(String instancePageId, {int? limit}) =>
+      inner.listEvents(instancePageId, limit: limit);
+  @override
+  Future<Event> captureEvent({
+    String? at,
+    String source = '',
+    String mime = '',
+    String labelSkill = '',
+    String? instancePageId,
+    String title = '',
+    String body = '',
+    Map<String, dynamic>? provenance,
+  }) =>
+      inner.captureEvent(
+        at: at,
+        source: source,
+        mime: mime,
+        labelSkill: labelSkill,
+        instancePageId: instancePageId,
+        title: title,
+        body: body,
+        provenance: provenance,
+      );
+
+  @override
   Future<ValidationResult> validate(String content, {String? asPageId}) =>
       inner.validate(content, asPageId: asPageId);
 
