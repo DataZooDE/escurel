@@ -385,6 +385,12 @@ real-LLM driver `agent_tools.py`):
 None of these are large lifts. The biggest addition is the `escurel`
 meta-skill, which is just one markdown file.
 
+> **Status (delivered).** Every row above now ships in the Rust
+> gateway: `neighbours`, `validate`, the CRDT write path + `update_page`
+> fallback, `run_stored_query` over MCP, the mandatory auto-shipped
+> `escurel` meta-skill, and `search(granularity='block'|'page')` with
+> the frontmatter `filter`.
+
 ## Decisions locked (2026-05-17)
 
 The four open questions above were resolved in the design
