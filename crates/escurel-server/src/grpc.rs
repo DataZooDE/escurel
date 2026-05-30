@@ -1233,6 +1233,12 @@ impl EscurelAdmin for EscurelAdminGrpc {
             .audit()
             .await
             .map_err(|e| Status::internal(format!("audit: {e}")))?;
+        // Reflect the drift in the escurel_audit_drift gauge.
+        self.state.metrics.set_audit_drift(
+            indexer.tenant(),
+            drift.markdown_not_in_duckdb.len() as i64,
+            drift.indexed_but_no_markdown.len() as i64,
+        );
         Ok(Response::new(AuditResponse {
             markdown_not_in_duckdb: drift.markdown_not_in_duckdb,
             indexed_but_no_markdown: drift.indexed_but_no_markdown,

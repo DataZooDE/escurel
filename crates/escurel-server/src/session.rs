@@ -223,6 +223,13 @@ impl SessionManager {
         self.entries.get(session_id).map(|e| e.page_id.clone())
     }
 
+    /// Number of currently-open live sessions, for the
+    /// `escurel_live_sessions_open` gauge (sampled at scrape time).
+    #[must_use]
+    pub fn open_count(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Read the current text content of an open session. Used by
     /// the live transports (gRPC bidi attach in M4.3, WS attach +
     /// `op_ack` replies in M4.4) to populate the `content` field

@@ -482,6 +482,10 @@ async fn version(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    // Sample gauge-style metrics at scrape time.
+    state
+        .metrics
+        .set_live_sessions(state.sessions.open_count() as i64);
     let body = state.metrics.render_prometheus();
     (
         StatusCode::OK,
