@@ -158,6 +158,8 @@ struct TomlConfig {
     storage: TomlStorage,
     #[serde(default)]
     embedding: TomlEmbedding,
+    #[serde(default)]
+    observability: TomlObservability,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -195,6 +197,11 @@ struct TomlEmbedding {
     model: Option<String>,
     device: Option<String>,
     dim: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TomlObservability {
+    metrics_listen: Option<String>,
 }
 
 /// Auth config (present only when an OIDC issuer is set).
@@ -249,6 +256,11 @@ pub struct EscurelConfig {
     /// `Some` → `capture_event` fires a fire-and-forget POST of the new
     /// event; `None` (default) disables it.
     pub webhook_url: Option<String>,
+    /// Dedicated Prometheus `/metrics` listener
+    /// (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default
+    /// `0.0.0.0:9090`). `None` when explicitly emptied — disables
+    /// scraping.
+    pub metrics_listen: Option<String>,
 }
 
 /// Source of an environment lookup — abstracted so `from_env` is
@@ -348,6 +360,18 @@ impl EscurelConfig {
         let webhook_url = env
             .get("ESCUREL_WEBHOOK_URL")
             .filter(|s| !s.trim().is_empty());
+        // Dedicated Prometheus `/metrics` listener. Default
+        // `0.0.0.0:9090`; an explicitly-empty value disables scraping.
+        let metrics_listen_raw = pick(
+            "ESCUREL_OBSERVABILITY_METRICS_LISTEN",
+            toml_cfg.observability.metrics_listen,
+            "0.0.0.0:9090",
+        );
+        let metrics_listen = if metrics_listen_raw.trim().is_empty() {
+            None
+        } else {
+            Some(metrics_listen_raw)
+        };
         let listen_http = pick(
             "ESCUREL_SERVER_LISTEN_HTTP",
             toml_cfg.server.listen_http,
@@ -496,6 +520,7 @@ impl EscurelConfig {
             demo_dir,
             seed_dir,
             webhook_url,
+            metrics_listen,
         })
     }
 }
@@ -658,6 +683,7 @@ impl EscurelConfig {
             embedder_factory: Some(self.embedder_factory()),
             demo_dir: self.demo_dir.clone(),
             webhook_url: self.webhook_url.clone(),
+            metrics_listen: self.metrics_listen.clone(),
         };
 
         let handle = serve(server_config)

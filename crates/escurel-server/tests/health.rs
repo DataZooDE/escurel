@@ -98,7 +98,9 @@ async fn version_returns_configured_version() {
 #[tokio::test]
 async fn metrics_returns_prometheus_text() {
     let p = start(ready_all_up(), "1.2.3-test").await;
-    let resp = reqwest::get(url(&p, "/metrics")).await.unwrap();
+    // Metrics live on their own dedicated listener, not the main app.
+    let metrics_url = p.metrics_url().expect("metrics listener bound");
+    let resp = reqwest::get(metrics_url).await.unwrap();
     assert_eq!(resp.status(), 200);
     let ct = resp
         .headers()

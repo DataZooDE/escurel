@@ -96,7 +96,11 @@ async fn api_routes_keep_precedence_over_demo() {
     let version = reqwest::get(url(&p, "/version")).await.unwrap();
     assert_eq!(version.status(), 200);
 
-    let metrics = reqwest::get(url(&p, "/metrics")).await.unwrap();
+    // Metrics live on their own dedicated listener — unaffected by the
+    // demo SPA fallback mounted on the main app.
+    let metrics = reqwest::get(p.metrics_url().expect("metrics listener"))
+        .await
+        .unwrap();
     assert_eq!(metrics.status(), 200);
     assert!(metrics.text().await.unwrap().contains("escurel_up"));
     p.shutdown().await;

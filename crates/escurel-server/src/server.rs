@@ -122,6 +122,13 @@ pub struct ServerConfig {
     /// `Some` → `capture_event` fires a fire-and-forget POST of the
     /// new event to this URL; `None` (default) disables it.
     pub webhook_url: Option<String>,
+    /// Dedicated Prometheus `/metrics` listener
+    /// (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default
+    /// `0.0.0.0:9090`). Served on its own port — tailnet-only in the
+    /// substrate — and NOT mounted on the main HTTP app. `None`
+    /// disables metrics scraping entirely. Tests pass
+    /// `Some("127.0.0.1:0")`.
+    pub metrics_listen: Option<String>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -153,6 +160,7 @@ impl ServerConfig {
             embedder_factory: None,
             demo_dir: None,
             webhook_url: None,
+            metrics_listen: Some("127.0.0.1:0".to_owned()),
         }
     }
 }
@@ -175,10 +183,15 @@ pub struct ServerHandle {
     pub local_addr: SocketAddr,
     /// Address of the gRPC listener, when configured.
     pub grpc_addr: Option<SocketAddr>,
+    /// Address of the dedicated Prometheus `/metrics` listener, when
+    /// configured.
+    pub metrics_addr: Option<SocketAddr>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     grpc_shutdown_tx: Option<oneshot::Sender<()>>,
+    metrics_shutdown_tx: Option<oneshot::Sender<()>>,
     join: JoinHandle<()>,
     grpc_join: Option<JoinHandle<()>>,
+    metrics_join: Option<JoinHandle<()>>,
     /// Telemetry guard. `Some` when this `serve()` call was the
     /// one that installed the global subscriber; `None` when a
     /// pre-existing subscriber (e.g. a test's) was already
@@ -207,8 +220,14 @@ impl ServerHandle {
         if let Some(tx) = self.grpc_shutdown_tx.take() {
             let _ = tx.send(());
         }
+        if let Some(tx) = self.metrics_shutdown_tx.take() {
+            let _ = tx.send(());
+        }
         let _ = self.join.await;
         if let Some(j) = self.grpc_join.take() {
+            let _ = j.await;
+        }
+        if let Some(j) = self.metrics_join.take() {
             let _ = j.await;
         }
     }
@@ -280,7 +299,6 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/version", get(version))
-        .route("/metrics", get(metrics))
         .route("/mcp", post(mcp))
         .route("/ws", get(ws_upgrade))
         .with_state(state.clone());
@@ -334,15 +352,57 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         None => (None, None, None),
     };
 
+    // Dedicated Prometheus `/metrics` listener (optional). Served on
+    // its own port — substrate scrapes it over the tailnet — so the
+    // public HTTP app never exposes `/metrics`. Same AppState → same
+    // registry the request handlers debit.
+    let (metrics_addr, metrics_shutdown_tx, metrics_join) = match config.metrics_listen.as_ref() {
+        Some(addr) => {
+            let (a, tx, j) = spawn_metrics(addr, state.clone()).await?;
+            (Some(a), Some(tx), Some(j))
+        }
+        None => (None, None, None),
+    };
+
     Ok(ServerHandle {
         local_addr,
         grpc_addr,
+        metrics_addr,
         shutdown_tx: Some(tx),
         grpc_shutdown_tx,
+        metrics_shutdown_tx,
         join,
         grpc_join,
+        metrics_join,
         _telemetry: telemetry_guard,
     })
+}
+
+/// Bind a minimal axum app exposing only `GET /metrics` on `addr` and
+/// spawn it with graceful shutdown. Returns the bound address, a
+/// shutdown sender, and the join handle.
+async fn spawn_metrics(
+    addr: &str,
+    state: AppState,
+) -> Result<(SocketAddr, oneshot::Sender<()>, JoinHandle<()>), ServerError> {
+    let app = Router::new()
+        .route("/metrics", get(metrics))
+        .with_state(state);
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| ServerError::Bind {
+            addr: addr.to_owned(),
+            source: e,
+        })?;
+    let bound = listener.local_addr().map_err(ServerError::Serve)?;
+    let (tx, rx) = oneshot::channel();
+    let join = tokio::spawn(async move {
+        let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+            let _ = rx.await;
+        });
+        let _ = serve.await;
+    });
+    Ok((bound, tx, join))
 }
 
 /// Install the process-global JSON tracing subscriber. Errors

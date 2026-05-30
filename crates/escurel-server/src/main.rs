@@ -38,6 +38,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         http = %handle.local_addr,
         grpc = ?handle.grpc_addr,
+        metrics = ?handle.metrics_addr,
         version = %config.version,
         env = %config.env,
         tenant = %config.tenant,
