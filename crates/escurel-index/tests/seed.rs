@@ -79,6 +79,46 @@ async fn seed_from_dir_indexes_crm_demo() {
 }
 
 #[tokio::test]
+async fn seed_loads_crm_demo_events_and_spine_history() {
+    let (indexer, _s, _d) = fresh_indexer();
+    indexer.seed_from_dir(&crm_demo_dir()).await.expect("seed");
+    let spine = "markdown/instances/engagement__hoffmann-spine.md";
+
+    // events.json populated the inbox + the spine's event history.
+    let inbox = indexer.list_inbox(None).await.expect("list_inbox");
+    assert!(!inbox.is_empty(), "crm-demo seeds inbox events");
+    let history = indexer.list_events(spine, None).await.expect("list_events");
+    assert!(
+        history.len() >= 5,
+        "the spine has its source-event history, got {}",
+        history.len(),
+    );
+    assert!(history.iter().all(|e| e.status == "processed"));
+
+    // history.json gives the spine a real CRDT snapshot timeline:
+    // state-at-T reconstructs the contemporaneous contract_value.
+    let early = indexer
+        .expand(spine, Some("2026-03-14T00:00:00Z"), None)
+        .await
+        .expect("expand")
+        .expect("spine at T");
+    assert_eq!(
+        early.frontmatter.get("phase").and_then(|v| v.as_str()),
+        Some("prospecting"),
+        "earliest snapshot is the prospecting state",
+    );
+    let later = indexer
+        .expand(spine, Some("2026-05-15T00:00:00Z"), None)
+        .await
+        .expect("expand")
+        .expect("spine at T2");
+    assert_eq!(
+        later.frontmatter.get("phase").and_then(|v| v.as_str()),
+        Some("delivering"),
+    );
+}
+
+#[tokio::test]
 async fn seed_from_dir_is_idempotent() {
     let (indexer, _s, _d) = fresh_indexer();
     let dir = crm_demo_dir();

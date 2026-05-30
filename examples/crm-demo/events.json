@@ -1,0 +1,86 @@
+[
+  {
+    "at": "2026-03-12T09:02:00Z",
+    "source": "gmail",
+    "mime": "message/rfc822",
+    "label_skill": "email",
+    "title": "Contact form · datazoo.de",
+    "body": "Inbound contact-form submission from Markus Weber at Münchner Pharma — the first warm signal in the account.\n\n> \"We're evaluating shared analytical sandboxes for clinical-trial units and want to avoid per-unit Snowflake procurement.\"",
+    "instance": "markdown/instances/engagement__hoffmann-spine.md",
+    "status": "processed",
+    "provenance": { "provenance": "EXTRACTED", "extracted_by": "agt:scout-a", "from": "Markus Weber", "direction": "inbound" }
+  },
+  {
+    "at": "2026-03-17T15:00:00Z",
+    "source": "meet",
+    "mime": "text/vtt",
+    "label_skill": "meeting",
+    "title": "Discovery call · Münchner Pharma × data zoo",
+    "body": "47-minute call. Three R&D sites on different platform configs; demand consolidation is broken between them — the primary pain. Reiter confirmed she is the budget authority. Three qualification criteria agreed.\n\n## Transcript (excerpt)\n- **00:14** Hoffmann — shop-floor visibility lags 4–24h depending on the line.\n- **01:42** Reiter — I'm the budget authority; procurement runs the paper.\n- **02:10** Reiter — yes to all three criteria.",
+    "instance": "markdown/instances/engagement__hoffmann-spine.md",
+    "status": "processed",
+    "provenance": { "provenance": "AUTO-PROMOTED", "extracted_by": "agt:qualifier-a", "promoted_at": "2026-03-17T16:01:00Z", "duration_min": 47 }
+  },
+  {
+    "at": "2026-05-01T13:00:00Z",
+    "source": "gcal",
+    "mime": "text/vtt",
+    "label_skill": "meeting",
+    "title": "Delivery kickoff · Münchner Pharma × data zoo",
+    "body": "Kickoff after commercial close. Weber named technical sponsor; first-unit provisioning target set. Inherited obligations from the engagement spine walked through and confirmed as the delivery backlog.",
+    "instance": "markdown/instances/engagement__hoffmann-spine.md",
+    "status": "processed",
+    "provenance": { "provenance": "EXTRACTED", "extracted_by": "agt:delivery-a", "duration_min": 32 }
+  },
+  {
+    "at": "2026-05-14T10:30:00Z",
+    "source": "gmail",
+    "mime": "message/rfc822",
+    "label_skill": "email",
+    "title": "Proposal · scope clarification on 3-site data model",
+    "body": "Outbound proposal threading from the discovery criteria. Clarifies the 3-site demand-consolidation scope and restates the inherited commitments: tenant write isolation, audit trail, sub-day provisioning, and a low-engineering-burden reference case study.",
+    "instance": "markdown/instances/engagement__hoffmann-spine.md",
+    "status": "processed",
+    "provenance": { "provenance": "EXTRACTED", "extracted_by": "agt:author-a", "direction": "outbound" }
+  },
+  {
+    "at": "2026-05-14T18:00:00Z",
+    "source": "drive",
+    "mime": "text/markdown",
+    "label_skill": "doc",
+    "title": "Project status · Münchner Pharma phase-1",
+    "body": "Week-9 status: first R&D unit live and accepted, second in provisioning, schedule confidence high. Notes the adjacent-integration effort that the scope-creep detector later quantifies.",
+    "instance": "markdown/instances/engagement__hoffmann-spine.md",
+    "status": "processed",
+    "provenance": { "provenance": "EXTRACTED", "extracted_by": "agt:delivery-a", "author": "Lena Kraus (data zoo)" }
+  },
+  {
+    "at": "2026-05-15T08:12:00Z",
+    "source": "gmail",
+    "mime": "message/rfc822",
+    "label_skill": "email",
+    "title": "RE: scope clarification on 3-site data model",
+    "body": "Dr. Sabine Reiter replies to the proposal confirming the 3-site scope and the executive sponsorship. Flags that the third site was always assumed in-scope on their side — the seed of the later 3-site change order.",
+    "instance": "markdown/instances/engagement__hoffmann-spine.md",
+    "status": "processed",
+    "provenance": { "provenance": "EXTRACTED", "extracted_by": "agt:scout-a", "from": "Dr. Sabine Reiter", "direction": "inbound" }
+  },
+  {
+    "at": "2026-06-04T07:30:00Z",
+    "source": "agent",
+    "mime": "text/markdown",
+    "label_skill": "doc",
+    "title": "Scope-creep auto-detector · Münchner Pharma phase-1",
+    "body": "Detector scan: 11 workitems delivered without milestone/commitment linkage; 4 represent ~€18k unbilled effort on adjacent integration. Reframe: this is a renewal signal, not a billing-recovery opportunity. Recommendation: route to engagement-strategist for renewal_skill spawn.",
+    "provenance": { "provenance": "AUTO-PROMOTED", "extracted_by": "agt:engagement-strategist", "promoted_at": "2026-06-04T07:31:00Z", "author": "agt:engagement-strategist" }
+  },
+  {
+    "at": "2026-06-10T09:00:00Z",
+    "source": "gmail",
+    "mime": "message/rfc822",
+    "label_skill": "email",
+    "title": "Re: phase-2 adjacent integration — budget?",
+    "body": "Reiter asks whether the adjacent-integration work seen in phase-1 can be folded into a phase-2 scope. Unprocessed — awaiting an agent to fold it onto the renewal.",
+    "provenance": { "provenance": "EXTRACTED", "from": "Dr. Sabine Reiter", "direction": "inbound" }
+  }
+]

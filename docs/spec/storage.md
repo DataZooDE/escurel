@@ -329,6 +329,16 @@ CREATE INDEX events_status_at   ON events(status, at_ts);          -- the inbox 
 CREATE INDEX events_instance_at ON events(instance_page_id, at_ts);-- an instance's event history
 ```
 
+**Demo seeding (M7).** `seed_from_dir` (the `ESCUREL_SEED_DIR`
+bootstrap) loads, alongside the markdown pages, two optional files in
+the seed dir: `events.json` (an array of events captured into the inbox;
+an entry with `status: "processed"` and an `instance` is also assigned
+to that instance's event history) and `history.json` (an array of
+`{page_id, states:[{taken_at, markdown}]}` CRDT snapshot timelines). Both
+are idempotent (skipped if events/snapshots already exist), so the
+demo's event stream + per-instance state history is real backend data,
+not a frontend fixture.
+
 The `LiveDoc` actor for a page is one Tokio task that accepts
 ops from the open session(s), feeds them to the in-memory
 Loro engine and on each accepted op runs a write transaction
