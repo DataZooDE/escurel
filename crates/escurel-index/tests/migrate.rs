@@ -55,7 +55,7 @@ fn index_exists(conn: &Connection, name: &str) -> bool {
 }
 
 #[test]
-fn up_creates_six_core_tables() {
+fn up_creates_core_tables() {
     let (conn, _dir) = fresh_db();
     Migrator::up(&conn).expect("schema migration succeeds");
 
@@ -66,6 +66,8 @@ fn up_creates_six_core_tables() {
         "frontmatter_index",
         "crdt_ops",
         "crdt_snapshots",
+        "chat_messages",
+        "events", // M7 — Event-sourcing surface
     ] {
         assert!(
             table_exists(&conn, table),

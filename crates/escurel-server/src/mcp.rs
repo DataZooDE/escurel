@@ -35,7 +35,8 @@ use base64::engine::general_purpose::STANDARD as B64;
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
-    AppendChatMessage, ChatMessage, Direction, Indexer, Issue, ListChatMessages, OrderDir,
+    AppendChatMessage, ChatMessage, Direction, EventInfo, Indexer, Issue, ListChatMessages,
+    NewEvent, OrderDir,
 };
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
@@ -279,7 +280,9 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         // `apply_op` is a write; `open_session` debits a session
         // slot (semaphore, not a token bucket) inside the tool
         // body; `close_session` is a cleanup and does not debit.
-        "update_page" | "apply_op" | "append_message" => Dimension::Writes,
+        "update_page" | "apply_op" | "append_message" | "capture_event" | "assign_event" => {
+            Dimension::Writes
+        }
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -359,6 +362,10 @@ async fn dispatch_tools_call(
         "update_page" => tool_update_page(indexer, params.arguments).await,
         "append_message" => tool_append_message(indexer, params.arguments).await,
         "list_messages" => tool_list_messages(indexer, params.arguments).await,
+        "capture_event" => tool_capture_event(indexer, params.arguments).await,
+        "list_inbox" => tool_list_inbox(indexer, params.arguments).await,
+        "list_events" => tool_list_events(indexer, params.arguments).await,
+        "assign_event" => tool_assign_event(indexer, params.arguments).await,
         // Admin-gated ops tools (mirror the documented MCP admin
         // surface; delegate to the same logic as EscurelAdmin gRPC).
         "admin_quota" => {
@@ -851,6 +858,119 @@ fn chat_message_to_json(m: &ChatMessage) -> Value {
     out
 }
 
+// --- events / inbox tools (M7 — Event-sourcing surface) --------
+
+#[derive(Deserialize)]
+struct CaptureEventArgs {
+    #[serde(default)]
+    event_id: Option<String>,
+    #[serde(default)]
+    at: Option<String>,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    mime: String,
+    /// Skill id that knows how to process this event type (the label→skill link).
+    #[serde(default)]
+    label_skill: String,
+    /// Optional candidate instance (Gmail-label style); the event still
+    /// lands in the inbox until `assign_event`.
+    #[serde(default)]
+    instance_page_id: Option<String>,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    provenance: Option<Value>,
+}
+
+async fn tool_capture_event(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: CaptureEventArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("capture_event: {e}")))?;
+    let stored = indexer
+        .capture_event(NewEvent {
+            event_id: a.event_id,
+            at: a.at,
+            source: a.source,
+            mime: a.mime,
+            label_skill: a.label_skill,
+            instance_page_id: a.instance_page_id,
+            title: a.title,
+            body: a.body,
+            provenance: a.provenance,
+        })
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?;
+    Ok(event_to_json(&stored))
+}
+
+#[derive(Deserialize)]
+struct ListInboxArgs {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn tool_list_inbox(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: ListInboxArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("list_inbox: {e}")))?;
+    let events = indexer
+        .list_inbox(a.limit)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_inbox: {e}")))?;
+    Ok(json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() }))
+}
+
+#[derive(Deserialize)]
+struct ListEventsArgs {
+    instance_page_id: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn tool_list_events(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: ListEventsArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("list_events: {e}")))?;
+    let events = indexer
+        .list_events(&a.instance_page_id, a.limit)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_events: {e}")))?;
+    Ok(json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() }))
+}
+
+#[derive(Deserialize)]
+struct AssignEventArgs {
+    event_id: String,
+    instance_page_id: String,
+}
+
+async fn tool_assign_event(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: AssignEventArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("assign_event: {e}")))?;
+    indexer
+        .assign_event(&a.event_id, &a.instance_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("assign_event: {e}")))?;
+    Ok(
+        json!({ "event_id": a.event_id, "instance_page_id": a.instance_page_id, "status": "processed" }),
+    )
+}
+
+fn event_to_json(e: &EventInfo) -> Value {
+    json!({
+        "event_id": e.event_id,
+        "at": e.at,
+        "source": e.source,
+        "mime": e.mime,
+        "label_skill": e.label_skill,
+        "instance_page_id": e.instance_page_id,
+        "status": e.status,
+        "title": e.title,
+        "body": e.body,
+        "provenance": e.provenance,
+    })
+}
+
 // --- admin ops tools (admin-role gated) ------------------------
 //
 // These mirror the documented MCP admin surface and delegate to the
@@ -1242,6 +1362,64 @@ fn tools_list_payload() -> Value {
                             "enum": ["asc", "desc"],
                             "default": "desc"
                         }
+                    }
+                }),
+            ),
+            tool_entry(
+                "capture_event",
+                "Append an event to the global inbox (M7). `label_skill` links \
+                 to the skill that knows how to process this event type; \
+                 `instance_page_id` may pre-flag a candidate instance but the \
+                 event stays in the inbox until `assign_event`. Returns the \
+                 stored event with its id + timestamp.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "event_id": { "type": "string", "description": "Caller-supplied id; server generates a ULID when absent." },
+                        "at": { "type": "string", "description": "RFC 3339 event time." },
+                        "source": { "type": "string", "description": "Ingest source, e.g. gmail/meet/drive." },
+                        "mime": { "type": "string", "description": "Content type, e.g. message/rfc822." },
+                        "label_skill": { "type": "string", "description": "Skill id: how to process this event type." },
+                        "instance_page_id": { "type": "string", "description": "Candidate instance (label hint); still inbox until assigned." },
+                        "title": { "type": "string" },
+                        "body": { "type": "string" },
+                        "provenance": { "type": "object" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_inbox",
+                "List unprocessed events (the inbox), newest first.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_events",
+                "List an instance's processed event history (the event sequence \
+                 whose projection is its state), oldest first.",
+                json!({
+                    "type": "object",
+                    "required": ["instance_page_id"],
+                    "properties": {
+                        "instance_page_id": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+                    }
+                }),
+            ),
+            tool_entry(
+                "assign_event",
+                "Assign an inbox event to an instance and mark it processed — the \
+                 (external) agent folding the event into the instance.",
+                json!({
+                    "type": "object",
+                    "required": ["event_id", "instance_page_id"],
+                    "properties": {
+                        "event_id": { "type": "string" },
+                        "instance_page_id": { "type": "string" }
                     }
                 }),
             ),

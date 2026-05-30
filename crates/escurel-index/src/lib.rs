@@ -20,6 +20,7 @@
 
 pub mod chat;
 pub mod citation;
+pub mod events;
 pub mod indexer;
 pub mod query;
 pub mod read;
@@ -29,6 +30,7 @@ pub mod validate;
 
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
+pub use events::{EVENTS_MAX_LIMIT, EventInfo, NewEvent};
 pub use indexer::{
     AuditDrift, Indexer, IndexerError, RebuildProgress, derive_attach_alias, is_safe_attach_source,
     is_valid_attach_alias,

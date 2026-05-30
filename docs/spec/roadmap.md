@@ -119,6 +119,37 @@ prototype's e2e verification suite.
 
 Cut a release. Tag `v1.0.0`. Publish operator docs.
 
+### M7 — Event-sourcing surface (post-v1)
+
+escurel models memory as a triad — **Events · Skills · Instances** — where
+the current state of an instance **is the projection of its event
+sequence, mediated by the skills** that describe how to process each
+event. v1 ships the Skills + Instances legs and the *event log via
+existing primitives*; M7 makes the **Event** leg and the projection
+first-class, **deliberately extending the v1 contract** (each change
+ships with its spec/contract/ADR update):
+
+- **Events / inbox store.** A dedicated `events` table (a real inbox
+  queue) tightly bound to the page model: each event's `label_skill`
+  links to the **skill** that knows how to process it, and
+  `instance_page_id` links to the **instance** it belongs to once
+  processed. Tools: `capture_event`, `list_inbox`, `list_events`,
+  `assign_event`. (This is an intentional break of the v1 "events are
+  ordinary instances; no new storage shape" invariant.)
+- **Frontmatter-link indexing** so an instance's frontmatter relations
+  (`about:`/`derived_from:`) are real backlinks.
+- **Historical state** via CRDT snapshots: `expand(as_of=T | version)`
+  re-materializes an instance's frontmatter+body at a past instant
+  (extends the v1 rule that markdown instances ignore `@version`).
+- **Outbound webhook** on new inbox items (the v1 transports are all
+  inbound; this is a new platform surface).
+- **External-agent projection.** The fold event→state is performed by an
+  **external** agent (using the event's `label_skill` as context); the
+  server stays automation-free, consistent with the v1 contract. v1.5's
+  in-server projection rules-engine remains out (see below).
+
+The reference consumer is the `escurel-explore` event/instance workspace.
+
 ## v1 cut-line — what is in vs. out
 
 In:
