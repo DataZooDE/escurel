@@ -81,6 +81,71 @@
     "label_skill": "email",
     "title": "Re: phase-2 adjacent integration — budget?",
     "body": "Reiter asks whether the adjacent-integration work seen in phase-1 can be folded into a phase-2 scope. Unprocessed — awaiting an agent to fold it onto the renewal.",
+    "status": "inbox",
     "provenance": { "provenance": "EXTRACTED", "from": "Dr. Sabine Reiter", "direction": "inbound" }
+  },
+  {
+    "at": "2026-04-19T16:40:00Z",
+    "source": "gmail",
+    "mime": "message/rfc822",
+    "label_skill": "email",
+    "title": "Intro · Hoffmann Automotive plant-data platform",
+    "body": "Inbound from Architect Brandt at Hoffmann Automotive after the Auto Tier-2 DACH webinar — asks for a working session on consolidating plant-engineering simulation data off the per-seat SAP stack.",
+    "instance": "markdown/instances/engagement__ha-spine.md",
+    "status": "inbox",
+    "provenance": { "provenance": "EXTRACTED", "from": "Architect Brandt", "direction": "inbound" }
+  },
+  {
+    "at": "2026-04-20T10:00:00Z",
+    "source": "meet",
+    "mime": "text/vtt",
+    "label_skill": "meeting",
+    "title": "Working session · Hoffmann Automotive × data zoo",
+    "body": "Discovery on the SAP plant-data estate. Brandt champions; Lang (CIO) is the economic buyer; Keller gates procurement. Unprocessed — awaiting qualification onto the Hoffmann spine.",
+    "instance": "markdown/instances/engagement__ha-spine.md",
+    "status": "inbox",
+    "provenance": { "provenance": "AUTO-PROMOTED", "duration_min": 38 }
+  },
+  {
+    "at": "2026-05-13T11:15:00Z",
+    "source": "gmail",
+    "mime": "message/rfc822",
+    "label_skill": "email",
+    "title": "Alpina Biotech · CH data residency question",
+    "body": "Dr. Moreau at Alpina Biotech asks whether per-assay sandboxes can be pinned to Swiss data residency. Unprocessed — candidate for the Alpina spine.",
+    "instance": "markdown/instances/engagement__alpina-spine.md",
+    "status": "inbox",
+    "provenance": { "provenance": "EXTRACTED", "from": "Dr. Moreau", "direction": "inbound" }
+  },
+  {
+    "at": "2026-06-12T08:00:00Z",
+    "source": "drive",
+    "mime": "text/markdown",
+    "label_skill": "doc",
+    "title": "Account health-check · Münchner Pharma",
+    "body": "Agent-generated weekly health roll-up across the Münchner Pharma estate: margin recovered, sentiment monotonic, renewal propensity 0.88. Unprocessed — awaiting fold onto the spine.",
+    "status": "inbox",
+    "provenance": { "provenance": "AUTO-PROMOTED", "author": "agt:health-monitor" }
+  },
+  {
+    "at": "2026-06-13T07:45:00Z",
+    "source": "agent",
+    "mime": "text/markdown",
+    "label_skill": "doc",
+    "title": "Lead-scoring sweep · DACH pipeline",
+    "body": "Nightly lead-scoring sweep flags two stale opportunities and one renewal signal across the DACH book. Unprocessed — no instance pre-flag; needs triage.",
+    "status": "inbox",
+    "provenance": { "provenance": "AUTO-PROMOTED", "author": "agt:lead-scorer" }
+  },
+  {
+    "at": "2026-06-14T13:20:00Z",
+    "source": "gcal",
+    "mime": "text/calendar",
+    "label_skill": "meeting",
+    "title": "Hold · Hoffmann Automotive commercial review",
+    "body": "Calendar hold for the commercial review with Keller (procurement) on the €140k platform opportunity. Unprocessed — candidate for the Hoffmann spine.",
+    "instance": "markdown/instances/engagement__ha-spine.md",
+    "status": "inbox",
+    "provenance": { "provenance": "EXTRACTED", "from": "Frau Keller" }
   }
 ]

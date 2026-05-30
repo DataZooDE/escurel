@@ -19,5 +19,22 @@
         "markdown": "---\ntype: instance\nskill: engagement\nid: hoffmann-spine\nat: 2026-03-12T14:20:00Z\nwith: [[contact::hoffmann]]\nchannel: event\nspine: true\nphase: delivering\ncommercial_model: fixed-price base + T&M change pool\ncontract_value: \"€350k base + €90k T&M pool\"\nrunning_margin: 0.66\nrisk_surface: \"0.40 · declining\"\nsentiment_trend: \"0.86 · positive · monotonic\"\nprimary_sponsor: [[contact::reiter]]\nchampion: [[contact::weber]]\norgunit: [[customer::muenchner-pharma]]\ncustomer: [[customer::muenchner-pharma]]\n---\n\n# Engagement — Münchner Pharma S&OP arc\n\nScope-creep detector reframed adjacent integration as a renewal signal; running margin recovered after the change order.\n"
       }
     ]
+  },
+  {
+    "page_id": "markdown/instances/engagement__ha-spine.md",
+    "states": [
+      {
+        "taken_at": "2026-04-20T10:00:00Z",
+        "markdown": "---\ntype: instance\nskill: engagement\nid: ha-spine\nat: 2026-04-20T10:00:00Z\nwith: [[contact::brandt]]\nchannel: event\nspine: true\nphase: prospecting\ncommercial_model: undetermined\ncontract_value: \"TBD\"\nrunning_margin: \"—\"\nrisk_surface: \"0.62 · elevated\"\nsentiment_trend: \"0.55 · neutral · forming\"\nprimary_sponsor: [[contact::lang]]\nchampion: [[contact::brandt]]\norgunit: [[orgunit::ha-plant-eng]]\ncustomer: [[customer::hoffmann-automotive]]\n---\n\n# Engagement — Hoffmann Automotive S&OP arc\n\nFirst working session booked off the Auto Tier-2 DACH webinar. No qualified opportunity yet.\n"
+      },
+      {
+        "taken_at": "2026-05-04T09:00:00Z",
+        "markdown": "---\ntype: instance\nskill: engagement\nid: ha-spine\nat: 2026-04-20T10:00:00Z\nwith: [[contact::brandt]]\nchannel: event\nspine: true\nphase: qualifying\ncommercial_model: fixed-price platform license\ncontract_value: \"€140k (proposed)\"\nrunning_margin: \"—\"\nrisk_surface: \"0.55 · elevated\"\nsentiment_trend: \"0.66 · positive · rising\"\nprimary_sponsor: [[contact::lang]]\nchampion: [[contact::brandt]]\norgunit: [[orgunit::ha-plant-eng]]\ncustomer: [[customer::hoffmann-automotive]]\n---\n\n# Engagement — Hoffmann Automotive S&OP arc\n\nDiscovery qualified BANT; Lang is the economic buyer. Opportunity opened at €140k.\n"
+      },
+      {
+        "taken_at": "2026-06-01T09:00:00Z",
+        "markdown": "---\ntype: instance\nskill: engagement\nid: ha-spine\nat: 2026-04-20T10:00:00Z\nwith: [[contact::brandt]]\nchannel: event\nspine: true\nphase: qualifying\ncommercial_model: fixed-price platform license\ncontract_value: \"€140k base\"\nrunning_margin: \"—\"\nrisk_surface: \"0.50 · settling\"\nsentiment_trend: \"0.72 · positive · rising\"\nprimary_sponsor: [[contact::lang]]\nchampion: [[contact::brandt]]\norgunit: [[orgunit::ha-plant-eng]]\ncustomer: [[customer::hoffmann-automotive]]\n---\n\n# Engagement — Hoffmann Automotive S&OP arc\n\nCommercial review scheduled with procurement; SAP-bridge integration scoped as the first delivery workstream.\n"
+      }
+    ]
   }
 ]

@@ -189,7 +189,13 @@ class HttpEscurelClient implements EscurelClient {
   }) async {
     final result = await _call('neighbours', {
       'page_id': pageId,
-      'direction': direction.name,
+      // The gateway's neighbours tool accepts `in|out|both`, not the
+      // Dart enum's `incoming|outgoing` names.
+      'direction': switch (direction) {
+        LinkDirection.incoming => 'in',
+        LinkDirection.outgoing => 'out',
+        LinkDirection.both => 'both',
+      },
       'link_skill': ?linkSkill,
       'as_of': ?asOf,
       'scenario': ?scenario,

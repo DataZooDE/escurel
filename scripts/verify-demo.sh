@@ -148,6 +148,28 @@ spine_events=$(mcp_int list_events "{\"instance_page_id\":\"$spine_id\"}" 'r.eve
 [[ "$spine_events" =~ ^[1-9] ]] || fail "no events bound to the spine (got '$spine_events')"
 note "probe ok: spine events = $spine_events"
 
+# --- enriched corpus: graph + grouping (links footer, menus) ---------
+note "probe: spine neighbours (backlinks + outgoing) for the links footer"
+backlinks=$(mcp_int neighbours "{\"page_id\":\"$spine_id\",\"direction\":\"in\"}" 'r.edges.length')
+outgoing=$(mcp_int neighbours "{\"page_id\":\"$spine_id\",\"direction\":\"out\"}" 'r.edges.length')
+[[ "$backlinks" -ge 7 ]] || fail "spine should have ≥7 backlinks (got '$backlinks')"
+[[ "$outgoing" -ge 5 ]] || fail "spine should have ≥5 outgoing links (got '$outgoing')"
+note "probe ok: spine backlinks=$backlinks, outgoing=$outgoing"
+
+note "probe: skills registry has event-typed + entity-bound skills"
+sk_event=$(mcp_int list_skills '{}' 'r.skills.filter(function(s){return s.is_event_typed}).length')
+sk_entity=$(mcp_int list_skills '{}' 'r.skills.filter(function(s){return !s.is_event_typed}).length')
+[[ "$sk_event" -ge 1 && "$sk_entity" -ge 2 ]] \
+  || fail "expected event-typed + entity-bound skills (event=$sk_event entity=$sk_entity)"
+note "probe ok: skills event-typed=$sk_event, entity-bound=$sk_entity"
+
+note "probe: Instances directory is multi-account (per-skill counts)"
+n_customer=$(mcp_int list_instances '{"skill_id":"customer"}' 'r.instances.length')
+n_workstream=$(mcp_int list_instances '{"skill_id":"workstream"}' 'r.instances.length')
+[[ "$n_customer" -ge 3 ]] || fail "expected ≥3 customers (got '$n_customer')"
+[[ "$n_workstream" -ge 4 ]] || fail "expected ≥4 workstreams (got '$n_workstream')"
+note "probe ok: customers=$n_customer, workstreams=$n_workstream"
+
 note "probe: capture_event appends to the inbox"
 inbox_before=$(mcp_int list_inbox '{}' 'r.events.length')
 [[ "$inbox_before" =~ ^[0-9] ]] || fail "list_inbox failed (got '$inbox_before')"

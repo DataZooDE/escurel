@@ -5,6 +5,7 @@ id: hoffmann-3site
 at: 2026-06-04T11:30:00Z
 status: accepted
 project: [[project::hoffmann-pilot]]
+engagement: [[engagement::hoffmann-spine]]
 delta_value_eur: 18000
 split: 60/40
 scope: extend tenant model from 2 to 3 R&D sites; shared demand consolidation

@@ -196,6 +196,22 @@ void main() {
       expect(r.first.linkSkill, 'with');
     });
 
+    test('neighbours maps LinkDirection to the gateway wire values in|out|both', () async {
+      // The gateway's neighbours tool rejects `incoming`/`outgoing`; the
+      // client must send `in`/`out`/`both`. A real socket captures it.
+      String? sent;
+      mock.toolHandlers['neighbours'] = (args) {
+        sent = args['direction'] as String?;
+        return {'edges': const []};
+      };
+      await client.neighbours('p', direction: LinkDirection.incoming);
+      expect(sent, 'in');
+      await client.neighbours('p', direction: LinkDirection.outgoing);
+      expect(sent, 'out');
+      await client.neighbours('p', direction: LinkDirection.both);
+      expect(sent, 'both');
+    });
+
     test('list_skills unmarshals required_frontmatter', () async {
       mock.toolHandlers['list_skills'] = (_) => {
             'skills': [
