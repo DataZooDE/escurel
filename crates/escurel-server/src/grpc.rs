@@ -37,8 +37,8 @@ use escurel_admin::{AdminError, TenantSpec as AdminTenantSpec, TenantStore};
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::Version;
 use escurel_index::{
-    AppendChatMessage, Direction, EventInfo, Indexer, IndexerError, Issue, ListChatMessages,
-    NewEvent, OrderDir, Severity, derive_attach_alias, is_safe_attach_source,
+    AppendChatMessage, Direction, EventInfo, Granularity, Indexer, IndexerError, Issue,
+    ListChatMessages, NewEvent, OrderDir, Severity, derive_attach_alias, is_safe_attach_source,
 };
 use escurel_md::PageType;
 use escurel_proto::v1::TenantSpec as ProtoTenantSpec;
@@ -258,8 +258,27 @@ impl Escurel for EscurelGrpc {
             Some(r.skill.as_str())
         };
         let k = if r.k == 0 { 10 } else { r.k as usize };
+        let granularity = Granularity::from_arg(&r.granularity);
+        // `filter_json` is an optional frontmatter post-filter object.
+        let filter: Option<serde_json::Value> = if r.filter_json.trim().is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str(&r.filter_json)
+                    .map_err(|e| Status::invalid_argument(format!("search filter_json: {e}")))?,
+            )
+        };
         let hits = indexer
-            .search(&r.q, k, pt, skill, opt(&r.as_of), opt(&r.scenario))
+            .search_with(
+                &r.q,
+                k,
+                pt,
+                skill,
+                opt(&r.as_of),
+                opt(&r.scenario),
+                granularity,
+                filter.as_ref(),
+            )
             .await
             .map_err(|e| Status::internal(format!("search: {e}")))?;
         let hits = hits
@@ -280,7 +299,7 @@ impl Escurel for EscurelGrpc {
             .collect();
         Ok(Response::new(SearchResponse {
             hits,
-            granularity: "block".to_owned(),
+            granularity: granularity.as_str().to_owned(),
         }))
     }
 

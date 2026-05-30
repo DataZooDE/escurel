@@ -22,21 +22,61 @@
 //! unacceptable; callers (and tests) refresh deliberately after
 //! a batch of writes.
 //!
-//! ## What does NOT ship in this PR
+//! ## Granularity + post-filter
 //!
-//! - Page-granularity hits (collapsing adjacent block hits).
-//! - Frontmatter filter clauses (`{at: {">=": "..."}}`).
+//! - `granularity = page` collapses the fused ranking to one hit per
+//!   page (best-scoring block wins; the block `anchor` is dropped).
+//!   `block` (default) returns block hits unchanged.
+//! - An optional frontmatter `filter` ([`crate::filter`]) is applied
+//!   to each candidate's frontmatter *after* retrieval, before the
+//!   top-`k` cut, so a filtered search still returns up to `k` hits.
+//!
+//! ## What does NOT ship here
+//!
 //! - The ADR-0001 retrieval-quality gate. That gate requires a
 //!   real embedder; M2.2 (EmbeddingGemma) lands the embedder,
 //!   then the gate is the first thing to run before production.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use duckdb::params;
 use escurel_md::PageType;
 
 use crate::indexer::BLOCKS_DENSE_VEC_DIM;
 use crate::{Indexer, IndexerError};
+
+/// Result granularity for [`Indexer::search_with`]. `Block` returns one
+/// hit per matching block; `Page` collapses adjacent block hits to one
+/// per page (the best-scoring block wins, its `anchor` dropped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Granularity {
+    #[default]
+    Block,
+    Page,
+}
+
+impl Granularity {
+    /// Parse the wire value (`"page"` → `Page`, anything else →
+    /// `Block`). Empty / unknown defaults to `Block`, matching the
+    /// protocol default.
+    #[must_use]
+    pub fn from_arg(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("page") {
+            Self::Page
+        } else {
+            Self::Block
+        }
+    }
+
+    /// Wire string reported back in the search response.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Page => "page",
+        }
+    }
+}
 
 /// One block-granularity hit. Shape mirrors `Hit` in
 /// `docs/spec/protocol.md §Shared types`.
@@ -85,14 +125,10 @@ impl Indexer {
         Ok(())
     }
 
-    /// Hybrid block search. Returns up to `k` [`SearchHit`]s
-    /// ordered by RRF-fused score descending.
-    ///
-    /// Optional filters narrow both the vector and FTS sides
-    /// before fusion:
-    /// - `page_type` — restrict to skill or instance blocks.
-    /// - `skill` — restrict to blocks belonging to pages of one
-    ///   skill.
+    /// Hybrid block search with default granularity (`Block`) and no
+    /// frontmatter post-filter. Thin wrapper over [`Self::search_with`]
+    /// kept for the many internal callers that don't need the extra
+    /// knobs.
     pub async fn search(
         &self,
         q: &str,
@@ -101,6 +137,39 @@ impl Indexer {
         skill: Option<&str>,
         as_of: Option<&str>,
         scenario: Option<&str>,
+    ) -> Result<Vec<SearchHit>, IndexerError> {
+        self.search_with(
+            q,
+            k,
+            page_type,
+            skill,
+            as_of,
+            scenario,
+            Granularity::Block,
+            None,
+        )
+        .await
+    }
+
+    /// Hybrid block/page search. Returns up to `k` [`SearchHit`]s
+    /// ordered by RRF-fused score descending.
+    ///
+    /// SQL-pushed filters narrow both the vector and FTS sides before
+    /// fusion (`page_type`, `skill`, `as_of`, `scenario`). The
+    /// `filter` object is a frontmatter post-filter applied after
+    /// hydration (see [`crate::filter`]); `granularity` controls
+    /// block- vs page-level collapse.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search_with(
+        &self,
+        q: &str,
+        k: usize,
+        page_type: Option<PageType>,
+        skill: Option<&str>,
+        as_of: Option<&str>,
+        scenario: Option<&str>,
+        granularity: Granularity,
+        filter: Option<&serde_json::Value>,
     ) -> Result<Vec<SearchHit>, IndexerError> {
         if k == 0 {
             return Ok(Vec::new());
@@ -156,13 +225,37 @@ impl Indexer {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.0.cmp(&b.0))
         });
-        ranked.truncate(k);
 
-        // 6. Hydrate hits.
-        let mut hits = Vec::with_capacity(ranked.len());
+        // 6. Hydrate in ranked order, applying the frontmatter
+        // post-filter and page collapse as we go, stopping once we
+        // have `k` hits. Filtering before the cut (rather than after a
+        // `truncate(k)`) keeps a filtered search returning up to `k`.
+        let mut hits = Vec::with_capacity(k);
+        let mut seen_pages: HashSet<String> = HashSet::new();
         for (block_id, score) in ranked {
-            if let Some(hit) = hydrate_hit(&conn, &block_id, score)? {
-                hits.push(hit);
+            if hits.len() >= k {
+                break;
+            }
+            let Some(hit) = hydrate_hit(&conn, &block_id, score)? else {
+                continue;
+            };
+            if let Some(f) = filter
+                && !crate::filter::matches_filter(f, &hit.frontmatter_excerpt)
+            {
+                continue;
+            }
+            match granularity {
+                Granularity::Block => hits.push(hit),
+                // One hit per page: the first (best-scoring) block wins;
+                // the block anchor is dropped for a page-level hit.
+                Granularity::Page => {
+                    if seen_pages.insert(hit.page_id.clone()) {
+                        hits.push(SearchHit {
+                            anchor: None,
+                            ..hit
+                        });
+                    }
+                }
             }
         }
         Ok(hits)

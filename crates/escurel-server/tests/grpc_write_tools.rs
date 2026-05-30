@@ -138,6 +138,80 @@ async fn search_returns_hits_for_query() {
 }
 
 #[tokio::test]
+async fn search_page_granularity_reports_page_and_drops_anchor() {
+    let p = start(None).await;
+    let mut a = authed_client(&p).await;
+    let resp = a
+        .client
+        .search(a.req(SearchRequest {
+            q: "customer".to_owned(),
+            k: 10,
+            granularity: "page".to_owned(),
+            page_type: String::new(),
+            skill: "customer".to_owned(),
+            filter_json: String::new(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.granularity, "page");
+    assert!(!resp.hits.is_empty());
+    // Page-level hits carry no block anchor…
+    assert!(resp.hits.iter().all(|h| h.anchor.is_empty()));
+    // …and there is at most one hit per page.
+    let mut pages: Vec<&str> = resp.hits.iter().map(|h| h.page_id.as_str()).collect();
+    let n = pages.len();
+    pages.sort_unstable();
+    pages.dedup();
+    assert_eq!(pages.len(), n, "page granularity yields one hit per page");
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn search_filter_narrows_by_frontmatter() {
+    let p = start(None).await;
+    let mut a = authed_client(&p).await;
+    let base = SearchRequest {
+        q: "customer".to_owned(),
+        k: 10,
+        granularity: String::new(),
+        page_type: String::new(),
+        skill: "customer".to_owned(),
+        filter_json: String::new(),
+        ..Default::default()
+    };
+    let unfiltered = a
+        .client
+        .search(a.req(base.clone()))
+        .await
+        .unwrap()
+        .into_inner();
+    // acme is tier=gold; initech has no tier → the equality clause
+    // drops it.
+    let filtered = a
+        .client
+        .search(a.req(SearchRequest {
+            filter_json: r#"{"tier":"gold"}"#.to_owned(),
+            ..base
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        filtered.hits.iter().any(|h| h.page_id.contains("acme")),
+        "gold-tier acme survives the filter"
+    );
+    assert!(
+        !filtered.hits.iter().any(|h| h.page_id.contains("initech")),
+        "initech (no tier) is filtered out: {:?}",
+        filtered.hits.iter().map(|h| &h.page_id).collect::<Vec<_>>()
+    );
+    assert!(filtered.hits.len() <= unfiltered.hits.len());
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn neighbours_returns_outbound_edges() {
     let p = start(None).await;
     let mut a = authed_client(&p).await;
