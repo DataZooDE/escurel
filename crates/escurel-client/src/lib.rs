@@ -43,16 +43,19 @@ mod error;
 pub use error::Error;
 
 // Re-export the request/response types the downstream caller needs
-// so they never pin `escurel-proto` directly. The set tracks the
-// signature list in `docs/spec/dx.md` §"Client crate for the app's
-// backend" one-to-one.
+// so they never pin `escurel-proto` directly. Covers the agent
+// surface from `docs/spec/dx.md` §"Client crate for the app's
+// backend" plus the M7 event-sourcing RPCs (capture / inbox / events /
+// assign) and `validate`.
 pub use escurel_proto::v1::{
-    AppendMessageRequest, AppendMessageResponse, ChatMessage, Edge, ExpandBlock, ExpandRequest,
-    ExpandResponse, InstanceInfo, ListInstancesRequest, ListInstancesResponse, ListMessagesRequest,
-    ListMessagesResponse, ListSkillsRequest, ListSkillsResponse, NeighboursRequest,
-    NeighboursResponse, PageRef, ResolveRequest, ResolveResponse, RunStoredQueryRequest,
-    RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
-    UpdatePageRequest, UpdatePageResponse, ValidationIssue, WikilinkParsed,
+    AppendMessageRequest, AppendMessageResponse, AssignEventRequest, AssignEventResponse,
+    CaptureEventRequest, ChatMessage, Edge, Event, ExpandBlock, ExpandRequest, ExpandResponse,
+    InstanceInfo, ListEventsRequest, ListEventsResponse, ListInboxRequest, ListInboxResponse,
+    ListInstancesRequest, ListInstancesResponse, ListMessagesRequest, ListMessagesResponse,
+    ListSkillsRequest, ListSkillsResponse, NeighboursRequest, NeighboursResponse, PageRef,
+    ResolveRequest, ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse, SearchHit,
+    SearchRequest, SearchResponse, Skill, StoredQueryColumn, UpdatePageRequest, UpdatePageResponse,
+    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
 };
 // Re-exported so callers don't need to depend on `secrecy` directly
 // just to spell out a token. Keeping the version in sync with this
@@ -198,6 +201,45 @@ impl Client {
     ) -> Result<ListMessagesResponse, Error> {
         let mut client = self.inner.clone();
         Ok(client.list_messages(self.authed(req)).await?.into_inner())
+    }
+
+    /// Dry-run the indexer's validation pipeline over draft `content`
+    /// without committing — returns the issue list the write path
+    /// would surface. See `protocol.md` §validate.
+    pub async fn validate(&self, req: ValidateRequest) -> Result<ValidateResponse, Error> {
+        let mut client = self.inner.clone();
+        Ok(client.validate(self.authed(req)).await?.into_inner())
+    }
+
+    /// Append an event to the global inbox (M7 event sourcing). An
+    /// empty `event_id` lets the server mint a ULID; the returned
+    /// [`Event`] echoes the stored row, including its `status`
+    /// (`inbox`).
+    pub async fn capture_event(&self, req: CaptureEventRequest) -> Result<Event, Error> {
+        let mut client = self.inner.clone();
+        Ok(client.capture_event(self.authed(req)).await?.into_inner())
+    }
+
+    /// List unprocessed inbox events, newest first. `limit` of 0 means
+    /// no limit.
+    pub async fn list_inbox(&self, req: ListInboxRequest) -> Result<ListInboxResponse, Error> {
+        let mut client = self.inner.clone();
+        Ok(client.list_inbox(self.authed(req)).await?.into_inner())
+    }
+
+    /// List an instance's processed event history, oldest first.
+    pub async fn list_events(&self, req: ListEventsRequest) -> Result<ListEventsResponse, Error> {
+        let mut client = self.inner.clone();
+        Ok(client.list_events(self.authed(req)).await?.into_inner())
+    }
+
+    /// Bind an inbox event to an instance and mark it processed.
+    pub async fn assign_event(
+        &self,
+        req: AssignEventRequest,
+    ) -> Result<AssignEventResponse, Error> {
+        let mut client = self.inner.clone();
+        Ok(client.assign_event(self.authed(req)).await?.into_inner())
     }
 
     /// Wrap a request body in a tonic `Request<T>` with the bearer

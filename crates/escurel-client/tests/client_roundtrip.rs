@@ -6,8 +6,9 @@
 //! mocks at the boundary the test exercises (CLAUDE principle 2).
 
 use escurel_client::{
-    AppendMessageRequest, Client, ExpandRequest, ListMessagesRequest, ListSkillsRequest,
-    ResolveRequest, SearchRequest, SecretString, UpdatePageRequest,
+    AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, ExpandRequest,
+    ListEventsRequest, ListInboxRequest, ListMessagesRequest, ListSkillsRequest, ResolveRequest,
+    SearchRequest, SecretString, UpdatePageRequest, ValidateRequest,
 };
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
 
@@ -64,6 +65,20 @@ async fn authed_client(p: &EscurelProcess) -> Client {
     Client::connect(&endpoint, SecretString::from(token))
         .await
         .unwrap()
+}
+
+/// Resolve a `[[wikilink]]` to its concrete `page_id`.
+async fn resolve_page_id(client: &Client, wikilink: &str) -> String {
+    client
+        .resolve(ResolveRequest {
+            wikilink: wikilink.to_owned(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .page
+        .expect("page present")
+        .page_id
 }
 
 #[tokio::test]
@@ -249,6 +264,132 @@ async fn append_then_list_messages_round_trip() {
         .unwrap();
     let bodies: Vec<&str> = resp.messages.iter().map(|m| m.content.as_str()).collect();
     assert_eq!(bodies, vec!["hello", "world"]);
+    p.shutdown().await;
+}
+
+/// `validate` dry-runs the indexer pipeline over draft content and
+/// returns the same issue list the write path would surface — without
+/// committing. A well-formed instance page validates clean.
+#[tokio::test]
+async fn validate_accepts_well_formed_page() {
+    let p = start().await;
+    let client = authed_client(&p).await;
+    let page_id = resolve_page_id(&client, "[[customer::acme]]").await;
+    let resp = client
+        .validate(ValidateRequest {
+            page_id,
+            content: ACME_INSTANCE.to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        resp.ok,
+        "expected clean validation, issues: {:?}",
+        resp.issues
+    );
+    p.shutdown().await;
+}
+
+/// Realistic CRM flow exercising the whole M7 event quartet end to end:
+/// capture an event (lands in the inbox) → see it in `list_inbox` →
+/// `assign_event` it to the Acme customer instance → read it back from
+/// that instance's processed history via `list_events`.
+#[tokio::test]
+async fn capture_inbox_assign_list_events_round_trip() {
+    let p = start().await;
+    let client = authed_client(&p).await;
+    let acme = resolve_page_id(&client, "[[customer::acme]]").await;
+
+    let captured = client
+        .capture_event(CaptureEventRequest {
+            source: "manual".to_owned(),
+            mime: "text/plain".to_owned(),
+            label_skill: "note".to_owned(),
+            title: "Renewal call".to_owned(),
+            body: "Acme wants to renew the gold tier.".to_owned(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        !captured.event_id.is_empty(),
+        "server should mint a ULID event_id"
+    );
+    assert_eq!(captured.status, "inbox");
+    let event_id = captured.event_id.clone();
+
+    // Unassigned event is visible in the global inbox.
+    let inbox = client
+        .list_inbox(ListInboxRequest { limit: 0 })
+        .await
+        .unwrap();
+    assert!(
+        inbox.events.iter().any(|e| e.event_id == event_id),
+        "captured event {event_id} not found in inbox"
+    );
+
+    // Assign it to the Acme instance; the ack echoes the binding.
+    let ack = client
+        .assign_event(AssignEventRequest {
+            event_id: event_id.clone(),
+            instance_page_id: acme.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(ack.event_id, event_id);
+    assert_eq!(ack.instance_page_id, acme);
+
+    // It now appears in the instance's processed event history and has
+    // left the inbox.
+    let events = client
+        .list_events(ListEventsRequest {
+            instance_page_id: acme.clone(),
+            limit: 0,
+        })
+        .await
+        .unwrap();
+    let assigned = events
+        .events
+        .iter()
+        .find(|e| e.event_id == event_id)
+        .expect("assigned event in instance history");
+    assert_eq!(assigned.status, "processed");
+    assert_eq!(assigned.instance_page_id, acme);
+
+    let inbox_after = client
+        .list_inbox(ListInboxRequest { limit: 0 })
+        .await
+        .unwrap();
+    assert!(
+        !inbox_after.events.iter().any(|e| e.event_id == event_id),
+        "assigned event should no longer be in the inbox"
+    );
+    p.shutdown().await;
+}
+
+/// `list_inbox` honours its `limit` cap.
+#[tokio::test]
+async fn list_inbox_respects_limit() {
+    let p = start().await;
+    let client = authed_client(&p).await;
+    for i in 0..3 {
+        client
+            .capture_event(CaptureEventRequest {
+                source: "manual".to_owned(),
+                mime: "text/plain".to_owned(),
+                label_skill: "note".to_owned(),
+                title: format!("evt-{i}"),
+                body: "body".to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    let limited = client
+        .list_inbox(ListInboxRequest { limit: 2 })
+        .await
+        .unwrap();
+    assert_eq!(limited.events.len(), 2, "limit=2 should cap the inbox read");
     p.shutdown().await;
 }
 
