@@ -145,10 +145,15 @@ ships with its spec/contract/ADR update):
   inbound; this is a new platform surface).
 - **External-agent projection.** The fold event→state is performed by an
   **external** agent (using the event's `label_skill` as context); the
-  server stays automation-free, consistent with the v1 contract. v1.5's
-  in-server projection rules-engine remains out (see below).
+  server stays automation-free, consistent with the v1 contract. The
+  reference implementation is the **`escurel-demo-agent`** crate — it
+  reads the inbox (notified by the capture webhook, or polling), routes
+  each event to its instance (pre-flag, else a `label_skill → instance`
+  table), and folds it in via `assign_event`. v1.5's in-server
+  projection rules-engine remains out (see below).
 
-The reference consumer is the `escurel-explore` event/instance workspace.
+The reference consumer is the `escurel-explore` event/instance workspace;
+the reference processor is the `escurel-demo-agent` crate.
 
 ## v1 cut-line — what is in vs. out
 
