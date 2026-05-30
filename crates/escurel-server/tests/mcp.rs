@@ -473,6 +473,7 @@ async fn tools_list_returns_the_agent_tools_with_schemas() {
         "capture_event",
         "list_inbox",
         "list_events",
+        "list_snapshots",
         "assign_event",
     ];
     for name in expected {

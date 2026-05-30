@@ -99,6 +99,8 @@ class _CapStubClient implements EscurelClient {
   Future<List<Event>> listEvents(String instancePageId, {int? limit}) =>
       inner.listEvents(instancePageId, limit: limit);
   @override
+  Future<List<String>> listSnapshots(String pageId) => inner.listSnapshots(pageId);
+  @override
   Future<Event> captureEvent({
     String? at,
     String source = '',

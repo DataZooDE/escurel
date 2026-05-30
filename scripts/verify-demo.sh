@@ -109,6 +109,7 @@ present inbox
 present region-instance
 present instance-pane
 present skill-wheel
+present version-markers
 present time-scrubber
 present scenario-switch
 
@@ -163,6 +164,11 @@ name_early=$(mcp_int expand "{\"page_id\":\"$spine_id\",\"as_of\":\"2026-03-13T0
 [[ -n "$name_now" && -n "$name_early" && "$name_now" != "$name_early" ]] \
   || fail "expand(as_of) did not show a different historical phase (now='$name_now', early='$name_early')"
 note "probe ok: spine phase now='$name_now', as_of(T)='$name_early'"
+
+note "probe: list_snapshots exposes the spine's state-over-time markers"
+snap_count=$(mcp_int list_snapshots "{\"page_id\":\"$spine_id\"}" 'r.snapshots.length')
+[[ "$snap_count" -ge 2 ]] || fail "spine has too few snapshots for version nav (got '$snap_count')"
+note "probe ok: spine snapshots = $snap_count"
 
 # --- live loop: capture → inbox → escurel-demo-agent → instance ------
 # The full M7 vision end-to-end: capture an event pre-flagged for the

@@ -49,6 +49,24 @@ impl Indexer {
         }
         Ok(())
     }
+
+    /// The `taken_at` timestamps of a page's snapshot history, oldest
+    /// first — the discrete points `expand(as_of = T)` can replay (the
+    /// "state over time" version markers in the UI). Empty (not an
+    /// error) when the page has no recorded history.
+    pub async fn list_snapshots(&self, page_id: &str) -> Result<Vec<String>, IndexerError> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT strftime(taken_at, '%Y-%m-%dT%H:%M:%SZ') FROM crdt_snapshots \
+             WHERE page_id = ? ORDER BY taken_at ASC, snapshot_hlc ASC",
+        )?;
+        let rows = stmt.query_map(params![page_id], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
 }
 
 /// The newest snapshot for `page_id` taken at-or-before `as_of`, or

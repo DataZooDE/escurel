@@ -183,6 +183,11 @@ when born, `null` when not). This extends the v1 rule that markdown
 instances ignore `@version` silently — markdown instances with a
 seeded snapshot history now honour the time cut.
 
+- **`list_snapshots`** *(read)* — `{page_id}` → `{snapshots: [taken_at,
+  …]}`, the RFC-3339 timestamps of an instance's snapshot history,
+  oldest first. These are the discrete points `expand(as_of=T)` can
+  replay — the "state over time" version markers in the instance view.
+
 For events: `expand` returns the full body of an event instance
 including any narrative text and follow-up links. Anchor support
 is the same as any other instance.

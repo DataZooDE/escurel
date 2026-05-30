@@ -147,3 +147,45 @@ async fn expand_as_of_without_snapshots_keeps_birth_filter_behaviour() {
         .unwrap();
     assert_eq!(cv(&p), "350k");
 }
+
+#[tokio::test]
+async fn list_snapshots_returns_taken_at_points_oldest_first() {
+    let h = fresh_harness();
+    write_page(&h, SPINE, &spine_md("620k", "scaling")).await;
+
+    // No history yet → empty.
+    assert!(h.indexer.list_snapshots(SPINE).await.unwrap().is_empty());
+
+    h.indexer
+        .seed_snapshot_history(
+            SPINE,
+            &[
+                ("2026-03-10T00:00:00Z", &spine_md("350k", "qualifying")),
+                ("2026-04-10T00:00:00Z", &spine_md("420k", "delivering")),
+                ("2026-05-10T00:00:00Z", &spine_md("620k", "scaling")),
+            ],
+        )
+        .await
+        .unwrap();
+
+    // The discrete state-over-time points `expand(as_of=T)` can replay,
+    // oldest first.
+    let snaps = h.indexer.list_snapshots(SPINE).await.unwrap();
+    assert_eq!(
+        snaps,
+        vec![
+            "2026-03-10T00:00:00Z".to_owned(),
+            "2026-04-10T00:00:00Z".to_owned(),
+            "2026-05-10T00:00:00Z".to_owned(),
+        ],
+    );
+
+    // A page with no history → empty (not an error).
+    assert!(
+        h.indexer
+            .list_snapshots("markdown/instances/engagement/other.md")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

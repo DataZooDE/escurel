@@ -280,6 +280,12 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<List<String>> listSnapshots(String pageId) async {
+    final result = await _call('list_snapshots', {'page_id': pageId});
+    return (result['snapshots'] as List? ?? const []).cast<String>();
+  }
+
+  @override
   Future<Event> captureEvent({
     String? at,
     String source = '',
