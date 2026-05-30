@@ -54,6 +54,8 @@ class FixtureEscurelClient implements EscurelClient {
   factory FixtureEscurelClient.fromSources({
     required Map<String, String> skillFiles,
     required Map<String, String> instanceFiles,
+    List<Event> events = const [],
+    Map<String, List<String>> snapshots = const {},
   }) {
     final pages = <String, _ParsedPage>{};
 
@@ -100,12 +102,21 @@ class FixtureEscurelClient implements EscurelClient {
       );
     });
 
-    return FixtureEscurelClient._(pages);
+    return FixtureEscurelClient._(pages, [...events], snapshots);
   }
 
-  FixtureEscurelClient._(this._pages);
+  FixtureEscurelClient._(this._pages, this._events, this._snapshots);
 
   final Map<String, _ParsedPage> _pages;
+
+  /// Events keyed by their (short) instance page id; processed events
+  /// form an instance's history, `inbox` events the global inbox.
+  /// Mutable so [captureEvent] can append.
+  final List<Event> _events;
+
+  /// Snapshot `taken_at` timestamps per (short) page id — the
+  /// state-over-time version markers.
+  final Map<String, List<String>> _snapshots;
 
   static md.Page _tryParse(String basename, String raw) {
     try {
@@ -147,15 +158,18 @@ class FixtureEscurelClient implements EscurelClient {
 
   @override
   Future<List<SkillSummary>> listSkills() async {
-    return _pages.values
-        .where((p) => p.pageType == md.PageType.skill)
-        .map((p) => SkillSummary(
-              id: p.id,
-              description: (p.frontmatter['description'] as String?) ?? '',
-              requiredFrontmatter: _stringList(p.frontmatter['required_frontmatter']),
-              optionalFrontmatter: _stringList(p.frontmatter['optional_frontmatter']),
-            ))
-        .toList();
+    return _pages.values.where((p) => p.pageType == md.PageType.skill).map((p) {
+      final required = _stringList(p.frontmatter['required_frontmatter']);
+      return SkillSummary(
+        id: p.id,
+        description: (p.frontmatter['description'] as String?) ?? '',
+        requiredFrontmatter: required,
+        optionalFrontmatter: _stringList(p.frontmatter['optional_frontmatter']),
+        // Mirror the backend: event-typed iff `required_frontmatter`
+        // includes `at` (read.rs).
+        isEventTyped: required.contains('at'),
+      );
+    }).toList();
   }
 
   @override
@@ -323,17 +337,24 @@ class FixtureEscurelClient implements EscurelClient {
     );
   }
 
-  // ── unimplemented surfaces (need a real server) ─────────────
-
-  // Events/inbox are an HTTP-backend surface; fixture mode has none.
-  @override
-  Future<List<Event>> listInbox({int? limit}) async => const [];
+  // ── events / inbox / snapshots (real, over the fixture corpus) ──
 
   @override
-  Future<List<Event>> listEvents(String instancePageId, {int? limit}) async => const [];
+  Future<List<Event>> listInbox({int? limit}) async {
+    final inbox = _events.where((e) => e.status == 'inbox').toList();
+    return (limit != null && inbox.length > limit) ? inbox.sublist(0, limit) : inbox;
+  }
 
   @override
-  Future<List<String>> listSnapshots(String pageId) async => const [];
+  Future<List<Event>> listEvents(String instancePageId, {int? limit}) async {
+    final hist = _events
+        .where((e) => e.status == 'processed' && e.instancePageId == instancePageId)
+        .toList();
+    return (limit != null && hist.length > limit) ? hist.sublist(0, limit) : hist;
+  }
+
+  @override
+  Future<List<String>> listSnapshots(String pageId) async => _snapshots[pageId] ?? const [];
 
   @override
   Future<Event> captureEvent({
@@ -345,8 +366,22 @@ class FixtureEscurelClient implements EscurelClient {
     String title = '',
     String body = '',
     Map<String, dynamic>? provenance,
-  }) async =>
-      throw notYetImplemented('capture_event');
+  }) async {
+    final event = Event(
+      eventId: 'fixture-ev-${_events.length}',
+      at: at,
+      source: source,
+      mime: mime,
+      labelSkill: labelSkill,
+      instancePageId: instancePageId,
+      status: 'inbox',
+      title: title,
+      body: body,
+      provenance: provenance ?? const {},
+    );
+    _events.add(event);
+    return event;
+  }
 
   @override
   Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}}) async =>
