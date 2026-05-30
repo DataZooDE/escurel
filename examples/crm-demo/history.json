@@ -1,0 +1,23 @@
+[
+  {
+    "page_id": "markdown/instances/engagement__hoffmann-spine.md",
+    "states": [
+      {
+        "taken_at": "2026-03-12T14:20:00Z",
+        "markdown": "---\ntype: instance\nskill: engagement\nid: hoffmann-spine\nat: 2026-03-12T14:20:00Z\nwith: [[contact::hoffmann]]\nchannel: event\nspine: true\nphase: prospecting\ncommercial_model: undetermined\ncontract_value: \"TBD\"\nrunning_margin: \"—\"\nrisk_surface: \"0.70 · high\"\nsentiment_trend: \"0.55 · neutral · forming\"\nprimary_sponsor: [[contact::reiter]]\nchampion: [[contact::weber]]\norgunit: [[customer::muenchner-pharma]]\ncustomer: [[customer::muenchner-pharma]]\n---\n\n# Engagement — Münchner Pharma S&OP arc\n\nFirst warm signal: a contact-form submission. No qualified opportunity yet.\n"
+      },
+      {
+        "taken_at": "2026-03-18T16:00:00Z",
+        "markdown": "---\ntype: instance\nskill: engagement\nid: hoffmann-spine\nat: 2026-03-12T14:20:00Z\nwith: [[contact::hoffmann]]\nchannel: event\nspine: true\nphase: qualifying\ncommercial_model: fixed-price base + T&M change pool\ncontract_value: \"€350k (proposed)\"\nrunning_margin: 0.72\nrisk_surface: \"0.55 · elevated\"\nsentiment_trend: \"0.71 · positive · rising\"\nprimary_sponsor: [[contact::reiter]]\nchampion: [[contact::weber]]\norgunit: [[customer::muenchner-pharma]]\ncustomer: [[customer::muenchner-pharma]]\n---\n\n# Engagement — Münchner Pharma S&OP arc\n\nDiscovery call qualified BANT. Reiter is the budget authority; three criteria agreed.\n"
+      },
+      {
+        "taken_at": "2026-05-02T09:00:00Z",
+        "markdown": "---\ntype: instance\nskill: engagement\nid: hoffmann-spine\nat: 2026-03-12T14:20:00Z\nwith: [[contact::hoffmann]]\nchannel: event\nspine: true\nphase: delivering\ncommercial_model: fixed-price base + T&M change pool\ncontract_value: \"€350k base\"\nrunning_margin: 0.62\nrisk_surface: \"0.48 · settling\"\nsentiment_trend: \"0.80 · positive · rising\"\nprimary_sponsor: [[contact::reiter]]\nchampion: [[contact::weber]]\norgunit: [[customer::muenchner-pharma]]\ncustomer: [[customer::muenchner-pharma]]\n---\n\n# Engagement — Münchner Pharma S&OP arc\n\nCommercial close; delivery kickoff. First R&D unit provisioning underway.\n"
+      },
+      {
+        "taken_at": "2026-06-05T08:00:00Z",
+        "markdown": "---\ntype: instance\nskill: engagement\nid: hoffmann-spine\nat: 2026-03-12T14:20:00Z\nwith: [[contact::hoffmann]]\nchannel: event\nspine: true\nphase: delivering\ncommercial_model: fixed-price base + T&M change pool\ncontract_value: \"€350k base + €90k T&M pool\"\nrunning_margin: 0.66\nrisk_surface: \"0.40 · declining\"\nsentiment_trend: \"0.86 · positive · monotonic\"\nprimary_sponsor: [[contact::reiter]]\nchampion: [[contact::weber]]\norgunit: [[customer::muenchner-pharma]]\ncustomer: [[customer::muenchner-pharma]]\n---\n\n# Engagement — Münchner Pharma S&OP arc\n\nScope-creep detector reframed adjacent integration as a renewal signal; running margin recovered after the change order.\n"
+      }
+    ]
+  }
+]

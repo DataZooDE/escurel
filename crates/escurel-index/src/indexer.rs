@@ -430,7 +430,98 @@ impl Indexer {
         // FTS has no incremental refresh PRAGMA; rebuild it over the
         // now-populated blocks (see search.rs / discovered notes).
         self.refresh_fts().await?;
+
+        // M7: optional `events.json` (events into the inbox, optionally
+        // assigned to an instance) and `history.json` (CRDT snapshot
+        // timelines) alongside the markdown pages.
+        self.seed_events_file(dir).await?;
+        self.seed_history_file(dir).await?;
+
         Ok(files.len())
+    }
+
+    /// Load `<dir>/events.json` if present: an array of events captured
+    /// into the inbox. An event with `status: "processed"` and an
+    /// `instance` is also assigned (enters that instance's event
+    /// history); otherwise it stays in the inbox (an `instance` then
+    /// only pre-flags a candidate).
+    async fn seed_events_file(&self, dir: &Path) -> Result<(), IndexerError> {
+        let path = dir.join("events.json");
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => {
+                return Err(IndexerError::SeedIo {
+                    path: path.display().to_string(),
+                    source,
+                });
+            }
+        };
+        let events: Vec<SeedEvent> = serde_json::from_str(&raw)?;
+        // Idempotent bootstrap: skip if the store already holds events
+        // (a re-seed, or live captures already happened).
+        {
+            let conn = self.conn.lock().await;
+            let n: i64 = conn.query_row("SELECT count(*) FROM events", [], |r| r.get(0))?;
+            if n > 0 {
+                return Ok(());
+            }
+        }
+        for e in events {
+            let processed = e.status.as_deref() == Some("processed");
+            let pre_flag = if processed { None } else { e.instance.clone() };
+            let stored = self
+                .capture_event(crate::events::NewEvent {
+                    event_id: e.event_id,
+                    at: e.at,
+                    source: e.source,
+                    mime: e.mime,
+                    label_skill: e.label_skill,
+                    instance_page_id: pre_flag,
+                    title: e.title,
+                    body: e.body,
+                    provenance: e.provenance,
+                })
+                .await?;
+            if processed && let Some(inst) = e.instance {
+                self.assign_event(&stored.event_id, &inst).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Load `<dir>/history.json` if present: an array of per-page CRDT
+    /// snapshot timelines seeded via [`Self::seed_snapshot_history`].
+    async fn seed_history_file(&self, dir: &Path) -> Result<(), IndexerError> {
+        let path = dir.join("history.json");
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => {
+                return Err(IndexerError::SeedIo {
+                    path: path.display().to_string(),
+                    source,
+                });
+            }
+        };
+        let histories: Vec<SeedHistory> = serde_json::from_str(&raw)?;
+        // Idempotent bootstrap: skip if any snapshots already exist.
+        {
+            let conn = self.conn.lock().await;
+            let n: i64 = conn.query_row("SELECT count(*) FROM crdt_snapshots", [], |r| r.get(0))?;
+            if n > 0 {
+                return Ok(());
+            }
+        }
+        for h in histories {
+            let states: Vec<(&str, &str)> = h
+                .states
+                .iter()
+                .map(|s| (s.taken_at.as_str(), s.markdown.as_str()))
+                .collect();
+            self.seed_snapshot_history(&h.page_id, &states).await?;
+        }
+        Ok(())
     }
 
     async fn list_markdown_paths(&self) -> Result<HashSet<String>, IndexerError> {
@@ -631,6 +722,46 @@ fn hex(bytes: &[u8]) -> String {
         out.push(HEX[(b & 0xf) as usize] as char);
     }
     out
+}
+
+/// One entry in a seed `events.json` array (M7).
+#[derive(serde::Deserialize)]
+struct SeedEvent {
+    #[serde(default)]
+    event_id: Option<String>,
+    #[serde(default)]
+    at: Option<String>,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    mime: String,
+    #[serde(default)]
+    label_skill: String,
+    /// The instance this event is about (assigned when `status` is
+    /// `"processed"`, else a candidate pre-flag).
+    #[serde(default)]
+    instance: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    provenance: Option<serde_json::Value>,
+}
+
+/// One per-page snapshot timeline in a seed `history.json` array (M7).
+#[derive(serde::Deserialize)]
+struct SeedHistory {
+    page_id: String,
+    states: Vec<SeedHistoryState>,
+}
+
+#[derive(serde::Deserialize)]
+struct SeedHistoryState {
+    taken_at: String,
+    markdown: String,
 }
 
 /// Extract `[[skill::id]]` wikilinks from every frontmatter field value,
