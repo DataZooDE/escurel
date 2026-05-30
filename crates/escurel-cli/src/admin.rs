@@ -97,7 +97,7 @@ pub enum TenantCmd {
         #[arg(long)]
         id: String,
         /// Input tarball file path.
-        #[arg(long, name = "in")]
+        #[arg(long = "in")]
         input: String,
     },
 }
