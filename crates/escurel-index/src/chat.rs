@@ -354,17 +354,19 @@ impl Indexer {
 
     /// Delete chat history matching the optional filters. Returns
     /// the number of rows removed. Used for both retention pruning
-    /// (`Some(before_ts)`) and GDPR-style erasure
-    /// (`Some(chat_group_id)`).
+    /// (`Some(before_ts)`) and GDPR-style erasure (`Some(chat_group_id)`
+    /// for a whole group, `Some(author)` for a single member).
     ///
-    /// - `chat_group_id = None, before_ts = None` removes the
-    ///   whole `chat_messages` table for this tenant.
-    /// - `chat_group_id = Some(g), before_ts = None` removes every
-    ///   message in `g`.
-    /// - `chat_group_id = Some(g), before_ts = Some(t)` removes
-    ///   messages in `g` with `ts < t` (strict).
-    /// - `chat_group_id = None, before_ts = Some(t)` removes
-    ///   messages in any group with `ts < t`.
+    /// The three filters compose with AND; any left `None` is not
+    /// constrained. Notable points:
+    /// - all `None` removes the whole `chat_messages` table for this
+    ///   tenant.
+    /// - `chat_group_id = Some(g)` alone removes every message in `g`.
+    /// - `author = Some(a)` alone removes member `a`'s messages across
+    ///   every group (GDPR right-to-erasure of one member).
+    /// - `chat_group_id = Some(g), author = Some(a)` removes member
+    ///   `a`'s messages within group `g` only.
+    /// - `before_ts = Some(t)` further restricts to `ts < t` (strict).
     ///
     /// The MCP surface exposes this only via the admin RPC; the
     /// agent-side tools never call it.
@@ -372,6 +374,7 @@ impl Indexer {
         &self,
         chat_group_id: Option<&str>,
         before_ts: Option<&str>,
+        author: Option<&str>,
     ) -> Result<usize, IndexerError> {
         let mut where_clauses: Vec<&str> = Vec::new();
         let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> = Vec::new();
@@ -379,6 +382,10 @@ impl Indexer {
         if let Some(g) = chat_group_id {
             where_clauses.push("chat_group_id = ?");
             bindings.push(Box::new(g.to_owned()));
+        }
+        if let Some(a) = author {
+            where_clauses.push("author = ?");
+            bindings.push(Box::new(a.to_owned()));
         }
         if let Some(ts) = before_ts {
             where_clauses.push("ts < TRY_CAST(? AS TIMESTAMP)");

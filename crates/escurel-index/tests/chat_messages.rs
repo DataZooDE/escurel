@@ -410,7 +410,7 @@ async fn delete_chat_history_purges_group() {
 
     let deleted = h
         .indexer
-        .delete_chat_history(Some("room-1"), None)
+        .delete_chat_history(Some("room-1"), None, None)
         .await
         .expect("delete room-1");
     assert_eq!(deleted, 1, "exactly one row removed");
@@ -469,7 +469,7 @@ async fn delete_with_before_ts_purges_old_only() {
 
     let deleted = h
         .indexer
-        .delete_chat_history(Some("room-1"), Some("2026-05-25T10:00:02Z"))
+        .delete_chat_history(Some("room-1"), Some("2026-05-25T10:00:02Z"), None)
         .await
         .expect("delete before ts");
     assert_eq!(
@@ -513,7 +513,7 @@ async fn delete_without_filters_purges_everything() {
 
     let deleted = h
         .indexer
-        .delete_chat_history(None, None)
+        .delete_chat_history(None, None, None)
         .await
         .expect("nuke");
     assert_eq!(deleted, 2);

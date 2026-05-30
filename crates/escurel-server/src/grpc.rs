@@ -1299,8 +1299,9 @@ impl EscurelAdmin for EscurelAdminGrpc {
         }
         let group = (!r.chat_group_id.is_empty()).then_some(r.chat_group_id.as_str());
         let before = (!r.before_ts.is_empty()).then_some(r.before_ts.as_str());
+        let author = (!r.author.is_empty()).then_some(r.author.as_str());
         let deleted = indexer
-            .delete_chat_history(group, before)
+            .delete_chat_history(group, before, author)
             .await
             .map_err(|e| Status::internal(format!("delete_chat_history: {e}")))?;
         Ok(Response::new(DeleteChatHistoryResponse {
