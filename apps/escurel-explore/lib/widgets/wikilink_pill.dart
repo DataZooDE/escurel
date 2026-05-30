@@ -34,9 +34,7 @@ class WikilinkPill extends ConsumerWidget {
           text,
           colour,
           colour,
-          onTap: r.exists
-              ? () => wref.read(currentPageIdProvider.notifier).state = r.pageId
-              : null,
+          onTap: r.exists ? () => navigateToInstance(wref, r.pageId) : null,
         );
       },
     );

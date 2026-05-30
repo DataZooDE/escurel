@@ -52,6 +52,46 @@ final escurelClientProvider = Provider<EscurelClient>((ref) {
 /// opened (initial state).
 final currentPageIdProvider = StateProvider<String?>((ref) => null);
 
+/// Back-stack of previously-focused page ids. Pushed when following an
+/// instance link (a wikilink pill, a skill-wheel / lineage node); popped
+/// by the instance view's Back button. A fresh `search` clears it.
+final navBackStackProvider = StateProvider<List<String>>((ref) => const []);
+
+/// Focus an instance, recording the current one on the back-stack so a
+/// Back action can return to it. No-op when the target is empty or
+/// already focused. This is the single entry point every in-app
+/// instance-link navigation routes through.
+void navigateToInstance(WidgetRef ref, String pageId) {
+  if (pageId.isEmpty) return;
+  final current = ref.read(currentPageIdProvider);
+  if (current == pageId) return;
+  if (current != null && current.isNotEmpty) {
+    ref.read(navBackStackProvider.notifier).state = [
+      ...ref.read(navBackStackProvider),
+      current,
+    ];
+  }
+  ref.read(currentPageIdProvider.notifier).state = pageId;
+}
+
+/// Pop the back-stack, returning focus to the previous instance. Returns
+/// false (no-op) when there is nothing to go back to.
+bool navigateBack(WidgetRef ref) {
+  final stack = ref.read(navBackStackProvider);
+  if (stack.isEmpty) return false;
+  ref.read(navBackStackProvider.notifier).state = stack.sublist(0, stack.length - 1);
+  ref.read(currentPageIdProvider.notifier).state = stack.last;
+  return true;
+}
+
+/// Drop the navigation history (used when a fresh search jumps the focus
+/// to an unrelated instance, so Back doesn't wander a stale trail).
+void clearNavHistory(WidgetRef ref) {
+  if (ref.read(navBackStackProvider).isNotEmpty) {
+    ref.read(navBackStackProvider.notifier).state = const [];
+  }
+}
+
 /// Global time-travel cut. `null` = the present (no cut); otherwise the
 /// time scrubber's selected instant. Every read provider passes it down
 /// as the backend `as_of`, so scrubbing reshapes the whole workspace at
