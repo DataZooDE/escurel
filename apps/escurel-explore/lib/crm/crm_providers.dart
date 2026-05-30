@@ -148,6 +148,6 @@ Future<void> focusWikilink(WidgetRef ref, String linkSkill, String slug) async {
       .read(escurelClientProvider)
       .resolve('[[$linkSkill::$slug]]', scenario: scenario);
   if (resolved.exists && resolved.pageId.isNotEmpty) {
-    ref.read(currentPageIdProvider.notifier).state = resolved.pageId;
+    navigateToInstance(ref, resolved.pageId);
   }
 }

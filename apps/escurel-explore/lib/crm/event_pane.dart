@@ -61,34 +61,48 @@ class EventPane extends ConsumerWidget {
           // Detail: the open event's preview.
           const Divider(height: 1),
           const Expanded(flex: 4, child: _EventDetail()),
-          // Inbox below.
+          // Inbox below — pending (not-yet-applied) events on a darker
+          // band, distinct from the processed history above (which reads
+          // as "now"). Aligned with the datazoo surface-container ramp.
           const Divider(height: 1),
-          _SectionHeader(
-            label: 'INBOX',
-            trailing: inbox.maybeWhen(data: (e) => '${e.length}', orElse: () => null),
-          ),
           Expanded(
             flex: 3,
-            child: Semantics(
-              label: 'inbox',
-              container: true,
-              explicitChildNodes: true,
-              child: inbox.when(
-                loading: () => const _Loading(),
-                error: (e, _) => _Error('$e'),
-                data: (list) => list.isEmpty
-                    ? const _Empty('Inbox empty')
-                    : ListView.separated(
-                        padding: EdgeInsets.zero,
-                        itemCount: list.length,
-                        separatorBuilder: (_, _) => const Divider(height: 1),
-                        itemBuilder: (_, i) => _EventTile(
-                          event: list[i],
-                          selected: list[i].eventId == open,
-                          inbox: true,
-                          onTap: () => ref.read(openEventProvider.notifier).state = list[i].eventId,
-                        ),
+            child: ColoredBox(
+              color: kSurfaceContainerHigh,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _SectionHeader(
+                    label: 'INBOX',
+                    trailing: inbox.maybeWhen(data: (e) => '${e.length}', orElse: () => null),
+                    background: kSurfaceContainerHighest,
+                  ),
+                  Expanded(
+                    child: Semantics(
+                      label: 'inbox',
+                      container: true,
+                      explicitChildNodes: true,
+                      child: inbox.when(
+                        loading: () => const _Loading(),
+                        error: (e, _) => _Error('$e'),
+                        data: (list) => list.isEmpty
+                            ? const _Empty('Inbox empty')
+                            : ListView.separated(
+                                padding: EdgeInsets.zero,
+                                itemCount: list.length,
+                                separatorBuilder: (_, _) => const Divider(height: 1),
+                                itemBuilder: (_, i) => _EventTile(
+                                  event: list[i],
+                                  selected: list[i].eventId == open,
+                                  inbox: true,
+                                  onTap: () =>
+                                      ref.read(openEventProvider.notifier).state = list[i].eventId,
+                                ),
+                              ),
                       ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -227,7 +241,9 @@ class _EventTile extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Container(
-          color: selected ? kSurfaceContainerHigh : null,
+          // Inbox tiles sit on the darker band, so their selected tint
+          // steps one shade darker than the processed-event tiles'.
+          color: selected ? (inbox ? kSurfaceContainerHighest : kSurfaceContainerHigh) : null,
           padding: const EdgeInsets.fromLTRB(14, 9, 12, 9),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -298,14 +314,15 @@ class _EventDetail extends ConsumerWidget {
 }
 
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.label, this.trailing});
+  const _SectionHeader({required this.label, this.trailing, this.background = kSurfaceContainerLow});
   final String label;
   final String? trailing;
+  final Color background;
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     return Container(
-      color: kSurfaceContainerLow,
+      color: background,
       padding: const EdgeInsets.fromLTRB(14, 8, 12, 8),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,

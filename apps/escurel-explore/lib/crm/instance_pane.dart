@@ -25,6 +25,8 @@ class InstancePane extends StatelessWidget {
       explicitChildNodes: true,
       child: const Column(
         children: [
+          // Back to the instance we followed a link from (if any).
+          _BackBar(),
           // The instance ↔ skills connection.
           SizedBox(height: 220, child: SkillWheel()),
           Divider(height: 1, color: kOutlineVariant),
@@ -36,6 +38,77 @@ class InstancePane extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A Back affordance shown at the top of the instance view once you have
+/// followed an instance link (a wikilink pill, a wheel/lineage node).
+/// Tapping returns to the instance you came from; hidden when there is no
+/// trail. Mirrors browser-style back navigation within the workspace.
+class _BackBar extends ConsumerWidget {
+  const _BackBar();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final stack = ref.watch(navBackStackProvider);
+    if (stack.isEmpty) return const SizedBox.shrink();
+    final text = Theme.of(context).textTheme;
+    final target = _shortPageLabel(stack.last);
+
+    return Semantics(
+      label: 'instance-back',
+      button: true,
+      onTap: () => navigateBack(ref),
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: () => navigateBack(ref),
+        child: Container(
+          width: double.infinity,
+          color: kSurfaceContainerLow,
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: kSecondaryContainer,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.arrow_back, size: 14, color: kOnSecondaryContainer),
+                    const SizedBox(width: 4),
+                    Text(
+                      'back',
+                      style: text.labelMedium
+                          ?.copyWith(color: kOnSecondaryContainer, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Text(
+                  'to $target',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Render a page id (`markdown/instances/engagement__hoffmann-spine.md`)
+/// as a compact `skill · slug` label for the Back affordance.
+String _shortPageLabel(String pageId) {
+  final file = pageId.split('/').last.replaceAll('.md', '');
+  final parts = file.split('__');
+  return parts.length == 2 ? '${parts[0]} · ${parts[1]}' : file;
 }
 
 /// The instance's state-over-time markers: a `now` chip plus one chip per

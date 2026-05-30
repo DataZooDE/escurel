@@ -30,7 +30,9 @@ class _SearchBarState extends ConsumerState<WorkspaceSearchBar> {
         setState(() => _status = 'no hits for "$q"');
         return;
       }
+      // A search is a fresh jump — drop any link-following trail.
       ref.read(currentPageIdProvider.notifier).state = res.hits.first.pageId;
+      clearNavHistory(ref);
       setState(() => _status = '${res.hits.length} hits → ${res.hits.first.skill}');
     } catch (e) {
       setState(() => _status = 'error: $e');
