@@ -71,7 +71,9 @@ class _SplitBody extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final leftCollapsed = ref.watch(leftCollapsedProvider);
+    // Effective collapse: auto-minimized while a skill is focused (no
+    // events), else the user's manual toggle.
+    final leftCollapsed = ref.watch(effectiveLeftCollapsedProvider);
     final rightCollapsed = ref.watch(rightCollapsedProvider);
     final fraction = ref.watch(leftPaneFractionProvider);
 
