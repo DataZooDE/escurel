@@ -19,7 +19,6 @@ import 'crm_providers.dart';
 import 'event_pane.dart';
 import 'instance_pane.dart';
 import 'search_bar.dart';
-import 'time_scrubber.dart';
 
 class CrmWorkspace extends ConsumerStatefulWidget {
   const CrmWorkspace({super.key});
@@ -55,7 +54,8 @@ class _CrmWorkspaceState extends ConsumerState<CrmWorkspace> {
         children: [
           WorkspaceSearchBar(),
           Expanded(child: _SplitBody()),
-          TimeScrubber(),
+          // Time-travel lives in the instance view's STATE OVER TIME
+          // version markers; no separate bottom scrubber.
           CaptureBar(),
         ],
       ),

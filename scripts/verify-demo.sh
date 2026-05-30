@@ -97,10 +97,10 @@ present() { wait_label "$1" || fail "region semantics not found: $1"; note "pres
 
 # Wait for the workspace to boot + auto-focus, then assert the container
 # regions of the M7 two-view workspace: the event view (left) with its
-# inbox, the instance view (right) with its skill-wheel, and the scrubber.
-# (Search/capture are TextField nodes that don't reliably materialise in
-# the static semantics DOM — see SCOPE; they're covered by the flutter
-# widget tests + the capture_event /mcp probe below.)
+# inbox, the instance view (right) with its skill-wheel + state-over-time
+# version markers. (Search/capture are TextField nodes that don't reliably
+# materialise in the static semantics DOM — see SCOPE; they're covered by
+# the flutter widget tests + the capture_event /mcp probe below.)
 present brand
 present region-events
 present event-pane
@@ -110,7 +110,6 @@ present region-instance
 present instance-pane
 present skill-wheel
 present version-markers
-present time-scrubber
 present scenario-switch
 
 # --- behaviour: drive the real backend via same-origin /mcp probes ---
