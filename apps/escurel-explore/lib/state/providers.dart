@@ -92,6 +92,21 @@ void clearNavHistory(WidgetRef ref) {
   }
 }
 
+/// Focus the skill *page* behind an instance or event — the durable "how"
+/// the reference is an occurrence of. A skill resolves from its bare id
+/// (`[[customer]]` → `markdown/skills/customer.md`), not `[[skill::id]]`.
+/// Routes through [navigateToInstance] so the jump records the back-stack
+/// exactly like an instance jump. No-op on an empty or dangling id.
+Future<void> focusSkill(WidgetRef ref, String skillId) async {
+  if (skillId.isEmpty) return;
+  final scenario = ref.read(scenarioProvider);
+  final resolved =
+      await ref.read(escurelClientProvider).resolve('[[$skillId]]', scenario: scenario);
+  if (resolved.exists && resolved.pageId.isNotEmpty) {
+    navigateToInstance(ref, resolved.pageId);
+  }
+}
+
 /// Global time-travel cut. `null` = the present (no cut); otherwise the
 /// time scrubber's selected instant. Every read provider passes it down
 /// as the backend `as_of`, so scrubbing reshapes the whole workspace at

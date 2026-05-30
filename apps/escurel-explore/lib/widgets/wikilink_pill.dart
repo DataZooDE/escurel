@@ -6,13 +6,16 @@ import '../client/models.dart';
 import '../md/wikilink.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
+import 'instance_skill_link.dart';
 
 /// Clickable pill rendering a `[[skill::id]]` reference.
 ///
 /// Resolves via [EscurelClient.resolve] on first build; the pill's
 /// outline turns red when the link is dangling and grey otherwise.
-/// Tapping a resolvable pill navigates the editor to the linked
-/// page through [currentPageIdProvider].
+/// A resolvable, *typed* pill carries the instance↔skill dual (see
+/// [InstanceSkillLink]): default tap → the linked instance; shift-click
+/// or the hover chip → the reference's skill. Untyped links just open
+/// their target.
 class WikilinkPill extends ConsumerWidget {
   const WikilinkPill({super.key, required this.ref});
 
@@ -25,23 +28,35 @@ class WikilinkPill extends ConsumerWidget {
     final text = ref.alias ?? (ref.skill != null ? '${ref.skill}::${ref.id}' : ref.id ?? '?');
 
     return resolved.when(
-      loading: () => _pillBody(context, text, kOutlineVariant, kOnSurfaceVariant, onTap: null),
-      error: (e, _) => _pillBody(context, text, kError, kError, onTap: null),
+      loading: () => _pillBody(context, text, kOutlineVariant, kOnSurfaceVariant),
+      error: (e, _) => _pillBody(context, text, kError, kError),
       data: (r) {
         final colour = r.exists ? kPrimary : kError;
-        return _pillBody(
-          context,
-          text,
-          colour,
-          colour,
-          onTap: r.exists ? () => navigateToInstance(wref, r.pageId) : null,
+        final pill = _pillBody(context, text, colour, colour);
+        if (!r.exists) return pill;
+        final skill = ref.skill;
+        // Typed links (`[[skill::id]]`) carry the dual; bare links just
+        // navigate to their target.
+        if (skill == null || skill.isEmpty) {
+          return InkWell(
+            borderRadius: BorderRadius.circular(4),
+            onTap: () => navigateToInstance(wref, r.pageId),
+            child: pill,
+          );
+        }
+        return InstanceSkillLink(
+          borderRadius: BorderRadius.circular(4),
+          skillLabel: skill,
+          onPrimary: () => navigateToInstance(wref, r.pageId),
+          onSkill: () => focusSkill(wref, skill),
+          child: pill,
         );
       },
     );
   }
 
-  Widget _pillBody(BuildContext context, String text, Color border, Color fg, {VoidCallback? onTap}) {
-    final pill = Container(
+  Widget _pillBody(BuildContext context, String text, Color border, Color fg) {
+    return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
       decoration: BoxDecoration(
         color: kSurfaceContainerLow,
@@ -49,12 +64,6 @@ class WikilinkPill extends ConsumerWidget {
         border: Border.all(color: border.withValues(alpha: 0.5)),
       ),
       child: Text(text, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: fg)),
-    );
-    if (onTap == null) return pill;
-    return InkWell(
-      borderRadius: BorderRadius.circular(4),
-      onTap: onTap,
-      child: pill,
     );
   }
 }
