@@ -141,7 +141,16 @@ Per-tenant write lock held throughout. Steps:
    anchors auto-synthesised if absent).
 2. **Parse wikilinks** using the regex-plus-code-region-stripping
    parser (do **not** use a markdown AST library — they
-   fragment text on `[`).
+   fragment text on `[`). Wikilinks are extracted from the **body**
+   *and* from **frontmatter field values** (e.g. `about:`,
+   `derived_from:`, `primary_sponsor:`); a frontmatter value that
+   YAML parses as a nested flow sequence (`about: [[skill::id]]`) is
+   rendered back to its raw `[[…]]` markup before parsing. Frontmatter
+   links carry their originating field in `links.src_field`
+   (`frontmatter.<key>`); body links leave it `NULL`. This makes a
+   relationship an instance declares only in frontmatter (e.g. an
+   event whose `about:` points at its entity) reachable via
+   `neighbours`.
 3. **Validate** (the four index-time checks plus
    required-frontmatter check; events get the extra check that
    `at:` parses as RFC 3339).
@@ -204,7 +213,7 @@ CREATE INDEX pages_skill_at  ON pages(skill, at_ts);   -- event-log scan support
 CREATE TABLE links (
   src_page     VARCHAR NOT NULL,
   src_anchor   VARCHAR,
-  src_field    VARCHAR,                  -- the frontmatter field if the link was in frontmatter
+  src_field    VARCHAR,                  -- `frontmatter.<key>` if the link came from a frontmatter value; NULL for body links
   dst_page     VARCHAR NOT NULL,
   dst_anchor   VARCHAR,
   link_skill   VARCHAR NOT NULL,         -- the skill segment of the typed link

@@ -199,6 +199,11 @@ impl Indexer {
             .map(str::to_owned);
         let body_text = parsed.body.to_owned();
         let wikilinks = parse_wikilinks(&body_text);
+        // Typed links also live in frontmatter (e.g. `about:`,
+        // `derived_from:`, `primary_sponsor:`). Index those too so the
+        // graph reflects relationships an instance declares in its
+        // frontmatter, not only in its body.
+        let fm_wikilinks = frontmatter_wikilinks(&parsed.frontmatter.fields);
 
         // Take the per-tenant DuckDB mutex BEFORE embedding. A
         // codex review of M2.1 caught that the obvious "embed
@@ -265,6 +270,31 @@ impl Indexer {
                  VALUES (?, '', NULL, ?, ?, ?, ?)",
                 params![
                     page_id,
+                    dst_page,
+                    wl.anchor.as_deref().unwrap_or(""),
+                    link_skill,
+                    wl.version.as_deref(),
+                ],
+            )?;
+        }
+        // Frontmatter-sourced links carry the originating field in
+        // `src_field` (e.g. `frontmatter.about`). `INSERT OR IGNORE`
+        // lets a body link for the same edge win the (PK) row; the edge
+        // is reachable from `neighbours` either way.
+        for (field, wl) in &fm_wikilinks {
+            let link_skill = wl.skill.as_deref().unwrap_or("");
+            let dst_page = wl.id.as_deref().unwrap_or("");
+            if dst_page.is_empty() {
+                continue;
+            }
+            let src_field = format!("frontmatter.{field}");
+            tx.execute(
+                "INSERT OR IGNORE INTO links \
+                 (src_page, src_anchor, src_field, dst_page, dst_anchor, link_skill, link_version) \
+                 VALUES (?, '', ?, ?, ?, ?, ?)",
+                params![
+                    page_id,
+                    src_field,
                     dst_page,
                     wl.anchor.as_deref().unwrap_or(""),
                     link_skill,
@@ -599,6 +629,51 @@ fn hex(bytes: &[u8]) -> String {
         out.push(HEX[(b & 0xf) as usize] as char);
     }
     out
+}
+
+/// Extract `[[skill::id]]` wikilinks from every frontmatter field value,
+/// returning each with the field key it came from. YAML parses an
+/// unquoted `about: [[engagement::spine]]` as a nested flow sequence, so
+/// each value is rendered back to its raw markup (`[[engagement::spine]]`)
+/// and run through the same parser used on the body.
+fn frontmatter_wikilinks(
+    fields: &escurel_md::YamlMapping,
+) -> Vec<(String, escurel_md::wikilink::WikilinkParsed)> {
+    let mut out = Vec::new();
+    for (k, v) in fields {
+        let Some(key) = k.as_str() else { continue };
+        let markup = render_yaml_markup(v);
+        if !markup.contains("[[") {
+            continue;
+        }
+        for wl in parse_wikilinks(&markup) {
+            out.push((key.to_owned(), wl));
+        }
+    }
+    out
+}
+
+/// Render a YAML value to a string that preserves `[[skill::id]]` markup:
+/// a sequence becomes `[a, b]` (so a nested flow sequence reconstructs
+/// `[[…]]`), scalars render raw (no quotes), mappings render their values.
+fn render_yaml_markup(v: &escurel_md::YamlValue) -> String {
+    use escurel_md::YamlValue as Y;
+    match v {
+        Y::String(s) => s.clone(),
+        Y::Number(n) => n.to_string(),
+        Y::Bool(b) => b.to_string(),
+        Y::Null => String::new(),
+        Y::Sequence(items) => {
+            let inner: Vec<String> = items.iter().map(render_yaml_markup).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Y::Mapping(m) => m
+            .values()
+            .map(render_yaml_markup)
+            .collect::<Vec<_>>()
+            .join(", "),
+        Y::Tagged(t) => render_yaml_markup(&t.value),
+    }
 }
 
 /// Convert a YAML mapping into a JSON string for the `pages.frontmatter`
