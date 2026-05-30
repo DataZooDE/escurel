@@ -369,14 +369,16 @@ message CompactProgress {
 }
 
 // Operator-only purge for the M-Chat conversation log (issue #63).
-// Both `chat_group_id` and `before_ts` are optional (empty string
-// means "no filter"); the combinations cover GDPR right-to-erasure
-// (`chat_group_id` set, `before_ts` empty), 30-day retention prune
-// (`before_ts` set), and full-tenant chat wipe (both empty).
+// `chat_group_id`, `before_ts` and `author` are each optional (empty
+// string means "no filter") and compose with AND; the combinations
+// cover GDPR right-to-erasure of a whole group (`chat_group_id` set)
+// or a single member across groups (`author` set), 30-day retention
+// prune (`before_ts` set), and full-tenant chat wipe (all empty).
 message DeleteChatHistoryRequest {
   string tenant_id     = 1;
   string chat_group_id = 2;
   string before_ts     = 3;
+  string author        = 4;
 }
 message DeleteChatHistoryResponse {
   uint64 deleted = 1;

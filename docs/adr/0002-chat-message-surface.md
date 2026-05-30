@@ -49,8 +49,9 @@ file. The shape:
     direction])` → `{messages: [...], next_cursor?}`. Debits **Queries**.
 - **One new admin RPC** (gRPC only):
   - `EscurelAdmin.DeleteChatHistory(tenant_id, [chat_group_id,
-    before_ts])` → `{deleted}`. Admin-role required. Powers both
-    retention pruning and GDPR right-to-erasure.
+    before_ts, author])` → `{deleted}`. Admin-role required. Powers both
+    retention pruning and GDPR right-to-erasure (a whole group *or* a
+    single member). MCP twin: `admin_delete_chat_history`.
 
 Agent contract size: **12 → 14 tools**. The contract doc + skill doc
 are bumped in the same PR sequence (`docs/contract/agent-interface.md`
@@ -72,14 +73,22 @@ with `WHERE dense_vec IS NOT NULL`.
 Deletion is **admin-only**. The agent surface has no delete tool by
 design: GDPR erasure and 30-day pruning are operator concerns and
 should not be exposed to the chat-write path. The single admin RPC
-covers all combinations:
+covers all combinations; the three filters (`chat_group_id`,
+`before_ts`, `author`) compose with **AND**:
 
-| `chat_group_id` | `before_ts` | Effect                              |
-|-----------------|-------------|-------------------------------------|
-| set             | unset       | Erase one chat group (GDPR)         |
-| set             | set         | Prune one group's history < cutoff  |
-| unset           | set         | Prune all groups' history < cutoff  |
-| unset           | unset       | Nuke the tenant's chat log entirely |
+| `chat_group_id` | `before_ts` | `author` | Effect                              |
+|-----------------|-------------|----------|-------------------------------------|
+| set             | unset       | unset    | Erase one chat group (GDPR)         |
+| unset           | unset       | set      | Erase one member across all groups (GDPR right-to-erasure) |
+| set             | unset       | set      | Erase one member within one group   |
+| set             | set         | —        | Prune one group's history < cutoff  |
+| unset           | set         | —        | Prune all groups' history < cutoff  |
+| unset           | unset       | unset    | Nuke the tenant's chat log entirely |
+
+The `author` filter closes the per-member erasure gap raised in
+[issue #63](https://github.com/DataZooDE/escurel/issues/63): a consumer
+operator can honour a single member's right-to-erasure without dropping
+the rest of a shared group's conversation.
 
 Scheduling — the periodic cron that calls `DeleteChatHistory(before_ts =
 now - 30d)` — lives **outside escurel**, in the consumer (Carl) or as

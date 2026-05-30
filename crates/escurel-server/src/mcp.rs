@@ -1040,6 +1040,8 @@ struct AdminDeleteChatHistoryArgs {
     chat_group_id: Option<String>,
     #[serde(default)]
     before_ts: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
 }
 
 async fn tool_admin_delete_chat_history(
@@ -1049,7 +1051,11 @@ async fn tool_admin_delete_chat_history(
     let a: AdminDeleteChatHistoryArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("admin_delete_chat_history: {e}")))?;
     let deleted = indexer
-        .delete_chat_history(a.chat_group_id.as_deref(), a.before_ts.as_deref())
+        .delete_chat_history(
+            a.chat_group_id.as_deref(),
+            a.before_ts.as_deref(),
+            a.author.as_deref(),
+        )
         .await
         .map_err(|e| JsonRpcError::internal(format!("admin_delete_chat_history: {e}")))?;
     Ok(json!({ "deleted": deleted }))
@@ -1492,14 +1498,17 @@ fn tools_list_payload() -> Value {
             ),
             tool_entry(
                 "admin_delete_chat_history",
-                "Admin: purge chat history. GDPR erasure (chat_group_id set), \
-                 retention prune (before_ts set), or both. MCP twin of the gRPC \
+                "Admin: purge chat history. GDPR erasure of a whole group \
+                 (chat_group_id set) or a single member across groups \
+                 (author set), retention prune (before_ts set); filters \
+                 compose with AND. MCP twin of the gRPC \
                  EscurelAdmin.DeleteChatHistory.",
                 json!({
                     "type": "object",
                     "properties": {
                         "chat_group_id": { "type": "string" },
-                        "before_ts": { "type": "string" }
+                        "before_ts": { "type": "string" },
+                        "author": { "type": "string" }
                     }
                 }),
             ),
