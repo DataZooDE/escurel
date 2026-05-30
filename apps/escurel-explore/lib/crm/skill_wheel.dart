@@ -13,22 +13,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
+import '../widgets/skill_avatar.dart';
 import 'crm_providers.dart';
 
-/// Stable per-skill spoke colours (cycled by skill name).
-const _spokePalette = <Color>[
-  kPrimary,
-  kSecondary,
-  kInfo,
-  kSuccess,
-  kWarning,
-  Color(0xFF6A4C93),
-  Color(0xFFB5651D),
-  Color(0xFF1D5962),
-];
-
-Color _skillColor(String skill) =>
-    _spokePalette[skill.hashCode.abs() % _spokePalette.length];
+/// Per-skill spoke colour — shared with the link chips + menus so a skill
+/// reads the same everywhere.
+Color _skillColor(String skill) => skillColor(skill);
 
 class SkillWheel extends ConsumerWidget {
   const SkillWheel({super.key});

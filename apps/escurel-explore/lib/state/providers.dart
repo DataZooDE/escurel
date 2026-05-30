@@ -160,6 +160,18 @@ final currentBacklinksProvider = FutureProvider<List<Neighbour>>((ref) async {
       .neighbours(id, direction: LinkDirection.incoming, asOf: asOf, scenario: scenario);
 });
 
+/// Outgoing links for the current page. The server returns directionless
+/// edges, so backlinks vs outgoing are two separate `neighbours` calls.
+final currentOutgoingLinksProvider = FutureProvider<List<Neighbour>>((ref) async {
+  final id = ref.watch(currentPageIdProvider);
+  if (id == null) return const <Neighbour>[];
+  final asOf = ref.watch(asOfStringProvider);
+  final scenario = ref.watch(scenarioProvider);
+  return ref
+      .watch(escurelClientProvider)
+      .neighbours(id, direction: LinkDirection.outgoing, asOf: asOf, scenario: scenario);
+});
+
 /// The inline boot corpus is intentionally small — two skills + two
 /// instances — just enough for the app to render *something* on a
 /// cold load when no overrides are in place. The richer
