@@ -100,6 +100,8 @@ pub enum IndexerError {
     InvalidExternalSource { reason: &'static str },
     #[error("invalid chat list cursor: {0}")]
     InvalidCursor(String),
+    #[error("crdt error: {0}")]
+    Crdt(#[from] escurel_crdt::Error),
     #[error("seed io error at {path}: {source}")]
     SeedIo {
         path: String,

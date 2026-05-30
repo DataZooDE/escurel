@@ -20,6 +20,7 @@
 
 pub mod chat;
 pub mod citation;
+pub mod crdt_history;
 pub mod events;
 pub mod indexer;
 pub mod query;

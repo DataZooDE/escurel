@@ -342,6 +342,19 @@ ops or 60 s). After a snapshot inserts into `crdt_snapshots`,
 the ops with `hlc <= snapshot.snapshot_hlc` for the same page
 are eligible for compaction (see "Compaction" below).
 
+**Query-time historical state (M7).** Beyond crash recovery,
+`crdt_snapshots` is also a read-time API: `expand(page_id,
+as_of = T)` loads the snapshot with the greatest `taken_at <=
+T`, materializes its `"body"` text container back to markdown
+(`escurel_crdt::body_from_snapshot`), and re-parses it —
+returning the instance's frontmatter+body **as it was at T**
+(the projection of its events up to T). A page with no snapshot
+at-or-before T falls through to the current-state path (the
+`at_ts` birth filter), so this is additive. Snapshot histories
+can be authored server-side via `Indexer::seed_snapshot_history`
+(deterministic Loro export, `escurel_crdt::snapshot_bytes_from_markdown`)
+— how the demo gives an instance a real state-over-time history.
+
 On server restart, opening a page that has CRDT rows replays
 the latest `crdt_snapshots` row for the page, then any
 `crdt_ops` rows with `hlc > snapshot_hlc`, yielding the exact

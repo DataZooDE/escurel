@@ -26,11 +26,13 @@
 //!   against a real DuckDB file via `Arc<Mutex<Connection>>`.
 
 pub mod backend;
+pub mod codec;
 pub mod error;
 pub mod livedoc;
 pub mod reconciler;
 
 pub use backend::{CrdtBackend, DuckdbCrdtBackend};
+pub use codec::{body_from_snapshot, snapshot_bytes_from_markdown};
 pub use error::Error;
 pub use livedoc::LiveDoc;
 pub use reconciler::{CitationLookup, Decision, ExternalEditReconciler};
