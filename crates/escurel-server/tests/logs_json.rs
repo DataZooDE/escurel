@@ -20,8 +20,11 @@ use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use escurel_obs::{TelemetryConfig, json_log_layer};
-use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts};
 use serde_json::{Value, json};
+
+const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\n\
+description: A buyer.\nrequired_frontmatter: [id]\n---\n# customer\n";
 use tracing_subscriber::layer::SubscriberExt;
 
 /// Append-only shared buffer the test subscriber writes into.
@@ -200,6 +203,79 @@ async fn mcp_request_emits_span_with_tool_name_and_request_id() {
         with_method.is_some(),
         "no log line names `method=tools/list`; lines: {all:?}"
     );
+
+    p.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_call_record_carries_full_audit_fields() {
+    let buf = shared_buf();
+    let start_offset = buf.lock().unwrap().len();
+
+    // Indexer enabled so a real tools/call (list_skills) succeeds.
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant("acme")
+                .skill("customer", CUSTOMER_SKILL)
+                .done(),
+        ),
+        config_overrides: ConfigOverrides {
+            gateway_version: Some("test-logs".to_owned()),
+            disable_grpc: true,
+            ..Default::default()
+        },
+    })
+    .await;
+
+    let http = reqwest::Client::new();
+    let resp = http
+        .post(p.mcp_url())
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "list_skills", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let all = {
+        let raw = String::from_utf8(buf.lock().unwrap()[start_offset..].to_vec()).unwrap();
+        raw.lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect::<Vec<_>>()
+    };
+
+    // The tool.completed audit record must carry the full per-record
+    // contract field set (platform.md §Observability).
+    let rec = all
+        .iter()
+        .find(|v| v.get("msg").and_then(|m| m.as_str()) == Some("tool.completed"))
+        .unwrap_or_else(|| panic!("no tool.completed record; lines: {all:?}"));
+    for key in [
+        "ts",
+        "level",
+        "tenant",
+        "tool",
+        "transport",
+        "subject",
+        "trace_id",
+        "duration_ms",
+    ] {
+        assert!(
+            rec.get(key).is_some(),
+            "tool.completed missing `{key}`: {rec}"
+        );
+    }
+    assert_eq!(rec["tool"], "list_skills");
+    assert_eq!(rec["transport"], "mcp_http");
+    assert_eq!(rec["tenant"], "default");
+    assert_eq!(rec["subject"], "anonymous");
+    assert!(rec["duration_ms"].is_number(), "duration_ms numeric: {rec}");
 
     p.shutdown().await;
 }
