@@ -362,7 +362,9 @@ async fn dispatch_tools_call(
         "update_page" => tool_update_page(indexer, params.arguments).await,
         "append_message" => tool_append_message(indexer, params.arguments).await,
         "list_messages" => tool_list_messages(indexer, params.arguments).await,
-        "capture_event" => tool_capture_event(indexer, params.arguments).await,
+        "capture_event" => {
+            tool_capture_event(indexer, state.webhook.as_ref(), params.arguments).await
+        }
         "list_inbox" => tool_list_inbox(indexer, params.arguments).await,
         "list_events" => tool_list_events(indexer, params.arguments).await,
         "assign_event" => tool_assign_event(indexer, params.arguments).await,
@@ -885,7 +887,11 @@ struct CaptureEventArgs {
     provenance: Option<Value>,
 }
 
-async fn tool_capture_event(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+async fn tool_capture_event(
+    indexer: &Indexer,
+    webhook: Option<&crate::webhook::Webhook>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: CaptureEventArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("capture_event: {e}")))?;
     let stored = indexer
@@ -902,7 +908,13 @@ async fn tool_capture_event(indexer: &Indexer, args: Value) -> Result<Value, Jso
         })
         .await
         .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?;
-    Ok(event_to_json(&stored))
+    let event = event_to_json(&stored);
+    // Notify any external processor of the new inbox item (opt-in,
+    // fire-and-forget; never fails the capture).
+    if let Some(hook) = webhook {
+        hook.notify(event.clone());
+    }
+    Ok(event)
 }
 
 #[derive(Deserialize)]

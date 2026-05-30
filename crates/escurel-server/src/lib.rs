@@ -38,6 +38,7 @@ mod health;
 mod mcp;
 mod server;
 mod session;
+mod webhook;
 mod ws;
 
 pub use config::{BootedServer, ConfigError, EscurelConfig};
