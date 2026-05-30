@@ -77,9 +77,13 @@ class _SkillsPanel extends ConsumerWidget {
     );
   }
 
-  void _open(WidgetRef ref, String skillId) {
+  Future<void> _open(WidgetRef ref, String skillId) async {
+    // Navigate *before* closing: focusSkill awaits a real `resolve` HTTP
+    // round-trip, and closing the menu disposes this overlay's `ref`. If
+    // we closed first, the post-await `ref.read` would hit a disposed
+    // element and silently no-op (the skill never opens).
+    await focusSkill(ref, skillId);
     close();
-    focusSkill(ref, skillId);
   }
 }
 
