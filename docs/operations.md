@@ -18,12 +18,15 @@ on first boot of a fresh host (see [Node loss](#node-loss--fresh-host)).
 | `GET /healthz` | Liveness. Always `200 OK` while the process is up; dependency-free. Wire this to the Nomad/Consul check. |
 | `GET /readyz` | Readiness. `200` only when LaneStore + indexer + embedder are all up; `503` with a per-component JSON body otherwise. A degraded embedder (model failed to load) shows here as `{"components":{"embedder":false}}` — the process still serves liveness and read traffic. |
 | `GET /version` | The build version (`VERSION` / `ESCUREL_VERSION`). |
-| `GET /metrics` | Prometheus exposition. `escurel_up`, `escurel_requests_total{route,status}`, plus the OTel-exported request metrics. Scrape via the tailnet-only `escurel-metrics` Consul service. |
+| `GET /metrics` | Prometheus exposition on a **dedicated listener** (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default `:9090`) — *not* the main HTTP port. Exposes `escurel_up`, `escurel_requests_total{route,status}`, and the per-tool families `escurel_tool_calls{tenant,tool,transport,status}`, `escurel_tool_latency_ms`, `escurel_live_sessions_open`, `escurel_audit_drift`. Scrape via the tailnet-only `escurel-metrics` Consul service. |
 
 Logs are structured JSON on stdout with `ts`, `level`, `msg`, `app`,
 `env`, `version`, `request_id` (per [`spec/platform.md`](spec/platform.md)).
 Every `/mcp` request carries an `X-Request-Id` (inbound header honoured,
-else a fresh ULID) threaded into a `mcp.request` span.
+else a fresh ULID) threaded into a `mcp.request` span (which also carries
+`transport` + `trace_id`). Each `tools/call` emits a `tool.completed`
+record adding `tenant`, `tool`, `subject`, `status`, and `duration_ms` —
+the per-call audit line.
 
 ## The admin surface
 

@@ -1,6 +1,6 @@
 # Downstream-app integration contract
 
-**Status:** Proposal. Locked items move into the table in [`README.md`](README.md#locked-design-decisions); open items live at the bottom of this file.
+**Status:** Delivered (contract honoured by `escurel-client` + `escurel-test-support`). Locked items move into the table in [`README.md`](README.md#locked-design-decisions); open items live at the bottom of this file.
 **Scope:** The contract escurel commits to for *applications built on top of escurel* — specifically, what their integration test harness can rely on. The rest of the spec describes the service from the operator's and implementer's seat; this doc describes it from the seat of someone wiring escurel into another product's tests.
 
 The motivating shape is concrete: a new application — frontend + backend — that uses escurel as its store and chains through triton (the DataZoo agent-ingress gateway) to its agents. The integration test the application's harness needs to write is:
@@ -35,14 +35,14 @@ The escurel workspace already contains the *primitives* a downstream test needs;
 | Typed MCP test client | Raw JSON-RPC `POST /mcp` in `tests/mcp.rs` (`call_tool`). | `McpTestClient` in `escurel-test-support`, wrapping `escurel-client`. |
 | Recipe for `escurel + X` chaining | Not present. | §"Chaining recipe" below. |
 
-The implementation of `escurel-test-support` and `escurel-client` is a separate milestone (see §"Implementation status"). This doc fixes the *contract* so the implementing PRs and the first consuming application can land in parallel.
+`escurel-test-support` and `escurel-client` are now implemented (see §"Implementation status"); this doc remains the *contract* both honour.
 
 ## Test-process façade
 
 A downstream test imports one crate (`escurel-test-support` as a `dev-dependency`) and uses one type to bring escurel up. The contract is:
 
 ```rust
-// not yet implemented; this is the committed shape.
+// the shipped shape (crates/escurel-test-support).
 
 pub struct EscurelProcess { /* opaque */ }
 
@@ -242,13 +242,13 @@ What it does **not** guarantee:
 
 ## Implementation status
 
-Not yet implemented. This document fixes the contract; the implementing milestone delivers:
+**Delivered.** All three pieces ship in the workspace:
 
-1. **`crates/escurel-test-support/`** — `EscurelProcess`, `Opts`, `AuthMode`, `FixtureBuilder`, `McpTestClient`. Reuses the helpers already in `tests/auth_quota.rs` and `tests/mcp.rs`.
-2. **`crates/escurel-client/`** — typed wrapper around `escurel-proto`'s tonic codegen, with HTTP and gRPC transports.
-3. **`examples/echo-app/`** (or a sibling repo) — a minimal application demonstrating the full chaining recipe above, with its `tests/e2e.rs` as the executable proof that the contract holds.
+1. **`crates/escurel-test-support/`** — `EscurelProcess`, `Opts`, `AuthMode`, `FixtureBuilder`, `McpTestClient`. Drives the gateway's own no-mock integration tests.
+2. **`crates/escurel-client/`** — typed wrapper around `escurel-proto`'s tonic codegen (exercised by `crates/escurel-client/tests/client_roundtrip.rs`).
+3. **`examples/echo-app/`** — a minimal application demonstrating the chaining recipe above, with its `tests/e2e.rs` as the executable proof that the contract holds.
 
-The order is `escurel-client` → `escurel-test-support` (which depends on it) → example app. The example app's `tests/e2e.rs` is the acceptance test for this contract: if it does not read roughly like the §"Chaining recipe" snippet above, the contract has drifted from the implementation and one of them needs to move.
+The dependency order is `escurel-client` → `escurel-test-support` (which depends on it) → example app. The example app's `tests/e2e.rs` is the acceptance test for this contract: if it drifts from the §"Chaining recipe" snippet above, the contract has diverged from the implementation and one of them needs to move.
 
 ## Open questions
 

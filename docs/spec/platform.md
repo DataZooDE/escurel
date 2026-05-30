@@ -250,10 +250,20 @@ A small set of OTel-conventional metrics:
 | `escurel.storage_bytes` | gauge | `tenant`, `lane` (`markdown` / `duckdb` / `external_ducklake`) |
 | `escurel.audit_drift` | gauge | `tenant`, `category` (`mn-d` markdown-not-in-duckdb, `i-no-m` indexed-but-no-markdown) |
 
-Exported via OTLP **and** scraped at `/metrics` on a separate
-port (default `:9090`) for Prometheus operators who don't run
-an OTLP collector. The `/metrics` endpoint is a thin Prometheus
-text-format adapter over the same OTel metrics SDK.
+Scraped at `/metrics` on a dedicated listener (default `:9090`,
+tailnet-only — see [`operations.md`](../operations.md)). The live
+gateway renders these through a Prometheus registry, so the wire
+names are `_`-separated: `escurel.tool_calls` is exposed as
+`escurel_tool_calls`, etc. Trace spans are exported via OTLP;
+metric OTLP export is not yet wired.
+
+**Implemented today:** `escurel_tool_calls`,
+`escurel_tool_latency_ms`, `escurel_live_sessions_open`, and
+`escurel_audit_drift`, plus the gateway-level `escurel_up` and
+`escurel_requests_total{route,status}`. The remaining
+histograms/gauges in the table above (`write_lock_wait_ms`,
+`embed_batch_size`, `embed_queue_depth`, `storage_bytes`) are
+**reserved** — specified here, not yet populated.
 
 ### Logs
 
