@@ -131,7 +131,8 @@ void main() {
 
     test('neighbours: outgoing edges from customer reach contact', () async {
       final out = await client.neighbours('customer__acme', direction: LinkDirection.outgoing);
-      expect(out.map((n) => n.dst), contains('contact__dora'));
+      // `dst` is the link's slug (matching the gateway wire shape).
+      expect(out.map((n) => n.dst), contains('dora'));
     });
 
     test('neighbours: incoming edges into customer include the contact', () async {

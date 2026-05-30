@@ -32,10 +32,10 @@ class LinksFooter extends ConsumerWidget {
         children: [
           const Divider(height: 32, color: kOutlineVariant),
           if (backlinks.isNotEmpty)
-            _Section(title: 'BACKLINKS', prefix: 'backlink', links: backlinks),
+            _Section(title: 'BACKLINKS', prefix: 'backlink', links: backlinks, incoming: true),
           if (backlinks.isNotEmpty && outgoing.isNotEmpty) const SizedBox(height: 20),
           if (outgoing.isNotEmpty)
-            _Section(title: 'OUTGOING LINKS', prefix: 'outlink', links: outgoing),
+            _Section(title: 'OUTGOING LINKS', prefix: 'outlink', links: outgoing, incoming: false),
         ],
       ),
     );
@@ -43,10 +43,19 @@ class LinksFooter extends ConsumerWidget {
 }
 
 class _Section extends ConsumerWidget {
-  const _Section({required this.title, required this.prefix, required this.links});
+  const _Section({
+    required this.title,
+    required this.prefix,
+    required this.links,
+    required this.incoming,
+  });
   final String title;
   final String prefix;
   final List<Neighbour> links;
+
+  /// Backlinks (incoming) show the *source* page (`n.src`, which links to
+  /// us); outgoing links show the *target* (`n.dst`).
+  final bool incoming;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -63,16 +72,38 @@ class _Section extends ConsumerWidget {
           spacing: 8,
           runSpacing: 8,
           children: [
-            for (final n in links)
-              EntityChip(
-                skill: n.linkSkill,
-                label: n.dst,
-                semanticsLabel: '$prefix:${n.dst}',
-                onTap: () => focusWikilink(ref, n.linkSkill, n.dst),
-              ),
+            for (final n in links) _chip(ref, n),
           ],
         ),
       ],
     );
   }
+
+  Widget _chip(WidgetRef ref, Neighbour n) {
+    if (incoming) {
+      // The "other end" is the source page that links to us; navigate to
+      // it by its page id, label/colour it by its own skill.
+      final (skill, slug) = _skillSlug(n.src);
+      return EntityChip(
+        skill: skill,
+        label: slug,
+        semanticsLabel: '$prefix:$slug',
+        onTap: () => navigateToInstance(ref, n.src),
+      );
+    }
+    return EntityChip(
+      skill: n.linkSkill,
+      label: n.dst,
+      semanticsLabel: '$prefix:${n.dst}',
+      onTap: () => focusWikilink(ref, n.linkSkill, n.dst),
+    );
+  }
+}
+
+/// Split a page id/ref (`markdown/instances/contact__reiter.md`,
+/// `contact__reiter`, or a bare slug) into `(skill, slug)`.
+(String, String) _skillSlug(String pageId) {
+  final base = pageId.split('/').last.replaceAll('.md', '');
+  final parts = base.split('__');
+  return parts.length == 2 ? (parts[0], parts[1]) : ('', base);
 }

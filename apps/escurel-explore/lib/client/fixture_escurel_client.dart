@@ -275,15 +275,23 @@ class FixtureEscurelClient implements EscurelClient {
     String? scenario, // ignored in fixture mode; honoured by the HTTP backend
   }) async {
     final out = <Neighbour>[];
+    // De-dupe edges the way the backend's `links` PK does (a field link
+    // and a body link for the same edge collapse to one).
+    final seen = <String>{};
+    void add(String src, String dst, String skill) {
+      if (seen.add('$src|$dst|$skill')) {
+        out.add(Neighbour(src: src, dst: dst, linkSkill: skill));
+      }
+    }
 
     if (direction == LinkDirection.outgoing || direction == LinkDirection.both) {
       final p = _pages[pageId];
       if (p != null) {
         for (final ref in p.wikilinksOut) {
-          final dst = _resolveRef(ref);
-          if (dst == null) continue;
+          if (_resolveRef(ref) == null) continue; // skip dangling
           if (linkSkill != null && ref.skill != linkSkill) continue;
-          out.add(Neighbour(src: p.id, dst: dst, linkSkill: ref.skill ?? ''));
+          // Match the backend's wire shape: `dst` is the link's slug.
+          add(p.id, ref.id ?? '', ref.skill ?? '');
         }
       }
     }
@@ -291,10 +299,9 @@ class FixtureEscurelClient implements EscurelClient {
     if (direction == LinkDirection.incoming || direction == LinkDirection.both) {
       for (final cand in _pages.values) {
         for (final ref in cand.wikilinksOut) {
-          final dst = _resolveRef(ref);
-          if (dst != pageId) continue;
+          if (_resolveRef(ref) != pageId) continue;
           if (linkSkill != null && ref.skill != linkSkill) continue;
-          out.add(Neighbour(src: cand.id, dst: pageId, linkSkill: ref.skill ?? ''));
+          add(cand.id, ref.id ?? '', ref.skill ?? '');
         }
       }
     }
