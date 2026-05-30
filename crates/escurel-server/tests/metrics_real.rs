@@ -42,10 +42,24 @@ async fn metrics_counts_real_mcp_requests() {
         assert_eq!(resp.status(), 200, "tools/list must succeed");
     }
 
-    // Scrape /metrics and parse the request-counter sample for the
-    // /mcp route.
-    let body = http
+    // Metrics live on their own dedicated listener now — NOT on the
+    // main HTTP app. The main port must 404 for `/metrics`.
+    let on_main = http
         .get(format!("{}/metrics", p.base_url()))
+        .send()
+        .await
+        .expect("main /metrics request");
+    assert_eq!(
+        on_main.status(),
+        404,
+        "/metrics must not be served on the main HTTP port"
+    );
+
+    // Scrape the dedicated metrics listener and parse the
+    // request-counter sample for the /mcp route.
+    let metrics_url = p.metrics_url().expect("metrics listener bound");
+    let body = http
+        .get(metrics_url)
         .send()
         .await
         .expect("metrics request")

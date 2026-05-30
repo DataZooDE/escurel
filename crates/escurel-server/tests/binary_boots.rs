@@ -123,6 +123,9 @@ async fn binary_boots_and_serves_healthz() {
         .env("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0")
         // Disable the gRPC mirror to keep the boot lean.
         .env("ESCUREL_SERVER_LISTEN_GRPC", "")
+        // Random loopback metrics port so parallel test binaries
+        // don't fight over the default :9090.
+        .env("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0")
         .env("VERSION", "9.9.9-bin")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -163,6 +166,7 @@ async fn degraded_embedder_start_boots_with_readyz_false() {
     let cfg = EscurelConfig::from_source(&source(env_map(&[
         ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
         ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
         ("ESCUREL_SERVER_LISTEN_GRPC", ""),
         ("ESCUREL_EMBEDDING_PROVIDER", "gemini"),
     ])))
@@ -203,6 +207,7 @@ async fn build_rejects_path_traversal_tenant() {
     let cfg = EscurelConfig::from_source(&source(env_map(&[
         ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
         ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
         ("ESCUREL_SERVER_LISTEN_GRPC", ""),
         ("ESCUREL_TENANT", "../escape"),
     ])))
@@ -243,6 +248,7 @@ async fn fresh_duckdb_rebuilds_index_from_surviving_markdown() {
     let cfg = EscurelConfig::from_source(&source(env_map(&[
         ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
         ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
         ("ESCUREL_SERVER_LISTEN_GRPC", ""),
     ])))
     .unwrap();

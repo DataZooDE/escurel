@@ -136,6 +136,10 @@ pub struct Opts {
 pub struct EscurelProcess {
     base_url: String,
     grpc_endpoint: Option<String>,
+    // Full `http://<addr>/metrics` URL for the dedicated metrics
+    // listener (a random port in tests). `None` only when metrics
+    // were disabled.
+    metrics_url: Option<String>,
     handle: Option<ServerHandle>,
     issuer: Option<TestIssuer>,
     // Pre-connected gRPC client for the default tenant ("acme").
@@ -291,12 +295,18 @@ impl EscurelProcess {
             embedder_factory: overrides.embedder_factory.clone(),
             demo_dir: overrides.demo_dir.clone(),
             webhook_url: overrides.webhook_url.clone(),
+            // Metrics on their own random port, mirroring production's
+            // dedicated listener (production defaults to :9090).
+            metrics_listen: Some("127.0.0.1:0".to_owned()),
         };
         let handle = serve(cfg)
             .await
             .expect("escurel-test-support: serve() failed");
         let base_url = format!("http://{}", handle.local_addr);
         let grpc_endpoint = handle.grpc_addr.map(|addr| format!("http://{addr}"));
+        let metrics_url = handle
+            .metrics_addr
+            .map(|addr| format!("http://{addr}/metrics"));
 
         // Connect the default-tenant client once when gRPC is
         // bound. Sync `client()` calls hand out clones of this
@@ -320,6 +330,7 @@ impl EscurelProcess {
         let mut process = Self {
             base_url,
             grpc_endpoint,
+            metrics_url,
             handle: Some(handle),
             issuer,
             default_client,
@@ -351,6 +362,14 @@ impl EscurelProcess {
     #[must_use]
     pub fn mcp_url(&self) -> String {
         format!("{}/mcp", self.base_url)
+    }
+
+    /// `http://127.0.0.1:<port>/metrics` — the dedicated Prometheus
+    /// scrape endpoint (a separate listener from the main HTTP app).
+    /// `None` only when metrics were disabled for this spawn.
+    #[must_use]
+    pub fn metrics_url(&self) -> Option<&str> {
+        self.metrics_url.as_deref()
     }
 
     /// `ws://127.0.0.1:<port>/ws` — the WebSocket endpoint for
