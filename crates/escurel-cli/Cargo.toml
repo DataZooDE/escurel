@@ -1,6 +1,6 @@
 [package]
 name = "escurel-cli"
-description = "Operator + agent-style CLI for the Escurel gateway (thin gRPC client)."
+description = "Operator + agent-style CLI for the Escurel gateway, built on escurel-client."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -16,15 +16,26 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
-escurel-proto = { path = "../escurel-proto" }
-serde_json = "1"
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "io-std", "io-util", "sync", "time"] }
-tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
+# Single typed gateway abstraction. The CLI is pure presentation on top
+# of it — no hand-rolled tonic, no direct escurel-proto dependency.
+escurel-client = { path = "../escurel-client" }
+# preserve_order keeps emitted JSON / table columns in the order the
+# command authored them, not alphabetised.
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+# Draining server-streams (rebuild / compact / export) + building the
+# import input stream for the admin streaming commands.
+futures = "0.3"
+tokio-stream = "0.1"
 
 [dev-dependencies]
 assert_cmd = "2"
+# Admin e2e spawns a gateway with a real TenantStore + quota wired.
+escurel-admin = { path = "../escurel-admin" }
+escurel-quota = { path = "../escurel-quota" }
 escurel-test-support = { path = "../escurel-test-support" }
 serde_json = "1"
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
