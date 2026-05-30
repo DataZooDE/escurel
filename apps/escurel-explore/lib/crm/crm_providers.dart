@@ -119,26 +119,6 @@ final currentNeighboursProvider = FutureProvider<List<Neighbour>>((ref) async {
       .neighbours(id, direction: LinkDirection.both, asOf: asOf, scenario: scenario);
 });
 
-/// The focused instance's event time-span — min/max `at` across its
-/// full event history (+ inbox) — used by the time scrubber to map
-/// slider position to an `as_of` instant. Computed from the *unfiltered*
-/// history so the scrubber's range never shrinks as you scrub. Null when
-/// nothing is dated.
-final corpusRangeProvider = FutureProvider<({DateTime start, DateTime end})?>((ref) async {
-  final history = await ref.watch(entityEventHistoryProvider.future);
-  final inbox = await ref.watch(inboxEventsProvider.future);
-  DateTime? lo;
-  DateTime? hi;
-  for (final e in [...history, ...inbox]) {
-    final at = DateTime.tryParse(e.at ?? '');
-    if (at == null) continue;
-    if (lo == null || at.isBefore(lo)) lo = at;
-    if (hi == null || at.isAfter(hi)) hi = at;
-  }
-  if (lo == null || hi == null || !lo.isBefore(hi)) return null;
-  return (start: lo, end: hi);
-});
-
 /// Resolve a typed `[[skill::slug]]` reference to its page id and focus
 /// it — used by the wheel/lineage nodes (neighbours return slugs, the
 /// editor navigates by page id).
