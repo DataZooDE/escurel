@@ -232,8 +232,9 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Query(QueryCmd::Run(a)) => run_query(client, a).await,
         Command::Chat(ChatCmd::Append(a)) => chat_append(client, a).await,
         Command::Chat(ChatCmd::List(a)) => chat_list(client, a).await,
-        // Admin is dispatched in main before reaching here.
+        // Admin / Ui are dispatched in main before reaching here.
         Command::Admin(_) => unreachable!("admin handled by admin::run"),
+        Command::Ui => unreachable!("ui handled by escurel_tui::run"),
     }
 }
 

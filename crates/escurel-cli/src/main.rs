@@ -80,6 +80,8 @@ enum Command {
     /// Operator surface (admin-role token required, except `health`).
     #[command(subcommand)]
     Admin(admin::AdminCmd),
+    /// Launch the interactive k9s-style terminal browser.
+    Ui,
 }
 
 #[tokio::main]
@@ -102,10 +104,13 @@ async fn run(cli: Cli) -> Result<()> {
     let token = SecretString::from(cli.token.unwrap_or_default());
     let fmt = cli.format;
 
-    // The admin group dials the admin service; everything else the
-    // agent service. Dial lazily so a bad URL surfaces the same way for
-    // both paths.
+    // The admin group dials the admin service; the `ui` subcommand takes
+    // over the terminal (raw mode + alternate screen) and never emits
+    // JSON; everything else dials the agent service and renders a value.
+    // Dial lazily so a bad URL surfaces the same way for every path.
     let value = match cli.cmd {
+        // `ui` returns directly: it owns the terminal and produces no value.
+        Command::Ui => return escurel_tui::run(&cli.server, token).await,
         Command::Admin(cmd) => {
             let client = AdminClient::connect(&cli.server, token).await?;
             admin::run(&client, cmd).await?
