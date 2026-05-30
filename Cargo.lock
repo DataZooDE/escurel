@@ -2194,11 +2194,17 @@ dependencies = [
 name = "escurel-client"
 version = "1.0.0"
 dependencies = [
+ "escurel-admin",
  "escurel-proto",
+ "escurel-quota",
  "escurel-test-support",
+ "futures",
+ "futures-core",
  "secrecy",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tonic 0.12.3",
 ]
 

@@ -38,8 +38,22 @@
 //! # }
 //! ```
 
+mod admin;
 mod error;
 
+pub use admin::AdminClient;
+// Admin-surface request/response types, re-exported so operators never
+// pin `escurel-proto` directly (parallels the agent re-exports below).
+pub use admin::{
+    AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
+    CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
+    EmbeddingReloadRequest, EmbeddingReloadResponse, HealthRequest, HealthResponse,
+    QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest,
+    TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse, TenantExportChunk,
+    TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportChunk,
+    TenantImportResponse, TenantListRequest, TenantListResponse, TenantSpec, TenantUpdateRequest,
+    TenantUpdateResponse,
+};
 pub use error::Error;
 
 // Re-export the request/response types the downstream caller needs
@@ -52,11 +66,16 @@ pub use escurel_proto::v1::{
     CaptureEventRequest, ChatMessage, Edge, Event, ExpandBlock, ExpandRequest, ExpandResponse,
     InstanceInfo, ListEventsRequest, ListEventsResponse, ListInboxRequest, ListInboxResponse,
     ListInstancesRequest, ListInstancesResponse, ListMessagesRequest, ListMessagesResponse,
-    ListSkillsRequest, ListSkillsResponse, NeighboursRequest, NeighboursResponse, PageRef,
-    ResolveRequest, ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse, SearchHit,
-    SearchRequest, SearchResponse, Skill, StoredQueryColumn, UpdatePageRequest, UpdatePageResponse,
-    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
+    ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse,
+    PageRef, ResolveRequest, ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse,
+    SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn, UpdatePageRequest,
+    UpdatePageResponse, ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
 };
+// `tonic::Streaming<T>` is part of the public signature of the
+// streaming RPCs (`live_session` plus the admin streams). Re-export it
+// so callers consume the stream without pinning `tonic` themselves —
+// same rationale as re-exporting `SecretString`.
+pub use tonic::Streaming;
 // Re-exported so callers don't need to depend on `secrecy` directly
 // just to spell out a token. Keeping the version in sync with this
 // crate's `Cargo.toml` is part of the semver contract.
@@ -240,6 +259,22 @@ impl Client {
     ) -> Result<AssignEventResponse, Error> {
         let mut client = self.inner.clone();
         Ok(client.assign_event(self.authed(req)).await?.into_inner())
+    }
+
+    /// Open a live CRDT co-editing session (bidi stream). The caller
+    /// drives `ops`: the **first** [`LiveOp`] attaches the session by
+    /// `page_id` (empty `op_b64`); later frames carry base64 Loro op
+    /// blobs. The returned [`Streaming`] yields one [`LiveAck`] per
+    /// frame — the attach ack carries the `session_id`.
+    ///
+    /// This is the wire path the demo's live-edit surface speaks; the
+    /// gateway must have a CRDT backend wired or the stream is rejected.
+    pub async fn live_session<S>(&self, ops: S) -> Result<Streaming<LiveAck>, Error>
+    where
+        S: futures_core::Stream<Item = LiveOp> + Send + 'static,
+    {
+        let mut client = self.inner.clone();
+        Ok(client.live_session(self.authed(ops)).await?.into_inner())
     }
 
     /// Wrap a request body in a tonic `Request<T>` with the bearer
