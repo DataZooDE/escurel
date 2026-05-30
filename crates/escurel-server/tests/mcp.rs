@@ -332,6 +332,42 @@ async fn search_returns_hits_for_query() {
 }
 
 #[tokio::test]
+async fn search_page_granularity_and_filter_over_mcp() {
+    let p = start_with_seeded_indexer().await;
+    // Page granularity: response echoes "page", hits drop the anchor
+    // and collapse to one per page.
+    let page = call_tool(
+        &p,
+        "search",
+        json!({ "q": "customer", "k": 10, "granularity": "page", "skill": "customer" }),
+    )
+    .await;
+    assert_eq!(page["granularity"], "page");
+    let hits = page["hits"].as_array().unwrap();
+    assert!(!hits.is_empty());
+    assert!(hits.iter().all(|h| h["anchor"].is_null()));
+
+    // Frontmatter filter narrows by a frontmatter field (an object
+    // `filter`, the MCP-native shape). `id` is present on every
+    // instance, so this isolates acme-corp and excludes globex.
+    let filtered = call_tool(
+        &p,
+        "search",
+        json!({ "q": "customer", "k": 10, "skill": "customer", "filter": { "id": "acme-corp" } }),
+    )
+    .await;
+    let fhits = filtered["hits"].as_array().unwrap();
+    assert!(!fhits.is_empty(), "acme-corp matches the filter");
+    assert!(
+        fhits
+            .iter()
+            .all(|h| h["frontmatter_excerpt"]["id"] == "acme-corp"),
+        "every hit has id acme-corp: {fhits:?}"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn run_stored_query_routes_through_http() {
     let p = start_with_seeded_indexer().await;
     let result = call_tool(

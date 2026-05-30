@@ -22,6 +22,7 @@ pub mod chat;
 pub mod citation;
 pub mod crdt_history;
 pub mod events;
+pub mod filter;
 pub mod indexer;
 pub mod meta_skill;
 pub mod query;
@@ -44,5 +45,5 @@ pub use read::{
     SkillInfo,
 };
 pub use schema::Migrator;
-pub use search::SearchHit;
+pub use search::{Granularity, SearchHit};
 pub use validate::{Issue, Severity};

@@ -35,8 +35,8 @@ use base64::engine::general_purpose::STANDARD as B64;
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
-    AppendChatMessage, ChatMessage, Direction, EventInfo, Indexer, IndexerError, Issue,
-    ListChatMessages, NewEvent, OrderDir,
+    AppendChatMessage, ChatMessage, Direction, EventInfo, Granularity, Indexer, IndexerError,
+    Issue, ListChatMessages, NewEvent, OrderDir,
 };
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
@@ -612,6 +612,12 @@ struct SearchArgs {
     /// Scenario overlay; base-only when null/absent.
     #[serde(default)]
     scenario: Option<String>,
+    /// `"block"` (default) or `"page"`.
+    #[serde(default)]
+    granularity: Option<String>,
+    /// Frontmatter post-filter object (see `escurel_index::filter`).
+    #[serde(default)]
+    filter: Option<Value>,
 }
 
 fn default_k() -> usize {
@@ -631,14 +637,19 @@ async fn tool_search(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcErr
             )));
         }
     };
+    let granularity = Granularity::from_arg(a.granularity.as_deref().unwrap_or_default());
+    // An empty `{}` filter is treated as "no filter".
+    let filter = a.filter.as_ref().filter(|f| !is_empty_filter(f));
     let hits = indexer
-        .search(
+        .search_with(
             &a.q,
             a.k,
             pt,
             a.skill.as_deref(),
             a.as_of.as_deref(),
             a.scenario.as_deref(),
+            granularity,
+            filter,
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
@@ -653,8 +664,14 @@ async fn tool_search(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcErr
             "score": h.score,
             "frontmatter_excerpt": h.frontmatter_excerpt,
         })).collect::<Vec<_>>(),
-        "granularity": "block",
+        "granularity": granularity.as_str(),
     }))
+}
+
+/// True for `null` or an empty `{}` filter object — both mean "no
+/// post-filter", so we skip the work and the `Some`/`None` plumbing.
+fn is_empty_filter(f: &Value) -> bool {
+    f.is_null() || f.as_object().is_some_and(serde_json::Map::is_empty)
 }
 
 #[derive(Deserialize)]
@@ -1304,8 +1321,10 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "q": { "type": "string" },
                         "k": { "type": "integer", "minimum": 0, "maximum": 1000 },
+                        "granularity": { "type": "string", "enum": ["block", "page"], "description": "Result granularity; `page` collapses block hits to one per page. Default `block`." },
                         "page_type": { "type": "string", "enum": ["skill", "instance", "any"] },
                         "skill": { "type": "string" },
+                        "filter": { "type": "object", "description": "Frontmatter post-filter; clauses are ANDed, e.g. {\"tier\": \"gold\", \"at\": {\">=\": \"2026-04-01\"}}." },
                         "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; blocks born after it are excluded." },
                         "scenario": { "type": "string", "description": "What-if overlay; base-only when absent." }
                     }
