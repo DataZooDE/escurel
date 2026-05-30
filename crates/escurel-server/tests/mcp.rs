@@ -129,15 +129,18 @@ async fn call_tool(p: &EscurelProcess, name: &str, args: Value) -> Value {
 }
 
 #[tokio::test]
-async fn list_skills_returns_three_skills() {
+async fn list_skills_returns_seeded_skills_plus_meta_skill() {
     let p = start_with_seeded_indexer().await;
     let result = call_tool(&p, "list_skills", json!({})).await;
     let skills = result["skills"].as_array().expect("skills array");
     let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
-    assert_eq!(ids.len(), 3);
+    // Three seeded skills plus the mandatory `escurel` meta-skill that
+    // every tenant ships (locked decision 3).
     assert!(ids.contains(&"customer"));
     assert!(ids.contains(&"meeting"));
     assert!(ids.contains(&"query"));
+    assert!(ids.contains(&"escurel"), "meta-skill present; got {ids:?}");
+    assert_eq!(ids.len(), 4);
     p.shutdown().await;
 }
 

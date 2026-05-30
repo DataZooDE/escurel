@@ -226,6 +226,14 @@ impl EscurelProcess {
                 let store_dir = TempDir::new().expect("tempdir for store");
                 let db_dir = TempDir::new().expect("tempdir for duckdb");
                 let (indexer, store) = build_indexer(&store_dir, &db_dir);
+                // Match production: every served tenant ships the
+                // mandatory `escurel` meta-skill (locked decision 3).
+                // Done here rather than in the sync `build_indexer`
+                // because it's an async write through the indexer.
+                indexer
+                    .ensure_meta_skill()
+                    .await
+                    .expect("escurel-test-support: ensure meta-skill");
                 (Some(store_dir), Some(db_dir), Some(indexer), Some(store))
             };
 

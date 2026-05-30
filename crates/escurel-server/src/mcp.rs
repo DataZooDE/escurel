@@ -35,8 +35,8 @@ use base64::engine::general_purpose::STANDARD as B64;
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
-    AppendChatMessage, ChatMessage, Direction, EventInfo, Indexer, Issue, ListChatMessages,
-    NewEvent, OrderDir,
+    AppendChatMessage, ChatMessage, Direction, EventInfo, Indexer, IndexerError, Issue,
+    ListChatMessages, NewEvent, OrderDir,
 };
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
@@ -723,22 +723,29 @@ struct UpdatePageArgs {
 async fn tool_update_page(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
     let a: UpdatePageArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("update_page: {e}")))?;
-    indexer
-        .update_page(&a.page_id, &a.content)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("update_page: {e}")))?;
-    // The trait doesn't currently surface validation issues
-    // (it errors out instead). Return the protocol-required
-    // `{ok, issues}` shape with an empty issues list and a stub
-    // new_version derived from the body hash. Real version IDs
-    // arrive once the CRDT layer (M4) gives us monotonic
-    // versions; until then the client only needs the field to
-    // exist.
-    Ok(json!({
-        "ok": true,
-        "issues": [],
-        "new_version": "v1",
-    }))
+    match indexer.update_page(&a.page_id, &a.content).await {
+        // The trait doesn't yet surface non-fatal validation issues
+        // (M4); return the protocol `{ok, issues}` shape with an empty
+        // list and a stub `new_version` until monotonic CRDT versions
+        // land.
+        Ok(()) => Ok(json!({
+            "ok": true,
+            "issues": [],
+            "new_version": "v1",
+        })),
+        // The protected meta-skill rejects the write as an
+        // error-severity issue rather than an opaque server error.
+        Err(IndexerError::MetaSkillProtected { reason }) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "meta_skill_protected",
+                "location": "frontmatter",
+                "message": reason,
+            }],
+        })),
+        Err(e) => Err(JsonRpcError::internal(format!("update_page: {e}"))),
+    }
 }
 
 // --- chat tools (M-Chat, issue #63) -----------------------------

@@ -111,9 +111,17 @@ async fn list_skills_returns_seeded_skill() {
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(resp.skills.len(), 1);
-    let s = &resp.skills[0];
-    assert_eq!(s.id, "customer");
+    // Every tenant ships the mandatory `escurel` meta-skill alongside
+    // the seeded one (locked decision 3); assert on the seeded skill.
+    assert!(
+        resp.skills.iter().any(|s| s.id == "escurel"),
+        "mandatory escurel meta-skill must be present"
+    );
+    let s = resp
+        .skills
+        .iter()
+        .find(|s| s.id == "customer")
+        .expect("seeded customer skill present");
     assert_eq!(s.description, "A buying organisation.");
     assert!(s.required_frontmatter.contains(&"id".to_owned()));
     assert!(s.optional_frontmatter.contains(&"tier".to_owned()));

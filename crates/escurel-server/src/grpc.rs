@@ -37,8 +37,8 @@ use escurel_admin::{AdminError, TenantSpec as AdminTenantSpec, TenantStore};
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::Version;
 use escurel_index::{
-    AppendChatMessage, Direction, EventInfo, Indexer, Issue, ListChatMessages, NewEvent, OrderDir,
-    Severity, derive_attach_alias, is_safe_attach_source,
+    AppendChatMessage, Direction, EventInfo, Indexer, IndexerError, Issue, ListChatMessages,
+    NewEvent, OrderDir, Severity, derive_attach_alias, is_safe_attach_source,
 };
 use escurel_md::PageType;
 use escurel_proto::v1::TenantSpec as ProtoTenantSpec;
@@ -366,17 +366,30 @@ impl Escurel for EscurelGrpc {
         self.enforce(&req, Some(Dimension::Writes)).await?;
         let indexer = self.indexer()?;
         let r = req.into_inner();
-        indexer
-            .update_page(&r.page_id, &r.content)
-            .await
-            .map_err(|e| Status::internal(format!("update_page: {e}")))?;
-        Ok(Response::new(UpdatePageResponse {
-            ok: true,
-            issues: Vec::new(),
-            // Stub until the CRDT version layer lands in M4. The
-            // HTTP MCP dispatcher returns the same sentinel.
-            new_version: "v1".to_owned(),
-        }))
+        match indexer.update_page(&r.page_id, &r.content).await {
+            Ok(()) => Ok(Response::new(UpdatePageResponse {
+                ok: true,
+                issues: Vec::new(),
+                // Stub until the CRDT version layer lands in M4. The
+                // HTTP MCP dispatcher returns the same sentinel.
+                new_version: "v1".to_owned(),
+            })),
+            // The protected meta-skill rejects the write as an
+            // error-severity issue (the live-write contract), not a
+            // transport failure.
+            Err(IndexerError::MetaSkillProtected { reason }) => {
+                Ok(Response::new(UpdatePageResponse {
+                    ok: false,
+                    issues: vec![ValidationIssue {
+                        code: "meta_skill_protected".to_owned(),
+                        message: format!("[error] {reason}"),
+                        anchor: "frontmatter".to_owned(),
+                    }],
+                    new_version: String::new(),
+                }))
+            }
+            Err(e) => Err(Status::internal(format!("update_page: {e}"))),
+        }
     }
 
     async fn validate(

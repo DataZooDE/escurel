@@ -232,9 +232,16 @@ async fn multiple_processes_run_in_parallel_with_independent_data() {
         a_skills.skills.iter().any(|s| s.id == "customer"),
         "a was seeded with customer"
     );
+    // b has no fixtures, so it carries only the mandatory `escurel`
+    // meta-skill every tenant ships (locked decision 3) — and crucially
+    // none of a's data, proving the two processes are independent.
     assert!(
-        b_skills.skills.is_empty(),
-        "b had no fixtures: {b_skills:?}"
+        !b_skills.skills.iter().any(|s| s.id == "customer"),
+        "b must not see a's customer fixture: {b_skills:?}"
+    );
+    assert!(
+        b_skills.skills.iter().all(|s| s.id == "escurel"),
+        "b carries only the meta-skill: {b_skills:?}"
     );
 
     a.shutdown().await;
