@@ -10,6 +10,7 @@ import '../state/providers.dart';
 import '../theme/app_theme.dart';
 import 'crm_providers.dart';
 import 'scenario_switch.dart';
+import 'skills_menu.dart';
 
 class CrmBreadcrumb extends ConsumerWidget implements PreferredSizeWidget {
   const CrmBreadcrumb({super.key});
@@ -29,7 +30,9 @@ class CrmBreadcrumb extends ConsumerWidget implements PreferredSizeWidget {
     return AppBar(
       automaticallyImplyLeading: false,
       toolbarHeight: 52,
-      titleSpacing: 16,
+      titleSpacing: 4,
+      leadingWidth: 52,
+      leading: const Center(child: SkillsMenu()),
       backgroundColor: kSurfaceContainerLowest,
       title: Row(
         children: [

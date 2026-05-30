@@ -8,6 +8,7 @@ library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../client/models.dart';
+import '../md/frontmatter.dart';
 import '../state/providers.dart';
 
 /// Every instance in the tenant, flattened across skills (skips the
@@ -29,6 +30,21 @@ final allInstancesProvider = FutureProvider<List<InstanceSummary>>((ref) async {
 final leftPaneFractionProvider = StateProvider<double>((ref) => 0.42);
 final leftCollapsedProvider = StateProvider<bool>((ref) => false);
 final rightCollapsedProvider = StateProvider<bool>((ref) => false);
+
+/// Whether the focused page is a skill (skills carry no events). Derived
+/// reactively from the expanded current page.
+final currentPageIsSkillProvider = Provider<bool>((ref) {
+  final page = ref.watch(currentPageProvider).valueOrNull;
+  return page?.pageType == PageType.skill;
+});
+
+/// The left event pane's *effective* collapsed state: auto-minimized when
+/// a skill is focused (no events to show), otherwise the user's manual
+/// chevron toggle ([leftCollapsedProvider]). The chevron keeps writing
+/// the manual flag, so the user's choice is restored on instances.
+final effectiveLeftCollapsedProvider = Provider<bool>((ref) {
+  return ref.watch(leftCollapsedProvider) || ref.watch(currentPageIsSkillProvider);
+});
 
 /// The event currently open in the left detail pane. Distinct from the
 /// pinned entity ([currentPageIdProvider], right pane) — opening an

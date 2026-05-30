@@ -218,6 +218,7 @@ class HttpEscurelClient implements EscurelClient {
               description: (s['description'] as String?) ?? '',
               requiredFrontmatter: (s['required_frontmatter'] as List? ?? const []).map((e) => e.toString()).toList(),
               optionalFrontmatter: (s['optional_frontmatter'] as List? ?? const []).map((e) => e.toString()).toList(),
+              isEventTyped: (s['is_event_typed'] as bool?) ?? false,
             ))
         .toList();
   }

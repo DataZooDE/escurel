@@ -144,12 +144,18 @@ class SkillSummary {
     required this.description,
     required this.requiredFrontmatter,
     required this.optionalFrontmatter,
+    this.isEventTyped = false,
   });
 
   final String id;
   final String description;
   final List<String> requiredFrontmatter;
   final List<String> optionalFrontmatter;
+
+  /// Whether the skill is event-typed (its instances are dated events,
+  /// e.g. `email` / `meeting` / `doc`) vs entity-bound (`customer`,
+  /// `contact`, …). Drives the skills-registry grouping.
+  final bool isEventTyped;
 }
 
 class InstanceSummary {
