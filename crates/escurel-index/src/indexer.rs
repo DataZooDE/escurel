@@ -148,6 +148,14 @@ impl Indexer {
         &self.tenant
     }
 
+    /// The canonical markdown [`LaneStore`] this indexer reads/writes.
+    /// Cloned `Arc` handle for admin lane-introspection tools that need
+    /// raw access to stored bytes.
+    #[must_use]
+    pub fn lane_store(&self) -> Arc<dyn LaneStore> {
+        Arc::clone(&self.store)
+    }
+
     /// Upsert the page identified by `page_id` from the markdown
     /// `content` blob, inside a single DuckDB transaction.
     ///

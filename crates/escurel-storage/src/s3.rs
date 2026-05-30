@@ -311,6 +311,26 @@ impl LaneStore for S3Store {
         let raw = format!("s3://{}/{}", self.bucket, object_key);
         Url::parse(&raw).map_err(|_| StoreError::InvalidFileUrl(key.clone()))
     }
+
+    fn backend(&self) -> &'static str {
+        "s3"
+    }
+
+    async fn size(&self, key: &Key) -> Result<u64> {
+        let object_key = self.object_key(key);
+        match self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(&object_key)
+            .send()
+            .await
+        {
+            Ok(out) => Ok(out.content_length().unwrap_or(0).max(0) as u64),
+            Err(e) if is_head_not_found(&e) => Err(StoreError::NotFound(key.clone())),
+            Err(e) => Err(sdk_io_error("head_object", e)),
+        }
+    }
 }
 
 /// Drop leading/trailing slashes from an operator-supplied prefix so

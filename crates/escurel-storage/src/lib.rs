@@ -69,4 +69,19 @@ pub trait LaneStore: Send + Sync + 'static {
     /// (`httpfs` / `file://`) without copying through this
     /// process.
     fn url(&self, key: &Key) -> Result<Url>;
+
+    /// Human-readable backend kind for admin lane introspection
+    /// (`"fs"`, `"s3"`). Adapters that don't override report
+    /// `"unknown"`.
+    fn backend(&self) -> &'static str {
+        "unknown"
+    }
+
+    /// Byte length of the value at `key` without transferring the
+    /// body. Returns [`StoreError::NotFound`] if the key has no value.
+    /// The default reads the full body; backends override with a
+    /// cheaper metadata / HEAD call.
+    async fn size(&self, key: &Key) -> Result<u64> {
+        Ok(self.read(key).await?.len() as u64)
+    }
 }
