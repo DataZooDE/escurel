@@ -13,12 +13,13 @@ use std::time::Duration;
 
 use escurel_proto::v1::escurel_admin_server::{EscurelAdmin, EscurelAdminServer};
 use escurel_proto::v1::{
-    AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
-    CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
-    EmbeddingReloadRequest, EmbeddingReloadResponse, HealthRequest, HealthResponse,
-    QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest,
-    TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse, TenantExportChunk,
-    TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportChunk,
+    AdminLaneBlobRequest, AdminLaneBlobResponse, AdminLaneKeysRequest, AdminLaneKeysResponse,
+    AdminListLanesRequest, AdminListLanesResponse, AttachExternalRequest, AttachExternalResponse,
+    AuditRequest, AuditResponse, CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest,
+    DeleteChatHistoryResponse, EmbeddingReloadRequest, EmbeddingReloadResponse, HealthRequest,
+    HealthResponse, QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest,
+    TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
+    TenantExportChunk, TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportChunk,
     TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
     TenantUpdateResponse,
 };
@@ -134,6 +135,27 @@ impl EscurelAdmin for StaticAdmin {
         _req: Request<DeleteChatHistoryRequest>,
     ) -> Result<Response<DeleteChatHistoryResponse>, Status> {
         Err(Status::unimplemented("M-Chat.3"))
+    }
+
+    async fn admin_list_lanes(
+        &self,
+        _req: Request<AdminListLanesRequest>,
+    ) -> Result<Response<AdminListLanesResponse>, Status> {
+        Err(Status::unimplemented("lane introspection"))
+    }
+
+    async fn admin_lane_keys(
+        &self,
+        _req: Request<AdminLaneKeysRequest>,
+    ) -> Result<Response<AdminLaneKeysResponse>, Status> {
+        Err(Status::unimplemented("lane introspection"))
+    }
+
+    async fn admin_lane_blob(
+        &self,
+        _req: Request<AdminLaneBlobRequest>,
+    ) -> Result<Response<AdminLaneBlobResponse>, Status> {
+        Err(Status::unimplemented("lane introspection"))
     }
 }
 

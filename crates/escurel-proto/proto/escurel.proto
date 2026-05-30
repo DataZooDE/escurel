@@ -488,6 +488,40 @@ service EscurelAdmin {
 
   rpc DeleteChatHistory (DeleteChatHistoryRequest) returns (DeleteChatHistoryResponse);
 
+  // Lane introspection — raw read-only access to the tenant's
+  // LaneStore for operator debugging (docs/contract/agent-interface.md).
+  rpc AdminListLanes (AdminListLanesRequest) returns (AdminListLanesResponse);
+  rpc AdminLaneKeys  (AdminLaneKeysRequest)  returns (AdminLaneKeysResponse);
+  rpc AdminLaneBlob  (AdminLaneBlobRequest)  returns (AdminLaneBlobResponse);
+
   rpc QuotaGet       (QuotaGetRequest)       returns (QuotaGetResponse);
   rpc Health         (HealthRequest)         returns (HealthResponse);
+}
+
+message AdminListLanesRequest {}
+message LaneInfo {
+  string name = 1;            // e.g. "markdown"
+  string backend = 2;         // "fs" | "s3"
+  repeated string tenants_present = 3;
+}
+message AdminListLanesResponse { repeated LaneInfo lanes = 1; }
+
+message AdminLaneKeysRequest {
+  string lane = 1;            // lane name (empty = the default "markdown")
+  string prefix = 2;          // tenant-relative key prefix
+  uint32 limit = 3;           // 0 → server default (100)
+}
+message LaneKey {
+  string key = 1;
+  uint64 size_bytes = 2;
+}
+message AdminLaneKeysResponse { repeated LaneKey keys = 1; }
+
+message AdminLaneBlobRequest {
+  string lane = 1;
+  string key = 2;
+}
+message AdminLaneBlobResponse {
+  bytes bytes = 1;
+  string content_type = 2;
 }

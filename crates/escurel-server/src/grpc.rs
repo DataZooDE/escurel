@@ -45,24 +45,27 @@ use escurel_proto::v1::TenantSpec as ProtoTenantSpec;
 use escurel_proto::v1::escurel_admin_server::EscurelAdmin;
 use escurel_proto::v1::escurel_server::Escurel;
 use escurel_proto::v1::{
-    AppendMessageRequest, AppendMessageResponse, AssignEventRequest, AssignEventResponse,
-    AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
-    CaptureEventRequest, ChatMessage as ProtoChatMessage, CompactLanesRequest, CompactProgress,
-    DeleteChatHistoryRequest, DeleteChatHistoryResponse, Edge, EmbeddingReloadRequest,
-    EmbeddingReloadResponse, Event as ProtoEvent, ExpandBlock, ExpandRequest, ExpandResponse,
-    HealthRequest, HealthResponse, InstanceInfo, ListEventsRequest, ListEventsResponse,
-    ListInboxRequest, ListInboxResponse, ListInstancesRequest, ListInstancesResponse,
-    ListMessagesRequest, ListMessagesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck,
-    LiveOp, NeighboursRequest, NeighboursResponse, PageRef, QuotaGetRequest, QuotaGetResponse,
-    RebuildProgress, RebuildRequest, ResolveRequest, ResolveResponse, RunStoredQueryRequest,
-    RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
-    TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
-    TenantExportChunk, TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportChunk,
-    TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
-    TenantUpdateResponse, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
-    ValidationIssue, WikilinkParsed,
+    AdminLaneBlobRequest, AdminLaneBlobResponse, AdminLaneKeysRequest, AdminLaneKeysResponse,
+    AdminListLanesRequest, AdminListLanesResponse, AppendMessageRequest, AppendMessageResponse,
+    AssignEventRequest, AssignEventResponse, AttachExternalRequest, AttachExternalResponse,
+    AuditRequest, AuditResponse, CaptureEventRequest, ChatMessage as ProtoChatMessage,
+    CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
+    Edge, EmbeddingReloadRequest, EmbeddingReloadResponse, Event as ProtoEvent, ExpandBlock,
+    ExpandRequest, ExpandResponse, HealthRequest, HealthResponse, InstanceInfo, LaneInfo, LaneKey,
+    ListEventsRequest, ListEventsResponse, ListInboxRequest, ListInboxResponse,
+    ListInstancesRequest, ListInstancesResponse, ListMessagesRequest, ListMessagesResponse,
+    ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse,
+    PageRef, QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest, ResolveRequest,
+    ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest,
+    SearchResponse, Skill, StoredQueryColumn, TenantCreateRequest, TenantCreateResponse,
+    TenantDeleteRequest, TenantDeleteResponse, TenantExportChunk, TenantExportRequest,
+    TenantGetRequest, TenantGetResponse, TenantImportChunk, TenantImportResponse,
+    TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
+    UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse, ValidationIssue,
+    WikilinkParsed,
 };
 use escurel_quota::{Dimension, QuotaError};
+use escurel_storage::{Key, StoreError};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use futures::Stream;
@@ -978,6 +981,15 @@ impl EscurelAdminGrpc {
         Self { state }
     }
 
+    /// The wired indexer, for lane-introspection RPCs that need its
+    /// `LaneStore` + tenant binding.
+    fn lane_indexer(&self) -> Result<&Arc<Indexer>, Status> {
+        self.state
+            .indexer
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("server has no indexer wired"))
+    }
+
     /// Enforce admin-role auth. Returns `Status::unauthenticated`
     /// on missing/invalid token; `Status::permission_denied` when
     /// the token verified but the caller is only `Role::Agent`.
@@ -1466,6 +1478,127 @@ impl EscurelAdmin for EscurelAdminGrpc {
             // actually changes hour-to-hour is occupancy.
             concurrent_sessions: snap.concurrent_sessions_in_use,
         }))
+    }
+
+    async fn admin_list_lanes(
+        &self,
+        req: Request<AdminListLanesRequest>,
+    ) -> Result<Response<AdminListLanesResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        let indexer = self.lane_indexer()?;
+        Ok(Response::new(AdminListLanesResponse {
+            lanes: vec![LaneInfo {
+                name: DEFAULT_LANE.to_owned(),
+                backend: indexer.lane_store().backend().to_owned(),
+                tenants_present: vec![indexer.tenant().to_owned()],
+            }],
+        }))
+    }
+
+    async fn admin_lane_keys(
+        &self,
+        req: Request<AdminLaneKeysRequest>,
+    ) -> Result<Response<AdminLaneKeysResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        let r = req.into_inner();
+        lane_name_ok(&r.lane)?;
+        let indexer = self.lane_indexer()?;
+        let store = indexer.lane_store();
+        let prefix = Key::new(indexer.tenant(), r.prefix.clone())
+            .map_err(|e| Status::invalid_argument(format!("lane prefix: {e}")))?;
+        let mut keys = store
+            .list(&prefix)
+            .await
+            .map_err(|e| Status::internal(format!("lane list: {e}")))?;
+        // Deterministic order so paginated reads are stable.
+        keys.sort_by(|a, b| a.path().cmp(b.path()));
+        let limit = if r.limit == 0 {
+            DEFAULT_LANE_KEYS_LIMIT
+        } else {
+            r.limit as usize
+        };
+        let mut out = Vec::new();
+        for k in keys.into_iter().take(limit) {
+            // `size` is a metadata/HEAD call, not a full read.
+            let size_bytes = store
+                .size(&k)
+                .await
+                .map_err(|e| Status::internal(format!("lane size: {e}")))?;
+            out.push(LaneKey {
+                key: k.path().to_owned(),
+                size_bytes,
+            });
+        }
+        Ok(Response::new(AdminLaneKeysResponse { keys: out }))
+    }
+
+    async fn admin_lane_blob(
+        &self,
+        req: Request<AdminLaneBlobRequest>,
+    ) -> Result<Response<AdminLaneBlobResponse>, Status> {
+        self.enforce_admin(req.metadata()).await?;
+        let r = req.into_inner();
+        lane_name_ok(&r.lane)?;
+        let indexer = self.lane_indexer()?;
+        let store = indexer.lane_store();
+        let key = Key::new(indexer.tenant(), r.key.clone())
+            .map_err(|e| Status::invalid_argument(format!("lane key: {e}")))?;
+        // Cap the transfer: HEAD the size first so an oversized blob is
+        // rejected without ever reading it into memory.
+        let size = store
+            .size(&key)
+            .await
+            .map_err(|e| map_store_err("lane blob", e))?;
+        if size as usize > LANE_BLOB_MAX_BYTES {
+            return Err(Status::failed_precondition(format!(
+                "blob is {size} bytes, over the {LANE_BLOB_MAX_BYTES}-byte admin cap"
+            )));
+        }
+        let bytes = store
+            .read(&key)
+            .await
+            .map_err(|e| map_store_err("lane blob", e))?;
+        Ok(Response::new(AdminLaneBlobResponse {
+            content_type: content_type_for(&r.key).to_owned(),
+            bytes: bytes.to_vec(),
+        }))
+    }
+}
+
+/// Canonical (and only) lane this server exposes.
+const DEFAULT_LANE: &str = "markdown";
+const DEFAULT_LANE_KEYS_LIMIT: usize = 100;
+/// Hard cap on a single `admin_lane_blob` transfer (1 MiB).
+const LANE_BLOB_MAX_BYTES: usize = 1024 * 1024;
+
+/// Accept the default lane name (or empty = default); reject others —
+/// this single-tenant-per-process server exposes one markdown lane.
+fn lane_name_ok(lane: &str) -> Result<(), Status> {
+    if lane.is_empty() || lane == DEFAULT_LANE {
+        Ok(())
+    } else {
+        Err(Status::not_found(format!(
+            "unknown lane `{lane}`; this server exposes only `{DEFAULT_LANE}`"
+        )))
+    }
+}
+
+/// Best-effort content type from the key's extension.
+fn content_type_for(key: &str) -> &'static str {
+    if key.ends_with(".md") {
+        "text/markdown"
+    } else if key.ends_with(".json") {
+        "application/json"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// Map a [`StoreError`] to a gRPC status, preserving not-found.
+fn map_store_err(ctx: &str, e: StoreError) -> Status {
+    match e {
+        StoreError::NotFound(_) => Status::not_found(format!("{ctx}: not found")),
+        other => Status::internal(format!("{ctx}: {other}")),
     }
 }
 

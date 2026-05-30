@@ -184,3 +184,37 @@ async fn agent_role_is_rejected_from_every_admin_tool() {
     }
     p.shutdown().await;
 }
+
+#[tokio::test]
+async fn admin_lane_tools_over_mcp() {
+    let p = start().await;
+
+    // list_lanes: one markdown/fs lane.
+    let env = call(&p, Role::Admin, "admin_list_lanes", json!({})).await;
+    let lanes = env["result"]["lanes"].as_array().expect("lanes");
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0]["name"], "markdown");
+    assert_eq!(lanes[0]["backend"], "fs");
+
+    // lane_blob: the meta-skill markdown (base64) with its content type.
+    let blob = call(
+        &p,
+        Role::Admin,
+        "admin_lane_blob",
+        json!({ "key": "markdown/skills/escurel.md" }),
+    )
+    .await;
+    assert_eq!(blob["result"]["content_type"], "text/markdown");
+    assert!(
+        blob["result"]["bytes_base64"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "bytes_base64 present: {blob}"
+    );
+
+    // Agent role is rejected.
+    let denied = call(&p, Role::Agent, "admin_list_lanes", json!({})).await;
+    assert!(denied.get("error").is_some(), "agent denied: {denied}");
+
+    p.shutdown().await;
+}

@@ -40,6 +40,7 @@ use escurel_index::{
 };
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
+use escurel_storage::{Key, StoreError};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::Instrument;
@@ -386,6 +387,18 @@ async fn dispatch_tools_call(
         "admin_delete_chat_history" => {
             require_admin(role)?;
             tool_admin_delete_chat_history(indexer, params.arguments).await
+        }
+        "admin_list_lanes" => {
+            require_admin(role)?;
+            tool_admin_list_lanes(indexer)
+        }
+        "admin_lane_keys" => {
+            require_admin(role)?;
+            tool_admin_lane_keys(indexer, params.arguments).await
+        }
+        "admin_lane_blob" => {
+            require_admin(role)?;
+            tool_admin_lane_blob(indexer, params.arguments).await
         }
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
@@ -1086,6 +1099,111 @@ async fn tool_admin_index_query(indexer: &Indexer, args: Value) -> Result<Value,
     }))
 }
 
+// --- admin lane introspection (mirrors EscurelAdmin gRPC) ---------
+
+/// Canonical (and only) lane this server exposes.
+const LANE_NAME: &str = "markdown";
+/// Hard cap on a single `admin_lane_blob` transfer (1 MiB).
+const LANE_BLOB_MAX_BYTES: u64 = 1024 * 1024;
+
+fn lane_name_ok(lane: &str) -> Result<(), JsonRpcError> {
+    if lane.is_empty() || lane == LANE_NAME {
+        Ok(())
+    } else {
+        Err(JsonRpcError::invalid_params(format!(
+            "unknown lane `{lane}`; this server exposes only `{LANE_NAME}`"
+        )))
+    }
+}
+
+fn lane_content_type(key: &str) -> &'static str {
+    if key.ends_with(".md") {
+        "text/markdown"
+    } else if key.ends_with(".json") {
+        "application/json"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+fn tool_admin_list_lanes(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+    Ok(json!({
+        "lanes": [{
+            "name": LANE_NAME,
+            "backend": indexer.lane_store().backend(),
+            "tenants_present": [indexer.tenant()],
+        }],
+    }))
+}
+
+#[derive(Deserialize)]
+struct AdminLaneKeysArgs {
+    #[serde(default)]
+    lane: String,
+    #[serde(default)]
+    prefix: String,
+    #[serde(default)]
+    limit: usize,
+}
+
+async fn tool_admin_lane_keys(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: AdminLaneKeysArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("admin_lane_keys: {e}")))?;
+    lane_name_ok(&a.lane)?;
+    let store = indexer.lane_store();
+    let prefix = Key::new(indexer.tenant(), a.prefix)
+        .map_err(|e| JsonRpcError::invalid_params(format!("admin_lane_keys prefix: {e}")))?;
+    let mut keys = store
+        .list(&prefix)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("admin_lane_keys: {e}")))?;
+    keys.sort_by(|x, y| x.path().cmp(y.path()));
+    let limit = if a.limit == 0 { 100 } else { a.limit };
+    let mut out = Vec::new();
+    for k in keys.into_iter().take(limit) {
+        let size = store
+            .size(&k)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("admin_lane_keys size: {e}")))?;
+        out.push(json!({ "key": k.path(), "size_bytes": size }));
+    }
+    Ok(json!({ "keys": out }))
+}
+
+#[derive(Deserialize)]
+struct AdminLaneBlobArgs {
+    #[serde(default)]
+    lane: String,
+    key: String,
+}
+
+async fn tool_admin_lane_blob(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: AdminLaneBlobArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("admin_lane_blob: {e}")))?;
+    lane_name_ok(&a.lane)?;
+    let store = indexer.lane_store();
+    let key = Key::new(indexer.tenant(), a.key.clone())
+        .map_err(|e| JsonRpcError::invalid_params(format!("admin_lane_blob key: {e}")))?;
+    let size = store.size(&key).await.map_err(map_lane_err)?;
+    if size > LANE_BLOB_MAX_BYTES {
+        return Err(JsonRpcError::invalid_params(format!(
+            "blob is {size} bytes, over the {LANE_BLOB_MAX_BYTES}-byte admin cap"
+        )));
+    }
+    let bytes = store.read(&key).await.map_err(map_lane_err)?;
+    Ok(json!({
+        "bytes_base64": B64.encode(&bytes),
+        "content_type": lane_content_type(&a.key),
+    }))
+}
+
+fn map_lane_err(e: StoreError) -> JsonRpcError {
+    match e {
+        StoreError::NotFound(_) => JsonRpcError::invalid_params("lane key not found".to_owned()),
+        other => JsonRpcError::internal(format!("lane: {other}")),
+    }
+}
+
 #[derive(Deserialize)]
 struct AdminDeleteChatHistoryArgs {
     #[serde(default)]
@@ -1576,6 +1694,38 @@ fn tools_list_payload() -> Value {
                         "chat_group_id": { "type": "string" },
                         "before_ts": { "type": "string" },
                         "author": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "admin_list_lanes",
+                "Admin: enumerate the configured LaneStores (name, backend, \
+                 tenants present). MCP twin of EscurelAdmin.AdminListLanes.",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "admin_lane_keys",
+                "Admin: list keys under a prefix in a lane, with byte sizes. \
+                 MCP twin of EscurelAdmin.AdminLaneKeys.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "lane": { "type": "string", "description": "Lane name; empty = the default `markdown`." },
+                        "prefix": { "type": "string", "description": "Tenant-relative key prefix." },
+                        "limit": { "type": "integer", "minimum": 0, "description": "0 → server default (100)." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "admin_lane_blob",
+                "Admin: fetch one blob (base64) from a lane, subject to a \
+                 1 MiB cap. MCP twin of EscurelAdmin.AdminLaneBlob.",
+                json!({
+                    "type": "object",
+                    "required": ["key"],
+                    "properties": {
+                        "lane": { "type": "string" },
+                        "key": { "type": "string" }
                     }
                 }),
             ),

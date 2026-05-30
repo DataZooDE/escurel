@@ -114,6 +114,21 @@ impl LaneStore for FsStore {
         let path = self.resolve(key);
         Url::from_file_path(&path).map_err(|()| StoreError::InvalidFileUrl(key.clone()))
     }
+
+    fn backend(&self) -> &'static str {
+        "fs"
+    }
+
+    async fn size(&self, key: &Key) -> Result<u64> {
+        let path = self.resolve(key);
+        match tfs::metadata(&path).await {
+            Ok(m) => Ok(m.len()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(StoreError::NotFound(key.clone()))
+            }
+            Err(e) => Err(StoreError::Io(e)),
+        }
+    }
 }
 
 /// Append a literal `.tmp` to `path`, preserving its existing
