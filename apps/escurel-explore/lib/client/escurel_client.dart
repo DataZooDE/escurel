@@ -85,6 +85,11 @@ abstract class EscurelClient {
   /// projection is its state), oldest first.
   Future<List<Event>> listEvents(String instancePageId, {int? limit});
 
+  /// The taken_at timestamps of an instance's CRDT snapshot history,
+  /// oldest first — the discrete state-over-time points `expand(asOf=T)`
+  /// can replay (the version markers in the instance view).
+  Future<List<String>> listSnapshots(String pageId);
+
   /// Capture a new event into the inbox. `instancePageId` only
   /// pre-flags a candidate; an external agent assigns + processes it.
   Future<Event> captureEvent({

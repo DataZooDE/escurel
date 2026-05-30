@@ -333,6 +333,9 @@ class FixtureEscurelClient implements EscurelClient {
   Future<List<Event>> listEvents(String instancePageId, {int? limit}) async => const [];
 
   @override
+  Future<List<String>> listSnapshots(String pageId) async => const [];
+
+  @override
   Future<Event> captureEvent({
     String? at,
     String source = '',

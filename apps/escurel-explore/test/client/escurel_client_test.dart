@@ -101,6 +101,8 @@ class _StubClient implements EscurelClient {
   Future<List<Event>> listEvents(String instancePageId, {int? limit}) async =>
       throw notYetImplemented('list_events');
   @override
+  Future<List<String>> listSnapshots(String pageId) async => throw notYetImplemented('list_snapshots');
+  @override
   Future<Event> captureEvent({
     String? at,
     String source = '',

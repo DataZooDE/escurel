@@ -83,6 +83,16 @@ final inboxEventsProvider = FutureProvider<List<Event>>((ref) async {
   return ref.watch(escurelClientProvider).listInbox();
 });
 
+/// The focused instance's CRDT snapshot timeline — the discrete
+/// `taken_at` points `expand(asOf=T)` can replay, oldest first. Powers
+/// the instance view's version markers. Empty when the instance has no
+/// recorded history.
+final instanceSnapshotsProvider = FutureProvider<List<String>>((ref) async {
+  final id = ref.watch(currentPageIdProvider);
+  if (id == null) return const <String>[];
+  return ref.watch(escurelClientProvider).listSnapshots(id);
+});
+
 /// The currently-open event (left detail), looked up in the entity
 /// history or the inbox. Null when nothing is open.
 final openEventDetailProvider = Provider<Event?>((ref) {

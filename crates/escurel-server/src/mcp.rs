@@ -367,6 +367,7 @@ async fn dispatch_tools_call(
         }
         "list_inbox" => tool_list_inbox(indexer, params.arguments).await,
         "list_events" => tool_list_events(indexer, params.arguments).await,
+        "list_snapshots" => tool_list_snapshots(indexer, params.arguments).await,
         "assign_event" => tool_assign_event(indexer, params.arguments).await,
         // Admin-gated ops tools (mirror the documented MCP admin
         // surface; delegate to the same logic as EscurelAdmin gRPC).
@@ -951,6 +952,21 @@ async fn tool_list_events(indexer: &Indexer, args: Value) -> Result<Value, JsonR
 }
 
 #[derive(Deserialize)]
+struct ListSnapshotsArgs {
+    page_id: String,
+}
+
+async fn tool_list_snapshots(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: ListSnapshotsArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("list_snapshots: {e}")))?;
+    let snapshots = indexer
+        .list_snapshots(&a.page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_snapshots: {e}")))?;
+    Ok(json!({ "snapshots": snapshots }))
+}
+
+#[derive(Deserialize)]
 struct AssignEventArgs {
     event_id: String,
     instance_page_id: String,
@@ -1425,6 +1441,19 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "instance_page_id": { "type": "string" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_snapshots",
+                "List the taken_at timestamps of an instance's CRDT snapshot \
+                 history, oldest first — the discrete state-over-time points \
+                 expand(as_of=T) can replay.",
+                json!({
+                    "type": "object",
+                    "required": ["page_id"],
+                    "properties": {
+                        "page_id": { "type": "string" }
                     }
                 }),
             ),
