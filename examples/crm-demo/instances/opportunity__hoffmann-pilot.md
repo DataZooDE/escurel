@@ -8,6 +8,7 @@ customer: [[customer::muenchner-pharma]]
 contact: [[contact::hoffmann]]
 champion: [[contact::hoffmann]]
 economic_buyer: [[contact::hoffmann]]
+engagement: [[engagement::hoffmann-spine]]
 value_eur: 60000
 close_date: 2026-06-30
 prev_review: null

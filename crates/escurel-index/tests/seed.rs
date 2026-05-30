@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use duckdb::Connection;
 use escurel_embed::{Embedder, ZeroEmbedder};
-use escurel_index::read::OrderDir;
+use escurel_index::read::{Direction, OrderDir};
 use escurel_index::{Indexer, Migrator};
 use escurel_storage::{FsStore, LaneStore};
 use tempfile::TempDir;
@@ -116,6 +116,70 @@ async fn seed_loads_crm_demo_events_and_spine_history() {
         later.frontmatter.get("phase").and_then(|v| v.as_str()),
         Some("delivering"),
     );
+}
+
+#[tokio::test]
+async fn seed_crm_demo_is_richly_connected() {
+    let (indexer, _s, _d) = fresh_indexer();
+    indexer.seed_from_dir(&crm_demo_dir()).await.expect("seed");
+
+    // The corpus spans multiple accounts: every skill group is populated,
+    // several with multiple instances (the Instances dropdown's grouping).
+    async fn count(indexer: &Indexer, skill: &str) -> usize {
+        indexer
+            .list_instances(skill, Some(OrderDir::Asc), None, None, None, None)
+            .await
+            .expect("list_instances")
+            .len()
+    }
+    assert!(count(&indexer, "customer").await >= 3, "≥3 customers");
+    assert!(count(&indexer, "contact").await >= 6, "≥6 contacts");
+    assert!(count(&indexer, "orgunit").await >= 2, "≥2 org units");
+    assert!(count(&indexer, "engagement").await >= 3, "≥3 engagements");
+    assert!(
+        count(&indexer, "opportunity").await >= 3,
+        "≥3 opportunities"
+    );
+    assert!(count(&indexer, "workstream").await >= 4, "≥4 workstreams");
+
+    // The Münchner Pharma spine is a richly-connected hub: ≥7 backlinks
+    // (incoming) and ≥5 outgoing — what the links footer renders.
+    let spine = "markdown/instances/engagement__hoffmann-spine.md";
+    let backlinks = indexer
+        .neighbours(spine, Direction::In, None, None, None)
+        .await
+        .expect("neighbours In");
+    assert!(
+        backlinks.len() >= 7,
+        "spine should have ≥7 backlinks, got {}",
+        backlinks.len(),
+    );
+    let outgoing = indexer
+        .neighbours(spine, Direction::Out, None, None, None)
+        .await
+        .expect("neighbours Out");
+    assert!(
+        outgoing.len() >= 5,
+        "spine should have ≥5 outgoing links, got {}",
+        outgoing.len(),
+    );
+
+    // A 2nd account's spine carries its own snapshot timeline (version
+    // markers on more than one instance).
+    let ha_spine = "markdown/instances/engagement__ha-spine.md";
+    let snaps = indexer
+        .list_snapshots(ha_spine)
+        .await
+        .expect("list_snapshots");
+    assert!(
+        snaps.len() >= 3,
+        "the Hoffmann spine has a 3-state timeline, got {}",
+        snaps.len()
+    );
+
+    // The inbox carries several unprocessed candidates across accounts.
+    let inbox = indexer.list_inbox(None).await.expect("list_inbox");
+    assert!(inbox.len() >= 5, "≥5 inbox events, got {}", inbox.len());
 }
 
 #[tokio::test]

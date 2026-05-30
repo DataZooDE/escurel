@@ -7,6 +7,7 @@ status: qualified
 contact: [[contact::hoffmann]]
 authority: [[contact::hoffmann]]
 prev_event: [[engagement::hoffmann-intro]]
+engagement: [[engagement::hoffmann-spine]]
 budget: confirmed
 need: per-trial-unit analytical sandboxes without per-unit Snowflake procurement
 timing: 2026-Q3 pilot, 2027-Q1 production
