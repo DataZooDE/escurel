@@ -118,6 +118,10 @@ pub struct ServerConfig {
     /// serving; unknown paths are 404. Set from
     /// `ESCUREL_SERVE_DEMO_DIR` by the binary.
     pub demo_dir: Option<std::path::PathBuf>,
+    /// Opt-in outbound capture webhook URL (`ESCUREL_WEBHOOK_URL`).
+    /// `Some` → `capture_event` fires a fire-and-forget POST of the
+    /// new event to this URL; `None` (default) disables it.
+    pub webhook_url: Option<String>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -148,6 +152,7 @@ impl ServerConfig {
             embedder_reload: None,
             embedder_factory: None,
             demo_dir: None,
+            webhook_url: None,
         }
     }
 }
@@ -231,6 +236,10 @@ pub(crate) struct AppState {
     /// `(route, status)` axis; `/metrics` renders it as the
     /// Prometheus text exposition body.
     pub(crate) metrics: Arc<Metrics>,
+    /// Opt-in outbound capture webhook (`ESCUREL_WEBHOOK_URL`). When
+    /// `Some`, `capture_event` fires a fire-and-forget POST of the new
+    /// event; `None` (default) is a no-op.
+    pub(crate) webhook: Option<crate::webhook::Webhook>,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -264,6 +273,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         embedder_factory: config.embedder_factory.clone(),
         sessions: Arc::new(SessionManager::new()),
         metrics: metrics_registry,
+        webhook: config.webhook_url.clone().map(crate::webhook::Webhook::new),
     };
 
     let mut app = Router::new()

@@ -88,6 +88,10 @@ pub struct ConfigOverrides {
     /// fallback + SPA index routing; `None` (default) keeps the
     /// bare-API behaviour (unknown path → 404).
     pub demo_dir: Option<std::path::PathBuf>,
+    /// Outbound capture webhook URL. `Some` exercises the
+    /// fire-and-forget POST `capture_event` fires on a new inbox item;
+    /// `None` (default) disables it.
+    pub webhook_url: Option<String>,
 }
 
 impl std::fmt::Debug for ConfigOverrides {
@@ -278,6 +282,7 @@ impl EscurelProcess {
             embedder_reload: overrides.embedder_reload.clone(),
             embedder_factory: overrides.embedder_factory.clone(),
             demo_dir: overrides.demo_dir.clone(),
+            webhook_url: overrides.webhook_url.clone(),
         };
         let handle = serve(cfg)
             .await

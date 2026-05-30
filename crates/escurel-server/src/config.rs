@@ -27,6 +27,7 @@
 //! | `ENV` / `ESCUREL_ENV` | `dev` | log field `env` |
 //! | `ESCUREL_SERVER_DATA_DIR` | `/data` | host-volume root for DuckDB + FsStore + tenants |
 //! | `ESCUREL_SEED_DIR` | — | markdown corpus seeded into the tenant at boot (idempotent), e.g. `examples/crm-demo` |
+//! | `ESCUREL_WEBHOOK_URL` | — | outbound capture webhook; fire-and-forget POST of each new `capture_event` (M7) |
 //! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
 //! | `ESCUREL_SERVER_LISTEN_GRPC` | `0.0.0.0:8081` | gRPC listener; empty disables gRPC |
 //! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
@@ -244,6 +245,10 @@ pub struct EscurelConfig {
     /// (e.g. `examples/crm-demo`). `None` → no seeding. Idempotent.
     /// Set from `ESCUREL_SEED_DIR`.
     pub seed_dir: Option<PathBuf>,
+    /// Optional outbound capture webhook URL (`ESCUREL_WEBHOOK_URL`).
+    /// `Some` → `capture_event` fires a fire-and-forget POST of the new
+    /// event; `None` (default) disables it.
+    pub webhook_url: Option<String>,
 }
 
 /// Source of an environment lookup — abstracted so `from_env` is
@@ -339,6 +344,10 @@ impl EscurelConfig {
             .get("ESCUREL_SEED_DIR")
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from);
+        // Optional outbound capture webhook (fire-and-forget POST).
+        let webhook_url = env
+            .get("ESCUREL_WEBHOOK_URL")
+            .filter(|s| !s.trim().is_empty());
         let listen_http = pick(
             "ESCUREL_SERVER_LISTEN_HTTP",
             toml_cfg.server.listen_http,
@@ -486,6 +495,7 @@ impl EscurelConfig {
             gemini_api_key,
             demo_dir,
             seed_dir,
+            webhook_url,
         })
     }
 }
@@ -641,6 +651,7 @@ impl EscurelConfig {
             embedder_reload: Some(Arc::clone(&embedder)),
             embedder_factory: Some(self.embedder_factory()),
             demo_dir: self.demo_dir.clone(),
+            webhook_url: self.webhook_url.clone(),
         };
 
         let handle = serve(server_config)

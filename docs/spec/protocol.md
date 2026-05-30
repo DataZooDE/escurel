@@ -389,6 +389,14 @@ processed. The inbox is the `status = 'inbox'` view.
 An `Event` is `{event_id, at, source, mime, label_skill,
 instance_page_id, status, title, body, provenance}`.
 
+**Capture webhook (opt-in).** When `ESCUREL_WEBHOOK_URL` is set, each
+`capture_event` fires a **fire-and-forget** HTTP `POST` of the stored
+event's JSON to that URL — the notification an external processing agent
+subscribes to. Delivery never blocks or fails the capture (a down sink is
+logged and dropped); the agent may also poll `list_inbox`, so a missed
+POST self-heals. The fold event→state remains the external agent's job
+(via `assign_event` + `update_page`); the server stays automation-free.
+
 ## Admin surface
 
 Exposed on gRPC and on MCP/HTTP under `/mcp/admin`. Requires the
