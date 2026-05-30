@@ -8,7 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
-import 'crm_providers.dart';
+import 'instances_menu.dart';
 import 'scenario_switch.dart';
 import 'skills_menu.dart';
 
@@ -21,10 +21,6 @@ class CrmBreadcrumb extends ConsumerWidget implements PreferredSizeWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final text = Theme.of(context).textTheme;
-    final count = ref.watch(allInstancesProvider).maybeWhen(
-          data: (xs) => xs.length,
-          orElse: () => null,
-        );
     final focused = ref.watch(currentPageIdProvider);
 
     return AppBar(
@@ -53,14 +49,8 @@ class CrmBreadcrumb extends ConsumerWidget implements PreferredSizeWidget {
               ]),
             ),
           ),
-          const SizedBox(width: 20),
-          _Crumb(
-            label: 'instances',
-            child: Text(
-              count == null ? 'Instances …' : 'Instances $count',
-              style: text.labelLarge?.copyWith(color: kOnSurfaceVariant),
-            ),
-          ),
+          const SizedBox(width: 16),
+          const InstancesMenu(),
           if (focused != null) ...[
             _Sep(),
             _Crumb(
