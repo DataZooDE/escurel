@@ -2,11 +2,13 @@
 //! as the HTTP gateway so OIDC verification + quota debits behave
 //! identically to `POST /mcp`.
 //!
-//! All nine unary Escurel RPCs are wired (`list_skills` /
+//! All nine core unary Escurel RPCs are wired (`list_skills` /
 //! `list_instances` / `resolve` / `expand` / `search` /
 //! `neighbours` / `run_stored_query` / `validate` / `update_page`),
-//! plus the `live_session` bidi stream. `validate` is the dry-run
-//! authoring-feedback path: it runs the same frontmatter +
+//! the chat tools (`append_message` / `list_messages`), the M7
+//! event/inbox tools (`capture_event` / `list_inbox` / `list_events` /
+//! `assign_event`), plus the `live_session` bidi stream. `validate` is
+//! the dry-run authoring-feedback path: it runs the same frontmatter +
 //! wikilink checks as `update_page` against the indexer but commits
 //! nothing. The `EscurelAdmin` service is partly stubbed.
 //!
@@ -35,19 +37,21 @@ use escurel_admin::{AdminError, TenantSpec as AdminTenantSpec, TenantStore};
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::Version;
 use escurel_index::{
-    AppendChatMessage, Direction, Indexer, Issue, ListChatMessages, OrderDir, Severity,
-    derive_attach_alias, is_safe_attach_source,
+    AppendChatMessage, Direction, EventInfo, Indexer, Issue, ListChatMessages, NewEvent, OrderDir,
+    Severity, derive_attach_alias, is_safe_attach_source,
 };
 use escurel_md::PageType;
 use escurel_proto::v1::TenantSpec as ProtoTenantSpec;
 use escurel_proto::v1::escurel_admin_server::EscurelAdmin;
 use escurel_proto::v1::escurel_server::Escurel;
 use escurel_proto::v1::{
-    AppendMessageRequest, AppendMessageResponse, AttachExternalRequest, AttachExternalResponse,
-    AuditRequest, AuditResponse, ChatMessage as ProtoChatMessage, CompactLanesRequest,
-    CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse, Edge,
-    EmbeddingReloadRequest, EmbeddingReloadResponse, ExpandBlock, ExpandRequest, ExpandResponse,
-    HealthRequest, HealthResponse, InstanceInfo, ListInstancesRequest, ListInstancesResponse,
+    AppendMessageRequest, AppendMessageResponse, AssignEventRequest, AssignEventResponse,
+    AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
+    CaptureEventRequest, ChatMessage as ProtoChatMessage, CompactLanesRequest, CompactProgress,
+    DeleteChatHistoryRequest, DeleteChatHistoryResponse, Edge, EmbeddingReloadRequest,
+    EmbeddingReloadResponse, Event as ProtoEvent, ExpandBlock, ExpandRequest, ExpandResponse,
+    HealthRequest, HealthResponse, InstanceInfo, ListEventsRequest, ListEventsResponse,
+    ListInboxRequest, ListInboxResponse, ListInstancesRequest, ListInstancesResponse,
     ListMessagesRequest, ListMessagesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck,
     LiveOp, NeighboursRequest, NeighboursResponse, PageRef, QuotaGetRequest, QuotaGetResponse,
     RebuildProgress, RebuildRequest, ResolveRequest, ResolveResponse, RunStoredQueryRequest,
@@ -484,6 +488,91 @@ impl Escurel for EscurelGrpc {
         }))
     }
 
+    // --- events / inbox (M7) — gRPC twins of the MCP event tools ---
+
+    async fn capture_event(
+        &self,
+        req: Request<CaptureEventRequest>,
+    ) -> Result<Response<ProtoEvent>, Status> {
+        self.enforce(&req, Some(Dimension::Writes)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+        let provenance = if r.provenance_json.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str::<serde_json::Value>(&r.provenance_json)
+                    .map_err(|e| Status::invalid_argument(format!("provenance_json: {e}")))?,
+            )
+        };
+        let stored = indexer
+            .capture_event(NewEvent {
+                event_id: (!r.event_id.is_empty()).then_some(r.event_id),
+                at: (!r.at.is_empty()).then_some(r.at),
+                source: r.source,
+                mime: r.mime,
+                label_skill: r.label_skill,
+                instance_page_id: (!r.instance_page_id.is_empty()).then_some(r.instance_page_id),
+                title: r.title,
+                body: r.body,
+                provenance,
+            })
+            .await
+            .map_err(|e| Status::internal(format!("capture_event: {e}")))?;
+        Ok(Response::new(event_to_proto(stored)))
+    }
+
+    async fn list_inbox(
+        &self,
+        req: Request<ListInboxRequest>,
+    ) -> Result<Response<ListInboxResponse>, Status> {
+        self.enforce(&req, Some(Dimension::Queries)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+        let limit = (r.limit != 0).then_some(r.limit as usize);
+        let events = indexer
+            .list_inbox(limit)
+            .await
+            .map_err(|e| Status::internal(format!("list_inbox: {e}")))?;
+        Ok(Response::new(ListInboxResponse {
+            events: events.into_iter().map(event_to_proto).collect(),
+        }))
+    }
+
+    async fn list_events(
+        &self,
+        req: Request<ListEventsRequest>,
+    ) -> Result<Response<ListEventsResponse>, Status> {
+        self.enforce(&req, Some(Dimension::Queries)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+        let limit = (r.limit != 0).then_some(r.limit as usize);
+        let events = indexer
+            .list_events(&r.instance_page_id, limit)
+            .await
+            .map_err(|e| Status::internal(format!("list_events: {e}")))?;
+        Ok(Response::new(ListEventsResponse {
+            events: events.into_iter().map(event_to_proto).collect(),
+        }))
+    }
+
+    async fn assign_event(
+        &self,
+        req: Request<AssignEventRequest>,
+    ) -> Result<Response<AssignEventResponse>, Status> {
+        self.enforce(&req, Some(Dimension::Writes)).await?;
+        let indexer = self.indexer()?;
+        let r = req.into_inner();
+        indexer
+            .assign_event(&r.event_id, &r.instance_page_id)
+            .await
+            .map_err(|e| Status::internal(format!("assign_event: {e}")))?;
+        Ok(Response::new(AssignEventResponse {
+            event_id: r.event_id,
+            instance_page_id: r.instance_page_id,
+        }))
+    }
+
     type LiveSessionStream = Pin<Box<dyn Stream<Item = Result<LiveAck, Status>> + Send>>;
     async fn live_session(
         &self,
@@ -750,6 +839,21 @@ fn chat_message_to_proto(m: escurel_index::ChatMessage) -> ProtoChatMessage {
         content: m.content,
         metadata_json: m.metadata.map(|v| v.to_string()).unwrap_or_default(),
         embedded: m.embedded,
+    }
+}
+
+fn event_to_proto(e: EventInfo) -> ProtoEvent {
+    ProtoEvent {
+        event_id: e.event_id,
+        at: e.at.unwrap_or_default(),
+        source: e.source,
+        mime: e.mime,
+        label_skill: e.label_skill,
+        instance_page_id: e.instance_page_id.unwrap_or_default(),
+        status: e.status,
+        title: e.title,
+        body: e.body,
+        provenance_json: e.provenance.to_string(),
     }
 }
 

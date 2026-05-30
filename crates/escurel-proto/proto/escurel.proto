@@ -296,6 +296,72 @@ message ListMessagesResponse {
   string next_cursor = 2;
 }
 
+// --- events / inbox (M7 — Event-sourcing surface) ----------------
+// gRPC twin of the MCP capture_event / list_inbox / list_events /
+// assign_event tools. Empty strings stand in for unset (proto3 has no
+// nullable string), matching the chat-message convention above.
+
+message Event {
+  string event_id         = 1;
+  // RFC-3339 in UTC; empty when undated.
+  string at               = 2;
+  string source           = 3;
+  string mime             = 4;
+  // The processing skill this event's label links to.
+  string label_skill      = 5;
+  // The instance the event is bound to once processed; empty in the inbox.
+  string instance_page_id = 6;
+  // `inbox` | `processed`.
+  string status           = 7;
+  string title            = 8;
+  string body             = 9;
+  // JSON value encoded as a string (`null` when absent).
+  string provenance_json  = 10;
+}
+
+message CaptureEventRequest {
+  // Empty → server-generated ULID.
+  string event_id         = 1;
+  // Empty → undated (NULL `at`).
+  string at               = 2;
+  string source           = 3;
+  string mime             = 4;
+  string label_skill      = 5;
+  // Empty → no pre-flag (pure inbox item).
+  string instance_page_id = 6;
+  string title            = 7;
+  string body             = 8;
+  // JSON value string, or empty.
+  string provenance_json  = 9;
+}
+
+message ListInboxRequest {
+  // `0` → no limit.
+  uint32 limit = 1;
+}
+message ListInboxResponse {
+  repeated Event events = 1;
+}
+
+message ListEventsRequest {
+  string instance_page_id = 1;
+  // `0` → no limit.
+  uint32 limit            = 2;
+}
+message ListEventsResponse {
+  repeated Event events = 1;
+}
+
+message AssignEventRequest {
+  string event_id         = 1;
+  string instance_page_id = 2;
+}
+message AssignEventResponse {
+  // Echoes the bound instance for ack symmetry with the MCP surface.
+  string event_id         = 1;
+  string instance_page_id = 2;
+}
+
 service Escurel {
   rpc Search        (SearchRequest)         returns (SearchResponse);
   rpc Resolve       (ResolveRequest)        returns (ResolveResponse);
@@ -309,6 +375,11 @@ service Escurel {
 
   rpc AppendMessage (AppendMessageRequest)  returns (AppendMessageResponse);
   rpc ListMessages  (ListMessagesRequest)   returns (ListMessagesResponse);
+
+  rpc CaptureEvent  (CaptureEventRequest)   returns (Event);
+  rpc ListInbox     (ListInboxRequest)      returns (ListInboxResponse);
+  rpc ListEvents    (ListEventsRequest)     returns (ListEventsResponse);
+  rpc AssignEvent   (AssignEventRequest)    returns (AssignEventResponse);
 
   rpc LiveSession   (stream LiveOp)         returns (stream LiveAck);
 }

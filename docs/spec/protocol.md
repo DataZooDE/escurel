@@ -369,7 +369,11 @@ Events are the dynamic input of the memory triad (Events · Skills ·
 Instances). They live in a dedicated `events` store (not pages); each
 event's `label_skill` links to the skill that knows how to process it,
 and `instance_page_id` links to the instance it belongs to once
-processed. The inbox is the `status = 'inbox'` view.
+processed. The inbox is the `status = 'inbox'` view. All four tools are
+mirrored on native gRPC (`Escurel.CaptureEvent` → `Event`, `ListInbox`,
+`ListEvents`, `AssignEvent`) with the same quota debits as MCP
+(`capture_event`/`assign_event` = Writes; `list_inbox`/`list_events` =
+Queries).
 
 - **`capture_event`** *(write)* — append an event to the inbox.
   Input: `{event_id?, at?, source?, mime?, label_skill?,
