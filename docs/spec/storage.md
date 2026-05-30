@@ -305,6 +305,28 @@ CREATE TABLE crdt_snapshots (
   taken_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (page_id, snapshot_hlc)
 );
+
+-- events: the global inbox / event store (M7 — Event-sourcing surface).
+-- An event is the dynamic input; `label_skill` links to the SKILL that
+-- knows how to process it, `instance_page_id` to the INSTANCE it belongs
+-- to once an (external) agent has processed it. `status='inbox'` until
+-- assigned. Events are NOT pages and are not in the `links` graph; their
+-- surface is capture_event / list_inbox / list_events / assign_event.
+CREATE TABLE events (
+  event_id          VARCHAR PRIMARY KEY,
+  at_ts             TIMESTAMP,                        -- event time (`at` is a DuckDB keyword)
+  source            VARCHAR NOT NULL DEFAULT '',      -- ingest source, e.g. gmail / meet
+  mime              VARCHAR NOT NULL DEFAULT '',      -- content type, e.g. message/rfc822
+  label_skill       VARCHAR NOT NULL DEFAULT '',      -- skill id: how to process this event type
+  instance_page_id  VARCHAR,                          -- assigned instance (NULL = inbox)
+  status            VARCHAR NOT NULL DEFAULT 'inbox', -- 'inbox' | 'processed'
+  title             VARCHAR NOT NULL DEFAULT '',
+  body              VARCHAR NOT NULL DEFAULT '',
+  provenance        JSON,
+  created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX events_status_at   ON events(status, at_ts);          -- the inbox view
+CREATE INDEX events_instance_at ON events(instance_page_id, at_ts);-- an instance's event history
 ```
 
 The `LiveDoc` actor for a page is one Tokio task that accepts

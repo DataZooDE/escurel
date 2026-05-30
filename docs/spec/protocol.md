@@ -353,6 +353,32 @@ unresolvable conflict, the response is `{ok: false,
 issues: [{code: "conflict", ...}], head_content: "..."}` —
 the client re-drafts against `head_content`.
 
+### Events / inbox (M7 — Event-sourcing surface)
+
+Events are the dynamic input of the memory triad (Events · Skills ·
+Instances). They live in a dedicated `events` store (not pages); each
+event's `label_skill` links to the skill that knows how to process it,
+and `instance_page_id` links to the instance it belongs to once
+processed. The inbox is the `status = 'inbox'` view.
+
+- **`capture_event`** *(write)* — append an event to the inbox.
+  Input: `{event_id?, at?, source?, mime?, label_skill?,
+  instance_page_id?, title?, body?, provenance?}` (`event_id` is a
+  server ULID when absent; `instance_page_id` only *pre-flags* a
+  candidate — the event stays in the inbox until `assign_event`).
+  Returns the stored event (`{event_id, at, status: "inbox", …}`).
+- **`list_inbox`** *(read)* — `{limit?}` → `{events: [Event, …]}`,
+  unprocessed events, newest first.
+- **`list_events`** *(read)* — `{instance_page_id, limit?}` →
+  `{events: [Event, …]}`, that instance's processed event history,
+  oldest first (the sequence whose projection is its state).
+- **`assign_event`** *(write)* — `{event_id, instance_page_id}` →
+  marks the event `processed` and bound to the instance. This is the
+  (external) agent's act of folding the event into state.
+
+An `Event` is `{event_id, at, source, mime, label_skill,
+instance_page_id, status, title, body, provenance}`.
+
 ## Admin surface
 
 Exposed on gRPC and on MCP/HTTP under `/mcp/admin`. Requires the

@@ -224,6 +224,58 @@ async fn list_instances_scenario_overlay_through_http() {
 }
 
 #[tokio::test]
+async fn events_capture_inbox_assign_history_round_trips_through_http() {
+    let p = start_with_seeded_indexer().await;
+    let instance = "markdown/instances/customer/acme-corp.md";
+
+    // capture → lands in the inbox.
+    let captured = call_tool(
+        &p,
+        "capture_event",
+        json!({
+            "at": "2026-04-01T09:00:00Z",
+            "source": "gmail",
+            "mime": "message/rfc822",
+            "label_skill": "email",
+            "title": "Contact form",
+            "body": "An enquiry.",
+            "provenance": { "extracted_by": "agt:scout-a" }
+        }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().expect("event id").to_owned();
+    assert_eq!(captured["status"], "inbox");
+
+    let inbox = call_tool(&p, "list_inbox", json!({})).await;
+    assert_eq!(inbox["events"].as_array().unwrap().len(), 1);
+    assert_eq!(inbox["events"][0]["source"], "gmail");
+
+    // history empty until assigned.
+    let before = call_tool(&p, "list_events", json!({ "instance_page_id": instance })).await;
+    assert!(before["events"].as_array().unwrap().is_empty());
+
+    // assign → leaves inbox, enters the instance's event history.
+    call_tool(
+        &p,
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": instance }),
+    )
+    .await;
+    let after_inbox = call_tool(&p, "list_inbox", json!({})).await;
+    assert!(
+        after_inbox["events"].as_array().unwrap().is_empty(),
+        "assigned event leaves the inbox",
+    );
+    let history = call_tool(&p, "list_events", json!({ "instance_page_id": instance })).await;
+    let evs = history["events"].as_array().unwrap();
+    assert_eq!(evs.len(), 1);
+    assert_eq!(evs[0]["event_id"], event_id);
+    assert_eq!(evs[0]["status"], "processed");
+    assert_eq!(evs[0]["provenance"]["extracted_by"], "agt:scout-a");
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn resolve_round_trips_through_http() {
     let p = start_with_seeded_indexer().await;
     let result = call_tool(
@@ -394,7 +446,7 @@ async fn update_page_propagates_parse_error_as_jsonrpc_internal() {
 }
 
 #[tokio::test]
-async fn tools_list_returns_all_eight_tools_with_schemas() {
+async fn tools_list_returns_the_agent_tools_with_schemas() {
     let p = start_with_seeded_indexer().await;
     let resp = reqwest::Client::new()
         .post(p.mcp_url())
@@ -418,6 +470,10 @@ async fn tools_list_returns_all_eight_tools_with_schemas() {
         "search",
         "run_stored_query",
         "update_page",
+        "capture_event",
+        "list_inbox",
+        "list_events",
+        "assign_event",
     ];
     for name in expected {
         assert!(

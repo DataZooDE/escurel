@@ -45,6 +45,7 @@ impl Migrator {
         conn.execute_batch(STAGE_3_FTS)?;
         conn.execute_batch(STAGE_4_CHAT_MESSAGES)?;
         conn.execute_batch(STAGE_5_SCENARIOS)?;
+        conn.execute_batch(STAGE_6_EVENTS)?;
         Ok(())
     }
 }
@@ -54,3 +55,4 @@ const STAGE_2_TABLES_AND_INDEXES: &str = include_str!("../sql/0001_b_tables.sql"
 const STAGE_3_FTS: &str = include_str!("../sql/0001_c_fts.sql");
 const STAGE_4_CHAT_MESSAGES: &str = include_str!("../sql/0002_chat_messages.sql");
 const STAGE_5_SCENARIOS: &str = include_str!("../sql/0003_scenarios.sql");
+const STAGE_6_EVENTS: &str = include_str!("../sql/0004_events.sql");
