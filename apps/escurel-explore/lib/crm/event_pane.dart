@@ -8,7 +8,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../client/models.dart';
+import '../state/providers.dart';
 import '../theme/app_theme.dart';
+import '../widgets/instance_skill_link.dart';
 import 'crm_providers.dart';
 
 class EventPane extends ConsumerWidget {
@@ -53,6 +55,7 @@ class EventPane extends ConsumerWidget {
                           event: list[i],
                           selected: list[i].eventId == open,
                           onTap: () => ref.read(openEventProvider.notifier).state = list[i].eventId,
+                          onSkill: () => focusSkill(ref, list[i].labelSkill),
                         ),
                       ),
               ),
@@ -97,6 +100,7 @@ class EventPane extends ConsumerWidget {
                                   inbox: true,
                                   onTap: () =>
                                       ref.read(openEventProvider.notifier).state = list[i].eventId,
+                                  onSkill: () => focusSkill(ref, list[i].labelSkill),
                                 ),
                               ),
                       ),
@@ -220,6 +224,7 @@ class _EventTile extends StatelessWidget {
     required this.event,
     required this.selected,
     required this.onTap,
+    required this.onSkill,
     this.inbox = false,
   });
   final Event event;
@@ -227,20 +232,16 @@ class _EventTile extends StatelessWidget {
   final bool inbox;
   final VoidCallback onTap;
 
+  /// Navigate to the event's processing skill (its `label_skill`) — the
+  /// shift-click / hover-chip action, uniform with the wikilink pills.
+  final VoidCallback onSkill;
+
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     final (icon, label) = sourceFace(event.source, event.labelSkill);
     final prov = (event.provenance['provenance'] as String?) ?? '';
-    return Semantics(
-      label: inbox ? 'inbox-item' : 'event-item',
-      button: true,
-      selected: selected,
-      onTap: onTap,
-      excludeSemantics: true,
-      child: InkWell(
-        onTap: onTap,
-        child: Container(
+    final tile = Container(
           // Inbox tiles sit on the darker band, so their selected tint
           // steps one shade darker than the processed-event tiles'.
           color: selected ? (inbox ? kSurfaceContainerHighest : kSurfaceContainerHigh) : null,
@@ -270,8 +271,26 @@ class _EventTile extends StatelessWidget {
               ],
             ],
           ),
-        ),
-      ),
+        );
+
+    // Uniform with the wikilink pills: default tap opens the event;
+    // shift-click / the hover chip → its processing skill (label_skill).
+    final dual = event.labelSkill.isEmpty
+        ? InkWell(onTap: onTap, child: tile)
+        : InstanceSkillLink(
+            skillLabel: event.labelSkill,
+            onPrimary: onTap,
+            onSkill: onSkill,
+            child: tile,
+          );
+
+    return Semantics(
+      label: inbox ? 'inbox-item' : 'event-item',
+      button: true,
+      selected: selected,
+      onTap: onTap,
+      excludeSemantics: true,
+      child: dual,
     );
   }
 }
