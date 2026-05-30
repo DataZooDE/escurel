@@ -101,6 +101,7 @@ present() { wait_label "$1" || fail "region semantics not found: $1"; note "pres
 present brand
 present region-events
 present event-pane
+present sources-filter
 present inbox
 present region-instance
 present instance-pane

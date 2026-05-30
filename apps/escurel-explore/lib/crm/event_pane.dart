@@ -27,6 +27,8 @@ class EventPane extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // Event-type (SOURCES) filter — one chip per processing skill.
+          const _SourcesFilter(),
           // Master: the focused instance's event history.
           _SectionHeader(
             label: 'EVENTS',
@@ -91,6 +93,84 @@ class EventPane extends ConsumerWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The event-type filter row: one chip per distinct `label_skill` in the
+/// focused instance's history. Tapping a chip filters the event list to
+/// that processing skill; tapping the active chip clears the filter.
+class _SourcesFilter extends ConsumerWidget {
+  const _SourcesFilter();
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sources = ref.watch(availableSourcesProvider);
+    final selected = ref.watch(eventSourceFilterProvider);
+    if (sources.isEmpty) return const SizedBox.shrink();
+    return Semantics(
+      label: 'sources-filter',
+      container: true,
+      explicitChildNodes: true,
+      child: Container(
+        color: kSurfaceContainerLow,
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final s in sources)
+              _SourceChip(
+                source: s,
+                active: selected == s,
+                onTap: () => ref.read(eventSourceFilterProvider.notifier).state = selected == s ? null : s,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SourceChip extends StatelessWidget {
+  const _SourceChip({required this.source, required this.active, required this.onTap});
+  final String source;
+  final bool active;
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) {
+    final (icon, label) = sourceFace(source, source);
+    return Semantics(
+      label: 'source-chip:$source',
+      button: true,
+      selected: active,
+      onTap: onTap,
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: active ? kPrimary : kSurfaceContainer,
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: active ? kPrimary : kOutlineVariant),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 13, color: active ? kSurface : kOnSurfaceVariant),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall
+                    ?.copyWith(color: active ? kSurface : kOnSurfaceVariant, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

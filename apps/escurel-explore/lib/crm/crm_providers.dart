@@ -45,14 +45,34 @@ final entityEventHistoryProvider = FutureProvider<List<Event>>((ref) async {
   return ref.watch(escurelClientProvider).listEvents(id);
 });
 
+/// The selected event-type (SOURCES) filter — a single `label_skill`
+/// (the processing skill an event links to), or null for all. Toggling
+/// the active chip clears it.
+final eventSourceFilterProvider = StateProvider<String?>((ref) => null);
+
+/// The distinct `label_skill`s across the focused instance's event
+/// history — the chips the SOURCES filter offers. Sorted, stable.
+final availableSourcesProvider = Provider<List<String>>((ref) {
+  final history = ref.watch(entityEventHistoryProvider).valueOrNull ?? const <Event>[];
+  final set = <String>{};
+  for (final e in history) {
+    if (e.labelSkill.isNotEmpty) set.add(e.labelSkill);
+  }
+  final out = set.toList()..sort();
+  return out;
+});
+
 /// The focused instance's event history up to the `as_of` cut (the
-/// events that had landed by T). Undated events always show.
+/// events that had landed by T) and matching the SOURCES filter.
+/// Undated events always pass the time cut.
 final entityEventsProvider = FutureProvider<List<Event>>((ref) async {
   final all = await ref.watch(entityEventHistoryProvider.future);
   final asOf = ref.watch(asOfProvider);
-  if (asOf == null) return all;
-  final cut = asOf.toUtc();
+  final source = ref.watch(eventSourceFilterProvider);
+  final cut = asOf?.toUtc();
   return all.where((e) {
+    if (source != null && e.labelSkill != source) return false;
+    if (cut == null) return true;
     final at = DateTime.tryParse(e.at ?? '');
     return at == null || !at.isAfter(cut);
   }).toList();
