@@ -1,9 +1,11 @@
-// Widget test for the CRM workspace shell (PR-3): breadcrumb +
-// 3-region body + command bar, backed by a small fixture corpus so it
-// renders end-to-end under `flutter test`.
+// Widget test for the M7 CRM workspace shell: breadcrumb + search-top +
+// a resizable/collapsible two-pane split (event view left, instance view
+// right) + time scrubber + capture-bottom, backed by a small fixture
+// corpus so it renders end-to-end under `flutter test`.
 
 import 'package:escurel_explore/client/escurel_client.dart';
 import 'package:escurel_explore/client/fixture_escurel_client.dart';
+import 'package:escurel_explore/crm/crm_providers.dart';
 import 'package:escurel_explore/crm/crm_workspace.dart';
 import 'package:escurel_explore/state/providers.dart';
 import 'package:flutter/material.dart';
@@ -20,15 +22,14 @@ EscurelClient _corpus() => FixtureEscurelClient.fromSources(
       },
     );
 
-Future<void> _pump(WidgetTester tester) async {
-  // Wide enough for the three-column layout (>=1000).
+Future<void> _pump(WidgetTester tester, {List<Override> overrides = const []}) async {
   tester.view.physicalSize = const Size(1400, 900);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
     ProviderScope(
-      overrides: [escurelClientProvider.overrideWithValue(_corpus())],
+      overrides: [escurelClientProvider.overrideWithValue(_corpus()), ...overrides],
       child: const MaterialApp(home: CrmWorkspace()),
     ),
   );
@@ -42,19 +43,33 @@ void main() {
     expect(find.bySemanticsLabel('instances'), findsOneWidget);
   });
 
-  testWidgets('breadcrumb shows the live instance count', (tester) async {
+  testWidgets('search pinned top, capture pinned bottom', (tester) async {
     await _pump(tester);
-    // One instance (customer::acme) in the fixture corpus.
-    expect(find.textContaining('Instances 1'), findsOneWidget);
+    expect(find.bySemanticsLabel('search-input'), findsOneWidget);
+    expect(find.bySemanticsLabel('search-send'), findsOneWidget);
+    expect(find.bySemanticsLabel('capture-input'), findsOneWidget);
+    expect(find.bySemanticsLabel('capture-send'), findsOneWidget);
   });
 
-  testWidgets('renders the three workspace regions + command bar', (tester) async {
+  testWidgets('renders both views of one memory (event left, instance right)', (tester) async {
     await _pump(tester);
-    expect(find.bySemanticsLabel('region-inbox'), findsOneWidget);
-    expect(find.bySemanticsLabel('region-reader'), findsOneWidget);
-    // Right detail region only at wide widths; the test surface is wide.
-    expect(find.bySemanticsLabel('region-detail'), findsOneWidget);
-    expect(find.bySemanticsLabel('command-input'), findsOneWidget);
-    expect(find.bySemanticsLabel('command-send'), findsOneWidget);
+    expect(find.bySemanticsLabel('region-events'), findsOneWidget);
+    expect(find.bySemanticsLabel('region-instance'), findsOneWidget);
+    expect(find.bySemanticsLabel('event-pane'), findsOneWidget);
+    expect(find.bySemanticsLabel('instance-pane'), findsOneWidget);
+    // The left view carries the event history + the inbox below it.
+    expect(find.bySemanticsLabel('event-history'), findsOneWidget);
+    expect(find.bySemanticsLabel('inbox'), findsOneWidget);
+    // A draggable divider sits between the two views.
+    expect(find.bySemanticsLabel('pane-resize'), findsOneWidget);
+  });
+
+  testWidgets('collapsing the left view hides it and offers an expand toggle', (tester) async {
+    await _pump(tester, overrides: [leftCollapsedProvider.overrideWith((ref) => true)]);
+    // Collapsed: the event pane is gone, an expand toggle remains.
+    expect(find.bySemanticsLabel('event-pane'), findsNothing);
+    expect(find.bySemanticsLabel('region-events-expand'), findsOneWidget);
+    // The instance view still renders.
+    expect(find.bySemanticsLabel('instance-pane'), findsOneWidget);
   });
 }

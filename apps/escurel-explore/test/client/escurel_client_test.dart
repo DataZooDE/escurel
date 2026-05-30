@@ -96,6 +96,24 @@ class _StubClient implements EscurelClient {
   }) async => throw notYetImplemented('list_instances');
 
   @override
+  Future<List<Event>> listInbox({int? limit}) async => throw notYetImplemented('list_inbox');
+  @override
+  Future<List<Event>> listEvents(String instancePageId, {int? limit}) async =>
+      throw notYetImplemented('list_events');
+  @override
+  Future<Event> captureEvent({
+    String? at,
+    String source = '',
+    String mime = '',
+    String labelSkill = '',
+    String? instancePageId,
+    String title = '',
+    String body = '',
+    Map<String, dynamic>? provenance,
+  }) async =>
+      throw notYetImplemented('capture_event');
+
+  @override
   Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}}) async =>
       throw notYetImplemented('run_stored_query');
 

@@ -1,6 +1,7 @@
-// Widget test for the time scrubber (PR-8): given a corpus with a dated
-// artifact span, the scrubber renders the readout + speed chips, and
-// dragging the slider sets the global `asOfProvider`.
+// Widget test for the time scrubber (M7): given a focused instance with a
+// dated event span, the scrubber renders the readout + speed chips, and
+// dragging the slider sets the global `asOfProvider`. The corpus range now
+// derives from the focused instance's event history (`list_events`).
 
 import 'package:escurel_explore/client/escurel_client.dart';
 import 'package:escurel_explore/client/models.dart';
@@ -10,42 +11,28 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-SkillSummary _skill(String id) => SkillSummary(
-      id: id,
-      description: id,
-      requiredFrontmatter: const [],
-      optionalFrontmatter: const [],
+Event _event(String id, String at) => Event(
+      eventId: id,
+      at: at,
+      source: 'gmail',
+      mime: 'message/rfc822',
+      labelSkill: 'gmail',
+      instancePageId: 'spine',
+      status: 'processed',
+      title: id,
+      body: id,
+      provenance: const {},
     );
 
 class _StubClient implements EscurelClient {
   @override
-  Future<List<SkillSummary>> listSkills() async => [_skill('email'), _skill('meeting')];
+  Future<List<Event>> listEvents(String instancePageId, {int? limit}) async => [
+        _event('a', '2026-01-01T00:00:00Z'),
+        _event('b', '2026-03-01T00:00:00Z'),
+      ];
 
   @override
-  Future<List<InstanceSummary>> listInstances(
-    String skillId, {
-    Map<String, Object?>? filter,
-    String? orderBy,
-    int? limit,
-    String? asOf,
-    String? scenario,
-  }) async {
-    if (skillId == 'email') {
-      return const [
-        InstanceSummary(
-          id: 'a',
-          skill: 'email',
-          frontmatter: {'at': '2026-01-01T00:00:00Z'},
-        ),
-        InstanceSummary(
-          id: 'b',
-          skill: 'email',
-          frontmatter: {'at': '2026-03-01T00:00:00Z'},
-        ),
-      ];
-    }
-    return const [];
-  }
+  Future<List<Event>> listInbox({int? limit}) async => const [];
 
   @override
   dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
@@ -68,7 +55,10 @@ Future<void> _pump(WidgetTester tester, ProviderContainer container) async {
 void main() {
   testWidgets('renders readout + speed chips, defaults to the present', (tester) async {
     final container = ProviderContainer(
-      overrides: [escurelClientProvider.overrideWithValue(_StubClient())],
+      overrides: [
+        escurelClientProvider.overrideWithValue(_StubClient()),
+        currentPageIdProvider.overrideWith((ref) => 'spine'),
+      ],
     );
     addTearDown(container.dispose);
     await _pump(tester, container);
@@ -84,7 +74,10 @@ void main() {
 
   testWidgets('dragging the slider left sets a past as_of cut', (tester) async {
     final container = ProviderContainer(
-      overrides: [escurelClientProvider.overrideWithValue(_StubClient())],
+      overrides: [
+        escurelClientProvider.overrideWithValue(_StubClient()),
+        currentPageIdProvider.overrideWith((ref) => 'spine'),
+      ],
     );
     addTearDown(container.dispose);
     await _pump(tester, container);

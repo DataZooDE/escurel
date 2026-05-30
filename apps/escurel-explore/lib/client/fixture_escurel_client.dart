@@ -325,6 +325,26 @@ class FixtureEscurelClient implements EscurelClient {
 
   // ── unimplemented surfaces (need a real server) ─────────────
 
+  // Events/inbox are an HTTP-backend surface; fixture mode has none.
+  @override
+  Future<List<Event>> listInbox({int? limit}) async => const [];
+
+  @override
+  Future<List<Event>> listEvents(String instancePageId, {int? limit}) async => const [];
+
+  @override
+  Future<Event> captureEvent({
+    String? at,
+    String source = '',
+    String mime = '',
+    String labelSkill = '',
+    String? instancePageId,
+    String title = '',
+    String body = '',
+    Map<String, dynamic>? provenance,
+  }) async =>
+      throw notYetImplemented('capture_event');
+
   @override
   Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}}) async =>
       throw notYetImplemented('run_stored_query');

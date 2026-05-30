@@ -160,6 +160,52 @@ class InstanceSummary {
   final Map<String, dynamic> frontmatter;
 }
 
+// ── events / inbox (M7) ─────────────────────────────────────────
+
+/// One event — the dynamic input of the memory triad. Its [labelSkill]
+/// links to the skill that knows how to process it; [instancePageId] is
+/// the instance it belongs to once processed.
+class Event {
+  const Event({
+    required this.eventId,
+    required this.at,
+    required this.source,
+    required this.mime,
+    required this.labelSkill,
+    required this.instancePageId,
+    required this.status,
+    required this.title,
+    required this.body,
+    required this.provenance,
+  });
+
+  final String eventId;
+  final String? at;
+  final String source;
+  final String mime;
+  final String labelSkill;
+  final String? instancePageId;
+  final String status;
+  final String title;
+  final String body;
+  final Map<String, dynamic> provenance;
+
+  bool get isInbox => status == 'inbox';
+
+  static Event fromJson(Map<String, dynamic> j) => Event(
+        eventId: (j['event_id'] as String?) ?? '',
+        at: j['at'] as String?,
+        source: (j['source'] as String?) ?? '',
+        mime: (j['mime'] as String?) ?? '',
+        labelSkill: (j['label_skill'] as String?) ?? '',
+        instancePageId: j['instance_page_id'] as String?,
+        status: (j['status'] as String?) ?? 'inbox',
+        title: (j['title'] as String?) ?? '',
+        body: (j['body'] as String?) ?? '',
+        provenance: Map<String, dynamic>.from(j['provenance'] as Map? ?? const {}),
+      );
+}
+
 // ── run_stored_query ────────────────────────────────────────────
 
 class QueryColumn {

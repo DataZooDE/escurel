@@ -24,85 +24,56 @@ final allInstancesProvider = FutureProvider<List<InstanceSummary>>((ref) async {
   return out;
 });
 
-/// Skills whose instances are *source artifacts* — the inbox feed.
-/// These are the channels agents ingest from (email/meeting/doc), as
-/// opposed to the CRM entities they promote into.
-const kArtifactSkills = <String>['email', 'meeting', 'doc'];
+/// Layout state for the resizable/collapsible two-pane split: the left
+/// pane's width fraction, and per-pane collapse flags.
+final leftPaneFractionProvider = StateProvider<double>((ref) => 0.42);
+final leftCollapsedProvider = StateProvider<bool>((ref) => false);
+final rightCollapsedProvider = StateProvider<bool>((ref) => false);
 
-/// One source artifact, projected from an instance's frontmatter for
-/// the inbox row (title, source channel, timestamp, provenance badge).
-class Artifact {
-  const Artifact({
-    required this.pageId,
-    required this.skill,
-    required this.title,
-    required this.source,
-    required this.at,
-    required this.provenance,
-  });
+/// The event currently open in the left detail pane. Distinct from the
+/// pinned entity ([currentPageIdProvider], right pane) — opening an
+/// event does NOT change the pinned entity (the two foci of the M7
+/// workspace).
+final openEventProvider = StateProvider<String?>((ref) => null);
 
-  final String pageId;
-  final String skill;
-  final String title;
-  final String source;
-  /// RFC 3339 timestamp from frontmatter `at`, or empty.
-  final String at;
-  /// `EXTRACTED` | `AUTO-PROMOTED` | '' (from frontmatter `provenance`).
-  final String provenance;
+/// The focused instance's *full* processed event history (`list_events`),
+/// oldest first. Unfiltered — the timeline range + the cut both derive
+/// from this so the range never shrinks as you scrub.
+final entityEventHistoryProvider = FutureProvider<List<Event>>((ref) async {
+  final id = ref.watch(currentPageIdProvider);
+  if (id == null) return const <Event>[];
+  return ref.watch(escurelClientProvider).listEvents(id);
+});
 
-  static Artifact fromInstance(InstanceSummary i) {
-    final fm = i.frontmatter;
-    String s(String k) => (fm[k] as String?) ?? '';
-    final title = s('subject').isNotEmpty
-        ? s('subject')
-        : (s('title').isNotEmpty ? s('title') : _slug(i.id));
-    return Artifact(
-      pageId: i.id,
-      skill: i.skill,
-      title: title,
-      source: s('source'),
-      at: s('at'),
-      provenance: s('provenance'),
-    );
+/// The focused instance's event history up to the `as_of` cut (the
+/// events that had landed by T). Undated events always show.
+final entityEventsProvider = FutureProvider<List<Event>>((ref) async {
+  final all = await ref.watch(entityEventHistoryProvider.future);
+  final asOf = ref.watch(asOfProvider);
+  if (asOf == null) return all;
+  final cut = asOf.toUtc();
+  return all.where((e) {
+    final at = DateTime.tryParse(e.at ?? '');
+    return at == null || !at.isAfter(cut);
+  }).toList();
+});
+
+/// The inbox — unprocessed events across the tenant, newest first.
+final inboxEventsProvider = FutureProvider<List<Event>>((ref) async {
+  return ref.watch(escurelClientProvider).listInbox();
+});
+
+/// The currently-open event (left detail), looked up in the entity
+/// history or the inbox. Null when nothing is open.
+final openEventDetailProvider = Provider<Event?>((ref) {
+  final id = ref.watch(openEventProvider);
+  if (id == null) return null;
+  final history = ref.watch(entityEventHistoryProvider).valueOrNull ?? const <Event>[];
+  final inbox = ref.watch(inboxEventsProvider).valueOrNull ?? const <Event>[];
+  for (final e in [...history, ...inbox]) {
+    if (e.eventId == id) return e;
   }
-}
-
-String _slug(String pageId) {
-  final base = pageId.split('/').last;
-  final stem = base.endsWith('.md') ? base.substring(0, base.length - 3) : base;
-  // `email__proposal` → `proposal`.
-  final us = stem.indexOf('__');
-  return us >= 0 ? stem.substring(us + 2) : stem;
-}
-
-/// The source inbox: every artifact instance across [kArtifactSkills],
-/// newest first. Uses the real `list_instances` (ordered by `at`) and
-/// merges the per-skill feeds into one timeline.
-final inboxArtifactsProvider = FutureProvider<List<Artifact>>((ref) async {
-  final client = ref.watch(escurelClientProvider);
-  final asOf = ref.watch(asOfStringProvider);
-  final scenario = ref.watch(scenarioProvider);
-  final available = await ref.watch(skillsCatalogueProvider.future);
-  final ids = available.map((s) => s.id).toSet();
-  final out = <Artifact>[];
-  for (final skill in kArtifactSkills) {
-    if (!ids.contains(skill)) continue;
-    final rows = await client.listInstances(
-      skill,
-      orderBy: 'at desc',
-      asOf: asOf,
-      scenario: scenario,
-    );
-    out.addAll(rows.map(Artifact.fromInstance));
-  }
-  // Newest first across the merged feed; undated sink to the bottom.
-  out.sort((a, b) {
-    if (a.at.isEmpty && b.at.isEmpty) return 0;
-    if (a.at.isEmpty) return 1;
-    if (b.at.isEmpty) return -1;
-    return b.at.compareTo(a.at);
-  });
-  return out;
+  return null;
 });
 
 /// Both-direction typed neighbours of the focused entity — the source
@@ -118,24 +89,21 @@ final currentNeighboursProvider = FutureProvider<List<Neighbour>>((ref) async {
       .neighbours(id, direction: LinkDirection.both, asOf: asOf, scenario: scenario);
 });
 
-/// The corpus's event time-span — the min/max `at` across all artifact
-/// instances — used by the time scrubber to map slider position to an
-/// `as_of` instant. Computed **without** an `as_of` cut so the scrubber's
-/// own range never shrinks as you scrub. Null when no artifact is dated.
+/// The focused instance's event time-span — min/max `at` across its
+/// full event history (+ inbox) — used by the time scrubber to map
+/// slider position to an `as_of` instant. Computed from the *unfiltered*
+/// history so the scrubber's range never shrinks as you scrub. Null when
+/// nothing is dated.
 final corpusRangeProvider = FutureProvider<({DateTime start, DateTime end})?>((ref) async {
-  final client = ref.watch(escurelClientProvider);
-  final available = await ref.watch(skillsCatalogueProvider.future);
-  final ids = available.map((s) => s.id).toSet();
+  final history = await ref.watch(entityEventHistoryProvider.future);
+  final inbox = await ref.watch(inboxEventsProvider.future);
   DateTime? lo;
   DateTime? hi;
-  for (final skill in kArtifactSkills) {
-    if (!ids.contains(skill)) continue;
-    for (final i in await client.listInstances(skill)) {
-      final at = DateTime.tryParse((i.frontmatter['at'] as String?) ?? '');
-      if (at == null) continue;
-      if (lo == null || at.isBefore(lo)) lo = at;
-      if (hi == null || at.isAfter(hi)) hi = at;
-    }
+  for (final e in [...history, ...inbox]) {
+    final at = DateTime.tryParse(e.at ?? '');
+    if (at == null) continue;
+    if (lo == null || at.isBefore(lo)) lo = at;
+    if (hi == null || at.isAfter(hi)) hi = at;
   }
   if (lo == null || hi == null || !lo.isBefore(hi)) return null;
   return (start: lo, end: hi);
