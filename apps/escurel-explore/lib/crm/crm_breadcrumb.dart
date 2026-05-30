@@ -53,11 +53,17 @@ class CrmBreadcrumb extends ConsumerWidget implements PreferredSizeWidget {
           const InstancesMenu(),
           if (focused != null) ...[
             _Sep(),
-            _Crumb(
-              label: 'focused-entity',
-              child: Text(
-                _entityLabel(focused),
-                style: text.labelLarge?.copyWith(color: kPrimary, fontWeight: FontWeight.w700),
+            // Flexible + ellipsis so a long entity label never overflows
+            // the title row.
+            Flexible(
+              child: _Crumb(
+                label: 'focused-entity',
+                child: Text(
+                  _entityLabel(focused),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: text.labelLarge?.copyWith(color: kPrimary, fontWeight: FontWeight.w700),
+                ),
               ),
             ),
           ],

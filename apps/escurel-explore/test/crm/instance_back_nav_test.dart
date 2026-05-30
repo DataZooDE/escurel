@@ -1,23 +1,19 @@
-// Widget test for the instance-view Back affordance: following an
-// instance link records a back-stack; the Back bar appears and returns
-// focus to where you came from.
+// No-mock widget test for the instance-view Back affordance over the real
+// crm-demo corpus: following an instance link records a back-stack; the
+// Back bar appears and returns focus to where you came from.
 
-import 'package:escurel_explore/client/escurel_client.dart';
+@TestOn('vm')
+library;
+
 import 'package:escurel_explore/crm/instance_pane.dart';
 import 'package:escurel_explore/state/providers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const _spine = 'markdown/instances/engagement__hoffmann-spine.md';
-const _weber = 'markdown/instances/contact__weber.md';
+import '../support/crm_demo.dart';
 
-class _StubClient implements EscurelClient {
-  @override
-  Future<List<String>> listSnapshots(String pageId) async => const [];
-  @override
-  dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
-}
+const _weber = 'contact__weber';
 
 void main() {
   testWidgets('back bar appears after following a link and returns on tap', (tester) async {
@@ -28,8 +24,8 @@ void main() {
 
     final container = ProviderContainer(
       overrides: [
-        escurelClientProvider.overrideWithValue(_StubClient()),
-        currentPageIdProvider.overrideWith((ref) => _spine),
+        escurelClientProvider.overrideWithValue(crmDemoClient()),
+        currentPageIdProvider.overrideWith((ref) => crmDemoSpineId),
       ],
     );
     addTearDown(container.dispose);
@@ -65,7 +61,7 @@ void main() {
     // Back → return to the spine; the affordance disappears again.
     await tester.tap(find.bySemanticsLabel('instance-back'));
     await tester.pumpAndSettle();
-    expect(container.read(currentPageIdProvider), _spine);
+    expect(container.read(currentPageIdProvider), crmDemoSpineId);
     expect(container.read(navBackStackProvider), isEmpty);
     expect(find.bySemanticsLabel('instance-back'), findsNothing);
   });

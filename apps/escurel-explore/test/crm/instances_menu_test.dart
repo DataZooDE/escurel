@@ -1,49 +1,27 @@
-// Widget test for the Instances crumb dropdown: opening it lists all
-// instances grouped by skill; clicking one re-centres the workspace.
+// No-mock widget test for the Instances crumb dropdown over the real
+// crm-demo corpus: opening it lists all instances grouped by skill;
+// clicking one re-centres the workspace.
 
-import 'package:escurel_explore/client/escurel_client.dart';
-import 'package:escurel_explore/client/models.dart';
+@TestOn('vm')
+library;
+
 import 'package:escurel_explore/crm/crm_breadcrumb.dart';
 import 'package:escurel_explore/state/providers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const _acme = 'markdown/instances/customer__acme.md';
-const _weber = 'markdown/instances/contact__weber.md';
-
-SkillSummary _skill(String id) =>
-    SkillSummary(id: id, description: id, requiredFrontmatter: const [], optionalFrontmatter: const []);
-
-class _StubClient implements EscurelClient {
-  @override
-  Future<List<SkillSummary>> listSkills() async => [_skill('customer'), _skill('contact')];
-
-  @override
-  Future<List<InstanceSummary>> listInstances(String skillId,
-      {Map<String, Object?>? filter, String? orderBy, int? limit, String? asOf, String? scenario}) async {
-    if (skillId == 'customer') {
-      return const [InstanceSummary(id: _acme, skill: 'customer', frontmatter: {'name': 'Acme Ltd'})];
-    }
-    if (skillId == 'contact') {
-      return const [InstanceSummary(id: _weber, skill: 'contact', frontmatter: {'name': 'M. Weber'})];
-    }
-    return const [];
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
-}
+import '../support/crm_demo.dart';
 
 void main() {
   testWidgets('the Instances crumb lists instances grouped by skill and opens one', (tester) async {
-    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.physicalSize = const Size(1200, 1000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final container = ProviderContainer(
-      overrides: [escurelClientProvider.overrideWithValue(_StubClient())],
+      overrides: [escurelClientProvider.overrideWithValue(crmDemoClient())],
     );
     addTearDown(container.dispose);
 
@@ -55,23 +33,22 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // The count crumb renders; the list is closed.
-    expect(find.textContaining('Instances 2'), findsOneWidget);
-    expect(find.bySemanticsLabel('instance-row:acme'), findsNothing);
+    // The crumb renders; the list is closed.
+    expect(find.bySemanticsLabel('instances'), findsOneWidget);
+    expect(find.bySemanticsLabel('instance-row:muenchner-pharma'), findsNothing);
 
-    // Open it → grouped rows.
+    // Open it → real per-skill groups (multi-account). Groups are sorted,
+    // so change_order/contact sit at the top of the (scrollable) panel.
     await tester.tap(find.bySemanticsLabel('instances'));
     await tester.pumpAndSettle();
-    expect(find.text('CONTACT · 1'), findsOneWidget);
-    expect(find.text('CUSTOMER · 1'), findsOneWidget);
-    expect(find.bySemanticsLabel('instance-row:acme'), findsOneWidget);
-    expect(find.bySemanticsLabel('instance-row:weber'), findsOneWidget);
-    expect(find.text('Acme Ltd'), findsOneWidget);
+    expect(find.text('CHANGE_ORDER · 1'), findsOneWidget);
+    expect(find.text('CONTACT · 8'), findsOneWidget);
 
-    // Click one → opens it, menu closes.
-    await tester.tap(find.bySemanticsLabel('instance-row:acme'));
+    // Click the first group's row → opens it (by its page id), menu closes.
+    expect(find.bySemanticsLabel('instance-row:hoffmann-3site'), findsOneWidget);
+    await tester.tap(find.bySemanticsLabel('instance-row:hoffmann-3site'));
     await tester.pumpAndSettle();
-    expect(container.read(currentPageIdProvider), _acme);
-    expect(find.bySemanticsLabel('instance-row:acme'), findsNothing);
+    expect(container.read(currentPageIdProvider), 'change_order__hoffmann-3site');
+    expect(find.bySemanticsLabel('instance-row:hoffmann-3site'), findsNothing);
   });
 }

@@ -1,10 +1,11 @@
-// Widget test for the radial skill-wheel: with an entity focused and
-// the client returning typed neighbours, the wheel renders one node
-// per unique (linkSkill, dst) and a lineage tile for each.
+// No-mock widget test for the radial skill-wheel + lineage rail over the
+// real crm-demo corpus: with the richly-connected spine focused, the
+// wheel renders a node per unique typed neighbour and the rail a tile per
+// link.
 
-import 'package:escurel_explore/client/escurel_client.dart';
-import 'package:escurel_explore/client/models.dart';
-import 'package:escurel_explore/md/frontmatter.dart';
+@TestOn('vm')
+library;
+
 import 'package:escurel_explore/crm/lineage_rail.dart';
 import 'package:escurel_explore/crm/skill_wheel.dart';
 import 'package:escurel_explore/state/providers.dart';
@@ -12,39 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class _StubClient implements EscurelClient {
-  @override
-  Future<List<Neighbour>> neighbours(String pageId,
-          {LinkDirection direction = LinkDirection.both, String? linkSkill, String? asOf, String? scenario}) async =>
-      const [
-        Neighbour(src: 'p', dst: 'hoffmann-followup', linkSkill: 'lead'),
-        Neighbour(src: 'p', dst: 'hoffmann-pilot', linkSkill: 'opportunity'),
-        Neighbour(src: 'p', dst: 'hoffmann-pilot', linkSkill: 'project'),
-      ];
-
-  @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf, String? scenario}) async =>
-      const ExpandResult(
-        pageId: 'markdown/instances/engagement__hoffmann-spine.md',
-        skill: 'engagement',
-        pageType: PageType.instance,
-        frontmatter: {},
-        body: '',
-        blocks: [],
-        wikilinksOut: [],
-      );
-
-  @override
-  Future<ResolveResult> resolve(String wikilink, {String? scenario}) async => const ResolveResult(
-        pageId: 'markdown/x.md',
-        skill: 'lead',
-        pageType: PageType.instance,
-        exists: true,
-      );
-
-  @override
-  dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
-}
+import '../support/crm_demo.dart';
 
 Future<void> _pump(WidgetTester tester, Widget child) async {
   tester.view.physicalSize = const Size(900, 900);
@@ -54,8 +23,8 @@ Future<void> _pump(WidgetTester tester, Widget child) async {
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
-        escurelClientProvider.overrideWithValue(_StubClient()),
-        currentPageIdProvider.overrideWith((ref) => 'markdown/instances/engagement__hoffmann-spine.md'),
+        escurelClientProvider.overrideWithValue(crmDemoClient()),
+        currentPageIdProvider.overrideWith((ref) => crmDemoSpineId),
       ],
       child: MaterialApp(home: Scaffold(body: child)),
     ),
@@ -64,17 +33,18 @@ Future<void> _pump(WidgetTester tester, Widget child) async {
 }
 
 void main() {
-  testWidgets('skill-wheel renders one node per unique typed neighbour', (tester) async {
+  testWidgets('skill-wheel renders a node per unique typed neighbour', (tester) async {
     await _pump(tester, const SkillWheel());
     expect(find.bySemanticsLabel('skill-wheel'), findsOneWidget);
-    // 3 unique (linkSkill, dst): lead/…, opportunity/…, project/…
-    expect(find.bySemanticsLabel('wheel-node'), findsNWidgets(3));
-    expect(find.textContaining('3 links'), findsOneWidget);
+    // The spine connects to many entities (lead, opp, project, contacts,
+    // customer, change_order, renewal, …).
+    expect(find.bySemanticsLabel('wheel-node'), findsAtLeastNWidgets(6));
+    expect(find.textContaining('links'), findsOneWidget);
   });
 
-  testWidgets('lineage rail lists each typed link', (tester) async {
+  testWidgets('lineage rail lists the typed links', (tester) async {
     await _pump(tester, const LineageRail());
     expect(find.bySemanticsLabel('lineage-rail'), findsOneWidget);
-    expect(find.bySemanticsLabel('lineage-link'), findsNWidgets(3));
+    expect(find.bySemanticsLabel('lineage-link'), findsAtLeastNWidgets(6));
   });
 }

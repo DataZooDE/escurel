@@ -1,57 +1,17 @@
-// Widget test for the ☰ skills registry: opening it lists skills grouped
-// ENTITY-BOUND / EVENT-TYPED; clicking a skill opens its manifest.
+// No-mock widget test for the ☰ skills registry over the real crm-demo
+// corpus: opening it lists skills grouped ENTITY-BOUND / EVENT-TYPED;
+// clicking a skill opens its manifest.
 
-import 'package:escurel_explore/client/escurel_client.dart';
-import 'package:escurel_explore/client/models.dart';
+@TestOn('vm')
+library;
+
 import 'package:escurel_explore/crm/crm_breadcrumb.dart';
-import 'package:escurel_explore/md/frontmatter.dart';
 import 'package:escurel_explore/state/providers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const _customerSkill = 'markdown/skills/customer.md';
-
-class _StubClient implements EscurelClient {
-  @override
-  Future<List<SkillSummary>> listSkills() async => const [
-        SkillSummary(
-          id: 'customer',
-          description: 'A buying organisation.',
-          requiredFrontmatter: [],
-          optionalFrontmatter: [],
-          isEventTyped: false,
-        ),
-        SkillSummary(
-          id: 'meeting',
-          description: 'A meeting/call artifact.',
-          requiredFrontmatter: [],
-          optionalFrontmatter: [],
-          isEventTyped: true,
-        ),
-      ];
-
-  @override
-  Future<List<InstanceSummary>> listInstances(String skillId,
-          {Map<String, Object?>? filter, String? orderBy, int? limit, String? asOf, String? scenario}) async =>
-      const [];
-
-  @override
-  Future<ResolveResult> resolve(String wikilink, {String? scenario}) async {
-    if (wikilink == '[[customer]]') {
-      return const ResolveResult(
-        pageId: _customerSkill,
-        skill: 'customer',
-        pageType: PageType.skill,
-        exists: true,
-      );
-    }
-    return const ResolveResult(pageId: '', skill: '', pageType: PageType.instance, exists: false);
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
-}
+import '../support/crm_demo.dart';
 
 void main() {
   testWidgets('the ☰ menu lists grouped skills and opens one on tap', (tester) async {
@@ -61,7 +21,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final container = ProviderContainer(
-      overrides: [escurelClientProvider.overrideWithValue(_StubClient())],
+      overrides: [escurelClientProvider.overrideWithValue(crmDemoClient())],
     );
     addTearDown(container.dispose);
 
@@ -75,22 +35,22 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // Closed initially.
     expect(find.bySemanticsLabel('skills-menu'), findsOneWidget);
     expect(find.bySemanticsLabel('skill-row:customer'), findsNothing);
 
-    // Open it → grouped rows.
+    // Open it → real skills grouped. The ENTITY-BOUND group sits at the
+    // top of the (scrollable) panel; the data-level test
+    // (fixture_crm_demo_test) covers that both groups exist.
     await tester.tap(find.bySemanticsLabel('skills-menu'));
     await tester.pumpAndSettle();
-    expect(find.text('ENTITY-BOUND · 1'), findsOneWidget);
-    expect(find.text('EVENT-TYPED · 1'), findsOneWidget);
+    expect(find.textContaining('ENTITY-BOUND ·'), findsOneWidget);
+    expect(find.bySemanticsLabel('skill-row:contact'), findsOneWidget);
     expect(find.bySemanticsLabel('skill-row:customer'), findsOneWidget);
-    expect(find.bySemanticsLabel('skill-row:meeting'), findsOneWidget);
 
-    // Click the customer skill → opens its manifest, menu closes.
+    // Click the customer skill → opens its manifest page, menu closes.
     await tester.tap(find.bySemanticsLabel('skill-row:customer'));
     await tester.pumpAndSettle();
-    expect(container.read(currentPageIdProvider), _customerSkill);
+    expect(container.read(currentPageIdProvider), 'customer');
     expect(find.bySemanticsLabel('skill-row:customer'), findsNothing);
   });
 }
