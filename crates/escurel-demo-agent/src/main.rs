@@ -10,6 +10,8 @@
 //! - `ESCUREL_AGENT_INTERVAL`  — poll interval seconds (default 5)
 //! - `ESCUREL_AGENT_ROUTES`    — optional `label_skill=instance_page_id`
 //!   pairs, comma-separated, for events without a pre-flagged instance.
+//! - `ESCUREL_AGENT_ONCE`      — when set (`1`/`true`), process the inbox
+//!   exactly once and exit (scriptable; used by `verify-demo.sh`).
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -27,9 +29,32 @@ async fn main() {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(5);
     let routes = parse_routes(std::env::var("ESCUREL_AGENT_ROUTES").unwrap_or_default());
+    let once = matches!(
+        std::env::var("ESCUREL_AGENT_ONCE").ok().as_deref(),
+        Some("1") | Some("true")
+    );
 
     let client = McpClient::new(mcp_url, token);
-    tracing::info!(target: "escurel", interval, routes = routes.len(), "demo agent started");
+    tracing::info!(target: "escurel", interval, once, routes = routes.len(), "demo agent started");
+
+    // Single-pass mode: process the inbox once and exit (scriptable).
+    if once {
+        match process_inbox_once(&client, &routes).await {
+            Ok(report) => {
+                tracing::info!(
+                    target: "escurel",
+                    assigned = report.assigned,
+                    skipped = report.skipped,
+                    "agent: single pass complete",
+                );
+            }
+            Err(e) => {
+                tracing::error!(target: "escurel", error = %e, "agent: single pass failed");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     loop {
         match process_inbox_once(&client, &routes).await {
