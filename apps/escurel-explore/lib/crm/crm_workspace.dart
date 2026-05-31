@@ -71,8 +71,17 @@ class _SplitBody extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Clear the explicit collapse choice when the focused page flips
+    // skill↔instance, so each context re-derives its default (skills
+    // minimize, instances show events) while the chevron stays live.
+    ref.listen<bool>(currentPageIsSkillProvider, (prev, next) {
+      if (prev != next) {
+        ref.read(leftCollapsedProvider.notifier).state = null;
+      }
+    });
+
     // Effective collapse: auto-minimized while a skill is focused (no
-    // events), else the user's manual toggle.
+    // events), else the user's explicit chevron choice.
     final leftCollapsed = ref.watch(effectiveLeftCollapsedProvider);
     final rightCollapsed = ref.watch(rightCollapsedProvider);
     final fraction = ref.watch(leftPaneFractionProvider);

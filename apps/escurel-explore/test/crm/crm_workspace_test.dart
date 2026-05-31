@@ -5,12 +5,24 @@
 
 import 'package:escurel_explore/client/escurel_client.dart';
 import 'package:escurel_explore/client/fixture_escurel_client.dart';
+import 'package:escurel_explore/client/models.dart';
 import 'package:escurel_explore/crm/crm_providers.dart';
 import 'package:escurel_explore/crm/crm_workspace.dart';
+import 'package:escurel_explore/md/frontmatter.dart';
 import 'package:escurel_explore/state/providers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+ExpandResult _skillPage() => const ExpandResult(
+      pageId: 'markdown/skills/customer.md',
+      skill: 'customer',
+      pageType: PageType.skill,
+      frontmatter: {'type': 'skill', 'id': 'customer'},
+      body: '# customer\n',
+      blocks: [],
+      wikilinksOut: [],
+    );
 
 EscurelClient _corpus() => FixtureEscurelClient.fromSources(
       skillFiles: const {
@@ -71,5 +83,25 @@ void main() {
     expect(find.bySemanticsLabel('region-events-expand'), findsOneWidget);
     // The instance view still renders.
     expect(find.bySemanticsLabel('instance-pane'), findsOneWidget);
+  });
+
+  testWidgets('the event-pane chevron re-opens an auto-minimized skill page', (tester) async {
+    // A skill page auto-minimizes the (event-less) left pane. Regression:
+    // the chevron used to be dead there — `effective = collapsed || isSkill`
+    // meant tapping expand could never beat the skill flag, so the pane
+    // could not be opened again. Now the explicit choice wins.
+    await _pump(tester, overrides: [
+      currentPageProvider.overrideWith((ref) async => _skillPage()),
+    ]);
+
+    // Auto-minimized: only the expand toggle shows.
+    expect(find.bySemanticsLabel('region-events-expand'), findsOneWidget);
+    expect(find.bySemanticsLabel('event-pane'), findsNothing);
+
+    // Tapping expand must re-open it (collapse toggle + event pane back).
+    await tester.tap(find.bySemanticsLabel('region-events-expand'));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('region-events-collapse'), findsOneWidget);
+    expect(find.bySemanticsLabel('event-pane'), findsOneWidget);
   });
 }

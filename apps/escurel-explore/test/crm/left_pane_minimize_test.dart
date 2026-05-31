@@ -19,26 +19,31 @@ ExpandResult _page(PageType type) => ExpandResult(
     );
 
 void main() {
-  test('effective collapse is forced on a skill, respects the toggle on an instance', () async {
-    // Skill focused → left auto-minimized even though the user toggle is off.
+  test('skill auto-minimizes by default, but an explicit choice always wins', () async {
+    // Skill focused, no explicit choice → auto-minimized.
     final skillC = ProviderContainer(
       overrides: [currentPageProvider.overrideWith((ref) async => _page(PageType.skill))],
     );
     addTearDown(skillC.dispose);
     await skillC.read(currentPageProvider.future);
     expect(skillC.read(currentPageIsSkillProvider), isTrue);
-    expect(skillC.read(leftCollapsedProvider), isFalse, reason: 'manual toggle untouched');
-    expect(skillC.read(effectiveLeftCollapsedProvider), isTrue, reason: 'skill forces minimize');
+    expect(skillC.read(leftCollapsedProvider), isNull, reason: 'no explicit choice yet');
+    expect(skillC.read(effectiveLeftCollapsedProvider), isTrue, reason: 'skill default = minimized');
 
-    // Instance focused → effective follows the manual toggle.
+    // The chevron writes an explicit choice — which must re-open the pane
+    // even on a skill page (regression: the OR-with-skill made it dead).
+    skillC.read(leftCollapsedProvider.notifier).state = false;
+    expect(skillC.read(effectiveLeftCollapsedProvider), isFalse, reason: 'explicit expand wins on a skill');
+
+    // Instance focused, no explicit choice → events shown.
     final instC = ProviderContainer(
       overrides: [currentPageProvider.overrideWith((ref) async => _page(PageType.instance))],
     );
     addTearDown(instC.dispose);
     await instC.read(currentPageProvider.future);
     expect(instC.read(currentPageIsSkillProvider), isFalse);
-    expect(instC.read(effectiveLeftCollapsedProvider), isFalse, reason: 'instance, toggle off');
+    expect(instC.read(effectiveLeftCollapsedProvider), isFalse, reason: 'instance default = shown');
     instC.read(leftCollapsedProvider.notifier).state = true;
-    expect(instC.read(effectiveLeftCollapsedProvider), isTrue, reason: 'instance, toggle on');
+    expect(instC.read(effectiveLeftCollapsedProvider), isTrue, reason: 'instance, explicit collapse');
   });
 }
