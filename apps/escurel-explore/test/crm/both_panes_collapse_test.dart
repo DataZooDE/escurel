@@ -71,11 +71,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.bySemanticsLabel('event-pane'), findsNothing);
 
-    // Tap near the TOP of the collapsed rail — far from the vertically
-    // centered chevron icon. Before the full-rail hit target, only the
-    // ~16px icon responded, so a real click that missed it did nothing.
+    // Tap low in the collapsed rail — well away from the chevron icon
+    // (which sits in the top band). Only a full-rail hit target responds
+    // here; the old centered-icon target would have ignored this click.
     final rail = tester.getRect(find.bySemanticsLabel('region-events'));
-    await tester.tapAt(Offset(rail.center.dx, rail.top + 24));
+    await tester.tapAt(Offset(rail.center.dx, rail.top + rail.height * 0.75));
     await tester.pumpAndSettle();
     expect(find.bySemanticsLabel('event-pane'), findsOneWidget,
         reason: 'tapping the rail (off the icon) must still expand it');

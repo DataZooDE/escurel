@@ -190,11 +190,20 @@ class _CollapsibleRegion extends StatelessWidget {
             message: 'Expand',
             child: InkWell(
               onTap: onToggle,
-              child: Center(
-                child: Icon(
-                  edge == _Edge.right ? Icons.chevron_right : Icons.chevron_left,
-                  size: 16,
-                  color: kOnSurfaceVariant,
+              // Whole rail stays tappable, but the chevron sits in the
+              // same top 28px band as the collapse chevron (consistent
+              // placement) rather than floating at the vertical centre.
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: SizedBox(
+                  height: 28,
+                  child: Center(
+                    child: Icon(
+                      edge == _Edge.right ? Icons.chevron_right : Icons.chevron_left,
+                      size: 16,
+                      color: kOnSurfaceVariant,
+                    ),
+                  ),
                 ),
               ),
             ),
