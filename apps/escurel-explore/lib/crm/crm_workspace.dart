@@ -31,18 +31,15 @@ class _CrmWorkspaceState extends ConsumerState<CrmWorkspace> {
 
   @override
   Widget build(BuildContext context) {
-    // Land on a populated view: auto-focus the engagement spine (else
-    // the first instance) once on first load.
+    // Land on a populated view: auto-focus the engagement spine with
+    // real processed event history (see autoFocusTargetProvider) once on
+    // first load.
     if (!_autoFocused && ref.watch(currentPageIdProvider) == null) {
-      ref.watch(allInstancesProvider).whenData((all) {
-        if (_autoFocused || all.isEmpty) return;
+      ref.watch(autoFocusTargetProvider).whenData((target) {
+        if (_autoFocused || target == null) return;
         _autoFocused = true;
-        final pick = all.firstWhere(
-          (i) => i.skill == 'engagement' && i.id.contains('spine'),
-          orElse: () => all.first,
-        );
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) ref.read(currentPageIdProvider.notifier).state = pick.id;
+          if (mounted) ref.read(currentPageIdProvider.notifier).state = target;
         });
       });
     }

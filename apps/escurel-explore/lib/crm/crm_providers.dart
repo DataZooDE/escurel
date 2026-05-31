@@ -25,6 +25,36 @@ final allInstancesProvider = FutureProvider<List<InstanceSummary>>((ref) async {
   return out;
 });
 
+/// The instance the workspace auto-focuses on first load: the engagement
+/// spine with the richest *processed* event history (the populated
+/// showcase), falling back to the first spine, then the first instance.
+/// `null` only when the tenant has no instances.
+///
+/// Ranking by `list_events` length is deliberate: the corpus carries
+/// several `spine: true` engagements but assigns *processed* history to
+/// only one — the others' events sit in the inbox, so focusing them
+/// would open an empty event view (no SOURCES filter, no timeline). A
+/// few `list_events` calls on first load buy a deterministic landing on
+/// the populated spine regardless of instance ordering.
+final autoFocusTargetProvider = FutureProvider<String?>((ref) async {
+  final all = await ref.watch(allInstancesProvider.future);
+  if (all.isEmpty) return null;
+  final spines =
+      all.where((i) => i.skill == 'engagement' && i.id.contains('spine')).toList();
+  if (spines.isEmpty) return all.first.id;
+  final client = ref.watch(escurelClientProvider);
+  var bestId = spines.first.id;
+  var bestCount = -1;
+  for (final s in spines) {
+    final count = (await client.listEvents(s.id)).length;
+    if (count > bestCount) {
+      bestCount = count;
+      bestId = s.id;
+    }
+  }
+  return bestId;
+});
+
 /// Layout state for the resizable/collapsible two-pane split: the left
 /// pane's width fraction, and per-pane collapse flags.
 final leftPaneFractionProvider = StateProvider<double>((ref) => 0.42);
