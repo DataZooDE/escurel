@@ -10,10 +10,7 @@
 //! FsStore via the same `update_page` write path production uses.
 
 use escurel_client::{ListSkillsRequest, ResolveRequest, SearchRequest};
-use escurel_test_support::{
-    AuthMode, EscurelProcess, FixtureBuilder, ListSkillsRequest as McpListSkillsRequest, Opts,
-    ResolveRequest as McpResolveRequest, Role, SearchRequest as McpSearchRequest,
-};
+use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
 
 const CUSTOMER_SKILL: &str = "---\n\
 type: skill\n\
@@ -147,7 +144,7 @@ async fn client_and_mcp_client_both_round_trip_search() {
     })
     .await;
 
-    // 1. gRPC client surface.
+    // 1. Typed `escurel-client` surface.
     let client = process.client();
     let _ = client
         .search(SearchRequest {
@@ -158,35 +155,37 @@ async fn client_and_mcp_client_both_round_trip_search() {
         .await
         .unwrap();
 
-    // 2. MCP-over-HTTP client surface.
+    // 2. Raw MCP-over-HTTP surface (`McpTestClient` carries no per-tool
+    //    decoders — it returns the raw `result` JSON; assert on the
+    //    wire shape directly).
     let mcp = process.mcp_client();
     let list = mcp
-        .list_skills(McpListSkillsRequest::default())
+        .call("list_skills", serde_json::json!({}))
         .await
         .unwrap();
     assert!(
-        list.skills.iter().any(|s| s.id == "customer"),
-        "mcp list_skills must include the seeded skill"
+        list["skills"]
+            .as_array()
+            .expect("skills array")
+            .iter()
+            .any(|s| s["id"] == "customer"),
+        "mcp list_skills must include the seeded skill: {list}"
     );
 
     let resolved = mcp
-        .resolve(McpResolveRequest {
-            wikilink: "[[customer::acme]]".to_owned(),
-            ..Default::default()
-        })
+        .call(
+            "resolve",
+            serde_json::json!({ "wikilink": "[[customer::acme]]" }),
+        )
         .await
         .unwrap();
-    assert!(resolved.exists);
+    assert_eq!(resolved["exists"], true, "resolve must find the fixture");
 
     let search = mcp
-        .search(McpSearchRequest {
-            q: "Acme".to_owned(),
-            k: 5,
-            ..Default::default()
-        })
+        .call("search", serde_json::json!({ "q": "Acme", "k": 5 }))
         .await
         .unwrap();
-    assert_eq!(search.granularity, "block");
+    assert_eq!(search["granularity"], "block");
 
     process.shutdown().await;
 }

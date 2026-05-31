@@ -59,9 +59,8 @@ async fn spawn_seeded() -> EscurelProcess {
 }
 
 async fn connect(process: &EscurelProcess) -> DataSource {
-    let endpoint = process.grpc_endpoint().expect("grpc endpoint").to_owned();
     let token = SecretString::from(process.mint_token(TENANT, Role::Agent));
-    DataSource::connect(&endpoint, token)
+    DataSource::connect(process.base_url(), token)
         .await
         .expect("connect data source")
 }
@@ -160,15 +159,12 @@ async fn inbox_then_assign_renders_event_in_events() {
     let stored = source
         .client()
         .capture_event(CaptureEventRequest {
-            event_id: String::new(),
-            at: String::new(),
             source: "manual".to_string(),
             mime: "text/plain".to_string(),
             label_skill: "note".to_string(),
-            instance_page_id: String::new(),
             title: "Renewal call".to_string(),
             body: "Discussed contract renewal.".to_string(),
-            provenance_json: String::new(),
+            ..Default::default()
         })
         .await
         .expect("capture event");

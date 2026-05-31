@@ -31,7 +31,7 @@ The escurel workspace already contains the *primitives* a downstream test needs;
 | Reusable process façade | Local `Harness` struct in [`crates/escurel-server/tests/mcp.rs`](../../crates/escurel-server/tests/mcp.rs) — copied per test file. | New `escurel-test-support` crate exposes `EscurelProcess`. |
 | Seed pages/skills/instances | Hand-written markdown strings + `update_page` loop in `tests/mcp.rs` (`start_with_seeded_indexer`). | `FixtureBuilder` chainable seeder in `escurel-test-support`. |
 | OIDC in tests | RSA keygen + wiremock JWKS dance in [`crates/escurel-server/tests/auth_quota.rs`](../../crates/escurel-server/tests/auth_quota.rs) (`keys`, `jwks_mock`, `token`). | `AuthMode::TestIssuer` runs an in-process JWKS+signer; `process.mint_token(...)` is the only call a test makes. |
-| Typed client for the app's *backend* | `escurel-proto` exists and is consumed server-side (the gateway in `crates/escurel-server/src/server.rs` wires `EscurelServer` from the tonic codegen), but no `escurel-client` crate exists yet. | New `escurel-client` crate built on `escurel-proto`. |
+| Typed client for the app's *backend* | The gateway in `crates/escurel-server/src/server.rs` serves the MCP-over-HTTP surface, but no `escurel-client` crate exists yet. | New `escurel-client` crate speaking MCP-over-HTTP. |
 | Typed MCP test client | Raw JSON-RPC `POST /mcp` in `tests/mcp.rs` (`call_tool`). | `McpTestClient` in `escurel-test-support`, wrapping `escurel-client`. |
 | Recipe for `escurel + X` chaining | Not present. | §"Chaining recipe" below. |
 
@@ -112,10 +112,11 @@ The application's *backend* depends on `escurel-client`, not on `escurel-test-su
 pub struct Client { /* opaque */ }
 
 impl Client {
+    // `endpoint` is the HTTP base, e.g. http://host:8080.
     pub async fn connect(endpoint: &str, token: SecretString) -> Result<Self, Error>;
 
-    // typed methods mirror the MCP tool surface from protocol.md and the
-    // gRPC service in crates/escurel-proto/proto/escurel.proto:
+    // typed methods mirror the MCP tool surface from protocol.md, spoken
+    // as MCP-over-HTTP (the sole transport):
     pub async fn search(&self, req: SearchRequest) -> Result<SearchResponse, Error>;
     pub async fn resolve(&self, req: ResolveRequest) -> Result<ResolveResponse, Error>;
     pub async fn expand(&self, req: ExpandRequest) -> Result<ExpandResponse, Error>;
@@ -124,15 +125,18 @@ impl Client {
     pub async fn list_instances(&self, req: ListInstancesRequest) -> Result<ListInstancesResponse, Error>;
     pub async fn run_stored_query(&self, req: RunStoredQueryRequest) -> Result<RunStoredQueryResponse, Error>;
     pub async fn update_page(&self, req: UpdatePageRequest) -> Result<UpdatePageResponse, Error>;
-    // ... live-mode + admin surface follow once protocol.md catches up.
+    // The long-running admin ops are blocking calls returning the final
+    // result directly: rebuild -> {done, total}; compact_lanes ->
+    // {ops_compacted, bytes_reclaimed}; tenant_export -> {tarball_b64,
+    // bytes}; tenant_import -> {bytes_imported}. live_session is WS-backed.
 }
 ```
 
 Commitments:
 
-1. **Built on `escurel-proto`.** Types are re-exported from the tonic codegen so the wire format and the client never drift. Adding a new MCP tool means: add to `protocol.md` → add to `escurel.proto` → tonic regenerates → typed method appears in `Client`.
-2. **Transport-agnostic at the surface.** The contract is the method signatures; whether `Client` speaks MCP-over-HTTP or native gRPC under the hood is configurable, with HTTP as the default. (`protocol.md` already promises both transports carry the same surface — decision 6 in [`README.md`](README.md#locked-design-decisions).)
-3. **Semver-tracked.** Breaking changes to `Client` method signatures bump escurel's minor; additions are patch-safe. Versioning is tied to escurel's release, not to the proto crate's internal version.
+1. **Speaks MCP-over-HTTP.** `Client` is a typed wrapper over the JSON-RPC `POST /mcp` surface so the wire format and the client never drift. Adding a new MCP tool means: add to `protocol.md` → add the typed method to `Client`.
+2. **HTTP is the sole transport.** The contract is the method signatures; `Client` speaks MCP-over-HTTP (decision 6 in [`README.md`](README.md#locked-design-decisions)). Live collaborative editing (`live_session`) runs over the WebSocket at `/ws`.
+3. **Semver-tracked.** Breaking changes to `Client` method signatures bump escurel's minor; additions are patch-safe. Versioning is tied to escurel's release.
 4. **No `escurel-server` dep.** The application's binary must not transitively pull in DuckDB or candle. `escurel-client` is a leaf crate.
 
 `McpTestClient` in `escurel-test-support` is `Client` plus the test-only spawn glue; it is not a parallel surface.
@@ -245,13 +249,13 @@ What it does **not** guarantee:
 **Delivered.** All three pieces ship in the workspace:
 
 1. **`crates/escurel-test-support/`** — `EscurelProcess`, `Opts`, `AuthMode`, `FixtureBuilder`, `McpTestClient`. Drives the gateway's own no-mock integration tests.
-2. **`crates/escurel-client/`** — typed wrapper around `escurel-proto`'s tonic codegen (exercised by `crates/escurel-client/tests/client_roundtrip.rs`).
+2. **`crates/escurel-client/`** — typed MCP-over-HTTP client (exercised by `crates/escurel-client/tests/client_roundtrip.rs`).
 3. **`examples/echo-app/`** — a minimal application demonstrating the chaining recipe above, with its `tests/e2e.rs` as the executable proof that the contract holds.
 
 The dependency order is `escurel-client` → `escurel-test-support` (which depends on it) → example app. The example app's `tests/e2e.rs` is the acceptance test for this contract: if it drifts from the §"Chaining recipe" snippet above, the contract has diverged from the implementation and one of them needs to move.
 
 ## Open questions
 
-- **gRPC vs HTTP default for `Client`.** Both transports are committed (decision 6 in [`README.md`](README.md#locked-design-decisions)). The contract does not yet pick a default; the implementing PR should pick whichever has the smaller dependency footprint for downstream apps (likely HTTP) and document the choice.
+- (resolved) **Client transport.** `escurel-client` speaks MCP-over-HTTP — the sole transport (decision 6 in [`README.md`](README.md#locked-design-decisions)). Live collaborative editing rides the WebSocket at `/ws`.
 - **`escurel-test-support` published or workspace-only.** During bootstrap (CI paused per [`CLAUDE.md`](../../CLAUDE.md) principle 2), workspace-only is fine. Before v1 stable, decide whether it is published to a registry; if not, downstream apps that live in other repos consume it as a git dependency.
 - **Multi-tenant fixtures.** `FixtureBuilder::tenant(id)` chains today; whether one `FixtureBuilder` may declare two tenants in one call is left to the implementing PR — neither shape changes the contract's commitments.

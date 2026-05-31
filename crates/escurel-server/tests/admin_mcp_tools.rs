@@ -22,7 +22,6 @@ async fn start() -> EscurelProcess {
         fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
         config_overrides: ConfigOverrides {
             quota: Some(Arc::new(QuotaManager::new(QuotaConfig::defaults()))),
-            disable_grpc: true,
             ..Default::default()
         },
     })

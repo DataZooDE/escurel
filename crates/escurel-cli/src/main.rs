@@ -36,8 +36,8 @@ use serde_json::json;
 #[derive(Parser, Debug)]
 #[command(name = "escurel", about = "CLI for the Escurel gateway", version)]
 struct Cli {
-    /// gRPC endpoint URL, e.g. `http://127.0.0.1:8081`.
-    #[arg(long, env = "ESCUREL_SERVER", default_value = "http://127.0.0.1:8081")]
+    /// HTTP endpoint URL, e.g. `http://127.0.0.1:8080`.
+    #[arg(long, env = "ESCUREL_SERVER", default_value = "http://127.0.0.1:8080")]
     server: String,
     /// OIDC bearer token. Required unless the server runs
     /// unauthenticated (dev only).

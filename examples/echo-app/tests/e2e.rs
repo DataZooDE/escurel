@@ -35,9 +35,9 @@ async fn dashboard_round_trips_through_echo_app() {
     .await;
     let token = escurel.mint_token("acme", Role::Agent);
 
-    // 2. echo-app backend up, pointed at escurel's gRPC endpoint.
+    // 2. echo-app backend up, pointed at escurel's HTTP base URL.
     let backend = echo_app::spawn(echo_app::Opts {
-        escurel_endpoint: escurel.grpc_endpoint().unwrap().to_owned(),
+        escurel_endpoint: escurel.base_url().to_owned(),
         escurel_token: token,
     })
     .await
@@ -81,7 +81,7 @@ async fn unknown_slug_returns_404() {
     let token = escurel.mint_token("acme", Role::Agent);
 
     let backend = echo_app::spawn(echo_app::Opts {
-        escurel_endpoint: escurel.grpc_endpoint().unwrap().to_owned(),
+        escurel_endpoint: escurel.base_url().to_owned(),
         escurel_token: token,
     })
     .await

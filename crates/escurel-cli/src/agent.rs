@@ -254,10 +254,8 @@ async fn search(client: &Client, a: SearchArgs) -> Result<Value> {
         .search(SearchRequest {
             q: a.q,
             k: a.k,
-            granularity: String::new(),
             page_type: a.page_type,
             skill: a.skill.unwrap_or_default(),
-            filter_json: String::new(),
             ..Default::default()
         })
         .await?;
@@ -273,11 +271,11 @@ async fn search(client: &Client, a: SearchArgs) -> Result<Value> {
                 "anchor": opt(&h.anchor),
                 "snippet": h.snippet,
                 "score": h.score,
-                "frontmatter_excerpt": json_or_null(&h.frontmatter_excerpt_json),
+                "frontmatter_excerpt": json_or_null(&h.frontmatter_excerpt),
             })
         })
         .collect();
-    Ok(json!({ "hits": hits, "granularity": resp.granularity }))
+    Ok(json!({ "hits": hits, "granularity": opt(&resp.granularity) }))
 }
 
 async fn resolve(client: &Client, wikilink: String) -> Result<Value> {
@@ -334,7 +332,7 @@ async fn list_instances(client: &Client, a: InstanceListArgs) -> Result<Value> {
             json!({
                 "page_id": i.page_id,
                 "skill": i.skill,
-                "frontmatter": json_or_null(&i.frontmatter_json),
+                "frontmatter": json_or_null(&i.frontmatter),
                 "at": opt(&i.at),
             })
         })
@@ -353,7 +351,7 @@ async fn expand(client: &Client, page_id: String) -> Result<Value> {
         .await?;
     Ok(json!({
         "page": resp.page.map(page_ref),
-        "frontmatter": json_or_null(&resp.frontmatter_json),
+        "frontmatter": json_or_null(&resp.frontmatter),
         "body": resp.body,
         "blocks": resp.blocks.into_iter().map(|b| json!({
             "anchor": b.anchor,
@@ -366,21 +364,34 @@ async fn expand(client: &Client, page_id: String) -> Result<Value> {
             "version": opt(&w.version),
             "alias": opt(&w.alias),
         })).collect::<Vec<_>>(),
-        "snapshot_version": opt(&resp.snapshot_version),
     }))
+}
+
+/// Parse an optional CLI string argument as JSON; empty/absent → `null`.
+/// Invalid JSON is wrapped as a JSON string so a stray value still
+/// round-trips rather than hard-erroring.
+fn parse_json_arg(s: Option<String>) -> Value {
+    match s {
+        None => Value::Null,
+        Some(s) if s.trim().is_empty() => Value::Null,
+        Some(s) => serde_json::from_str(&s).unwrap_or(Value::String(s)),
+    }
 }
 
 async fn validate(client: &Client, page_id: String) -> Result<Value> {
     let content = read_stdin("page body")?;
     let resp = client
-        .validate(ValidateRequest { page_id, content })
+        .validate(ValidateRequest {
+            content,
+            as_page_id: page_id,
+        })
         .await?;
     Ok(json!({
         "ok": resp.ok,
         "issues": resp.issues.into_iter().map(|i| json!({
             "code": i.code,
             "message": i.message,
-            "anchor": opt(&i.anchor),
+            "location": opt(&i.location),
         })).collect::<Vec<_>>(),
     }))
 }
@@ -395,7 +406,7 @@ async fn update_page(client: &Client, page_id: String) -> Result<Value> {
         "issues": resp.issues.into_iter().map(|i| json!({
             "code": i.code,
             "message": i.message,
-            "anchor": opt(&i.anchor),
+            "location": opt(&i.location),
         })).collect::<Vec<_>>(),
         "new_version": opt(&resp.new_version),
     }))
@@ -407,9 +418,6 @@ async fn neighbours(client: &Client, a: NeighboursArgs) -> Result<Value> {
             page_id: a.page_id,
             direction: a.direction,
             link_skill: a.link_skill.unwrap_or_default(),
-            link_skill_in: Vec::new(),
-            order_by: String::new(),
-            limit: a.limit,
             ..Default::default()
         })
         .await?;
@@ -446,7 +454,7 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
                     instance_page_id: a.instance.unwrap_or_default(),
                     title: a.title,
                     body,
-                    provenance_json: a.provenance.unwrap_or_default(),
+                    provenance: parse_json_arg(a.provenance),
                 })
                 .await?;
             Ok(event(stored))
@@ -483,11 +491,11 @@ async fn run_query(client: &Client, a: QueryRunArgs) -> Result<Value> {
     let resp = client
         .run_stored_query(RunStoredQueryRequest {
             query_id: a.query_id,
-            params_json: a.params,
+            params: parse_json_arg(Some(a.params)),
         })
         .await?;
     Ok(json!({
-        "rows": json_or_null(&resp.rows_json),
+        "rows": json_or_null(&resp.rows),
         "schema": resp.schema.into_iter().map(|c| json!({
             "name": c.name,
             "type": c.type_name,
@@ -507,7 +515,7 @@ async fn chat_append(client: &Client, a: ChatAppendArgs) -> Result<Value> {
             content,
             author: a.author.unwrap_or_default(),
             ts: a.ts.unwrap_or_default(),
-            metadata_json: a.metadata.unwrap_or_default(),
+            metadata: parse_json_arg(a.metadata),
             msg_id: a.msg_id.unwrap_or_default(),
             embed: !a.no_embed,
         })
@@ -532,11 +540,11 @@ async fn chat_list(client: &Client, a: ChatListArgs) -> Result<Value> {
             "msg_id": m.msg_id,
             "ts": m.ts,
             "role": m.role,
-            "author": opt(&m.author),
+            "author": opt(m.author.as_deref().unwrap_or("")),
             "content": m.content,
-            "metadata": json_or_null(&m.metadata_json),
+            "metadata": m.metadata.as_ref().map(json_or_null).unwrap_or(Value::Null),
             "embedded": m.embedded,
         })).collect::<Vec<_>>(),
-        "next_cursor": opt(&resp.next_cursor),
+        "next_cursor": opt(resp.next_cursor.as_deref().unwrap_or("")),
     }))
 }

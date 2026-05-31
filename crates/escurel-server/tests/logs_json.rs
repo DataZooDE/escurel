@@ -87,7 +87,6 @@ async fn spawn_gateway() -> EscurelProcess {
         fixtures: None,
         config_overrides: ConfigOverrides {
             gateway_version: Some("test-logs".to_owned()),
-            disable_grpc: true,
             disable_indexer: true,
             ..Default::default()
         },
@@ -223,7 +222,6 @@ async fn tool_call_record_carries_full_audit_fields() {
         ),
         config_overrides: ConfigOverrides {
             gateway_version: Some("test-logs".to_owned()),
-            disable_grpc: true,
             ..Default::default()
         },
     })

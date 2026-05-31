@@ -259,10 +259,17 @@ impl DataSource {
                 .collect(),
             Err(_) => Vec::new(),
         };
+        // The wire frontmatter is a real JSON value now; render it back
+        // to a compact JSON string for the entity's frontmatter pane.
+        let frontmatter_json = if resp.frontmatter.is_null() {
+            String::new()
+        } else {
+            resp.frontmatter.to_string()
+        };
         Ok(ScreenData::Entity(EntityView {
             page_id: resolved_page_id,
             title,
-            frontmatter_json: resp.frontmatter_json,
+            frontmatter_json,
             body: resp.body,
             outgoing_links,
             backlinks,

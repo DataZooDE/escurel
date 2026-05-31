@@ -1,7 +1,8 @@
-//! Operator-surface commands (the `EscurelAdmin` service). All require
-//! an admin-role bearer except `health`. Streaming RPCs (`rebuild`,
-//! `compact-lanes`, `tenant export`) drain to a collected JSON array;
-//! `tenant import` streams a file's bytes up in one chunk.
+//! Operator-surface commands (the admin-gated MCP tools). All require
+//! an admin-role bearer except `health`. The long-running ops
+//! (`rebuild`, `compact-lanes`, `tenant export`/`import`) are one-shot
+//! over the MCP transport: they return the terminal result directly
+//! rather than a progress stream.
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
@@ -9,9 +10,8 @@ use escurel_client::{
     AdminClient, AttachExternalRequest, AuditRequest, CompactLanesRequest,
     DeleteChatHistoryRequest, EmbeddingReloadRequest, HealthRequest, QuotaGetRequest,
     RebuildRequest, TenantCreateRequest, TenantDeleteRequest, TenantExportRequest,
-    TenantGetRequest, TenantImportChunk, TenantListRequest, TenantSpec, TenantUpdateRequest,
+    TenantGetRequest, TenantListRequest, TenantSpec, TenantUpdateRequest,
 };
-use futures::StreamExt as _;
 use serde_json::{Value, json};
 
 use crate::convert::opt;
@@ -47,14 +47,15 @@ pub enum AdminCmd {
     },
     /// Hot-reload the embedding model.
     EmbeddingReload,
-    /// Rebuild a tenant's index (streams progress).
+    /// Rebuild a tenant's index. Returns the terminal `{done, total}`.
     Rebuild {
         #[arg(long)]
         tenant: String,
         #[arg(long, default_value = "")]
         scope: String,
     },
-    /// Compact a tenant's CRDT op lanes (streams progress).
+    /// Compact a tenant's CRDT op lanes. Returns the terminal
+    /// `{ops_compacted, bytes_reclaimed}`.
     CompactLanes {
         #[arg(long)]
         tenant: String,
@@ -178,36 +179,22 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
             Ok(json!({ "model_revision": r.model_revision }))
         }
         AdminCmd::Rebuild { tenant, scope } => {
-            let mut stream = client
+            let p = client
                 .rebuild(RebuildRequest {
                     tenant_id: tenant,
                     scope,
                 })
                 .await?;
-            let mut progress = Vec::new();
-            while let Some(msg) = stream.next().await {
-                let p = msg?;
-                progress.push(json!({
-                    "done": p.done,
-                    "total": p.total,
-                    "current_page": opt(&p.current_page),
-                }));
-            }
-            Ok(json!({ "progress": progress }))
+            Ok(json!({ "done": p.done, "total": p.total }))
         }
         AdminCmd::CompactLanes { tenant } => {
-            let mut stream = client
+            let p = client
                 .compact_lanes(CompactLanesRequest { tenant_id: tenant })
                 .await?;
-            let mut progress = Vec::new();
-            while let Some(msg) = stream.next().await {
-                let p = msg?;
-                progress.push(json!({
-                    "ops_compacted": p.ops_compacted,
-                    "bytes_reclaimed": p.bytes_reclaimed,
-                }));
-            }
-            Ok(json!({ "progress": progress }))
+            Ok(json!({
+                "ops_compacted": p.ops_compacted,
+                "bytes_reclaimed": p.bytes_reclaimed,
+            }))
         }
     }
 }
@@ -258,13 +245,9 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
             Ok(json!({ "deleted": r.deleted }))
         }
         TenantCmd::Export { id, out } => {
-            let mut stream = client
+            let bytes = client
                 .tenant_export(TenantExportRequest { tenant_id: id })
                 .await?;
-            let mut bytes = Vec::new();
-            while let Some(chunk) = stream.next().await {
-                bytes.extend_from_slice(&chunk?.data);
-            }
             let n = bytes.len();
             std::fs::write(&out, &bytes).with_context(|| format!("write export to {out}"))?;
             Ok(json!({ "bytes_exported": n, "path": out }))
@@ -272,12 +255,8 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
         TenantCmd::Import { id, input } => {
             let bytes =
                 std::fs::read(&input).with_context(|| format!("read import from {input}"))?;
-            let chunks = futures::stream::iter(vec![TenantImportChunk {
-                tenant_id: id,
-                data: bytes,
-            }]);
-            let r = client.tenant_import(chunks).await?;
-            Ok(json!({ "bytes_imported": r.bytes_imported }))
+            let imported = client.tenant_import(&id, bytes).await?;
+            Ok(json!({ "bytes_imported": imported }))
         }
     }
 }

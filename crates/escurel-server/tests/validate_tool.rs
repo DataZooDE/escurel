@@ -1,18 +1,13 @@
 //! End-to-end tests for the `validate` agent tool (the 12th tool).
 //!
 //! Real running gateway, real Indexer (DuckDB + FsStore +
-//! ZeroEmbedder), exercised over both transports: MCP-over-HTTP
-//! (raw JSON-RPC via reqwest) and native gRPC (tonic
-//! `EscurelClient`). `validate` is a dry run — it must produce the
-//! same issue list `update_page` would, but commit nothing.
+//! ZeroEmbedder), exercised over MCP-over-HTTP (raw JSON-RPC via
+//! reqwest). `validate` is a dry run — it must produce the same issue
+//! list `update_page` would, but commit nothing. (The gRPC arm was
+//! removed when gRPC was dropped; HTTP is now the only transport.)
 
-use escurel_proto::v1::ValidateRequest;
-use escurel_proto::v1::escurel_client::EscurelClient;
 use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
 use serde_json::{Value, json};
-use tonic::Request;
-use tonic::metadata::MetadataValue;
-use tonic::transport::Channel;
 
 const TENANT: &str = "acme";
 
@@ -74,29 +69,6 @@ async fn validate_mcp(p: &EscurelProcess, content: &str, as_page_id: Option<&str
         panic!("validate returned error: {body}");
     }
     body["result"].clone()
-}
-
-async fn grpc_client(
-    p: &EscurelProcess,
-) -> (
-    EscurelClient<Channel>,
-    MetadataValue<tonic::metadata::Ascii>,
-) {
-    let endpoint = p.grpc_endpoint().expect("grpc endpoint");
-    let channel = Channel::from_shared(endpoint.to_owned())
-        .unwrap()
-        .connect()
-        .await
-        .unwrap();
-    let t = p.mint_token(TENANT, Role::Agent);
-    let bearer: MetadataValue<_> = format!("Bearer {t}").parse().unwrap();
-    (EscurelClient::new(channel), bearer)
-}
-
-fn authed<T>(body: T, bearer: &MetadataValue<tonic::metadata::Ascii>) -> Request<T> {
-    let mut r = Request::new(body);
-    r.metadata_mut().insert("authorization", bearer.clone());
-    r
 }
 
 #[tokio::test]
@@ -218,49 +190,6 @@ async fn validate_does_not_commit() {
         body["result"]["exists"], false,
         "validate must not commit the page: {body}"
     );
-    p.shutdown().await;
-}
-
-#[tokio::test]
-async fn validate_over_grpc_matches_mcp() {
-    let p = start().await;
-    let content = "---\n\
-                   type: instance\n\
-                   skill: customer\n\
-                   id: globex\n\
-                   name: Globex\n\
-                   ---\n\
-                   # Globex\n\nRefers to [[nonexistent::whoever]].\n";
-
-    let mcp_result = validate_mcp(&p, content, None).await;
-    let mcp_codes: Vec<String> = mcp_result["issues"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|i| i["code"].as_str().map(str::to_owned))
-        .collect();
-
-    let (mut client, bearer) = grpc_client(&p).await;
-    let resp = client
-        .validate(authed(
-            ValidateRequest {
-                page_id: String::new(),
-                content: content.to_owned(),
-            },
-            &bearer,
-        ))
-        .await
-        .unwrap()
-        .into_inner();
-    let mut grpc_codes: Vec<String> = resp.issues.iter().map(|i| i.code.clone()).collect();
-    let mut mcp_sorted = mcp_codes.clone();
-    mcp_sorted.sort();
-    grpc_codes.sort();
-    assert_eq!(
-        grpc_codes, mcp_sorted,
-        "gRPC and MCP must produce the same issue codes"
-    );
-    assert!(!resp.ok, "content with an error issue must report ok=false");
     p.shutdown().await;
 }
 

@@ -77,8 +77,8 @@ Crates: `escurel-crdt`, plus the admin half of `escurel-server`.
 - Loro adapter, `LiveDoc` actor per page, op log + snapshot
   persistence.
 - WebSocket op streaming.
-- `open_session` / `apply_op` / `close_session` over HTTP, WS,
-  and gRPC bidi.
+- `open_session` / `apply_op` / `close_session` over HTTP and
+  the WebSocket op stream.
 - Admin endpoints: tenant CRUD, export/import, attach_external,
   audit/rebuild streaming.
 - Two-stage reconciler for external markdown edits.

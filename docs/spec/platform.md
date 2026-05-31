@@ -32,8 +32,7 @@ On every request:
 1. Extract `Bearer` token from the `Authorization` header.
 2. Verify signature against the issuer's JWKS (cached, refreshed
    per `jwks_refresh_secs`). Reject on any failure with the
-   transport's native error shape (HTTP 401, gRPC
-   `UNAUTHENTICATED`, WS close code 4401).
+   transport's native error shape (HTTP 401, WS close code 4401).
 3. Resolve **tenant_id** = the value of the `tenant_claim` claim.
    Reject if absent.
 4. Look up the tenant in the tenant manager; reject with
@@ -45,8 +44,8 @@ On every request:
 6. Stamp the resolved `(tenant_id, role, sub)` onto the request
    context for downstream layers.
 
-The same flow handles WS (token in the upgrade request),
-HTTP (header on every request), and gRPC (metadata).
+The same flow handles HTTP (header on every request) and WS
+(token in the upgrade request).
 
 Two operational notes:
 
@@ -193,7 +192,7 @@ Three dimensions, all token-bucket per tenant:
 
 Defaults are in the server config; per-tenant overrides in the
 manifest. On bucket exhaustion the server returns
-`RESOURCE_EXHAUSTED` (gRPC) / HTTP 429 / WS error code 4429 with
+HTTP 429 / WS error code 4429 with
 a `retry_after_ms` hint. Live-mode WS connections that hit the
 concurrent-sessions cap on connect are rejected at upgrade time
 with HTTP 429.
@@ -314,7 +313,7 @@ output; useful for local development, not production.
   AND storage is reachable AND OTel exporter has connected (or
   is configured no-op)
 - `GET /metrics` — Prometheus scrape
-- gRPC `EscurelAdmin.Health` — richer JSON with version, embedding
+- `health` MCP tool — richer JSON with version, embedding
   status, tenant count, lane stats
 
 Substrate orchestrators (Nomad) wire `/readyz` as the

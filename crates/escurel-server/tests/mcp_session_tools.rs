@@ -104,7 +104,6 @@ async fn start(quota: Option<Arc<QuotaManager>>, with_crdt: bool) -> Harness {
             quota,
             crdt_backend,
             disable_indexer: true,
-            disable_grpc: true,
             ..Default::default()
         },
     })

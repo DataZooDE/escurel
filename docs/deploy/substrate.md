@@ -163,7 +163,7 @@ breaks `SPEC.md §6` default-deny posture.
 | Tag | Holder | ACL |
 |---|---|---|
 | `tag:escurel` | Escurel Nomad allocations | Reaches `tag:srv` for Vault template only; does *not* initiate to `tag:agents` (Escurel is not behind Triton) |
-| `tag:ops` | Operators + CI ops identity | May reach Escurel gRPC `:8081` over the tailnet for admin tooling |
+| `tag:ops` | Operators + CI ops identity | May reach Escurel's HTTP `:8080` over the tailnet for admin tooling (admin-role-gated MCP tools) |
 | `tag:agents` | Agent pool | Escurel does NOT reach `tag:agents`; only Triton (`tag:cli`) does |
 
 ---
@@ -177,17 +177,17 @@ declares public listeners via Consul tags:
 service { name = "escurel-mcp";  port = "mcp";  tags = ["urlprefix-escurel.<env>.<domain>/mcp"] }
 service { name = "escurel-ws";   port = "ws";   tags = ["urlprefix-escurel.<env>.<domain>/ws"]  }
 service { name = "escurel-rest"; port = "rest"; tags = ["urlprefix-escurel.<env>.<domain>/"]    }
-service { name = "escurel-grpc"; port = "grpc"  /* no urlprefix tag — invisible to Fabio */ }
+service { name = "escurel-http"; port = "http"  /* MCP/HTTP + WS; urlprefix tag for Fabio */ }
 ```
 
 Fabio reads the Consul catalog and materialises one route per
-tag. The `escurel-grpc` service stays out of Fabio entirely;
-operator tooling reaches it via `escurel-grpc.service.consul`
+tag. Operator tooling reaches the HTTP surface via
+`escurel-http.service.consul` (admin-role-gated MCP tools)
 over the tailnet.
 
 The transport-exposure policy this binding implements is the one
 [`protocol.md §Transport-summary`](../spec/protocol.md#transport-summary)
-names as the default: MCP/HTTP and WS public via Fabio, gRPC
+names as the default: MCP/HTTP and WS public via Fabio
 tailnet-only.
 
 ---

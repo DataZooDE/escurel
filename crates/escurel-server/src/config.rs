@@ -29,7 +29,6 @@
 //! | `ESCUREL_SEED_DIR` | — | markdown corpus seeded into the tenant at boot (idempotent), e.g. `examples/crm-demo` |
 //! | `ESCUREL_WEBHOOK_URL` | — | outbound capture webhook; fire-and-forget POST of each new `capture_event` (M7) |
 //! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
-//! | `ESCUREL_SERVER_LISTEN_GRPC` | `0.0.0.0:8081` | gRPC listener; empty disables gRPC |
 //! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
 //! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs` or `s3` |
 //! | `ESCUREL_STORAGE_S3_BUCKET` | — | S3 bucket (backend=s3) |
@@ -166,7 +165,6 @@ struct TomlConfig {
 struct TomlServer {
     data_dir: Option<String>,
     listen_http: Option<String>,
-    listen_grpc: Option<String>,
     tenant: Option<String>,
     version: Option<String>,
     env: Option<String>,
@@ -233,8 +231,6 @@ pub struct EscurelConfig {
     pub env: String,
     pub data_dir: PathBuf,
     pub listen_http: String,
-    /// `None` disables the gRPC mirror.
-    pub listen_grpc: Option<String>,
     pub tenant: String,
     pub storage_backend: StorageBackend,
     pub s3: Option<S3Config>,
@@ -377,17 +373,6 @@ impl EscurelConfig {
             toml_cfg.server.listen_http,
             "0.0.0.0:8080",
         );
-        let listen_grpc_raw = pick(
-            "ESCUREL_SERVER_LISTEN_GRPC",
-            toml_cfg.server.listen_grpc,
-            "0.0.0.0:8081",
-        );
-        // An explicitly-empty value disables the gRPC mirror.
-        let listen_grpc = if listen_grpc_raw.is_empty() {
-            None
-        } else {
-            Some(listen_grpc_raw)
-        };
         let tenant = pick("ESCUREL_TENANT", toml_cfg.server.tenant, "default");
 
         // --- storage ---
@@ -507,7 +492,6 @@ impl EscurelConfig {
             env: server_env,
             data_dir,
             listen_http,
-            listen_grpc,
             tenant,
             storage_backend,
             s3,
@@ -666,7 +650,6 @@ impl EscurelConfig {
 
         let server_config = ServerConfig {
             listen: self.listen_http.clone(),
-            grpc_listen: self.listen_grpc.clone(),
             version: self.version.clone(),
             readiness,
             indexer: Some(indexer),
