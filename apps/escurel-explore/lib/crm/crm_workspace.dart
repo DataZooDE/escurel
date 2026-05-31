@@ -173,11 +173,33 @@ class _CollapsibleRegion extends StatelessWidget {
     );
 
     if (collapsed) {
+      // The whole collapsed rail is the expand target. A centered 16px icon
+      // is far too small to reliably hit — and when *both* panes collapse
+      // the right rail balloons to a wide blank area — so an InkWell fills
+      // the region and re-expands on a tap anywhere within it.
       return Semantics(
         label: label,
         container: true,
         explicitChildNodes: true,
-        child: Center(child: toggle),
+        child: Semantics(
+          label: '$label-expand',
+          button: true,
+          onTap: onToggle,
+          excludeSemantics: true,
+          child: Tooltip(
+            message: 'Expand',
+            child: InkWell(
+              onTap: onToggle,
+              child: Center(
+                child: Icon(
+                  edge == _Edge.right ? Icons.chevron_right : Icons.chevron_left,
+                  size: 16,
+                  color: kOnSurfaceVariant,
+                ),
+              ),
+            ),
+          ),
+        ),
       );
     }
     return Semantics(
