@@ -27,6 +27,39 @@ repo alongside the spec.
 - Deployment binding to the DataZoo Hetzner substrate is in
   [`docs/deploy/`](docs/deploy/).
 
+## CLI & TUI
+
+The `escurel` binary (crate `escurel-cli`) is a gh/aws-style client
+over the gateway: one resource noun, one verb, one RPC. It speaks the
+gRPC endpoint (`--server` / `ESCUREL_SERVER`, default
+`http://127.0.0.1:8081`) with an OIDC bearer (`--token` /
+`ESCUREL_TOKEN`).
+
+```sh
+escurel skill list                        # Tier-1 skill catalogue
+escurel instance list --skill customer    # instances of a skill
+escurel page expand markdown/instances/customer/acme.md
+escurel link neighbours <page_id> --direction in
+escurel search "renewal" --k 5
+escurel resolve '[[customer::acme]]'
+escurel event capture --title "Renewal call" --body "…"
+escurel event inbox                       # unprocessed events
+escurel event assign --event <id> --instance <page_id>
+escurel query run <query_id> --params '{"skill":"customer"}'
+escurel chat append -g <group> --content "hi"
+escurel admin tenant list                 # operator surface
+```
+
+Every command emits stable JSON by default; pass `--format table` for
+a human-readable view. Errors are emitted as JSON on stderr with a
+non-zero exit, so an agent can branch on them.
+
+`escurel ui` launches an interactive **k9s-style terminal browser**
+(crate `escurel-tui`) against the same `--server` / `--token`: drill
+skills → instances → entity, inspect outgoing links + backlinks,
+browse the event inbox and per-instance history, filter with `/`, `?`
+for help, `q` to quit.
+
 ## License
 
 Source-available under the [Business Source License 1.1](LICENSE),

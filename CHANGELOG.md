@@ -4,6 +4,38 @@ All notable changes to escurel are recorded here. The format is
 loosely [Keep a Changelog](https://keepachangelog.com/); escurel
 follows SemVer from v1.0.0 onward.
 
+## Unreleased
+
+### Client
+
+- `escurel-client` admin + streaming surface: an `AdminClient` for the
+  unary `EscurelAdmin` RPCs (tenant CRUD, audit, quota, health,
+  `attach_external`, `embedding_reload`, `compact_lanes`) plus the
+  server-streaming (export / rebuild / compact) and client-streaming
+  (import) flows, and the agent event/validate RPCs (`capture_event` /
+  `list_inbox` / `list_events` / `assign_event`, `validate`).
+
+### CLI
+
+- Rebuilt the `escurel` CLI as a gh/aws-style noun-verb tree over
+  `escurel-client` (`skill`, `instance`, `page`, `link`, `event`,
+  `query`, `chat`, `admin`, plus top-level `search` / `resolve`), with
+  a global `--format json|table` flag and a JSON-on-stderr error
+  contract (non-zero exit) for agent consumption.
+- New `escurel ui` subcommand launches the interactive terminal
+  browser against the same `--server` / `--token`.
+
+### TUI
+
+- New `escurel-tui` crate: a k9s-style interactive terminal UI
+  (ratatui + crossterm) over `escurel-client`. Elm-style `App`
+  (navigation stack skills → instances → entity, inbox + per-instance
+  event history, outgoing links + backlinks, `/` filter, `?` help)
+  with a panic-safe terminal guard and a real crossterm event loop.
+  Logic is terminal-free and exercised against a real gateway via a
+  ratatui `TestBackend` (no mocks); run it with
+  `scripts/verify-tui.sh`.
+
 ## [1.0.0] — 2026-05-26
 
 First stable release. The v1 cut-line in

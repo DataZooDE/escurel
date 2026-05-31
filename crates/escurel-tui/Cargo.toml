@@ -1,0 +1,29 @@
+[package]
+name = "escurel-tui"
+description = "k9s-style interactive terminal UI for the Escurel gateway, built on escurel-client."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow = "1"
+# Single typed gateway abstraction — the TUI is pure presentation on top
+# of it (no hand-rolled tonic, no direct escurel-proto dependency).
+escurel-client = { path = "../escurel-client" }
+ratatui = "0.29"
+crossterm = "0.28"
+secrecy = "0.10"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+# No-mock e2e spawns a real gateway and seeds fixtures through the
+# public write path.
+escurel-test-support = { path = "../escurel-test-support" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
