@@ -104,4 +104,40 @@ void main() {
     expect(find.bySemanticsLabel('region-events-collapse'), findsOneWidget);
     expect(find.bySemanticsLabel('event-pane'), findsOneWidget);
   });
+
+  testWidgets('navigate to a skill, then the chevron re-opens the event pane (real nav)', (tester) async {
+    // Closer to the live flow than the static override above: a real
+    // fixture and an actual navigation to a skill, so `currentPage`
+    // resolves async and `isSkill` flips through the real provider
+    // machinery (incl. the reset listener) before the chevron is tapped.
+    final client = _corpus();
+    final container = ProviderContainer(overrides: [escurelClientProvider.overrideWithValue(client)]);
+    addTearDown(container.dispose);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: CrmWorkspace()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Navigate to the skill page (mirrors focusSkill setting currentPageId).
+    final resolved = await client.resolve('[[customer]]');
+    expect(resolved.exists, isTrue);
+    container.read(currentPageIdProvider.notifier).state = resolved.pageId;
+    await tester.pumpAndSettle();
+
+    // Auto-minimized on the skill, then the chevron re-opens it.
+    expect(find.bySemanticsLabel('region-events-expand'), findsOneWidget);
+    expect(find.bySemanticsLabel('event-pane'), findsNothing);
+    await tester.tap(find.bySemanticsLabel('region-events-expand'));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('region-events-collapse'), findsOneWidget);
+    expect(find.bySemanticsLabel('event-pane'), findsOneWidget);
+  });
 }
