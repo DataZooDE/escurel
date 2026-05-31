@@ -13,7 +13,7 @@ use bytes::Bytes;
 use duckdb::Connection;
 use escurel_admin::TenantStore;
 use escurel_auth::{OidcConfig, OidcVerifier};
-use escurel_client::{Client, SecretString, UpdatePageRequest};
+use escurel_client::{Client, SecretString};
 use escurel_crdt::CrdtBackend;
 use escurel_embed::ReloadableEmbedder;
 use escurel_embed::{Embedder, ZeroEmbedder};
@@ -512,11 +512,11 @@ impl EscurelProcess {
         // be declaring fixtures.
         let mcp = self.mcp_client();
         for entry in entries {
-            let resp = mcp
-                .update_page(UpdatePageRequest {
-                    page_id: entry.page_id.clone(),
-                    content: entry.body,
-                })
+            let result = mcp
+                .call(
+                    "update_page",
+                    serde_json::json!({ "page_id": entry.page_id, "content": entry.body }),
+                )
                 .await
                 .unwrap_or_else(|e| {
                     panic!(
@@ -524,9 +524,13 @@ impl EscurelProcess {
                         entry.page_id, entry.tenant
                     )
                 });
+            let ok = result
+                .get("ok")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
             assert!(
-                resp.ok,
-                "seed: update_page `{}` returned ok=false: {resp:?}",
+                ok,
+                "seed: update_page `{}` returned ok=false: {result:?}",
                 entry.page_id
             );
         }

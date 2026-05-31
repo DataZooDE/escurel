@@ -26,6 +26,7 @@ mod agent;
 mod chat;
 mod core;
 mod events;
+mod null;
 mod session;
 
 pub use admin::*;

@@ -22,8 +22,20 @@ tokio = { version = "1", default-features = false, features = ["macros"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
+# The roundtrip integration tests stand up real backends to seed the
+# gateway and to give `live_session` a CRDT doc to attach to. These are
+# dev-only — the shipped `escurel-client` stays a leaf crate (see the
+# crate docs): it does not depend on the server/indexer/storage tree.
+duckdb = { version = "1", features = ["bundled"] }
+escurel-admin = { path = "../escurel-admin" }
+escurel-crdt = { path = "../escurel-crdt" }
+escurel-index = { path = "../escurel-index" }
+escurel-quota = { path = "../escurel-quota" }
 escurel-test-support = { path = "../escurel-test-support" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+loro = "1.12"
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 tracing = "0.1"
 
 [lints]

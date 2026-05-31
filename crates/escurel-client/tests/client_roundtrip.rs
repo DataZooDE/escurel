@@ -1,8 +1,8 @@
 //! End-to-end tests for the `escurel-client` typed wrapper.
 //!
-//! Real gateway via `escurel-test-support`, real tonic transport,
-//! real `OidcVerifier` against the in-process JWKS the support
-//! crate stands up, real `Indexer` with a real DuckDB file. No
+//! Real gateway via `escurel-test-support`, real MCP-over-HTTP
+//! transport, real `OidcVerifier` against the in-process JWKS the
+//! support crate stands up, real `Indexer` with a real DuckDB file. No
 //! mocks at the boundary the test exercises (CLAUDE principle 2).
 
 use escurel_client::{
@@ -60,9 +60,8 @@ async fn start() -> EscurelProcess {
 }
 
 async fn authed_client(p: &EscurelProcess) -> Client {
-    let endpoint = p.grpc_endpoint().expect("grpc endpoint").to_owned();
     let token = p.mint_token(TENANT, Role::Agent);
-    Client::connect(&endpoint, SecretString::from(token))
+    Client::connect(p.base_url(), SecretString::from(token))
         .await
         .unwrap()
 }
@@ -167,10 +166,6 @@ async fn search_round_trips() {
         .search(SearchRequest {
             q: "Acme".to_owned(),
             k: 5,
-            granularity: String::new(),
-            page_type: String::new(),
-            skill: String::new(),
-            filter_json: String::new(),
             ..Default::default()
         })
         .await
@@ -208,25 +203,23 @@ name: Globex\n\
 async fn missing_token_surfaces_unauthenticated_error() {
     let p = start().await;
     // Bogus token: parses fine as a header but the verifier rejects
-    // it. Surface should be `Error::Rpc` carrying
-    // `Code::Unauthenticated`.
-    let endpoint = p.grpc_endpoint().unwrap().to_owned();
-    let client = Client::connect(&endpoint, SecretString::from("not.a.real.jwt".to_owned()))
-        .await
-        .unwrap();
+    // it. The HTTP transport surfaces the rejection as `Error::Http {
+    // status: 401, .. }`.
+    let client = Client::connect(
+        p.base_url(),
+        SecretString::from("not.a.real.jwt".to_owned()),
+    )
+    .await
+    .unwrap();
     let err = client
         .list_skills(ListSkillsRequest::default())
         .await
         .unwrap_err();
     match err {
-        escurel_client::Error::Rpc(status) => {
-            assert_eq!(
-                status.code(),
-                tonic::Code::Unauthenticated,
-                "status: {status:?}"
-            );
+        escurel_client::Error::Http { status, .. } => {
+            assert_eq!(status, 401, "expected 401 Unauthorized, got {status}");
         }
-        other => panic!("expected Error::Rpc(Unauthenticated), got {other:?}"),
+        other => panic!("expected Error::Http {{ status: 401 }}, got {other:?}"),
     }
     p.shutdown().await;
 }
@@ -245,11 +238,9 @@ async fn append_then_list_messages_round_trip() {
                 chat_group_id: "room-1".to_owned(),
                 role: "user".to_owned(),
                 content: content.to_owned(),
-                author: String::new(),
                 ts: ts.to_owned(),
-                metadata_json: String::new(),
-                msg_id: String::new(),
                 embed: true,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -260,11 +251,8 @@ async fn append_then_list_messages_round_trip() {
     let resp = client
         .list_messages(ListMessagesRequest {
             chat_group_id: "room-1".to_owned(),
-            since: String::new(),
-            until: String::new(),
-            limit: 0,
-            cursor: String::new(),
             direction: "asc".to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -283,7 +271,7 @@ async fn validate_accepts_well_formed_page() {
     let page_id = resolve_page_id(&client, "[[customer::acme]]").await;
     let resp = client
         .validate(ValidateRequest {
-            page_id,
+            as_page_id: page_id,
             content: ACME_INSTANCE.to_owned(),
         })
         .await
@@ -419,8 +407,7 @@ async fn token_is_not_leaked_in_debug_output() {
     // accidental log leaks.
     let secret = "THIS_TOKEN_SHOULD_NEVER_APPEAR_IN_LOGS_xyz123";
     let p = start().await;
-    let endpoint = p.grpc_endpoint().unwrap().to_owned();
-    let client = Client::connect(&endpoint, SecretString::from(secret.to_owned()))
+    let client = Client::connect(p.base_url(), SecretString::from(secret.to_owned()))
         .await
         .unwrap();
     let dbg = format!("{client:?}");

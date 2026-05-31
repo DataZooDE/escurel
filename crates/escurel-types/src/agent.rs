@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::core::{PageRef, WikilinkParsed};
+use crate::null::null_as_default;
 
 // ── search ────────────────────────────────────────────────────────
 
@@ -192,6 +193,8 @@ pub struct InstanceInfo {
     /// MCP wire key `frontmatter` carries a real JSON object (the proto
     /// encoded this as the string `frontmatter_json`).
     pub frontmatter: Value,
+    /// `null` on the wire when the instance carries no `at` timestamp.
+    #[serde(deserialize_with = "null_as_default")]
     pub at: String,
 }
 

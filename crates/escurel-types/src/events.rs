@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::null::null_as_default;
+
 /// A captured event. MCP wire keys: `event_id`, `at`, `source`,
 /// `mime`, `label_skill`, `instance_page_id`, `status`, `title`,
 /// `body`, `provenance` (a JSON value — the proto encoded this as the
@@ -14,10 +16,14 @@ use serde_json::Value;
 #[serde(default)]
 pub struct Event {
     pub event_id: String,
+    /// `null` on the wire when the event carries no timestamp.
+    #[serde(deserialize_with = "null_as_default")]
     pub at: String,
     pub source: String,
     pub mime: String,
     pub label_skill: String,
+    /// `null` on the wire for an unassigned inbox event.
+    #[serde(deserialize_with = "null_as_default")]
     pub instance_page_id: String,
     /// `inbox` | `processed`.
     pub status: String,
