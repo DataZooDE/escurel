@@ -32,20 +32,29 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use escurel_admin::{TenantSpec as AdminTenantSpec, TenantStore, validate_tenant_id};
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
     AppendChatMessage, ChatMessage, Direction, EventInfo, Granularity, Indexer, IndexerError,
-    Issue, ListChatMessages, NewEvent, OrderDir,
+    Issue, ListChatMessages, NewEvent, OrderDir, is_safe_attach_source,
 };
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
 use escurel_storage::{Key, StoreError};
+use escurel_types::{
+    AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
+    ListSkillsResponse, QuotaGetResponse, RebuildProgress, Skill as TypesSkill,
+    TenantCreateResponse, TenantDeleteResponse, TenantGetResponse, TenantImportResponse,
+    TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::Instrument;
 
+use crate::server::AppState;
 use crate::session::{SessionError, SessionManager};
+use crate::tenant_archive::{tar_gz_into_chunks, untar_gz_into};
 
 /// JSON-RPC 2.0 request envelope.
 #[derive(Debug, Deserialize)]
@@ -355,6 +364,14 @@ fn require_admin(role: Option<Role>) -> Result<(), JsonRpcError> {
     }
 }
 
+/// Serialize an `escurel_types` response struct to a JSON-RPC result
+/// value. The escurel-types structs are the wire contract; a
+/// serialization failure here is a server bug, surfaced as internal.
+fn to_value<T: serde::Serialize>(resp: T) -> Result<Value, JsonRpcError> {
+    serde_json::to_value(resp)
+        .map_err(|e| JsonRpcError::internal(format!("serialize response: {e}")))
+}
+
 async fn dispatch_tools_call(
     state: &crate::server::AppState,
     tenant_id: &str,
@@ -392,6 +409,54 @@ async fn dispatch_tools_call(
                 params.arguments,
             )
             .await;
+        }
+        // Admin-gated tenant CRUD + long-running ops. These take
+        // `state` directly (tenant_store / indexer / crdt_backend /
+        // embedder seam) rather than the bound indexer, so they route
+        // before the indexer gate, mirroring the session tools above.
+        "tenant_create" => {
+            require_admin(role)?;
+            return tool_tenant_create(state, params.arguments).await;
+        }
+        "tenant_list" => {
+            require_admin(role)?;
+            return tool_tenant_list(state).await;
+        }
+        "tenant_get" => {
+            require_admin(role)?;
+            return tool_tenant_get(state, params.arguments).await;
+        }
+        "tenant_update" => {
+            require_admin(role)?;
+            return tool_tenant_update(state, params.arguments).await;
+        }
+        "tenant_delete" => {
+            require_admin(role)?;
+            return tool_tenant_delete(state, params.arguments).await;
+        }
+        "tenant_export" => {
+            require_admin(role)?;
+            return tool_tenant_export(state, params.arguments).await;
+        }
+        "tenant_import" => {
+            require_admin(role)?;
+            return tool_tenant_import(state, params.arguments).await;
+        }
+        "attach_external" => {
+            require_admin(role)?;
+            return tool_attach_external(state, params.arguments).await;
+        }
+        "embedding_reload" => {
+            require_admin(role)?;
+            return tool_embedding_reload(state).await;
+        }
+        "rebuild" => {
+            require_admin(role)?;
+            return tool_rebuild(state, params.arguments).await;
+        }
+        "compact_lanes" => {
+            require_admin(role)?;
+            return tool_compact_lanes(state, params.arguments).await;
         }
         _ => {}
     }
@@ -462,15 +527,19 @@ async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpcError> {
         .list_skills()
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_skills: {e}")))?;
-    Ok(json!({
-        "skills": skills.iter().map(|s| json!({
-            "id": s.id,
-            "description": s.description,
-            "required_frontmatter": s.required_frontmatter,
-            "optional_frontmatter": s.optional_frontmatter,
-            "is_event_typed": s.is_event_typed,
-        })).collect::<Vec<_>>(),
-    }))
+    let resp = ListSkillsResponse {
+        skills: skills
+            .into_iter()
+            .map(|s| TypesSkill {
+                id: s.id,
+                description: s.description,
+                required_frontmatter: s.required_frontmatter,
+                optional_frontmatter: s.optional_frontmatter,
+                is_event_typed: s.is_event_typed,
+            })
+            .collect(),
+    };
+    to_value(resp)
 }
 
 #[derive(Deserialize)]
@@ -1100,12 +1169,12 @@ fn tool_admin_quota(
         .as_ref()
         .ok_or_else(|| JsonRpcError::internal("no quota manager wired on this server"))?;
     let s = quota.snapshot(tenant_id);
-    Ok(json!({
-        "queries_remaining": s.queries_remaining,
-        "writes_remaining": s.writes_remaining,
-        "embeds_remaining": s.embeds_remaining,
-        "concurrent_sessions_in_use": s.concurrent_sessions_in_use,
-    }))
+    to_value(QuotaGetResponse {
+        queries_remaining: s.queries_remaining,
+        writes_remaining: s.writes_remaining,
+        embeds_remaining: s.embeds_remaining,
+        concurrent_sessions: s.concurrent_sessions_in_use,
+    })
 }
 
 async fn tool_admin_audit(indexer: &Indexer) -> Result<Value, JsonRpcError> {
@@ -1240,10 +1309,10 @@ async fn tool_admin_lane_blob(indexer: &Indexer, args: Value) -> Result<Value, J
         )));
     }
     let bytes = store.read(&key).await.map_err(map_lane_err)?;
-    Ok(json!({
-        "bytes_base64": B64.encode(&bytes),
-        "content_type": lane_content_type(&a.key),
-    }))
+    to_value(AdminLaneBlobResponse {
+        bytes_base64: B64.encode(&bytes),
+        content_type: lane_content_type(&a.key).to_owned(),
+    })
 }
 
 fn map_lane_err(e: StoreError) -> JsonRpcError {
@@ -1278,6 +1347,312 @@ async fn tool_admin_delete_chat_history(
         .await
         .map_err(|e| JsonRpcError::internal(format!("admin_delete_chat_history: {e}")))?;
     Ok(json!({ "deleted": deleted }))
+}
+
+// --- admin tenant CRUD + long-ops (admin-role gated) -----------
+//
+// These port the gRPC `EscurelAdmin` business logic verbatim; only
+// the transport wrapper changes. The role gate is applied by the
+// dispatcher (`require_admin`) before these run. gRPC error codes
+// (not_found / invalid_argument / failed_precondition) map onto the
+// JSON-RPC `internal` / `invalid_params` envelope with a clear
+// message.
+
+/// `state.tenant_store` or a failed-precondition error mirroring the
+/// gRPC `tenant_store()` accessor.
+fn tenant_store(state: &AppState) -> Result<&Arc<dyn TenantStore>, JsonRpcError> {
+    state
+        .tenant_store
+        .as_ref()
+        .ok_or_else(|| JsonRpcError::internal("server has no tenant_store wired"))
+}
+
+/// `state.indexer` or a failed-precondition error.
+fn admin_indexer(state: &AppState) -> Result<&Arc<Indexer>, JsonRpcError> {
+    state
+        .indexer
+        .as_ref()
+        .ok_or_else(|| JsonRpcError::internal("server has no indexer wired"))
+}
+
+/// Map an `AdminError` onto the JSON-RPC envelope, mirroring the
+/// gRPC status mapping: invalid id → invalid_params; everything else
+/// (already-exists, I/O, duckdb) → internal.
+fn map_admin_err(e: escurel_admin::AdminError) -> JsonRpcError {
+    match e {
+        escurel_admin::AdminError::InvalidTenantId(_) => {
+            JsonRpcError::invalid_params(e.to_string())
+        }
+        other => JsonRpcError::internal(other.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct TenantSpecArgs {
+    #[serde(default)]
+    tenant_id: String,
+    #[serde(default)]
+    display_name: String,
+}
+
+#[derive(Deserialize)]
+struct TenantIdArgs {
+    #[serde(default)]
+    tenant_id: String,
+}
+
+async fn tool_tenant_create(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: TenantSpecArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_create: {e}")))?;
+    let store = tenant_store(state)?.clone();
+    let spec = AdminTenantSpec {
+        tenant_id: a.tenant_id,
+        display_name: a.display_name,
+    };
+    store.create(&spec).await.map_err(map_admin_err)?;
+    to_value(TenantCreateResponse {
+        spec: Some(TypesTenantSpec {
+            tenant_id: spec.tenant_id,
+            display_name: spec.display_name,
+        }),
+    })
+}
+
+async fn tool_tenant_list(state: &AppState) -> Result<Value, JsonRpcError> {
+    let store = tenant_store(state)?.clone();
+    let specs = store.list().await.map_err(map_admin_err)?;
+    to_value(TenantListResponse {
+        tenants: specs
+            .into_iter()
+            .map(|s| TypesTenantSpec {
+                tenant_id: s.tenant_id,
+                display_name: s.display_name,
+            })
+            .collect(),
+    })
+}
+
+async fn tool_tenant_get(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: TenantIdArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_get: {e}")))?;
+    let store = tenant_store(state)?.clone();
+    match store.get(&a.tenant_id).await.map_err(map_admin_err)? {
+        None => Err(JsonRpcError::invalid_params(format!(
+            "tenant `{}` not found",
+            a.tenant_id
+        ))),
+        Some(spec) => to_value(TenantGetResponse {
+            spec: Some(TypesTenantSpec {
+                tenant_id: spec.tenant_id,
+                display_name: spec.display_name,
+            }),
+        }),
+    }
+}
+
+async fn tool_tenant_update(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: TenantSpecArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_update: {e}")))?;
+    let store = tenant_store(state)?.clone();
+    let spec = AdminTenantSpec {
+        tenant_id: a.tenant_id,
+        display_name: a.display_name,
+    };
+    store.update(&spec).await.map_err(map_admin_err)?;
+    to_value(TenantUpdateResponse {
+        spec: Some(TypesTenantSpec {
+            tenant_id: spec.tenant_id,
+            display_name: spec.display_name,
+        }),
+    })
+}
+
+async fn tool_tenant_delete(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: TenantIdArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_delete: {e}")))?;
+    let store = tenant_store(state)?.clone();
+    let deleted = store.delete(&a.tenant_id).await.map_err(map_admin_err)?;
+    to_value(TenantDeleteResponse { deleted })
+}
+
+async fn tool_tenant_export(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: TenantIdArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_export: {e}")))?;
+    let store = tenant_store(state)?.clone();
+    // Validate before constructing on-disk paths — `tenant_dir` is
+    // filesystem-direct and would happily resolve `../other`.
+    validate_tenant_id(&a.tenant_id).map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+    let tenant_dir = store
+        .tenant_dir(&a.tenant_id)
+        .ok_or_else(|| JsonRpcError::internal("tenant store has no on-disk path"))?;
+    // Spec (storage.md): only canonical markdown is exported.
+    let markdown_dir = tenant_dir.join("markdown");
+    if !tokio::fs::try_exists(&markdown_dir).await.unwrap_or(false) {
+        return Err(JsonRpcError::invalid_params(format!(
+            "tenant `{}` not found",
+            a.tenant_id
+        )));
+    }
+    // Build the whole tarball in memory on a blocking thread (file
+    // I/O + zlib). The MCP transport is one-shot, so we accumulate
+    // every chunk rather than streaming.
+    const CHUNK: usize = 64 * 1024;
+    let bytes = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
+        let mut out: Vec<u8> = Vec::new();
+        tar_gz_into_chunks(&markdown_dir, CHUNK, |chunk| {
+            out.extend_from_slice(&chunk);
+            Ok(())
+        })?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| JsonRpcError::internal(format!("tenant_export join error: {e}")))?
+    .map_err(|e| JsonRpcError::internal(format!("tenant_export: {e}")))?;
+    let len = bytes.len() as u64;
+    Ok(json!({ "tarball_b64": B64.encode(&bytes), "bytes": len }))
+}
+
+#[derive(Deserialize)]
+struct TenantImportArgs {
+    #[serde(default)]
+    tenant_id: String,
+    #[serde(default)]
+    tarball_b64: String,
+}
+
+async fn tool_tenant_import(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: TenantImportArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_import: {e}")))?;
+    let store = tenant_store(state)?.clone();
+    validate_tenant_id(&a.tenant_id).map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+    // The target tenant must exist before import (mirrors gRPC).
+    if store
+        .get(&a.tenant_id)
+        .await
+        .map_err(map_admin_err)?
+        .is_none()
+    {
+        return Err(JsonRpcError::invalid_params(format!(
+            "tenant `{}` not found",
+            a.tenant_id
+        )));
+    }
+    let tenant_dir = store
+        .tenant_dir(&a.tenant_id)
+        .ok_or_else(|| JsonRpcError::internal("tenant store has no on-disk path"))?;
+    let markdown_dir = tenant_dir.join("markdown");
+    let buf = B64
+        .decode(a.tarball_b64.as_bytes())
+        .map_err(|e| JsonRpcError::invalid_params(format!("tarball_b64 is not base64: {e}")))?;
+    let bytes_imported = buf.len() as u64;
+    tokio::task::spawn_blocking(move || untar_gz_into(&buf, &markdown_dir))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("tenant_import join error: {e}")))?
+        .map_err(|e| JsonRpcError::internal(format!("tenant_import: {e}")))?;
+    to_value(TenantImportResponse { bytes_imported })
+}
+
+#[derive(Deserialize)]
+struct AttachExternalArgs {
+    #[serde(default)]
+    alias: String,
+    #[serde(default)]
+    source_url: String,
+}
+
+async fn tool_attach_external(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: AttachExternalArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("attach_external: {e}")))?;
+    let indexer = admin_indexer(state)?.clone();
+    // Reject an unsafe source before it reaches the ATTACH SQL.
+    // DuckDB has no parameter binding for ATTACH, so this is the
+    // injection boundary (the indexer re-checks defensively).
+    if !is_safe_attach_source(&a.source_url) {
+        return Err(JsonRpcError::invalid_params(
+            "source_url contains an unsafe character (quote, backslash, semicolon, \
+             or control char) or is empty"
+                .to_owned(),
+        ));
+    }
+    indexer
+        .attach_external(&a.alias, &a.source_url)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("attach_external: {e}")))?;
+    to_value(AttachExternalResponse { source_id: a.alias })
+}
+
+async fn tool_embedding_reload(state: &AppState) -> Result<Value, JsonRpcError> {
+    // The reloadable seam + the rebuild factory are wired together:
+    // without both there is nothing to reload.
+    let (reload, factory) = match (&state.embedder_reload, &state.embedder_factory) {
+        (Some(r), Some(f)) => (r, f),
+        _ => {
+            return Err(JsonRpcError::internal("no reloadable embedder configured"));
+        }
+    };
+    let (embedder, model_revision) = factory()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("embedding_reload: model load failed: {e}")))?;
+    reload.reload(embedder);
+    to_value(EmbeddingReloadResponse { model_revision })
+}
+
+async fn tool_rebuild(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: TenantIdArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("rebuild: {e}")))?;
+    if !a.tenant_id.is_empty() {
+        validate_tenant_id(&a.tenant_id)
+            .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+    }
+    let indexer = admin_indexer(state)?.clone();
+    // Capture the last (done, total) the progress callback reports.
+    // The MCP transport returns the terminal counts rather than a
+    // progress stream.
+    let last = Arc::new(std::sync::Mutex::new((0u64, 0u64)));
+    let sink = Arc::clone(&last);
+    indexer
+        .rebuild_with_progress(move |p| {
+            if let Ok(mut g) = sink.lock() {
+                *g = (p.done, p.total);
+            }
+        })
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("rebuild: {e}")))?;
+    let (done, total) = *last.lock().expect("rebuild progress lock");
+    to_value(RebuildProgress {
+        done,
+        total,
+        current_page: String::new(),
+    })
+}
+
+async fn tool_compact_lanes(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: TenantIdArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("compact_lanes: {e}")))?;
+    validate_tenant_id(&a.tenant_id).map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+    let backend = state
+        .crdt_backend
+        .as_ref()
+        .ok_or_else(|| JsonRpcError::internal("server has no crdt_backend wired"))?
+        .clone();
+    let pages = backend
+        .pages_with_snapshots()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("compact_lanes: list pages: {e}")))?;
+    let mut ops_compacted = 0u64;
+    let mut bytes_reclaimed = 0u64;
+    for page_id in pages {
+        let (ops, bytes) = backend
+            .compact_subsumed_ops(&page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("compact_lanes: page `{page_id}`: {e}")))?;
+        ops_compacted += ops;
+        bytes_reclaimed += bytes;
+    }
+    to_value(CompactProgress {
+        ops_compacted,
+        bytes_reclaimed,
+    })
 }
 
 // --- session tools (M4.2) --------------------------------------

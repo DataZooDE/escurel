@@ -45,6 +45,7 @@ escurel-obs = { path = "../escurel-obs" }
 escurel-proto = { path = "../escurel-proto" }
 escurel-quota = { path = "../escurel-quota" }
 escurel-storage = { path = "../escurel-storage" }
+escurel-types = { path = "../escurel-types" }
 flate2 = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

@@ -204,16 +204,17 @@ pub struct QuotaGetRequest {
     pub tenant_id: String,
 }
 
-/// Proto `QuotaGetResponse`. NB: the live MCP `admin_quota` tool emits
-/// `concurrent_sessions_in_use` rather than the proto's
-/// `concurrent_sessions`; this struct follows the proto field name —
-/// reconciling the admin-tool wire key is a later (P2) task.
+/// MCP `admin_quota` response. The live tool emits
+/// `concurrent_sessions_in_use` (the in-use occupancy, not the proto's
+/// `concurrent_sessions` cap), so the field serializes under that wire
+/// key to stay byte-compatible with the dispatcher.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct QuotaGetResponse {
     pub queries_remaining: u32,
     pub writes_remaining: u32,
     pub embeds_remaining: u32,
+    #[serde(rename = "concurrent_sessions_in_use")]
     pub concurrent_sessions: u32,
 }
 
@@ -282,15 +283,14 @@ pub struct AdminLaneBlobRequest {
     pub key: String,
 }
 
-/// Proto `AdminLaneBlobResponse`: `bytes`, `content_type`. NB: the
-/// live MCP `admin_lane_blob` tool emits the payload base64-encoded
-/// under the wire key `bytes_base64` (not raw `bytes`); this struct
-/// follows the proto field name with `data: Vec<u8>` and defers
-/// base64 (de)serialization to the consumer in a later task.
+/// MCP `admin_lane_blob` response. The live tool emits the payload as
+/// a base64 *string* under `bytes_base64`, plus `content_type` derived
+/// from the key extension. The struct mirrors that wire exactly —
+/// `bytes_base64` is the standard-alphabet base64 of the raw blob, and
+/// decoding it back to bytes is the consumer's job.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AdminLaneBlobResponse {
-    #[serde(rename = "bytes")]
-    pub data: Vec<u8>,
+    pub bytes_base64: String,
     pub content_type: String,
 }

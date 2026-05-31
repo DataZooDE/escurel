@@ -38,6 +38,7 @@ mod health;
 mod mcp;
 mod server;
 mod session;
+mod tenant_archive;
 mod webhook;
 mod ws;
 

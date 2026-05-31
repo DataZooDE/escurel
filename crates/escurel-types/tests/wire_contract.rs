@@ -275,13 +275,15 @@ fn chat_message_optional_metadata() {
 }
 
 #[test]
-fn admin_lane_blob_response_bytes_rename() {
-    // Proto field `bytes` ⇄ Rust `data`.
-    let wire = json!({ "bytes": [1, 2, 3], "content_type": "text/markdown" });
+fn admin_lane_blob_response_bytes_base64_wire() {
+    // The live MCP `admin_lane_blob` tool emits the payload as a
+    // base64 *string* under `bytes_base64` (not a raw byte array).
+    let wire = json!({ "bytes_base64": "AQID", "content_type": "text/markdown" });
     let resp: AdminLaneBlobResponse = serde_json::from_value(wire).unwrap();
-    assert_eq!(resp.data, vec![1, 2, 3]);
+    assert_eq!(resp.bytes_base64, "AQID");
     let back = serde_json::to_value(&resp).unwrap();
-    assert!(back.get("bytes").is_some());
+    assert_eq!(back["bytes_base64"], json!("AQID"));
+    assert!(back.get("bytes").is_none());
     assert!(back.get("data").is_none());
 }
 
@@ -503,7 +505,7 @@ fn roundtrip_admin() {
         }],
     });
     rt(AdminLaneBlobResponse {
-        data: vec![1, 2],
+        bytes_base64: "AQI=".to_owned(),
         content_type: "text/markdown".into(),
     });
     rt(DeleteChatHistoryResponse { deleted: 4 });
