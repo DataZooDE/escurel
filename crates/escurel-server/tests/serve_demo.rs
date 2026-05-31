@@ -32,7 +32,6 @@ async fn start(demo: &TempDir) -> EscurelProcess {
         fixtures: None,
         config_overrides: ConfigOverrides {
             demo_dir: Some(demo.path().to_path_buf()),
-            disable_grpc: true,
             disable_indexer: true,
             ..Default::default()
         },
@@ -134,7 +133,6 @@ async fn no_demo_dir_means_unknown_path_is_404() {
         auth: AuthMode::Disabled,
         fixtures: None,
         config_overrides: ConfigOverrides {
-            disable_grpc: true,
             disable_indexer: true,
             ..Default::default()
         },

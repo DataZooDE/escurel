@@ -31,7 +31,6 @@ async fn start_authed(quota: Option<Arc<QuotaManager>>) -> EscurelProcess {
         ),
         config_overrides: ConfigOverrides {
             quota,
-            disable_grpc: true,
             ..Default::default()
         },
     })

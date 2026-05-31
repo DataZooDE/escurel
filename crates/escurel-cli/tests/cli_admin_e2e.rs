@@ -67,8 +67,7 @@ async fn start() -> Harness {
     })
     .await;
     let grpc_addr = process
-        .grpc_endpoint()
-        .expect("grpc endpoint")
+        .base_url()
         .strip_prefix("http://")
         .unwrap()
         .to_owned();
@@ -177,14 +176,13 @@ async fn admin_audit_and_quota() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn admin_rebuild_streams_progress() {
+async fn admin_rebuild_reports_terminal_progress() {
     let h = start().await;
+    // The MCP transport is one-shot: rebuild returns the terminal
+    // `{done, total}` rather than a stream of progress chunks.
     let out = admin(&h, v(&["admin", "rebuild", "--tenant", TENANT])).await;
     let prog = json(&out);
-    let arr = prog["progress"].as_array().unwrap();
-    assert!(!arr.is_empty(), "rebuild should stream progress chunks");
-    let last = arr.last().unwrap();
-    assert_eq!(last["done"], last["total"]);
+    assert_eq!(prog["done"], prog["total"], "rebuild done == total: {prog}");
     h.process.shutdown().await;
 }
 
@@ -244,12 +242,15 @@ async fn admin_rejects_agent_token() {
     .await
     .unwrap();
     let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON");
+    // The admin tools live on the same `/mcp` endpoint; an agent-role
+    // token reaches the dispatcher and gets the JSON-RPC `-32001`
+    // ("admin role required for this tool") error, surfaced verbatim.
     assert!(
         err["error"]
             .as_str()
             .unwrap()
             .to_lowercase()
-            .contains("permission"),
+            .contains("admin role"),
         "got: {err}"
     );
     h.process.shutdown().await;

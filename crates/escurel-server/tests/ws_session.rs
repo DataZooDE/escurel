@@ -86,7 +86,6 @@ async fn start_authed(quota: Option<Arc<QuotaManager>>) -> Harness {
             quota,
             crdt_backend: Some(crdt_backend),
             disable_indexer: true,
-            disable_grpc: true,
             ..Default::default()
         },
     })

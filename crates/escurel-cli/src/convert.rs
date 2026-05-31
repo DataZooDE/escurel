@@ -17,13 +17,15 @@ pub fn opt(s: &str) -> Value {
     }
 }
 
-/// Empty → `null`; otherwise parse as JSON, falling back to the raw
-/// string if it isn't valid JSON.
-pub fn json_or_null(s: &str) -> Value {
-    if s.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.to_owned()))
+/// Normalise a JSON value for the CLI's contract: `null` / empty object
+/// / empty array collapse to `null`, everything else passes through. The
+/// wire types now carry real JSON values, not strings.
+pub fn json_or_null(v: &Value) -> Value {
+    match v {
+        Value::Null => Value::Null,
+        Value::Object(m) if m.is_empty() => Value::Null,
+        Value::Array(a) if a.is_empty() => Value::Null,
+        other => other.clone(),
     }
 }
 
@@ -47,6 +49,6 @@ pub fn event(e: Event) -> Value {
         "status": e.status,
         "title": e.title,
         "body": e.body,
-        "provenance": json_or_null(&e.provenance_json),
+        "provenance": json_or_null(&e.provenance),
     })
 }

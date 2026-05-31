@@ -1,6 +1,6 @@
 [package]
 name = "escurel-client"
-description = "Typed RPC client for the Escurel v1 surface, built on escurel-proto. Leaf crate — no escurel-server / DuckDB / candle in the dependency tree."
+description = "Typed MCP-over-HTTP client for the Escurel v1 surface."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -10,38 +10,21 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-escurel-proto = { path = "../escurel-proto" }
-# Trait-only crate providing the `Stream` trait the streaming RPCs
-# (`live_session`, `tenant_import`) are generic over. No runtime —
-# keeps the leaf-crate footprint tiny.
-futures-core = "0.3"
+base64 = "0.22"
+escurel-types = { path = "../escurel-types" }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 secrecy = "0.10"
+serde = "1"
+serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", default-features = false, features = ["rt"] }
-tonic = { version = "0.12", default-features = false, features = [
-    "codegen",
-    "prost",
-    "transport",
-] }
+tokio = { version = "1", default-features = false, features = ["macros"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
-# Admin e2e needs a real TenantStore + quota config to drive the admin
-# surface against a live gateway. These are dev-only — the published
-# crate stays a leaf (escurel-proto + tonic + secrecy).
-escurel-admin = { path = "../escurel-admin" }
-escurel-quota = { path = "../escurel-quota" }
 escurel-test-support = { path = "../escurel-test-support" }
-# Streaming e2e: build input streams (tokio_stream::iter) and drain
-# output streams (StreamExt).
-futures = "0.3"
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
-tokio-stream = "0.1"
-tonic = { version = "0.12", default-features = false, features = [
-    "codegen",
-    "prost",
-    "transport",
-] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
 
 [lints]
 workspace = true

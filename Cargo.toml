@@ -8,7 +8,6 @@ members = [
     "crates/escurel-embed",
     "crates/escurel-auth",
     "crates/escurel-quota",
-    "crates/escurel-proto",
     "crates/escurel-types",
     "crates/escurel-admin",
     "crates/escurel-server",

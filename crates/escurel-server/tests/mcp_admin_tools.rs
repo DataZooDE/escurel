@@ -53,7 +53,6 @@ async fn start() -> Harness {
         config_overrides: ConfigOverrides {
             tenant_store: Some(tenant_store),
             quota: Some(Arc::new(QuotaManager::new(QuotaConfig::defaults()))),
-            disable_grpc: true,
             ..Default::default()
         },
     })
@@ -367,7 +366,6 @@ async fn compact_lanes_returns_totals() {
         config_overrides: ConfigOverrides {
             crdt_backend: Some(backend),
             disable_indexer: true,
-            disable_grpc: true,
             ..Default::default()
         },
     })

@@ -40,7 +40,6 @@ async fn start(readiness: Arc<dyn ReadinessProbe>, version: &str) -> EscurelProc
         config_overrides: ConfigOverrides {
             gateway_version: Some(version.to_owned()),
             readiness: Some(readiness),
-            disable_grpc: true,
             disable_indexer: true,
             ..Default::default()
         },

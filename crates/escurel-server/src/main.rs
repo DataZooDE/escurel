@@ -3,7 +3,7 @@
 //! 12-factor entry point (CLAUDE.md principle 3): read the
 //! `ESCUREL_*` config surface from the environment (over an optional
 //! TOML base at `$ESCUREL_CONFIG`), build the real backends, bind the
-//! HTTP (`8080`) + gRPC (`8081`) listeners, and run until `SIGTERM` /
+//! HTTP (`8080`) listener, and run until `SIGTERM` /
 //! `SIGINT`. JSON structured logs go to stdout via
 //! `escurel_obs::init_telemetry` (installed inside `serve`).
 //!
@@ -37,7 +37,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(
         http = %handle.local_addr,
-        grpc = ?handle.grpc_addr,
         metrics = ?handle.metrics_addr,
         version = %config.version,
         env = %config.env,

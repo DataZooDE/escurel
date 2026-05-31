@@ -19,7 +19,6 @@ async fn metrics_counts_real_mcp_requests() {
         auth: AuthMode::Disabled,
         fixtures: None,
         config_overrides: ConfigOverrides {
-            disable_grpc: true,
             disable_indexer: true,
             ..Default::default()
         },
@@ -120,7 +119,6 @@ async fn per_tool_metrics_record_calls_and_latency() {
                 .done(),
         ),
         config_overrides: ConfigOverrides {
-            disable_grpc: true,
             ..Default::default()
         },
     })

@@ -1,21 +1,23 @@
 //! End-to-end tests for the `escurel-client` **admin** wrapper
-//! ([`AdminClient`]).
+//! ([`AdminClient`]) over HTTP (MCP).
 //!
-//! Real gateway via `escurel-test-support`, real tonic transport,
-//! real `OidcVerifier`, real tempdir-backed `FsTenantStore`, real
-//! `Indexer` with a real DuckDB file. No mocks at the boundary the
-//! test exercises (CLAUDE principle 2). Each test drives the
-//! production admin code path verbatim through the typed client an
-//! operator (CLI / dashboard) would use.
+//! Real gateway via `escurel-test-support`, real HTTP transport, real
+//! `OidcVerifier`, real tempdir-backed `FsTenantStore`, real `Indexer`
+//! with a real DuckDB file. No mocks at the boundary the test
+//! exercises (CLAUDE principle 2). Each test drives the production
+//! admin code path verbatim through the typed client an operator
+//! (CLI / dashboard) would use.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use escurel_admin::{FsTenantStore, TenantStore};
+use escurel_client::Error as ClientError;
 use escurel_client::{
     AdminClient, AppendMessageRequest, AuditRequest, Client, DeleteChatHistoryRequest,
-    HealthRequest, ListMessagesRequest, QuotaGetRequest, SecretString, TenantCreateRequest,
-    TenantDeleteRequest, TenantGetRequest, TenantListRequest, TenantSpec, TenantUpdateRequest,
+    HealthRequest, JSONRPC_ADMIN_REQUIRED, ListMessagesRequest, QuotaGetRequest, SecretString,
+    TenantCreateRequest, TenantDeleteRequest, TenantGetRequest, TenantListRequest, TenantSpec,
+    TenantUpdateRequest,
 };
 use escurel_quota::{QuotaConfig, QuotaManager};
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
@@ -39,7 +41,7 @@ struct Harness {
 }
 
 /// Spawn a gateway with a real tempdir-backed `FsTenantStore` so the
-/// tenant-CRUD + audit RPCs are fully wired.
+/// tenant-CRUD + audit tools are fully wired.
 async fn start_with_store() -> Harness {
     let tenants_dir = TempDir::new().unwrap();
     let tenants_root = tenants_dir.path().to_path_buf();
@@ -92,25 +94,22 @@ async fn start_with_quota() -> EscurelProcess {
 }
 
 async fn admin_client(p: &EscurelProcess) -> AdminClient {
-    let endpoint = p.grpc_endpoint().expect("grpc endpoint").to_owned();
     let token = p.mint_token(TENANT, Role::Admin);
-    AdminClient::connect(&endpoint, SecretString::from(token))
+    AdminClient::connect(p.base_url(), SecretString::from(token))
         .await
         .unwrap()
 }
 
 async fn agent_admin_client(p: &EscurelProcess) -> AdminClient {
-    let endpoint = p.grpc_endpoint().expect("grpc endpoint").to_owned();
     let token = p.mint_token(TENANT, Role::Agent);
-    AdminClient::connect(&endpoint, SecretString::from(token))
+    AdminClient::connect(p.base_url(), SecretString::from(token))
         .await
         .unwrap()
 }
 
 async fn agent_client(p: &EscurelProcess) -> Client {
-    let endpoint = p.grpc_endpoint().expect("grpc endpoint").to_owned();
     let token = p.mint_token(TENANT, Role::Agent);
-    Client::connect(&endpoint, SecretString::from(token))
+    Client::connect(p.base_url(), SecretString::from(token))
         .await
         .unwrap()
 }
@@ -239,10 +238,8 @@ async fn delete_chat_history_erases_a_group() {
                 role: "user".to_owned(),
                 content: content.to_owned(),
                 author: "alice".to_owned(),
-                ts: String::new(),
-                metadata_json: String::new(),
-                msg_id: String::new(),
                 embed: false,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -262,11 +259,8 @@ async fn delete_chat_history_erases_a_group() {
     let after = agent
         .list_messages(ListMessagesRequest {
             chat_group_id: "room-gdpr".to_owned(),
-            since: String::new(),
-            until: String::new(),
-            limit: 0,
-            cursor: String::new(),
             direction: "asc".to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -278,7 +272,7 @@ async fn delete_chat_history_erases_a_group() {
 }
 
 #[tokio::test]
-async fn agent_role_is_rejected_on_admin_rpc() {
+async fn agent_role_is_rejected_on_admin_tool() {
     let h = start_with_store().await;
     let client = agent_admin_client(&h.process).await;
     let err = client
@@ -286,14 +280,13 @@ async fn agent_role_is_rejected_on_admin_rpc() {
         .await
         .unwrap_err();
     match err {
-        escurel_client::Error::Rpc(status) => {
+        ClientError::JsonRpc { code, .. } => {
             assert_eq!(
-                status.code(),
-                tonic::Code::PermissionDenied,
-                "status: {status:?}"
+                code, JSONRPC_ADMIN_REQUIRED,
+                "agent role must be denied with the admin-required JSON-RPC code"
             );
         }
-        other => panic!("expected Error::Rpc(PermissionDenied), got {other:?}"),
+        other => panic!("expected Error::JsonRpc(admin required), got {other:?}"),
     }
     h.process.shutdown().await;
 }

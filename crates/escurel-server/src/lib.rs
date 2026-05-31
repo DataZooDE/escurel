@@ -2,11 +2,11 @@
 //!
 //! The gateway ships the substrate-aligned health surface —
 //! `/healthz`, `/readyz`, `/version`, `/metrics` — the
-//! MCP-over-HTTP dispatcher on `POST /mcp`, the optional gRPC
-//! mirror on `:8081`, and the WebSocket scaffolding on `GET /ws`.
+//! MCP-over-HTTP dispatcher on `POST /mcp`, and the WebSocket
+//! scaffolding on `GET /ws`.
 //! The WS endpoint authenticates the upgrade with the same
-//! [`OidcVerifier`][escurel_auth::OidcVerifier] used by HTTP and
-//! gRPC, occupies a session slot on the per-tenant
+//! [`OidcVerifier`][escurel_auth::OidcVerifier] used by HTTP,
+//! occupies a session slot on the per-tenant
 //! [`QuotaManager`][escurel_quota::QuotaManager], and dispatches
 //! the presence + search-subscribe frames defined in
 //! `docs/spec/protocol.md §WebSocket framing`. The live CRDT
@@ -33,7 +33,6 @@
 
 pub mod config;
 mod config_probe;
-mod grpc;
 mod health;
 mod mcp;
 mod server;

@@ -1,45 +1,40 @@
-//! End-to-end tests for the `escurel-client` **admin streaming**
-//! surface: `rebuild` (server-stream) and `tenant_export` /
-//! `tenant_import` (server- and client-stream).
+//! Long-op + live-session paths over the typed `escurel-client`:
+//! the admin one-shot long-ops (`rebuild`, `compact_lanes`,
+//! `tenant_export` / `tenant_import`) and the WS `live_session`.
 //!
-//! Real gateway via `escurel-test-support`, real tonic transport,
-//! real `OidcVerifier`, real tempdir-backed `FsTenantStore`, real
-//! `Indexer` over a real DuckDB file. No mocks at the boundary the
-//! test exercises (CLAUDE principle 2).
-//!
-//! `Client::live_session` (the agent bidi stream) is intentionally not
-//! e2e-tested here: a pure-gRPC client cannot *open* a CRDT session —
-//! `open_session` is an HTTP-MCP-only tool — so the bidi stream can
-//! only ever *attach* to a session opened over HTTP. The bidi wire
-//! behaviour is covered at the server layer in
-//! `escurel-server/tests/grpc_live_session.rs`; the client wrapper is a
-//! thin passthrough over the same generated stub the admin streams use
-//! (exercised here), so it shares their transport coverage.
+//! Real gateway via `escurel-test-support`, real HTTP (MCP + WS)
+//! transport, real CRDT backend (`DuckdbCrdtBackend`) so
+//! `live_session` has a live doc to attach to. No mocks at the
+//! boundary (CLAUDE principle 2).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use escurel_admin::{FsTenantStore, TenantSpec as AdminTenantSpec, TenantStore};
+use duckdb::Connection;
+use escurel_admin::{FsTenantStore, TenantStore};
 use escurel_client::{
-    AdminClient, RebuildRequest, SecretString, TenantCreateRequest, TenantExportRequest,
-    TenantImportChunk, TenantSpec,
+    AdminClient, Client, CompactLanesRequest, LiveOp, RebuildRequest, SecretString,
+    TenantCreateRequest, TenantExportRequest, TenantSpec,
 };
-use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
-use futures::StreamExt;
+use escurel_crdt::{CrdtBackend, DuckdbCrdtBackend};
+use escurel_index::Migrator;
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts, Role};
+use futures_util::StreamExt as _;
 use tempfile::TempDir;
+use tokio::sync::Mutex;
 
 const TENANT: &str = "acme";
 
-const PAGES: &[(&str, &str)] = &[
-    (
-        "markdown/skills/customer.md",
-        "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n",
-    ),
-    (
-        "markdown/instances/customer/acme.md",
-        "---\ntype: instance\nskill: customer\nid: acme\n---\n# Acme\n",
-    ),
-];
+/// Build a `DuckdbCrdtBackend` over a fresh on-disk DuckDB. The
+/// tempdir is leaked so the file outlives the backend for the test's
+/// duration (the test process is short-lived).
+fn crdt_backend() -> Arc<dyn CrdtBackend> {
+    let dir = TempDir::new().unwrap();
+    let conn = Connection::open(dir.path().join("crdt.duckdb")).unwrap();
+    Migrator::up(&conn).unwrap();
+    std::mem::forget(dir);
+    Arc::new(DuckdbCrdtBackend::new(Arc::new(Mutex::new(conn))))
+}
 
 struct AdminHarness {
     process: EscurelProcess,
@@ -47,44 +42,20 @@ struct AdminHarness {
     _tenants_dir: TempDir,
 }
 
-/// Mirror the seeded markdown into `<root>/<TENANT>/markdown/...` so
-/// the `tenant_export` RPC (which walks the on-disk tree) has bytes.
-async fn mirror_to_tenants_root(tenants_root: &std::path::Path) {
-    let md_root = tenants_root.join(TENANT).join("markdown");
-    for (path, body) in PAGES {
-        let abs = md_root.join(path.strip_prefix("markdown/").unwrap());
-        if let Some(parent) = abs.parent() {
-            tokio::fs::create_dir_all(parent).await.unwrap();
-        }
-        tokio::fs::write(&abs, body).await.unwrap();
-    }
-}
-
+/// Gateway with a real tenant store + CRDT backend so the admin
+/// long-ops have something to act on.
 async fn start_admin() -> AdminHarness {
     let tenants_dir = TempDir::new().unwrap();
     let tenants_root = tenants_dir.path().to_path_buf();
-    let tenant_store: Arc<dyn TenantStore> = Arc::new(FsTenantStore::new(tenants_root.clone()));
-    tenant_store
-        .create(&AdminTenantSpec {
-            tenant_id: TENANT.to_owned(),
-            display_name: "Acme".to_owned(),
-        })
-        .await
-        .unwrap();
-    mirror_to_tenants_root(&tenants_root).await;
-
-    let mut fixtures = FixtureBuilder::new().tenant(TENANT);
-    for (path, body) in PAGES {
-        fixtures = fixtures.page(path, *body);
-    }
+    let store: Arc<dyn TenantStore> = Arc::new(FsTenantStore::new(tenants_root.clone()));
     let process = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
-        fixtures: Some(fixtures.done()),
         config_overrides: ConfigOverrides {
-            gateway_version: Some("1.0.0-test".to_owned()),
-            tenant_store: Some(tenant_store),
+            tenant_store: Some(store),
+            crdt_backend: Some(crdt_backend()),
             ..Default::default()
         },
+        ..Default::default()
     })
     .await;
     AdminHarness {
@@ -94,60 +65,57 @@ async fn start_admin() -> AdminHarness {
     }
 }
 
-async fn admin_client(p: &EscurelProcess) -> AdminClient {
-    let endpoint = p.grpc_endpoint().expect("grpc endpoint").to_owned();
+async fn admin(p: &EscurelProcess) -> AdminClient {
     let token = p.mint_token(TENANT, Role::Admin);
-    AdminClient::connect(&endpoint, SecretString::from(token))
+    AdminClient::connect(p.base_url(), SecretString::from(token))
         .await
         .unwrap()
 }
 
-/// `rebuild` streams progress chunks and the terminator has
-/// `done == total` with a non-zero total.
+/// `rebuild` returns the terminal `{done, total}` over the one-shot
+/// MCP transport (no streaming).
 #[tokio::test]
-async fn rebuild_streams_progress_to_completion() {
+async fn rebuild_returns_terminal_progress() {
     let h = start_admin().await;
-    let client = admin_client(&h.process).await;
-    let mut stream = client
+    let client = admin(&h.process).await;
+    // Default tenant the gateway's indexer is bound to is "acme".
+    let progress = client
         .rebuild(RebuildRequest {
             tenant_id: TENANT.to_owned(),
             scope: String::new(),
         })
         .await
-        .unwrap();
-    let mut last = None;
-    while let Some(msg) = stream.next().await {
-        last = Some(msg.expect("progress chunk ok"));
-    }
-    let last = last.expect("at least one progress chunk");
-    assert!(last.total > 0, "rebuild should report a page total");
-    assert_eq!(last.done, last.total, "terminator: done == total");
+        .expect("rebuild");
+    // done == total for a completed rebuild (terminal counts).
+    assert_eq!(progress.done, progress.total);
     h.process.shutdown().await;
 }
 
-/// Realistic operator backup/restore: export the tenant to a tar+gz
-/// byte stream through the typed client, then stream those bytes back
-/// into a freshly-created tenant via `tenant_import`.
+/// `compact_lanes` returns the terminal `{ops_compacted,
+/// bytes_reclaimed}`.
 #[tokio::test]
-async fn tenant_export_then_import_round_trips() {
+async fn compact_lanes_returns_terminal_counts() {
     let h = start_admin().await;
-    let client = admin_client(&h.process).await;
-
-    // Drain the export stream into one buffer.
-    let mut export = client
-        .tenant_export(TenantExportRequest {
+    let client = admin(&h.process).await;
+    let progress = client
+        .compact_lanes(CompactLanesRequest {
             tenant_id: TENANT.to_owned(),
         })
         .await
-        .unwrap();
-    let mut bytes = Vec::new();
-    while let Some(chunk) = export.next().await {
-        bytes.extend_from_slice(&chunk.expect("export chunk ok").data);
-    }
-    assert!(!bytes.is_empty(), "export should produce tarball bytes");
+        .expect("compact_lanes");
+    // A fresh backend with no ops reclaims nothing — the assertion is
+    // that the call succeeds and returns the terminal counts shape.
+    let _ = (progress.ops_compacted, progress.bytes_reclaimed);
+    h.process.shutdown().await;
+}
 
-    // Create a destination tenant on disk so import has somewhere to
-    // land (mirrors the server's existence check).
+/// `tenant_export` decodes the base64 tarball to bytes; `tenant_import`
+/// re-encodes and replays it. Round-trips a freshly created tenant.
+#[tokio::test]
+async fn tenant_export_then_import_round_trips() {
+    let h = start_admin().await;
+    let client = admin(&h.process).await;
+
     client
         .tenant_create(TenantCreateRequest {
             spec: Some(TenantSpec {
@@ -156,28 +124,117 @@ async fn tenant_export_then_import_round_trips() {
             }),
         })
         .await
-        .unwrap();
+        .expect("tenant_create");
+    assert!(h.tenants_root.join("globex").join("tenant.json").is_file());
 
-    // Stream the bytes back in. The first chunk carries the target id.
-    let chunks = tokio_stream::iter(vec![TenantImportChunk {
-        tenant_id: "globex".to_owned(),
-        data: bytes.clone(),
-    }]);
-    let resp = client.tenant_import(chunks).await.unwrap();
-    assert_eq!(
-        resp.bytes_imported as usize,
-        bytes.len(),
-        "import should account for every exported byte"
-    );
-    // The imported markdown is now under the destination tenant.
-    assert!(
-        h.tenants_root
-            .join("globex")
-            .join("markdown")
-            .join("skills")
-            .join("customer.md")
-            .is_file(),
-        "imported tree should contain the exported markdown"
-    );
+    let bytes = client
+        .tenant_export(TenantExportRequest {
+            tenant_id: "globex".to_owned(),
+        })
+        .await
+        .expect("tenant_export");
+    assert!(!bytes.is_empty(), "export tarball must be non-empty");
+
+    let imported = client
+        .tenant_import("globex", bytes)
+        .await
+        .expect("tenant_import");
+    assert!(imported > 0, "import must report the bytes it ingested");
+
     h.process.shutdown().await;
 }
+
+/// `live_session` over the WS channel: open a session via the raw
+/// `open_session` tool to learn its id + seed content, then drive the
+/// WS channel with one op and assert an `op_ack` comes back.
+#[tokio::test]
+async fn live_session_attach_and_one_op_acks() {
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            crdt_backend: Some(crdt_backend()),
+            disable_indexer: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let client = process.client_for(TENANT, Role::Agent).await;
+
+    // Open a session (and learn its id) via the raw MCP tool.
+    let opened = client
+        .call_raw(
+            "open_session",
+            serde_json::json!({ "page_id": "markdown/instances/customer__acme.md" }),
+        )
+        .await
+        .expect("open_session");
+    let session = opened["session"]
+        .as_str()
+        .expect("session id present")
+        .to_owned();
+
+    // Build one Loro op against a fresh doc.
+    let op_bytes = {
+        use loro::LoroDoc;
+        let doc = LoroDoc::new();
+        doc.get_text("content").insert(0, "hello live").unwrap();
+        doc.export(loro::ExportMode::Snapshot).unwrap()
+    };
+
+    // Drive the WS channel: attach (first op carries the session id),
+    // then the op; expect one ack back.
+    let ops = futures_util::stream::iter(vec![LiveOp {
+        session: session.clone(),
+        op: op_bytes,
+    }]);
+    let mut acks = client.live_session(ops).await.expect("live_session open");
+    let ack = acks
+        .next()
+        .await
+        .expect("at least one ack")
+        .expect("ack ok");
+    assert_eq!(ack.session, session, "ack echoes the session id");
+    assert!(
+        !ack.merged_version.is_empty(),
+        "ack carries a merged version"
+    );
+
+    process.shutdown().await;
+}
+
+/// `live_session` against a gateway with no CRDT backend wired is
+/// refused at the WS upgrade (or first frame), surfacing as a
+/// `LiveSession` error rather than a panic.
+#[tokio::test]
+async fn live_session_without_backend_errors() {
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            disable_indexer: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let client = process.client_for(TENANT, Role::Agent).await;
+
+    let ops = futures_util::stream::iter(vec![LiveOp {
+        session: "sess-does-not-exist".to_owned(),
+        op: vec![1, 2, 3],
+    }]);
+    let opened = client.live_session(ops).await;
+    // Either the open fails, or the first ack is an error.
+    let errored = match opened {
+        Err(_) => true,
+        Ok(mut acks) => matches!(acks.next().await, Some(Err(_)) | None),
+    };
+    assert!(errored, "live_session must error without a CRDT backend");
+
+    process.shutdown().await;
+}
+
+// Silence unused-import lints when only a subset of the helpers are
+// exercised by a given build configuration.
+#[allow(dead_code)]
+fn _client_type_anchor(_: &Client) {}

@@ -46,7 +46,6 @@ fn from_env_builds_fs_config_with_defaults() {
     assert!(cfg.s3.is_none());
     assert_eq!(cfg.data_dir.to_str().unwrap(), "/data");
     assert_eq!(cfg.listen_http, "0.0.0.0:8080");
-    assert_eq!(cfg.listen_grpc.as_deref(), Some("0.0.0.0:8081"));
     assert_eq!(cfg.tenant, "default");
     assert_eq!(cfg.version, "0.0.0-dev");
     assert_eq!(cfg.embedding_provider, EmbeddingProvider::Zero);
@@ -122,7 +121,6 @@ async fn binary_boots_and_serves_healthz() {
         // Random loopback port; the binary prints the resolved addr.
         .env("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0")
         // Disable the gRPC mirror to keep the boot lean.
-        .env("ESCUREL_SERVER_LISTEN_GRPC", "")
         // Random loopback metrics port so parallel test binaries
         // don't fight over the default :9090.
         .env("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0")
@@ -167,7 +165,6 @@ async fn degraded_embedder_start_boots_with_readyz_false() {
         ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
         ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
         ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
-        ("ESCUREL_SERVER_LISTEN_GRPC", ""),
         ("ESCUREL_EMBEDDING_PROVIDER", "gemini"),
     ])))
     .unwrap();
@@ -208,7 +205,6 @@ async fn build_rejects_path_traversal_tenant() {
         ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
         ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
         ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
-        ("ESCUREL_SERVER_LISTEN_GRPC", ""),
         ("ESCUREL_TENANT", "../escape"),
     ])))
     .unwrap();
@@ -249,7 +245,6 @@ async fn fresh_duckdb_rebuilds_index_from_surviving_markdown() {
         ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
         ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
         ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
-        ("ESCUREL_SERVER_LISTEN_GRPC", ""),
     ])))
     .unwrap();
     let booted = cfg.build().await.expect("server boots");

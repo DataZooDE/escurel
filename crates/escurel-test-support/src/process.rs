@@ -68,11 +68,6 @@ pub struct ConfigOverrides {
     /// HNSW autoload gotcha never bites (see
     /// `docs/notes/discovered/2026-05-24-duckdb-second-connection-stale.md`).
     pub disable_indexer: bool,
-    /// Do not bind a gRPC listener. The MCP-over-HTTP path is
-    /// still available. Tests that exercise only the WebSocket or
-    /// HTTP surfaces set this to true to skip the gRPC client
-    /// connect dance at `spawn` time.
-    pub disable_grpc: bool,
     /// Install a hot-swappable embedder seam wired to the
     /// `embedding_reload` admin RPC. Paired with `embedder_factory`
     /// — both must be `Some` for the RPC to do anything other than
@@ -104,7 +99,6 @@ impl std::fmt::Debug for ConfigOverrides {
             .field("crdt_backend_overridden", &self.crdt_backend.is_some())
             .field("indexer_overridden", &self.indexer.is_some())
             .field("disable_indexer", &self.disable_indexer)
-            .field("disable_grpc", &self.disable_grpc)
             .field(
                 "embedder_reload_overridden",
                 &self.embedder_reload.is_some(),
@@ -127,7 +121,7 @@ pub struct Opts {
     pub config_overrides: ConfigOverrides,
 }
 
-/// Running Escurel gateway, ready to accept HTTP + gRPC traffic.
+/// Running Escurel gateway, ready to accept HTTP (MCP + WS) traffic.
 ///
 /// Carries owned tempdirs + (optionally) the mock OIDC issuer so
 /// the process is fully self-contained: when the `EscurelProcess`
@@ -135,24 +129,17 @@ pub struct Opts {
 /// and the on-disk state all go away together.
 pub struct EscurelProcess {
     base_url: String,
-    grpc_endpoint: Option<String>,
     // Full `http://<addr>/metrics` URL for the dedicated metrics
     // listener (a random port in tests). `None` only when metrics
     // were disabled.
     metrics_url: Option<String>,
     handle: Option<ServerHandle>,
     issuer: Option<TestIssuer>,
-    // Pre-connected gRPC client for the default tenant ("acme").
-    // We connect once at spawn time so `client()` can stay sync
-    // (as the dx.md spec mandates) without needing
-    // `block_in_place`, which requires the multi-threaded runtime
-    // and would force every downstream test to spell
-    // `#[tokio::test(flavor = "multi_thread")]`.
-    //
-    // `None` when `ConfigOverrides::disable_grpc` is set — the
-    // sync `client()` accessor panics in that case so the test
-    // gets an obvious error rather than a quiet connect failure.
-    default_client: Option<Client>,
+    // Pre-built MCP-over-HTTP client for the default tenant ("acme").
+    // `Client::connect` is cheap (no network round-trip — the first
+    // request is what dials), so this is just a typed handle carrying
+    // the base URL + bearer; `client()` hands out clones of it.
+    default_client: Client,
     // Shared handle on the same indexer the gateway uses, for
     // fixture seeding without paying the auth/quota gate. The
     // gateway's `update_page` tool calls
@@ -276,14 +263,8 @@ impl EscurelProcess {
             .readiness
             .clone()
             .unwrap_or_else(|| Arc::new(AlwaysReady) as Arc<dyn ReadinessProbe>);
-        let grpc_listen = if overrides.disable_grpc {
-            None
-        } else {
-            Some("127.0.0.1:0".to_owned())
-        };
         let cfg = ServerConfig {
             listen: "127.0.0.1:0".to_owned(),
-            grpc_listen,
             version,
             readiness,
             indexer: indexer.clone(),
@@ -303,33 +284,24 @@ impl EscurelProcess {
             .await
             .expect("escurel-test-support: serve() failed");
         let base_url = format!("http://{}", handle.local_addr);
-        let grpc_endpoint = handle.grpc_addr.map(|addr| format!("http://{addr}"));
         let metrics_url = handle
             .metrics_addr
             .map(|addr| format!("http://{addr}/metrics"));
 
-        // Connect the default-tenant client once when gRPC is
-        // bound. Sync `client()` calls hand out clones of this
-        // rather than re-connecting, so the surface stays sync on
-        // the single-thread runtime most `#[tokio::test]`s use.
-        let default_client = match &grpc_endpoint {
-            Some(endpoint) => {
-                let default_token = match &issuer {
-                    Some(i) => i.mint("acme", Role::Agent),
-                    None => "test-disabled".to_owned(),
-                };
-                Some(
-                    Client::connect(endpoint, SecretString::from(default_token))
-                        .await
-                        .expect("escurel-test-support: Client::connect default tenant"),
-                )
-            }
-            None => None,
+        // Build the default-tenant MCP-over-HTTP client. `connect` is
+        // cheap (no network), so `client()` hands out clones of this
+        // rather than re-connecting — the surface stays sync, matching
+        // `docs/spec/dx.md` §"Test-process façade".
+        let default_token = match &issuer {
+            Some(i) => i.mint("acme", Role::Agent),
+            None => String::new(),
         };
+        let default_client = Client::connect(&base_url, SecretString::from(default_token))
+            .await
+            .expect("escurel-test-support: Client::connect default tenant");
 
         let mut process = Self {
             base_url,
-            grpc_endpoint,
             metrics_url,
             handle: Some(handle),
             issuer,
@@ -390,20 +362,6 @@ impl EscurelProcess {
         format!("{scheme}://{trimmed}/ws")
     }
 
-    /// `http://<addr>` — the gRPC endpoint, when a gRPC listener
-    /// is bound. Returns `None` if `ConfigOverrides::disable_grpc`
-    /// was set (the listener was not configured).
-    ///
-    /// Advisory escape hatch outside the spec's committed surface:
-    /// tests that need a raw `tonic::transport::Channel` for the
-    /// admin client or a custom interceptor use this rather than
-    /// `client()`. The committed `client()` covers the agent
-    /// gRPC surface only.
-    #[must_use]
-    pub fn grpc_endpoint(&self) -> Option<&str> {
-        self.grpc_endpoint.as_deref()
-    }
-
     /// Mint a fresh bearer token for `tenant` with `role`. Only
     /// valid when [`AuthMode::TestIssuer`] is selected — other
     /// modes panic, because the caller has no business asking the
@@ -423,49 +381,34 @@ impl EscurelProcess {
         issuer.mint(tenant, role)
     }
 
-    /// Typed gRPC client targeting this process's gRPC listener,
-    /// pre-loaded with a bearer token minted for the default
-    /// `"acme"` tenant. Cheap clone of an already-connected
-    /// channel — no `await` here, matching the sync signature in
+    /// Typed MCP-over-HTTP client targeting this process's HTTP
+    /// listener, pre-loaded with a bearer token minted for the default
+    /// `"acme"` tenant. Cheap clone of an already-built client — no
+    /// `await` here, matching the sync signature in
     /// `docs/spec/dx.md` §"Test-process façade".
     ///
     /// Tests that need a client for a *different* tenant call
     /// [`Self::client_for`].
-    ///
-    /// # Panics
-    ///
-    /// Panics when the process was spawned with
-    /// `ConfigOverrides::disable_grpc` — no client is connected
-    /// to hand out a clone of.
     #[must_use]
     pub fn client(&self) -> Client {
-        self.default_client
-            .clone()
-            .expect("client() requires a bound gRPC listener; spawned with disable_grpc=true")
+        self.default_client.clone()
     }
 
-    /// Typed gRPC client minting a fresh bearer for an arbitrary
-    /// tenant + role. This *is* async because it has to open a
-    /// new tonic channel — the sync `client()` path covers the
-    /// common case.
+    /// Typed MCP-over-HTTP client minting a fresh bearer for an
+    /// arbitrary tenant + role.
     ///
     /// # Panics
     ///
-    /// Panics when the process was spawned with
-    /// `AuthMode::Disabled` and the caller asks for a per-tenant
-    /// token — there is no issuer to mint one. Also panics when
-    /// no gRPC listener is bound (`disable_grpc=true`).
+    /// Panics when the process was spawned with `AuthMode::Disabled`
+    /// and the caller asks for a per-tenant token — there is no issuer
+    /// to mint one.
     pub async fn client_for(&self, tenant: &str, role: Role) -> Client {
         let token = self
             .issuer
             .as_ref()
             .expect("client_for requires AuthMode::TestIssuer")
             .mint(tenant, role);
-        let endpoint = self
-            .grpc_endpoint
-            .as_deref()
-            .expect("client_for requires a bound gRPC listener");
-        Client::connect(endpoint, SecretString::from(token))
+        Client::connect(&self.base_url, SecretString::from(token))
             .await
             .expect("Client::connect")
     }

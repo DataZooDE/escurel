@@ -1,7 +1,6 @@
-//! axum HTTP gateway + tonic gRPC mirror. Both transports share
-//! the same `AppState` (indexer + verifier + quota) so the auth
-//! and quota policies enforced on `POST /mcp` are mirrored 1:1 by
-//! the gRPC interceptors.
+//! axum HTTP gateway. The `AppState` (indexer + verifier + quota)
+//! backs the MCP-over-HTTP dispatcher on `POST /mcp` and the
+//! WebSocket live-session channel on `GET /ws`.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -19,8 +18,6 @@ use escurel_crdt::CrdtBackend;
 use escurel_embed::{Embedder, ReloadableEmbedder};
 use escurel_index::Indexer;
 use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
-use escurel_proto::v1::escurel_admin_server::EscurelAdminServer;
-use escurel_proto::v1::escurel_server::EscurelServer;
 use escurel_quota::QuotaManager;
 use serde_json::json;
 use thiserror::Error;
@@ -31,7 +28,6 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
-use crate::grpc::{EscurelAdminGrpc, EscurelGrpc};
 use crate::health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 use crate::mcp::mcp;
 use crate::session::SessionManager;
@@ -44,7 +40,7 @@ use crate::ws::ws_upgrade;
 /// seam and `revision` is returned to the caller; on `Err` the RPC
 /// returns `Status::internal` and the server stays degraded.
 ///
-/// The factory owns (captures) the embedding config — the gRPC layer
+/// The factory owns (captures) the embedding config — the handler
 /// never sees the original [`EscurelConfig`](crate::EscurelConfig),
 /// keeping the handler thin and the config out of `AppState`. The
 /// `revision` is the model id / path (or any short label the binary
@@ -63,10 +59,6 @@ pub struct ServerConfig {
     /// HTTP listener — `0.0.0.0:8080` in production; tests pass
     /// `127.0.0.1:0` to let the OS pick a free port.
     pub listen: String,
-    /// gRPC listener — `0.0.0.0:8081` in production; `None`
-    /// disables the gRPC mirror entirely (useful for HTTP-only or
-    /// health-only deployments). Tests pass `Some("127.0.0.1:0")`.
-    pub grpc_listen: Option<String>,
     /// Returned as the body of `GET /version`. Comes from `VERSION`
     /// env var in production; tests usually pass a literal.
     pub version: String,
@@ -88,13 +80,13 @@ pub struct ServerConfig {
     /// Backing store for the admin tenant-CRUD RPCs. `None`
     /// means every tenant CRUD RPC returns
     /// `Status::failed_precondition` — useful for health-only
-    /// deployments and for the M3 grpc_admin stubs test (which
-    /// keeps proving the role-gate without exercising the new
+    /// deployments and for the admin-tenant tests (which keep
+    /// proving the role-gate without exercising the new
     /// implementation surface).
     pub tenant_store: Option<Arc<dyn TenantStore>>,
     /// Live-CRDT backend powering the `open_session` / `apply_op`
-    /// / `close_session` MCP tools (and, later, the WS / gRPC bidi
-    /// live channels). `None` disables live mode — the session
+    /// / `close_session` MCP tools (and the WS live channel).
+    /// `None` disables live mode — the session
     /// tools return a JSON-RPC `-32603 internal` error with
     /// `"live CRDT mode not enabled on this server"`.
     pub crdt_backend: Option<Arc<dyn CrdtBackend>>,
@@ -135,7 +127,6 @@ impl std::fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerConfig")
             .field("listen", &self.listen)
-            .field("grpc_listen", &self.grpc_listen)
             .field("version", &self.version)
             .finish_non_exhaustive()
     }
@@ -143,12 +134,11 @@ impl std::fmt::Debug for ServerConfig {
 
 impl ServerConfig {
     /// Minimal config for a local dev / test run: HTTP on a random
-    /// port, gRPC disabled, `version = "0.0.0-dev"`, `AlwaysReady`.
+    /// port, `version = "0.0.0-dev"`, `AlwaysReady`.
     #[must_use]
     pub fn test_defaults() -> Self {
         Self {
             listen: "127.0.0.1:0".to_owned(),
-            grpc_listen: None,
             version: "0.0.0-dev".to_owned(),
             readiness: Arc::new(AlwaysReady),
             indexer: None,
@@ -181,16 +171,12 @@ pub enum ServerError {
 /// shutdown via [`ServerHandle::shutdown`].
 pub struct ServerHandle {
     pub local_addr: SocketAddr,
-    /// Address of the gRPC listener, when configured.
-    pub grpc_addr: Option<SocketAddr>,
     /// Address of the dedicated Prometheus `/metrics` listener, when
     /// configured.
     pub metrics_addr: Option<SocketAddr>,
     shutdown_tx: Option<oneshot::Sender<()>>,
-    grpc_shutdown_tx: Option<oneshot::Sender<()>>,
     metrics_shutdown_tx: Option<oneshot::Sender<()>>,
     join: JoinHandle<()>,
-    grpc_join: Option<JoinHandle<()>>,
     metrics_join: Option<JoinHandle<()>>,
     /// Telemetry guard. `Some` when this `serve()` call was the
     /// one that installed the global subscriber; `None` when a
@@ -204,7 +190,6 @@ impl std::fmt::Debug for ServerHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerHandle")
             .field("local_addr", &self.local_addr)
-            .field("grpc_addr", &self.grpc_addr)
             .finish_non_exhaustive()
     }
 }
@@ -217,16 +202,10 @@ impl ServerHandle {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
-        if let Some(tx) = self.grpc_shutdown_tx.take() {
-            let _ = tx.send(());
-        }
         if let Some(tx) = self.metrics_shutdown_tx.take() {
             let _ = tx.send(());
         }
         let _ = self.join.await;
-        if let Some(j) = self.grpc_join.take() {
-            let _ = j.await;
-        }
         if let Some(j) = self.metrics_join.take() {
             let _ = j.await;
         }
@@ -343,15 +322,6 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         let _ = serve.await;
     });
 
-    // gRPC mirror (optional). Same AppState — same auth/quota.
-    let (grpc_addr, grpc_shutdown_tx, grpc_join) = match config.grpc_listen.as_ref() {
-        Some(addr) => {
-            let (a, tx, j) = spawn_grpc(addr, state.clone()).await?;
-            (Some(a), Some(tx), Some(j))
-        }
-        None => (None, None, None),
-    };
-
     // Dedicated Prometheus `/metrics` listener (optional). Served on
     // its own port — substrate scrapes it over the tailnet — so the
     // public HTTP app never exposes `/metrics`. Same AppState → same
@@ -366,13 +336,10 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
 
     Ok(ServerHandle {
         local_addr,
-        grpc_addr,
         metrics_addr,
         shutdown_tx: Some(tx),
-        grpc_shutdown_tx,
         metrics_shutdown_tx,
         join,
-        grpc_join,
         metrics_join,
         _telemetry: telemetry_guard,
     })
@@ -422,40 +389,6 @@ fn install_telemetry(config: &ServerConfig) -> Option<escurel_obs::TelemetryGuar
         json_logs: true,
     };
     init_telemetry(cfg).ok()
-}
-
-async fn spawn_grpc(
-    addr: &str,
-    state: AppState,
-) -> Result<(SocketAddr, oneshot::Sender<()>, JoinHandle<()>), ServerError> {
-    let listener = TcpListener::bind(addr)
-        .await
-        .map_err(|e| ServerError::Bind {
-            addr: addr.to_owned(),
-            source: e,
-        })?;
-    let local_addr = listener.local_addr().map_err(ServerError::Serve)?;
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-
-    let agent_svc = EscurelServer::new(EscurelGrpc::new(state.clone()));
-    let admin_svc = EscurelAdminServer::new(EscurelAdminGrpc::new(state));
-
-    let (tx, rx) = oneshot::channel();
-    let join = tokio::spawn(async move {
-        let _ = tonic::transport::Server::builder()
-            // Open a span per RPC. tonic 0.12 honours the Tower
-            // `trace` layer through `Server::layer`. Records emit
-            // a structured `http.request` span with method + uri
-            // and a completion event at the end.
-            .layer(TraceLayer::new_for_grpc())
-            .add_service(agent_svc)
-            .add_service(admin_svc)
-            .serve_with_incoming_shutdown(incoming, async move {
-                let _ = rx.await;
-            })
-            .await;
-    });
-    Ok((local_addr, tx, join))
 }
 
 // --- handlers ---------------------------------------------------

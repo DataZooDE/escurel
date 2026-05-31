@@ -17,7 +17,7 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 # Single typed gateway abstraction. The CLI is pure presentation on top
-# of it — no hand-rolled tonic, no direct escurel-proto dependency.
+# of it — no hand-rolled transport, just the typed escurel-client.
 escurel-client = { path = "../escurel-client" }
 # `escurel ui` launches the interactive k9s-style terminal browser, which
 # is itself pure presentation over escurel-client.

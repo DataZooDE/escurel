@@ -37,12 +37,10 @@ duckdb = { version = "1", features = ["bundled"] }
 escurel-admin = { path = "../escurel-admin" }
 escurel-auth = { path = "../escurel-auth" }
 escurel-crdt = { path = "../escurel-crdt" }
-futures = "0.3"
 escurel-embed = { path = "../escurel-embed" }
 escurel-index = { path = "../escurel-index" }
 escurel-md = { path = "../escurel-md" }
 escurel-obs = { path = "../escurel-obs" }
-escurel-proto = { path = "../escurel-proto" }
 escurel-quota = { path = "../escurel-quota" }
 escurel-storage = { path = "../escurel-storage" }
 escurel-types = { path = "../escurel-types" }
@@ -54,8 +52,6 @@ tar = "0.4"
 thiserror = "2"
 toml = "0.8"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
-tokio-stream = { version = "0.1", features = ["net", "sync"] }
-tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "fs", "cors"] }
 tracing = "0.1"
@@ -72,18 +68,14 @@ escurel-crdt = { path = "../escurel-crdt" }
 escurel-embed = { path = "../escurel-embed" }
 escurel-index = { path = "../escurel-index" }
 escurel-obs = { path = "../escurel-obs" }
-escurel-proto = { path = "../escurel-proto" }
 escurel-storage = { path = "../escurel-storage" }
 escurel-test-support = { path = "../escurel-test-support" }
-futures = "0.3"
 loro = "1.12"
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-tokio-stream = "0.1"
 tokio-tungstenite = "0.24"
 wiremock = "0.6"
-tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 

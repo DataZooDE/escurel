@@ -62,8 +62,7 @@ async fn start() -> Harness {
     })
     .await;
     let grpc_addr = process
-        .grpc_endpoint()
-        .expect("grpc endpoint")
+        .base_url()
         .strip_prefix("http://")
         .unwrap()
         .to_owned();
@@ -463,8 +462,7 @@ async fn unauthenticated_mode_works_without_token() {
     })
     .await;
     let grpc_addr = process
-        .grpc_endpoint()
-        .unwrap()
+        .base_url()
         .strip_prefix("http://")
         .unwrap()
         .to_owned();
@@ -509,13 +507,13 @@ async fn missing_token_against_authed_server_emits_json_error() {
     .await
     .unwrap();
     // JSON-on-stderr error contract: parseable object with `error`.
+    // A missing bearer against an auth-enabled gateway is rejected at
+    // the HTTP layer (401), which the CLI surfaces as an `http 401`
+    // error carrying the `unauthorized` body.
     let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON");
+    let msg = err["error"].as_str().unwrap().to_lowercase();
     assert!(
-        err["error"]
-            .as_str()
-            .unwrap()
-            .to_lowercase()
-            .contains("unauthenticated"),
+        msg.contains("401") || msg.contains("unauthorized"),
         "got: {err}"
     );
     h.process.shutdown().await;

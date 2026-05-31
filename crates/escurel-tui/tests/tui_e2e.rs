@@ -168,7 +168,6 @@ async fn inbox_then_assign_renders_event_in_events() {
             instance_page_id: String::new(),
             title: "Renewal call".to_string(),
             body: "Discussed contract renewal.".to_string(),
-            provenance_json: String::new(),
         })
         .await
         .expect("capture event");
