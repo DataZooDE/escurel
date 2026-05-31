@@ -49,7 +49,6 @@ network egress is acceptable).
 ```sh
 export ESCUREL_SERVER_DATA_DIR=$HOME/.local/share/escurel
 export ESCUREL_SERVER_LISTEN_HTTP=127.0.0.1:8080
-export ESCUREL_SERVER_LISTEN_GRPC=127.0.0.1:8081
 
 # Filesystem LaneStore — no S3, no spool-to-cloud.
 export ESCUREL_STORAGE_BACKEND=fs
@@ -74,7 +73,7 @@ mkdir -p "$ESCUREL_SERVER_DATA_DIR"
 escurel-server
 ```
 
-Drive it with the `escurel` CLI (`ESCUREL_SERVER=http://127.0.0.1:8081`,
+Drive it with the `escurel` CLI (`ESCUREL_SERVER=http://127.0.0.1:8080`,
 `ESCUREL_TOKEN=<test-token>`).
 
 ### Target B — systemd unit on a VM (FS, OTLP to local Tempo/Prometheus)
@@ -122,7 +121,6 @@ WantedBy=multi-user.target
 ```sh
 ESCUREL_SERVER_DATA_DIR=/var/lib/escurel
 ESCUREL_SERVER_LISTEN_HTTP=0.0.0.0:8080
-ESCUREL_SERVER_LISTEN_GRPC=0.0.0.0:8081
 
 ESCUREL_STORAGE_BACKEND=fs
 

@@ -6,6 +6,22 @@ follows SemVer from v1.0.0 onward.
 
 ## Unreleased
 
+### Changed
+
+- **BREAKING: removed the gRPC transport.** HTTP (MCP-over-HTTP +
+  WebSocket) is now the only transport. Deleted the `escurel-proto`
+  crate and the `:8081` gRPC listener. `escurel-client` now speaks
+  MCP-over-HTTP, and the `escurel` CLI / `escurel-tui` default
+  `--server` to `http://127.0.0.1:8080`. Admin/operator capabilities
+  are now admin-role-gated MCP tools on `POST /mcp` rather than a
+  separate gRPC service. Long-running admin ops (`rebuild`,
+  `compact_lanes`, `tenant_export`, `tenant_import`) are blocking
+  JSON-RPC calls that return their final result directly; tarballs are
+  carried base64-encoded in the JSON (`tenant_export` →
+  `{tarball_b64, bytes}`, `tenant_import` takes
+  `{tenant_id, tarball_b64}`) rather than as gRPC streams.
+  `live_session` runs over the WebSocket at `/ws`.
+
 ### Client
 
 - `escurel-client` admin + streaming surface: an `AdminClient` for the
@@ -41,20 +57,20 @@ follows SemVer from v1.0.0 onward.
 First stable release. The v1 cut-line in
 [`docs/spec/roadmap.md`](docs/spec/roadmap.md) is met.
 
-### Agent surface (14 tools, on MCP-over-HTTP + gRPC)
+### Agent surface (14 tools, on MCP-over-HTTP)
 
 - Read: `search` (hybrid vector + FTS, RRF-fused), `resolve`,
   `expand`, `neighbours`, `list_skills`, `list_instances`,
   `run_stored_query`, `validate`.
 - Write: `update_page`.
 - Live CRDT: `open_session` / `apply_op` / `close_session` over
-  HTTP, the gRPC `LiveSession` bidi stream, and the WebSocket `/ws`
+  HTTP and the WebSocket `/ws`
   attach path (Loro engine, per-page `LiveDoc` actor, op-log +
   snapshot persistence, two-stage external-edit reconciler).
 - Chat history: `append_message` / `list_messages` (per-chat-group
   conversation log).
 
-### Admin surface (gRPC `EscurelAdmin`, admin-role gated)
+### Admin surface (admin-role-gated MCP tools)
 
 Tenant CRUD, streaming export/import, audit, streaming rebuild,
 `attach_external` (read-only external catalog), `embedding_reload`
@@ -78,7 +94,7 @@ dev loop.
 
 ### Transports, auth, quotas
 
-axum HTTP gateway (MCP/JSON-RPC framing + `/ws`), tonic gRPC mirror,
+axum HTTP gateway (MCP/JSON-RPC framing + `/ws`),
 OIDC JWT verification with JWKS caching, token-bucket quotas across
 three dimensions (queries, writes+embeds, concurrent sessions).
 

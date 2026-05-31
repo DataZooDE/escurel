@@ -49,8 +49,9 @@ right.
 
 This directory specifies the *implementation*: a single Rust binary
 (`escurel-server`) and a thin CLI client (`escurel`), exposing the
-agent surface over three transports (MCP-over-HTTP, WebSocket, native
-gRPC), with the operator surface mirrored on gRPC. It captures every
+agent surface over two transports (MCP-over-HTTP and WebSocket). HTTP
+is the sole transport; the operator surface is exposed as admin-role-
+gated MCP tools on the same `/mcp` endpoint. It captures every
 decision that needed to be locked before code can be written.
 
 ## Document map
@@ -58,7 +59,7 @@ decision that needed to be locked before code can be written.
 | Doc | What it covers |
 |---|---|
 | [`README.md`](README.md) (this file) | TL;DR, locked decisions, architecture, crate layout |
-| [`protocol.md`](protocol.md) | Wire protocols (MCP/HTTP, WS, gRPC); full tool schemas and admin endpoints |
+| [`protocol.md`](protocol.md) | Wire protocols (MCP/HTTP, WS); full tool schemas and admin tools |
 | [`storage.md`](storage.md) | Per-tenant FS layout, single DuckDB store (relational + `vss` + `fts` + CRDT op log), markdown source of truth, S3 driver, audit/rebuild |
 | [`platform.md`](platform.md) | OIDC auth, tenancy resolution, admin & lifecycle API, quotas, observability |
 | [`roadmap.md`](roadmap.md) | Milestones, v1 cut-line, deferred items, license audit recap |
@@ -81,11 +82,11 @@ are the ones with the largest blast radius if changed later.
 | 4 | Embedding model — default | **EmbeddingGemma** (`google/embeddinggemma-300m`), 768d, Matryoshka-trained, multilingual | Open weights; loads on first start, cached under `${ESCUREL_DATA_DIR}/cache/models/` |
 | 4a | Embedding model — optional | Gemini embeddings (`gemini-embedding-001`) over HTTPS, gated by `embedding.provider = gemini` | Bypasses candle; breaks air-gapped use; only enabled if explicitly configured |
 | 5 | Embed/rerank runtime | **candle** (pure Rust) | No external runtime; CUDA/Metal feature flags; sidecar adapter exists as a trait impl for future use |
-| **6** | **Transports** | **MCP-over-HTTP (streaming)** + **WebSocket** (live mode) + **native gRPC** | See [`protocol.md`](protocol.md) for each |
+| **6** | **Transports** | **MCP-over-HTTP** + **WebSocket** (live mode); HTTP is the sole transport | See [`protocol.md`](protocol.md) for each |
 | 7 | Storage backend | **Local FS for dev; S3 LaneStore is the production backend.** S3-compatible stores supported via `object_store::aws` (verified: AWS S3, MinIO, Hetzner Object Storage); FS retained as a dev-only convenience | DuckDB supports object-store URLs via `httpfs`, DuckLake natively; markdown ships through the same trait |
 | **8** | **CRDT state** | **Lives in the server**. Single source of truth for each open page. Web client and agent both connect to the same server. | See [`storage.md`](storage.md#crdt-persistence) |
-| 9 | CLI shape | **Thin MCP client over HTTP**, same auth as agents | Operator-only commands hit the gRPC admin surface; the CLI carries both |
-| 10 | gRPC surface | **Full mirror of the MCP tool surface + admin endpoints** | One service definition; admin endpoints require an `admin` role on the OIDC token |
+| 9 | CLI shape | **Thin MCP client over HTTP**, same auth as agents | Operator-only commands call the admin-role-gated MCP tools; the CLI carries both |
+| 10 | Admin/operator surface | **Admin-role-gated MCP tools (no separate service)** | The operator capabilities are MCP tools on `/mcp`; they require an `admin` role on the OIDC token (missing role → JSON-RPC `-32001`) |
 | 11 | Execution model | **Single-process Tokio + per-tenant async write lock**; background jobs in a Tokio task pool | One DuckDB writer per tenant at a time (single-file lock); reads concurrent; jobs share the runtime |
 | 12 | Tenant lifecycle | **Explicit admin API + export/import**; no auto-provision | Admin creates tenants before first agent call; export = tarball (markdown + lane snapshot + manifest) |
 | 13 | Observability | **OpenTelemetry traces + metrics (OTLP)**, **JSON logs to stdout**, **`/metrics` Prometheus fallback** | See [`platform.md`](platform.md#observability) |
@@ -93,7 +94,7 @@ are the ones with the largest blast radius if changed later.
 | 15 | Page IDs | **ULID** is canonical; **mutable slug** stored as metadata for human-friendly URLs | Wikilinks reference ULID at storage layer; slug → ULID resolved at parse time |
 | 16 | Deployment target binding | The core spec is target-agnostic; concrete bindings for any specific runtime live in [`../deploy/`](../deploy/). v1 ships [`../deploy/substrate.md`](../deploy/substrate.md) for the `DataZooDE/hetzner-agent-substrate` target | Names the OIDC issuer source, S3 LaneStore config, audit/backup shippers, placement-group sizing, golden-image content, Tailscale tags, and ingress proxy (Fabio) for that target. New deployment targets get their own sibling doc; the core spec stays unchanged. |
 
-**Two intentional extensions beyond a strict tool-surface-only contract.** Decisions 6 (transports) and 10 (gRPC admin surface) broaden the agent contract: live mode benefits from WebSocket and operator tooling benefits from a strongly-typed gRPC client, while admin endpoints become uniformly available across transports gated by an OIDC `admin` role claim. The CLI becomes a thin client over the same surfaces rather than a separate channel. The contract — twelve agent tools, no direct SQL, no raw vector access, no cross-tenant operations — is preserved.
+**Two intentional extensions beyond a strict tool-surface-only contract.** Decisions 6 (transports) and 10 (admin/operator surface) broaden the agent contract: live mode benefits from WebSocket, while the admin/operator capabilities are exposed as additional MCP tools on the same `/mcp` endpoint, gated by an OIDC `admin` role claim. The CLI becomes a thin client over the same surface rather than a separate channel. The contract — twelve agent tools, no direct SQL, no raw vector access, no cross-tenant operations — is preserved.
 
 Two decisions remain *deliberately* deferred to implementation,
 both about transport efficiency:
@@ -101,7 +102,7 @@ both about transport efficiency:
 - Whether `apply_op` over MCP/HTTP is request/response per op or
   bidirectional streaming on a long-lived call. v1 ships
   request/response over HTTP and bidirectional streaming over
-  WS+gRPC (WS is the recommended path for live mode anyway).
+  WS (WS is the recommended path for live mode anyway).
 - Whether viewer-awareness shares the WS channel with the CRDT op
   stream or uses a separate WS path. v1 puts both on `/ws` with a
   message-type discriminator; can split later if needed.
@@ -117,12 +118,12 @@ both about transport efficiency:
                                       ▼
   Agent (Claude/etc) ──┐                                   ┌── Web client
                        │       streamable HTTP +           │
-                       │       WebSocket + gRPC            │
+                       │          WebSocket               │
                        ▼                                   ▼
                 ┌──────────────────────────────────────────────────────┐
                 │                escurel-server (Rust)                 │
                 │  ┌──────────────────────────────────────────────┐    │
-                │  │   gateway: tonic (gRPC) + axum (HTTP/WS)     │    │
+                │  │   gateway: axum (HTTP/WS)                    │    │
                 │  └─────────────────────┬────────────────────────┘    │
                 │                        │                             │
                 │  ┌─────────────────────▼────────────────────────┐    │
@@ -235,8 +236,7 @@ escurel/
 ├── Cargo.toml                 # workspace
 ├── crates/
 │   ├── escurel-server/        # binary, gateway, dispatcher, tenant manager
-│   ├── escurel-cli/           # binary, thin MCP client + admin gRPC client
-│   ├── escurel-proto/         # tonic-built gRPC types + MCP JSON schemas
+│   ├── escurel-cli/           # binary, thin MCP client (agent + admin tools)
 │   ├── escurel-storage/       # LaneStore trait, FS impl, S3 impl
 │   ├── escurel-index/         # DuckDB lane logic (relational + vss + fts); indexer; audit/rebuild
 │   ├── escurel-md/            # markdown parser, wikilink parser, frontmatter
@@ -251,10 +251,9 @@ escurel/
 ```
 
 Why a workspace: the CLI links the same MCP client used by
-integration tests; the gRPC types are shared between server and
-CLI; the indexer is testable in isolation. Plus, separate crates
-make it easier to swap backends behind their traits without
-touching the gateway code.
+integration tests; the indexer is testable in isolation. Plus,
+separate crates make it easier to swap backends behind their traits
+without touching the gateway code.
 
 Crates that have non-trivial external deps:
 
@@ -263,11 +262,11 @@ Crates that have non-trivial external deps:
 - `escurel-crdt`: `loro` (MIT)
 - `escurel-embed`: `candle-core` + `candle-nn` + `candle-transformers`
   (MIT/Apache-2.0); `reqwest` for Gemini adapter
-- `escurel-server`: `tonic` (MIT), `axum` (MIT), `tokio` (MIT)
+- `escurel-server`: `axum` (MIT), `tokio` (MIT)
 - `escurel-auth`: `jsonwebtoken` (MIT), `reqwest`, `serde_json`
 - `escurel-obs`: `opentelemetry-otlp`, `tracing-subscriber`,
   `tracing-opentelemetry`, `prometheus`
-- `escurel-cli`: `clap`, the MCP client from `escurel-proto`
+- `escurel-cli`: `clap`, the MCP client from `escurel-client`
 
 The full license audit is in [`roadmap.md`](roadmap.md#licenses).
 All deps are MIT or Apache-2.0; no GPL surface.
@@ -282,7 +281,6 @@ field. Example:
 [server]
 data_dir = "/var/lib/escurel"
 listen_http = "0.0.0.0:8080"
-listen_grpc = "0.0.0.0:8081"
 
 [auth]
 oidc_issuer = "https://auth.example.com/realms/main"
@@ -343,7 +341,7 @@ The cut line for v1 (the binary you can run in production):
 
 - All 12 MCP tools from
   [`../contract/agent-interface.md`](../contract/agent-interface.md)
-- Live CRDT mode + whole-page fallback on all three transports
+- Live CRDT mode + whole-page fallback over MCP/HTTP and WebSocket
 - **S3 LaneStore is the production default** (Hetzner Object
   Storage is the reference substrate target); local FS retained
   as a dev-only convenience

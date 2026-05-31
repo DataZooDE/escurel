@@ -13,7 +13,7 @@ Read it in the order below.
    locked design decisions, crate layout, configuration, the v1
    cut-line.
 3. **[`spec/protocol.md`](spec/protocol.md)** — wire protocols
-   (MCP-over-HTTP, WebSocket, gRPC), full tool schemas, admin
+   (MCP-over-HTTP, WebSocket), full tool schemas, admin
    endpoints.
 4. **[`spec/storage.md`](spec/storage.md)** — per-tenant filesystem
    layout, the single DuckDB store with `vss` + `fts` + CRDT op log,

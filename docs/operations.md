@@ -30,7 +30,7 @@ the per-call audit line.
 
 ## The admin surface
 
-Admin operations are the `EscurelAdmin` gRPC service (`:8081`, tailnet-only).
+Admin operations are admin-role-gated MCP tools on `POST /mcp` (the same `:8080` HTTP surface as the agent tools).
 Every method requires a bearer JWT carrying the admin role
 (`ESCUREL_AUTH_ADMIN_ROLE_VALUE`, default `escurel:admin`); `Health` is
 the one exception (auth-free liveness). A missing/invalid bearer is
