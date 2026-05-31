@@ -11,19 +11,18 @@ homepage.workspace = true
 
 [dependencies]
 anyhow = "1"
-# Single typed gateway abstraction — the TUI is pure presentation on top
-# of it (no hand-rolled tonic, no direct escurel-proto dependency).
-escurel-client = { path = "../escurel-client" }
-ratatui = "0.29"
 crossterm = "0.28"
-secrecy = "0.10"
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros"] }
+ratatui = "0.29"
+# escurel-tui talks to the gateway only through escurel-client (no
+# hand-rolled transport, no direct wire-type dependency beyond the
+# re-exported escurel-types).
+escurel-client = { path = "../escurel-client" }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "io-std"] }
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [dev-dependencies]
-# No-mock e2e spawns a real gateway and seeds fixtures through the
-# public write path.
 escurel-test-support = { path = "../escurel-test-support" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

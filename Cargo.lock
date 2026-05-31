@@ -2405,7 +2405,7 @@ dependencies = [
  "escurel-client",
  "escurel-test-support",
  "ratatui",
- "secrecy",
+ "serde_json",
  "tokio",
 ]
 
