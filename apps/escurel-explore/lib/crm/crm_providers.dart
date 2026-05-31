@@ -28,7 +28,14 @@ final allInstancesProvider = FutureProvider<List<InstanceSummary>>((ref) async {
 /// Layout state for the resizable/collapsible two-pane split: the left
 /// pane's width fraction, and per-pane collapse flags.
 final leftPaneFractionProvider = StateProvider<double>((ref) => 0.42);
-final leftCollapsedProvider = StateProvider<bool>((ref) => false);
+
+/// The user's *explicit* event-pane collapse choice. `null` means "follow
+/// the page-type default" (skills auto-minimize, instances show events); a
+/// concrete bool is a chevron toggle that overrides that default. The
+/// override is reset to `null` when the focused page flips skill↔instance
+/// (see `_SplitBody`), so each context re-derives its default while the
+/// chevron stays live — including re-opening the pane on a skill page.
+final leftCollapsedProvider = StateProvider<bool?>((ref) => null);
 final rightCollapsedProvider = StateProvider<bool>((ref) => false);
 
 /// Whether the focused page is a skill (skills carry no events). Derived
@@ -38,12 +45,15 @@ final currentPageIsSkillProvider = Provider<bool>((ref) {
   return page?.pageType == PageType.skill;
 });
 
-/// The left event pane's *effective* collapsed state: auto-minimized when
-/// a skill is focused (no events to show), otherwise the user's manual
-/// chevron toggle ([leftCollapsedProvider]). The chevron keeps writing
-/// the manual flag, so the user's choice is restored on instances.
+/// The left event pane's *effective* collapsed state: the user's explicit
+/// chevron choice ([leftCollapsedProvider]) when set, otherwise the
+/// page-type default — skills carry no events, so they auto-minimize. The
+/// override (not an OR over the skill flag) is what lets the chevron
+/// re-open the pane on a skill page; `_SplitBody` clears it on a
+/// skill↔instance transition so each context falls back to its default.
 final effectiveLeftCollapsedProvider = Provider<bool>((ref) {
-  return ref.watch(leftCollapsedProvider) || ref.watch(currentPageIsSkillProvider);
+  final choice = ref.watch(leftCollapsedProvider);
+  return choice ?? ref.watch(currentPageIsSkillProvider);
 });
 
 /// The event currently open in the left detail pane. Distinct from the
