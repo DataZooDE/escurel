@@ -37,7 +37,7 @@ use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
     AppendChatMessage, ChatMessage, Direction, EventInfo, Granularity, Indexer, IndexerError,
-    Issue, ListChatMessages, NewEvent, OrderDir, is_safe_attach_source,
+    Issue, ListChatMessages, NewEvent, OrderDir, Severity, is_safe_attach_source,
 };
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
@@ -335,6 +335,20 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         return None;
     }
     let name = params.get("name").and_then(Value::as_str)?;
+    // Admin / operator tools are role-gated, not part of the tenant's
+    // *agent* rate budget — they must not debit the query/write
+    // buckets (the old gRPC admin surface carried no quota
+    // middleware). Otherwise an operator's own `admin_quota` snapshot
+    // would read back one-less-than-full.
+    if name.starts_with("admin_")
+        || name.starts_with("tenant_")
+        || matches!(
+            name,
+            "rebuild" | "compact_lanes" | "attach_external" | "embedding_reload"
+        )
+    {
+        return None;
+    }
     Some(match name {
         // `apply_op` is a write; `open_session` debits a session
         // slot (semaphore, not a token bucket) inside the tool
@@ -842,7 +856,12 @@ async fn tool_validate(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcE
         .validate(a.as_page_id.as_deref(), &a.content)
         .await
         .map_err(|e| JsonRpcError::internal(format!("validate: {e}")))?;
+    // `ok` is false iff any issue is error-severity, mirroring the
+    // documented ValidateResponse contract (warnings/infos don't fail
+    // a draft). The wire carries both `ok` and the full issue list.
+    let ok = !issues.iter().any(|i| i.severity == Severity::Error);
     Ok(json!({
+        "ok": ok,
         "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
     }))
 }
