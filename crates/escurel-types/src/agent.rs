@@ -134,7 +134,11 @@ pub struct Edge {
     pub src_page: String,
     pub dst_page: String,
     pub link_skill: String,
+    // The MCP wire emits `null` for an edge with no pinned version /
+    // no destination anchor; map it to "" rather than failing decode.
+    #[serde(deserialize_with = "null_as_default")]
     pub link_version: String,
+    #[serde(deserialize_with = "null_as_default")]
     pub dst_anchor: String,
 }
 
