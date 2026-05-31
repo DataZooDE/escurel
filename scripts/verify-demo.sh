@@ -58,11 +58,15 @@ fi
 
 DATA_DIR="$(mktemp -d)"
 note "starting escurel-server (seed=$SEED_DIR, data=$DATA_DIR)"
+# Metrics scraping is irrelevant to the demo and would otherwise bind
+# the default :9090 — empty disables the dedicated listener so a
+# co-running gateway (or a parallel demo run) doesn't hit a port clash.
 ESCUREL_SEED_DIR="$SEED_DIR" \
 ESCUREL_SERVE_DEMO_DIR="$APP/build/web" \
 ESCUREL_SERVER_DATA_DIR="$DATA_DIR" \
 ESCUREL_SERVER_LISTEN_HTTP="127.0.0.1:$PORT" \
 ESCUREL_SERVER_LISTEN_GRPC="" \
+ESCUREL_OBSERVABILITY_METRICS_LISTEN="" \
 ESCUREL_EMBEDDING_PROVIDER="zero" \
   cargo run -q -p escurel-server >"$ROOT/target/escurel-demo.log" 2>&1 &
 SERVER_PID=$!
