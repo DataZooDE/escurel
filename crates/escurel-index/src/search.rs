@@ -39,7 +39,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use duckdb::params;
 use escurel_md::PageType;
 
 use crate::indexer::BLOCKS_DENSE_VEC_DIM;
@@ -226,19 +225,24 @@ impl Indexer {
                 .then_with(|| a.0.cmp(&b.0))
         });
 
-        // 6. Hydrate in ranked order, applying the frontmatter
-        // post-filter and page collapse as we go, stopping once we
-        // have `k` hits. Filtering before the cut (rather than after a
-        // `truncate(k)`) keeps a filtered search returning up to `k`.
+        // 6. Hydrate all ranked candidates in ONE bulk query, then
+        // walk `ranked` to assemble hits in rank order — applying the
+        // frontmatter post-filter and page collapse as we go, stopping
+        // once we have `k` hits. Filtering before the cut (rather than
+        // after a `truncate(k)`) keeps a filtered search returning up
+        // to `k`. The bulk fetch replaces a per-candidate query_row.
+        let block_ids: Vec<&str> = ranked.iter().map(|(id, _)| id.as_str()).collect();
+        let hydrated = hydrate_blocks(&conn, &block_ids)?;
         let mut hits = Vec::with_capacity(k);
         let mut seen_pages: HashSet<String> = HashSet::new();
         for (block_id, score) in ranked {
             if hits.len() >= k {
                 break;
             }
-            let Some(hit) = hydrate_hit(&conn, &block_id, score)? else {
+            let Some(parts) = hydrated.get(&block_id) else {
                 continue;
             };
+            let hit = parts.clone().into_hit(score);
             if let Some(f) = filter
                 && !crate::filter::matches_filter(f, &hit.frontmatter_excerpt)
             {
@@ -349,49 +353,86 @@ fn accumulate_rrf(scores: &mut HashMap<String, f64>, ranked: &[String]) {
     }
 }
 
-fn hydrate_hit(
+/// The score-independent fields of a search hit, hydrated once per
+/// candidate block. [`into_hit`](Self::into_hit) stamps the RRF score
+/// on at assembly time.
+#[derive(Clone)]
+struct HydratedBlock {
+    page_id: String,
+    slug: Option<String>,
+    skill: String,
+    page_type: PageType,
+    anchor: Option<String>,
+    snippet: String,
+    frontmatter_excerpt: serde_json::Value,
+}
+
+impl HydratedBlock {
+    fn into_hit(self, score: f64) -> SearchHit {
+        SearchHit {
+            page_id: self.page_id,
+            slug: self.slug,
+            skill: self.skill,
+            page_type: self.page_type,
+            anchor: self.anchor,
+            snippet: self.snippet,
+            score,
+            frontmatter_excerpt: self.frontmatter_excerpt,
+        }
+    }
+}
+
+/// Bulk-hydrate every candidate block in a single `IN (…)` query,
+/// keyed by `block_id`. Replaces the per-candidate `query_row`; the
+/// caller walks the ranked list and assembles hits in rank order.
+/// Replicates the original column set + NULL handling exactly (empty
+/// `anchor` is normalised to `None`).
+fn hydrate_blocks(
     conn: &duckdb::Connection,
-    block_id: &str,
-    score: f64,
-) -> Result<Option<SearchHit>, IndexerError> {
-    let row = conn
-        .query_row(
-            "SELECT b.page_id, b.anchor, b.body, p.slug, p.skill, p.page_type, \
-                    p.frontmatter::VARCHAR \
-             FROM blocks b JOIN pages p USING (page_id) WHERE b.block_id = ?",
-            params![block_id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, String>(6)?,
-                ))
+    block_ids: &[&str],
+) -> Result<HashMap<String, HydratedBlock>, IndexerError> {
+    let mut out = HashMap::with_capacity(block_ids.len());
+    if block_ids.is_empty() {
+        return Ok(out);
+    }
+    let placeholders = std::iter::repeat_n("?", block_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT b.block_id, b.page_id, b.anchor, b.body, p.slug, p.skill, p.page_type, \
+                p.frontmatter::VARCHAR \
+         FROM blocks b JOIN pages p USING (page_id) WHERE b.block_id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(duckdb::params_from_iter(block_ids.iter()))?;
+    while let Some(r) = rows.next()? {
+        let block_id: String = r.get(0)?;
+        let page_id: String = r.get(1)?;
+        let anchor: Option<String> = r.get(2)?;
+        let body: String = r.get(3)?;
+        let slug: Option<String> = r.get(4)?;
+        let skill: String = r.get(5)?;
+        let page_type_str: String = r.get(6)?;
+        let fm_json: String = r.get(7)?;
+        let page_type = match page_type_str.as_str() {
+            "skill" => PageType::Skill,
+            _ => PageType::Instance,
+        };
+        let frontmatter_excerpt: serde_json::Value = serde_json::from_str(&fm_json)?;
+        out.insert(
+            block_id,
+            HydratedBlock {
+                page_id,
+                slug,
+                skill,
+                page_type,
+                anchor: anchor.filter(|a| !a.is_empty()),
+                snippet: snippet_from_body(&body),
+                frontmatter_excerpt,
             },
-        )
-        .ok();
-    let Some((page_id, anchor, body, slug, skill, page_type_str, fm_json)) = row else {
-        return Ok(None);
-    };
-    let page_type = match page_type_str.as_str() {
-        "skill" => PageType::Skill,
-        _ => PageType::Instance,
-    };
-    let frontmatter_excerpt: serde_json::Value = serde_json::from_str(&fm_json)?;
-    let snippet = snippet_from_body(&body);
-    Ok(Some(SearchHit {
-        page_id,
-        slug,
-        skill,
-        page_type,
-        anchor: anchor.filter(|a| !a.is_empty()),
-        snippet,
-        score,
-        frontmatter_excerpt,
-    }))
+        );
+    }
+    Ok(out)
 }
 
 fn snippet_from_body(body: &str) -> String {

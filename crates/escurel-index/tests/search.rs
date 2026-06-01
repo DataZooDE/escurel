@@ -256,6 +256,50 @@ async fn search_hits_carry_frontmatter_excerpt() {
 }
 
 #[tokio::test]
+async fn search_bulk_hydration_preserves_rank_order_and_fields() {
+    // Pins the bulk-hydrate-then-assemble-in-rank-order path: a query
+    // returning multiple hits must surface the same page_ids in the
+    // same (descending-score) order, with every field populated, as
+    // the prior per-candidate hydration did.
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER, ACME, GLOBEX, MEETING]).await;
+
+    let hits = h
+        .indexer
+        .search("Stuttgart customer", 4, None, None, None, None)
+        .await
+        .unwrap();
+
+    assert!(hits.len() >= 2, "expected multiple hits: {hits:?}");
+
+    // Order matches descending score (assembly walks ranked order).
+    for w in hits.windows(2) {
+        assert!(
+            w[0].score >= w[1].score,
+            "rank order must be score-descending: {} then {}",
+            w[0].score,
+            w[1].score,
+        );
+    }
+
+    // Both Stuttgart instances are present.
+    let page_ids: std::collections::HashSet<&str> =
+        hits.iter().map(|h| h.page_id.as_str()).collect();
+    assert!(page_ids.contains(ACME.0), "{page_ids:?}");
+    assert!(page_ids.contains(GLOBEX.0), "{page_ids:?}");
+
+    // Every hydrated field is populated exactly as before.
+    for hit in &hits {
+        assert!(!hit.page_id.is_empty());
+        assert!(!hit.skill.is_empty());
+        assert!(hit.slug.is_some(), "slug must hydrate: {hit:?}");
+        assert!(!hit.snippet.is_empty());
+        assert!(hit.score > 0.0);
+        assert!(hit.frontmatter_excerpt.is_object());
+    }
+}
+
+#[tokio::test]
 async fn search_scores_are_monotonic_decreasing() {
     let h = fresh_harness();
     seed(&h, &[SKILL_CUSTOMER, ACME, GLOBEX, MEETING]).await;
