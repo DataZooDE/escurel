@@ -1,7 +1,7 @@
 ---
 name: escurel-platform
 version: 0.2.0
-description: Use when building an application that consumes the Escurel knowledge-base service as its data store — designing a tenant's skill/instance data model, calling the fourteen agent tools (search/resolve/expand/neighbours/list_skills/list_instances/run_stored_query/validate/open_session/apply_op/close_session/update_page/append_message/list_messages), or wiring escurel into an app backend and its integration tests. Covers the published surfaces (MCP-over-HTTP `/mcp`, gRPC, the `escurel` CLI), the Rust `escurel-client` + `escurel-test-support` path, fixture seeding, auth/tenancy, per-chat-group conversation history (append_message/list_messages + admin DeleteChatHistory), and the no-mock dev loop. Triggers on phrases like "use escurel from my app", "escurel MCP tool", "resolve a wikilink", "run_stored_query", "seed an escurel tenant", "escurel-client", "EscurelProcess test", "author a skill page", "escurel CLI", "FixtureBuilder", "chat history", "append_message", "list_messages", "delete chat history". DO NOT use for escurel-internal work (the indexer, LaneStore, the markdown parser, the dispatcher, the embedder) — that is a PR against the escurel repo itself, not consumer-facing.
+description: Use when building an application that consumes the Escurel knowledge-base service as its data store — designing a tenant's skill/instance data model, calling the fourteen agent tools (search/resolve/expand/neighbours/list_skills/list_instances/run_stored_query/validate/open_session/apply_op/close_session/update_page/append_message/list_messages), or wiring escurel into an app backend and its integration tests. Covers the published surfaces (MCP-over-HTTP `/mcp`, the `escurel` CLI), the Rust `escurel-client` + `escurel-test-support` path, fixture seeding, auth/tenancy, per-chat-group conversation history (append_message/list_messages + admin DeleteChatHistory), and the no-mock dev loop. Triggers on phrases like "use escurel from my app", "escurel MCP tool", "resolve a wikilink", "run_stored_query", "seed an escurel tenant", "escurel-client", "EscurelProcess test", "author a skill page", "escurel CLI", "FixtureBuilder", "chat history", "append_message", "list_messages", "delete chat history". DO NOT use for escurel-internal work (the indexer, LaneStore, the markdown parser, the dispatcher, the embedder) — that is a PR against the escurel repo itself, not consumer-facing.
 ---
 
 # escurel-platform — build apps that consume Escurel
@@ -25,14 +25,14 @@ Escurel is reached through its **published surfaces** — your app does not
 link Escurel's internals:
 
 1. **Over the wire (language-agnostic).** Any runtime (Python, TS, Go, …)
-   speaks **MCP-over-HTTP** at `POST /mcp` (JSON-RPC 2.0) or the native
-   **gRPC** service `escurel.v1.Escurel` on `:8081`. → `references/03`.
-2. **Via the `escurel` CLI.** A thin gRPC client binary with one
+   speaks **MCP-over-HTTP** at `POST /mcp` (JSON-RPC 2.0) on `:8080`.
+   → `references/03`.
+2. **Via the `escurel` CLI.** A thin MCP-over-HTTP client binary with one
    subcommand per agent tool, JSON on stdout — ideal for shells, scripts,
    and non-Rust apps that prefer to shell out. → `references/04`.
 
 For **Rust** apps there is a typed path on top of (1): the
-**`escurel-client`** crate (typed gRPC) for the backend, and
+**`escurel-client`** crate (typed MCP-over-HTTP client) for the backend, and
 **`escurel-test-support`** (`EscurelProcess`, `FixtureBuilder`) for
 no-mock integration tests. → `references/05`, `references/06`.
 
@@ -68,7 +68,7 @@ it **navigates to** the canonical spec in `docs/` and the source in
 | `references/00-what-is-escurel.md` | First contact. The skill/instance model, the published surfaces, where your app sits. |
 | `references/01-data-model.md` | Designing *your* tenant. Skills, instances, frontmatter, wikilinks, the kind/time/origin axes, the mandatory `escurel` meta-skill. |
 | `references/02-tool-surface.md` | The fourteen agent tools at a glance: inputs, outputs, read-vs-write-vs-chat, and the anti-patterns. |
-| `references/03-consume-over-http-mcp.md` | Consuming from any language over `POST /mcp` (JSON-RPC) or gRPC. Envelope, auth, per-tool shapes. |
+| `references/03-consume-over-http-mcp.md` | Consuming from any language over `POST /mcp` (JSON-RPC). Envelope, auth, per-tool shapes. |
 | `references/04-consume-via-cli.md` | Driving Escurel from a shell or non-Rust app with the `escurel` CLI. |
 | `references/05-consume-from-rust.md` | A Rust backend. `escurel-client`: `Client::connect`, the typed methods, request/response fields. |
 | `references/06-integration-tests.md` | The no-mock dev loop. `EscurelProcess` + `FixtureBuilder` (Rust); endpoint/CLI driving (non-Rust); red→green TDD. |

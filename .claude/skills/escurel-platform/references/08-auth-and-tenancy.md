@@ -7,8 +7,8 @@ JWT and gets exactly that tenant's content. Canonical: `docs/spec/platform.md`
 
 ## The bearer + the claims
 
-Every call carries `Authorization: Bearer <jwt>` (HTTP/MCP) or an
-`authorization` gRPC metadata header. The server verifies it against the
+Every call carries `Authorization: Bearer <jwt>` (HTTP/MCP). The server
+verifies it against the
 issuer's JWKS and reads a small, **configurable** set of claims
 (`platform.md` defaults / substrate deploy overrides):
 

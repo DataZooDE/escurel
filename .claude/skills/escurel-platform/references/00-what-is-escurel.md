@@ -35,10 +35,9 @@ A consuming app reaches a tenant through one of these — all carry the
 
 | Surface | Endpoint | Use from |
 |---|---|---|
-| MCP-over-HTTP | `POST /mcp` (JSON-RPC 2.0), `:8080` | any language; agent harnesses; → `references/03` |
-| gRPC | `escurel.v1.Escurel`, `:8081` | typed clients (the Rust `escurel-client` rides this); → `references/03`, `05` |
+| MCP-over-HTTP | `POST /mcp` (JSON-RPC 2.0), `:8080` | any language; agent harnesses; typed clients (the Rust `escurel-client` rides this); → `references/03`, `05` |
 | WebSocket | `/ws`, `:8080` | live CRDT co-editing + presence; → `references/02` |
-| CLI | the `escurel` binary (a thin gRPC client) | shells, scripts, non-Rust apps; → `references/04` |
+| CLI | the `escurel` binary (a thin MCP-over-HTTP client) | shells, scripts, non-Rust apps; → `references/04` |
 
 Operational routes also exist: `/healthz`, `/readyz`, `/version`,
 `/metrics` (→ `references/09`).

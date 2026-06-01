@@ -25,11 +25,11 @@ cargo test -p <your-crate> <test_name>     # spawns escurel + your backend, asse
 
 If you want a gateway to poke at *interactively* (e.g. to drive the CLI or
 an MCP client by hand), write a throwaway binary/test that calls
-`EscurelProcess::spawn`, prints `grpc_endpoint()` / `mcp_url()` and a
+`EscurelProcess::spawn`, prints `base_url()` / `mcp_url()` and a
 `mint_token(...)`, and parks until Ctrl-C. Then:
 
 ```sh
-export ESCUREL_SERVER=<printed grpc endpoint>
+export ESCUREL_SERVER=<printed base url>
 export ESCUREL_TOKEN=<printed token>
 escurel list-skills
 ```
@@ -40,7 +40,7 @@ For non-Rust apps, or to develop against real data, point your app/CLI at
 a deployed `nonprod` gateway:
 
 ```sh
-export ESCUREL_SERVER="http://<host>:8081"     # CLI (gRPC)
+export ESCUREL_SERVER="http://<host>:8080"     # CLI (HTTP MCP)
 export ESCUREL_TOKEN="<bearer from the real issuer>"   # references/08
 # or for your app's own client: ESCUREL_ENDPOINT / your app's bearer
 ```
@@ -51,7 +51,6 @@ export ESCUREL_TOKEN="<bearer from the real issuer>"   # references/08
 |---|---|---|
 | `POST /mcp` | 8080 | MCP-over-HTTP tool calls (`references/03`) |
 | `/ws` | 8080 | live CRDT + presence |
-| gRPC `escurel.v1.Escurel` | 8081 | typed RPCs (`escurel-client`, CLI) |
 | `/healthz` | 8080 | liveness (dependency-free) |
 | `/readyz` | 8080 | readiness (dependencies up) |
 | `/version` | 8080 | build version |
@@ -61,12 +60,12 @@ Quick liveness check while iterating: `curl -s localhost:8080/healthz`.
 
 ## The three env-var namespaces (don't mix them up)
 
-- **CLI** (`crates/escurel-cli`): `ESCUREL_SERVER` (gRPC URL, default
-  `http://127.0.0.1:8081`), `ESCUREL_TOKEN`.
+- **CLI** (`crates/escurel-cli`): `ESCUREL_SERVER` (HTTP MCP URL, default
+  `http://127.0.0.1:8080`), `ESCUREL_TOKEN`.
 - **Your app's client** (your choice; the example uses):
   `ESCUREL_ENDPOINT`, `ESCUREL_TOKEN` (`examples/echo-app/src/lib.rs`).
 - **The production server** (`docs/deploy/`): `ESCUREL_SERVER_DATA_DIR`,
-  `ESCUREL_SERVER_LISTEN_HTTP` / `_GRPC`, `ESCUREL_CONFIG`,
+  `ESCUREL_SERVER_LISTEN_HTTP`, `ESCUREL_CONFIG`,
   `ESCUREL_AUTH_*`, `ESCUREL_STORAGE_S3_*`. Your app doesn't set these —
   the deployment does.
 

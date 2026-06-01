@@ -29,11 +29,10 @@ The full surface (`crates/escurel-test-support/src/`):
 | `AuthMode::{Disabled, TestIssuer, External{issuer_url, jwks_url}}` | `TestIssuer` runs an in-process JWKS+signer (`references/08`) |
 | `Role::{Agent, Admin}` | role for a minted token |
 | `FixtureBuilder` / `TenantFixture` | chainable seeding (`references/07`) |
-| `ConfigOverrides { … }` | optional knobs (quota, readiness probe, crdt backend, `disable_grpc`, …) |
-| `.base_url()` / `.mcp_url()` / `.ws_url()` | HTTP / `/mcp` / `/ws` URLs |
-| `.grpc_endpoint() -> Option<&str>` | gRPC URL to point your backend at |
+| `ConfigOverrides { … }` | optional knobs (quota, readiness probe, crdt backend, …) |
+| `.base_url()` / `.mcp_url()` / `.ws_url()` | HTTP base / `/mcp` / `/ws` URLs (point your backend's `escurel-client` at `base_url()`) |
 | `.mint_token(tenant, role) -> String` | bearer; **`TestIssuer` only** (panics otherwise) |
-| `.client() -> Client` | sync; typed gRPC client pre-tokened for the default `acme` tenant |
+| `.client() -> Client` | sync; typed `escurel-client` (HTTP MCP) pre-tokened for the default `acme` tenant |
 | `.client_for(tenant, role) -> Client` | async; client for any tenant/role |
 | `.mcp_client() -> McpTestClient` | typed MCP-over-HTTP client (same methods, returns the same response types) |
 | `.shutdown()` | async; explicit graceful teardown (else `Drop` handles it) |
@@ -59,9 +58,9 @@ async fn round_trips() {
     }).await;
     let token = escurel.mint_token("acme", Role::Agent);
 
-    // 2. your backend up, pointed at escurel's gRPC endpoint.
+    // 2. your backend up, pointed at escurel's HTTP base URL.
     let backend = my_app::spawn(my_app::Opts {
-        escurel_endpoint: escurel.grpc_endpoint().unwrap().to_owned(),
+        escurel_endpoint: escurel.base_url().to_owned(),
         escurel_token: token,
     }).await.unwrap();
 
@@ -98,7 +97,7 @@ let hits = escurel.mcp_client().search(SearchRequest { q: "acme".into(), ..Defau
 
 1. Stand a gateway up (`references/09`) — for CI, the simplest reliable
    path is a tiny Rust helper crate that calls `EscurelProcess::spawn`,
-   prints `grpc_endpoint()`/`mcp_url()` + a minted token, and stays up
+   prints `base_url()`/`mcp_url()` + a minted token, and stays up
    until killed; your test harness shells out to it. Or point at a shared
    dev/`nonprod` instance.
 2. Seed via the public write path: loop `escurel update-page <path> < body`

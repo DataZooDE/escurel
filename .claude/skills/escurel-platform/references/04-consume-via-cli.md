@@ -1,6 +1,6 @@
 # 04 — Consume via the `escurel` CLI
 
-The `escurel` binary (`crates/escurel-cli`) is a **thin gRPC client** for
+The `escurel` binary (`crates/escurel-cli`) is a **thin MCP-over-HTTP client** for
 the agent surface — one subcommand per read/write tool, JSON on stdout.
 Ideal for shells, scripts, Makefiles/justfiles, CI smoke checks, and
 non-Rust apps that prefer to shell out rather than embed a client.
@@ -8,7 +8,7 @@ non-Rust apps that prefer to shell out rather than embed a client.
 ## Connecting
 
 ```sh
-export ESCUREL_SERVER="http://127.0.0.1:8081"   # gRPC endpoint; this is the default
+export ESCUREL_SERVER="http://127.0.0.1:8080"   # HTTP MCP endpoint; this is the default
 export ESCUREL_TOKEN="<bearer>"                 # omit only if the server runs unauthenticated
 ```
 
@@ -61,7 +61,7 @@ surface.
 ## When to prefer the CLI
 
 - Non-Rust apps that want a stable, language-neutral entry point without
-  generating gRPC stubs.
+  embedding an HTTP/MCP client of their own.
 - Scripted seeding/inspection in dev and CI (`escurel update-page` in a
   loop is exactly how fixtures get in — `references/07`).
 - Quick interactive poking while iterating (`references/09`).
