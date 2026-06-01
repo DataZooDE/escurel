@@ -252,7 +252,7 @@ pub(crate) struct AppState {
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
-/// once the HTTP (and optional gRPC) listener is bound so tests
+/// once the HTTP (and optional metrics) listener is bound so tests
 /// can read back the local addresses. Both background tasks run
 /// until [`ServerHandle::shutdown`] fires or the process exits.
 pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {

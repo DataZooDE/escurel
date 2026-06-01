@@ -36,8 +36,8 @@ spec into running code.
 
 3. **12-factor.** Config via `ESCUREL_*` env vars (overriding TOML
    defaults); logs JSON to stdout; processes stateless except for
-   explicit host-volume state; ports bound at startup (`8080` HTTP,
-   `8081` gRPC); graceful `SIGTERM`; backing services (LaneStore,
+   explicit host-volume state; ports bound at startup (`8080` HTTP);
+   graceful `SIGTERM`; backing services (LaneStore,
    OIDC issuer, OTel collector) are attached resources behind traits.
 
 4. **Substrate alignment.** Match the

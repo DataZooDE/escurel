@@ -161,8 +161,7 @@ impl Metrics {
 
     /// Record one agent tool call: bump the counter and observe its
     /// latency. `status` is a short label (`"ok"`, `"error"`,
-    /// `"quota_exhausted"`); `transport` is `"mcp_http"` / `"grpc"` /
-    /// `"ws"`.
+    /// `"quota_exhausted"`); `transport` is `"mcp_http"` / `"ws"`.
     pub fn record_tool_call(
         &self,
         tenant: &str,

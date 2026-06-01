@@ -1,9 +1,9 @@
 # 02 — The tool surface (fourteen agent tools)
 
-The contract every surface carries (HTTP/MCP, gRPC, CLI, WebSocket).
+The contract every surface carries (HTTP/MCP, CLI, WebSocket).
 Canonical: `docs/contract/agent-interface.md` §The tool surface and
 `docs/spec/protocol.md` §Agent surface (full JSON schemas + field types).
-Wire shapes per transport: `references/03` (HTTP/MCP, gRPC) and
+Wire shapes per transport: `references/03` (HTTP/MCP) and
 `references/04` (CLI). Rust signatures: `references/05`.
 
 Design rule: **read OR write, never both in one call.** All read tools
@@ -29,7 +29,7 @@ Notes:
   page); `page` collapses to one row per page. The choice is echoed in the
   response so a cache can tell them apart.
 - `list_instances` frontmatter filtering (`{status: open}`, `{at: '>= …'}`)
-  is in the contract; the gRPC/CLI surface today exposes `skill`,
+  is in the contract; the MCP/CLI surface today exposes `skill`,
   `order_by_at`, `limit` (richer filter clauses land per
   `protocol.md` §list_instances).
 - `run_stored_query` params are bound as **typed values** (prepared

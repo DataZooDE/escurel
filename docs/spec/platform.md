@@ -188,7 +188,7 @@ Three dimensions, all token-bucket per tenant:
 | `queries_per_minute` | continuous | all read tools: `search`, `resolve`, `expand`, `neighbours`, `list_skills`, `list_instances`, `run_stored_query`, `validate` |
 | `writes_per_minute` | continuous | all writes: `update_page`, `apply_op`, `close_session(commit=true)`; also `embeds_per_minute` is debited from this bucket when a write triggers embedding |
 | `embeds_per_minute` | continuous | counts embedding jobs (one per new/changed block); shared bucket means a bulk import triggers backpressure here |
-| `concurrent_sessions` | semaphore | counts open MCP sessions, WS connections, and active gRPC streams |
+| `concurrent_sessions` | semaphore | counts open MCP sessions and WS connections |
 
 Defaults are in the server config; per-tenant overrides in the
 manifest. On bucket exhaustion the server returns
@@ -216,7 +216,7 @@ Every tool call emits one span at the gateway, with attributes:
 ```
 escurel.tenant       = "<id>"
 escurel.tool         = "search" | "expand" | ...
-escurel.transport    = "mcp_http" | "ws" | "grpc"
+escurel.transport    = "mcp_http" | "ws"
 escurel.role         = "agent" | "admin"
 escurel.subject      = "<sub from token>"
 ```

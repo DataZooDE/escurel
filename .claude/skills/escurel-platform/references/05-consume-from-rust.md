@@ -1,8 +1,9 @@
 # 05 — Consume from Rust (`escurel-client`)
 
-`escurel-client` (`crates/escurel-client`) is the typed gRPC client a Rust
-**backend** depends on. It is a **leaf crate**: it pulls in `escurel-proto`
-and `tonic`, and deliberately **not** `escurel-server`, DuckDB, or candle —
+`escurel-client` (`crates/escurel-client`) is the typed MCP-over-HTTP
+client a Rust **backend** depends on. It is a **leaf crate**: it pulls in
+`escurel-types` (the serde wire-contract structs) and `reqwest`, and
+deliberately **not** `escurel-server`, DuckDB, or candle —
 your binary stays light (`references/10` makes this a hard rule). The live
 reference is `examples/echo-app/src/lib.rs`.
 
@@ -20,21 +21,22 @@ secrecy = "0.10"   # for SecretString; also re-exported by escurel-client
 use escurel_client::{Client, SecretString};
 
 let client = Client::connect(
-    "http://127.0.0.1:8081",            // gRPC endpoint
+    "http://127.0.0.1:8080",            // HTTP MCP endpoint
     SecretString::from(token),          // bearer; wrapped so it never logs
 ).await?;                               // Result<Client, escurel_client::Error>
 ```
 
-- `Client` is `Clone` and cheap to clone (the tonic channel is shared) —
-  build it once at startup, wrap in `Arc`, clone per request.
-- Errors: `Error::{InvalidEndpoint, InvalidToken, Connect, Rpc}` —
-  `Rpc(tonic::Status)` for per-call failures. The enum is intentionally
-  small; additions are breaking.
+- `Client` is `Clone` and cheap to clone (the underlying `reqwest` client
+  is shared) — build it once at startup, wrap in `Arc`, clone per request.
+- Errors: `Error::{InvalidEndpoint, InvalidToken, Transport, Http, JsonRpc}`
+  — `Transport(reqwest::Error)` / `Http{status, body}` for transport-level
+  failures, `JsonRpc{code, message}` for tool-level errors. The enum is
+  intentionally small; additions are breaking.
 
 ## The typed methods
 
 Each takes a `*Request` and returns a `*Response`, both re-exported from
-`escurel_client` (originating in `escurel-proto::v1`):
+`escurel_client` (originating in `escurel-types`):
 
 ```rust
 client.search(SearchRequest { q: "acme".into(), k: 5, ..Default::default() }).await?;
@@ -62,11 +64,11 @@ client.list_messages(ListMessagesRequest {
 }).await?;
 ```
 
-Field names follow the proto (`q`/`k`, not `query`/`top_k`); JSON-bearing
-fields (`frontmatter_json`, `rows_json`, `params_json`) are JSON strings
-you parse. See `crates/escurel-proto/proto/escurel.proto` and
+Field names follow the wire contract (`q`/`k`, not `query`/`top_k`);
+JSON-bearing fields (`frontmatter_json`, `rows_json`, `params_json`) are
+JSON strings you parse. See `crates/escurel-types/src/` and
 `references/03` for the message shapes. The live-CRDT trio and admin
-methods are added as `protocol.md` and the proto catch up.
+methods are added as `protocol.md` and the types catch up.
 
 ## The backend pattern (from `examples/echo-app/src/lib.rs`)
 
@@ -91,8 +93,8 @@ async fn get_page(State(state): State<AppState>, Path(slug): Path<String>) -> Re
 ```
 
 Translate Escurel outcomes into *your* HTTP semantics: a missing page
-(`exists == false`) is a 404; an upstream RPC failure is a 502. Don't leak
-`tonic::Status` to your callers.
+(`exists == false`) is a 404; an upstream call failure is a 502. Don't leak
+`escurel_client::Error` to your callers.
 
 ## Configuration
 
@@ -102,7 +104,7 @@ choice, not Escurel-defined):
 
 ```rust
 // examples/echo-app/src/lib.rs — env_opts()
-let escurel_endpoint = std::env::var("ESCUREL_ENDPOINT")?;   // gRPC URL
+let escurel_endpoint = std::env::var("ESCUREL_ENDPOINT")?;   // HTTP MCP URL
 let escurel_token    = std::env::var("ESCUREL_TOKEN")?;      // bearer
 ```
 

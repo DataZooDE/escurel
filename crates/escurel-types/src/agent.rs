@@ -1,11 +1,9 @@
 //! Agent-facing tool request/response types: search, resolve, expand,
 //! neighbours, skills, instances, stored queries, validate, update.
 //!
-//! Field sets follow the proto (`crates/escurel-proto/proto/escurel.proto`)
-//! reconciled with the live MCP wire (`escurel-server/src/mcp.rs`
+//! Field sets follow the MCP wire contract (`escurel-server/src/mcp.rs`
 //! `json!` builders + `*Args` structs, and the `escurel-test-support`
-//! `decode_*` helpers). Where the two disagree the MCP wire wins,
-//! since the MCP-over-HTTP transport is the contract now.
+//! `decode_*` helpers). The MCP-over-HTTP transport is the contract.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

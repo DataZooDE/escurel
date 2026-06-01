@@ -104,7 +104,7 @@ this collector ingests both shapes.
 ## §4 — Backup shipper contract
 
 The substrate ships a tenant-export shipper Nomad periodic job
-that calls `EscurelAdmin.TenantExport` per active tenant on a
+that calls the `tenant_export` admin tool per active tenant on a
 configurable cadence, validates the SHA-256 terminator per the
 [`protocol.md` tenant_export contract](../spec/protocol.md#tenant_export-as-the-backup-contract-producer),
 and uploads each tarball to GCS as a single object.

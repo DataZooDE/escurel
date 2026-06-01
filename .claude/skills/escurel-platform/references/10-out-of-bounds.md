@@ -56,10 +56,10 @@ stay with the operator.
 
 ## When you genuinely need Escurel to change
 
-A missing tool, a proto field, a new validation code, different indexer
+A missing tool, a wire field, a new validation code, different indexer
 behaviour — these are **PRs against this repo**, following `CLAUDE.md`
 (red→green TDD, no-mock integration test, incremental ~400-LOC PRs). Adding
-a tool is: `protocol.md` → `escurel.proto` → tonic regenerates → typed
+a tool is: `protocol.md` → the `escurel-types` wire structs → a typed
 method appears in `escurel-client`. Don't simulate the missing capability
 with a hack in your app; raise it.
 

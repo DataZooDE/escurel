@@ -44,13 +44,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # `escurel-proto`'s build.rs runs prost/tonic codegen, which
-      # shells out to `protoc`. The runner image doesn't ship it.
-      # (`unsafe_code = "forbid"` rules out setting PROTOC to a
-      # vendored binary from the build script in edition 2024.)
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
       # rust-toolchain.toml drives the channel + components; rustup
       # honours it automatically on first invocation.
       - name: Install Rust toolchain

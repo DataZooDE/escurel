@@ -736,8 +736,8 @@ impl EscurelConfig {
     }
 
     /// Build the on-demand rebuild closure the `embedding_reload`
-    /// admin RPC invokes. It captures a clone of this config so the
-    /// gRPC layer never has to own the original `EscurelConfig`;
+    /// admin tool invokes. It captures a clone of this config so the
+    /// server layer never has to own the original `EscurelConfig`;
     /// each call re-attempts [`load_real_embedder`](Self::load_real_embedder)
     /// and, on success, returns the real embedder plus a revision
     /// label (the model id / path, falling back to the provider

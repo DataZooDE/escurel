@@ -123,13 +123,12 @@ job "dz-escurel" {
 
     // Named ports. The HTTP listener (8080) carries MCP, WS, REST,
     // /healthz, /readyz; Fabio routes mcp/ws/rest by `urlprefix-` tag.
-    // gRPC (8081) and metrics (9090) are tailnet-only (no Fabio tag).
+    // metrics (9090) is tailnet-only (no Fabio tag).
     network {
       mode = "bridge"
       port "mcp" { to = 8080 }     // MCP-over-HTTP
       port "ws" { to = 8080 }      // WebSocket on the same listener
       port "rest" { to = 8080 }    // /healthz, /readyz
-      port "grpc" { to = 8081 }    // gRPC admin surface
       port "metrics" { to = 9090 } // Prometheus /metrics
     }
 
@@ -178,19 +177,6 @@ job "dz-escurel" {
         path     = "/readyz"
         interval = "30s"
         timeout  = "5s"
-      }
-    }
-
-    // -------- gRPC (tailnet-only; no urlprefix-* tag) --------
-    service {
-      name     = "escurel-grpc"
-      port     = "grpc"
-      provider = "consul"
-
-      check {
-        type     = "tcp"
-        interval = "15s"
-        timeout  = "3s"
       }
     }
 
@@ -243,7 +229,7 @@ job "dz-escurel" {
 
       config {
         image = var.image
-        ports = ["mcp", "ws", "rest", "grpc", "metrics"]
+        ports = ["mcp", "ws", "rest", "metrics"]
       }
 
       // Vault-templated secrets land in /secrets and are sourced by
@@ -307,7 +293,6 @@ EOH
 
         // Listen addresses. MCP/WS/REST share the HTTP listener.
         ESCUREL_SERVER_LISTEN_HTTP = "0.0.0.0:8080"
-        ESCUREL_SERVER_LISTEN_GRPC = "0.0.0.0:8081"
 
         // Auth — substrate Vault OIDC role.
         ESCUREL_AUTH_OIDC_ISSUER       = "${var.oidc_issuer}"

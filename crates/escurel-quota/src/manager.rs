@@ -156,7 +156,7 @@ impl QuotaManager {
     /// Lazy-creates the tenant's buckets if it has never been
     /// debited — the snapshot of a brand-new tenant returns the
     /// configured caps for the three rate dimensions and `0` for
-    /// the in-use sessions. Used by `EscurelAdmin.quota_get`.
+    /// the in-use sessions. Used by the `quota_get` admin tool.
     #[must_use]
     pub fn snapshot(&self, tenant: &str) -> QuotaSnapshot {
         let t = self.tenant(tenant);

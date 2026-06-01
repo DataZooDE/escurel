@@ -12,7 +12,6 @@ DATA="$(mktemp -d)"
 ESCUREL_SEED_DIR="$ROOT/examples/crm-demo" \
 ESCUREL_SERVER_DATA_DIR="$DATA" \
 ESCUREL_SERVER_LISTEN_HTTP="127.0.0.1:$PORT" \
-ESCUREL_SERVER_LISTEN_GRPC="" \
 ESCUREL_EMBEDDING_PROVIDER="zero" \
   "$ROOT/target/debug/escurel-server" >"$ROOT/target/probe-gw.log" 2>&1 &
 PID=$!

@@ -1,6 +1,6 @@
 //! Admin surface for Escurel — tenant CRUD.
 //!
-//! The gRPC `EscurelAdmin` service in `escurel-server` is a thin
+//! The admin MCP tools in `escurel-server` are a thin
 //! shell that delegates `tenant_create` / `tenant_list` /
 //! `tenant_get` / `tenant_update` / `tenant_delete` to a
 //! [`TenantStore`]. Today the only implementation is
@@ -83,7 +83,7 @@ pub enum AdminError {
 /// Storage abstraction for the admin tenant-CRUD endpoints.
 ///
 /// Implementations must be thread-safe and cheap to clone behind
-/// an `Arc` — the gRPC server keeps a single handle and calls
+/// an `Arc` — the server keeps a single handle and calls
 /// concurrently from per-request tasks.
 #[async_trait]
 pub trait TenantStore: Send + Sync + 'static {
@@ -104,8 +104,8 @@ pub trait TenantStore: Send + Sync + 'static {
 
     /// Persist a modified spec. The tenant must already exist —
     /// missing tenants return [`AdminError::Io`] with kind
-    /// `NotFound` so the gRPC layer can map it to
-    /// `Status::not_found`.
+    /// `NotFound` so the server layer can map it to a
+    /// not-found error.
     async fn update(&self, spec: &TenantSpec) -> Result<(), AdminError>;
 
     /// Remove a tenant's directory tree. Returns `Ok(false)` when

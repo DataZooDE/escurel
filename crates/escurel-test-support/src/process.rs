@@ -54,7 +54,7 @@ pub struct ConfigOverrides {
     pub tenant_store: Option<Arc<dyn TenantStore>>,
     /// Install a `CrdtBackend`. Required to exercise the live
     /// session tools (`open_session`/`apply_op`/`close_session`)
-    /// and the WS attach + gRPC bidi paths.
+    /// and the WS attach paths.
     pub crdt_backend: Option<Arc<dyn CrdtBackend>>,
     /// Replace the auto-built default indexer with a test-owned
     /// `Arc<Indexer>`. When `Some`, the support crate does *not*
