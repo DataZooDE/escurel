@@ -241,10 +241,8 @@ impl Indexer {
 
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn duckdb::ToSql> = bindings
-            .iter()
-            .map(|b| b as &dyn duckdb::ToSql)
-            .collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> =
+            bindings.iter().map(|b| b as &dyn duckdb::ToSql).collect();
         let mut rows = stmt.query(param_refs.as_slice())?;
         while let Some(row) = rows.next()? {
             let slug: String = row.get(0)?;

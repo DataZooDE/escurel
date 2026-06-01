@@ -191,9 +191,7 @@ impl SessionManager {
         // shard lock.
         let stale_sid = self.pages.get(page_id).map(|r| r.value().clone());
         if let Some(stale_sid) = stale_sid {
-            let evicted = self
-                .evict_if_idle(&stale_sid, page_id, self.idle_ttl)
-                .await;
+            let evicted = self.evict_if_idle(&stale_sid, page_id, self.idle_ttl).await;
             if !evicted {
                 return Err(SessionError::AlreadyOpen(page_id.to_owned()));
             }
