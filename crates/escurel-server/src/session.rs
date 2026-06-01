@@ -22,12 +22,11 @@
 //! actor — that way concurrent applies on different sessions
 //! don't contend on the registry, only on their own actor.
 //!
-//! The close path removes the entry, then `Arc::try_unwrap`s the
-//! sole remaining `Arc<LiveDoc>` to satisfy `LiveDoc::close`'s
-//! `self` parameter. If a transport leaked another `Arc` clone
-//! (e.g. by parking it on a background task), close falls back to
-//! a `RuntimeBusy` error rather than blocking on the missing
-//! drop.
+//! The close path removes the entry, then closes through the
+//! `Arc<LiveDoc>` directly — `LiveDoc::close` takes `&self` and
+//! terminates the actor via its `Command::Close`, so no sole-
+//! ownership reclaim is needed and an outstanding `Arc` clone (e.g.
+//! an in-flight `apply`) can no longer wedge close.
 
 use std::sync::Arc;
 
@@ -95,14 +94,6 @@ pub enum SessionError {
     /// today (codex review on PR M4.5b).
     #[error("page `{0}` already has an open session")]
     AlreadyOpen(String),
-
-    /// `close` couldn't reclaim sole ownership of the `LiveDoc`
-    /// — another transport leaked an `Arc<LiveDoc>` clone past
-    /// the registry's removal. The actor stays alive (the clone
-    /// can still call `apply_op`); the session id is gone from
-    /// the registry, so future `apply` / `close` calls 404.
-    #[error("livedoc handle still referenced elsewhere; cannot close")]
-    StillReferenced,
 
     /// Errors bubbled up from [`LiveDoc`] (Loro / DuckDB).
     #[error("livedoc error: {0}")]
@@ -203,11 +194,11 @@ impl SessionManager {
         // Release the page reservation so a subsequent open() on
         // the same page can succeed.
         self.pages.remove(&entry.page_id);
-        // `LiveDoc::close` consumes `self`, so we need sole
-        // ownership of the Arc. Under normal use (HTTP MCP only)
-        // the entry holds the only strong count.
-        let doc = Arc::try_unwrap(entry.doc).map_err(|_| SessionError::StillReferenced)?;
-        let v = doc.close(commit).await?;
+        // `LiveDoc::close` takes `&self` and terminates the actor via
+        // its `Command::Close`, so we can close through the `Arc`
+        // directly — no `Arc::try_unwrap`, which would wedge close with
+        // `StillReferenced` if any in-flight `apply` still held a clone.
+        let v = entry.doc.close(commit).await?;
         // `entry._guard` already dropped when we destructured the
         // entry above; the semaphore slot is free.
         Ok(v)
@@ -305,6 +296,36 @@ mod tests {
         // After close, a second open is allowed again.
         let _ = sm.close(&sid_a, false).await.unwrap();
         let _ = sm.open(b, "page-x", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_succeeds_while_a_doc_arc_clone_is_held() {
+        // Pins FIX 3: close must not depend on sole Arc ownership.
+        // We clone the registry's `Arc<LiveDoc>` (simulating an
+        // in-flight `apply` or a transport that parked a handle) and
+        // hold it across `close`. The old `Arc::try_unwrap` path
+        // would have failed here with `StillReferenced`; with
+        // `LiveDoc::close(&self)` the close goes through cleanly.
+        let (_dir, b) = backend();
+        let sm = SessionManager::new();
+        let (sid, _v) = sm.open(b, "page-held", None).await.unwrap();
+
+        // Reach into the registry (same module) and clone the doc Arc.
+        let held: Arc<escurel_crdt::LiveDoc> = {
+            let entry = sm.entries.get(&sid).unwrap();
+            Arc::clone(&entry.doc)
+        };
+        assert!(Arc::strong_count(&held) >= 2, "a second strong ref is held");
+
+        // Close while the clone is still alive: must succeed.
+        let v = sm.close(&sid, false).await.expect("close must not wedge");
+        let _ = v; // a final Version is returned
+        assert!(sm.page_id_of(&sid).is_none(), "entry removed");
+
+        // The held clone's actor has terminated; a further close
+        // through it is a benign Closed error, not a hang.
+        let after = held.close(false).await;
+        assert!(after.is_err(), "actor already terminated: {after:?}");
     }
 
     #[tokio::test]

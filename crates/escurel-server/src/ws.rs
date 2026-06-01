@@ -475,7 +475,6 @@ fn session_error_frame(session_id: &str, err: &SessionError) -> Value {
     let code = match err {
         SessionError::UnknownSession(_) => "unknown_session",
         SessionError::AlreadyOpen(_) => "session_already_open",
-        SessionError::StillReferenced => "session_still_referenced",
         SessionError::LiveDoc(_) => "livedoc_error",
     };
     json!({
