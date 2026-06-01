@@ -282,6 +282,40 @@ async fn tampered_signature_is_rejected() {
 }
 
 #[tokio::test]
+async fn token_with_disallowed_alg_is_rejected() {
+    // A token whose header `alg` is outside the asymmetric allow-list
+    // (here HS256, an HMAC alg) must be rejected on the algorithm
+    // allow-list — even when it carries the right `kid`. This pins
+    // the defence-in-depth against alg-confusion / downgrade.
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let claims = json!({
+        "iss": issuer,
+        "aud": AUDIENCE,
+        "sub": "u",
+        "tenant": "acme",
+        "iat": now,
+        "exp": now + 600,
+    });
+    // Sign with HS256 + a symmetric secret, but advertise the known kid.
+    let mut header = Header::new(Algorithm::HS256);
+    header.kid = Some(KID.to_owned());
+    let key = EncodingKey::from_secret(b"attacker-chosen-secret");
+    let token = encode(&header, &claims, &key).expect("sign hs256");
+
+    let err = v.verify(&token).await.expect_err("must reject HS256");
+    assert!(
+        matches!(err, AuthError::UnsupportedAlg(Algorithm::HS256)),
+        "{err}"
+    );
+}
+
+#[tokio::test]
 async fn jwks_cache_serves_repeated_lookups_without_extra_fetches() {
     let server = MockServer::start().await;
     let keys = make_keys();

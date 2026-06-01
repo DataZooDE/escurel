@@ -104,6 +104,8 @@ pub enum AuthError {
     Jwks(#[from] JwksCacheError),
     #[error("token validation failed: {0}")]
     Invalid(String),
+    #[error("token header algorithm `{0:?}` is not in the trusted allow-list")]
+    UnsupportedAlg(Algorithm),
     #[error("token missing required `{tenant_claim}` claim")]
     MissingTenant { tenant_claim: String },
 }
@@ -151,9 +153,24 @@ impl OidcVerifier {
     /// success.
     pub async fn verify(&self, token: &str) -> Result<AuthContext, AuthError> {
         let header = decode_header(token).map_err(|e| AuthError::BadHeader(e.to_string()))?;
+        // Pin the accepted algorithm set from a trusted allow-list
+        // (asymmetric only — RSA/ECDSA, never HMAC) rather than
+        // trusting the header. Reject the untrusted header `alg` if
+        // it falls outside the allow-list before doing any further
+        // work. Defence-in-depth against alg-confusion / downgrade.
+        let alg = header.alg;
+        if !allowed_algorithms().contains(&alg) {
+            return Err(AuthError::UnsupportedAlg(alg));
+        }
         let kid = header.kid.ok_or(AuthError::MissingKid)?;
         let key = self.jwks.key_for_kid(&kid).await?;
-        let alg = header.alg;
+        // Validate against exactly the (already allow-listed) header
+        // alg. We must not stuff the whole allow-list in here —
+        // jsonwebtoken returns `InvalidAlgorithm` if any algorithm in
+        // the set is incompatible with the key family (e.g. an EC alg
+        // against an RSA key). The allow-list gate above is what bounds
+        // the accepted set; `Validation::new(alg)` pins this token to
+        // its single, vetted algorithm.
         let mut validation = Validation::new(alg);
         validation.set_audience(&[self.config.audience.as_str()]);
         validation.set_issuer(&[self.config.issuer.as_str()]);
@@ -176,12 +193,6 @@ impl OidcVerifier {
         } else {
             Role::Agent
         };
-
-        // Algorithms our validator accepts. The spec doesn't pin
-        // one; we accept any the JWKS supplies. Implicit security
-        // bound: jsonwebtoken `decode` rejects when `alg` doesn't
-        // match the key's type, so an attacker can't downgrade.
-        let _ = alg;
 
         Ok(AuthContext {
             subject: claims.sub,
@@ -211,7 +222,6 @@ fn has_admin_role(claims: &serde_json::Map<String, serde_json::Value>, cfg: &Oid
 
 /// Algorithms we trust at validate-time. RSA SHA-256/384/512 +
 /// ECDSA P-256/P-384. Asymmetric only — no HMAC.
-#[allow(dead_code)]
 fn allowed_algorithms() -> &'static [Algorithm] {
     &[
         Algorithm::RS256,
