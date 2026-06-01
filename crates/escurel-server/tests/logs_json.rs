@@ -148,7 +148,6 @@ async fn mcp_request_emits_json_log_with_required_substrate_fields() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_request_emits_span_with_tool_name_and_request_id() {
     let buf = shared_buf();
-    let start_offset = buf.lock().unwrap().len();
 
     let p = spawn_gateway().await;
     let http = reqwest::Client::new();
@@ -165,14 +164,12 @@ async fn mcp_request_emits_span_with_tool_name_and_request_id() {
     assert_eq!(resp.status(), 200);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
+    // The subscriber buffer is shared + append-only across every test
+    // in this binary, so we can't slice "our" lines out by offset
+    // (and must never index the parsed-line vec by a byte offset).
+    // Assert on the request_id we supplied, which is unique to this
+    // request, scanning the whole snapshot.
     let all = snapshot(&buf);
-    let mine: Vec<&Value> = all[start_offset.saturating_sub(0)..]
-        .iter()
-        .filter(|v| v.get("request_id").is_some())
-        .collect();
-
-    // At least one record was emitted inside a request span and
-    // carries a hoisted request_id field.
     let inbound = all.iter().find(|v| {
         v.get("request_id")
             .and_then(|r| r.as_str())
@@ -180,8 +177,8 @@ async fn mcp_request_emits_span_with_tool_name_and_request_id() {
             .unwrap_or(false)
     });
     assert!(
-        inbound.is_some() || !mine.is_empty(),
-        "expected at least one log line with a `request_id` field; all lines: {all:?}"
+        inbound.is_some(),
+        "expected a log line with request_id `req-test-7`; all lines: {all:?}"
     );
     // When the caller supplied `X-Request-Id`, the span should
     // adopt it.
