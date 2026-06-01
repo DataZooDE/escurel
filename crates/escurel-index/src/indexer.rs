@@ -56,7 +56,7 @@ pub struct Indexer {
 /// Per-page progress event emitted by
 /// [`Indexer::rebuild_with_progress`]. Borrowed so the callback
 /// can receive a `&str` without forcing an allocation per page;
-/// gRPC handlers copy it into the proto message at the boundary.
+/// the MCP handlers serialize it into the response at the boundary.
 #[derive(Debug)]
 pub struct RebuildProgress<'a> {
     pub done: u64,
@@ -457,7 +457,7 @@ impl Indexer {
 
     /// Like [`Self::rebuild`], but invokes `on_progress` once per
     /// page reindexed with the running `(done, total, page_id)`
-    /// tuple. Used by `EscurelAdmin.Rebuild` to stream
+    /// tuple. Used by the `rebuild` admin tool to stream
     /// `RebuildProgress` chunks to the caller. `done` is `1` on
     /// the first emission and equal to `total` on the last.
     pub async fn rebuild_with_progress<F>(&self, mut on_progress: F) -> Result<(), IndexerError>

@@ -1,9 +1,9 @@
 //! Transport-neutral tar+gz helpers for tenant export/import.
 //!
 //! These were originally inline in `grpc.rs`; they were lifted here
-//! so both the gRPC `EscurelAdmin` service and the MCP-over-HTTP
-//! `tenant_export` / `tenant_import` tools can share one
-//! implementation without either transport depending on the other.
+//! so the (then gRPC `EscurelAdmin`, now MCP-over-HTTP)
+//! `tenant_export` / `tenant_import` tools share one
+//! transport-neutral implementation.
 //!
 //! `tar::Archive::unpack` rejects entries containing `..` segments
 //! by default, so the path-traversal surface mirrors the rest of

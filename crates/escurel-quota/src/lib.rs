@@ -8,7 +8,7 @@
 //!   `close_session(commit=true)`. Also debits `embeds_per_minute`
 //!   when a write triggers embedding.
 //! - `embeds_per_minute` — counts embedding jobs.
-//! - `concurrent_sessions` — semaphore over open MCP / WS / gRPC
+//! - `concurrent_sessions` — semaphore over open MCP / WS
 //!   sessions.
 //!
 //! All in-memory: restart zeroes every bucket. Per the spec this

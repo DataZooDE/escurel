@@ -20,7 +20,7 @@ const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\ndescription: x\n--
 
 struct Harness {
     process: EscurelProcess,
-    grpc_addr: String,
+    http_addr: String,
     admin_token: String,
     agent_token: String,
     tenants_root: PathBuf,
@@ -66,7 +66,7 @@ async fn start() -> Harness {
         },
     })
     .await;
-    let grpc_addr = process
+    let http_addr = process
         .base_url()
         .strip_prefix("http://")
         .unwrap()
@@ -75,7 +75,7 @@ async fn start() -> Harness {
         admin_token: process.mint_token(TENANT, Role::Admin),
         agent_token: process.mint_token(TENANT, Role::Agent),
         process,
-        grpc_addr,
+        http_addr,
         tenants_root,
         _tenants_dir: tenants_dir,
     }
@@ -86,7 +86,7 @@ fn v(args: &[&str]) -> Vec<String> {
 }
 
 async fn admin(h: &Harness, args: Vec<String>) -> std::process::Output {
-    let addr = h.grpc_addr.clone();
+    let addr = h.http_addr.clone();
     let token = h.admin_token.clone();
     tokio::task::spawn_blocking(move || {
         Command::cargo_bin("escurel")
@@ -226,7 +226,7 @@ async fn admin_tenant_export_then_import() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_rejects_agent_token() {
     let h = start().await;
-    let addr = h.grpc_addr.clone();
+    let addr = h.http_addr.clone();
     let token = h.agent_token.clone();
     let out = tokio::task::spawn_blocking(move || {
         Command::cargo_bin("escurel")

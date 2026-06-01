@@ -1,5 +1,5 @@
 //! In-memory session registry shared by every live-CRDT transport
-//! on the gateway (HTTP MCP, gRPC bidi, WebSocket).
+//! on the gateway (HTTP MCP, WebSocket).
 //!
 //! Each entry maps a `sess_<ulid>` id to a [`LiveDoc`] actor plus
 //! the [`SessionGuard`] returned by
@@ -43,13 +43,13 @@ use ulid::Ulid;
 struct Entry {
     /// The page this session edits. Surfaced via
     /// [`SessionManager::page_id_of`] so the live transports
-    /// (WS / gRPC bidi, M4.3+) can authorise ops without hitting
+    /// (WS attach, M4.3+) can authorise ops without hitting
     /// the indexer. The HTTP MCP dispatcher doesn't read it
     /// directly — the unit test in this module exercises the
     /// round-trip — but the release build does not run unit
     /// tests, so dead-code allow keeps clippy quiet without
     /// dropping the field that the upcoming transports require.
-    #[allow(dead_code)] // M4.3 WS / gRPC bidi consumer.
+    #[allow(dead_code)] // M4.3 WS attach consumer.
     page_id: String,
     doc: Arc<LiveDoc>,
     // Held for the lifetime of the session; dropped when the
@@ -331,7 +331,7 @@ impl SessionManager {
     }
 
     /// Look up the `page_id` an open session is attached to. Used
-    /// by the live transports (WS, gRPC bidi) to authorise ops
+    /// by the live transports (WS attach) to authorise ops
     /// without round-tripping through the indexer. M4.4 wires
     /// the WS attach path through this accessor; the HTTP MCP
     /// dispatcher doesn't call it directly.
@@ -348,7 +348,7 @@ impl SessionManager {
     }
 
     /// Read the current text content of an open session. Used by
-    /// the live transports (gRPC bidi attach in M4.3, WS attach +
+    /// the live transports (WS attach +
     /// `op_ack` replies in M4.4) to populate the `content` field
     /// without forcing the caller to keep a parallel mirror of the
     /// doc.

@@ -3,7 +3,7 @@
 //! This module hoists the `keys` / `jwks_mock` / `token` helpers
 //! that previously lived as private copies in
 //! `crates/escurel-server/tests/auth_quota.rs`,
-//! `crates/escurel-server/tests/grpc_write_tools.rs`, and
+//! `crates/escurel-server/tests/mcp_admin_tools.rs`, and
 //! `crates/escurel-client/tests/client_roundtrip.rs`. The downstream
 //! contract from `docs/spec/dx.md` §"Auth in tests" promises that a
 //! test using `AuthMode::TestIssuer` never imports `wiremock`,

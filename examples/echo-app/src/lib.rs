@@ -33,8 +33,8 @@ use tokio::task::JoinHandle;
 
 /// Construction options for [`spawn`].
 ///
-/// `escurel_endpoint` is the gRPC URL of the escurel gateway
-/// (e.g. `http://127.0.0.1:8081`); `escurel_token` is the bearer
+/// `escurel_endpoint` is the HTTP MCP URL of the escurel gateway
+/// (e.g. `http://127.0.0.1:8080`); `escurel_token` is the bearer
 /// the backend uses on every upstream call. In production both
 /// come from env vars (see [`crate::env_opts`]); in tests they
 /// come from the `escurel-test-support` façade.
@@ -107,7 +107,7 @@ struct AppState {
 ///
 /// Errors:
 /// - failed bind (port exhaustion, permissions).
-/// - failed escurel client connect (gRPC handshake, invalid
+/// - failed escurel client connect (HTTP handshake, invalid
 ///   endpoint, invalid token).
 pub async fn spawn(opts: Opts) -> anyhow::Result<Backend> {
     let client = Client::connect(

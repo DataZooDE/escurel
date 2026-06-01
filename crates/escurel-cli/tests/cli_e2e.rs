@@ -40,7 +40,7 @@ name: Initech\n\
 
 struct Harness {
     process: EscurelProcess,
-    grpc_addr: String,
+    http_addr: String,
     bearer: String,
 }
 
@@ -61,7 +61,7 @@ async fn start() -> Harness {
         },
     })
     .await;
-    let grpc_addr = process
+    let http_addr = process
         .base_url()
         .strip_prefix("http://")
         .unwrap()
@@ -69,7 +69,7 @@ async fn start() -> Harness {
     let bearer = process.mint_token(TENANT, Role::Agent);
     Harness {
         process,
-        grpc_addr,
+        http_addr,
         bearer,
     }
 }
@@ -77,7 +77,7 @@ async fn start() -> Harness {
 /// Build a CLI command pre-wired with server + token env, running the
 /// given args on the blocking pool (assert_cmd is sync).
 async fn run_args(h: &Harness, args: Vec<String>) -> std::process::Output {
-    let addr = h.grpc_addr.clone();
+    let addr = h.http_addr.clone();
     let bearer = h.bearer.clone();
     tokio::task::spawn_blocking(move || {
         Command::cargo_bin("escurel")
@@ -95,7 +95,7 @@ async fn run_args(h: &Harness, args: Vec<String>) -> std::process::Output {
 }
 
 async fn run_stdin(h: &Harness, args: Vec<String>, stdin: &str) -> std::process::Output {
-    let addr = h.grpc_addr.clone();
+    let addr = h.http_addr.clone();
     let bearer = h.bearer.clone();
     let stdin = stdin.to_owned();
     tokio::task::spawn_blocking(move || {
@@ -461,7 +461,7 @@ async fn unauthenticated_mode_works_without_token() {
         },
     })
     .await;
-    let grpc_addr = process
+    let http_addr = process
         .base_url()
         .strip_prefix("http://")
         .unwrap()
@@ -469,7 +469,7 @@ async fn unauthenticated_mode_works_without_token() {
     let out = tokio::task::spawn_blocking(move || {
         Command::cargo_bin("escurel")
             .unwrap()
-            .env("ESCUREL_SERVER", format!("http://{grpc_addr}"))
+            .env("ESCUREL_SERVER", format!("http://{http_addr}"))
             .env_remove("ESCUREL_TOKEN")
             .args(["skill", "list"])
             .assert()
@@ -492,7 +492,7 @@ async fn unauthenticated_mode_works_without_token() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_token_against_authed_server_emits_json_error() {
     let h = start().await;
-    let addr = h.grpc_addr.clone();
+    let addr = h.http_addr.clone();
     let out = tokio::task::spawn_blocking(move || {
         Command::cargo_bin("escurel")
             .unwrap()

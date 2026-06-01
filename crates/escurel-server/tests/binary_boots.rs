@@ -120,7 +120,6 @@ async fn binary_boots_and_serves_healthz() {
         .env("ESCUREL_SERVER_DATA_DIR", data_dir.path())
         // Random loopback port; the binary prints the resolved addr.
         .env("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0")
-        // Disable the gRPC mirror to keep the boot lean.
         // Random loopback metrics port so parallel test binaries
         // don't fight over the default :9090.
         .env("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0")

@@ -31,7 +31,6 @@ note "starting escurel-server (data=$DATA_DIR)"
 ESCUREL_SERVE_DEMO_DIR="$APP/build/web" \
 ESCUREL_SERVER_DATA_DIR="$DATA_DIR" \
 ESCUREL_SERVER_LISTEN_HTTP="127.0.0.1:$PORT" \
-ESCUREL_SERVER_LISTEN_GRPC="" \
 ESCUREL_EMBEDDING_PROVIDER="zero" \
   cargo run -q -p escurel-server >"$ROOT/target/escurel-drive.log" 2>&1 &
 SERVER_PID=$!

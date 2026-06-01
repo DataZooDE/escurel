@@ -3,7 +3,7 @@
 //!
 //! These types are the intended single source of truth for the
 //! request/response/message shapes exchanged over the MCP `/mcp`
-//! endpoint (replacing the prost-generated types in `escurel-proto`).
+//! endpoint.
 //!
 //! Wire-shape rules captured here:
 //!
