@@ -56,15 +56,14 @@ logged but not gating.
 
 ### M3 — Transports + auth + quotas
 
-Crates: `escurel-server` gateway, `escurel-auth`, `escurel-quota`, `escurel-proto`.
+Crates: `escurel-server` gateway, `escurel-auth`, `escurel-quota`.
 
 - axum HTTP server with MCP/JSON-RPC framing.
-- tonic gRPC server with the full `Kb` service.
 - WebSocket endpoint (without live mode yet — just presence
   and search subscriptions stubbed out).
 - OIDC verification with JWKS caching.
 - Token-bucket quotas wired in.
-- `escurel` CLI as a thin MCP/HTTP + gRPC client.
+- `escurel` CLI as a thin MCP-over-HTTP client.
 
 **Acceptance.** Run the cold-start verification through the CLI
 against a real running server. 8/8 queries correct under both
@@ -243,7 +242,6 @@ The v1 dep set (Rust crates):
 | `duckdb` (Rust bindings) | MIT | bindings; DuckDB itself MIT; the `vss` and `fts` extensions are part of the DuckDB extension ecosystem under MIT |
 | `loro` | MIT | CRDT |
 | `candle-core`, `candle-nn`, `candle-transformers` | MIT/Apache-2.0 | HF inference runtime |
-| `tonic`, `prost` | MIT | gRPC |
 | `axum`, `hyper`, `tokio` | MIT | HTTP + runtime |
 | `tower`, `tower-http` | MIT | middleware |
 | `tracing`, `tracing-opentelemetry` | MIT | logs + traces |

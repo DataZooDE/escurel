@@ -3,7 +3,7 @@
 > *Escurel* — old French for *knowledge-base*.
 
 Escurel is a multi-tenant knowledge-base service for agents. It exposes
-a 12-tool MCP surface (plus HTTP, WebSocket and gRPC bindings), stores
+a 12-tool MCP surface (plus HTTP and WebSocket bindings), stores
 each tenant's data in a single per-tenant DuckDB file using the `vss`
 and `fts` extensions, and treats a `pages/` markdown directory as the
 canonical source of truth. Live multi-author editing is backed by a
@@ -31,8 +31,8 @@ repo alongside the spec.
 
 The `escurel` binary (crate `escurel-cli`) is a gh/aws-style client
 over the gateway: one resource noun, one verb, one RPC. It speaks the
-gRPC endpoint (`--server` / `ESCUREL_SERVER`, default
-`http://127.0.0.1:8081`) with an OIDC bearer (`--token` /
+HTTP MCP endpoint (`--server` / `ESCUREL_SERVER`, default
+`http://127.0.0.1:8080`) with an OIDC bearer (`--token` /
 `ESCUREL_TOKEN`).
 
 ```sh

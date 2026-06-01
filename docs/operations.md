@@ -103,8 +103,8 @@ baked model path `ESCUREL_EMBEDDING_MODEL`), then call
 
 ### Quota exhaustion
 
-A tenant hitting its rate budget gets `429` (HTTP) / `RESOURCE_EXHAUSTED`
-(gRPC) with a `Retry-After-Ms` hint. Inspect remaining budget with
+A tenant hitting its rate budget gets `429` (HTTP) with a
+`Retry-After-Ms` hint. Inspect remaining budget with
 `QuotaGet`. The three dimensions are queries, writes+embeds, and
 concurrent sessions.
 
