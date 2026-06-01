@@ -139,6 +139,19 @@ impl Client {
         if !req.skill.is_empty() {
             args["skill"] = json!(req.skill);
         }
+        // Forward the optional refinement fields the server's `search`
+        // tool honours: frontmatter post-filter, time-travel cut, and
+        // scenario overlay. Omitting these (the prior behaviour)
+        // silently returned unfiltered/base results.
+        if !req.filter.is_null() {
+            args["filter"] = req.filter.clone();
+        }
+        if !req.as_of.is_empty() {
+            args["as_of"] = json!(req.as_of);
+        }
+        if !req.scenario.is_empty() {
+            args["scenario"] = json!(req.scenario);
+        }
         self.transport.call_typed("search", args).await
     }
 

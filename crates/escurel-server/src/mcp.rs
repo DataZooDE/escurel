@@ -37,7 +37,8 @@ use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
     AppendChatMessage, ChatMessage, Direction, EventInfo, Granularity, Indexer, IndexerError,
-    Issue, ListChatMessages, NewEvent, OrderDir, Severity, is_safe_attach_source,
+    Issue, ListChatMessages, NewEvent, OrderDir, Severity, derive_attach_alias,
+    is_safe_attach_source,
 };
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
@@ -502,11 +503,11 @@ async fn dispatch_tools_call(
         // surface; delegate to the same logic as EscurelAdmin gRPC).
         "admin_quota" => {
             require_admin(role)?;
-            tool_admin_quota(state, tenant_id)
+            tool_admin_quota(state, tenant_id, params.arguments)
         }
         "admin_audit" => {
             require_admin(role)?;
-            tool_admin_audit(indexer).await
+            tool_admin_audit(indexer, params.arguments).await
         }
         "admin_index_query" => {
             require_admin(role)?;
@@ -1182,7 +1183,16 @@ fn event_to_json(e: &EventInfo) -> Value {
 fn tool_admin_quota(
     state: &crate::server::AppState,
     tenant_id: &str,
+    args: Value,
 ) -> Result<Value, JsonRpcError> {
+    // Honour the requested tenant: reject a `tenant_id` arg that names
+    // a different tenant than this gateway serves, rather than silently
+    // returning the caller's own snapshot.
+    let req: TenantIdArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("admin_quota: {e}")))?;
+    if let Some(indexer) = state.indexer.as_ref() {
+        ensure_tenant_matches(indexer, &req.tenant_id)?;
+    }
     let quota = state
         .quota
         .as_ref()
@@ -1196,7 +1206,10 @@ fn tool_admin_quota(
     })
 }
 
-async fn tool_admin_audit(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+async fn tool_admin_audit(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let req: TenantIdArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("admin_audit: {e}")))?;
+    ensure_tenant_matches(indexer, &req.tenant_id)?;
     let drift = indexer
         .audit()
         .await
@@ -1394,6 +1407,21 @@ fn admin_indexer(state: &AppState) -> Result<&Arc<Indexer>, JsonRpcError> {
         .ok_or_else(|| JsonRpcError::internal("server has no indexer wired"))
 }
 
+/// Reject an admin tool whose `tenant_id` argument targets a tenant
+/// other than the one this single-tenant gateway is bound to. An empty
+/// arg means "this gateway's tenant" and always passes. Without this
+/// guard a `--tenant other` request silently operates on / reports the
+/// wrong tenant (the gRPC admin surface enforced the same match).
+fn ensure_tenant_matches(indexer: &Indexer, tenant_id: &str) -> Result<(), JsonRpcError> {
+    if !tenant_id.is_empty() && tenant_id != indexer.tenant() {
+        return Err(JsonRpcError::failed_precondition(format!(
+            "tenant `{tenant_id}` does not match this gateway's tenant `{}`",
+            indexer.tenant()
+        )));
+    }
+    Ok(())
+}
+
 /// Map an `AdminError` onto the JSON-RPC envelope, mirroring the
 /// gRPC status mapping: invalid id → invalid_params; everything else
 /// (already-exists, I/O, duckdb) → internal.
@@ -1574,7 +1602,7 @@ async fn tool_tenant_import(state: &AppState, args: Value) -> Result<Value, Json
 #[derive(Deserialize)]
 struct AttachExternalArgs {
     #[serde(default)]
-    alias: String,
+    tenant_id: String,
     #[serde(default)]
     source_url: String,
 }
@@ -1583,6 +1611,7 @@ async fn tool_attach_external(state: &AppState, args: Value) -> Result<Value, Js
     let a: AttachExternalArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("attach_external: {e}")))?;
     let indexer = admin_indexer(state)?.clone();
+    ensure_tenant_matches(&indexer, &a.tenant_id)?;
     // Reject an unsafe source before it reaches the ATTACH SQL.
     // DuckDB has no parameter binding for ATTACH, so this is the
     // injection boundary (the indexer re-checks defensively).
@@ -1593,11 +1622,17 @@ async fn tool_attach_external(state: &AppState, args: Value) -> Result<Value, Js
                 .to_owned(),
         ));
     }
+    // Derive a safe catalog alias from the source — the caller does
+    // not choose it (matches the gRPC contract; the returned
+    // `source_id` is this derived alias, not the tenant).
+    let alias = derive_attach_alias(&a.source_url).ok_or_else(|| {
+        JsonRpcError::invalid_params("could not derive a catalog alias from source_url".to_owned())
+    })?;
     indexer
-        .attach_external(&a.alias, &a.source_url)
+        .attach_external(&alias, &a.source_url)
         .await
         .map_err(|e| JsonRpcError::internal(format!("attach_external: {e}")))?;
-    to_value(AttachExternalResponse { source_id: a.alias })
+    to_value(AttachExternalResponse { source_id: alias })
 }
 
 async fn tool_embedding_reload(state: &AppState) -> Result<Value, JsonRpcError> {
@@ -1624,6 +1659,9 @@ async fn tool_rebuild(state: &AppState, args: Value) -> Result<Value, JsonRpcErr
             .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
     }
     let indexer = admin_indexer(state)?.clone();
+    // A wrong `tenant_id` must not silently rebuild this gateway's
+    // (only) tenant.
+    ensure_tenant_matches(&indexer, &a.tenant_id)?;
     // Capture the last (done, total) the progress callback reports.
     // The MCP transport returns the terminal counts rather than a
     // progress stream.
@@ -2215,6 +2253,15 @@ impl JsonRpcError {
     fn internal(msg: impl Into<String>) -> Self {
         Self {
             code: -32603,
+            message: msg.into(),
+        }
+    }
+    /// A precondition the server can't satisfy (e.g. an admin tool
+    /// asked to act on a tenant other than the one this single-tenant
+    /// gateway is bound to). Mirrors the old gRPC `FailedPrecondition`.
+    fn failed_precondition(msg: impl Into<String>) -> Self {
+        Self {
+            code: -32002,
             message: msg.into(),
         }
     }
