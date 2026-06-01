@@ -310,7 +310,6 @@ pub const INSPECTABLE_TABLES: &[&str] = &[
     "pages",
     "blocks",
     "links",
-    "frontmatter_index",
     "crdt_ops",
     "crdt_snapshots",
     "chat_messages",

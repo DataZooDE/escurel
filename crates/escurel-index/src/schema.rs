@@ -1,8 +1,8 @@
 //! DuckDB schema migrator.
 //!
 //! Applies the v1 schema to a fresh per-tenant DuckDB file: pages,
-//! links, blocks (with HNSW + FTS indexes), frontmatter_index,
-//! crdt_ops, crdt_snapshots. See `docs/spec/storage.md §DuckDB
+//! links, blocks (with HNSW + FTS indexes), crdt_ops,
+//! crdt_snapshots. See `docs/spec/storage.md §DuckDB
 //! schema` for the canonical reference.
 
 use duckdb::Connection;

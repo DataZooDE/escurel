@@ -2147,7 +2147,7 @@ fn tools_list_payload() -> Value {
             tool_entry(
                 "admin_index_query",
                 "Admin: read up to `limit` rows from an allow-listed index table \
-                 (pages, blocks, links, frontmatter_index, crdt_ops, crdt_snapshots, \
+                 (pages, blocks, links, crdt_ops, crdt_snapshots, \
                  chat_messages). Not arbitrary SQL.",
                 json!({
                     "type": "object",
@@ -2155,7 +2155,7 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "table": {
                             "type": "string",
-                            "enum": ["pages", "blocks", "links", "frontmatter_index",
+                            "enum": ["pages", "blocks", "links",
                                      "crdt_ops", "crdt_snapshots", "chat_messages"]
                         },
                         "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 }
