@@ -63,7 +63,6 @@ fn up_creates_core_tables() {
         "pages",
         "links",
         "blocks",
-        "frontmatter_index",
         "crdt_ops",
         "crdt_snapshots",
         "chat_messages",

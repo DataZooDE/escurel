@@ -89,3 +89,29 @@ race conditions" caught this; the audit/rebuild test would
 *not* have surfaced it because that test path is single-task.
 Periodic codex reviews on async mutation paths specifically
 earn their keep.
+
+## Resolution (2026-06-01) — dedicated `write_lock`
+
+The "take `conn` first" fix above preserved ordering but, as an
+Antigravity review later flagged, it also blocks **every read**
+(search / list) for the whole duration of a slow (network) embed —
+the connection mutex is the only read path too.
+
+Resolved by separating the two concerns instead of overloading the
+connection mutex:
+
+- `Indexer` gains a dedicated `write_lock: tokio::sync::Mutex<()>`.
+- `update_page` takes `write_lock` **first** (serialising writers
+  through the entire embed → commit sequence — the ordering
+  guarantee the note above is about), runs `embedder.embed(...)`
+  **without** holding `conn`, then takes `conn` **only** for the
+  transaction.
+
+This is exactly the spec's per-tenant write-lock model
+(`docs/spec/platform.md §Concurrency`) realised inside the Indexer:
+one writer at a time (no out-of-order commit), while reads keep
+free access to the connection during the embed. The original race
+stays closed *by construction* (the writer lock, not lock ordering,
+is what enforces it), and the comment-only invariant is now pinned
+by a regression test:
+`crates/escurel-index/tests/embed_lock.rs::slow_embed_does_not_block_reads_on_the_connection`.

@@ -57,17 +57,6 @@ CREATE INDEX hnsw_blocks_vec
     ON blocks USING HNSW (dense_vec)
     WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);
 
--- Frontmatter index: flattened key/value for skill-specific filters
--- (status, tier, risk, …) without a schema migration per skill.
-CREATE TABLE frontmatter_index (
-    page_id  VARCHAR NOT NULL,
-    key      VARCHAR NOT NULL,
-    value    JSON NOT NULL,
-    value_ts TIMESTAMP,
-    PRIMARY KEY (page_id, key)
-);
-CREATE INDEX fm_key_value ON frontmatter_index (key, value_ts);
-
 -- CRDT op log.
 CREATE TABLE crdt_ops (
     page_id      VARCHAR NOT NULL,

@@ -27,7 +27,8 @@
 //!   `[[<skill>::...]]` whose `<skill>` is not an indexed skill
 //!   page is an `error` issue with code `unknown_skill`.
 
-use duckdb::params;
+use std::collections::{HashMap, HashSet};
+
 use escurel_md::wikilink::parse_wikilinks;
 use escurel_md::{PageType, YamlValue, parse};
 
@@ -129,44 +130,65 @@ impl Indexer {
         let mut issues = Vec::new();
         let fields = &parsed.frontmatter.fields;
 
-        // required_frontmatter — only when the draft's declared
-        // skill resolves to a skill page that declares required keys.
         // Skill pages declare themselves via `id:`; instance pages
         // via `skill:`.
-        let skill_id = match parsed.frontmatter.page_type {
+        let declared_skill = match parsed.frontmatter.page_type {
             PageType::Instance => fields.get("skill").and_then(YamlValue::as_str),
             PageType::Skill => fields.get("id").and_then(YamlValue::as_str),
         };
-        if let Some(skill) = skill_id {
-            // A `skill:` on an instance that names a non-existent
-            // skill is itself an unknown-skill error.
-            if parsed.frontmatter.page_type == PageType::Instance
-                && !self.skill_page_exists(skill).await?
-            {
-                issues.push(Issue::error(
-                    "unknown_skill",
-                    "frontmatter.skill",
-                    format!("declared skill `{skill}` is not an indexed skill page"),
-                ));
-            } else if let Some(required) = self.required_frontmatter_for(skill).await? {
-                for key in required {
-                    if fields.get(key.as_str()).is_none() {
-                        issues.push(Issue::error(
-                            "frontmatter_required_key_missing",
-                            format!("frontmatter.{key}"),
-                            format!("skill `{skill}` requires frontmatter key `{key}`"),
-                        ));
+
+        // Collect every skill slug we need to resolve up front — the
+        // draft's declared skill plus each typed wikilink target — so
+        // existence + required_frontmatter resolve in ONE locked pass
+        // instead of 2N queries / 2N lock acquisitions across the
+        // loops below.
+        let wikilinks = parse_wikilinks(parsed.body);
+        let mut wanted: HashSet<&str> = HashSet::new();
+        if let Some(skill) = declared_skill {
+            wanted.insert(skill);
+        }
+        for wl in &wikilinks {
+            if let (Some(skill), Some(_)) = (&wl.skill, &wl.id) {
+                wanted.insert(skill.as_str());
+            }
+        }
+        // `skills[slug]` present  => skill exists, value is its
+        // required_frontmatter list; absent => not an indexed skill.
+        let skills = self.resolve_skills(&wanted).await?;
+
+        // required_frontmatter — only when the draft's declared
+        // skill resolves to a skill page that declares required keys.
+        if let Some(skill) = declared_skill {
+            match skills.get(skill) {
+                // A `skill:` on an instance that names a non-existent
+                // skill is itself an unknown-skill error.
+                None if parsed.frontmatter.page_type == PageType::Instance => {
+                    issues.push(Issue::error(
+                        "unknown_skill",
+                        "frontmatter.skill",
+                        format!("declared skill `{skill}` is not an indexed skill page"),
+                    ));
+                }
+                Some(required) => {
+                    for key in required {
+                        if fields.get(key.as_str()).is_none() {
+                            issues.push(Issue::error(
+                                "frontmatter_required_key_missing",
+                                format!("frontmatter.{key}"),
+                                format!("skill `{skill}` requires frontmatter key `{key}`"),
+                            ));
+                        }
                     }
                 }
+                None => {}
             }
         }
 
         // Wikilink syntax + referenced-skill existence.
-        let wikilinks = parse_wikilinks(parsed.body);
         for wl in &wikilinks {
             match (&wl.skill, &wl.id) {
                 (Some(skill), Some(_)) => {
-                    if !self.skill_page_exists(skill).await? {
+                    if !skills.contains_key(skill.as_str()) {
                         issues.push(Issue::error(
                             "unknown_skill",
                             format!("wikilink `[[{skill}::...]]`"),
@@ -190,47 +212,57 @@ impl Indexer {
         Ok(issues)
     }
 
-    /// True iff a skill page with `frontmatter.id == skill` (i.e.
-    /// `pages.slug = skill AND page_type = 'skill'`) is indexed.
-    async fn skill_page_exists(&self, skill: &str) -> Result<bool, IndexerError> {
-        let conn = self.conn.lock().await;
-        let n: i64 = conn.query_row(
-            "SELECT count(*) FROM pages WHERE page_type = 'skill' AND slug = ?",
-            params![skill],
-            |row| row.get(0),
-        )?;
-        Ok(n > 0)
-    }
-
-    /// The `required_frontmatter` list a skill page declares, or
-    /// `None` when the skill is not indexed (the caller treats a
-    /// missing skill page as an `unknown_skill` issue separately).
-    async fn required_frontmatter_for(
+    /// Resolve a set of skill slugs in a single locked DuckDB pass.
+    ///
+    /// Returns a map keyed by the slugs that exist as indexed skill
+    /// pages (`page_type = 'skill'`); each value is that skill's
+    /// declared `required_frontmatter` list (empty when it declares
+    /// none). A slug absent from the map is not an indexed skill —
+    /// callers treat that as an `unknown_skill` issue.
+    async fn resolve_skills(
         &self,
-        skill: &str,
-    ) -> Result<Option<Vec<String>>, IndexerError> {
+        slugs: &HashSet<&str>,
+    ) -> Result<HashMap<String, Vec<String>>, IndexerError> {
+        let mut out = HashMap::new();
+        if slugs.is_empty() {
+            return Ok(out);
+        }
+
+        // Dynamic `IN (?, ?, …)` with bound params — never string
+        // interpolation of the slugs (injection-safe).
+        let placeholders = std::iter::repeat_n("?", slugs.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT slug, frontmatter::VARCHAR FROM pages \
+             WHERE page_type = 'skill' AND slug IN ({placeholders})"
+        );
+        let bindings: Vec<String> = slugs.iter().map(|s| (*s).to_owned()).collect();
+
         let conn = self.conn.lock().await;
-        let fm_json: Option<String> = conn
-            .query_row(
-                "SELECT frontmatter::VARCHAR FROM pages \
-                 WHERE page_type = 'skill' AND slug = ? LIMIT 1",
-                params![skill],
-                |row| row.get(0),
-            )
-            .ok();
-        let Some(fm_json) = fm_json else {
-            return Ok(None);
-        };
-        let fm: serde_json::Value = serde_json::from_str(&fm_json)?;
-        let keys = fm
-            .get("required_frontmatter")
-            .and_then(serde_json::Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(str::to_owned))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        Ok(Some(keys))
+        let mut stmt = conn.prepare(&sql)?;
+        let param_refs: Vec<&dyn duckdb::ToSql> =
+            bindings.iter().map(|b| b as &dyn duckdb::ToSql).collect();
+        let mut rows = stmt.query(param_refs.as_slice())?;
+        while let Some(row) = rows.next()? {
+            let slug: String = row.get(0)?;
+            let fm_json: Option<String> = row.get(1)?;
+            let required = match fm_json {
+                Some(s) => {
+                    let fm: serde_json::Value = serde_json::from_str(&s)?;
+                    fm.get("required_frontmatter")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(str::to_owned))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                }
+                None => Vec::new(),
+            };
+            out.insert(slug, required);
+        }
+        Ok(out)
     }
 }

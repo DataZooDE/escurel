@@ -113,7 +113,13 @@ impl LiveDoc {
     /// Close the actor. If `commit == true`, the actor first
     /// exports a snapshot and persists it. Returns the final
     /// `Version` at which the doc was closed.
-    pub async fn close(self, commit: bool) -> Result<Version, Error> {
+    ///
+    /// Takes `&self` (not `self`): the actor loop terminates on the
+    /// `Command::Close` it receives here (or when the last sender
+    /// drops), so ownership of the handle isn't required. This frees
+    /// callers from `Arc::try_unwrap` gymnastics when the doc is held
+    /// behind a shared `Arc`.
+    pub async fn close(&self, commit: bool) -> Result<Version, Error> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(Command::Close(commit, reply_tx))

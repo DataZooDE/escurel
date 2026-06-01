@@ -48,7 +48,8 @@ base64 = "0.22"
 bytes = "1"
 escurel-embed = { path = "../escurel-embed" }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+async-trait = "0.1"
 
 [lints]
 workspace = true
