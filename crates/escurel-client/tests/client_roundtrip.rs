@@ -177,6 +177,48 @@ async fn search_round_trips() {
     p.shutdown().await;
 }
 
+/// The client must forward the `filter` field (and `as_of` / `scenario`)
+/// to the server's `search` tool — earlier it dropped them, silently
+/// returning unfiltered results. Pin it: an unfiltered query for the
+/// seeded customers returns hits; the same query with a frontmatter
+/// filter for a `tier` value nothing has returns none.
+#[tokio::test]
+async fn search_forwards_frontmatter_filter() {
+    let p = start().await;
+    let client = authed_client(&p).await;
+
+    let unfiltered = client
+        .search(SearchRequest {
+            q: "Acme".to_owned(),
+            k: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        !unfiltered.hits.is_empty(),
+        "baseline search should return hits"
+    );
+
+    let filtered = client
+        .search(SearchRequest {
+            q: "Acme".to_owned(),
+            k: 10,
+            // No seeded instance has tier=platinum (acme is gold). If
+            // the filter is forwarded, this excludes everything.
+            filter: serde_json::json!({ "tier": "platinum" }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        filtered.hits.is_empty(),
+        "filter must be applied server-side; got {} hits",
+        filtered.hits.len()
+    );
+    p.shutdown().await;
+}
+
 #[tokio::test]
 async fn update_page_round_trips() {
     let p = start().await;

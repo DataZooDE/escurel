@@ -514,6 +514,19 @@ async fn tools_list_returns_the_agent_tools_with_schemas() {
         "list_events",
         "list_snapshots",
         "assign_event",
+        // Admin tenant-lifecycle + operator tools must be advertised
+        // too, so a discovery client finds them.
+        "tenant_create",
+        "tenant_list",
+        "tenant_get",
+        "tenant_update",
+        "tenant_delete",
+        "tenant_export",
+        "tenant_import",
+        "rebuild",
+        "compact_lanes",
+        "attach_external",
+        "embedding_reload",
     ];
     for name in expected {
         assert!(

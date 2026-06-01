@@ -173,9 +173,9 @@ impl AdminClient {
             .await
     }
 
-    /// Attach an external read-only source to a tenant. The MCP tool's
-    /// argument keys are `alias` + `source_url`; the source alias comes
-    /// back as `source_id`.
+    /// Attach an external read-only source to the gateway's tenant. The
+    /// server validates `tenant_id` against the gateway, derives a safe
+    /// catalog alias from `source_url`, and returns it as `source_id`.
     pub async fn attach_external(
         &self,
         req: AttachExternalRequest,
@@ -183,7 +183,7 @@ impl AdminClient {
         self.transport
             .call_typed(
                 "attach_external",
-                json!({ "alias": req.tenant_id, "source_url": req.source_url }),
+                json!({ "tenant_id": req.tenant_id, "source_url": req.source_url }),
             )
             .await
     }

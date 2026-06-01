@@ -223,12 +223,97 @@ async fn attach_external_rejects_unsafe_source() {
         &h.process,
         Role::Admin,
         "attach_external",
-        json!({ "alias": "ext", "source_url": "foo';DROP TABLE pages;--" }),
+        json!({ "tenant_id": TENANT, "source_url": "foo';DROP TABLE pages;--" }),
     )
     .await;
     assert_eq!(
         body["error"]["code"], -32602,
         "expected invalid_params: {body}"
+    );
+    h.process.shutdown().await;
+}
+
+// --- tenant-match guards on the admin surface (codex regressions) -----
+//
+// Every admin tool that takes a `tenant_id` must reject a value that
+// names a tenant other than the one this single-tenant gateway serves,
+// rather than silently acting on / reporting the wrong tenant. The
+// gateway here is bound to `acme`; `globex` is a valid-but-foreign id.
+
+#[tokio::test]
+async fn rebuild_rejects_foreign_tenant() {
+    let h = start().await;
+    let body = call(
+        &h.process,
+        Role::Admin,
+        "rebuild",
+        json!({ "tenant_id": "globex" }),
+    )
+    .await;
+    assert_eq!(
+        body["error"]["code"], -32002,
+        "rebuild must reject a foreign tenant: {body}"
+    );
+    h.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn attach_external_rejects_foreign_tenant() {
+    let h = start().await;
+    let body = call(
+        &h.process,
+        Role::Admin,
+        "attach_external",
+        json!({ "tenant_id": "globex", "source_url": "/tmp/catalog.duckdb" }),
+    )
+    .await;
+    assert_eq!(
+        body["error"]["code"], -32002,
+        "attach_external must reject a foreign tenant: {body}"
+    );
+    h.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn admin_quota_rejects_foreign_tenant() {
+    let h = start().await;
+    let body = call(
+        &h.process,
+        Role::Admin,
+        "admin_quota",
+        json!({ "tenant_id": "globex" }),
+    )
+    .await;
+    assert_eq!(
+        body["error"]["code"], -32002,
+        "admin_quota must reject a foreign tenant: {body}"
+    );
+    // The gateway's own tenant still resolves cleanly.
+    let ok = call(
+        &h.process,
+        Role::Admin,
+        "admin_quota",
+        json!({ "tenant_id": TENANT }),
+    )
+    .await;
+    assert!(ok.get("error").is_none(), "own-tenant quota: {ok}");
+    assert!(ok["result"]["queries_remaining"].is_number());
+    h.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn admin_audit_rejects_foreign_tenant() {
+    let h = start().await;
+    let body = call(
+        &h.process,
+        Role::Admin,
+        "admin_audit",
+        json!({ "tenant_id": "globex" }),
+    )
+    .await;
+    assert_eq!(
+        body["error"]["code"], -32002,
+        "admin_audit must reject a foreign tenant: {body}"
     );
     h.process.shutdown().await;
 }
