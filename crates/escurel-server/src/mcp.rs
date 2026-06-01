@@ -2210,6 +2210,121 @@ fn tools_list_payload() -> Value {
                     }
                 }),
             ),
+            // Admin tenant-lifecycle + operator tools. All require an
+            // admin-role bearer (JSON-RPC -32001 otherwise) and a
+            // `tenant_id` naming this single-tenant gateway's tenant
+            // (-32002 on a mismatch).
+            tool_entry(
+                "tenant_create",
+                "Admin: provision a tenant (directory + DuckDB file).",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id"],
+                    "properties": {
+                        "tenant_id": { "type": "string" },
+                        "display_name": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "tenant_list",
+                "Admin: list all tenants in the tenant store.",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "tenant_get",
+                "Admin: fetch one tenant's spec.",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id"],
+                    "properties": { "tenant_id": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "tenant_update",
+                "Admin: update a tenant's spec (e.g. display name).",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id"],
+                    "properties": {
+                        "tenant_id": { "type": "string" },
+                        "display_name": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "tenant_delete",
+                "Admin: delete a tenant and its on-disk state.",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id"],
+                    "properties": { "tenant_id": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "tenant_export",
+                "Admin: export a tenant's canonical markdown as a base64 \
+                 tar+gz blob (`tarball_b64` + `bytes`).",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id"],
+                    "properties": { "tenant_id": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "tenant_import",
+                "Admin: import a tenant's markdown from a base64 tar+gz blob \
+                 into an existing tenant; returns `bytes_imported`.",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id", "tarball_b64"],
+                    "properties": {
+                        "tenant_id": { "type": "string" },
+                        "tarball_b64": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "rebuild",
+                "Admin: rebuild the tenant's index from canonical markdown; \
+                 returns the final `{done, total}` page counts.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "compact_lanes",
+                "Admin: compact the tenant's CRDT op lanes; returns \
+                 `{ops_compacted, bytes_reclaimed}`.",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id"],
+                    "properties": { "tenant_id": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "attach_external",
+                "Admin: attach an external read-only DuckDB source; the \
+                 catalog alias is derived from `source_url` and returned as \
+                 `source_id`.",
+                json!({
+                    "type": "object",
+                    "required": ["source_url"],
+                    "properties": {
+                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                        "source_url": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "embedding_reload",
+                "Admin: hot-reload the embedding model from the captured \
+                 config; returns the new `model_revision`.",
+                json!({ "type": "object", "properties": {} }),
+            ),
         ]
     })
 }
