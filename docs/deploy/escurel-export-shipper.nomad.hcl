@@ -2,10 +2,10 @@
 //
 // The substrate-side completion of escurel's backup contract
 // (docs/deploy/substrate.md §4). `escurel-server` is a producer-only:
-// it can emit a `tenant_export` tarball via the admin gRPC surface
-// (EscurelAdmin.TenantExport) but never ships it anywhere. This
+// it can emit a `tenant_export` tarball via the admin HTTP MCP surface
+// (the `tenant_export` admin tool) but never ships it anywhere. This
 // periodic batch job is the shipper: once per cadence it enumerates
-// active tenants, calls TenantExport per tenant, validates the
+// active tenants, calls the `tenant_export` tool per tenant, validates the
 // SHA-256 terminator per the protocol.md tenant_export contract, and
 // uploads each tarball to the substrate GCS backup bucket as one
 // object.
@@ -36,7 +36,7 @@ variable "version" {
 
 variable "image" {
   type        = string
-  description = "Shipper container image, pinned by digest. Bundles the escurel admin client (gRPC) + a GCS uploader (gsutil/rclone). NEVER :latest."
+  description = "Shipper container image, pinned by digest. Bundles the escurel admin client (HTTP MCP) + a GCS uploader (gsutil/rclone). NEVER :latest."
   // Example: "registry.datazoo.internal/escurel-export-shipper@sha256:..."
 }
 
@@ -60,7 +60,7 @@ job "dz-escurel-export-shipper" {
     count = 1
 
     // The shipper reaches escurel's admin surface over the tailnet
-    // (escurel-grpc.service.consul:8081) — it is NOT a public client.
+    // (escurel-mcp.service.consul:8080) — it is NOT a public client.
     // It runs on a default cli node; it does not need the
     // escurel-class placement floor (it is I/O-bound, not embedding-bound).
 
@@ -77,7 +77,7 @@ job "dz-escurel-export-shipper" {
       driver = "docker"
 
       // apps-dz grants read on kv/data/apps/dz/escurel/<env>/* — the
-      // admin OIDC token (for the gRPC call) and the GCS uploader
+      // admin OIDC token (for the HTTP MCP call) and the GCS uploader
       // credentials both live there (skill ref 02).
       vault {
         policies = ["apps-dz"]
@@ -88,7 +88,7 @@ job "dz-escurel-export-shipper" {
       }
 
       // Admin bearer + GCS creds, both from Vault. `escurel:admin`
-      // role in the OIDC token lets EscurelAdmin.TenantExport through
+      // role in the OIDC token lets the `tenant_export` admin tool through
       // (substrate.md §1 admin_role_value). The GCS service-account
       // key is scoped write-only to the escurel backups prefix.
       template {
@@ -121,17 +121,17 @@ EOH
         ENV     = "${var.datacenter}"
         VERSION = "${var.version}"
 
-        // Admin gRPC endpoint over the tailnet (the escurel-grpc
+        // Admin HTTP MCP endpoint over the tailnet (the escurel-mcp
         // Consul service from escurel.nomad.hcl).
-        ESCUREL_SERVER = "http://escurel-grpc.service.consul:8081"
+        ESCUREL_SERVER = "http://escurel-mcp.service.consul:8080"
 
         GOOGLE_APPLICATION_CREDENTIALS = "/secrets/gcs-sa.json"
 
         // Per-object key format (substrate.md §4):
         //   <tenant_id>/<YYYY>-<MM>-<DD>T<HH><MM><SS>Z.tar
         // The shipper entrypoint:
-        //   1. enumerates active tenants via EscurelAdmin.ListTenants
-        //   2. for each: EscurelAdmin.TenantExport → stream tarball
+        //   1. enumerates active tenants via the admin `list_tenants` tool
+        //   2. for each: the admin `tenant_export` tool → tarball
         //   3. validates the SHA-256 terminator (protocol.md contract)
         //   4. uploads to gs://${GCS_BACKUP_BUCKET}/${GCS_BACKUP_PREFIX}<key>
         //   5. emits one audit line: tool=tenant_export_shipped
@@ -140,7 +140,7 @@ EOH
         // ref 13 idempotency contract).
       }
 
-      // I/O-bound (gRPC stream → GCS), like the substrate's own backup
+      // I/O-bound (HTTP MCP → GCS), like the substrate's own backup
       // jobs (skill ref 13: 200 MHz / 256 MiB). A large tenant's tarball
       // streams; it is not buffered whole in memory.
       resources {

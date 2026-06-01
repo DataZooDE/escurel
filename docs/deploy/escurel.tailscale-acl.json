@@ -24,9 +24,11 @@
 //   - tag:dz-escurel reaches tag:srv ONLY for the Vault template
 //     (secret fetch at task start). It does NOT initiate to
 //     tag:agents — escurel is not behind Triton.
-//   - tag:ops (operators + CI ops identity) may reach escurel's gRPC
-//     admin surface :8081 over the tailnet for admin tooling and the
-//     export shipper.
+//   - tag:ops (operators + CI ops identity) may reach escurel's
+//     Prometheus /metrics :9090 over the tailnet. Admin tooling and
+//     the export shipper reach the admin surface via the authenticated
+//     HTTP MCP service (port 8080, behind Fabio/OIDC), not a
+//     tailnet-only port.
 //   - tag:agents (the agent pool) does NOT reach escurel directly;
 //     only Triton (on tag:cli) does, and that is over Fabio /
 //     Consul-routed HTTP, not a tailnet ACL grant.
@@ -38,11 +40,11 @@
 
   "acls": [
     // Operators + CI ops identity reach escurel's tailnet-only
-    // surfaces: gRPC admin :8081 and Prometheus /metrics :9090.
+    // surface: Prometheus /metrics :9090.
     {
       "action": "accept",
       "src": ["tag:ops"],
-      "dst": ["tag:dz-escurel:8081", "tag:dz-escurel:9090"]
+      "dst": ["tag:dz-escurel:9090"]
     },
 
     // escurel reaches the Vault/Consul/Nomad servers ONLY for the
@@ -63,7 +65,7 @@
   // Operator note: public MCP/WS/REST ingress is NOT a tailnet ACL
   // concern — it flows internet -> Hetzner LB :443 -> Fabio (on cli)
   // -> Consul-routed -> escurel alloc (skill ref 03 + substrate.md §8).
-  // The tailnet ACL governs only the tailnet-only surfaces (gRPC,
-  // metrics) and the Vault secret fetch.
+  // The tailnet ACL governs only the tailnet-only surface (metrics)
+  // and the Vault secret fetch.
   "ssh": []
 }
