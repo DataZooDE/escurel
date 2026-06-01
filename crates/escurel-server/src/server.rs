@@ -30,7 +30,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 use crate::mcp::mcp;
-use crate::session::SessionManager;
+use crate::session::{DEFAULT_IDLE_TTL, SessionManager};
 use crate::ws::ws_upgrade;
 
 /// Async factory that rebuilds the real embedder from the same
@@ -169,6 +169,9 @@ pub enum ServerError {
 
 /// Handle to a running [`serve`]. Drops cleanly: callers signal
 /// shutdown via [`ServerHandle::shutdown`].
+/// How often the background sweep checks for idle sessions to evict.
+const EVICT_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub struct ServerHandle {
     pub local_addr: SocketAddr,
     /// Address of the dedicated Prometheus `/metrics` listener, when
@@ -176,8 +179,10 @@ pub struct ServerHandle {
     pub metrics_addr: Option<SocketAddr>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     metrics_shutdown_tx: Option<oneshot::Sender<()>>,
+    evict_shutdown_tx: Option<oneshot::Sender<()>>,
     join: JoinHandle<()>,
     metrics_join: Option<JoinHandle<()>>,
+    evict_join: Option<JoinHandle<()>>,
     /// Telemetry guard. `Some` when this `serve()` call was the
     /// one that installed the global subscriber; `None` when a
     /// pre-existing subscriber (e.g. a test's) was already
@@ -205,8 +210,14 @@ impl ServerHandle {
         if let Some(tx) = self.metrics_shutdown_tx.take() {
             let _ = tx.send(());
         }
+        if let Some(tx) = self.evict_shutdown_tx.take() {
+            let _ = tx.send(());
+        }
         let _ = self.join.await;
         if let Some(j) = self.metrics_join.take() {
+            let _ = j.await;
+        }
+        if let Some(j) = self.evict_join.take() {
             let _ = j.await;
         }
     }
@@ -322,6 +333,27 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         let _ = serve.await;
     });
 
+    // Periodic idle-session sweep: a transport that drops without a
+    // clean close (a crashed client) would otherwise hold its page's
+    // reservation forever. `open()` evicts opportunistically on a
+    // contended page, but this backstop reclaims a long-idle session
+    // even when nobody reopens it. Discards (no commit), like an
+    // abandoned draft.
+    let (evict_shutdown_tx, mut evict_shutdown_rx) = oneshot::channel();
+    let sweep_sessions = Arc::clone(&state.sessions);
+    let evict_join = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(EVICT_SWEEP_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    sweep_sessions.evict_idle(DEFAULT_IDLE_TTL).await;
+                }
+                _ = &mut evict_shutdown_rx => break,
+            }
+        }
+    });
+
     // Dedicated Prometheus `/metrics` listener (optional). Served on
     // its own port — substrate scrapes it over the tailnet — so the
     // public HTTP app never exposes `/metrics`. Same AppState → same
@@ -339,8 +371,10 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         metrics_addr,
         shutdown_tx: Some(tx),
         metrics_shutdown_tx,
+        evict_shutdown_tx: Some(evict_shutdown_tx),
         join,
         metrics_join,
+        evict_join: Some(evict_join),
         _telemetry: telemetry_guard,
     })
 }
