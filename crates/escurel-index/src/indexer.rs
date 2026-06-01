@@ -40,6 +40,16 @@ pub struct Indexer {
     store: Arc<dyn LaneStore>,
     pub(crate) embedder: Arc<dyn Embedder>,
     pub(crate) conn: Mutex<Connection>,
+    /// Write-serialization lock. Held across the whole
+    /// embed → transaction sequence in [`Self::update_page`] so two
+    /// concurrent writes to the same page can't commit out of order
+    /// (the slow embedder finishing second and clobbering newer
+    /// content). It is NOT the connection mutex: holding `conn`
+    /// across a slow (network) embed would block every reader, so the
+    /// embed runs while only `write_lock` is held and `conn` is taken
+    /// only for the transaction. Mirrors the spec's per-tenant write
+    /// lock (`docs/spec/platform.md §Concurrency`).
+    write_lock: Mutex<()>,
     tenant: String,
 }
 
@@ -138,6 +148,7 @@ impl Indexer {
             store,
             embedder,
             conn: Mutex::new(conn),
+            write_lock: Mutex::new(()),
             tenant: tenant.into(),
         })
     }
@@ -164,6 +175,13 @@ impl Indexer {
     /// within the tenant (e.g. `markdown/skills/customer.md`).
     /// ULID + slug semantics arrive in a later PR.
     pub async fn update_page(&self, page_id: &str, content: &str) -> Result<(), IndexerError> {
+        // Serialise the whole embed → write sequence through the
+        // dedicated write lock (NOT the connection mutex) so two
+        // concurrent writers can't commit out of order. Held for the
+        // duration of this call; the embed below runs while readers
+        // keep free access to `conn`.
+        let _write = self.write_lock.lock().await;
+
         // The mandatory `escurel` meta-skill is protected: a write that
         // drops its skill identity or one of its established sections is
         // rejected (operators may append, never remove). See
@@ -244,20 +262,17 @@ impl Indexer {
         // frontmatter, not only in its body.
         let fm_wikilinks = frontmatter_wikilinks(&parsed.frontmatter.fields);
 
-        // Take the per-tenant DuckDB mutex BEFORE embedding. A
-        // codex review of M2.1 caught that the obvious "embed
-        // outside the lock" optimisation lets two concurrent
-        // `update_page` calls for the same `page_id` commit out
-        // of order: the slower embed finishes second and
-        // overwrites the newer content. Production avoids this
-        // via the spec's per-tenant write-RwLock in `kb-server`
-        // (`docs/spec/platform.md §Concurrency`); the M2-stage
-        // Indexer's single connection mutex is the only barrier
-        // and must serialise the whole `embed → write`
-        // sequence. See
+        // Embed WITHOUT holding the connection mutex. Out-of-order
+        // commits — the original hazard a codex review of M2.1 caught,
+        // where a slow embed finishes second and overwrites newer
+        // content — are prevented by `write_lock` (taken at the top of
+        // this fn), which serialises writers through the whole
+        // embed → write sequence. Keeping `conn` free during the
+        // (potentially network-bound) embed means concurrent reads
+        // (search / list) are no longer blocked. This matches the
+        // spec's per-tenant write-RwLock model
+        // (`docs/spec/platform.md §Concurrency`). See
         // `docs/notes/discovered/2026-05-24-update-page-embed-order.md`.
-        let mut conn = self.conn.lock().await;
-
         let embeddings = self.embedder.embed(&[body_text.as_str()]).await?;
         let dense_vec = embeddings.into_iter().next().ok_or_else(|| {
             IndexerError::Embed(EmbedError::Backend(
@@ -272,6 +287,8 @@ impl Indexer {
         }
         let dense_vec_sql = format_vector_literal(&dense_vec);
 
+        // Take the connection mutex only for the transaction.
+        let mut conn = self.conn.lock().await;
         let tx = conn.transaction()?;
 
         // pages: upsert via DELETE + INSERT to keep semantics
