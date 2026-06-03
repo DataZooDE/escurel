@@ -588,6 +588,13 @@ impl EscurelConfig {
             path: db_path.display().to_string(),
             source,
         })?;
+        // `vss`/`fts` + the HNSW-persistence flag are per-connection session
+        // state, so load them on EVERY boot — not only when the DB is fresh.
+        // The schema DDL (`up`) is one-time, but a restart against an existing
+        // DB still needs these extensions loaded on this write connection, or
+        // modifying the HNSW-indexed `blocks` table fails ("unknown index type
+        // 'HNSW'"). `INSTALL` is idempotent.
+        Migrator::load_extensions(&conn)?;
         if fresh {
             Migrator::up(&conn)?;
         }
@@ -631,6 +638,8 @@ impl EscurelConfig {
             path: db_path.display().to_string(),
             source,
         })?;
+        // Same per-connection preamble for the CRDT backend's connection.
+        Migrator::load_extensions(&crdt_conn)?;
         let crdt_backend: Arc<dyn CrdtBackend> =
             Arc::new(DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn))));
 

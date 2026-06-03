@@ -25,6 +25,22 @@ pub enum MigrationError {
 pub struct Migrator;
 
 impl Migrator {
+    /// Load the per-connection extension/session state Escurel relies on:
+    /// auto-install/-load, `INSTALL`+`LOAD` of `vss`+`fts`, and the
+    /// experimental-HNSW-persistence flag (see `sql/0001_a_autoload.sql`).
+    ///
+    /// This is **per-connection session state**, not durable schema — `LOAD`
+    /// and `SET` apply only to the connection that ran them. It MUST run on
+    /// **every** connection that touches the index, on every boot — not just
+    /// when the DuckDB file is fresh. A connection opened against an existing
+    /// DB that skips this cannot modify the HNSW-indexed `blocks` table
+    /// (`Cannot bind index 'blocks', unknown index type 'HNSW'`). `INSTALL` is
+    /// idempotent (a no-op once the binary is on disk / baked in the image).
+    pub fn load_extensions(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_1_AUTOLOAD)?;
+        Ok(())
+    }
+
     /// Apply the v1 schema. Connection should be a fresh DuckDB.
     pub fn up(conn: &Connection) -> Result<(), MigrationError> {
         // The migration is split into staged batches because the
@@ -56,3 +72,51 @@ const STAGE_3_FTS: &str = include_str!("../sql/0001_c_fts.sql");
 const STAGE_4_CHAT_MESSAGES: &str = include_str!("../sql/0002_chat_messages.sql");
 const STAGE_5_SCENARIOS: &str = include_str!("../sql/0003_scenarios.sql");
 const STAGE_6_EVENTS: &str = include_str!("../sql/0004_events.sql");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression (DataZooDE/escurel): a restart against an EXISTING db is
+    // non-fresh, so the server skips `up` and only runs `load_extensions`.
+    // That connection must still be able to MODIFY the HNSW-indexed `blocks`
+    // table. Before the fix only `up` (fresh-only) loaded `vss`, so a reopened
+    // write connection failed with "unknown index type 'HNSW'".
+    #[test]
+    fn modifies_hnsw_blocks_after_reopen_with_only_load_extensions() {
+        let path = std::env::temp_dir().join(format!(
+            "escurel-vss-regression-{}.duckdb",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("duckdb.wal"));
+
+        let zeros = std::iter::repeat_n("0.0", 768)
+            .collect::<Vec<_>>()
+            .join(",");
+        let insert = |conn: &Connection, id: &str| {
+            conn.execute_batch(&format!(
+                "INSERT INTO blocks (block_id, page_id, body, dense_vec) \
+                 VALUES ('{id}', 'p1', 'hello world', [{zeros}]::FLOAT[768]);"
+            ))
+        };
+
+        // Fresh boot: full migrate creates `blocks` + the HNSW index.
+        {
+            let conn = Connection::open(&path).expect("open fresh");
+            Migrator::up(&conn).expect("fresh migrate");
+            insert(&conn, "b-fresh").expect("write on the freshly-migrated connection");
+        }
+
+        // Restart: the DB already exists, so production skips `up` and only
+        // runs `load_extensions`. Writing the HNSW table must still succeed.
+        let conn = Connection::open(&path).expect("reopen");
+        Migrator::load_extensions(&conn).expect("load_extensions on reopen");
+        insert(&conn, "b-reopen")
+            .expect("modifying the HNSW-indexed blocks table after reopen must succeed");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("duckdb.wal"));
+    }
+}
