@@ -1,0 +1,24 @@
+# Keep the Docker build context small and stable so a Dockerfile-only edit
+# doesn't bust the (expensive) DuckDB/cargo build layer. The server build
+# (`cargo build -p escurel-server --features gemini`) only needs the cargo
+# workspace: Cargo.{toml,lock}, rust-toolchain.toml, crates/, examples/.
+
+# VCS + local build output (the cargo build runs inside the image).
+.git
+.gitignore
+target
+**/target
+
+# The Dockerfile/.dockerignore themselves — excluding them means editing the
+# Dockerfile leaves `COPY . .` unchanged, so the build cache survives.
+Dockerfile
+.dockerignore
+
+# CI, docs, and the Flutter explore UI: not part of the cargo workspace.
+.github
+docs
+apps
+
+# Editor / OS cruft.
+.DS_Store
+*.swp
