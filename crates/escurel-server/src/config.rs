@@ -44,6 +44,7 @@
 //! | `ESCUREL_AUTH_ADMIN_ROLE_CLAIM` | `roles` | JWT claim listing roles |
 //! | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | `escurel:admin` | role value granting admin |
 //! | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | `300` | JWKS cache TTL (seconds) |
+//! | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
 //! | `ESCUREL_EMBEDDING_PROVIDER` | `zero` | `zero`, `gemini`, or `embeddinggemma` |
 //! | `ESCUREL_EMBEDDING_MODEL` | provider default | model id |
 //! | `ESCUREL_EMBEDDING_DEVICE` | `cpu` | candle device (informational; CPU only today) |
@@ -178,6 +179,7 @@ struct TomlAuth {
     admin_role_claim: Option<String>,
     admin_role_value: Option<String>,
     jwks_refresh_secs: Option<u64>,
+    jwks_uri: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -211,6 +213,11 @@ pub struct AuthConfig {
     pub admin_role_claim: String,
     pub admin_role_value: String,
     pub jwks_refresh: Duration,
+    /// Explicit JWKS URL override. When `None`, the verifier derives one from
+    /// the issuer (Keycloak's `<issuer>/protocol/openid-connect/certs`). Set
+    /// this for issuers that publish elsewhere — e.g. Triton at
+    /// `<issuer>/.well-known/jwks.json`.
+    pub jwks_uri: Option<String>,
 }
 
 /// S3 storage config (present only when backend == s3).
@@ -448,6 +455,10 @@ impl EscurelConfig {
                         "escurel:admin",
                     ),
                     jwks_refresh: Duration::from_secs(jwks_refresh_secs),
+                    jwks_uri: env
+                        .get("ESCUREL_AUTH_JWKS_URI")
+                        .filter(|s| !s.is_empty())
+                        .or(toml_cfg.auth.jwks_uri),
                 })
             }
             _ => None,
@@ -845,6 +856,9 @@ impl EscurelConfig {
         let mut cfg = OidcConfig::new(auth.issuer.clone(), auth.audience.clone())
             .with_tenant_claim(auth.tenant_claim.clone())
             .with_admin_role(auth.admin_role_claim.clone(), auth.admin_role_value.clone());
+        if let Some(uri) = auth.jwks_uri.clone() {
+            cfg = cfg.with_jwks_uri(uri);
+        }
         cfg.jwks_refresh = auth.jwks_refresh;
         Some(Arc::new(OidcVerifier::new(cfg)))
     }
