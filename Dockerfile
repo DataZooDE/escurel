@@ -56,4 +56,11 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s \
   CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 
-ENTRYPOINT ["/usr/local/bin/escurel-server"]
+# Rebuild-on-boot: vss's EXPERIMENTAL HNSW persistence segfaults when a
+# restarted process reloads the on-disk index, so treat the DuckDB index as an
+# ephemeral derived cache — drop it before every start and let escurel rebuild
+# a fresh index from the durable markdown LaneStore (its fresh-boot recovery
+# path). The canonical markdown corpus is NEVER touched. Inline (no extra file)
+# so editing this Dockerfile doesn't bust the build cache (.dockerignore excludes
+# the Dockerfile from the context). Trade-off: re-embeds the corpus at boot.
+ENTRYPOINT ["/bin/sh", "-c", "rm -f \"${ESCUREL_SERVER_DATA_DIR:-/data}\"/tenants/*/escurel.duckdb \"${ESCUREL_SERVER_DATA_DIR:-/data}\"/tenants/*/escurel.duckdb.wal 2>/dev/null; exec /usr/local/bin/escurel-server"]
