@@ -39,6 +39,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/escurel-server /usr/local/bin/escurel-server
 
+# Kamal (the substrate's deployer) asserts at deploy that the image carries a
+# `service` label exactly matching the Kamal service name, else it refuses to
+# boot it ("missing the 'service' label"). The substrate runs escurel as the
+# `dz-escurel` service, so stamp that here. (If escurel is ever deployed under a
+# different Kamal service name, override with `docker build --label service=…`.)
+LABEL service="dz-escurel"
+
 # Defaults; a deployment overrides via env. Data dir is where the volume mounts.
 ENV ESCUREL_SERVER_LISTEN_HTTP=0.0.0.0:8080 \
     ESCUREL_SERVER_DATA_DIR=/data
