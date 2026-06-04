@@ -191,6 +191,31 @@ async fn update_page_writes_one_pages_row_per_call() {
 }
 
 #[tokio::test]
+async fn update_page_persists_to_the_lanestore() {
+    // Regression: update_page must write the canonical markdown to the
+    // LaneStore (not only the DuckDB index), so `rebuild`/`audit` stay in sync
+    // and a dropped/lost index rebuilds the REAL corpus rather than an empty
+    // one (crash-recovery contract, docs/spec/storage.md).
+    let h = fresh_harness();
+    h.indexer
+        .update_page(INSTANCE_ACME.0, INSTANCE_ACME.1)
+        .await
+        .expect("update");
+
+    let key = Key::new(TENANT, INSTANCE_ACME.0.to_owned()).expect("lane key");
+    let bytes = h
+        .store
+        .read(&key)
+        .await
+        .expect("update_page must persist the page to the LaneStore");
+    assert_eq!(
+        std::str::from_utf8(&bytes).unwrap(),
+        INSTANCE_ACME.1,
+        "LaneStore content must match what was written"
+    );
+}
+
+#[tokio::test]
 async fn update_page_persists_frontmatter_as_json() {
     let h = fresh_harness();
     h.indexer
