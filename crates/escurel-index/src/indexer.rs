@@ -210,6 +210,23 @@ impl Indexer {
             }
         }
         let parsed = parse(content)?;
+
+        // Persist the canonical markdown to the LaneStore BEFORE indexing.
+        // `update_page` previously wrote only the DuckDB index, leaving the
+        // LaneStore (the source of truth `rebuild`/`audit` read) out of sync —
+        // so a lost or dropped DuckDB rebuilt to an EMPTY corpus, breaking the
+        // crash-recovery contract (docs/spec/storage.md) and leaving `audit`
+        // permanently dirty. Writing the lane first (canonical) then the index
+        // (derived) keeps them in sync and makes the index safely rebuildable.
+        // `page_id` is the lane key (`markdown/<relpath>`), as `seed_from_dir`
+        // and `ensure_meta_skill` already rely on.
+        {
+            let key = Key::new(self.tenant.as_str(), page_id.to_owned())?;
+            self.store
+                .write(&key, Bytes::from(content.to_owned()))
+                .await?;
+        }
+
         let frontmatter_json = mapping_to_json(&parsed.frontmatter.fields)?;
         let body_hash = hash_body(content);
         let page_type_str = match parsed.frontmatter.page_type {
