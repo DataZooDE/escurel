@@ -334,7 +334,7 @@ where
 fn content_version(body: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(body.as_bytes());
-    format!("sha256:{:x}", digest)
+    format!("sha256:{digest:x}")
 }
 
 /// Compute the backoff before the `attempt`-th retry: a simple linear
