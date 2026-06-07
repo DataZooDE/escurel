@@ -46,6 +46,13 @@ pub const DEFAULT_CLAUDE_BIN: &str = "claude";
 /// resolves on `PATH`; a deterministic test overrides it to a stub.
 pub const DEFAULT_CODEX_BIN: &str = "codex";
 
+/// Default adk-rust runner binary the Google ADK adapter (#154) spawns.
+/// There is no sensible default on `PATH` (the heavy adk-rust runtime lives
+/// in an external binary built from the `datazoo-agent-template`), so a
+/// deployment MUST point `ESCUREL_RUNNER_ADK_BIN` at its built runner; the
+/// deterministic test overrides it to a real scripted runner.
+pub const DEFAULT_ADK_BIN: &str = "datazoo-agent-adk-runner";
+
 /// Default path of the runner-local durable run ledger (its own SQLite
 /// file, *never* the tenant store). Relative to the process CWD so a dev
 /// run drops it in place; deployments set [`crate::RunnerConfig::ledger_path`]
@@ -159,6 +166,15 @@ pub struct RunnerConfig {
     /// default.
     /// Source: `ESCUREL_RUNNER_CODEX_MODEL` (unset → `None`).
     pub codex_model: Option<String>,
+    /// Path to the adk-rust runner binary the Google ADK adapter (#154)
+    /// spawns.
+    /// Source: `ESCUREL_RUNNER_ADK_BIN` (default [`DEFAULT_ADK_BIN`]).
+    pub adk_bin: String,
+    /// Optional LLM model id the Google ADK adapter passes to the runner via
+    /// `LLM_MODEL` (e.g. `gemini-3.5-flash`); `None` lets the runner pick its
+    /// configured default.
+    /// Source: `ESCUREL_RUNNER_ADK_MODEL` (unset → `None`).
+    pub adk_model: Option<String>,
 }
 
 impl RunnerConfig {
@@ -221,6 +237,11 @@ impl RunnerConfig {
             .unwrap_or_else(|| DEFAULT_CODEX_BIN.to_owned());
         let codex_model = lookup("ESCUREL_RUNNER_CODEX_MODEL").filter(|s| !s.is_empty());
 
+        let adk_bin = lookup("ESCUREL_RUNNER_ADK_BIN")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_ADK_BIN.to_owned());
+        let adk_model = lookup("ESCUREL_RUNNER_ADK_MODEL").filter(|s| !s.is_empty());
+
         Ok(Self {
             listen,
             gateway_url,
@@ -238,6 +259,8 @@ impl RunnerConfig {
             claude_model,
             codex_bin,
             codex_model,
+            adk_bin,
+            adk_model,
         })
     }
 }
@@ -302,6 +325,32 @@ mod tests {
         assert_eq!(cfg.claude_model, None);
         assert_eq!(cfg.codex_bin, DEFAULT_CODEX_BIN);
         assert_eq!(cfg.codex_model, None);
+        assert_eq!(cfg.adk_bin, DEFAULT_ADK_BIN);
+        assert_eq!(cfg.adk_model, None);
+    }
+
+    #[test]
+    fn adk_bin_and_model_load_when_set_and_ignore_empty() {
+        let set = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_ADK_BIN" => Some("/opt/datazoo-agent".to_owned()),
+            "ESCUREL_RUNNER_ADK_MODEL" => Some("gemini-3.5-flash".to_owned()),
+            _ => None,
+        })
+        .expect("adk config must parse");
+        assert_eq!(set.adk_bin, "/opt/datazoo-agent");
+        assert_eq!(set.adk_model, Some("gemini-3.5-flash".to_owned()));
+
+        let empty = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_ADK_BIN" => Some(String::new()),
+            "ESCUREL_RUNNER_ADK_MODEL" => Some(String::new()),
+            _ => None,
+        })
+        .expect("empty adk config must parse");
+        assert_eq!(
+            empty.adk_bin, DEFAULT_ADK_BIN,
+            "empty adk bin falls back to the default"
+        );
+        assert_eq!(empty.adk_model, None, "empty model is treated as unset");
     }
 
     #[test]

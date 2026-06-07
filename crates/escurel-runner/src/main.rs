@@ -41,7 +41,7 @@ use escurel_runner_core::{
     DispatchConsumer, DispatchQueue, EnqueueOutcome, Ledger, LedgerDecision, RunStatus,
     RunnerConfig, TaskContext, Trigger, package,
 };
-use escurel_runner_harness::{ClaudeHarness, CodexHarness, EchoHarness, Harness};
+use escurel_runner_harness::{AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, Harness};
 use escurel_types::{Event, ListEventsRequest, ListInboxRequest};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -326,9 +326,9 @@ fn echo_harness_path() -> String {
 
 /// Build the configured harness adapter. `echo` is the deterministic real
 /// harness (#151); `claude` drives the real Claude Code CLI (#152); `codex`
-/// drives the real Codex CLI (#153). Unknown selectors fall back to `echo`
-/// with a warning so a typo never silently disables dispatch. `adk` (#154)
-/// slots in here without touching the dispatch path.
+/// drives the real Codex CLI (#153); `adk` drives an external adk-rust runner
+/// binary (#154). Unknown selectors fall back to `echo` with a warning so a
+/// typo never silently disables dispatch.
 fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
     match config.harness.as_str() {
         "echo" => Arc::new(EchoHarness::new(echo_harness_path())),
@@ -338,6 +338,9 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
         "codex" => Arc::new(
             CodexHarness::new(config.codex_bin.clone()).with_model(config.codex_model.clone()),
         ),
+        "adk" => {
+            Arc::new(AdkHarness::new(config.adk_bin.clone()).with_model(config.adk_model.clone()))
+        }
         other => {
             tracing::warn!(
                 target: "escurel_runner",
