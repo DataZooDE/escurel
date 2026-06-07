@@ -9,6 +9,12 @@ Read it in the order below.
    the agent ↔ KB contract: twelve MCP tools, the mandatory `escurel`
    meta-skill, and the behavioural promises both sides depend on. The
    spec under `spec/` is the implementation of this contract.
+1a. **[`contract/agent-orchestration.md`](contract/agent-orchestration.md)** —
+   proposal (post-v1): event-driven agent-harness orchestration. A
+   standalone `escurel-agent-runner` triggers a harness (Claude Code,
+   Codex, Google ADK) on each new inbox element to project events into
+   instance documents, with cascading + loop controls, keeping the
+   gateway automation-free.
 2. **[`spec/README.md`](spec/README.md)** — architecture overview,
    locked design decisions, crate layout, configuration, the v1
    cut-line.
