@@ -43,6 +43,13 @@ pub struct Lineage {
     /// A root trigger starts it empty (it has touched no instance yet); each
     /// cascade hop appends the instance its confirmed write landed on.
     pub instance_path: Vec<String>,
+    /// The OTel trace id shared by **every hop of this cascade lineage**
+    /// (#158). The root hop mints it (a 32-hex-char W3C trace id); each
+    /// cascaded event carries it forward in `provenance.runner.trace_id`, so a
+    /// later hop continues the SAME trace rather than starting a fresh one.
+    /// `None` for a legacy webhook-origin event with no trace id yet (the
+    /// runner mints one when it starts the root span).
+    pub trace_id: Option<String>,
 }
 
 impl Lineage {
@@ -56,6 +63,7 @@ impl Lineage {
             depth: 0,
             lineage_path: vec![event_id],
             instance_path: Vec::new(),
+            trace_id: None,
         }
     }
 }
@@ -147,11 +155,19 @@ fn lineage_from_provenance(provenance: &serde_json::Value, event_id: &str) -> Op
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    // The cascade-wide trace id (#158): carried forward so every hop continues
+    // the same OTel trace. Absent on a legacy event → the runner mints one.
+    let trace_id = runner
+        .get("trace_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     Some(Lineage {
         root_event_id,
         depth,
         lineage_path,
         instance_path,
+        trace_id,
     })
 }
 

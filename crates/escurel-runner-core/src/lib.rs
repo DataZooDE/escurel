@@ -19,7 +19,9 @@ mod config;
 mod dispatch;
 mod ledger;
 mod packager;
+mod quota;
 mod reconciler;
+mod recovery;
 mod trigger;
 
 pub use admit::{Admission, LoopLimits, admit};
@@ -30,9 +32,11 @@ pub use ledger::{
     DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
 };
 pub use packager::{ALLOWED_TOOLS, PackageError, TaskContext, package};
+pub use quota::{Governor, QuotaDecision, QuotaLimits, RunSlot, ThrottleReason};
 pub use reconciler::{
-    ConfirmedEffect, ReconcileError, RunReport, classify_client_error, confirm_effect,
+    ConfirmedEffect, ReconcileError, RunFailure, RunReport, classify_client_error, confirm_effect,
     run_with_retry,
 };
+pub use recovery::{RecoveryReport, recover_pending};
 pub use secrecy::SecretString;
 pub use trigger::{Lineage, Trigger};

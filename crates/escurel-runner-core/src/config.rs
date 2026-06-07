@@ -78,6 +78,28 @@ pub const DEFAULT_MAX_DEPTH: u32 = 8;
 /// without deepening (so the depth cap alone wouldn't catch it).
 pub const DEFAULT_MAX_RUNS_PER_ROOT: u64 = 64;
 
+/// Default per-tenant runs/min quota (#158). The dispatch gate counts
+/// admitted runs per tenant in a fixed one-minute window; over-budget triggers
+/// are *throttled* (held, the event stays in the inbox for the poller to
+/// backstop), never dead-lettered. Sized generous for legitimate bursts.
+pub const DEFAULT_TENANT_RUNS_PER_MIN: u64 = 120;
+
+/// Default per-tenant max concurrent in-flight runs (#158). A second
+/// throttle gate: while this many runs execute for a tenant, a new trigger is
+/// held back.
+pub const DEFAULT_TENANT_MAX_CONCURRENT: u64 = 8;
+
+/// Default global cap on concurrent harness subprocesses across all tenants
+/// (#158). Subprocesses are the heaviest resource, so this bounds total spawn
+/// concurrency with a process-wide semaphore regardless of per-tenant limits.
+pub const DEFAULT_MAX_HARNESS_PROCS: usize = 16;
+
+/// Default SIGTERM drain timeout (#158): on shutdown the runner stops
+/// accepting new triggers and lets in-flight runs finish, bounded by this
+/// deadline before it exits anyway (a still-pending run is recovered on the
+/// next start by read-back).
+pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Default path of the runner-local durable run ledger (its own SQLite
 /// file, *never* the tenant store). Relative to the process CWD so a dev
 /// run drops it in place; deployments set [`crate::RunnerConfig::ledger_path`]
@@ -135,6 +157,26 @@ pub enum ConfigError {
     /// integer (the budget must be at least `1`).
     #[error("invalid ESCUREL_RUNNER_MAX_RUNS_PER_ROOT {value:?}: expected a positive integer")]
     InvalidMaxRunsPerRoot {
+        /// The offending value.
+        value: String,
+    },
+    /// A positive-`u64` quota env var was set but is not a positive integer.
+    #[error("invalid {key} {value:?}: expected a positive integer")]
+    InvalidQuotaU64 {
+        /// The offending env var name.
+        key: String,
+        /// The offending value.
+        value: String,
+    },
+    /// `ESCUREL_RUNNER_MAX_HARNESS_PROCS` was set but is not a positive integer.
+    #[error("invalid ESCUREL_RUNNER_MAX_HARNESS_PROCS {value:?}: expected a positive integer")]
+    InvalidMaxHarnessProcs {
+        /// The offending value.
+        value: String,
+    },
+    /// `ESCUREL_RUNNER_DRAIN_TIMEOUT` was set but is not a valid duration.
+    #[error("invalid ESCUREL_RUNNER_DRAIN_TIMEOUT {value:?}: expected e.g. 30s, 1500ms")]
+    InvalidDrainTimeout {
         /// The offending value.
         value: String,
     },
@@ -243,6 +285,24 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_MAX_RUNS_PER_ROOT` (default
     /// [`DEFAULT_MAX_RUNS_PER_ROOT`]).
     pub max_runs_per_root: u64,
+    /// Per-tenant runs/min quota; over-budget triggers are throttled (#158).
+    /// Source: `ESCUREL_RUNNER_TENANT_RUNS_PER_MIN` (default
+    /// [`DEFAULT_TENANT_RUNS_PER_MIN`]).
+    pub tenant_runs_per_min: u64,
+    /// Per-tenant max concurrent in-flight runs; over-limit triggers are
+    /// throttled (#158).
+    /// Source: `ESCUREL_RUNNER_TENANT_MAX_CONCURRENT` (default
+    /// [`DEFAULT_TENANT_MAX_CONCURRENT`]).
+    pub tenant_max_concurrent: u64,
+    /// Global cap on concurrent harness subprocesses across all tenants (#158).
+    /// Source: `ESCUREL_RUNNER_MAX_HARNESS_PROCS` (default
+    /// [`DEFAULT_MAX_HARNESS_PROCS`]).
+    pub max_harness_procs: usize,
+    /// SIGTERM drain timeout: how long shutdown lets in-flight runs finish
+    /// before exiting anyway (#158).
+    /// Source: `ESCUREL_RUNNER_DRAIN_TIMEOUT` (default
+    /// [`DEFAULT_DRAIN_TIMEOUT`]).
+    pub drain_timeout: Duration,
 }
 
 impl RunnerConfig {
@@ -338,6 +398,30 @@ impl RunnerConfig {
             _ => DEFAULT_MAX_RUNS_PER_ROOT,
         };
 
+        let tenant_runs_per_min = parse_positive_u64(
+            "ESCUREL_RUNNER_TENANT_RUNS_PER_MIN",
+            &lookup,
+            DEFAULT_TENANT_RUNS_PER_MIN,
+        )?;
+        let tenant_max_concurrent = parse_positive_u64(
+            "ESCUREL_RUNNER_TENANT_MAX_CONCURRENT",
+            &lookup,
+            DEFAULT_TENANT_MAX_CONCURRENT,
+        )?;
+        let max_harness_procs = match lookup("ESCUREL_RUNNER_MAX_HARNESS_PROCS") {
+            Some(raw) if !raw.is_empty() => match raw.parse::<usize>() {
+                Ok(n) if n >= 1 => n,
+                _ => return Err(ConfigError::InvalidMaxHarnessProcs { value: raw }),
+            },
+            _ => DEFAULT_MAX_HARNESS_PROCS,
+        };
+        let drain_timeout = match lookup("ESCUREL_RUNNER_DRAIN_TIMEOUT") {
+            Some(raw) if !raw.is_empty() => {
+                parse_duration(&raw).ok_or(ConfigError::InvalidDrainTimeout { value: raw })?
+            }
+            _ => DEFAULT_DRAIN_TIMEOUT,
+        };
+
         Ok(Self {
             listen,
             gateway_url,
@@ -361,7 +445,29 @@ impl RunnerConfig {
             retry_backoff,
             max_depth,
             max_runs_per_root,
+            tenant_runs_per_min,
+            tenant_max_concurrent,
+            max_harness_procs,
+            drain_timeout,
         })
+    }
+}
+
+/// Parse a positive-`u64` quota env var (must be ≥ 1), falling back to
+/// `default` when unset/empty.
+fn parse_positive_u64<F>(key: &str, lookup: &F, default: u64) -> Result<u64, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match lookup(key) {
+        Some(raw) if !raw.is_empty() => match raw.parse::<u64>() {
+            Ok(n) if n >= 1 => Ok(n),
+            _ => Err(ConfigError::InvalidQuotaU64 {
+                key: key.to_owned(),
+                value: raw,
+            }),
+        },
+        _ => Ok(default),
     }
 }
 
@@ -431,6 +537,41 @@ mod tests {
         assert_eq!(cfg.retry_backoff, DEFAULT_RETRY_BACKOFF);
         assert_eq!(cfg.max_depth, DEFAULT_MAX_DEPTH);
         assert_eq!(cfg.max_runs_per_root, DEFAULT_MAX_RUNS_PER_ROOT);
+        assert_eq!(cfg.tenant_runs_per_min, DEFAULT_TENANT_RUNS_PER_MIN);
+        assert_eq!(cfg.tenant_max_concurrent, DEFAULT_TENANT_MAX_CONCURRENT);
+        assert_eq!(cfg.max_harness_procs, DEFAULT_MAX_HARNESS_PROCS);
+        assert_eq!(cfg.drain_timeout, DEFAULT_DRAIN_TIMEOUT);
+    }
+
+    #[test]
+    fn quota_config_loads_and_validates() {
+        let set = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_TENANT_RUNS_PER_MIN" => Some("5".to_owned()),
+            "ESCUREL_RUNNER_TENANT_MAX_CONCURRENT" => Some("3".to_owned()),
+            "ESCUREL_RUNNER_MAX_HARNESS_PROCS" => Some("4".to_owned()),
+            "ESCUREL_RUNNER_DRAIN_TIMEOUT" => Some("10s".to_owned()),
+            _ => None,
+        })
+        .expect("quota config must parse");
+        assert_eq!(set.tenant_runs_per_min, 5);
+        assert_eq!(set.tenant_max_concurrent, 3);
+        assert_eq!(set.max_harness_procs, 4);
+        assert_eq!(set.drain_timeout, Duration::from_secs(10));
+
+        let zero = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_TENANT_RUNS_PER_MIN").then(|| "0".to_owned())
+        })
+        .expect_err("runs_per_min=0 must fail");
+        assert!(matches!(zero, ConfigError::InvalidQuotaU64 { .. }));
+
+        let bad_procs = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_MAX_HARNESS_PROCS").then(|| "lots".to_owned())
+        })
+        .expect_err("a bad harness-proc cap must fail");
+        assert!(matches!(
+            bad_procs,
+            ConfigError::InvalidMaxHarnessProcs { .. }
+        ));
     }
 
     #[test]

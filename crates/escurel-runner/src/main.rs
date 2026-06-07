@@ -36,18 +36,27 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use escurel_client::{Client, SecretString};
-use escurel_obs::{TelemetryConfig, init_telemetry};
+use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
 use escurel_runner_core::{
     Admission, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue, EnqueueOutcome,
-    Ledger, LedgerDecision, LoopLimits, ReconcileError, RunStatus, RunnerConfig, TaskContext,
-    Trigger, admit, classify_client_error, confirm_effect, emit_cascade, package, run_with_retry,
+    Governor, Ledger, LedgerDecision, LoopLimits, QuotaDecision, QuotaLimits, ReconcileError,
+    RunFailure, RunStatus, RunnerConfig, TaskContext, Trigger, admit, classify_client_error,
+    confirm_effect, emit_cascade, package, recover_pending, run_with_retry,
 };
+use escurel_runner_core::{DeadLetterReason, RunId};
 use escurel_runner_harness::{AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, Harness};
 use escurel_types::{Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use tokio::sync::Notify;
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// In-flight quota slots keyed by `event_id` (#158). A slot is held for a
+/// run's whole lifetime (queue → run → terminal) so the tenant's concurrency
+/// budget reflects real in-flight work, not just the instant of admission.
+type InflightSlots =
+    Arc<std::sync::Mutex<std::collections::HashMap<String, escurel_runner_core::RunSlot>>>;
 
 /// Header carrying the gateway's HMAC-SHA256 signature of the raw POST
 /// body, in the form `sha256=<lowercase-hex>` (#147). The secret is the
@@ -71,6 +80,20 @@ struct AppState {
     /// depth cap + per-root run budget. A trigger that would breach them is
     /// dead-lettered (with `cycle` checked against the lineage instance chain).
     limits: LoopLimits,
+    /// The quota governor (#158): per-tenant runs/min + max-concurrent gates
+    /// at admission. Over-quota triggers are throttled (held, not
+    /// dead-lettered) so the event stays in the inbox for the poller backstop.
+    governor: Governor,
+    /// In-flight quota slots, keyed by `event_id`. The gate inserts a slot on
+    /// admission (debiting the tenant's concurrency budget) and the dispatch
+    /// loop removes it when the run terminates (releasing the budget). Held
+    /// here so the slot's lifetime spans queue → run, not just the gate call.
+    inflight: InflightSlots,
+    /// The metrics registry rendered at `GET /metrics` (#158).
+    metrics: Arc<Metrics>,
+    /// Set once shutdown begins: the ingress paths stop admitting new triggers
+    /// while in-flight runs drain.
+    draining: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[tokio::main]
@@ -106,12 +129,61 @@ async fn main() -> anyhow::Result<()> {
         max_runs_per_root: config.max_runs_per_root,
     };
 
+    // The quota governor (#158): per-tenant runs/min + max-concurrent gates,
+    // plus the global harness-subprocess semaphore. Shared between the
+    // admission gate (rate/concurrency) and the dispatch loop (harness cap).
+    let governor = Governor::new(QuotaLimits {
+        runs_per_min: config.tenant_runs_per_min,
+        max_concurrent: config.tenant_max_concurrent,
+        max_harness_procs: config.max_harness_procs,
+    });
+
+    // The metrics registry rendered at /metrics (#158).
+    let metrics = Arc::new(Metrics::new());
+    metrics.set_up(true);
+
+    // Drain flag: shutdown sets it so ingress stops admitting new triggers
+    // while in-flight runs finish.
+    let draining = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // In-flight quota slots, shared gate → dispatch loop (#158).
+    let inflight: InflightSlots = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    // Crash recovery (#158): before opening for traffic, reconcile any
+    // orphaned `pending` rows left by a previous crash. A confirmed effect is
+    // marked processed; an unconfirmed row is reset to retriable so the poller
+    // backstops it. Best-effort, bounded; only runs with a gateway client.
+    if let (Some(_), Some(token)) = (config.tenant.clone(), config.token.clone()) {
+        match Client::connect(&config.gateway_url, SecretString::from(token)).await {
+            Ok(client) => {
+                let report = recover_pending(&ledger, &client).await;
+                if report.swept > 0 {
+                    tracing::info!(
+                        target: "escurel_runner",
+                        swept = report.swept,
+                        confirmed = report.confirmed,
+                        reset = report.reset,
+                        "crash recovery: reconciled orphaned pending runs on startup"
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                target: "escurel_runner",
+                error = %e,
+                "crash recovery: could not build gateway client; skipping pending sweep"
+            ),
+        }
+    }
+
     // The bounded dispatch queue both ingress paths converge on. The
     // consumer side runs the real package→harness→reconcile path (#151) when
     // a tenant + token are configured; without them the runner can't build a
     // gateway client, so it falls back to draining (terminal-marking) the
     // queue so the dedup seen-set still governs convergence.
     let (queue, consumer) = DispatchQueue::new(config.queue_cap, config.seen_cap);
+    // Notified once the dispatch loop observes the queue closed AND finished
+    // its in-flight run — the drain-complete signal SIGTERM waits on.
+    let drained = Arc::new(Notify::new());
     match (config.tenant.clone(), config.token.clone()) {
         (Some(_), Some(token)) => {
             let harness = build_harness(&config);
@@ -121,6 +193,10 @@ async fn main() -> anyhow::Result<()> {
                 config.clone(),
                 token,
                 harness,
+                governor.clone(),
+                Arc::clone(&metrics),
+                Arc::clone(&inflight),
+                Arc::clone(&drained),
             ));
         }
         _ => {
@@ -128,7 +204,12 @@ async fn main() -> anyhow::Result<()> {
                 target: "escurel_runner",
                 "harness dispatch disabled (no tenant/token); draining queue instead"
             );
-            tokio::spawn(drain_loop(consumer, Arc::clone(&ledger)));
+            let drained = Arc::clone(&drained);
+            let ledger = Arc::clone(&ledger);
+            tokio::spawn(async move {
+                drain_loop(consumer, ledger).await;
+                drained.notify_one();
+            });
         }
     }
 
@@ -144,6 +225,10 @@ async fn main() -> anyhow::Result<()> {
                 queue.clone(),
                 Arc::clone(&ledger),
                 limits,
+                governor.clone(),
+                Arc::clone(&metrics),
+                Arc::clone(&inflight),
+                Arc::clone(&draining),
             ));
         }
         _ => {
@@ -157,14 +242,21 @@ async fn main() -> anyhow::Result<()> {
     let version = config.version.clone();
     let state = AppState {
         webhook_secret: config.webhook_secret.clone().map(Arc::from),
-        queue,
+        queue: queue.clone(),
         ledger,
         limits,
+        governor,
+        metrics: Arc::clone(&metrics),
+        inflight: Arc::clone(&inflight),
+        draining: Arc::clone(&draining),
     };
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/version", get(move || version_handler(version.clone())))
+        .route("/metrics", get(metrics_handler))
         .route("/trigger", post(trigger))
+        .route("/dlq", get(dlq_list))
+        .route("/dlq/requeue", post(dlq_requeue))
         .route("/debug/seen", get(debug_seen))
         .route("/debug/ledger", get(debug_ledger))
         .route("/debug/run", get(debug_run))
@@ -174,12 +266,46 @@ async fn main() -> anyhow::Result<()> {
     let local_addr = listener.local_addr()?;
     tracing::info!(addr = %local_addr, "escurel-runner listening");
 
+    // Graceful shutdown (#158): on SIGTERM/SIGINT, stop the HTTP server from
+    // accepting new connections AND flip the drain flag so the poller stops
+    // enqueuing. Then drop the producer-side queue handle so the dispatch loop
+    // sees the channel close, lets its current run finish, and signals
+    // `drained` — bounded by the configured drain timeout.
+    let drain_timeout = config.drain_timeout;
     axum::serve(listener, app)
-        .with_graceful_shutdown(wait_for_shutdown())
+        .with_graceful_shutdown(wait_for_shutdown(Arc::clone(&draining)))
         .await?;
+
+    tracing::info!(
+        target: "escurel_runner",
+        "shutdown signalled; draining in-flight runs"
+    );
+    // Closing the producer side lets the dispatch loop's `recv()` return None
+    // once its current run completes. The router (and its `AppState` clone of
+    // the queue) was dropped when `serve` returned; the poller drops its clone
+    // on the drain flag; this drops the last local one.
+    drop(queue);
+    let drain = tokio::time::timeout(drain_timeout, drained.notified()).await;
+    match drain {
+        Ok(()) => tracing::info!(target: "escurel_runner", "in-flight runs drained cleanly"),
+        Err(_) => tracing::warn!(
+            target: "escurel_runner",
+            timeout_ms = drain_timeout.as_millis() as u64,
+            "drain timeout elapsed; exiting (any still-pending run recovers on restart)"
+        ),
+    }
 
     tracing::info!("escurel-runner shut down cleanly");
     Ok(())
+}
+
+/// Render the Prometheus metrics registry (#158).
+async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("content-type", "text/plain; version=0.0.4")],
+        state.metrics.render_prometheus(),
+    )
 }
 
 /// Liveness probe. Dependency-free per CLAUDE.md principle 4.
@@ -204,6 +330,11 @@ async fn version_handler(version: String) -> impl IntoResponse {
 /// exactly what the gateway signed. When no secret is configured (dev),
 /// no signature is required.
 async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> StatusCode {
+    // 0. Shutdown drain (#158): stop admitting new triggers while draining so
+    //    the event stays in the inbox for the next process to re-drive.
+    if state.draining.load(std::sync::atomic::Ordering::Relaxed) {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
     // 1. Authenticate the raw body BEFORE parsing it (#147).
     if let Some(secret) = state.webhook_secret.as_deref() {
         let presented = headers
@@ -252,6 +383,9 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         &state.ledger,
         &state.queue,
         &state.limits,
+        &state.governor,
+        &state.metrics,
+        &state.inflight,
         trigger,
         "webhook",
     );
@@ -274,10 +408,14 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
 /// Returns `true` if the trigger was enqueued. Best-effort: a ledger error
 /// is logged and the trigger dropped (the poller re-pulls on the next tick),
 /// never panicking the process.
+#[allow(clippy::too_many_arguments)]
 fn gate_and_enqueue(
     ledger: &Ledger,
     queue: &DispatchQueue,
     limits: &LoopLimits,
+    governor: &Governor,
+    metrics: &Metrics,
+    inflight: &InflightSlots,
     trigger: Trigger,
     via: &str,
 ) -> bool {
@@ -297,6 +435,7 @@ fn gate_and_enqueue(
                             "gate: could not record dead-letter"
                         );
                     }
+                    record_run_terminal(metrics, &trigger.tenant, "dead_letter");
                     tracing::warn!(
                         target: "escurel_runner",
                         via,
@@ -324,7 +463,58 @@ fn gate_and_enqueue(
                 }
                 Ok(Admission::Admit) => {}
             }
+
+            // Quota gate (#158): per-tenant runs/min + max-concurrent. An
+            // over-quota trigger is THROTTLED — held, NOT dead-lettered. We
+            // reset the just-created row to retriable `failed` so the poller
+            // re-claims the still-inbox event next cycle (a `failed` row is not
+            // idempotency-terminal, #157); the event itself stays in the inbox.
+            match governor.try_admit(&trigger.tenant) {
+                (QuotaDecision::Admit, Some(slot)) => {
+                    inflight
+                        .lock()
+                        .expect("inflight slots mutex")
+                        .insert(trigger.event_id.clone(), slot);
+                }
+                (QuotaDecision::Throttle(reason), _) => {
+                    if let Err(e) = ledger.mark(&run_id, RunStatus::Failed) {
+                        tracing::error!(
+                            target: "escurel_runner",
+                            via,
+                            event_id = %trigger.event_id,
+                            error = %e,
+                            "gate: could not reset throttled run to retriable"
+                        );
+                    }
+                    metrics.inc_runner_throttled(reason.as_str());
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        via,
+                        tenant = %trigger.tenant,
+                        event_id = %trigger.event_id,
+                        reason = %reason.as_str(),
+                        throttled_total = governor.throttled_total(),
+                        "gate: trigger throttled by quota; held for the poller to re-drive"
+                    );
+                    return false;
+                }
+                (QuotaDecision::Admit, None) => return false,
+            }
+
             let outcome = queue.enqueue(trigger.clone());
+            // If the trigger did not actually reach the channel (a duplicate
+            // already in flight, or backpressure), release the quota slot we
+            // just took — the run won't dispatch under this slot. A `Full`
+            // trigger is reset to retriable so the poller re-drives it.
+            if !matches!(outcome, EnqueueOutcome::Enqueued) {
+                inflight
+                    .lock()
+                    .expect("inflight slots mutex")
+                    .remove(&trigger.event_id);
+                if matches!(outcome, EnqueueOutcome::Full) {
+                    let _ = ledger.mark(&run_id, RunStatus::Failed);
+                }
+            }
             tracing::info!(
                 target: "escurel_runner",
                 via,
@@ -356,6 +546,119 @@ fn gate_and_enqueue(
             );
             false
         }
+    }
+}
+
+/// Record a run reaching a terminal `status` on the metrics registry (#158).
+/// Keeps cardinality sane: only tenant + status labels.
+fn record_run_terminal(metrics: &Metrics, tenant: &str, status: &str) {
+    metrics.inc_runner_run(tenant, status);
+}
+
+/// Operator DLQ list (#158): every dead-lettered run with its reason +
+/// originating event/instance. An ops/debug surface (like `/debug/*`), not
+/// part of the gateway-facing contract.
+async fn dlq_list(State(state): State<AppState>) -> impl IntoResponse {
+    match state.ledger.list_dead_letters() {
+        Ok(rows) => {
+            let entries: Vec<_> = rows
+                .into_iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "run_id": r.run_id,
+                        "tenant": r.tenant,
+                        "event_id": r.event_id,
+                        "instance_page_id": r.instance_page_id,
+                        "produced_instance_page_id": r.produced_instance_page_id,
+                        "reason": r.reason,
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({ "dead_letters": entries })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Operator DLQ requeue (#158): body `{ "run_id": "..." }` or `{ "tenant":
+/// "...", "event_id": "..." }`. Clears the dead-letter terminal block so the
+/// originating (still-inbox) event can be re-driven, and re-enqueues a fresh
+/// trigger so the runner picks it up immediately (the poller would too).
+async fn dlq_requeue(
+    State(state): State<AppState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let requeued = if let Some(run_id) = body.get("run_id").and_then(|v| v.as_str()) {
+        state.ledger.requeue_dead_letter(run_id)
+    } else if let (Some(tenant), Some(event_id)) = (
+        body.get("tenant").and_then(|v| v.as_str()),
+        body.get("event_id").and_then(|v| v.as_str()),
+    ) {
+        state
+            .ledger
+            .requeue_dead_letter_by_event(tenant, event_id)
+            .map(|_| (tenant.to_owned(), event_id.to_owned()))
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "error": "provide run_id, or tenant + event_id"
+            })),
+        );
+    };
+
+    match requeued {
+        Ok((tenant, event_id)) => {
+            // Re-enqueue a fresh trigger directly so the runner re-drives the
+            // event immediately. The ledger row is now `pending` (re-claimed),
+            // so we enqueue onto the dispatch queue under a fresh quota slot.
+            let trigger = Trigger {
+                tenant: tenant.clone(),
+                event_id: event_id.clone(),
+                label_skill: String::new(),
+                instance_page_id: None,
+                lineage: escurel_runner_core::Lineage::root(event_id.clone()),
+            };
+            // The row is already pending; enqueue onto the queue and take a
+            // quota slot so the dispatch loop runs it.
+            match state.governor.try_admit(&tenant) {
+                (QuotaDecision::Admit, Some(slot)) => {
+                    state
+                        .inflight
+                        .lock()
+                        .expect("inflight slots mutex")
+                        .insert(event_id.clone(), slot);
+                    let _ = state.queue.enqueue(trigger);
+                }
+                _ => {
+                    // Over quota right now: the poller will re-drive it.
+                }
+            }
+            tracing::info!(
+                target: "escurel_runner",
+                tenant = %tenant,
+                event_id = %event_id,
+                "dlq: requeued dead-lettered run; cleared terminal block"
+            );
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({
+                    "requeued": true,
+                    "tenant": tenant,
+                    "event_id": event_id,
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
+        ),
     }
 }
 
@@ -495,12 +798,17 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
 /// The full reconciler/retry policy is #155; this keeps the reconcile minimal
 /// but REAL: the event genuinely becomes processed through the harness's
 /// `/mcp` calls, and the ledger reflects the confirmed outcome.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_loop(
     mut consumer: DispatchConsumer,
     ledger: Arc<Ledger>,
     config: RunnerConfig,
     token: String,
     harness: Arc<dyn Harness>,
+    governor: Governor,
+    metrics: Arc<Metrics>,
+    inflight: InflightSlots,
+    drained: Arc<Notify>,
 ) {
     let client = match Client::connect(&config.gateway_url, SecretString::from(token)).await {
         Ok(client) => client,
@@ -510,6 +818,7 @@ async fn dispatch_loop(
                 error = %e,
                 "dispatch loop could not build a gateway client; dispatch disabled"
             );
+            drained.notify_one();
             return;
         }
     };
@@ -519,15 +828,24 @@ async fn dispatch_loop(
         "harness dispatch loop started"
     );
 
-    while let Some(trigger) = consumer.recv().await {
+    while let Some(mut trigger) = consumer.recv().await {
+        // Queue-depth observability (#158): sample after pulling this trigger.
+        metrics.set_runner_queue_depth(0);
+        // Cascade-depth high-water (#158).
+        metrics.observe_runner_cascade_depth(trigger.lineage.depth as i64);
+
         let run_id = match ledger.get_run(&trigger.tenant, &trigger.event_id) {
-            Ok(Some(record)) => escurel_runner_core::RunId(record.run_id),
+            Ok(Some(record)) => RunId(record.run_id),
             Ok(None) => {
                 tracing::warn!(
                     target: "escurel_runner",
                     event_id = %trigger.event_id,
                     "dispatch: no ledger row for trigger; skipping"
                 );
+                inflight
+                    .lock()
+                    .expect("inflight slots mutex")
+                    .remove(&trigger.event_id);
                 continue;
             }
             Err(e) => {
@@ -537,9 +855,34 @@ async fn dispatch_loop(
                     error = %e,
                     "dispatch: ledger lookup failed; skipping"
                 );
+                inflight
+                    .lock()
+                    .expect("inflight slots mutex")
+                    .remove(&trigger.event_id);
                 continue;
             }
         };
+
+        // One OTel trace per cascade lineage (#158): the ROOT hop mints a
+        // trace id; deeper hops carry it forward via `provenance.runner`. The
+        // run's root span uses this id, and the cascade emitter stamps the same
+        // id onto the next hop's event so hop N+1 continues the SAME trace.
+        if trigger.lineage.trace_id.is_none() {
+            trigger.lineage.trace_id = Some(mint_trace_id());
+        }
+        let trace_id = trigger.lineage.trace_id.clone().unwrap_or_default();
+        let run_span = tracing::info_span!(
+            "runner.run",
+            trace_id = %trace_id,
+            root_event_id = %trigger.lineage.root_event_id,
+            event_id = %trigger.event_id,
+            depth = trigger.lineage.depth,
+        );
+        let _run_guard = run_span.enter();
+
+        // Acquire a global harness-subprocess permit (#158): bounds concurrent
+        // harness spawns across all tenants. Held across the whole run.
+        let _harness_permit = governor.acquire_harness().await;
 
         // Reconcile with retry: package + run the harness + read back over
         // `/mcp` to CONFIRM the effect, retrying transient failures with
@@ -553,18 +896,27 @@ async fn dispatch_loop(
         // - confirmed effect      → `processed` (+ produced instance/version);
         // - clean no-op (converged) → `processed` with no produced instance —
         //   a converged cascade hop ends tidily, NOT `failed` (#156/#157);
-        // - otherwise              → `failed` (retriable; the poller/operator
-        //   may re-drive it).
-        let result = match (&report.confirmed, report.converged_no_op) {
-            (Some(effect), _) => ledger.complete(
+        // - retries exhausted / bad output → `dead_letter` (#158), terminal;
+        // - otherwise (permanent)  → `failed` (retriable; operator may re-drive).
+        let result = match (&report.confirmed, report.converged_no_op, report.failure) {
+            (Some(effect), _, _) => ledger.complete(
                 &run_id,
                 RunStatus::Processed,
                 Some((effect.instance_page_id.as_str(), effect.version.as_str())),
             ),
-            (None, true) => ledger.complete(&run_id, RunStatus::Processed, None),
-            (None, false) => ledger.complete(&run_id, RunStatus::Failed, None),
+            (None, true, _) => ledger.complete(&run_id, RunStatus::Processed, None),
+            (None, false, Some(RunFailure::RetriesExhausted)) => {
+                record_run_terminal(&metrics, &trigger.tenant, "dead_letter");
+                ledger.dead_letter(&run_id, DeadLetterReason::RetriesExhausted)
+            }
+            (None, false, Some(RunFailure::BadOutput)) => {
+                record_run_terminal(&metrics, &trigger.tenant, "dead_letter");
+                ledger.dead_letter(&run_id, DeadLetterReason::BadOutput)
+            }
+            (None, false, _) => ledger.complete(&run_id, RunStatus::Failed, None),
         };
         if report.confirmed.is_none() && report.converged_no_op {
+            record_run_terminal(&metrics, &trigger.tenant, "converged");
             tracing::info!(
                 target: "escurel_runner",
                 event_id = %trigger.event_id,
@@ -573,8 +925,14 @@ async fn dispatch_loop(
                 "dispatch: run was a clean no-op; recorded processed (converged, no cascade)"
             );
         }
+        // Release the in-flight quota slot now this run reached a terminal.
+        inflight
+            .lock()
+            .expect("inflight slots mutex")
+            .remove(&trigger.event_id);
         match (&report.confirmed, result) {
             (Some(effect), Ok(())) => {
+                record_run_terminal(&metrics, &trigger.tenant, "processed");
                 tracing::info!(
                     target: "escurel_runner",
                     event_id = %trigger.event_id,
@@ -617,13 +975,37 @@ async fn dispatch_loop(
                     ),
                 }
             }
-            (None, Ok(())) => tracing::warn!(
-                target: "escurel_runner",
-                event_id = %trigger.event_id,
-                run_id = %run_id,
-                attempts = report.attempts,
-                "dispatch: run failed after retries; recorded failed"
-            ),
+            (None, Ok(())) => {
+                // Not confirmed, not converged: a dead-letter (retries/bad
+                // output, already metered above) or a retriable `failed`.
+                match report.failure {
+                    Some(RunFailure::RetriesExhausted) => tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        attempts = report.attempts,
+                        reason = "retries_exhausted",
+                        "dispatch: retries exhausted; dead-lettered (event left in inbox)"
+                    ),
+                    Some(RunFailure::BadOutput) => tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        reason = "bad_output",
+                        "dispatch: unparseable harness output; dead-lettered (event left in inbox)"
+                    ),
+                    _ => {
+                        record_run_terminal(&metrics, &trigger.tenant, "failed");
+                        tracing::warn!(
+                            target: "escurel_runner",
+                            event_id = %trigger.event_id,
+                            run_id = %run_id,
+                            attempts = report.attempts,
+                            "dispatch: permanent failure; recorded failed (retriable re-drive)"
+                        );
+                    }
+                }
+            }
             (_, Err(e)) => tracing::warn!(
                 target: "escurel_runner",
                 event_id = %trigger.event_id,
@@ -633,6 +1015,21 @@ async fn dispatch_loop(
             ),
         }
     }
+
+    // The producer side closed (graceful shutdown): no more triggers and the
+    // current run finished. Signal the drain-complete so SIGTERM can exit 0.
+    tracing::info!(
+        target: "escurel_runner",
+        "dispatch loop drained (queue closed); signalling shutdown"
+    );
+    drained.notify_one();
+}
+
+/// Mint a fresh W3C-style trace id: 32 lowercase hex chars (128 bits). A
+/// cascade-wide identifier shared by every hop of a lineage (#158).
+fn mint_trace_id() -> String {
+    let bits: u128 = ulid::Ulid::new().into();
+    format!("{bits:032x}")
 }
 
 /// One full reconciler attempt (#155): package the trigger, run the harness,
@@ -739,14 +1136,16 @@ fn package_error_to_reconcile(e: escurel_runner_core::PackageError) -> Reconcile
 
 /// Map an adapter-level harness error to a reconcile classification. Spawn /
 /// timeout / I/O are transient (the host/subprocess may recover); a non-zero
-/// exit or an unparseable outcome is permanent.
+/// exit is permanent; **unparseable output** is its own `BadOutput` variant so
+/// the dispatch loop dead-letters it `bad_output` (#158).
 fn harness_error_to_reconcile(e: &escurel_runner_harness::HarnessError) -> ReconcileError {
     use escurel_runner_harness::HarnessError as H;
     match e {
         H::Spawn { .. } | H::Timeout { .. } | H::Io { .. } => {
             ReconcileError::Transient(e.to_string())
         }
-        H::NonZeroExit { .. } | H::BadOutcome { .. } => ReconcileError::Permanent(e.to_string()),
+        H::BadOutcome { .. } => ReconcileError::BadOutput(e.to_string()),
+        H::NonZeroExit { .. } => ReconcileError::Permanent(e.to_string()),
     }
 }
 
@@ -797,6 +1196,7 @@ async fn drain_loop(mut consumer: DispatchConsumer, ledger: Arc<Ledger>) {
 /// webhook already delivered. Best-effort: a failed poll is logged and the
 /// next tick retries — the poller's whole job is to be the self-healing
 /// fallback, so it must never panic the process.
+#[allow(clippy::too_many_arguments)]
 async fn poll_loop(
     gateway_url: String,
     tenant: String,
@@ -805,6 +1205,10 @@ async fn poll_loop(
     queue: DispatchQueue,
     ledger: Arc<Ledger>,
     limits: LoopLimits,
+    governor: Governor,
+    metrics: Arc<Metrics>,
+    inflight: InflightSlots,
+    draining: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let client = match Client::connect(&gateway_url, SecretString::from(token)).await {
         Ok(client) => client,
@@ -828,14 +1232,27 @@ async fn poll_loop(
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
+        // Stop pulling new work once shutdown drain begins so the dispatch
+        // loop's queue can close and in-flight runs finish. Dropping the
+        // poller's queue clone here lets the channel reach `None`.
+        if draining.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!(
+                target: "escurel_runner",
+                "inbox poller stopping (drain); releasing queue handle"
+            );
+            return;
+        }
         match client.list_inbox(ListInboxRequest::default()).await {
             Ok(resp) => {
                 for event in &resp.events {
                     let trigger = Trigger::from_event(event, tenant.clone());
-                    // Route through the same loop-control gate the webhook
-                    // uses: the durable ledger decides create-vs-drop, then the
-                    // depth/cycle/budget controls admit-or-dead-letter.
-                    gate_and_enqueue(&ledger, &queue, &limits, trigger, "poll");
+                    // Route through the same loop-control + quota gate the
+                    // webhook uses: the durable ledger decides create-vs-drop,
+                    // the depth/cycle/budget controls admit-or-dead-letter, and
+                    // the quota gate throttles (holds) an over-quota trigger.
+                    gate_and_enqueue(
+                        &ledger, &queue, &limits, &governor, &metrics, &inflight, trigger, "poll",
+                    );
                 }
             }
             Err(e) => tracing::warn!(
@@ -879,9 +1296,11 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
 }
 
 /// Block until SIGTERM (Nomad's graceful-stop signal) or SIGINT
-/// (Ctrl-C in a dev shell). On non-unix targets, only Ctrl-C.
+/// (Ctrl-C in a dev shell), then flip the `draining` flag so ingress stops
+/// admitting new triggers and the poller releases its queue handle (#158). On
+/// non-unix targets, only Ctrl-C.
 #[cfg(unix)]
-async fn wait_for_shutdown() {
+async fn wait_for_shutdown(draining: Arc<std::sync::atomic::AtomicBool>) {
     use tokio::signal::unix::{SignalKind, signal};
 
     let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
@@ -890,9 +1309,11 @@ async fn wait_for_shutdown() {
         _ = sigterm.recv() => {}
         _ = sigint.recv() => {}
     }
+    draining.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[cfg(not(unix))]
-async fn wait_for_shutdown() {
+async fn wait_for_shutdown(draining: Arc<std::sync::atomic::AtomicBool>) {
     let _ = tokio::signal::ctrl_c().await;
+    draining.store(true, std::sync::atomic::Ordering::Relaxed);
 }

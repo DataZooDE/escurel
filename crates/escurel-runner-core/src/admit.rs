@@ -115,6 +115,7 @@ mod tests {
                 depth,
                 lineage_path: vec!["ROOT".into()],
                 instance_path,
+                trace_id: None,
             },
         }
     }

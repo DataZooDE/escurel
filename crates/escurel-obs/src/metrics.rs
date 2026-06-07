@@ -41,6 +41,15 @@ pub struct Metrics {
     /// `escurel_audit_drift{tenant,category}` — last-observed drift
     /// counts from an `audit` run.
     audit_drift: IntGaugeVec,
+    /// `escurel_runner_runs_total{tenant,status}` — agent-runner runs by
+    /// terminal status (`processed`/`failed`/`dead_letter`/`converged`).
+    runner_runs: IntCounterVec,
+    /// `escurel_runner_throttled_total{reason}` — quota throttles by reason.
+    runner_throttled: IntCounterVec,
+    /// `escurel_runner_queue_depth` — current dispatch-queue depth.
+    runner_queue_depth: IntGauge,
+    /// `escurel_runner_cascade_depth_max` — deepest cascade hop seen.
+    runner_cascade_depth_max: IntGauge,
 }
 
 impl Metrics {
@@ -108,6 +117,36 @@ impl Metrics {
         )
         .expect("valid gauge opts");
 
+        let runner_runs = IntCounterVec::new(
+            Opts::new(
+                "escurel_runner_runs_total",
+                "Agent-runner runs by tenant and terminal status.",
+            ),
+            &["tenant", "status"],
+        )
+        .expect("valid counter opts");
+
+        let runner_throttled = IntCounterVec::new(
+            Opts::new(
+                "escurel_runner_throttled_total",
+                "Agent-runner triggers throttled by quota, by reason.",
+            ),
+            &["reason"],
+        )
+        .expect("valid counter opts");
+
+        let runner_queue_depth = IntGauge::with_opts(Opts::new(
+            "escurel_runner_queue_depth",
+            "Current agent-runner dispatch-queue depth.",
+        ))
+        .expect("valid gauge opts");
+
+        let runner_cascade_depth_max = IntGauge::with_opts(Opts::new(
+            "escurel_runner_cascade_depth_max",
+            "Deepest cascade hop the agent-runner has processed.",
+        ))
+        .expect("valid gauge opts");
+
         registry
             .register(Box::new(requests.clone()))
             .expect("register escurel_requests_total");
@@ -129,6 +168,18 @@ impl Metrics {
         registry
             .register(Box::new(audit_drift.clone()))
             .expect("register escurel_audit_drift");
+        registry
+            .register(Box::new(runner_runs.clone()))
+            .expect("register escurel_runner_runs_total");
+        registry
+            .register(Box::new(runner_throttled.clone()))
+            .expect("register escurel_runner_throttled_total");
+        registry
+            .register(Box::new(runner_queue_depth.clone()))
+            .expect("register escurel_runner_queue_depth");
+        registry
+            .register(Box::new(runner_cascade_depth_max.clone()))
+            .expect("register escurel_runner_cascade_depth_max");
 
         Self {
             registry,
@@ -139,6 +190,10 @@ impl Metrics {
             tool_latency_ms,
             live_sessions,
             audit_drift,
+            runner_runs,
+            runner_throttled,
+            runner_queue_depth,
+            runner_cascade_depth_max,
         }
     }
 
@@ -198,6 +253,30 @@ impl Metrics {
             .set(index_not_in_markdown);
     }
 
+    /// Record one agent-runner run reaching a terminal `status`
+    /// (`processed` / `failed` / `dead_letter` / `converged`) for `tenant`.
+    pub fn inc_runner_run(&self, tenant: &str, status: &str) {
+        self.runner_runs.with_label_values(&[tenant, status]).inc();
+    }
+
+    /// Record one quota throttle, by `reason` (`runs_per_min` /
+    /// `max_concurrent`).
+    pub fn inc_runner_throttled(&self, reason: &str) {
+        self.runner_throttled.with_label_values(&[reason]).inc();
+    }
+
+    /// Set the current dispatch-queue depth gauge.
+    pub fn set_runner_queue_depth(&self, depth: i64) {
+        self.runner_queue_depth.set(depth);
+    }
+
+    /// Bump the max-cascade-depth gauge if `depth` exceeds the last high-water.
+    pub fn observe_runner_cascade_depth(&self, depth: i64) {
+        if depth > self.runner_cascade_depth_max.get() {
+            self.runner_cascade_depth_max.set(depth);
+        }
+    }
+
     /// Render the registry in Prometheus text exposition format
     /// (the `text/plain; version=0.0.4` body served at `/metrics`).
     pub fn render_prometheus(&self) -> String {
@@ -234,6 +313,35 @@ mod tests {
             && l.trim_end().ends_with(" 1")));
         assert!(body.contains("# TYPE escurel_tool_latency_ms histogram"));
         assert!(body.contains("escurel_tool_latency_ms_count{"));
+    }
+
+    #[test]
+    fn runner_metrics_render() {
+        let m = Metrics::new();
+        m.inc_runner_run("acme", "processed");
+        m.inc_runner_run("acme", "dead_letter");
+        m.inc_runner_throttled("runs_per_min");
+        m.set_runner_queue_depth(3);
+        m.observe_runner_cascade_depth(2);
+        m.observe_runner_cascade_depth(1); // does not lower the high-water
+        let body = m.render_prometheus();
+        assert!(
+            body.lines()
+                .any(|l| l.starts_with("escurel_runner_runs_total{")
+                    && l.contains(r#"tenant="acme""#)
+                    && l.contains(r#"status="dead_letter""#)
+                    && l.trim_end().ends_with(" 1"))
+        );
+        assert!(
+            body.lines()
+                .any(|l| l.starts_with("escurel_runner_throttled_total{")
+                    && l.contains(r#"reason="runs_per_min""#))
+        );
+        assert!(body.contains("escurel_runner_queue_depth 3"));
+        assert!(
+            body.contains("escurel_runner_cascade_depth_max 2"),
+            "cascade depth gauge keeps the high-water mark"
+        );
     }
 
     #[test]

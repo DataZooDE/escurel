@@ -160,19 +160,25 @@ fn build_runner_provenance(
     if instance_path.last() != Some(&effect.instance_page_id) {
         instance_path.push(effect.instance_page_id.clone());
     }
-    json!({
-        "runner": {
-            "root_event_id": parent_lineage.root_event_id,
-            "parent_event_id": parent_trigger.event_id,
-            "parent_run_id": parent_run_id,
-            "depth": depth,
-            "lineage_path": lineage_path,
-            "instance_path": instance_path,
-            "cause": format!("instance-updated:{}", parent_trigger.label_skill),
-            "changed_instance": effect.instance_page_id,
-            "changed_version": effect.version,
-        }
-    })
+    let mut runner = serde_json::Map::new();
+    runner.insert("root_event_id".into(), json!(parent_lineage.root_event_id));
+    runner.insert("parent_event_id".into(), json!(parent_trigger.event_id));
+    runner.insert("parent_run_id".into(), json!(parent_run_id));
+    runner.insert("depth".into(), json!(depth));
+    runner.insert("lineage_path".into(), json!(lineage_path));
+    runner.insert("instance_path".into(), json!(instance_path));
+    runner.insert(
+        "cause".into(),
+        json!(format!("instance-updated:{}", parent_trigger.label_skill)),
+    );
+    runner.insert("changed_instance".into(), json!(effect.instance_page_id));
+    runner.insert("changed_version".into(), json!(effect.version));
+    // Carry the cascade-wide OTel trace id forward (#158) so the next hop's
+    // root span continues the SAME trace. Present once the root hop minted it.
+    if let Some(trace_id) = &parent_lineage.trace_id {
+        runner.insert("trace_id".into(), json!(trace_id));
+    }
+    json!({ "runner": runner })
 }
 
 /// Resolve a skill's optional `cascade_target` — the instance page id a
@@ -279,6 +285,7 @@ mod tests {
                 depth: 1,
                 lineage_path: vec!["ROOT0".into(), "HOP1".into()],
                 instance_path: vec!["markdown/instances/meeting/m1.md".into()],
+                trace_id: None,
             },
         );
         let runner = build_runner_provenance(&parent, "run-9", &effect())["runner"].clone();

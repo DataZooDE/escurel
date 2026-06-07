@@ -87,6 +87,13 @@ pub enum DeadLetterReason {
     Cycle,
     /// The per-root run budget (`ESCUREL_RUNNER_MAX_RUNS_PER_ROOT`) is spent.
     BudgetExceeded,
+    /// The reconciler exhausted its retry-attempts cap on a transient failure
+    /// (#158). A terminal dead-letter — the operator must DLQ-requeue to
+    /// re-attempt — rather than a bare retriable `failed`.
+    RetriesExhausted,
+    /// The harness produced output the adapter could not parse (#158). A
+    /// re-run won't fix a broken harness contract, so it dead-letters.
+    BadOutput,
 }
 
 impl DeadLetterReason {
@@ -96,6 +103,8 @@ impl DeadLetterReason {
             DeadLetterReason::DepthExceeded => "depth_exceeded",
             DeadLetterReason::Cycle => "cycle",
             DeadLetterReason::BudgetExceeded => "budget_exceeded",
+            DeadLetterReason::RetriesExhausted => "retries_exhausted",
+            DeadLetterReason::BadOutput => "bad_output",
         }
     }
 }
@@ -555,6 +564,135 @@ impl Ledger {
         )?;
         Ok(n as u64)
     }
+
+    /// List every dead-lettered run, newest first — the operator DLQ surface
+    /// (#158). Each entry carries the run id, tenant, originating event, the
+    /// produced instance (if any), and the dead-letter reason, so an operator
+    /// can triage and re-drive.
+    pub fn list_dead_letters(&self) -> Result<Vec<RunRecord>, LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let mut stmt = conn.prepare(
+            "SELECT run_id, tenant, event_id, instance_page_id, content_hash,
+                    produced_instance_page_id, produced_version,
+                    status, depth, root_event_id, reason
+             FROM runs WHERE status = ?1
+             ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![RunStatus::DeadLetter.as_str()], |r| {
+                let status_str: String = r.get(7)?;
+                Ok(RunRecord {
+                    run_id: r.get(0)?,
+                    tenant: r.get(1)?,
+                    event_id: r.get(2)?,
+                    instance_page_id: r.get(3)?,
+                    content_hash: r.get(4)?,
+                    produced_instance_page_id: r.get(5)?,
+                    produced_version: r.get(6)?,
+                    status: RunStatus::from_str(&status_str).unwrap_or(RunStatus::DeadLetter),
+                    depth: r.get(8)?,
+                    root_event_id: r.get(9)?,
+                    reason: r.get(10)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Clear a dead-lettered run's terminal block so its originating event can
+    /// be re-driven — the DLQ **requeue** path (#158). The row is reset to
+    /// `pending` with a fresh `run_id` (and its prior produced/reason fields
+    /// cleared), so the next `begin_run` for that `(tenant, event_id)` no longer
+    /// reports `AlreadyTerminal`. Looks the run up by `run_id`; returns the
+    /// `(tenant, event_id)` it cleared so the caller can re-enqueue a trigger.
+    ///
+    /// Only a `dead_letter` row is requeued — a `processed`/`pending`/`failed`
+    /// row is left untouched and reported via [`LedgerError::NotFound`] (the
+    /// operator requeues a dead-letter, nothing else).
+    pub fn requeue_dead_letter(&self, run_id: &str) -> Result<(String, String), LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let (tenant, event_id): (String, String) = conn
+            .query_row(
+                "SELECT tenant, event_id FROM runs WHERE run_id = ?1 AND status = ?2",
+                rusqlite::params![run_id, RunStatus::DeadLetter.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|_| LedgerError::NotFound(run_id.to_owned()))?;
+        let fresh = RunId::new();
+        conn.execute(
+            "UPDATE runs
+                SET run_id = ?1, status = 'pending',
+                    produced_instance_page_id = NULL,
+                    produced_version = NULL, reason = NULL,
+                    updated_at = ?2
+              WHERE run_id = ?3",
+            rusqlite::params![fresh.as_str(), now_iso(), run_id],
+        )?;
+        Ok((tenant, event_id))
+    }
+
+    /// Requeue a dead-lettered run found by its originating `(tenant,
+    /// event_id)` (the operator may hold the event id, not the run id). Same
+    /// semantics as [`Self::requeue_dead_letter`].
+    pub fn requeue_dead_letter_by_event(
+        &self,
+        tenant: &str,
+        event_id: &str,
+    ) -> Result<String, LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let _existing: String = conn
+            .query_row(
+                "SELECT run_id FROM runs
+                  WHERE tenant = ?1 AND event_id = ?2 AND status = ?3",
+                rusqlite::params![tenant, event_id, RunStatus::DeadLetter.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(|_| LedgerError::NotFound(format!("{tenant}/{event_id}")))?;
+        let fresh = RunId::new();
+        conn.execute(
+            "UPDATE runs
+                SET run_id = ?1, status = 'pending',
+                    produced_instance_page_id = NULL,
+                    produced_version = NULL, reason = NULL,
+                    updated_at = ?2
+              WHERE tenant = ?3 AND event_id = ?4",
+            rusqlite::params![fresh.as_str(), now_iso(), tenant, event_id],
+        )?;
+        Ok(fresh.0)
+    }
+
+    /// Every `pending` (in-flight) run across all tenants — the basis of
+    /// crash recovery (#158). On restart the runner re-confirms each of these
+    /// by read-back: a landed effect is marked `processed`, an unconfirmed one
+    /// is reset to retriable so the poller backstops it.
+    pub fn list_pending(&self) -> Result<Vec<RunRecord>, LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let mut stmt = conn.prepare(
+            "SELECT run_id, tenant, event_id, instance_page_id, content_hash,
+                    produced_instance_page_id, produced_version,
+                    status, depth, root_event_id, reason
+             FROM runs WHERE status = ?1",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![RunStatus::Pending.as_str()], |r| {
+                let status_str: String = r.get(7)?;
+                Ok(RunRecord {
+                    run_id: r.get(0)?,
+                    tenant: r.get(1)?,
+                    event_id: r.get(2)?,
+                    instance_page_id: r.get(3)?,
+                    content_hash: r.get(4)?,
+                    produced_instance_page_id: r.get(5)?,
+                    produced_version: r.get(6)?,
+                    status: RunStatus::from_str(&status_str).unwrap_or(RunStatus::Pending),
+                    depth: r.get(8)?,
+                    root_event_id: r.get(9)?,
+                    reason: r.get(10)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
 }
 
 /// Add a nullable `TEXT` column to `runs` if it is not already present.
@@ -820,6 +958,92 @@ mod tests {
     }
 
     #[test]
+    fn dlq_list_and_requeue_round_trip() {
+        // A dead-lettered run is listed in the DLQ; requeueing it clears the
+        // terminal block so a re-delivery Creates again (re-driveable).
+        let ledger = Ledger::open_in_memory().expect("open");
+        let id = match ledger.begin_run(&trigger("DLQ1")).expect("begin") {
+            LedgerDecision::Created(id) => id,
+            other => panic!("expected Created, got {other:?}"),
+        };
+        ledger
+            .dead_letter(&id, DeadLetterReason::RetriesExhausted)
+            .expect("dead-letter");
+
+        let listed = ledger.list_dead_letters().expect("list dlq");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].event_id, "DLQ1");
+        assert_eq!(listed[0].reason.as_deref(), Some("retries_exhausted"));
+
+        // Re-delivery of a dead-lettered event drops (terminal) until requeued.
+        assert_eq!(
+            ledger.begin_run(&trigger("DLQ1")).expect("re-begin"),
+            LedgerDecision::AlreadyTerminal,
+        );
+
+        let (tenant, event_id) = ledger.requeue_dead_letter(id.as_str()).expect("requeue");
+        assert_eq!((tenant.as_str(), event_id.as_str()), ("acme", "DLQ1"));
+        assert!(ledger.list_dead_letters().expect("list").is_empty());
+        // Requeue resets the row to `pending` (re-driveable) with a fresh run
+        // id; the operator path re-enqueues a trigger directly, so a later
+        // begin sees it in-flight (no longer the terminal AlreadyTerminal that
+        // wedged it). It is back on the runnable path.
+        let rec = ledger
+            .get_run("acme", "DLQ1")
+            .expect("get")
+            .expect("present");
+        assert_eq!(rec.status, RunStatus::Pending);
+        assert_eq!(rec.reason, None, "requeue clears the dead-letter reason");
+        assert_ne!(rec.run_id, id.0, "requeue mints a fresh run id");
+        assert_eq!(
+            ledger
+                .begin_run(&trigger("DLQ1"))
+                .expect("re-begin post-requeue"),
+            LedgerDecision::InFlight,
+            "a requeued (pending) row is in-flight, no longer terminal"
+        );
+    }
+
+    #[test]
+    fn requeue_by_event_only_targets_dead_letters() {
+        let ledger = Ledger::open_in_memory().expect("open");
+        let id = match ledger.begin_run(&trigger("DLQ2")).expect("begin") {
+            LedgerDecision::Created(id) => id,
+            other => panic!("expected Created, got {other:?}"),
+        };
+        // A pending (not dead-lettered) run is not requeueable.
+        assert!(ledger.requeue_dead_letter_by_event("acme", "DLQ2").is_err());
+        ledger
+            .dead_letter(&id, DeadLetterReason::BadOutput)
+            .expect("dead-letter");
+        let fresh = ledger
+            .requeue_dead_letter_by_event("acme", "DLQ2")
+            .expect("requeue by event");
+        assert_ne!(fresh, id.0, "requeue mints a fresh run id");
+        let rec = ledger
+            .get_run("acme", "DLQ2")
+            .expect("get")
+            .expect("present");
+        assert_eq!(rec.status, RunStatus::Pending);
+    }
+
+    #[test]
+    fn list_pending_finds_in_flight_rows() {
+        let ledger = Ledger::open_in_memory().expect("open");
+        let _ = ledger.begin_run(&trigger("P1")).expect("begin P1");
+        let p2 = match ledger.begin_run(&trigger("P2")).expect("begin P2") {
+            LedgerDecision::Created(id) => id,
+            other => panic!("expected Created, got {other:?}"),
+        };
+        ledger
+            .complete(&p2, RunStatus::Processed, None)
+            .expect("complete P2");
+        let pending = ledger.list_pending().expect("list pending");
+        assert_eq!(pending.len(), 1, "only the in-flight row is pending");
+        assert_eq!(pending[0].event_id, "P1");
+    }
+
+    #[test]
     fn count_runs_for_root_counts_the_cascade_tree() {
         let ledger = Ledger::open_in_memory().expect("open");
         // Two hops sharing a root, plus an unrelated root.
@@ -831,6 +1055,7 @@ mod tests {
             depth: 1,
             lineage_path: vec!["R0".into(), "R0-HOP1".into()],
             instance_path: vec![],
+            trace_id: None,
         };
         let other = trigger("R9");
         let _ = ledger.begin_run(&hop0).expect("hop0");

@@ -65,6 +65,11 @@ pub enum ReconcileError {
     /// A failure a retry cannot fix — fail fast.
     #[error("permanent reconcile failure: {0}")]
     Permanent(String),
+    /// The harness produced unparseable output — fail fast, and dead-letter
+    /// `bad_output` (#158). A permanent failure with a distinct label so the
+    /// caller can record the precise DLQ reason.
+    #[error("harness produced unparseable output: {0}")]
+    BadOutput(String),
     /// **Not a failure** — the run was a *clean no-op*: the harness ran
     /// successfully but had genuinely nothing to do (no cross-skill change, no
     /// instance to write), so there is no effect to confirm. A converged
@@ -184,6 +189,21 @@ pub async fn confirm_effect(
     })
 }
 
+/// How a run terminated, for the caller's terminal-status decision (#158).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunFailure {
+    /// A transient failure that retried up to the attempts cap and never
+    /// converged — the caller dead-letters `retries_exhausted` (#158).
+    RetriesExhausted,
+    /// A permanent failure (4xx/protocol/`NonZeroExit`/clean-but-failed). The
+    /// caller records `failed` (retriable by an operator re-drive).
+    Permanent,
+    /// The harness output could not be parsed — the caller dead-letters
+    /// `bad_output` (#158). Surfaced as a distinct permanent sub-kind so the
+    /// dispatch loop can label the DLQ entry precisely.
+    BadOutput,
+}
+
 /// The result of [`run_with_retry`]: whether the run ultimately succeeded
 /// (with the confirmed effect to record) and how many attempts it took.
 #[derive(Debug)]
@@ -197,6 +217,9 @@ pub struct RunReport {
     /// as a clean terminal (NOT `failed`), and emits no cascade. Mutually
     /// exclusive with [`Self::confirmed`] being `Some`.
     pub converged_no_op: bool,
+    /// How the run failed, when it did (`confirmed`/`converged_no_op` are both
+    /// false). Drives the dead-letter-vs-failed terminal decision (#158).
+    pub failure: Option<RunFailure>,
     /// How many attempts were made (≥ 1).
     pub attempts: u32,
 }
@@ -225,6 +248,7 @@ where
                 return RunReport {
                     confirmed: Some(effect),
                     converged_no_op: false,
+                    failure: None,
                     attempts: tries,
                 };
             }
@@ -241,6 +265,7 @@ where
                 return RunReport {
                     confirmed: None,
                     converged_no_op: true,
+                    failure: None,
                     attempts: tries,
                 };
             }
@@ -254,6 +279,21 @@ where
                 return RunReport {
                     confirmed: None,
                     converged_no_op: false,
+                    failure: Some(RunFailure::Permanent),
+                    attempts: tries,
+                };
+            }
+            Err(ReconcileError::BadOutput(reason)) => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    attempt = tries,
+                    reason = %reason,
+                    "reconcile: unparseable harness output; failing fast (will dead-letter bad_output)"
+                );
+                return RunReport {
+                    confirmed: None,
+                    converged_no_op: false,
+                    failure: Some(RunFailure::BadOutput),
                     attempts: tries,
                 };
             }
@@ -268,6 +308,7 @@ where
                     return RunReport {
                         confirmed: None,
                         converged_no_op: false,
+                        failure: Some(RunFailure::RetriesExhausted),
                         attempts: tries,
                     };
                 }
