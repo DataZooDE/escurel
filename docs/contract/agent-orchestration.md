@@ -231,6 +231,30 @@ still owns every decision to *act*.
   ledger; on restart reconcile `pending`/`running` by read-back against the
   gateway; the poller backstops anything lost).
 
+## Definition of Done (binding on every work-item)
+
+Red → green → refactor, in that order (CLAUDE.md principles 1 + 2):
+
+1. **Red** — write the work-item's real integration test *first*; confirm it
+   fails for the named behaviour (not a compile error, not a missing
+   fixture).
+2. **Green** — implement the minimum to pass.
+3. **Refactor** — tidy with the test green.
+
+The **only** accepted Definition of Done is a **real, no-mock integration
+test** exercising the **real escurel interface, real data, and real
+requests**: a real `escurel-test-support::EscurelProcess` gateway, a real
+DuckDB file, real `/mcp` JSON-RPC over the wire, real `FixtureBuilder` data,
+and — for harness work-items — a **real harness subprocess** (the
+echo-harness is a real binary; the real-LLM adapters drive the real `/mcp`,
+and a skip-only env-guarded run does not satisfy DoD). **No `mockall`, no
+test doubles, no stubbed transport** at the boundary a work-item covers. If
+the real component cannot be exercised from a test, the work-item is not
+done. The named test ships in the same PR as the code, and all four local
+gates are green (`cargo fmt --check`; `cargo clippy --workspace
+--all-targets -- -D warnings`; `cargo test --workspace --all-targets`;
+`cargo build --workspace --release`).
+
 ## Work-item breakdown (proto-epic → future sub-issues)
 
 Each item is a future sub-issue with a one-line scope + the no-mock
