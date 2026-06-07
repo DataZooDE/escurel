@@ -38,9 +38,9 @@ use axum::routing::{get, post};
 use escurel_client::{Client, SecretString};
 use escurel_obs::{TelemetryConfig, init_telemetry};
 use escurel_runner_core::{
-    ConfirmedEffect, DispatchConsumer, DispatchQueue, EnqueueOutcome, Ledger, LedgerDecision,
-    ReconcileError, RunStatus, RunnerConfig, TaskContext, Trigger, classify_client_error,
-    confirm_effect, package, run_with_retry,
+    CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue, EnqueueOutcome, Ledger,
+    LedgerDecision, ReconcileError, RunStatus, RunnerConfig, TaskContext, Trigger,
+    classify_client_error, confirm_effect, emit_cascade, package, run_with_retry,
 };
 use escurel_runner_harness::{AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, Harness};
 use escurel_types::{Event, ListInboxRequest};
@@ -478,15 +478,49 @@ async fn dispatch_loop(
             None => ledger.complete(&run_id, RunStatus::Failed, None),
         };
         match (&report.confirmed, result) {
-            (Some(effect), Ok(())) => tracing::info!(
-                target: "escurel_runner",
-                event_id = %trigger.event_id,
-                run_id = %run_id,
-                attempts = report.attempts,
-                instance = %effect.instance_page_id,
-                version = %effect.version,
-                "dispatch: run succeeded; recorded processed with produced instance + version"
-            ),
+            (Some(effect), Ok(())) => {
+                tracing::info!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    run_id = %run_id,
+                    attempts = report.attempts,
+                    instance = %effect.instance_page_id,
+                    version = %effect.version,
+                    "dispatch: run succeeded; recorded processed with produced instance + version"
+                );
+                // The "change → event" bridge (#156): a CONFIRMED successful
+                // write may cascade a follow-on event describing the change.
+                // The cascade decides (cross-skill change only) and tags the
+                // emitted event with lineage; the new event re-enters the SAME
+                // poll → trigger → package → harness → reconcile pipeline.
+                // Fired only here — after a confirmed success — so a failed or
+                // converged-no-op run never spuriously emits.
+                match emit_cascade(&client, &trigger, &run_id.0, effect).await {
+                    Ok(CascadeOutcome::Emitted {
+                        event_id,
+                        label_skill,
+                    }) => tracing::info!(
+                        target: "escurel_runner",
+                        parent_event_id = %trigger.event_id,
+                        parent_run_id = %run_id,
+                        cascaded_event_id = %event_id,
+                        label_skill = %label_skill,
+                        depth = trigger.lineage.depth + 1,
+                        "cascade: emitted lineage-tagged follow-on event"
+                    ),
+                    Ok(CascadeOutcome::NotCrossSkill) => tracing::debug!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        "cascade: confirmed write is not a cross-skill change; no follow-on"
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        error = %e,
+                        "cascade: failed to emit follow-on event (run already recorded processed)"
+                    ),
+                }
+            }
             (None, Ok(())) => tracing::warn!(
                 target: "escurel_runner",
                 event_id = %trigger.event_id,
