@@ -42,6 +42,10 @@ pub const DEFAULT_HARNESS: &str = "echo";
 /// name resolves on `PATH`; a deterministic test overrides it to a stub.
 pub const DEFAULT_CLAUDE_BIN: &str = "claude";
 
+/// Default `codex` binary the Codex adapter (#153) spawns. A bare name
+/// resolves on `PATH`; a deterministic test overrides it to a stub.
+pub const DEFAULT_CODEX_BIN: &str = "codex";
+
 /// Default path of the runner-local durable run ledger (its own SQLite
 /// file, *never* the tenant store). Relative to the process CWD so a dev
 /// run drops it in place; deployments set [`crate::RunnerConfig::ledger_path`]
@@ -147,6 +151,14 @@ pub struct RunnerConfig {
     /// pick its configured default.
     /// Source: `ESCUREL_RUNNER_CLAUDE_MODEL` (unset → `None`).
     pub claude_model: Option<String>,
+    /// Path to the `codex` binary the Codex adapter (#153) spawns.
+    /// Source: `ESCUREL_RUNNER_CODEX_BIN` (default [`DEFAULT_CODEX_BIN`]).
+    pub codex_bin: String,
+    /// Optional `-m/--model` the Codex adapter passes to `codex` (a model
+    /// id like `o3`/`gpt-5-codex`); `None` lets `codex` pick its configured
+    /// default.
+    /// Source: `ESCUREL_RUNNER_CODEX_MODEL` (unset → `None`).
+    pub codex_model: Option<String>,
 }
 
 impl RunnerConfig {
@@ -204,6 +216,11 @@ impl RunnerConfig {
             .unwrap_or_else(|| DEFAULT_CLAUDE_BIN.to_owned());
         let claude_model = lookup("ESCUREL_RUNNER_CLAUDE_MODEL").filter(|s| !s.is_empty());
 
+        let codex_bin = lookup("ESCUREL_RUNNER_CODEX_BIN")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_CODEX_BIN.to_owned());
+        let codex_model = lookup("ESCUREL_RUNNER_CODEX_MODEL").filter(|s| !s.is_empty());
+
         Ok(Self {
             listen,
             gateway_url,
@@ -219,6 +236,8 @@ impl RunnerConfig {
             harness,
             claude_bin,
             claude_model,
+            codex_bin,
+            codex_model,
         })
     }
 }
@@ -281,6 +300,32 @@ mod tests {
         assert_eq!(cfg.harness, DEFAULT_HARNESS);
         assert_eq!(cfg.claude_bin, DEFAULT_CLAUDE_BIN);
         assert_eq!(cfg.claude_model, None);
+        assert_eq!(cfg.codex_bin, DEFAULT_CODEX_BIN);
+        assert_eq!(cfg.codex_model, None);
+    }
+
+    #[test]
+    fn codex_bin_and_model_load_when_set_and_ignore_empty() {
+        let set = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_CODEX_BIN" => Some("/usr/local/bin/codex".to_owned()),
+            "ESCUREL_RUNNER_CODEX_MODEL" => Some("o3".to_owned()),
+            _ => None,
+        })
+        .expect("codex config must parse");
+        assert_eq!(set.codex_bin, "/usr/local/bin/codex");
+        assert_eq!(set.codex_model, Some("o3".to_owned()));
+
+        let empty = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_CODEX_BIN" => Some(String::new()),
+            "ESCUREL_RUNNER_CODEX_MODEL" => Some(String::new()),
+            _ => None,
+        })
+        .expect("empty codex config must parse");
+        assert_eq!(
+            empty.codex_bin, DEFAULT_CODEX_BIN,
+            "empty codex bin falls back to the default"
+        );
+        assert_eq!(empty.codex_model, None, "empty model is treated as unset");
     }
 
     #[test]

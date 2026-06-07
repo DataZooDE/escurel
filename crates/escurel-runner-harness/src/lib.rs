@@ -26,11 +26,13 @@
 //! [`docs/contract/agent-orchestration.md`]: https://github.com/DataZooDE/escurel/blob/main/docs/contract/agent-orchestration.md
 
 mod claude;
+mod codex;
 mod echo;
 mod harness;
 mod task;
 
 pub use claude::ClaudeHarness;
+pub use codex::CodexHarness;
 pub use echo::EchoHarness;
 pub use harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus};
 pub use task::HarnessTask;
