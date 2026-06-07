@@ -28,6 +28,7 @@
 //! | `ESCUREL_SERVER_DATA_DIR` | `/data` | host-volume root for DuckDB + FsStore + tenants |
 //! | `ESCUREL_SEED_DIR` | — | markdown corpus seeded into the tenant at boot (idempotent), e.g. `examples/crm-demo` |
 //! | `ESCUREL_WEBHOOK_URL` | — | outbound capture webhook; fire-and-forget POST of each new `capture_event` (M7) |
+//! | `ESCUREL_WEBHOOK_SECRET` | — | shared secret; when set the webhook body is HMAC-SHA256-signed via `X-Escurel-Webhook-Signature: sha256=<hex>` |
 //! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
 //! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
 //! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs` or `s3` |
@@ -259,6 +260,13 @@ pub struct EscurelConfig {
     /// `Some` → `capture_event` fires a fire-and-forget POST of the new
     /// event; `None` (default) disables it.
     pub webhook_url: Option<String>,
+    /// Optional shared secret authenticating the outbound capture
+    /// webhook (`ESCUREL_WEBHOOK_SECRET`). When set, the gateway signs
+    /// each POST body with HMAC-SHA256 and sends it as
+    /// `X-Escurel-Webhook-Signature: sha256=<hex>`; the runner verifies
+    /// it against the same secret. `None` (default) leaves the POST
+    /// unsigned.
+    pub webhook_secret: Option<String>,
     /// Dedicated Prometheus `/metrics` listener
     /// (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default
     /// `0.0.0.0:9090`). `None` when explicitly emptied — disables
@@ -362,6 +370,12 @@ impl EscurelConfig {
         // Optional outbound capture webhook (fire-and-forget POST).
         let webhook_url = env
             .get("ESCUREL_WEBHOOK_URL")
+            .filter(|s| !s.trim().is_empty());
+        // Optional shared secret authenticating the capture webhook
+        // (HMAC-SHA256 over the POST body). An empty value is treated
+        // as unset — an unsigned webhook.
+        let webhook_secret = env
+            .get("ESCUREL_WEBHOOK_SECRET")
             .filter(|s| !s.trim().is_empty());
         // Dedicated Prometheus `/metrics` listener. Default
         // `0.0.0.0:9090`; an explicitly-empty value disables scraping.
@@ -515,6 +529,7 @@ impl EscurelConfig {
             demo_dir,
             seed_dir,
             webhook_url,
+            webhook_secret,
             metrics_listen,
         })
     }
@@ -686,6 +701,7 @@ impl EscurelConfig {
             embedder_factory: Some(self.embedder_factory()),
             demo_dir: self.demo_dir.clone(),
             webhook_url: self.webhook_url.clone(),
+            webhook_secret: self.webhook_secret.clone(),
             metrics_listen: self.metrics_listen.clone(),
         };
 

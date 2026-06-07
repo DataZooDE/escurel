@@ -2307,6 +2307,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "escurel-runner"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "escurel-client",
+ "escurel-obs",
+ "escurel-runner-core",
+ "escurel-runner-harness",
+ "escurel-test-support",
+ "escurel-types",
+ "hmac 0.12.1",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
+name = "escurel-runner-core"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "escurel-client",
+ "escurel-types",
+ "rusqlite",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
+name = "escurel-runner-harness"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "escurel-runner-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "escurel-server"
 version = "1.0.0"
 dependencies = [
@@ -2331,10 +2387,12 @@ dependencies = [
  "escurel-types",
  "flate2",
  "futures",
+ "hmac 0.12.1",
  "loro",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
@@ -3730,6 +3788,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e02f3bb43d335493c96bf3fd3a321600bf6bd07ed34bc64118e9293bdffea46c"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "libsqlite3-sys"
+version = "0.35.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f"
+dependencies = [
+ "cc",
+ "pkg-config",
+ "vcpkg",
 ]
 
 [[package]]
@@ -5254,6 +5323,20 @@ dependencies = [
  "spki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rusqlite"
+version = "0.37.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "165ca6e57b20e1351573e3729b958bc62f0e48025386970b6e4d29e7a7e71f3f"
+dependencies = [
+ "bitflags",
+ "fallible-iterator",
+ "fallible-streaming-iterator",
+ "hashlink",
+ "libsqlite3-sys",
+ "smallvec",
 ]
 
 [[package]]

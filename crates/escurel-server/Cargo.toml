@@ -45,9 +45,11 @@ escurel-quota = { path = "../escurel-quota" }
 escurel-storage = { path = "../escurel-storage" }
 escurel-types = { path = "../escurel-types" }
 flate2 = "1"
+hmac = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tar = "0.4"
 thiserror = "2"
 toml = "0.8"
@@ -72,8 +74,10 @@ escurel-obs = { path = "../escurel-obs" }
 escurel-storage = { path = "../escurel-storage" }
 escurel-test-support = { path = "../escurel-test-support" }
 futures = "0.3"
+hmac = "0.12"
 loro = "1.12"
 serde_json = "1"
+sha2 = "0.10"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-tungstenite = "0.24"

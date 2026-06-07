@@ -22,7 +22,12 @@ pub struct PageRef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct WikilinkParsed {
+    #[serde(deserialize_with = "null_as_default")]
     pub skill: String,
+    // A bare-skill wikilink (`[[customer]]`) resolves with no `id`
+    // segment; the MCP wire emits an explicit `null` there, so tolerate
+    // it as the empty default rather than failing the decode.
+    #[serde(deserialize_with = "null_as_default")]
     pub id: String,
     #[serde(deserialize_with = "null_as_default")]
     pub anchor: String,

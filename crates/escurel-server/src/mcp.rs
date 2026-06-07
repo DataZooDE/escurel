@@ -1086,9 +1086,11 @@ async fn tool_capture_event(
         .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?;
     let event = event_to_json(&stored);
     // Notify any external processor of the new inbox item (opt-in,
-    // fire-and-forget; never fails the capture).
+    // fire-and-forget; never fails the capture). The gateway is
+    // single-tenant per indexer, so `indexer.tenant()` is the
+    // authoritative tenant we stamp into the delivered payload (#147).
     if let Some(hook) = webhook {
-        hook.notify(event.clone());
+        hook.notify(event.clone(), indexer.tenant());
     }
     Ok(event)
 }

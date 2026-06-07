@@ -114,6 +114,12 @@ pub struct ServerConfig {
     /// `Some` → `capture_event` fires a fire-and-forget POST of the
     /// new event to this URL; `None` (default) disables it.
     pub webhook_url: Option<String>,
+    /// Shared secret authenticating the outbound capture webhook
+    /// (`ESCUREL_WEBHOOK_SECRET`). When `Some`, the gateway signs each
+    /// POST body with HMAC-SHA256 and sends it as
+    /// `X-Escurel-Webhook-Signature: sha256=<hex>` so the receiver can
+    /// trust the POST; `None` (default) leaves the POST unsigned.
+    pub webhook_secret: Option<String>,
     /// Dedicated Prometheus `/metrics` listener
     /// (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default
     /// `0.0.0.0:9090`). Served on its own port — tailnet-only in the
@@ -150,6 +156,7 @@ impl ServerConfig {
             embedder_factory: None,
             demo_dir: None,
             webhook_url: None,
+            webhook_secret: None,
             metrics_listen: Some("127.0.0.1:0".to_owned()),
         }
     }
@@ -282,7 +289,10 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         embedder_factory: config.embedder_factory.clone(),
         sessions: Arc::new(SessionManager::new()),
         metrics: metrics_registry,
-        webhook: config.webhook_url.clone().map(crate::webhook::Webhook::new),
+        webhook: config
+            .webhook_url
+            .clone()
+            .map(|url| crate::webhook::Webhook::new(url, config.webhook_secret.clone())),
     };
 
     let mut app = Router::new()

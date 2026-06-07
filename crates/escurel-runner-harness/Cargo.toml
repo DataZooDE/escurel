@@ -1,0 +1,26 @@
+[package]
+name = "escurel-runner-harness"
+description = "Harness-adapter trait and Claude Code / Codex / Google ADK adapters for the escurel agent runner."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+escurel-runner-core = { path = "../escurel-runner-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["process", "io-util", "time", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

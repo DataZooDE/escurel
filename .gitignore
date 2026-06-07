@@ -1,6 +1,8 @@
 # Rust
 /target/
 **/*.rs.bk
+# Git worktrees hosted inside the repo (e.g. .worktrees/runner).
+/.worktrees/
 # Cargo.lock is COMMITTED for this workspace (native deps via
 # libduckdb-sys; the workspace produces binaries from M3 onwards).
 # NOTE: gitignore does NOT support inline comments — `#` only starts a
@@ -24,6 +26,13 @@
 *.duckdb.tmp
 *.db-shm
 *.db-wal
+
+# Runner-local run ledger (its own SQLite file; default path drops it in
+# the CWD for a dev run — deployments point ESCUREL_RUNNER_LEDGER_PATH at
+# a host volume). Never committed.
+escurel-runner-ledger.sqlite
+escurel-runner-ledger.sqlite-shm
+escurel-runner-ledger.sqlite-wal
 
 # Doc build artefacts
 /docs/build/

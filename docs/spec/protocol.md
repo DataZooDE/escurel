@@ -397,6 +397,20 @@ logged and dropped); the agent may also poll `list_inbox`, so a missed
 POST self-heals. The fold event→state remains the external agent's job
 (via `assign_event` + `update_page`); the server stays automation-free.
 
+The delivered payload always carries an additional `tenant_id` field — the
+gateway's authoritative tenant (single-tenant per indexer) — so the
+receiver knows which tenant the event belongs to without a side channel.
+
+When `ESCUREL_WEBHOOK_SECRET` is also set, the gateway authenticates the
+POST: it serializes the body once, computes **HMAC-SHA256 over those exact
+body bytes** under the secret, and sends it as the header
+`X-Escurel-Webhook-Signature: sha256=<hex>` (lowercase hex of the 32-byte
+digest), POSTing the same bytes with `content-type: application/json`. The
+receiver recomputes the HMAC over the raw request body and rejects a
+missing/mismatched signature (a constant-time compare). With no secret
+configured the POST is unsigned (dev). This is the only ingress trust
+anchor between the gateway and the external runner.
+
 ## Admin surface
 
 The admin/operator capabilities are exposed as admin-role-gated MCP

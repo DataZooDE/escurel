@@ -1,0 +1,46 @@
+[package]
+name = "escurel-runner"
+description = "Deployable escurel agent-runner process: HTTP listener, config, graceful shutdown, observability."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "escurel-runner"
+path = "src/main.rs"
+
+[[bin]]
+name = "escurel-echo-harness"
+path = "src/bin/echo_harness.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+escurel-client = { path = "../escurel-client" }
+escurel-obs = { path = "../escurel-obs" }
+escurel-runner-core = { path = "../escurel-runner-core" }
+escurel-runner-harness = { path = "../escurel-runner-harness" }
+escurel-types = { path = "../escurel-types" }
+hmac = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+tracing = "0.1"
+ulid = "1"
+
+[dev-dependencies]
+escurel-test-support = { path = "../escurel-test-support" }
+hmac = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
+sha2 = "0.10"
+tempfile = "3"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "time", "io-util", "sync"] }
+
+[lints]
+workspace = true

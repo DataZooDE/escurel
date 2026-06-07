@@ -1,0 +1,30 @@
+[package]
+name = "escurel-runner-core"
+description = "Harness-agnostic engine for the escurel agent runner: config, trigger lifecycle, dispatch queue, loop control."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow = "1"
+escurel-client = { path = "../escurel-client" }
+escurel-types = { path = "../escurel-types" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["sync", "time"] }
+tracing = "0.1"
+ulid = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
