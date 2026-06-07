@@ -2315,6 +2315,7 @@ dependencies = [
  "escurel-obs",
  "escurel-runner-core",
  "escurel-runner-harness",
+ "escurel-types",
  "reqwest 0.12.28",
  "tokio",
  "tracing",
@@ -2325,6 +2326,7 @@ name = "escurel-runner-core"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "escurel-types",
  "serde",
  "thiserror 2.0.18",
 ]

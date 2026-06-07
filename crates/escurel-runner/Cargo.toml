@@ -19,6 +19,7 @@ axum = "0.8"
 escurel-obs = { path = "../escurel-obs" }
 escurel-runner-core = { path = "../escurel-runner-core" }
 escurel-runner-harness = { path = "../escurel-runner-harness" }
+escurel-types = { path = "../escurel-types" }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal"] }
 tracing = "0.1"
 

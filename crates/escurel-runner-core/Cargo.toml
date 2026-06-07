@@ -11,6 +11,7 @@ homepage.workspace = true
 
 [dependencies]
 anyhow = "1"
+escurel-types = { path = "../escurel-types" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 

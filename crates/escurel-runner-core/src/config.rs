@@ -52,6 +52,12 @@ pub struct RunnerConfig {
     /// Build version string, taken from `CARGO_PKG_VERSION` at compile
     /// time. Stamped on every log record per the substrate contract.
     pub version: String,
+    /// Optional shared secret the webhook listener requires on inbound
+    /// `POST /trigger` requests (header `X-Escurel-Webhook-Secret`).
+    /// `None` leaves the endpoint open (the gateway's POST is opt-in
+    /// and tenant-scoped hardening lands in #147).
+    /// Source: `ESCUREL_WEBHOOK_SECRET` (unset → `None`).
+    pub webhook_secret: Option<String>,
 }
 
 impl RunnerConfig {
@@ -81,12 +87,14 @@ impl RunnerConfig {
         let gateway_url =
             lookup("ESCUREL_RUNNER_GATEWAY_URL").unwrap_or_else(|| DEFAULT_GATEWAY_URL.to_owned());
         let env = lookup("ESCUREL_RUNNER_ENV").unwrap_or_else(|| DEFAULT_ENV.to_owned());
+        let webhook_secret = lookup("ESCUREL_WEBHOOK_SECRET").filter(|s| !s.is_empty());
 
         Ok(Self {
             listen,
             gateway_url,
             env,
             version: env!("CARGO_PKG_VERSION").to_owned(),
+            webhook_secret,
         })
     }
 }
@@ -102,6 +110,24 @@ mod tests {
         assert_eq!(cfg.gateway_url, DEFAULT_GATEWAY_URL);
         assert_eq!(cfg.env, DEFAULT_ENV);
         assert_eq!(cfg.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(cfg.webhook_secret, None);
+    }
+
+    #[test]
+    fn webhook_secret_loads_when_set_and_ignores_empty() {
+        let set = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_WEBHOOK_SECRET").then(|| "s3cret".to_owned())
+        })
+        .expect("a webhook secret must parse");
+        assert_eq!(set.webhook_secret, Some("s3cret".to_owned()));
+
+        let empty =
+            RunnerConfig::from_env_with(|key| (key == "ESCUREL_WEBHOOK_SECRET").then(String::new))
+                .expect("an empty webhook secret must parse");
+        assert_eq!(
+            empty.webhook_secret, None,
+            "empty secret is treated as unset"
+        );
     }
 
     #[test]

@@ -14,5 +14,7 @@
 //! [`docs/contract/agent-orchestration.md`]: https://github.com/DataZooDE/escurel/blob/main/docs/contract/agent-orchestration.md
 
 mod config;
+mod trigger;
 
 pub use config::{ConfigError, RunnerConfig};
+pub use trigger::{Lineage, Trigger};
