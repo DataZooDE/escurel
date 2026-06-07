@@ -53,9 +53,11 @@ pub struct RunnerConfig {
     /// time. Stamped on every log record per the substrate contract.
     pub version: String,
     /// Optional shared secret the webhook listener requires on inbound
-    /// `POST /trigger` requests (header `X-Escurel-Webhook-Secret`).
-    /// `None` leaves the endpoint open (the gateway's POST is opt-in
-    /// and tenant-scoped hardening lands in #147).
+    /// `POST /trigger` requests. When set, the request must carry a valid
+    /// HMAC-SHA256 signature of the raw body in the header
+    /// `X-Escurel-Webhook-Signature: sha256=<hex>` (#147); an unsigned or
+    /// mismatched request is rejected `401`. `None` leaves the endpoint
+    /// open (dev mode).
     /// Source: `ESCUREL_WEBHOOK_SECRET` (unset → `None`).
     pub webhook_secret: Option<String>,
 }

@@ -45,10 +45,10 @@ impl Lineage {
 pub struct Trigger {
     /// The tenant this event belongs to.
     ///
-    /// The webhook payload carries no authoritative tenant today; #147
-    /// adds an explicit `tenant_id` (payload/header) to the gateway
-    /// POST. Until then the listener supplies this from the
-    /// `X-Escurel-Tenant` header if present, else a configured default.
+    /// As of #147 the gateway stamps the authoritative `tenant_id` into
+    /// the webhook payload; the listener reads it from there. (The
+    /// gateway is single-tenant per indexer, so `indexer.tenant()` is the
+    /// source of truth.)
     pub tenant: String,
     /// The triggering event's id.
     pub event_id: String,

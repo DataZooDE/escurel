@@ -195,14 +195,24 @@ in-corpus, not hardcoded.
 
 Almost everything is runner-only. The one gateway change needed:
 
-- **Webhook authenticity + tenant identity**
+- **Webhook authenticity + tenant identity** *(implemented, #147)*
   ([`../../crates/escurel-server/src/webhook.rs`](../../crates/escurel-server/src/webhook.rs)):
-  today the POST has no auth header and no explicit tenant. Add (a) a
-  configurable HMAC/shared-secret header (`ESCUREL_WEBHOOK_SECRET`) so the
-  runner can trust the POST, and (b) the `tenant_id` in the payload/header —
-  today the runner cannot tell which tenant the event belongs to. A small
-  hardening of an existing opt-in surface; ships with its spec/contract/ADR
-  update per M7's "deliberately extending the contract" rule.
+  the POST now (a) carries the gateway's authoritative `tenant_id` in the
+  JSON payload (the gateway is single-tenant per indexer, so
+  `indexer.tenant()` is the source of truth — the runner reads this for
+  `Trigger.tenant`), and (b) when `ESCUREL_WEBHOOK_SECRET` is set, is
+  signed with **HMAC-SHA256 over the exact serialized body bytes**, sent as
+  the header `X-Escurel-Webhook-Signature: sha256=<hex>`. The body is
+  serialized once, those bytes are signed, and those exact bytes are
+  POSTed (`content-type: application/json`) so the signature matches what
+  the receiver verifies over the raw request body. The runner
+  ([`POST /trigger`](../../crates/escurel-runner/src/main.rs)) verifies the
+  signature on the raw bytes (constant-time compare) **before** parsing
+  the event, returning `401` on a missing/invalid signature when a secret
+  is configured; the unsigned dev path stays open when no secret is set.
+  Shipped with this spec/contract/ADR update per M7's "deliberately
+  extending the contract" rule (see
+  [`../adr/0003-capture-webhook-hmac-auth.md`](../adr/0003-capture-webhook-hmac-auth.md)).
 
 Deferred / not recommended: promoting lineage fields to indexed `events`
 columns (start with `provenance`); a gateway change-feed for `update_page`
@@ -268,9 +278,14 @@ no `mockall`).
 2. **Webhook listener + Trigger** — `POST /trigger`, `202`. *Test:*
    `EscurelProcess` with `ESCUREL_WEBHOOK_URL` → runner; `capture_event`;
    assert the normalised trigger is received.
-3. **Gateway webhook auth + tenant identity** (gateway PR) — HMAC secret +
-   `tenant_id`. *Test:* runner rejects a wrong-secret POST, accepts the
-   correct one, reads the right tenant.
+3. **Gateway webhook auth + tenant identity** (gateway PR, **done #147**) —
+   HMAC-SHA256 signature (`X-Escurel-Webhook-Signature: sha256=<hex>`) over
+   the body + `tenant_id` in the payload. *Test:* the gateway delivers a
+   payload with the right `tenant_id` and a valid signature
+   (`escurel-server/tests/webhook.rs`); the runner rejects a wrong /
+   tampered / missing signature with `401` and accepts a valid one with
+   `202`, reading the tenant from the payload
+   (`escurel-runner/tests/trigger.rs`).
 4. **Inbox poller + convergence/dedup** — periodic `list_inbox`. *Test:*
    webhook unset → the poller drives it; both on → exactly one run.
 5. **Run ledger + idempotency** — durable ledger; unique `(tenant,

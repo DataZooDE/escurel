@@ -1,16 +1,24 @@
-//! DoD test for issue #146: spawn the real `escurel-runner` binary and
-//! drive its `POST /trigger` webhook listener over real HTTP. No mocks —
-//! a real subprocess, a real TCP listener, real requests (CLAUDE.md
+//! DoD test for issue #146 + #147: spawn the real `escurel-runner` binary
+//! and drive its `POST /trigger` webhook listener over real HTTP. No
+//! mocks — a real subprocess, a real TCP listener, real requests (CLAUDE.md
 //! principle 2).
 //!
-//! Two cases: (1) no secret configured → a realistic serialized `Event`
-//! body returns `202`; (2) a secret configured → a POST without the
-//! header returns `401`, with the correct header returns `202`.
+//! #146 cases: (1) no secret configured → a realistic serialized `Event`
+//! body returns `202`. #147 upgrades the auth model to an HMAC over the
+//! raw request body: (2) a secret configured → a POST with a valid
+//! `X-Escurel-Webhook-Signature: sha256=<hex>` returns `202`; a tampered
+//! body / wrong signature returns `401`; a missing signature returns `401`.
+//! The authoritative `tenant_id` now rides in the payload.
 
 use std::io::ErrorKind;
 use std::net::TcpListener;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
+
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Kills the spawned runner on drop so a test failure never orphans the
 /// process.
@@ -30,8 +38,9 @@ fn free_port() -> u16 {
     listener.local_addr().expect("read local_addr").port()
 }
 
-/// A realistic webhook body: a serialized [`escurel_types::Event`] as the
-/// gateway's `client.post(url).json(&event)` would send it.
+/// A realistic webhook body: a serialized [`escurel_types::Event`] plus the
+/// authoritative `tenant_id` the gateway injects (#147), as the gateway's
+/// signed POST sends it.
 const EVENT_BODY: &str = r#"{
         "event_id": "01ABCDEF0123456789",
         "source": "gcal",
@@ -39,8 +48,18 @@ const EVENT_BODY: &str = r#"{
         "label_skill": "note",
         "title": "x",
         "body": "y",
-        "status": "inbox"
+        "status": "inbox",
+        "tenant_id": "carl"
     }"#;
+
+/// Compute `sha256=<hex>` HMAC over `body`, matching the gateway scheme.
+fn sign(secret: &str, body: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac key of any size");
+    mac.update(body);
+    let bytes = mac.finalize().into_bytes();
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("sha256={hex}")
+}
 
 /// Spawn the runner, optionally with a webhook secret, and wait until it
 /// answers `/healthz`.
@@ -92,38 +111,77 @@ fn trigger_without_secret_accepts_event() {
 }
 
 #[test]
-fn trigger_with_secret_enforces_header() {
+fn trigger_with_secret_enforces_hmac_signature() {
+    const SECRET: &str = "s3cret";
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
-    let _guard = spawn_runner(&listen, Some("s3cret"));
+    let _guard = spawn_runner(&listen, Some(SECRET));
 
     let client = reqwest::blocking::Client::new();
     let url = format!("http://{listen}/trigger");
 
-    // No header → 401.
+    // No signature → 401.
     let resp = client
         .post(&url)
         .header("content-type", "application/json")
         .body(EVENT_BODY)
         .send()
-        .expect("POST /trigger without secret");
+        .expect("POST /trigger without signature");
     assert_eq!(
         resp.status().as_u16(),
         401,
-        "a secured /trigger must reject a request missing the secret header"
+        "a secured /trigger must reject a request missing the signature"
     );
 
-    // Correct header → 202.
+    // Tampered body (signature over the original, but body altered) → 401.
+    let tampered = EVENT_BODY.replace("\"title\": \"x\"", "\"title\": \"tampered\"");
     let resp = client
         .post(&url)
         .header("content-type", "application/json")
-        .header("X-Escurel-Webhook-Secret", "s3cret")
+        .header(
+            "X-Escurel-Webhook-Signature",
+            sign(SECRET, EVENT_BODY.as_bytes()),
+        )
+        .body(tampered)
+        .send()
+        .expect("POST /trigger with mismatched signature");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "a secured /trigger must reject a body that does not match the signature"
+    );
+
+    // Wrong-secret signature over the correct body → 401.
+    let resp = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header(
+            "X-Escurel-Webhook-Signature",
+            sign("wrong-secret", EVENT_BODY.as_bytes()),
+        )
         .body(EVENT_BODY)
         .send()
-        .expect("POST /trigger with secret");
+        .expect("POST /trigger with wrong-secret signature");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "a secured /trigger must reject a signature computed with the wrong secret"
+    );
+
+    // Valid signature over the exact body → 202.
+    let resp = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header(
+            "X-Escurel-Webhook-Signature",
+            sign(SECRET, EVENT_BODY.as_bytes()),
+        )
+        .body(EVENT_BODY)
+        .send()
+        .expect("POST /trigger with valid signature");
     assert_eq!(
         resp.status().as_u16(),
         202,
-        "a secured /trigger must accept a request with the matching secret header"
+        "a secured /trigger must accept a request whose signature matches the body"
     );
 }

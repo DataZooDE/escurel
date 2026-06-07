@@ -15,6 +15,8 @@ acceptance gates that apply.
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-duckdb-only-storage.md) | DuckDB-only per-tenant storage | Accepted — pre-deployment gate open |
+| [0002](0002-chat-message-surface.md) | Per-chat-group conversation history (chat_messages) | Accepted |
+| [0003](0003-capture-webhook-hmac-auth.md) | Authenticated capture webhook (HMAC-SHA256 + tenant identity) | Accepted |
 
 New ADRs are numbered sequentially (`0002-…`, `0003-…`). An ADR
 is never edited after acceptance except to update its **Status**

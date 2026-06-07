@@ -87,6 +87,11 @@ pub struct ConfigOverrides {
     /// fire-and-forget POST `capture_event` fires on a new inbox item;
     /// `None` (default) disables it.
     pub webhook_url: Option<String>,
+    /// Shared secret for the outbound capture webhook. When `Some`, the
+    /// gateway HMAC-SHA256-signs the POST body and sends it as
+    /// `X-Escurel-Webhook-Signature: sha256=<hex>`. `None` (default)
+    /// leaves the POST unsigned.
+    pub webhook_secret: Option<String>,
 }
 
 impl std::fmt::Debug for ConfigOverrides {
@@ -276,6 +281,7 @@ impl EscurelProcess {
             embedder_factory: overrides.embedder_factory.clone(),
             demo_dir: overrides.demo_dir.clone(),
             webhook_url: overrides.webhook_url.clone(),
+            webhook_secret: overrides.webhook_secret.clone(),
             // Metrics on their own random port, mirroring production's
             // dedicated listener (production defaults to :9090).
             metrics_listen: Some("127.0.0.1:0".to_owned()),
