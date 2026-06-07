@@ -38,11 +38,12 @@ use axum::routing::{get, post};
 use escurel_client::{Client, SecretString};
 use escurel_obs::{TelemetryConfig, init_telemetry};
 use escurel_runner_core::{
-    DispatchConsumer, DispatchQueue, EnqueueOutcome, Ledger, LedgerDecision, RunStatus,
-    RunnerConfig, TaskContext, Trigger, package,
+    ConfirmedEffect, DispatchConsumer, DispatchQueue, EnqueueOutcome, Ledger, LedgerDecision,
+    ReconcileError, RunStatus, RunnerConfig, TaskContext, Trigger, classify_client_error,
+    confirm_effect, package, run_with_retry,
 };
 use escurel_runner_harness::{AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, Harness};
-use escurel_types::{Event, ListEventsRequest, ListInboxRequest};
+use escurel_types::{Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -152,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/trigger", post(trigger))
         .route("/debug/seen", get(debug_seen))
         .route("/debug/ledger", get(debug_ledger))
+        .route("/debug/run", get(debug_run))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
@@ -309,7 +311,58 @@ async fn debug_ledger(State(state): State<AppState>) -> impl IntoResponse {
             .count_all_by_status(RunStatus::Pending)
             .unwrap_or(0),
     );
-    axum::Json(serde_json::json!({ "total": total, "terminal": terminal }))
+    // `succeeded` = runs recorded `processed` (the confirmed-effect terminal
+    // status #155 records). The #155 integration test reads this to assert a
+    // run converged to success after the transient failure cleared.
+    let succeeded = state
+        .ledger
+        .count_all_by_status(RunStatus::Processed)
+        .unwrap_or(0);
+    let failed = state
+        .ledger
+        .count_all_by_status(RunStatus::Failed)
+        .unwrap_or(0);
+    axum::Json(serde_json::json!({
+        "total": total,
+        "terminal": terminal,
+        "succeeded": succeeded,
+        "failed": failed,
+    }))
+}
+
+/// Introspection endpoint over a single ledger run row, keyed by
+/// `?tenant=<t>&event_id=<e>`. Returns the run's terminal status plus the
+/// produced instance + its confirmed version (the #155 read-back result), so
+/// the no-mock integration test can assert the run was recorded `succeeded`
+/// WITH the produced instance + version straight from the real sqlite ledger.
+/// Read-only; no secrets. Not part of the gateway-facing contract.
+async fn debug_run(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let tenant = params.get("tenant").map(String::as_str).unwrap_or("");
+    let event_id = params.get("event_id").map(String::as_str).unwrap_or("");
+    match state.ledger.get_run(tenant, event_id) {
+        Ok(Some(rec)) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "run_id": rec.run_id,
+                "tenant": rec.tenant,
+                "event_id": rec.event_id,
+                "status": rec.status.as_str(),
+                "instance_page_id": rec.produced_instance_page_id,
+                "produced_version": rec.produced_version,
+            })),
+        ),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "run not found" })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
 }
 
 /// Resolve the absolute path of the `escurel-echo-harness` sibling binary.
@@ -408,43 +461,84 @@ async fn dispatch_loop(
             }
         };
 
-        let status = run_one(&trigger, &client, &config, harness.as_ref()).await;
-        if let Err(e) = ledger.mark(&run_id, status) {
-            tracing::warn!(
+        // Reconcile with retry: package + run the harness + read back over
+        // `/mcp` to CONFIRM the effect, retrying transient failures with
+        // backoff up to the attempts cap (#155).
+        let report = run_with_retry(&config, |attempt| {
+            attempt_run(&trigger, &client, &config, harness.as_ref(), attempt)
+        })
+        .await;
+
+        let result = match &report.confirmed {
+            Some(effect) => ledger.complete(
+                &run_id,
+                RunStatus::Processed,
+                Some((effect.instance_page_id.as_str(), effect.version.as_str())),
+            ),
+            None => ledger.complete(&run_id, RunStatus::Failed, None),
+        };
+        match (&report.confirmed, result) {
+            (Some(effect), Ok(())) => tracing::info!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                run_id = %run_id,
+                attempts = report.attempts,
+                instance = %effect.instance_page_id,
+                version = %effect.version,
+                "dispatch: run succeeded; recorded processed with produced instance + version"
+            ),
+            (None, Ok(())) => tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                run_id = %run_id,
+                attempts = report.attempts,
+                "dispatch: run failed after retries; recorded failed"
+            ),
+            (_, Err(e)) => tracing::warn!(
                 target: "escurel_runner",
                 event_id = %trigger.event_id,
                 run_id = %run_id,
                 error = %e,
-                "dispatch: could not mark run terminal"
-            );
+                "dispatch: could not record run outcome"
+            ),
         }
     }
 }
 
-/// Package + run a single trigger and decide its terminal ledger status.
+/// One full reconciler attempt (#155): package the trigger, run the harness,
+/// then **read back over `/mcp`** to confirm the effect. Returns the
+/// [`ConfirmedEffect`] on success, or a classified [`ReconcileError`] the
+/// retry loop uses to decide retry-vs-fail-fast.
 ///
-/// Returns [`RunStatus::Processed`] only when the harness ran cleanly **and**
-/// the minimal reconcile confirms the triggering event is now `processed` on
-/// the gateway; otherwise [`RunStatus::Failed`] (the #155 retry policy may
-/// revive it later).
-async fn run_one(
+/// Classification of this attempt's failures:
+/// - a packaging `/mcp` read failure → classified via
+///   [`classify_client_error`] (transport/5xx transient, 4xx/protocol
+///   permanent);
+/// - an adapter-level harness error (`Spawn`/`Timeout`/`Io`) → **transient**
+///   (a flapping subprocess/host may recover);
+/// - a `NonZeroExit` or `BadOutcome` → **permanent** (the harness is broken
+///   in a way a re-run won't fix);
+/// - a clean-but-`Failed` harness outcome → **permanent** (it ran and decided
+///   it could not do the work);
+/// - read-back not yet converged → **transient** (the idempotent
+///   `assign_event`/`update_page` re-run can finish a partial success).
+async fn attempt_run(
     trigger: &Trigger,
     client: &Client,
     config: &RunnerConfig,
     harness: &dyn Harness,
-) -> RunStatus {
-    let task: TaskContext = match package(trigger, client, config).await {
-        Ok(task) => task,
-        Err(e) => {
-            tracing::warn!(
-                target: "escurel_runner",
-                event_id = %trigger.event_id,
-                error = %e,
-                "dispatch: packaging failed"
-            );
-            return RunStatus::Failed;
-        }
-    };
+    attempt: u32,
+) -> Result<ConfirmedEffect, ReconcileError> {
+    let task: TaskContext = package(trigger, client, config).await.map_err(|e| {
+        tracing::warn!(
+            target: "escurel_runner",
+            event_id = %trigger.event_id,
+            attempt,
+            error = %e,
+            "dispatch: packaging failed"
+        );
+        package_error_to_reconcile(e)
+    })?;
 
     match harness.run(&task).await {
         Ok(outcome) => {
@@ -452,6 +546,7 @@ async fn run_one(
                 target: "escurel_runner",
                 event_id = %trigger.event_id,
                 harness = %harness.name(),
+                attempt,
                 ok = outcome.ok,
                 tool_calls = outcome.tool_calls,
                 produced_instance = ?outcome.produced_instance,
@@ -459,78 +554,53 @@ async fn run_one(
                 "dispatch: harness completed"
             );
             if !outcome.ok {
-                return RunStatus::Failed;
+                // The harness ran cleanly but reported it could not complete
+                // — re-running won't change that, so fail fast.
+                return Err(ReconcileError::Permanent(format!(
+                    "harness {} reported a failed outcome: {}",
+                    harness.name(),
+                    outcome.summary
+                )));
             }
         }
         Err(e) => {
             tracing::warn!(
                 target: "escurel_runner",
                 event_id = %trigger.event_id,
+                attempt,
                 error = %e,
                 "dispatch: harness run failed"
             );
-            return RunStatus::Failed;
+            return Err(harness_error_to_reconcile(&e));
         }
     }
 
-    // Minimal reconcile (#151): confirm the event is now processed on the
-    // gateway via the harness's `/mcp` writes. The full reconciler is #155.
-    if reconcile_event_processed(client, trigger).await {
-        RunStatus::Processed
-    } else {
-        tracing::warn!(
-            target: "escurel_runner",
-            event_id = %trigger.event_id,
-            "dispatch: harness ran but event not confirmed processed; marking failed"
-        );
-        RunStatus::Failed
+    // Don't trust the harness: read back over `/mcp` to confirm the event is
+    // processed + bound and the instance's version advanced (#155).
+    confirm_effect(client, trigger).await
+}
+
+/// Map a packaging error to a reconcile classification. A `/mcp` read failure
+/// is classified by its underlying client error; the other variants (skill
+/// not found, missing token) are permanent — a re-run can't conjure a missing
+/// skill or token.
+fn package_error_to_reconcile(e: escurel_runner_core::PackageError) -> ReconcileError {
+    match e {
+        escurel_runner_core::PackageError::Client { source, .. } => classify_client_error(&source),
+        other => ReconcileError::Permanent(other.to_string()),
     }
 }
 
-/// Read back (over the gateway's own `/mcp`) that the triggering event is now
-/// `processed`. For a trigger that targets an instance the event joined that
-/// instance's `list_events` history; for an unassigned trigger the harness
-/// chose the instance, so we fall back to "the event is no longer in the
-/// inbox".
-async fn reconcile_event_processed(client: &Client, trigger: &Trigger) -> bool {
-    if let Some(instance_page_id) = &trigger.instance_page_id {
-        match client
-            .list_events(ListEventsRequest {
-                instance_page_id: instance_page_id.clone(),
-                limit: 100,
-            })
-            .await
-        {
-            Ok(resp) => {
-                return resp
-                    .events
-                    .iter()
-                    .any(|e| e.event_id == trigger.event_id && e.status == "processed");
-            }
-            Err(e) => {
-                tracing::warn!(
-                    target: "escurel_runner",
-                    event_id = %trigger.event_id,
-                    error = %e,
-                    "reconcile: list_events failed"
-                );
-                return false;
-            }
+/// Map an adapter-level harness error to a reconcile classification. Spawn /
+/// timeout / I/O are transient (the host/subprocess may recover); a non-zero
+/// exit or an unparseable outcome is permanent.
+fn harness_error_to_reconcile(e: &escurel_runner_harness::HarnessError) -> ReconcileError {
+    use escurel_runner_harness::HarnessError as H;
+    match e {
+        H::Spawn { .. } | H::Timeout { .. } | H::Io { .. } => {
+            ReconcileError::Transient(e.to_string())
         }
-    }
-
-    // No pre-flagged instance: confirm the event left the inbox.
-    match client.list_inbox(ListInboxRequest { limit: 100 }).await {
-        Ok(resp) => !resp.events.iter().any(|e| e.event_id == trigger.event_id),
-        Err(e) => {
-            tracing::warn!(
-                target: "escurel_runner",
-                event_id = %trigger.event_id,
-                error = %e,
-                "reconcile: list_inbox failed"
-            );
-            false
-        }
+        H::NonZeroExit { .. } | H::BadOutcome { .. } => ReconcileError::Permanent(e.to_string()),
     }
 }
 

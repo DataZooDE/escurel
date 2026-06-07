@@ -17,11 +17,16 @@ mod config;
 mod dispatch;
 mod ledger;
 mod packager;
+mod reconciler;
 mod trigger;
 
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
 pub use ledger::{Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus};
 pub use packager::{ALLOWED_TOOLS, PackageError, TaskContext, package};
+pub use reconciler::{
+    ConfirmedEffect, ReconcileError, RunReport, classify_client_error, confirm_effect,
+    run_with_retry,
+};
 pub use secrecy::SecretString;
 pub use trigger::{Lineage, Trigger};

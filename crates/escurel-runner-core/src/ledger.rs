@@ -146,6 +146,16 @@ pub struct RunRecord {
     /// Content hash for `(instance, content-hash)` dedup (#157); `None` for
     /// now.
     pub content_hash: Option<String>,
+    /// The instance page the completed run produced, read back from `/mcp`
+    /// by the reconciler (#155). `None` until the run completes (and for a
+    /// run that produced no instance write). Distinct from
+    /// [`Self::instance_page_id`], which is the *pre-flagged* target carried
+    /// by the trigger — `produced_instance_page_id` is the *confirmed*
+    /// instance the effect actually landed on.
+    pub produced_instance_page_id: Option<String>,
+    /// The confirmed version of [`Self::produced_instance_page_id`] after the
+    /// run, read back via `expand` (#155). `None` until completion.
+    pub produced_version: Option<String>,
     /// Current status.
     pub status: RunStatus,
     /// Cascade depth (`0` for a webhook-origin trigger).
@@ -212,6 +222,12 @@ impl Ledger {
              CREATE UNIQUE INDEX IF NOT EXISTS runs_tenant_event
                  ON runs (tenant, event_id);",
         )?;
+        // #155 read-back columns: the confirmed instance + version the run
+        // produced. Added with `ALTER TABLE … ADD COLUMN` (ignoring the
+        // "duplicate column" error on re-open) so an existing ledger file
+        // migrates in place rather than needing a rebuild.
+        add_column_if_missing(conn, "produced_instance_page_id")?;
+        add_column_if_missing(conn, "produced_version")?;
         Ok(())
     }
 
@@ -294,26 +310,66 @@ impl Ledger {
         Ok(())
     }
 
+    /// Complete a run: move it to a terminal `status` **and** record the
+    /// produced instance + its confirmed version (#155). The reconciler calls
+    /// this on success with the read-back `(instance, version)`; on a failed
+    /// run `produced` is `None` and only the status moves. Idempotent in the
+    /// sense that re-completing overwrites the same terminal facts.
+    pub fn complete(
+        &self,
+        run_id: &RunId,
+        status: RunStatus,
+        produced: Option<(&str, &str)>,
+    ) -> Result<(), LedgerError> {
+        let (instance, version) = match produced {
+            Some((i, v)) => (Some(i), Some(v)),
+            None => (None, None),
+        };
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let changed = conn.execute(
+            "UPDATE runs
+                SET status = ?1,
+                    produced_instance_page_id = ?2,
+                    produced_version = ?3,
+                    updated_at = ?4
+              WHERE run_id = ?5",
+            rusqlite::params![
+                status.as_str(),
+                instance,
+                version,
+                now_iso(),
+                run_id.as_str()
+            ],
+        )?;
+        if changed == 0 {
+            return Err(LedgerError::NotFound(run_id.0.clone()));
+        }
+        Ok(())
+    }
+
     /// Fetch a run row by `(tenant, event_id)`, if present.
     pub fn get_run(&self, tenant: &str, event_id: &str) -> Result<Option<RunRecord>, LedgerError> {
         let conn = self.conn.lock().expect("run ledger mutex");
         let mut stmt = conn.prepare(
             "SELECT run_id, tenant, event_id, instance_page_id, content_hash,
+                    produced_instance_page_id, produced_version,
                     status, depth, root_event_id
              FROM runs WHERE tenant = ?1 AND event_id = ?2",
         )?;
         let row = stmt
             .query_row(rusqlite::params![tenant, event_id], |r| {
-                let status_str: String = r.get(5)?;
+                let status_str: String = r.get(7)?;
                 Ok(RunRecord {
                     run_id: r.get(0)?,
                     tenant: r.get(1)?,
                     event_id: r.get(2)?,
                     instance_page_id: r.get(3)?,
                     content_hash: r.get(4)?,
+                    produced_instance_page_id: r.get(5)?,
+                    produced_version: r.get(6)?,
                     status: RunStatus::from_str(&status_str).unwrap_or(RunStatus::Pending),
-                    depth: r.get(6)?,
-                    root_event_id: r.get(7)?,
+                    depth: r.get(8)?,
+                    root_event_id: r.get(9)?,
                 })
             })
             .ok();
@@ -363,6 +419,21 @@ impl Ledger {
             |r| r.get(0),
         )?;
         Ok(n as u64)
+    }
+}
+
+/// Add a nullable `TEXT` column to `runs` if it is not already present.
+/// SQLite has no `ADD COLUMN IF NOT EXISTS`, so we attempt the `ALTER` and
+/// treat the "duplicate column name" error as a successful no-op — that is
+/// what makes re-opening an already-migrated ledger file idempotent.
+fn add_column_if_missing(conn: &Connection, column: &str) -> Result<(), LedgerError> {
+    let sql = format!("ALTER TABLE runs ADD COLUMN {column} TEXT");
+    match conn.execute(&sql, []) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column") => {
+            Ok(())
+        }
+        Err(e) => Err(LedgerError::Sqlite(e)),
     }
 }
 
@@ -511,6 +582,57 @@ mod tests {
             .mark(&RunId("nope".to_owned()), RunStatus::Processed)
             .expect_err("marking a missing run must error");
         assert!(matches!(err, LedgerError::NotFound(_)));
+    }
+
+    #[test]
+    fn complete_records_produced_instance_and_version() {
+        // A completed run stores the read-back instance + version alongside
+        // the terminal status, surviving a re-open of the real sqlite file.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("complete.sqlite");
+        let run_id = {
+            let ledger = Ledger::open(&path).expect("open");
+            let id = match ledger.begin_run(&trigger("D")).expect("begin D") {
+                LedgerDecision::Created(id) => id,
+                other => panic!("expected Created, got {other:?}"),
+            };
+            ledger
+                .complete(&id, RunStatus::Processed, Some(("inst-7", "sha256:abc")))
+                .expect("complete D");
+            id
+        };
+        let _ = run_id;
+
+        let reopened = Ledger::open(&path).expect("re-open");
+        let rec = reopened
+            .get_run("acme", "D")
+            .expect("get")
+            .expect("present");
+        assert_eq!(rec.status, RunStatus::Processed);
+        assert_eq!(rec.produced_instance_page_id, Some("inst-7".to_owned()));
+        assert_eq!(rec.produced_version, Some("sha256:abc".to_owned()));
+        assert_eq!(
+            reopened
+                .count_all_by_status(RunStatus::Processed)
+                .expect("count"),
+            1
+        );
+    }
+
+    #[test]
+    fn complete_failed_leaves_produced_fields_null() {
+        let ledger = Ledger::open_in_memory().expect("open");
+        let id = match ledger.begin_run(&trigger("E")).expect("begin E") {
+            LedgerDecision::Created(id) => id,
+            other => panic!("expected Created, got {other:?}"),
+        };
+        ledger
+            .complete(&id, RunStatus::Failed, None)
+            .expect("complete failed");
+        let rec = ledger.get_run("acme", "E").expect("get").expect("present");
+        assert_eq!(rec.status, RunStatus::Failed);
+        assert_eq!(rec.produced_instance_page_id, None);
+        assert_eq!(rec.produced_version, None);
     }
 
     #[test]

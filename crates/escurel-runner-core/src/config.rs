@@ -53,6 +53,18 @@ pub const DEFAULT_CODEX_BIN: &str = "codex";
 /// deterministic test overrides it to a real scripted runner.
 pub const DEFAULT_ADK_BIN: &str = "datazoo-agent-adk-runner";
 
+/// Default cap on how many times the reconciler (#155) attempts a single
+/// run before recording it `failed`. The first try plus retries: e.g. `3`
+/// means one initial attempt and up to two retries. Sized small — a
+/// transient `/mcp`/harness blip clears in a couple of attempts; a run that
+/// burns the whole cap is almost certainly permanently broken.
+pub const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+
+/// Default base backoff between reconciler retry attempts. Backoff grows
+/// per attempt (the reconciler applies a simple exponential), so this is the
+/// delay before the first retry.
+pub const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_millis(500);
+
 /// Default path of the runner-local durable run ledger (its own SQLite
 /// file, *never* the tenant store). Relative to the process CWD so a dev
 /// run drops it in place; deployments set [`crate::RunnerConfig::ledger_path`]
@@ -84,6 +96,19 @@ pub enum ConfigError {
     /// (`30s`, `1500ms`, `2m`, or a bare integer of seconds).
     #[error("invalid ESCUREL_RUNNER_POLL_INTERVAL {value:?}: expected e.g. 30s, 1500ms, 2m")]
     InvalidPollInterval {
+        /// The offending value.
+        value: String,
+    },
+    /// `ESCUREL_RUNNER_MAX_ATTEMPTS` was set but is not a positive integer
+    /// (the cap must be at least `1` — one attempt is always made).
+    #[error("invalid ESCUREL_RUNNER_MAX_ATTEMPTS {value:?}: expected a positive integer")]
+    InvalidMaxAttempts {
+        /// The offending value.
+        value: String,
+    },
+    /// `ESCUREL_RUNNER_RETRY_BACKOFF` was set but is not a valid duration.
+    #[error("invalid ESCUREL_RUNNER_RETRY_BACKOFF {value:?}: expected e.g. 500ms, 2s")]
+    InvalidRetryBackoff {
         /// The offending value.
         value: String,
     },
@@ -175,6 +200,14 @@ pub struct RunnerConfig {
     /// configured default.
     /// Source: `ESCUREL_RUNNER_ADK_MODEL` (unset → `None`).
     pub adk_model: Option<String>,
+    /// Cap on reconciler attempts per run before recording `failed` (#155).
+    /// Always at least `1` (one attempt is made even with retries disabled).
+    /// Source: `ESCUREL_RUNNER_MAX_ATTEMPTS` (default [`DEFAULT_MAX_ATTEMPTS`]).
+    pub max_attempts: u32,
+    /// Base backoff before the first reconciler retry; grows per attempt.
+    /// Source: `ESCUREL_RUNNER_RETRY_BACKOFF` (default
+    /// [`DEFAULT_RETRY_BACKOFF`]).
+    pub retry_backoff: Duration,
 }
 
 impl RunnerConfig {
@@ -242,6 +275,20 @@ impl RunnerConfig {
             .unwrap_or_else(|| DEFAULT_ADK_BIN.to_owned());
         let adk_model = lookup("ESCUREL_RUNNER_ADK_MODEL").filter(|s| !s.is_empty());
 
+        let max_attempts = match lookup("ESCUREL_RUNNER_MAX_ATTEMPTS") {
+            Some(raw) if !raw.is_empty() => match raw.parse::<u32>() {
+                Ok(n) if n >= 1 => n,
+                _ => return Err(ConfigError::InvalidMaxAttempts { value: raw }),
+            },
+            _ => DEFAULT_MAX_ATTEMPTS,
+        };
+        let retry_backoff = match lookup("ESCUREL_RUNNER_RETRY_BACKOFF") {
+            Some(raw) if !raw.is_empty() => {
+                parse_duration(&raw).ok_or(ConfigError::InvalidRetryBackoff { value: raw })?
+            }
+            _ => DEFAULT_RETRY_BACKOFF,
+        };
+
         Ok(Self {
             listen,
             gateway_url,
@@ -261,6 +308,8 @@ impl RunnerConfig {
             codex_model,
             adk_bin,
             adk_model,
+            max_attempts,
+            retry_backoff,
         })
     }
 }
@@ -327,6 +376,35 @@ mod tests {
         assert_eq!(cfg.codex_model, None);
         assert_eq!(cfg.adk_bin, DEFAULT_ADK_BIN);
         assert_eq!(cfg.adk_model, None);
+        assert_eq!(cfg.max_attempts, DEFAULT_MAX_ATTEMPTS);
+        assert_eq!(cfg.retry_backoff, DEFAULT_RETRY_BACKOFF);
+    }
+
+    #[test]
+    fn retry_config_loads_and_validates() {
+        let set = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_MAX_ATTEMPTS" => Some("5".to_owned()),
+            "ESCUREL_RUNNER_RETRY_BACKOFF" => Some("250ms".to_owned()),
+            _ => None,
+        })
+        .expect("retry config must parse");
+        assert_eq!(set.max_attempts, 5);
+        assert_eq!(set.retry_backoff, Duration::from_millis(250));
+
+        let zero = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_MAX_ATTEMPTS").then(|| "0".to_owned())
+        })
+        .expect_err("max_attempts=0 must fail (at least one attempt is made)");
+        assert!(matches!(zero, ConfigError::InvalidMaxAttempts { .. }));
+
+        let bad_backoff = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_RETRY_BACKOFF").then(|| "soon".to_owned())
+        })
+        .expect_err("a bad backoff must fail");
+        assert!(matches!(
+            bad_backoff,
+            ConfigError::InvalidRetryBackoff { .. }
+        ));
     }
 
     #[test]
