@@ -50,9 +50,7 @@ for a in "$@"; do
   prev="$a"
 done
 printf '%s' '{{"type":"result","subtype":"success","is_error":false,"result":"folded the renewal event","num_turns":3,"session_id":"stub-1"}}'
-"#,
-        argv_out = argv_out,
-        mcp_out = mcp_out,
+"#
     );
     std::fs::write(&stub, script).expect("write stub script");
     // chmod +x so the OS will exec it.

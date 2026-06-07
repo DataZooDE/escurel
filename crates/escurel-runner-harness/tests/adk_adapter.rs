@@ -43,9 +43,7 @@ cat > "{task_out}"
 printf '%s' "${{ESCUREL_MCP_BEARER:-}}" > "{token_out}"
 # Emit a canned HarnessOutcome on stdout.
 printf '%s\n' '{{"ok":true,"status":"ok","summary":"adk runner folded the renewal event","tool_calls":3,"produced_instance":null}}'
-"#,
-        task_out = task_out,
-        token_out = token_out,
+"#
     );
     std::fs::write(&stub, script).expect("write stub script");
     let mut perms = std::fs::metadata(&stub).expect("stat stub").permissions();

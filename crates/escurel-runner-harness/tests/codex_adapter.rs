@@ -78,10 +78,7 @@ fi
 printf '%s\n' '{{"type":"item.completed","item":{{"item_type":"mcp_tool_call","server":"escurel","tool":"update_page"}}}}'
 printf '%s\n' '{{"type":"item.completed","item":{{"item_type":"mcp_tool_call","server":"escurel","tool":"assign_event"}}}}'
 printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":10,"output_tokens":5}}}}'
-"#,
-        argv_out = argv_out,
-        cfg_out = cfg_out,
-        token_out = token_out,
+"#
     );
     std::fs::write(&stub, script).expect("write stub script");
     // chmod +x so the OS will exec it.
