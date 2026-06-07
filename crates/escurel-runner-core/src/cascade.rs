@@ -35,7 +35,7 @@
 //! [`crate::Trigger::from_event`] reads `provenance.runner` back so the next
 //! hop continues the same lineage.
 
-use escurel_client::{CaptureEventRequest, Client};
+use escurel_client::{CaptureEventRequest, Client, ExpandRequest, ResolveRequest};
 use serde_json::json;
 
 use crate::{ConfirmedEffect, Trigger};
@@ -105,15 +105,23 @@ pub async fn emit_cascade(
         parent_trigger.lineage.root_event_id,
     );
 
+    // Optional data-driven cascade target: when the produced skill declares a
+    // `cascade_target` instance in its frontmatter, the follow-on event is
+    // pre-flagged onto it so the next hop does real work (and may cascade
+    // again). When absent, the event is emitted **unassigned** — a no-target
+    // hop produces no cross-skill change, so the chain converges (the #156
+    // behaviour). This keeps the cascade in-corpus and data-driven, never
+    // hardcoded.
+    let cascade_target = resolve_cascade_target(client, &produced_skill)
+        .await
+        .unwrap_or_default();
+
     let event = client
         .capture_event(CaptureEventRequest {
             source: "runner-cascade".to_owned(),
             mime: "text/plain".to_owned(),
             label_skill: produced_skill.clone(),
-            // Unassigned: the cascaded event re-enters the pipeline as a fresh
-            // inbox item. Leaving it unbound is also what makes the chain
-            // converge — a no-target hop produces no cross-skill change.
-            instance_page_id: String::new(),
+            instance_page_id: cascade_target,
             title,
             body,
             provenance,
@@ -145,6 +153,13 @@ fn build_runner_provenance(
     if lineage_path.last().map(String::as_str) != Some(parent_trigger.event_id.as_str()) {
         lineage_path.push(parent_trigger.event_id.clone());
     }
+    // Extend the instance chain with the instance this hop's confirmed write
+    // landed on (#157). The next hop's cycle check tests its candidate target
+    // against this path; a re-visited instance closes a cycle.
+    let mut instance_path = parent_lineage.instance_path.clone();
+    if instance_path.last() != Some(&effect.instance_page_id) {
+        instance_path.push(effect.instance_page_id.clone());
+    }
     json!({
         "runner": {
             "root_event_id": parent_lineage.root_event_id,
@@ -152,11 +167,42 @@ fn build_runner_provenance(
             "parent_run_id": parent_run_id,
             "depth": depth,
             "lineage_path": lineage_path,
+            "instance_path": instance_path,
             "cause": format!("instance-updated:{}", parent_trigger.label_skill),
             "changed_instance": effect.instance_page_id,
             "changed_version": effect.version,
         }
     })
+}
+
+/// Resolve a skill's optional `cascade_target` — the instance page id a
+/// confirmed cross-skill write of that skill should pre-flag its follow-on
+/// event onto. Reads the skill page's frontmatter via `resolve` → `expand`.
+/// Returns `None` (best-effort) on any read failure or when the skill does not
+/// declare a `cascade_target`, so a missing target degrades to an unassigned
+/// (converging) cascade rather than erroring the run.
+async fn resolve_cascade_target(client: &Client, skill: &str) -> Option<String> {
+    let resolved = client
+        .resolve(ResolveRequest {
+            wikilink: format!("[[{skill}]]"),
+            ..Default::default()
+        })
+        .await
+        .ok()?;
+    let page_id = resolved.page?.page_id;
+    let expanded = client
+        .expand(ExpandRequest {
+            page_id,
+            ..Default::default()
+        })
+        .await
+        .ok()?;
+    expanded
+        .frontmatter
+        .get("cascade_target")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 /// Derive an instance's skill from its page id
@@ -232,6 +278,7 @@ mod tests {
                 root_event_id: "ROOT0".into(),
                 depth: 1,
                 lineage_path: vec!["ROOT0".into(), "HOP1".into()],
+                instance_path: vec!["markdown/instances/meeting/m1.md".into()],
             },
         );
         let runner = build_runner_provenance(&parent, "run-9", &effect())["runner"].clone();

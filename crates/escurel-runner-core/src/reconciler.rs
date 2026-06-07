@@ -65,6 +65,15 @@ pub enum ReconcileError {
     /// A failure a retry cannot fix — fail fast.
     #[error("permanent reconcile failure: {0}")]
     Permanent(String),
+    /// **Not a failure** — the run was a *clean no-op*: the harness ran
+    /// successfully but had genuinely nothing to do (no cross-skill change, no
+    /// instance to write), so there is no effect to confirm. A converged
+    /// cascade hop ends here (#156/#157): it terminates CLEANLY rather than
+    /// burning retries and recording `failed`. The caller must only ever
+    /// classify the genuinely-nothing-to-do case as `Converged`, never a real
+    /// failure — otherwise it would mask a broken run.
+    #[error("run converged (clean no-op): {0}")]
+    Converged(String),
 }
 
 /// Classify an [`escurel_client::Error`] as transient (retry) or permanent
@@ -179,10 +188,15 @@ pub async fn confirm_effect(
 /// (with the confirmed effect to record) and how many attempts it took.
 #[derive(Debug)]
 pub struct RunReport {
-    /// `Some(effect)` when the run converged; `None` when it exhausted the
-    /// attempts cap (or hit a permanent failure) and should be recorded
-    /// `failed`.
+    /// `Some(effect)` when the run produced a confirmed effect; `None` when it
+    /// exhausted the attempts cap, hit a permanent failure, **or** was a clean
+    /// no-op (see [`Self::converged_no_op`]).
     pub confirmed: Option<ConfirmedEffect>,
+    /// `true` when the run was a **clean no-op** — the harness ran fine but had
+    /// nothing to do (a converged cascade hop). The caller records such a run
+    /// as a clean terminal (NOT `failed`), and emits no cascade. Mutually
+    /// exclusive with [`Self::confirmed`] being `Some`.
+    pub converged_no_op: bool,
     /// How many attempts were made (≥ 1).
     pub attempts: u32,
 }
@@ -210,6 +224,23 @@ where
             Ok(effect) => {
                 return RunReport {
                     confirmed: Some(effect),
+                    converged_no_op: false,
+                    attempts: tries,
+                };
+            }
+            Err(ReconcileError::Converged(reason)) => {
+                // A clean no-op: the harness ran but had nothing to do. Stop
+                // immediately (no retry) and report a converged terminal — the
+                // caller records it cleanly, not `failed` (#156/#157).
+                tracing::info!(
+                    target: "escurel_runner",
+                    attempt = tries,
+                    reason = %reason,
+                    "reconcile: clean no-op; converged (no effect, no retry)"
+                );
+                return RunReport {
+                    confirmed: None,
+                    converged_no_op: true,
                     attempts: tries,
                 };
             }
@@ -222,6 +253,7 @@ where
                 );
                 return RunReport {
                     confirmed: None,
+                    converged_no_op: false,
                     attempts: tries,
                 };
             }
@@ -235,6 +267,7 @@ where
                     );
                     return RunReport {
                         confirmed: None,
+                        converged_no_op: false,
                         attempts: tries,
                     };
                 }
@@ -373,6 +406,24 @@ mod tests {
         .await;
         assert_eq!(report.attempts, 3, "must use the whole cap");
         assert!(report.confirmed.is_none());
+    }
+
+    #[tokio::test]
+    async fn converged_no_op_is_a_clean_terminal_not_failed() {
+        // A clean no-op (the harness ran but had nothing to do) stops
+        // immediately and reports a converged terminal — NOT a failure to be
+        // retried/recorded `failed` (#156/#157).
+        let c = cfg(5);
+        let report = run_with_retry(&c, |_attempt| async {
+            Err::<ConfirmedEffect, _>(ReconcileError::Converged("nothing to fold".into()))
+        })
+        .await;
+        assert_eq!(report.attempts, 1, "a clean no-op must not retry");
+        assert!(report.confirmed.is_none());
+        assert!(
+            report.converged_no_op,
+            "a clean no-op must report converged_no_op"
+        );
     }
 
     #[tokio::test]

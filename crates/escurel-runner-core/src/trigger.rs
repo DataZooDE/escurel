@@ -36,17 +36,26 @@ pub struct Lineage {
     /// hop's own event. A root trigger's path is `[event_id]`; a
     /// cascaded hop appends its own event id to the parent's path.
     pub lineage_path: Vec<String>,
+    /// The chain of **instance page ids** each hop in this cascade wrote
+    /// (#157). Event ids are always fresh per hop, so they cannot detect a
+    /// re-visited *instance* — the instance chain can. Cycle prevention
+    /// checks whether the candidate target instance is already in this path.
+    /// A root trigger starts it empty (it has touched no instance yet); each
+    /// cascade hop appends the instance its confirmed write landed on.
+    pub instance_path: Vec<String>,
 }
 
 impl Lineage {
     /// A root lineage for a webhook-origin trigger: the event is its
-    /// own root at depth `0`, with a single-element `lineage_path`.
+    /// own root at depth `0`, with a single-element `lineage_path` and an
+    /// empty `instance_path` (it has touched no instance yet).
     pub fn root(event_id: impl Into<String>) -> Self {
         let event_id = event_id.into();
         Self {
             root_event_id: event_id.clone(),
             depth: 0,
             lineage_path: vec![event_id],
+            instance_path: Vec::new(),
         }
     }
 }
@@ -129,10 +138,20 @@ fn lineage_from_provenance(provenance: &serde_json::Value, event_id: &str) -> Op
         })
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| vec![event_id.to_owned()]);
+    let instance_path = runner
+        .get("instance_path")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     Some(Lineage {
         root_event_id,
         depth,
         lineage_path,
+        instance_path,
     })
 }
 
@@ -199,6 +218,7 @@ mod tests {
                 "parent_event_id": "ROOT0",
                 "depth": 1,
                 "lineage_path": ["ROOT0", "HOP1"],
+                "instance_path": ["markdown/instances/beta/b1.md"],
             }
         });
         let trigger = Trigger::from_event(&event, "tenant-a");
@@ -208,6 +228,12 @@ mod tests {
         assert_eq!(
             trigger.lineage.lineage_path,
             vec!["ROOT0".to_owned(), "HOP1".to_owned()]
+        );
+        // The instance chain is read back so cycle detection can spot a
+        // re-visited instance (#157).
+        assert_eq!(
+            trigger.lineage.instance_path,
+            vec!["markdown/instances/beta/b1.md".to_owned()]
         );
     }
 

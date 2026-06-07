@@ -13,6 +13,7 @@
 //!
 //! [`docs/contract/agent-orchestration.md`]: https://github.com/DataZooDE/escurel/blob/main/docs/contract/agent-orchestration.md
 
+mod admit;
 mod cascade;
 mod config;
 mod dispatch;
@@ -21,10 +22,13 @@ mod packager;
 mod reconciler;
 mod trigger;
 
+pub use admit::{Admission, LoopLimits, admit};
 pub use cascade::{CascadeError, CascadeOutcome, emit_cascade};
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
-pub use ledger::{Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus};
+pub use ledger::{
+    DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
+};
 pub use packager::{ALLOWED_TOOLS, PackageError, TaskContext, package};
 pub use reconciler::{
     ConfirmedEffect, ReconcileError, RunReport, classify_client_error, confirm_effect,

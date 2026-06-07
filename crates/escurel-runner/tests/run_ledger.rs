@@ -85,10 +85,25 @@ async fn ledger_counts(client: &reqwest::Client, base: &str) -> Option<(u64, u64
 
 #[tokio::test]
 async fn same_event_twice_yields_exactly_one_terminal_run() {
-    // 1. Real gateway with a tenant fixture.
+    // 1. Real gateway with a tenant fixture + a `note` skill so the run
+    //    converges to a CLEAN terminal (`processed`). #157 made a transiently
+    //    `failed` run *retriable* (so a re-drive can re-attempt it), so this
+    //    idempotency test must exercise a genuinely *handled* event — a
+    //    no-skill event would land `failed` and the second delivery would
+    //    legitimately re-claim it. The note event carries no target instance,
+    //    so the echo-harness reports a clean no-op → the run records
+    //    `processed` (converged), which is idempotency-terminal.
     let gateway = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
-        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(
+                    "note",
+                    "---\ntype: skill\nid: note\n---\n# note\n\nFold the note.\n",
+                )
+                .done(),
+        ),
         ..Default::default()
     })
     .await;

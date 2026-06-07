@@ -65,6 +65,19 @@ pub const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 /// delay before the first retry.
 pub const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_millis(500);
 
+/// Default cascade depth cap (#157). When a trigger's lineage `depth`
+/// exceeds this, the dispatch gate dead-letters the run `depth_exceeded`
+/// rather than admitting it — the hard backstop that bounds any cascade,
+/// even if cycle detection misses. Sized generous enough for legitimate
+/// multi-stage chains but far below a runaway.
+pub const DEFAULT_MAX_DEPTH: u32 = 8;
+
+/// Default per-root run budget (#157). The dispatch gate counts runs sharing
+/// a `root_event_id`; once the budget is spent it dead-letters further runs
+/// `budget_exceeded`. A second backstop against a cascade that fans out
+/// without deepening (so the depth cap alone wouldn't catch it).
+pub const DEFAULT_MAX_RUNS_PER_ROOT: u64 = 64;
+
 /// Default path of the runner-local durable run ledger (its own SQLite
 /// file, *never* the tenant store). Relative to the process CWD so a dev
 /// run drops it in place; deployments set [`crate::RunnerConfig::ledger_path`]
@@ -109,6 +122,19 @@ pub enum ConfigError {
     /// `ESCUREL_RUNNER_RETRY_BACKOFF` was set but is not a valid duration.
     #[error("invalid ESCUREL_RUNNER_RETRY_BACKOFF {value:?}: expected e.g. 500ms, 2s")]
     InvalidRetryBackoff {
+        /// The offending value.
+        value: String,
+    },
+    /// `ESCUREL_RUNNER_MAX_DEPTH` was set but is not a valid integer.
+    #[error("invalid ESCUREL_RUNNER_MAX_DEPTH {value:?}: expected a non-negative integer")]
+    InvalidMaxDepth {
+        /// The offending value.
+        value: String,
+    },
+    /// `ESCUREL_RUNNER_MAX_RUNS_PER_ROOT` was set but is not a positive
+    /// integer (the budget must be at least `1`).
+    #[error("invalid ESCUREL_RUNNER_MAX_RUNS_PER_ROOT {value:?}: expected a positive integer")]
+    InvalidMaxRunsPerRoot {
         /// The offending value.
         value: String,
     },
@@ -208,6 +234,15 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_RETRY_BACKOFF` (default
     /// [`DEFAULT_RETRY_BACKOFF`]).
     pub retry_backoff: Duration,
+    /// Cascade depth cap; a trigger deeper than this is dead-lettered
+    /// `depth_exceeded` at the dispatch gate (#157).
+    /// Source: `ESCUREL_RUNNER_MAX_DEPTH` (default [`DEFAULT_MAX_DEPTH`]).
+    pub max_depth: u32,
+    /// Per-root run budget; runs sharing a `root_event_id` beyond this are
+    /// dead-lettered `budget_exceeded` (#157).
+    /// Source: `ESCUREL_RUNNER_MAX_RUNS_PER_ROOT` (default
+    /// [`DEFAULT_MAX_RUNS_PER_ROOT`]).
+    pub max_runs_per_root: u64,
 }
 
 impl RunnerConfig {
@@ -289,6 +324,20 @@ impl RunnerConfig {
             _ => DEFAULT_RETRY_BACKOFF,
         };
 
+        let max_depth = match lookup("ESCUREL_RUNNER_MAX_DEPTH") {
+            Some(raw) if !raw.is_empty() => raw
+                .parse::<u32>()
+                .map_err(|_| ConfigError::InvalidMaxDepth { value: raw })?,
+            _ => DEFAULT_MAX_DEPTH,
+        };
+        let max_runs_per_root = match lookup("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT") {
+            Some(raw) if !raw.is_empty() => match raw.parse::<u64>() {
+                Ok(n) if n >= 1 => n,
+                _ => return Err(ConfigError::InvalidMaxRunsPerRoot { value: raw }),
+            },
+            _ => DEFAULT_MAX_RUNS_PER_ROOT,
+        };
+
         Ok(Self {
             listen,
             gateway_url,
@@ -310,6 +359,8 @@ impl RunnerConfig {
             adk_model,
             max_attempts,
             retry_backoff,
+            max_depth,
+            max_runs_per_root,
         })
     }
 }
@@ -378,6 +429,35 @@ mod tests {
         assert_eq!(cfg.adk_model, None);
         assert_eq!(cfg.max_attempts, DEFAULT_MAX_ATTEMPTS);
         assert_eq!(cfg.retry_backoff, DEFAULT_RETRY_BACKOFF);
+        assert_eq!(cfg.max_depth, DEFAULT_MAX_DEPTH);
+        assert_eq!(cfg.max_runs_per_root, DEFAULT_MAX_RUNS_PER_ROOT);
+    }
+
+    #[test]
+    fn loop_control_config_loads_and_validates() {
+        let set = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_MAX_DEPTH" => Some("3".to_owned()),
+            "ESCUREL_RUNNER_MAX_RUNS_PER_ROOT" => Some("16".to_owned()),
+            _ => None,
+        })
+        .expect("loop-control config must parse");
+        assert_eq!(set.max_depth, 3);
+        assert_eq!(set.max_runs_per_root, 16);
+
+        let bad_depth = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_MAX_DEPTH").then(|| "deep".to_owned())
+        })
+        .expect_err("a bad max depth must fail");
+        assert!(matches!(bad_depth, ConfigError::InvalidMaxDepth { .. }));
+
+        let zero_budget = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_MAX_RUNS_PER_ROOT").then(|| "0".to_owned())
+        })
+        .expect_err("a zero per-root budget must fail");
+        assert!(matches!(
+            zero_budget,
+            ConfigError::InvalidMaxRunsPerRoot { .. }
+        ));
     }
 
     #[test]

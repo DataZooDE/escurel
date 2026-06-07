@@ -38,9 +38,9 @@ use axum::routing::{get, post};
 use escurel_client::{Client, SecretString};
 use escurel_obs::{TelemetryConfig, init_telemetry};
 use escurel_runner_core::{
-    CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue, EnqueueOutcome, Ledger,
-    LedgerDecision, ReconcileError, RunStatus, RunnerConfig, TaskContext, Trigger,
-    classify_client_error, confirm_effect, emit_cascade, package, run_with_retry,
+    Admission, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue, EnqueueOutcome,
+    Ledger, LedgerDecision, LoopLimits, ReconcileError, RunStatus, RunnerConfig, TaskContext,
+    Trigger, admit, classify_client_error, confirm_effect, emit_cascade, package, run_with_retry,
 };
 use escurel_runner_harness::{AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, Harness};
 use escurel_types::{Event, ListInboxRequest};
@@ -67,6 +67,10 @@ struct AppState {
     /// The durable run ledger — the idempotency authority (#149). The gate
     /// consults it before enqueueing so a re-delivered event is dropped.
     ledger: Arc<Ledger>,
+    /// The loop-control limits (#157) the gate enforces after idempotency:
+    /// depth cap + per-root run budget. A trigger that would breach them is
+    /// dead-lettered (with `cycle` checked against the lineage instance chain).
+    limits: LoopLimits,
 }
 
 #[tokio::main]
@@ -93,6 +97,14 @@ async fn main() -> anyhow::Result<()> {
         path = %config.ledger_path,
         "run ledger opened"
     );
+
+    // The loop-control limits (#157) the dispatch gate enforces after
+    // idempotency: depth cap + per-root run budget (cycle is checked against
+    // the lineage instance chain, needing no limit).
+    let limits = LoopLimits {
+        max_depth: config.max_depth,
+        max_runs_per_root: config.max_runs_per_root,
+    };
 
     // The bounded dispatch queue both ingress paths converge on. The
     // consumer side runs the real package→harness→reconcile path (#151) when
@@ -131,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
                 config.poll_interval,
                 queue.clone(),
                 Arc::clone(&ledger),
+                limits,
             ));
         }
         _ => {
@@ -146,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
         webhook_secret: config.webhook_secret.clone().map(Arc::from),
         queue,
         ledger,
+        limits,
     };
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -234,25 +248,82 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     // idempotency authority; the in-memory seen-set is a cheap fast-path in
     // front of it. Either way we acknowledge 202 immediately so the
     // gateway's POST never blocks.
-    gate_and_enqueue(&state.ledger, &state.queue, trigger, "webhook");
+    gate_and_enqueue(
+        &state.ledger,
+        &state.queue,
+        &state.limits,
+        trigger,
+        "webhook",
+    );
     StatusCode::ACCEPTED
 }
 
-/// The dispatch gate (#149 idempotency half of lifecycle step 4). Consults
-/// the **durable run ledger** — the authority that survives a restart —
-/// then the in-memory seen-set fast-path:
+/// The dispatch gate (lifecycle step 4). Consults the **durable run
+/// ledger** — the authority that survives a restart — for idempotency
+/// (#149), then enforces the **loop controls** (#157), then the in-memory
+/// seen-set fast-path:
 ///
-/// - `begin_run` returns [`LedgerDecision::Created`] → a fresh `pending`
-///   run exists; enqueue the trigger (the in-memory seen-set collapses any
-///   webhook/poll overlap inside the same process).
-/// - `AlreadyTerminal` (idempotency) / `InFlight` (dedup) → drop.
+/// - `begin_run` returns [`LedgerDecision::Created`] → a fresh `pending` run
+///   exists. Run the loop-control [`admit`] gate: if it denies (depth/cycle/
+///   budget), **dead-letter** the just-created run with the reason and do NOT
+///   enqueue — the cascade stops here. Otherwise enqueue the trigger (the
+///   in-memory seen-set collapses any webhook/poll overlap).
+/// - `AlreadyTerminal` (idempotency — `processed`/`dead_letter`) / `InFlight`
+///   (dedup) → drop. (A prior `failed` run is re-claimed as `Created`.)
 ///
 /// Returns `true` if the trigger was enqueued. Best-effort: a ledger error
 /// is logged and the trigger dropped (the poller re-pulls on the next tick),
 /// never panicking the process.
-fn gate_and_enqueue(ledger: &Ledger, queue: &DispatchQueue, trigger: Trigger, via: &str) -> bool {
+fn gate_and_enqueue(
+    ledger: &Ledger,
+    queue: &DispatchQueue,
+    limits: &LoopLimits,
+    trigger: Trigger,
+    via: &str,
+) -> bool {
     match ledger.begin_run(&trigger) {
         Ok(LedgerDecision::Created(run_id)) => {
+            // Loop controls: depth/cycle/budget. The `pending` row already
+            // exists (idempotency), so a denial dead-letters THAT row — making
+            // it idempotency-terminal so a re-delivery of the same event drops.
+            match admit(&trigger, limits, ledger) {
+                Ok(Admission::DeadLetter(reason)) => {
+                    if let Err(e) = ledger.dead_letter(&run_id, reason) {
+                        tracing::error!(
+                            target: "escurel_runner",
+                            via,
+                            event_id = %trigger.event_id,
+                            error = %e,
+                            "gate: could not record dead-letter"
+                        );
+                    }
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        via,
+                        tenant = %trigger.tenant,
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        reason = %reason,
+                        depth = trigger.lineage.depth,
+                        root_event_id = %trigger.lineage.root_event_id,
+                        "gate: run dead-lettered by loop control; cascade stopped"
+                    );
+                    return false;
+                }
+                Err(e) => {
+                    // A ledger read failed mid-gate: leave the row pending and
+                    // drop; the poller re-pulls and re-evaluates next tick.
+                    tracing::error!(
+                        target: "escurel_runner",
+                        via,
+                        event_id = %trigger.event_id,
+                        error = %e,
+                        "gate: loop-control check errored; dropping (poller retries)"
+                    );
+                    return false;
+                }
+                Ok(Admission::Admit) => {}
+            }
             let outcome = queue.enqueue(trigger.clone());
             tracing::info!(
                 target: "escurel_runner",
@@ -261,7 +332,7 @@ fn gate_and_enqueue(ledger: &Ledger, queue: &DispatchQueue, trigger: Trigger, vi
                 event_id = %trigger.event_id,
                 run_id = %run_id,
                 outcome = ?outcome,
-                "gate: run created; trigger enqueued"
+                "gate: run created + admitted; trigger enqueued"
             );
             matches!(outcome, EnqueueOutcome::Enqueued)
         }
@@ -322,11 +393,18 @@ async fn debug_ledger(State(state): State<AppState>) -> impl IntoResponse {
         .ledger
         .count_all_by_status(RunStatus::Failed)
         .unwrap_or(0);
+    // `dead_letter` = runs blocked by a loop control (#157). The no-mock
+    // integration test reads this to assert the cascade was stopped.
+    let dead_letter = state
+        .ledger
+        .count_all_by_status(RunStatus::DeadLetter)
+        .unwrap_or(0);
     axum::Json(serde_json::json!({
         "total": total,
         "terminal": terminal,
         "succeeded": succeeded,
         "failed": failed,
+        "dead_letter": dead_letter,
     }))
 }
 
@@ -352,6 +430,8 @@ async fn debug_run(
                 "status": rec.status.as_str(),
                 "instance_page_id": rec.produced_instance_page_id,
                 "produced_version": rec.produced_version,
+                // The loop-control dead-letter reason (#157), when dead-lettered.
+                "reason": rec.reason,
             })),
         ),
         Ok(None) => (
@@ -469,14 +549,30 @@ async fn dispatch_loop(
         })
         .await;
 
-        let result = match &report.confirmed {
-            Some(effect) => ledger.complete(
+        // Outcome → terminal status:
+        // - confirmed effect      → `processed` (+ produced instance/version);
+        // - clean no-op (converged) → `processed` with no produced instance —
+        //   a converged cascade hop ends tidily, NOT `failed` (#156/#157);
+        // - otherwise              → `failed` (retriable; the poller/operator
+        //   may re-drive it).
+        let result = match (&report.confirmed, report.converged_no_op) {
+            (Some(effect), _) => ledger.complete(
                 &run_id,
                 RunStatus::Processed,
                 Some((effect.instance_page_id.as_str(), effect.version.as_str())),
             ),
-            None => ledger.complete(&run_id, RunStatus::Failed, None),
+            (None, true) => ledger.complete(&run_id, RunStatus::Processed, None),
+            (None, false) => ledger.complete(&run_id, RunStatus::Failed, None),
         };
+        if report.confirmed.is_none() && report.converged_no_op {
+            tracing::info!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                run_id = %run_id,
+                attempts = report.attempts,
+                "dispatch: run was a clean no-op; recorded processed (converged, no cascade)"
+            );
+        }
         match (&report.confirmed, result) {
             (Some(effect), Ok(())) => {
                 tracing::info!(
@@ -596,6 +692,22 @@ async fn attempt_run(
                     outcome.summary
                 )));
             }
+            // Clean no-op: the harness ran fine but produced no instance AND
+            // the trigger had no pre-flagged target. This is a *converged*
+            // cascade hop (e.g. an unassigned cascaded event the echo-harness
+            // can't bind) — there is genuinely nothing to confirm. Terminate
+            // CLEANLY (#156/#157) rather than burning retries on a read-back
+            // that can never converge and recording `failed`. We only treat
+            // the genuinely-nothing-to-do case (ok + no produced instance + no
+            // pre-flagged target) as converged, so a real failure is never
+            // masked.
+            if outcome.produced_instance.is_none() && trigger.instance_page_id.is_none() {
+                return Err(ReconcileError::Converged(format!(
+                    "harness {} had nothing to do: {}",
+                    harness.name(),
+                    outcome.summary
+                )));
+            }
         }
         Err(e) => {
             tracing::warn!(
@@ -692,6 +804,7 @@ async fn poll_loop(
     interval: std::time::Duration,
     queue: DispatchQueue,
     ledger: Arc<Ledger>,
+    limits: LoopLimits,
 ) {
     let client = match Client::connect(&gateway_url, SecretString::from(token)).await {
         Ok(client) => client,
@@ -720,8 +833,9 @@ async fn poll_loop(
                 for event in &resp.events {
                     let trigger = Trigger::from_event(event, tenant.clone());
                     // Route through the same loop-control gate the webhook
-                    // uses: the durable ledger decides create-vs-drop.
-                    gate_and_enqueue(&ledger, &queue, trigger, "poll");
+                    // uses: the durable ledger decides create-vs-drop, then the
+                    // depth/cycle/budget controls admit-or-dead-letter.
+                    gate_and_enqueue(&ledger, &queue, &limits, trigger, "poll");
                 }
             }
             Err(e) => tracing::warn!(

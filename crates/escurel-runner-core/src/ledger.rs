@@ -1,5 +1,28 @@
 //! The runner-local **run ledger** + the idempotency half of the
-//! loop-control gate (#149).
+//! loop-control gate (#149), extended with the depth/budget/cycle
+//! dead-lettering controls (#157).
+//!
+//! ## Terminal-vs-retriable matrix (#149 / #155 / #157)
+//!
+//! The ledger distinguishes two flavours of "finished":
+//!
+//! | status        | idempotency-terminal? | meaning                                  |
+//! |---------------|-----------------------|------------------------------------------|
+//! | `pending`     | no (in-flight)        | created, not yet reconciled              |
+//! | `processed`   | **yes**               | confirmed success — never re-run         |
+//! | `dead_letter` | **yes**               | depth/cycle/budget block — never re-run  |
+//! | `failed`      | **no (retriable)**    | transient exhaustion — an operator       |
+//! |               |                       | re-drive / the poller backstop MAY       |
+//! |               |                       | re-attempt it                            |
+//!
+//! The #149 gate originally treated `failed` as terminal-for-idempotency,
+//! which permanently wedged an event that merely failed *transiently*. #155
+//! gave failures a retry policy; #157 finishes the job: only `processed` and
+//! `dead_letter` are genuinely terminal, so a `failed` row no longer blocks a
+//! re-delivery (the poller re-pulls the still-`inbox` event, and `begin_run`
+//! re-claims the failed row rather than reporting `AlreadyTerminal`). A
+//! `dead_letter` IS terminal — a depth/cycle/budget block is a deliberate,
+//! permanent decision the operator must DLQ-requeue to override.
 //!
 //! [`docs/contract/agent-orchestration.md`](https://github.com/DataZooDE/escurel/blob/main/docs/contract/agent-orchestration.md)
 //! §Architecture item 4 calls for a *runner-local durable store — its own
@@ -29,24 +52,58 @@ use rusqlite::Connection;
 
 use crate::Trigger;
 
-/// Terminal/in-flight status of a run row.
+/// Terminal/in-flight status of a run row. See the module docs for the full
+/// terminal-vs-retriable matrix.
 ///
-/// `pending` is the only non-terminal state: a row is created `pending` and
-/// later moved to a terminal state by [`Ledger::mark`]. `processed` and
-/// `dead` are the terminal states that make a `(tenant, event_id)`
-/// idempotent (a re-delivery is dropped); `failed` is terminal-for-this-run
-/// but a retry policy (#157) may revive it, so it is treated like the other
-/// terminal states for the idempotency gate.
+/// Only `processed` and `dead_letter` are **idempotency-terminal** (a
+/// re-delivery of their `(tenant, event_id)` is dropped). `pending` is
+/// in-flight; `failed` is *retriable* — a transient exhaustion that an
+/// operator re-drive or the poller backstop may re-attempt, so it does NOT
+/// wedge the event at the idempotency gate (#157 reconciles the #149
+/// failed-terminal rough edge).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
     /// Run created, not yet reconciled. The in-flight state.
     Pending,
     /// Run completed successfully (the agent's write was confirmed).
     Processed,
-    /// Run failed (may be retried by a later policy).
+    /// Run failed transiently (exhausted retries). **Retriable** — not
+    /// idempotency-terminal, so a re-drive can re-attempt it.
     Failed,
-    /// Run dead-lettered (terminal; will not be retried).
-    Dead,
+    /// Run dead-lettered by a loop control (depth/cycle/budget) — a
+    /// deliberate, permanent block. Idempotency-terminal; only a DLQ
+    /// requeue overrides it. Carries a `reason` (see [`DeadLetterReason`]).
+    DeadLetter,
+}
+
+/// The reason a run was dead-lettered by a loop control (#157). Recorded in
+/// the ledger's `reason` column and read back via `/debug/run`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeadLetterReason {
+    /// `trigger.lineage.depth` exceeded `ESCUREL_RUNNER_MAX_DEPTH`.
+    DepthExceeded,
+    /// The candidate instance is already in the lineage's instance chain —
+    /// admitting the run would close a cascade cycle.
+    Cycle,
+    /// The per-root run budget (`ESCUREL_RUNNER_MAX_RUNS_PER_ROOT`) is spent.
+    BudgetExceeded,
+}
+
+impl DeadLetterReason {
+    /// The wire/DB string for this reason.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeadLetterReason::DepthExceeded => "depth_exceeded",
+            DeadLetterReason::Cycle => "cycle",
+            DeadLetterReason::BudgetExceeded => "budget_exceeded",
+        }
+    }
+}
+
+impl std::fmt::Display for DeadLetterReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl RunStatus {
@@ -56,28 +113,28 @@ impl RunStatus {
             RunStatus::Pending => "pending",
             RunStatus::Processed => "processed",
             RunStatus::Failed => "failed",
-            RunStatus::Dead => "dead",
+            RunStatus::DeadLetter => "dead_letter",
         }
     }
 
-    /// Parse a DB string back into a [`RunStatus`].
+    /// Parse a DB string back into a [`RunStatus`]. The legacy `dead` value
+    /// (pre-#157) maps to [`RunStatus::DeadLetter`] for forward-compat.
     fn from_str(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(RunStatus::Pending),
             "processed" => Some(RunStatus::Processed),
             "failed" => Some(RunStatus::Failed),
-            "dead" => Some(RunStatus::Dead),
+            "dead_letter" | "dead" => Some(RunStatus::DeadLetter),
             _ => None,
         }
     }
 
-    /// Whether this status is terminal (the run has finished). A terminal
-    /// row makes its `(tenant, event_id)` idempotent.
+    /// Whether this status is **idempotency-terminal** — a row in this state
+    /// makes its `(tenant, event_id)` idempotent (a re-delivery is dropped).
+    /// `failed` is deliberately NOT terminal here (it is retriable); see the
+    /// module-level matrix.
     fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            RunStatus::Processed | RunStatus::Failed | RunStatus::Dead
-        )
+        matches!(self, RunStatus::Processed | RunStatus::DeadLetter)
     }
 }
 
@@ -162,6 +219,10 @@ pub struct RunRecord {
     pub depth: u32,
     /// The event at the root of this cascade.
     pub root_event_id: String,
+    /// The dead-letter reason (`depth_exceeded` / `cycle` /
+    /// `budget_exceeded`), when [`Self::status`] is
+    /// [`RunStatus::DeadLetter`]; `None` otherwise.
+    pub reason: Option<String>,
 }
 
 /// The runner-local durable run ledger.
@@ -193,7 +254,7 @@ impl Ledger {
     /// Open an in-memory ledger (tests for non-persistence cases only — the
     /// durable behaviour must be tested against a real file).
     #[cfg(test)]
-    fn open_in_memory() -> Result<Self, LedgerError> {
+    pub(crate) fn open_in_memory() -> Result<Self, LedgerError> {
         let conn = Connection::open_in_memory()?;
         Self::migrate(&conn)?;
         Ok(Self {
@@ -228,6 +289,11 @@ impl Ledger {
         // migrates in place rather than needing a rebuild.
         add_column_if_missing(conn, "produced_instance_page_id")?;
         add_column_if_missing(conn, "produced_version")?;
+        // #157 dead-letter reason: `depth_exceeded` / `cycle` /
+        // `budget_exceeded` for a run blocked by a loop control. Added in
+        // place via `ALTER TABLE` so an existing ledger file migrates rather
+        // than rebuilds.
+        add_column_if_missing(conn, "reason")?;
         Ok(())
     }
 
@@ -250,12 +316,42 @@ impl Ledger {
 
         // Fast path: a row already exists.
         if let Some(status) = lookup_status(&tx, &trigger.tenant, &trigger.event_id)? {
-            tx.commit()?;
-            return Ok(if status.is_terminal() {
-                LedgerDecision::AlreadyTerminal
-            } else {
-                LedgerDecision::InFlight
-            });
+            match status {
+                // Idempotency-terminal: a confirmed success or a deliberate
+                // dead-letter — drop the re-delivery.
+                RunStatus::Processed | RunStatus::DeadLetter => {
+                    tx.commit()?;
+                    return Ok(LedgerDecision::AlreadyTerminal);
+                }
+                // Retriable: a prior attempt failed transiently. Re-claim the
+                // row (reset to `pending`, mint a fresh run id) so a re-drive /
+                // poller backstop re-attempts it rather than the event wedging
+                // forever (#157 reconciles the #149 failed-terminal edge).
+                RunStatus::Failed => {
+                    let run_id = RunId::new();
+                    tx.execute(
+                        "UPDATE runs
+                            SET run_id = ?1, status = 'pending',
+                                produced_instance_page_id = NULL,
+                                produced_version = NULL, reason = NULL,
+                                updated_at = ?2
+                          WHERE tenant = ?3 AND event_id = ?4",
+                        rusqlite::params![
+                            run_id.as_str(),
+                            now_iso(),
+                            trigger.tenant,
+                            trigger.event_id,
+                        ],
+                    )?;
+                    tx.commit()?;
+                    return Ok(LedgerDecision::Created(run_id));
+                }
+                // Still pending: a concurrent/overlapping delivery — drop.
+                RunStatus::Pending => {
+                    tx.commit()?;
+                    return Ok(LedgerDecision::InFlight);
+                }
+            }
         }
 
         // No row yet: try to claim it. ON CONFLICT DO NOTHING means a
@@ -347,13 +443,51 @@ impl Ledger {
         Ok(())
     }
 
+    /// Dead-letter a run: move it to [`RunStatus::DeadLetter`] and record the
+    /// loop-control `reason` (#157). Terminal and deliberate — only a DLQ
+    /// requeue overrides it.
+    pub fn dead_letter(&self, run_id: &RunId, reason: DeadLetterReason) -> Result<(), LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let changed = conn.execute(
+            "UPDATE runs SET status = ?1, reason = ?2, updated_at = ?3 WHERE run_id = ?4",
+            rusqlite::params![
+                RunStatus::DeadLetter.as_str(),
+                reason.as_str(),
+                now_iso(),
+                run_id.as_str()
+            ],
+        )?;
+        if changed == 0 {
+            return Err(LedgerError::NotFound(run_id.0.clone()));
+        }
+        Ok(())
+    }
+
+    /// Count the runs sharing a `root_event_id` for a tenant — the per-root
+    /// run budget the loop-control gate debits (#157). Counts every row in the
+    /// cascade tree, in any status, so a runaway chain is caught regardless of
+    /// where its hops landed.
+    pub fn count_runs_for_root(
+        &self,
+        tenant: &str,
+        root_event_id: &str,
+    ) -> Result<u64, LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM runs WHERE tenant = ?1 AND root_event_id = ?2",
+            rusqlite::params![tenant, root_event_id],
+            |r| r.get(0),
+        )?;
+        Ok(n as u64)
+    }
+
     /// Fetch a run row by `(tenant, event_id)`, if present.
     pub fn get_run(&self, tenant: &str, event_id: &str) -> Result<Option<RunRecord>, LedgerError> {
         let conn = self.conn.lock().expect("run ledger mutex");
         let mut stmt = conn.prepare(
             "SELECT run_id, tenant, event_id, instance_page_id, content_hash,
                     produced_instance_page_id, produced_version,
-                    status, depth, root_event_id
+                    status, depth, root_event_id, reason
              FROM runs WHERE tenant = ?1 AND event_id = ?2",
         )?;
         let row = stmt
@@ -370,6 +504,7 @@ impl Ledger {
                     status: RunStatus::from_str(&status_str).unwrap_or(RunStatus::Pending),
                     depth: r.get(8)?,
                     root_event_id: r.get(9)?,
+                    reason: r.get(10)?,
                 })
             })
             .ok();
@@ -633,6 +768,79 @@ mod tests {
         assert_eq!(rec.status, RunStatus::Failed);
         assert_eq!(rec.produced_instance_page_id, None);
         assert_eq!(rec.produced_version, None);
+    }
+
+    #[test]
+    fn dead_letter_is_terminal_and_records_reason() {
+        // A dead-lettered run is idempotency-terminal (re-delivery dropped) and
+        // exposes its loop-control reason.
+        let ledger = Ledger::open_in_memory().expect("open");
+        let id = match ledger.begin_run(&trigger("DL")).expect("begin DL") {
+            LedgerDecision::Created(id) => id,
+            other => panic!("expected Created, got {other:?}"),
+        };
+        ledger
+            .dead_letter(&id, DeadLetterReason::Cycle)
+            .expect("dead-letter DL");
+        let rec = ledger.get_run("acme", "DL").expect("get").expect("present");
+        assert_eq!(rec.status, RunStatus::DeadLetter);
+        assert_eq!(rec.reason.as_deref(), Some("cycle"));
+        assert_eq!(
+            ledger.begin_run(&trigger("DL")).expect("re-begin DL"),
+            LedgerDecision::AlreadyTerminal,
+            "a dead-lettered run is terminal — a re-delivery must drop"
+        );
+    }
+
+    #[test]
+    fn failed_run_is_retriable_not_wedged() {
+        // #157 reconciles the #149 failed-terminal edge: a transient `failed`
+        // run must be re-claimable (Created with a fresh run id), NOT reported
+        // AlreadyTerminal — otherwise an operator re-drive / poller backstop
+        // could never re-attempt it.
+        let ledger = Ledger::open_in_memory().expect("open");
+        let first = match ledger.begin_run(&trigger("FR")).expect("begin FR") {
+            LedgerDecision::Created(id) => id,
+            other => panic!("expected Created, got {other:?}"),
+        };
+        ledger
+            .complete(&first, RunStatus::Failed, None)
+            .expect("fail FR");
+        let second = ledger.begin_run(&trigger("FR")).expect("re-begin FR");
+        match second {
+            LedgerDecision::Created(id) => assert_ne!(
+                id.as_str(),
+                first.as_str(),
+                "a re-claimed failed run mints a fresh run id"
+            ),
+            other => panic!("a failed run must be re-claimable (Created), got {other:?}"),
+        }
+        // Still exactly one row for the event (re-claim updates in place).
+        assert_eq!(ledger.count_runs("acme").expect("count"), 1);
+    }
+
+    #[test]
+    fn count_runs_for_root_counts_the_cascade_tree() {
+        let ledger = Ledger::open_in_memory().expect("open");
+        // Two hops sharing a root, plus an unrelated root.
+        let mut hop0 = trigger("R0");
+        hop0.lineage = Lineage::root("R0");
+        let mut hop1 = trigger("R0-HOP1");
+        hop1.lineage = Lineage {
+            root_event_id: "R0".into(),
+            depth: 1,
+            lineage_path: vec!["R0".into(), "R0-HOP1".into()],
+            instance_path: vec![],
+        };
+        let other = trigger("R9");
+        let _ = ledger.begin_run(&hop0).expect("hop0");
+        let _ = ledger.begin_run(&hop1).expect("hop1");
+        let _ = ledger.begin_run(&other).expect("other");
+        assert_eq!(
+            ledger.count_runs_for_root("acme", "R0").expect("count"),
+            2,
+            "both hops sharing root R0 are counted"
+        );
     }
 
     #[test]
