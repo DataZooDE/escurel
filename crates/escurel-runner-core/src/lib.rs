@@ -16,9 +16,11 @@
 mod config;
 mod dispatch;
 mod ledger;
+mod packager;
 mod trigger;
 
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
 pub use ledger::{Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus};
+pub use packager::{ALLOWED_TOOLS, PackageError, TaskContext, package};
 pub use trigger::{Lineage, Trigger};
