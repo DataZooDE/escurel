@@ -38,6 +38,10 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// `adk` arrive in later work-items and are selected by the same env var.
 pub const DEFAULT_HARNESS: &str = "echo";
 
+/// Default `claude` binary the Claude Code adapter (#152) spawns. A bare
+/// name resolves on `PATH`; a deterministic test overrides it to a stub.
+pub const DEFAULT_CLAUDE_BIN: &str = "claude";
+
 /// Default path of the runner-local durable run ledger (its own SQLite
 /// file, *never* the tenant store). Relative to the process CWD so a dev
 /// run drops it in place; deployments set [`crate::RunnerConfig::ledger_path`]
@@ -135,6 +139,14 @@ pub struct RunnerConfig {
     /// work-items add adapters without touching the dispatch path.
     /// Source: `ESCUREL_RUNNER_HARNESS` (default [`DEFAULT_HARNESS`]).
     pub harness: String,
+    /// Path to the `claude` binary the Claude Code adapter (#152) spawns.
+    /// Source: `ESCUREL_RUNNER_CLAUDE_BIN` (default [`DEFAULT_CLAUDE_BIN`]).
+    pub claude_bin: String,
+    /// Optional `--model` the Claude Code adapter passes to `claude` (an
+    /// alias like `opus`/`sonnet` or a full model id); `None` lets `claude`
+    /// pick its configured default.
+    /// Source: `ESCUREL_RUNNER_CLAUDE_MODEL` (unset → `None`).
+    pub claude_model: Option<String>,
 }
 
 impl RunnerConfig {
@@ -187,6 +199,11 @@ impl RunnerConfig {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_HARNESS.to_owned());
 
+        let claude_bin = lookup("ESCUREL_RUNNER_CLAUDE_BIN")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_CLAUDE_BIN.to_owned());
+        let claude_model = lookup("ESCUREL_RUNNER_CLAUDE_MODEL").filter(|s| !s.is_empty());
+
         Ok(Self {
             listen,
             gateway_url,
@@ -200,6 +217,8 @@ impl RunnerConfig {
             poll_interval,
             ledger_path,
             harness,
+            claude_bin,
+            claude_model,
         })
     }
 }
@@ -260,6 +279,32 @@ mod tests {
         assert_eq!(cfg.poll_interval, DEFAULT_POLL_INTERVAL);
         assert_eq!(cfg.ledger_path, DEFAULT_LEDGER_PATH);
         assert_eq!(cfg.harness, DEFAULT_HARNESS);
+        assert_eq!(cfg.claude_bin, DEFAULT_CLAUDE_BIN);
+        assert_eq!(cfg.claude_model, None);
+    }
+
+    #[test]
+    fn claude_bin_and_model_load_when_set_and_ignore_empty() {
+        let set = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_CLAUDE_BIN" => Some("/usr/local/bin/claude".to_owned()),
+            "ESCUREL_RUNNER_CLAUDE_MODEL" => Some("opus".to_owned()),
+            _ => None,
+        })
+        .expect("claude config must parse");
+        assert_eq!(set.claude_bin, "/usr/local/bin/claude");
+        assert_eq!(set.claude_model, Some("opus".to_owned()));
+
+        let empty = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_CLAUDE_BIN" => Some(String::new()),
+            "ESCUREL_RUNNER_CLAUDE_MODEL" => Some(String::new()),
+            _ => None,
+        })
+        .expect("empty claude config must parse");
+        assert_eq!(
+            empty.claude_bin, DEFAULT_CLAUDE_BIN,
+            "empty claude bin falls back to the default"
+        );
+        assert_eq!(empty.claude_model, None, "empty model is treated as unset");
     }
 
     #[test]

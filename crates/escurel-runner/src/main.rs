@@ -41,7 +41,7 @@ use escurel_runner_core::{
     DispatchConsumer, DispatchQueue, EnqueueOutcome, Ledger, LedgerDecision, RunStatus,
     RunnerConfig, TaskContext, Trigger, package,
 };
-use escurel_runner_harness::{EchoHarness, Harness};
+use escurel_runner_harness::{ClaudeHarness, EchoHarness, Harness};
 use escurel_types::{Event, ListEventsRequest, ListInboxRequest};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
     let (queue, consumer) = DispatchQueue::new(config.queue_cap, config.seen_cap);
     match (config.tenant.clone(), config.token.clone()) {
         (Some(_), Some(token)) => {
-            let harness = build_harness(&config.harness);
+            let harness = build_harness(&config);
             tokio::spawn(dispatch_loop(
                 consumer,
                 Arc::clone(&ledger),
@@ -324,13 +324,17 @@ fn echo_harness_path() -> String {
         .unwrap_or_else(|| "escurel-echo-harness".to_owned())
 }
 
-/// Build the configured harness adapter. `echo` is the only adapter today
-/// (#151); unknown selectors fall back to it with a warning so a typo never
-/// silently disables dispatch. `claude` / `codex` / `adk` (#152-154) slot in
-/// here without touching the dispatch path.
-fn build_harness(selector: &str) -> Arc<dyn Harness> {
-    match selector {
+/// Build the configured harness adapter. `echo` is the deterministic real
+/// harness (#151); `claude` drives the real Claude Code CLI (#152). Unknown
+/// selectors fall back to `echo` with a warning so a typo never silently
+/// disables dispatch. `codex` / `adk` (#153-154) slot in here without
+/// touching the dispatch path.
+fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
+    match config.harness.as_str() {
         "echo" => Arc::new(EchoHarness::new(echo_harness_path())),
+        "claude" => Arc::new(
+            ClaudeHarness::new(config.claude_bin.clone()).with_model(config.claude_model.clone()),
+        ),
         other => {
             tracing::warn!(
                 target: "escurel_runner",

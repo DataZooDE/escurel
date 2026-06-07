@@ -121,6 +121,29 @@ impl TaskContext {
     pub fn token_str(&self) -> &str {
         self.token.expose_secret()
     }
+
+    /// Construct a `TaskContext` directly from its parts.
+    ///
+    /// The normal construction path is [`package`], which reads the skill +
+    /// instance state off the gateway. This constructor exists so harness
+    /// adapters (and their tests) can build a `TaskContext` by hand to
+    /// exercise the invocation-build / outcome-parse path without standing up
+    /// a gateway. The bearer is wrapped opaquely exactly as [`package`] does.
+    pub fn for_test(
+        instructions: String,
+        input: String,
+        mcp_endpoint: String,
+        allowed_tools: Vec<String>,
+        token: SecretString,
+    ) -> Self {
+        Self {
+            instructions,
+            input,
+            mcp_endpoint,
+            allowed_tools,
+            token,
+        }
+    }
 }
 
 impl std::fmt::Debug for TaskContext {
