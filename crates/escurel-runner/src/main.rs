@@ -12,10 +12,20 @@
 //! secret is now an **HMAC-SHA256 signature over the raw request body**
 //! (header `X-Escurel-Webhook-Signature: sha256=<hex>`), verified on the
 //! raw bytes *before* JSON parsing, and the authoritative `tenant_id` is
-//! read from the payload (the gateway stamps it). The listener still
-//! parses the gateway's serialized `Event`, normalises it into a
-//! `Trigger`, and returns `202` without blocking (the gateway has a 5s
-//! timeout) — the dispatch queue lands in #148.
+//! read from the payload (the gateway stamps it). The listener parses the
+//! gateway's serialized `Event`, normalises it into a `Trigger`, and
+//! returns `202` without blocking (the gateway has a 5s timeout).
+//!
+//! #148 adds the **bounded dispatch queue** ([`DispatchQueue`]) and the
+//! **inbox poller**. Both the webhook handler and the poller enqueue onto
+//! the *same* queue; a shared dedup seen-set collapses the overlap
+//! (effectively-once processing over at-least-once delivery). The poller
+//! is the self-healing fallback for missed webhooks: every
+//! `ESCUREL_RUNNER_POLL_INTERVAL` it calls `list_inbox` on the gateway and
+//! enqueues each event. A small `GET /debug/seen` introspection endpoint
+//! exposes the seen-set so ops (and the no-mock integration test) can
+//! observe the queue's effect; the harness-side consumer arrives in a
+//! later work-item, so for now a drain task empties the queue.
 
 use std::sync::Arc;
 
@@ -25,9 +35,10 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use escurel_client::{Client, SecretString};
 use escurel_obs::{TelemetryConfig, init_telemetry};
-use escurel_runner_core::{RunnerConfig, Trigger};
-use escurel_types::Event;
+use escurel_runner_core::{DispatchConsumer, DispatchQueue, EnqueueOutcome, RunnerConfig, Trigger};
+use escurel_types::{Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -39,12 +50,15 @@ type HmacSha256 = Hmac<Sha256>;
 /// before parsing fixes the earlier extractor-ordering flag.
 const WEBHOOK_SIGNATURE_HEADER: &str = "X-Escurel-Webhook-Signature";
 
-/// Shared listener state. Cheap to clone (only the optional secret).
+/// Shared listener state. Cheap to clone (an `Arc`-backed secret + a
+/// cloneable dispatch-queue producer handle).
 #[derive(Clone)]
 struct AppState {
     /// Optional shared secret required on `POST /trigger`. When `Some`,
     /// the request must carry a valid HMAC-SHA256 signature of the body.
     webhook_secret: Option<Arc<str>>,
+    /// The bounded dispatch queue both ingress paths converge on.
+    queue: DispatchQueue,
 }
 
 #[tokio::main]
@@ -62,14 +76,43 @@ async fn main() -> anyhow::Result<()> {
         json_logs: true,
     })?;
 
+    // The bounded dispatch queue both ingress paths converge on. The
+    // consumer side is drained here until the harness dispatcher (a later
+    // work-item) takes it over; draining keeps the channel from filling so
+    // the dedup seen-set — not channel backpressure — governs convergence.
+    let (queue, consumer) = DispatchQueue::new(config.queue_cap, config.seen_cap);
+    tokio::spawn(drain_loop(consumer));
+
+    // The inbox poller: the self-healing fallback for missed webhooks.
+    // Enabled only when both a tenant and a token are configured.
+    match (config.tenant.clone(), config.token.clone()) {
+        (Some(tenant), Some(token)) => {
+            tokio::spawn(poll_loop(
+                config.gateway_url.clone(),
+                tenant,
+                token,
+                config.poll_interval,
+                queue.clone(),
+            ));
+        }
+        _ => {
+            tracing::info!(
+                target: "escurel_runner",
+                "inbox poller disabled: set ESCUREL_RUNNER_TENANT + ESCUREL_RUNNER_TOKEN to enable"
+            );
+        }
+    }
+
     let version = config.version.clone();
     let state = AppState {
         webhook_secret: config.webhook_secret.clone().map(Arc::from),
+        queue,
     };
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/version", get(move || version_handler(version.clone())))
         .route("/trigger", post(trigger))
+        .route("/debug/seen", get(debug_seen))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
@@ -146,20 +189,110 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         .unwrap_or_default();
 
     let trigger = Trigger::from_event(&event, tenant);
-    // Hand-off point for #148's bounded dispatch queue; for now we log
-    // the normalised trigger's fields and acknowledge immediately.
+    // Converge onto the shared dispatch queue (#148). Dedup collapses any
+    // event the poller already delivered. Either way we acknowledge 202
+    // immediately so the gateway's POST never blocks.
+    let outcome = state.queue.enqueue(trigger.clone());
     tracing::info!(
         target: "escurel_runner",
         tenant = %trigger.tenant,
         event_id = %trigger.event_id,
         label_skill = %trigger.label_skill,
-        instance_page_id = ?trigger.instance_page_id,
-        root_event_id = %trigger.lineage.root_event_id,
-        depth = trigger.lineage.depth,
-        "POST /trigger accepted; trigger normalised"
+        outcome = ?outcome,
+        "POST /trigger accepted; trigger enqueued"
     );
 
     StatusCode::ACCEPTED
+}
+
+/// Introspection endpoint: the dedup seen-set's `event_id`s as JSON
+/// `{"event_ids": [...]}`. A runner ops/observability surface (also the
+/// no-mock observable the #148 integration test reads). Read-only; no
+/// secrets. Not part of the gateway-facing contract.
+async fn debug_seen(State(state): State<AppState>) -> impl IntoResponse {
+    let event_ids = state.queue.seen_event_ids();
+    axum::Json(serde_json::json!({ "event_ids": event_ids }))
+}
+
+/// Drain the dispatch queue. A placeholder consumer until the harness
+/// dispatcher work-item lands: it pulls each trigger off so the bounded
+/// channel keeps draining (the dedup seen-set, not channel backpressure,
+/// is what governs the webhook/poll convergence under test).
+async fn drain_loop(mut consumer: DispatchConsumer) {
+    while let Some(trigger) = consumer.recv().await {
+        tracing::debug!(
+            target: "escurel_runner",
+            event_id = %trigger.event_id,
+            "dispatch queue: drained trigger (harness dispatch is a later work-item)"
+        );
+    }
+}
+
+/// The inbox poller (lifecycle step 2 backstop). Every `interval` it calls
+/// `list_inbox` on the gateway with a tenant-scoped bearer, normalises each
+/// `Event` into a `Trigger`, and enqueues it. Dedup collapses anything a
+/// webhook already delivered. Best-effort: a failed poll is logged and the
+/// next tick retries — the poller's whole job is to be the self-healing
+/// fallback, so it must never panic the process.
+async fn poll_loop(
+    gateway_url: String,
+    tenant: String,
+    token: String,
+    interval: std::time::Duration,
+    queue: DispatchQueue,
+) {
+    let client = match Client::connect(&gateway_url, SecretString::from(token)).await {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::error!(
+                target: "escurel_runner",
+                error = %e,
+                "inbox poller could not build a gateway client; poller disabled"
+            );
+            return;
+        }
+    };
+    tracing::info!(
+        target: "escurel_runner",
+        gateway = %gateway_url,
+        tenant = %tenant,
+        interval_ms = interval.as_millis() as u64,
+        "inbox poller started"
+    );
+
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        match client.list_inbox(ListInboxRequest::default()).await {
+            Ok(resp) => {
+                for event in &resp.events {
+                    let trigger = Trigger::from_event(event, tenant.clone());
+                    match queue.enqueue(trigger) {
+                        EnqueueOutcome::Enqueued => tracing::debug!(
+                            target: "escurel_runner",
+                            event_id = %event.event_id,
+                            "poller enqueued inbox event"
+                        ),
+                        EnqueueOutcome::Duplicate => tracing::trace!(
+                            target: "escurel_runner",
+                            event_id = %event.event_id,
+                            "poller skipped already-seen event (dedup)"
+                        ),
+                        EnqueueOutcome::Full => tracing::warn!(
+                            target: "escurel_runner",
+                            event_id = %event.event_id,
+                            "dispatch queue full; dropping poll (next tick retries)"
+                        ),
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(
+                target: "escurel_runner",
+                error = %e,
+                "inbox poll failed; will retry next tick"
+            ),
+        }
+    }
 }
 
 /// Verify a `sha256=<hex>` HMAC-SHA256 signature over `body` under

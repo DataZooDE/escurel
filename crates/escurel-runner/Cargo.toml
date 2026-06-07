@@ -16,20 +16,24 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 axum = "0.8"
+escurel-client = { path = "../escurel-client" }
 escurel-obs = { path = "../escurel-obs" }
 escurel-runner-core = { path = "../escurel-runner-core" }
 escurel-runner-harness = { path = "../escurel-runner-harness" }
 escurel-types = { path = "../escurel-types" }
 hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
 tracing = "0.1"
 
 [dev-dependencies]
+escurel-test-support = { path = "../escurel-test-support" }
 hmac = "0.12"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
 sha2 = "0.10"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
 
 [lints]
 workspace = true

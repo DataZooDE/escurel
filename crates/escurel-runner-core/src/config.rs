@@ -7,6 +7,7 @@
 //! telemetry/log contract.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 /// Default address the runner's own HTTP server binds to
 /// (`/healthz`, `/version`, and the future `POST /trigger`).
@@ -17,6 +18,20 @@ pub const DEFAULT_GATEWAY_URL: &str = "http://127.0.0.1:8080";
 
 /// Default deployment environment, stamped on every log record.
 pub const DEFAULT_ENV: &str = "dev";
+
+/// Default bound on the dispatch queue (channel capacity). The queue is
+/// bounded so a backlog applies backpressure rather than growing without
+/// limit (see [`crate::DispatchQueue`]).
+pub const DEFAULT_QUEUE_CAP: usize = 1024;
+
+/// Default bound on the dedup seen-set. Sized larger than the queue so the
+/// webhook/poll overlap window is comfortably covered even when the queue
+/// drains slowly.
+pub const DEFAULT_SEEN_CAP: usize = 4096;
+
+/// Default inbox-poll interval. The poller is the self-healing fallback for
+/// missed webhooks, so a coarse cadence is fine.
+pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Errors raised while loading [`RunnerConfig`] from the environment.
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +44,22 @@ pub enum ConfigError {
         /// The underlying parse error.
         #[source]
         source: std::net::AddrParseError,
+    },
+    /// A `usize`-valued env var (`ESCUREL_RUNNER_QUEUE_CAP` /
+    /// `ESCUREL_RUNNER_SEEN_CAP`) was set but is not a valid integer.
+    #[error("invalid {key} {value:?}: expected a non-negative integer")]
+    InvalidUsize {
+        /// The offending env var name.
+        key: String,
+        /// The offending value.
+        value: String,
+    },
+    /// `ESCUREL_RUNNER_POLL_INTERVAL` was set but is not a valid duration
+    /// (`30s`, `1500ms`, `2m`, or a bare integer of seconds).
+    #[error("invalid ESCUREL_RUNNER_POLL_INTERVAL {value:?}: expected e.g. 30s, 1500ms, 2m")]
+    InvalidPollInterval {
+        /// The offending value.
+        value: String,
     },
 }
 
@@ -60,6 +91,29 @@ pub struct RunnerConfig {
     /// open (dev mode).
     /// Source: `ESCUREL_WEBHOOK_SECRET` (unset → `None`).
     pub webhook_secret: Option<String>,
+    /// Tenant the runner polls and stamps onto every normalised
+    /// [`crate::Trigger`]. The gateway is single-tenant per indexer, so
+    /// this is the tenant whose inbox the poller drains.
+    /// Source: `ESCUREL_RUNNER_TENANT` (unset → `None`; the poller is
+    /// disabled when either this or [`Self::token`] is absent).
+    pub tenant: Option<String>,
+    /// Tenant-scoped bearer the runner presents to the gateway's `/mcp`
+    /// when polling `list_inbox`. Held opaque; never logged.
+    /// Source: `ESCUREL_RUNNER_TOKEN` (unset → `None`; the poller is
+    /// disabled when either this or [`Self::tenant`] is absent).
+    pub token: Option<String>,
+    /// Channel capacity (bound) of the dispatch queue.
+    /// Source: `ESCUREL_RUNNER_QUEUE_CAP` (default [`DEFAULT_QUEUE_CAP`]).
+    pub queue_cap: usize,
+    /// Bound on the dedup seen-set.
+    /// Source: `ESCUREL_RUNNER_SEEN_CAP` (default [`DEFAULT_SEEN_CAP`]).
+    pub seen_cap: usize,
+    /// Interval between inbox polls. Accepts a humantime-style duration
+    /// (`30s`, `1500ms`, `2m`); tests use a small value (`1s`) to keep the
+    /// loop fast.
+    /// Source: `ESCUREL_RUNNER_POLL_INTERVAL` (default
+    /// [`DEFAULT_POLL_INTERVAL`]).
+    pub poll_interval: Duration,
 }
 
 impl RunnerConfig {
@@ -91,14 +145,69 @@ impl RunnerConfig {
         let env = lookup("ESCUREL_RUNNER_ENV").unwrap_or_else(|| DEFAULT_ENV.to_owned());
         let webhook_secret = lookup("ESCUREL_WEBHOOK_SECRET").filter(|s| !s.is_empty());
 
+        let tenant = lookup("ESCUREL_RUNNER_TENANT").filter(|s| !s.is_empty());
+        let token = lookup("ESCUREL_RUNNER_TOKEN").filter(|s| !s.is_empty());
+
+        let queue_cap = parse_usize("ESCUREL_RUNNER_QUEUE_CAP", &lookup, DEFAULT_QUEUE_CAP)?;
+        let seen_cap = parse_usize("ESCUREL_RUNNER_SEEN_CAP", &lookup, DEFAULT_SEEN_CAP)?;
+
+        let poll_interval = match lookup("ESCUREL_RUNNER_POLL_INTERVAL") {
+            Some(raw) if !raw.is_empty() => {
+                parse_duration(&raw).ok_or(ConfigError::InvalidPollInterval { value: raw })?
+            }
+            _ => DEFAULT_POLL_INTERVAL,
+        };
+
         Ok(Self {
             listen,
             gateway_url,
             env,
             version: env!("CARGO_PKG_VERSION").to_owned(),
             webhook_secret,
+            tenant,
+            token,
+            queue_cap,
+            seen_cap,
+            poll_interval,
         })
     }
+}
+
+/// Parse a `usize` env var, falling back to `default` when unset/empty.
+fn parse_usize<F>(key: &str, lookup: &F, default: usize) -> Result<usize, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match lookup(key) {
+        Some(raw) if !raw.is_empty() => {
+            raw.parse::<usize>().map_err(|_| ConfigError::InvalidUsize {
+                key: key.to_owned(),
+                value: raw,
+            })
+        }
+        _ => Ok(default),
+    }
+}
+
+/// Parse a humantime-lite duration: a non-negative integer with a unit
+/// suffix `ms`, `s`, or `m` (e.g. `30s`, `1500ms`, `2m`). A bare integer is
+/// treated as seconds. Returns `None` for anything unparseable.
+fn parse_duration(raw: &str) -> Option<Duration> {
+    let s = raw.trim();
+    if let Some(num) = s.strip_suffix("ms") {
+        return num.trim().parse::<u64>().ok().map(Duration::from_millis);
+    }
+    if let Some(num) = s.strip_suffix('s') {
+        return num.trim().parse::<u64>().ok().map(Duration::from_secs);
+    }
+    if let Some(num) = s.strip_suffix('m') {
+        return num
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(|m| Duration::from_secs(m * 60));
+    }
+    s.parse::<u64>().ok().map(Duration::from_secs)
 }
 
 #[cfg(test)]
@@ -113,6 +222,56 @@ mod tests {
         assert_eq!(cfg.env, DEFAULT_ENV);
         assert_eq!(cfg.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(cfg.webhook_secret, None);
+        assert_eq!(cfg.tenant, None);
+        assert_eq!(cfg.token, None);
+        assert_eq!(cfg.queue_cap, DEFAULT_QUEUE_CAP);
+        assert_eq!(cfg.seen_cap, DEFAULT_SEEN_CAP);
+        assert_eq!(cfg.poll_interval, DEFAULT_POLL_INTERVAL);
+    }
+
+    #[test]
+    fn poller_config_loads_when_set() {
+        let cfg = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_TENANT" => Some("carl".to_owned()),
+            "ESCUREL_RUNNER_TOKEN" => Some("tok".to_owned()),
+            "ESCUREL_RUNNER_QUEUE_CAP" => Some("8".to_owned()),
+            "ESCUREL_RUNNER_SEEN_CAP" => Some("16".to_owned()),
+            "ESCUREL_RUNNER_POLL_INTERVAL" => Some("250ms".to_owned()),
+            _ => None,
+        })
+        .expect("poller config must parse");
+        assert_eq!(cfg.tenant, Some("carl".to_owned()));
+        assert_eq!(cfg.token, Some("tok".to_owned()));
+        assert_eq!(cfg.queue_cap, 8);
+        assert_eq!(cfg.seen_cap, 16);
+        assert_eq!(cfg.poll_interval, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn poll_interval_accepts_units_and_bare_seconds() {
+        assert_eq!(parse_duration("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_duration("1500ms"), Some(Duration::from_millis(1500)));
+        assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
+        assert_eq!(parse_duration("5"), Some(Duration::from_secs(5)));
+        assert_eq!(parse_duration("nope"), None);
+    }
+
+    #[test]
+    fn invalid_poll_interval_is_an_error() {
+        let err = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_POLL_INTERVAL").then(|| "soon".to_owned())
+        })
+        .expect_err("a bad poll interval must fail");
+        assert!(matches!(err, ConfigError::InvalidPollInterval { .. }));
+    }
+
+    #[test]
+    fn invalid_queue_cap_is_an_error() {
+        let err = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_QUEUE_CAP").then(|| "lots".to_owned())
+        })
+        .expect_err("a bad queue cap must fail");
+        assert!(matches!(err, ConfigError::InvalidUsize { .. }));
     }
 
     #[test]
