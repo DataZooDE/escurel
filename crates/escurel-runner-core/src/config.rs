@@ -33,6 +33,11 @@ pub const DEFAULT_SEEN_CAP: usize = 4096;
 /// missed webhooks, so a coarse cadence is fine.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Default harness adapter the runner dispatches each packaged trigger to.
+/// `echo` is the deterministic real harness (#151); `claude` / `codex` /
+/// `adk` arrive in later work-items and are selected by the same env var.
+pub const DEFAULT_HARNESS: &str = "echo";
+
 /// Default path of the runner-local durable run ledger (its own SQLite
 /// file, *never* the tenant store). Relative to the process CWD so a dev
 /// run drops it in place; deployments set [`crate::RunnerConfig::ledger_path`]
@@ -125,6 +130,11 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_LEDGER_PATH` (default
     /// [`DEFAULT_LEDGER_PATH`]).
     pub ledger_path: String,
+    /// Which harness adapter dispatches each packaged trigger (`echo` /
+    /// `claude` / `codex` / `adk`). Data-driven selection so later
+    /// work-items add adapters without touching the dispatch path.
+    /// Source: `ESCUREL_RUNNER_HARNESS` (default [`DEFAULT_HARNESS`]).
+    pub harness: String,
 }
 
 impl RunnerConfig {
@@ -173,6 +183,10 @@ impl RunnerConfig {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_LEDGER_PATH.to_owned());
 
+        let harness = lookup("ESCUREL_RUNNER_HARNESS")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_HARNESS.to_owned());
+
         Ok(Self {
             listen,
             gateway_url,
@@ -185,6 +199,7 @@ impl RunnerConfig {
             seen_cap,
             poll_interval,
             ledger_path,
+            harness,
         })
     }
 }
@@ -244,6 +259,24 @@ mod tests {
         assert_eq!(cfg.seen_cap, DEFAULT_SEEN_CAP);
         assert_eq!(cfg.poll_interval, DEFAULT_POLL_INTERVAL);
         assert_eq!(cfg.ledger_path, DEFAULT_LEDGER_PATH);
+        assert_eq!(cfg.harness, DEFAULT_HARNESS);
+    }
+
+    #[test]
+    fn harness_loads_when_set_and_ignores_empty() {
+        let set = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_HARNESS").then(|| "codex".to_owned())
+        })
+        .expect("a harness selector must parse");
+        assert_eq!(set.harness, "codex");
+
+        let empty =
+            RunnerConfig::from_env_with(|key| (key == "ESCUREL_RUNNER_HARNESS").then(String::new))
+                .expect("an empty harness selector must parse");
+        assert_eq!(
+            empty.harness, DEFAULT_HARNESS,
+            "empty harness falls back to the default"
+        );
     }
 
     #[test]

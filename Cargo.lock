@@ -2347,6 +2347,15 @@ dependencies = [
 [[package]]
 name = "escurel-runner-harness"
 version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "escurel-runner-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "escurel-server"

@@ -13,6 +13,10 @@ homepage.workspace = true
 name = "escurel-runner"
 path = "src/main.rs"
 
+[[bin]]
+name = "escurel-echo-harness"
+path = "src/bin/echo_harness.rs"
+
 [dependencies]
 anyhow = "1"
 axum = "0.8"
@@ -22,6 +26,7 @@ escurel-runner-core = { path = "../escurel-runner-core" }
 escurel-runner-harness = { path = "../escurel-runner-harness" }
 escurel-types = { path = "../escurel-types" }
 hmac = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

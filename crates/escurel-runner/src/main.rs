@@ -39,9 +39,10 @@ use escurel_client::{Client, SecretString};
 use escurel_obs::{TelemetryConfig, init_telemetry};
 use escurel_runner_core::{
     DispatchConsumer, DispatchQueue, EnqueueOutcome, Ledger, LedgerDecision, RunStatus,
-    RunnerConfig, Trigger,
+    RunnerConfig, TaskContext, Trigger, package,
 };
-use escurel_types::{Event, ListInboxRequest};
+use escurel_runner_harness::{EchoHarness, Harness};
+use escurel_types::{Event, ListEventsRequest, ListInboxRequest};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -93,11 +94,30 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // The bounded dispatch queue both ingress paths converge on. The
-    // consumer side is drained here until the harness dispatcher (a later
-    // work-item) takes it over; draining keeps the channel from filling so
-    // the dedup seen-set — not channel backpressure — governs convergence.
+    // consumer side runs the real package→harness→reconcile path (#151) when
+    // a tenant + token are configured; without them the runner can't build a
+    // gateway client, so it falls back to draining (terminal-marking) the
+    // queue so the dedup seen-set still governs convergence.
     let (queue, consumer) = DispatchQueue::new(config.queue_cap, config.seen_cap);
-    tokio::spawn(drain_loop(consumer, Arc::clone(&ledger)));
+    match (config.tenant.clone(), config.token.clone()) {
+        (Some(_), Some(token)) => {
+            let harness = build_harness(&config.harness);
+            tokio::spawn(dispatch_loop(
+                consumer,
+                Arc::clone(&ledger),
+                config.clone(),
+                token,
+                harness,
+            ));
+        }
+        _ => {
+            tracing::info!(
+                target: "escurel_runner",
+                "harness dispatch disabled (no tenant/token); draining queue instead"
+            );
+            tokio::spawn(drain_loop(consumer, Arc::clone(&ledger)));
+        }
+    }
 
     // The inbox poller: the self-healing fallback for missed webhooks.
     // Enabled only when both a tenant and a token are configured.
@@ -290,6 +310,218 @@ async fn debug_ledger(State(state): State<AppState>) -> impl IntoResponse {
             .unwrap_or(0),
     );
     axum::Json(serde_json::json!({ "total": total, "terminal": terminal }))
+}
+
+/// Resolve the absolute path of the `escurel-echo-harness` sibling binary.
+/// Deployments ship both binaries side by side, so it lives next to the
+/// running `escurel-runner`; fall back to a bare name (`PATH` lookup) if the
+/// current-exe directory can't be determined.
+fn echo_harness_path() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("escurel-echo-harness")))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "escurel-echo-harness".to_owned())
+}
+
+/// Build the configured harness adapter. `echo` is the only adapter today
+/// (#151); unknown selectors fall back to it with a warning so a typo never
+/// silently disables dispatch. `claude` / `codex` / `adk` (#152-154) slot in
+/// here without touching the dispatch path.
+fn build_harness(selector: &str) -> Arc<dyn Harness> {
+    match selector {
+        "echo" => Arc::new(EchoHarness::new(echo_harness_path())),
+        other => {
+            tracing::warn!(
+                target: "escurel_runner",
+                selector = %other,
+                "unknown ESCUREL_RUNNER_HARNESS; falling back to echo"
+            );
+            Arc::new(EchoHarness::new(echo_harness_path()))
+        }
+    }
+}
+
+/// The real dispatch loop (lifecycle steps 5-7): consume each `Trigger`,
+/// `package` it ("skill body = instructions, `/mcp` = tools"), run the
+/// selected `harness` (a real subprocess that makes the escurel writes via
+/// its own `/mcp` calls), then **reconcile minimally** — read back that the
+/// triggering event is now `processed` on the gateway — and mark the durable
+/// ledger run terminal (`processed` on success, `failed` otherwise).
+///
+/// The full reconciler/retry policy is #155; this keeps the reconcile minimal
+/// but REAL: the event genuinely becomes processed through the harness's
+/// `/mcp` calls, and the ledger reflects the confirmed outcome.
+async fn dispatch_loop(
+    mut consumer: DispatchConsumer,
+    ledger: Arc<Ledger>,
+    config: RunnerConfig,
+    token: String,
+    harness: Arc<dyn Harness>,
+) {
+    let client = match Client::connect(&config.gateway_url, SecretString::from(token)).await {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::error!(
+                target: "escurel_runner",
+                error = %e,
+                "dispatch loop could not build a gateway client; dispatch disabled"
+            );
+            return;
+        }
+    };
+    tracing::info!(
+        target: "escurel_runner",
+        harness = %harness.name(),
+        "harness dispatch loop started"
+    );
+
+    while let Some(trigger) = consumer.recv().await {
+        let run_id = match ledger.get_run(&trigger.tenant, &trigger.event_id) {
+            Ok(Some(record)) => escurel_runner_core::RunId(record.run_id),
+            Ok(None) => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    "dispatch: no ledger row for trigger; skipping"
+                );
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    error = %e,
+                    "dispatch: ledger lookup failed; skipping"
+                );
+                continue;
+            }
+        };
+
+        let status = run_one(&trigger, &client, &config, harness.as_ref()).await;
+        if let Err(e) = ledger.mark(&run_id, status) {
+            tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                run_id = %run_id,
+                error = %e,
+                "dispatch: could not mark run terminal"
+            );
+        }
+    }
+}
+
+/// Package + run a single trigger and decide its terminal ledger status.
+///
+/// Returns [`RunStatus::Processed`] only when the harness ran cleanly **and**
+/// the minimal reconcile confirms the triggering event is now `processed` on
+/// the gateway; otherwise [`RunStatus::Failed`] (the #155 retry policy may
+/// revive it later).
+async fn run_one(
+    trigger: &Trigger,
+    client: &Client,
+    config: &RunnerConfig,
+    harness: &dyn Harness,
+) -> RunStatus {
+    let task: TaskContext = match package(trigger, client, config).await {
+        Ok(task) => task,
+        Err(e) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                error = %e,
+                "dispatch: packaging failed"
+            );
+            return RunStatus::Failed;
+        }
+    };
+
+    match harness.run(&task).await {
+        Ok(outcome) => {
+            tracing::info!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                harness = %harness.name(),
+                ok = outcome.ok,
+                tool_calls = outcome.tool_calls,
+                produced_instance = ?outcome.produced_instance,
+                summary = %outcome.summary,
+                "dispatch: harness completed"
+            );
+            if !outcome.ok {
+                return RunStatus::Failed;
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                error = %e,
+                "dispatch: harness run failed"
+            );
+            return RunStatus::Failed;
+        }
+    }
+
+    // Minimal reconcile (#151): confirm the event is now processed on the
+    // gateway via the harness's `/mcp` writes. The full reconciler is #155.
+    if reconcile_event_processed(client, trigger).await {
+        RunStatus::Processed
+    } else {
+        tracing::warn!(
+            target: "escurel_runner",
+            event_id = %trigger.event_id,
+            "dispatch: harness ran but event not confirmed processed; marking failed"
+        );
+        RunStatus::Failed
+    }
+}
+
+/// Read back (over the gateway's own `/mcp`) that the triggering event is now
+/// `processed`. For a trigger that targets an instance the event joined that
+/// instance's `list_events` history; for an unassigned trigger the harness
+/// chose the instance, so we fall back to "the event is no longer in the
+/// inbox".
+async fn reconcile_event_processed(client: &Client, trigger: &Trigger) -> bool {
+    if let Some(instance_page_id) = &trigger.instance_page_id {
+        match client
+            .list_events(ListEventsRequest {
+                instance_page_id: instance_page_id.clone(),
+                limit: 100,
+            })
+            .await
+        {
+            Ok(resp) => {
+                return resp
+                    .events
+                    .iter()
+                    .any(|e| e.event_id == trigger.event_id && e.status == "processed");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    error = %e,
+                    "reconcile: list_events failed"
+                );
+                return false;
+            }
+        }
+    }
+
+    // No pre-flagged instance: confirm the event left the inbox.
+    match client.list_inbox(ListInboxRequest { limit: 100 }).await {
+        Ok(resp) => !resp.events.iter().any(|e| e.event_id == trigger.event_id),
+        Err(e) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                error = %e,
+                "reconcile: list_inbox failed"
+            );
+            false
+        }
+    }
 }
 
 /// Drain the dispatch queue. A placeholder consumer until the harness
