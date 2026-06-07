@@ -1,6 +1,8 @@
 # Rust
 /target/
 **/*.rs.bk
+# Git worktrees hosted inside the repo (e.g. .worktrees/runner).
+/.worktrees/
 # Cargo.lock is COMMITTED for this workspace (native deps via
 # libduckdb-sys; the workspace produces binaries from M3 onwards).
 # NOTE: gitignore does NOT support inline comments — `#` only starts a

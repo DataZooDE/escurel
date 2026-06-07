@@ -1,0 +1,18 @@
+[package]
+name = "escurel-runner-core"
+description = "Harness-agnostic engine for the escurel agent runner: config, trigger lifecycle, dispatch queue, loop control."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[lints]
+workspace = true

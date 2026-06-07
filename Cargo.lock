@@ -2307,6 +2307,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "escurel-runner"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "escurel-obs",
+ "escurel-runner-core",
+ "escurel-runner-harness",
+ "reqwest 0.12.28",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "escurel-runner-core"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "escurel-runner-harness"
+version = "1.0.0"
+
+[[package]]
 name = "escurel-server"
 version = "1.0.0"
 dependencies = [

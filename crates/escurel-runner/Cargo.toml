@@ -1,0 +1,29 @@
+[package]
+name = "escurel-runner"
+description = "Deployable escurel agent-runner process: HTTP listener, config, graceful shutdown, observability."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "escurel-runner"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+escurel-obs = { path = "../escurel-obs" }
+escurel-runner-core = { path = "../escurel-runner-core" }
+escurel-runner-harness = { path = "../escurel-runner-harness" }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal"] }
+tracing = "0.1"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+
+[lints]
+workspace = true

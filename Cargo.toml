@@ -17,6 +17,9 @@ members = [
     "crates/escurel-demo-agent",
     "crates/escurel-crdt",
     "crates/escurel-test-support",
+    "crates/escurel-runner-core",
+    "crates/escurel-runner-harness",
+    "crates/escurel-runner",
     "examples/echo-app",
 ]
 
