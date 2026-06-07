@@ -15,8 +15,10 @@
 
 mod config;
 mod dispatch;
+mod ledger;
 mod trigger;
 
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
+pub use ledger::{Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus};
 pub use trigger::{Lineage, Trigger};

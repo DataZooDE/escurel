@@ -33,6 +33,7 @@ escurel-test-support = { path = "../escurel-test-support" }
 hmac = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
 sha2 = "0.10"
+tempfile = "3"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
 
 [lints]

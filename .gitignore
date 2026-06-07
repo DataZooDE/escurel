@@ -27,6 +27,13 @@
 *.db-shm
 *.db-wal
 
+# Runner-local run ledger (its own SQLite file; default path drops it in
+# the CWD for a dev run — deployments point ESCUREL_RUNNER_LEDGER_PATH at
+# a host volume). Never committed.
+escurel-runner-ledger.sqlite
+escurel-runner-ledger.sqlite-shm
+escurel-runner-ledger.sqlite-wal
+
 # Doc build artefacts
 /docs/build/
 /docs/book/

@@ -37,7 +37,10 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use escurel_client::{Client, SecretString};
 use escurel_obs::{TelemetryConfig, init_telemetry};
-use escurel_runner_core::{DispatchConsumer, DispatchQueue, EnqueueOutcome, RunnerConfig, Trigger};
+use escurel_runner_core::{
+    DispatchConsumer, DispatchQueue, EnqueueOutcome, Ledger, LedgerDecision, RunStatus,
+    RunnerConfig, Trigger,
+};
 use escurel_types::{Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -59,6 +62,9 @@ struct AppState {
     webhook_secret: Option<Arc<str>>,
     /// The bounded dispatch queue both ingress paths converge on.
     queue: DispatchQueue,
+    /// The durable run ledger — the idempotency authority (#149). The gate
+    /// consults it before enqueueing so a re-delivered event is dropped.
+    ledger: Arc<Ledger>,
 }
 
 #[tokio::main]
@@ -76,12 +82,22 @@ async fn main() -> anyhow::Result<()> {
         json_logs: true,
     })?;
 
+    // The durable run ledger — its own SQLite file, the idempotency
+    // authority that survives a process restart (#149). Opening it is
+    // fatal: without the ledger the gate cannot enforce effectively-once.
+    let ledger = Arc::new(Ledger::open(&config.ledger_path)?);
+    tracing::info!(
+        target: "escurel_runner",
+        path = %config.ledger_path,
+        "run ledger opened"
+    );
+
     // The bounded dispatch queue both ingress paths converge on. The
     // consumer side is drained here until the harness dispatcher (a later
     // work-item) takes it over; draining keeps the channel from filling so
     // the dedup seen-set — not channel backpressure — governs convergence.
     let (queue, consumer) = DispatchQueue::new(config.queue_cap, config.seen_cap);
-    tokio::spawn(drain_loop(consumer));
+    tokio::spawn(drain_loop(consumer, Arc::clone(&ledger)));
 
     // The inbox poller: the self-healing fallback for missed webhooks.
     // Enabled only when both a tenant and a token are configured.
@@ -93,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
                 token,
                 config.poll_interval,
                 queue.clone(),
+                Arc::clone(&ledger),
             ));
         }
         _ => {
@@ -107,12 +124,14 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         webhook_secret: config.webhook_secret.clone().map(Arc::from),
         queue,
+        ledger,
     };
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/version", get(move || version_handler(version.clone())))
         .route("/trigger", post(trigger))
         .route("/debug/seen", get(debug_seen))
+        .route("/debug/ledger", get(debug_ledger))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
@@ -189,20 +208,62 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         .unwrap_or_default();
 
     let trigger = Trigger::from_event(&event, tenant);
-    // Converge onto the shared dispatch queue (#148). Dedup collapses any
-    // event the poller already delivered. Either way we acknowledge 202
-    // immediately so the gateway's POST never blocks.
-    let outcome = state.queue.enqueue(trigger.clone());
-    tracing::info!(
-        target: "escurel_runner",
-        tenant = %trigger.tenant,
-        event_id = %trigger.event_id,
-        label_skill = %trigger.label_skill,
-        outcome = ?outcome,
-        "POST /trigger accepted; trigger enqueued"
-    );
-
+    // Loop-control gate (lifecycle step 4): the durable ledger is the
+    // idempotency authority; the in-memory seen-set is a cheap fast-path in
+    // front of it. Either way we acknowledge 202 immediately so the
+    // gateway's POST never blocks.
+    gate_and_enqueue(&state.ledger, &state.queue, trigger, "webhook");
     StatusCode::ACCEPTED
+}
+
+/// The dispatch gate (#149 idempotency half of lifecycle step 4). Consults
+/// the **durable run ledger** — the authority that survives a restart —
+/// then the in-memory seen-set fast-path:
+///
+/// - `begin_run` returns [`LedgerDecision::Created`] → a fresh `pending`
+///   run exists; enqueue the trigger (the in-memory seen-set collapses any
+///   webhook/poll overlap inside the same process).
+/// - `AlreadyTerminal` (idempotency) / `InFlight` (dedup) → drop.
+///
+/// Returns `true` if the trigger was enqueued. Best-effort: a ledger error
+/// is logged and the trigger dropped (the poller re-pulls on the next tick),
+/// never panicking the process.
+fn gate_and_enqueue(ledger: &Ledger, queue: &DispatchQueue, trigger: Trigger, via: &str) -> bool {
+    match ledger.begin_run(&trigger) {
+        Ok(LedgerDecision::Created(run_id)) => {
+            let outcome = queue.enqueue(trigger.clone());
+            tracing::info!(
+                target: "escurel_runner",
+                via,
+                tenant = %trigger.tenant,
+                event_id = %trigger.event_id,
+                run_id = %run_id,
+                outcome = ?outcome,
+                "gate: run created; trigger enqueued"
+            );
+            matches!(outcome, EnqueueOutcome::Enqueued)
+        }
+        Ok(decision) => {
+            tracing::debug!(
+                target: "escurel_runner",
+                via,
+                event_id = %trigger.event_id,
+                decision = ?decision,
+                "gate: dropped re-delivery (idempotency/dedup)"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::error!(
+                target: "escurel_runner",
+                via,
+                event_id = %trigger.event_id,
+                error = %e,
+                "gate: ledger error; dropping trigger (poller will retry)"
+            );
+            false
+        }
+    }
 }
 
 /// Introspection endpoint: the dedup seen-set's `event_id`s as JSON
@@ -214,17 +275,61 @@ async fn debug_seen(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(serde_json::json!({ "event_ids": event_ids }))
 }
 
+/// Introspection endpoint over the **durable run ledger**: per-tenant run
+/// counts as JSON `{"total": N, "terminal": M}`. The no-mock #149
+/// integration test reads this to assert "exactly one terminal run row"
+/// after a doubly-delivered event. Read-only; no secrets. Not part of the
+/// gateway-facing contract. The single-tenant runner reports tenant-agnostic
+/// totals (`terminal` = all rows that are not `pending`).
+async fn debug_ledger(State(state): State<AppState>) -> impl IntoResponse {
+    let total = state.ledger.count_all_runs().unwrap_or(0);
+    let terminal = total.saturating_sub(
+        state
+            .ledger
+            .count_all_by_status(RunStatus::Pending)
+            .unwrap_or(0),
+    );
+    axum::Json(serde_json::json!({ "total": total, "terminal": terminal }))
+}
+
 /// Drain the dispatch queue. A placeholder consumer until the harness
-/// dispatcher work-item lands: it pulls each trigger off so the bounded
-/// channel keeps draining (the dedup seen-set, not channel backpressure,
-/// is what governs the webhook/poll convergence under test).
-async fn drain_loop(mut consumer: DispatchConsumer) {
+/// dispatcher + reconciler work-items land: it pulls each trigger off and —
+/// standing in for the reconciler (lifecycle step 7) — moves the run to a
+/// terminal `processed` status in the durable ledger. That terminal row is
+/// what makes a later re-delivery of the same event idempotent (#149).
+async fn drain_loop(mut consumer: DispatchConsumer, ledger: Arc<Ledger>) {
     while let Some(trigger) = consumer.recv().await {
-        tracing::debug!(
-            target: "escurel_runner",
-            event_id = %trigger.event_id,
-            "dispatch queue: drained trigger (harness dispatch is a later work-item)"
-        );
+        match ledger.get_run(&trigger.tenant, &trigger.event_id) {
+            Ok(Some(record)) => {
+                let run_id = escurel_runner_core::RunId(record.run_id);
+                if let Err(e) = ledger.mark(&run_id, RunStatus::Processed) {
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        error = %e,
+                        "drain: could not mark run processed"
+                    );
+                } else {
+                    tracing::debug!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        "drain: run reconciled (placeholder); marked processed"
+                    );
+                }
+            }
+            Ok(None) => tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                "drain: no ledger row for drained trigger"
+            ),
+            Err(e) => tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                error = %e,
+                "drain: ledger lookup failed"
+            ),
+        }
     }
 }
 
@@ -240,6 +345,7 @@ async fn poll_loop(
     token: String,
     interval: std::time::Duration,
     queue: DispatchQueue,
+    ledger: Arc<Ledger>,
 ) {
     let client = match Client::connect(&gateway_url, SecretString::from(token)).await {
         Ok(client) => client,
@@ -267,23 +373,9 @@ async fn poll_loop(
             Ok(resp) => {
                 for event in &resp.events {
                     let trigger = Trigger::from_event(event, tenant.clone());
-                    match queue.enqueue(trigger) {
-                        EnqueueOutcome::Enqueued => tracing::debug!(
-                            target: "escurel_runner",
-                            event_id = %event.event_id,
-                            "poller enqueued inbox event"
-                        ),
-                        EnqueueOutcome::Duplicate => tracing::trace!(
-                            target: "escurel_runner",
-                            event_id = %event.event_id,
-                            "poller skipped already-seen event (dedup)"
-                        ),
-                        EnqueueOutcome::Full => tracing::warn!(
-                            target: "escurel_runner",
-                            event_id = %event.event_id,
-                            "dispatch queue full; dropping poll (next tick retries)"
-                        ),
-                    }
+                    // Route through the same loop-control gate the webhook
+                    // uses: the durable ledger decides create-vs-drop.
+                    gate_and_enqueue(&ledger, &queue, trigger, "poll");
                 }
             }
             Err(e) => tracing::warn!(

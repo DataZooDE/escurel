@@ -33,6 +33,12 @@ pub const DEFAULT_SEEN_CAP: usize = 4096;
 /// missed webhooks, so a coarse cadence is fine.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Default path of the runner-local durable run ledger (its own SQLite
+/// file, *never* the tenant store). Relative to the process CWD so a dev
+/// run drops it in place; deployments set [`crate::RunnerConfig::ledger_path`]
+/// to a host-volume path under `/data` (see the substrate contract).
+pub const DEFAULT_LEDGER_PATH: &str = "./escurel-runner-ledger.sqlite";
+
 /// Errors raised while loading [`RunnerConfig`] from the environment.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -114,6 +120,11 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_POLL_INTERVAL` (default
     /// [`DEFAULT_POLL_INTERVAL`]).
     pub poll_interval: Duration,
+    /// Filesystem path of the runner-local durable run ledger (its own
+    /// SQLite file — the idempotency authority that survives a restart).
+    /// Source: `ESCUREL_RUNNER_LEDGER_PATH` (default
+    /// [`DEFAULT_LEDGER_PATH`]).
+    pub ledger_path: String,
 }
 
 impl RunnerConfig {
@@ -158,6 +169,10 @@ impl RunnerConfig {
             _ => DEFAULT_POLL_INTERVAL,
         };
 
+        let ledger_path = lookup("ESCUREL_RUNNER_LEDGER_PATH")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_LEDGER_PATH.to_owned());
+
         Ok(Self {
             listen,
             gateway_url,
@@ -169,6 +184,7 @@ impl RunnerConfig {
             queue_cap,
             seen_cap,
             poll_interval,
+            ledger_path,
         })
     }
 }
@@ -227,6 +243,25 @@ mod tests {
         assert_eq!(cfg.queue_cap, DEFAULT_QUEUE_CAP);
         assert_eq!(cfg.seen_cap, DEFAULT_SEEN_CAP);
         assert_eq!(cfg.poll_interval, DEFAULT_POLL_INTERVAL);
+        assert_eq!(cfg.ledger_path, DEFAULT_LEDGER_PATH);
+    }
+
+    #[test]
+    fn ledger_path_loads_when_set_and_ignores_empty() {
+        let set = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_LEDGER_PATH").then(|| "/data/runner.sqlite".to_owned())
+        })
+        .expect("a ledger path must parse");
+        assert_eq!(set.ledger_path, "/data/runner.sqlite");
+
+        let empty = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_LEDGER_PATH").then(String::new)
+        })
+        .expect("an empty ledger path must parse");
+        assert_eq!(
+            empty.ledger_path, DEFAULT_LEDGER_PATH,
+            "empty ledger path falls back to the default"
+        );
     }
 
     #[test]
