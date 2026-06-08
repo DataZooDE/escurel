@@ -79,6 +79,13 @@ class HttpEscurelClient implements EscurelClient {
     if (result is! Map<String, dynamic>) {
       throw EscurelTransportException('unexpected result shape: $result');
     }
+    // A `tools/call` result is an MCP `CallToolResult`
+    // (`{content, structuredContent, isError}`); the raw tool payload lives
+    // under `structuredContent`. Fall back to `result` for older gateways.
+    final structured = result['structuredContent'];
+    if (structured is Map<String, dynamic>) {
+      return structured;
+    }
     return result;
   }
 

@@ -43,7 +43,10 @@ async fn call(p: &EscurelProcess, name: &str, args: Value) -> Value {
         .expect("post");
     let body: Value = resp.json().await.unwrap();
     assert!(body.get("error").is_none(), "tool {name} error: {body}");
-    body["result"].clone()
+    // `tools/call` returns an MCP `CallToolResult`; the raw tool payload is
+    // under `structuredContent`.
+    let result = body["result"].clone();
+    result.get("structuredContent").cloned().unwrap_or(result)
 }
 
 async fn capture(p: &EscurelProcess, args: Value) {
