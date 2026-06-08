@@ -60,7 +60,9 @@ async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Va
     if body.get("error").is_some() {
         panic!("tool {name} returned error: {body}");
     }
-    body["result"].clone()
+    // tools/call results are MCP-shaped; the payload is under
+    // `structuredContent`.
+    body["result"]["structuredContent"].clone()
 }
 
 #[tokio::test]

@@ -63,7 +63,8 @@ async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Va
     assert_eq!(resp.status(), 200, "http status");
     let body: Value = resp.json().await.unwrap();
     assert!(body.get("error").is_none(), "tool {name} error: {body}");
-    body["result"].clone()
+    let result = body["result"].clone();
+    result.get("structuredContent").cloned().unwrap_or(result)
 }
 
 /// Fetch `/debug/ledger` and return `(total_runs, terminal_runs)` for the

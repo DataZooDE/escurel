@@ -125,7 +125,10 @@ async fn call_tool(p: &EscurelProcess, name: &str, args: Value) -> Value {
     if body.get("error").is_some() {
         panic!("tool {name} returned error: {body}");
     }
-    body["result"].clone()
+    // tools/call results are MCP-shaped (`CallToolResult`); the payload
+    // lives under `structuredContent`. Return it so callers read
+    // `result["skills"]` etc. unchanged.
+    body["result"]["structuredContent"].clone()
 }
 
 #[tokio::test]

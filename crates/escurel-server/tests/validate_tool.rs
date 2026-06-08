@@ -68,7 +68,9 @@ async fn validate_mcp(p: &EscurelProcess, content: &str, as_page_id: Option<&str
     if body.get("error").is_some() {
         panic!("validate returned error: {body}");
     }
-    body["result"].clone()
+    // tools/call results are MCP-shaped; the payload is under
+    // `structuredContent`.
+    body["result"]["structuredContent"].clone()
 }
 
 #[tokio::test]
@@ -187,7 +189,7 @@ async fn validate_does_not_commit() {
         .unwrap();
     let body: Value = resp.json().await.unwrap();
     assert_eq!(
-        body["result"]["exists"], false,
+        body["result"]["structuredContent"]["exists"], false,
         "validate must not commit the page: {body}"
     );
     p.shutdown().await;

@@ -265,7 +265,9 @@ async fn fresh_duckdb_rebuilds_index_from_surviving_markdown() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    let skills = body["result"]["skills"].as_array().expect("skills array");
+    let skills = body["result"]["structuredContent"]["skills"]
+        .as_array()
+        .expect("skills array");
     assert!(
         skills.iter().any(|s| s["id"] == "customer"),
         "fresh boot must rebuild the seeded skill from markdown; got: {body}"

@@ -158,11 +158,37 @@ async fn mcp_streamable_http_lifecycle_round_trips() {
         captured.get("error").is_none(),
         "capture_event must not error: {captured}"
     );
-    let event_id = captured["result"]["event_id"]
+    // REGRESSION GUARD for the empty-tool-output bug: a `tools/call`
+    // result MUST be an MCP `CallToolResult` — a `content` array a
+    // text-only client (Claude Code) can read, plus `isError:false`.
+    let call_result = &captured["result"];
+    assert_eq!(
+        call_result["isError"], false,
+        "tools/call result carries isError:false: {captured}"
+    );
+    let content = call_result["content"]
+        .as_array()
+        .expect("CallToolResult.content array");
+    assert!(!content.is_empty(), "content is non-empty: {captured}");
+    assert_eq!(
+        content[0]["type"], "text",
+        "first content block is text: {captured}"
+    );
+    // The text block parses back to the same payload (this is what a
+    // text-only client reads).
+    let text = content[0]["text"].as_str().expect("content[0].text string");
+    let parsed: Value = serde_json::from_str(text).expect("content text parses as JSON");
+    assert_eq!(
+        parsed, call_result["structuredContent"],
+        "content text == structuredContent payload"
+    );
+    // Programmatic clients read the raw payload from `structuredContent`.
+    let structured = &call_result["structuredContent"];
+    let event_id = structured["event_id"]
         .as_str()
         .expect("event_id")
         .to_owned();
-    assert_eq!(captured["result"]["status"], "inbox");
+    assert_eq!(structured["status"], "inbox");
 
     let (status, body) = post_raw(
         &p,
@@ -176,9 +202,9 @@ async fn mcp_streamable_http_lifecycle_round_trips() {
     .await;
     assert_eq!(status, 200, "list_inbox http status");
     let inbox: Value = serde_json::from_str(&body).expect("inbox json");
-    let events = inbox["result"]["events"]
+    let events = inbox["result"]["structuredContent"]["events"]
         .as_array()
-        .expect("result.events array");
+        .expect("result.structuredContent.events array");
     assert_eq!(events.len(), 1, "captured event visible in inbox");
     assert_eq!(events[0]["event_id"], event_id);
     assert_eq!(events[0]["source"], "gmail");

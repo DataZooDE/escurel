@@ -65,7 +65,7 @@ async fn admin_quota_returns_snapshot() {
     let p = start().await;
     let body = call(&p, Role::Admin, "admin_quota", json!({})).await;
     assert!(body.get("error").is_none(), "admin_quota error: {body}");
-    let r = &body["result"];
+    let r = &body["result"]["structuredContent"];
     assert!(r["queries_remaining"].is_number());
     assert!(r["writes_remaining"].is_number());
     assert!(r["embeds_remaining"].is_number());
@@ -78,7 +78,7 @@ async fn admin_audit_returns_drift_lists() {
     let p = start().await;
     let body = call(&p, Role::Admin, "admin_audit", json!({})).await;
     assert!(body.get("error").is_none(), "admin_audit error: {body}");
-    let r = &body["result"];
+    let r = &body["result"]["structuredContent"];
     assert!(r["markdown_not_in_duckdb"].is_array());
     assert!(r["indexed_but_no_markdown"].is_array());
     p.shutdown().await;
@@ -100,7 +100,9 @@ async fn admin_index_query_reads_chat_messages() {
         body.get("error").is_none(),
         "admin_index_query error: {body}"
     );
-    let rows = body["result"]["rows"].as_array().expect("rows array");
+    let rows = body["result"]["structuredContent"]["rows"]
+        .as_array()
+        .expect("rows array");
     assert!(
         rows.iter().any(|row| row["content"] == "hello ops"),
         "expected the appended message in the table read: {rows:?}",
@@ -143,7 +145,7 @@ async fn admin_delete_chat_history_purges_then_reads_empty() {
     )
     .await;
     assert!(del.get("error").is_none(), "delete error: {del}");
-    assert_eq!(del["result"]["deleted"], 1);
+    assert_eq!(del["result"]["structuredContent"]["deleted"], 1);
 
     // Re-read via the agent list_messages tool: empty now.
     let list = call(
@@ -153,7 +155,13 @@ async fn admin_delete_chat_history_purges_then_reads_empty() {
         json!({"chat_group_id": "room-1", "direction": "asc"}),
     )
     .await;
-    assert_eq!(list["result"]["messages"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        list["result"]["structuredContent"]["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
     p.shutdown().await;
 }
 
@@ -190,7 +198,9 @@ async fn admin_lane_tools_over_mcp() {
 
     // list_lanes: one markdown/fs lane.
     let env = call(&p, Role::Admin, "admin_list_lanes", json!({})).await;
-    let lanes = env["result"]["lanes"].as_array().expect("lanes");
+    let lanes = env["result"]["structuredContent"]["lanes"]
+        .as_array()
+        .expect("lanes");
     assert_eq!(lanes.len(), 1);
     assert_eq!(lanes[0]["name"], "markdown");
     assert_eq!(lanes[0]["backend"], "fs");
@@ -203,9 +213,12 @@ async fn admin_lane_tools_over_mcp() {
         json!({ "key": "markdown/skills/escurel.md" }),
     )
     .await;
-    assert_eq!(blob["result"]["content_type"], "text/markdown");
+    assert_eq!(
+        blob["result"]["structuredContent"]["content_type"],
+        "text/markdown"
+    );
     assert!(
-        blob["result"]["bytes_base64"]
+        blob["result"]["structuredContent"]["bytes_base64"]
             .as_str()
             .is_some_and(|s| !s.is_empty()),
         "bytes_base64 present: {blob}"

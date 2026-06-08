@@ -82,7 +82,8 @@ async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Va
     assert_eq!(resp.status(), 200, "http status");
     let body: Value = resp.json().await.unwrap();
     assert!(body.get("error").is_none(), "tool {name} error: {body}");
-    body["result"].clone()
+    let result = body["result"].clone();
+    result.get("structuredContent").cloned().unwrap_or(result)
 }
 
 /// Write a REAL adk-runner stub: a bash + curl/jq script speaking the
@@ -116,7 +117,7 @@ rpc() {
     -H 'content-type: application/json' \
     -d "$(jq -nc --arg n "$1" --argjson a "$2" \
         '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$n,arguments:$a}}')" \
-    | jq '.result'
+    | jq '.result.structuredContent // .result'
 }
 
 # 1. Oldest inbox event with a target instance (list_inbox is newest-first).

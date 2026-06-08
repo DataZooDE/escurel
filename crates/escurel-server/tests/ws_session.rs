@@ -148,7 +148,9 @@ async fn call_ok(h: &Harness, bearer: &str, id: u64, name: &str, args: Value) ->
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert!(body.get("error").is_none(), "{name} error: {body}");
-    body["result"].clone()
+    // tools/call results are MCP-shaped; the payload is under
+    // `structuredContent`.
+    body["result"]["structuredContent"].clone()
 }
 
 async fn call_raw(h: &Harness, bearer: &str, id: u64, name: &str, args: Value) -> Value {

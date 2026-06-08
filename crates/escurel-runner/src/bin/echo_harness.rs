@@ -102,7 +102,12 @@ impl Mcp {
         if let Some(err) = body.get("error") {
             return Err(format!("/mcp {name} tool error: {err}"));
         }
-        Ok(body.get("result").cloned().unwrap_or(Value::Null))
+        let result = body.get("result").cloned().unwrap_or(Value::Null);
+        // The gateway MCP-shapes a `tools/call` success into a
+        // `CallToolResult` (`{content, structuredContent, isError}`);
+        // unwrap `structuredContent` (the raw payload) so the fold below
+        // reads `events` / `body` / `frontmatter` directly.
+        Ok(result.get("structuredContent").cloned().unwrap_or(result))
     }
 }
 

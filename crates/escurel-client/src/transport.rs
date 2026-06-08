@@ -78,10 +78,16 @@ impl McpTransport {
         serde_json::from_value(result).map_err(|e| Error::Decode(format!("{tool}: {e}")))
     }
 
-    /// Low-level JSON-RPC `tools/call` driver. Returns the inner
-    /// `result` JSON value, or maps the JSON-RPC error envelope to
+    /// Low-level JSON-RPC `tools/call` driver. Returns the tool's
+    /// payload, or maps the JSON-RPC error envelope to
     /// [`Error::JsonRpc`] and a non-success HTTP status to
     /// [`Error::Http`].
+    ///
+    /// The gateway MCP-shapes a `tools/call` success into a spec
+    /// `CallToolResult` (`{content, structuredContent, isError}`); we
+    /// unwrap `structuredContent` (the raw payload) when present so
+    /// every typed/raw consumer sees the payload directly, falling back
+    /// to the whole `result` for back-compat with any non-wrapped shape.
     pub(crate) async fn call(&self, tool: &str, arguments: Value) -> Result<Value, Error> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let envelope = json!({
@@ -114,9 +120,12 @@ impl McpTransport {
                 .to_owned();
             return Err(Error::JsonRpc { code, message });
         }
-        body.get("result")
-            .cloned()
-            .ok_or_else(|| Error::Decode(format!("response missing `result` field: {body_text}")))
+        let result = body.get("result").cloned().ok_or_else(|| {
+            Error::Decode(format!("response missing `result` field: {body_text}"))
+        })?;
+        // Unwrap the MCP `CallToolResult.structuredContent` payload when
+        // the gateway wrapped it; otherwise return the result as-is.
+        Ok(result.get("structuredContent").cloned().unwrap_or(result))
     }
 
     /// GET a plain-text endpoint relative to the base (e.g.
