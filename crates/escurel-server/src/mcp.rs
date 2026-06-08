@@ -61,6 +61,11 @@ use crate::tenant_archive::{tar_gz_into_chunks, untar_gz_into};
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
+    /// `#[serde(default)]` so a JSON-RPC *notification* (which omits
+    /// `id`) still deserializes — `id` becomes `Value::Null`. The
+    /// MCP lifecycle drives `notifications/initialized` after the
+    /// handshake, and those carry no `id`.
+    #[serde(default)]
     pub id: Value,
     pub method: String,
     #[serde(default)]
@@ -75,9 +80,15 @@ pub struct ToolsCallParams {
     pub arguments: Value,
 }
 
-/// MCP entry point: `POST /mcp`. Single-request, single-response
-/// for now; batched and SSE-streamed responses come with later
-/// PRs.
+/// MCP entry point: `POST /mcp` — a spec-compliant MCP
+/// **Streamable-HTTP** server. Drives the full client lifecycle:
+/// `initialize` (handshake → `InitializeResult`), the
+/// `notifications/initialized` notification (→ HTTP 202, empty
+/// body — a notification gets no JSON-RPC response), `ping`, and
+/// the `tools/list` / `tools/call` calls. Each request is a single
+/// JSON response (`Content-Type: application/json`); the optional
+/// SSE / `GET /mcp` streaming transport is not implemented (the
+/// Streamable-HTTP spec permits a JSON-only response).
 ///
 /// When the gateway is configured with an [`OidcVerifier`], the
 /// caller must supply `Authorization: Bearer <jwt>`; missing /
@@ -189,7 +200,19 @@ async fn mcp_inner(
         .map(|c| c.subject.clone())
         .unwrap_or_else(|| "anonymous".to_owned());
 
+    // JSON-RPC notifications (no `id`, method `notifications/*`) get
+    // NO response envelope — the MCP Streamable-HTTP spec says the
+    // server acknowledges with HTTP 202 Accepted and an empty body.
+    // The client posts `notifications/initialized` right after the
+    // `initialize` handshake; we 202 any `notifications/*` and never
+    // error on an unknown one.
+    if req.method.starts_with("notifications/") {
+        return StatusCode::ACCEPTED.into_response();
+    }
+
     let result = match req.method.as_str() {
+        "initialize" => Ok(initialize_result(&req.params)),
+        "ping" => Ok(json!({})),
         "tools/list" => Ok(tools_list_payload()),
         "tools/call" => {
             // Per-tool metrics (escurel_tool_calls / _latency_ms):
@@ -331,6 +354,31 @@ fn quota_response(id: Value, err: &QuotaError) -> axum::response::Response {
 /// Map (method, params) to the quota dimension a request should
 /// debit, if any. Tools/list and unauthenticated discovery don't
 /// consume a bucket; session-tools are special-cased.
+/// Build the MCP `initialize` result. We echo the client's
+/// requested `protocolVersion` when it is a non-empty string (maximises
+/// compatibility — Claude Code negotiates e.g. `"2025-06-18"`), and
+/// fall back to the latest version we speak otherwise.
+fn initialize_result(params: &Value) -> Value {
+    const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
+    let protocol_version = params
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(DEFAULT_PROTOCOL_VERSION);
+    json!({
+        "protocolVersion": protocol_version,
+        "capabilities": { "tools": { "listChanged": false } },
+        "serverInfo": {
+            "name": "escurel",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+    })
+}
+
+/// Maps a JSON-RPC method to the quota dimension it debits, or `None`
+/// for methods that consume no tenant rate budget. The lifecycle
+/// methods (`initialize`, `ping`, `notifications/*`) and `tools/list`
+/// all fall through the `tools/call` guard below and so debit nothing.
 fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
     if method != "tools/call" {
         return None;
