@@ -88,7 +88,12 @@ impl McpClient {
                 message: err.to_string(),
             });
         }
-        Ok(body.get("result").cloned().unwrap_or(Value::Null))
+        // A `tools/call` result is an MCP `CallToolResult`
+        // (`{content, structuredContent, isError}`). The raw tool payload
+        // lives under `structuredContent`; fall back to `result` for any
+        // non-tools/call response.
+        let result = body.get("result").cloned().unwrap_or(Value::Null);
+        Ok(result.get("structuredContent").cloned().unwrap_or(result))
     }
 
     /// Read the inbox (unprocessed events, newest first).

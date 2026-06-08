@@ -86,7 +86,7 @@ async fn valid_token_lets_request_through() {
     let resp = post_mcp(&p, Some(&t), list_skills_call()).await;
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert!(body["result"]["skills"].is_array());
+    assert!(body["result"]["structuredContent"]["skills"].is_array());
     p.shutdown().await;
 }
 

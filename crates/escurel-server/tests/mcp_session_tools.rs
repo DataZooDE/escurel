@@ -134,11 +134,13 @@ async fn call_raw(h: &Harness, id: u64, name: &str, args: Value) -> Value {
     resp.json().await.unwrap()
 }
 
-/// As above but assert the call succeeded, return `result`.
+/// As above but assert the call succeeded, return the tool payload.
+/// `tools/call` results are MCP-shaped (`CallToolResult`); the payload
+/// lives under `structuredContent`.
 async fn call_ok(h: &Harness, id: u64, name: &str, args: Value) -> Value {
     let body = call_raw(h, id, name, args).await;
     assert!(body.get("error").is_none(), "{name} returned error: {body}");
-    body["result"].clone()
+    body["result"]["structuredContent"].clone()
 }
 
 #[tokio::test]

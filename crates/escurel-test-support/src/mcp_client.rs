@@ -98,8 +98,13 @@ impl McpTestClient {
                 .to_owned();
             return Err(McpError::JsonRpc { code, message });
         }
-        body.get("result")
+        let result = body
+            .get("result")
             .cloned()
-            .ok_or(McpError::MissingResult { body: body_text })
+            .ok_or(McpError::MissingResult { body: body_text })?;
+        // This helper only issues `tools/call`, whose result is an MCP
+        // `CallToolResult` (`{content, structuredContent, isError}`). The raw
+        // tool payload is under `structuredContent`; fall back to `result`.
+        Ok(result.get("structuredContent").cloned().unwrap_or(result))
     }
 }

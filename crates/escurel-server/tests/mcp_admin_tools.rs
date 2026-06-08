@@ -100,8 +100,14 @@ async fn tenant_crud_lifecycle_over_mcp() {
     )
     .await;
     assert!(created.get("error").is_none(), "create error: {created}");
-    assert_eq!(created["result"]["spec"]["tenant_id"], "globex");
-    assert_eq!(created["result"]["spec"]["display_name"], "Globex Corp");
+    assert_eq!(
+        created["result"]["structuredContent"]["spec"]["tenant_id"],
+        "globex"
+    );
+    assert_eq!(
+        created["result"]["structuredContent"]["spec"]["display_name"],
+        "Globex Corp"
+    );
     let dir = h.tenants_root.join("globex");
     assert!(dir.join("tenant.json").is_file());
     assert!(dir.join("markdown").is_dir());
@@ -115,11 +121,14 @@ async fn tenant_crud_lifecycle_over_mcp() {
         json!({ "tenant_id": "globex" }),
     )
     .await;
-    assert_eq!(got["result"]["spec"]["display_name"], "Globex Corp");
+    assert_eq!(
+        got["result"]["structuredContent"]["spec"]["display_name"],
+        "Globex Corp"
+    );
 
     // list → includes the created tenant.
     let listed = call(p, Role::Admin, "tenant_list", json!({})).await;
-    let ids: Vec<String> = listed["result"]["tenants"]
+    let ids: Vec<String> = listed["result"]["structuredContent"]["tenants"]
         .as_array()
         .expect("tenants array")
         .iter()
@@ -138,7 +147,10 @@ async fn tenant_crud_lifecycle_over_mcp() {
         json!({ "tenant_id": "globex", "display_name": "Globex Inc" }),
     )
     .await;
-    assert_eq!(updated["result"]["spec"]["display_name"], "Globex Inc");
+    assert_eq!(
+        updated["result"]["structuredContent"]["spec"]["display_name"],
+        "Globex Inc"
+    );
     let reread = call(
         p,
         Role::Admin,
@@ -146,7 +158,10 @@ async fn tenant_crud_lifecycle_over_mcp() {
         json!({ "tenant_id": "globex" }),
     )
     .await;
-    assert_eq!(reread["result"]["spec"]["display_name"], "Globex Inc");
+    assert_eq!(
+        reread["result"]["structuredContent"]["spec"]["display_name"],
+        "Globex Inc"
+    );
 
     // delete → returns true + the directory is gone.
     let deleted = call(
@@ -156,7 +171,7 @@ async fn tenant_crud_lifecycle_over_mcp() {
         json!({ "tenant_id": "globex" }),
     )
     .await;
-    assert_eq!(deleted["result"]["deleted"], true);
+    assert_eq!(deleted["result"]["structuredContent"]["deleted"], true);
     assert!(!dir.exists());
 
     h.process.shutdown().await;
@@ -208,7 +223,7 @@ async fn tenant_delete_missing_returns_false() {
     )
     .await;
     assert!(body.get("error").is_none(), "delete error: {body}");
-    assert_eq!(body["result"]["deleted"], false);
+    assert_eq!(body["result"]["structuredContent"]["deleted"], false);
     h.process.shutdown().await;
 }
 
@@ -297,7 +312,7 @@ async fn admin_quota_rejects_foreign_tenant() {
     )
     .await;
     assert!(ok.get("error").is_none(), "own-tenant quota: {ok}");
-    assert!(ok["result"]["queries_remaining"].is_number());
+    assert!(ok["result"]["structuredContent"]["queries_remaining"].is_number());
     h.process.shutdown().await;
 }
 
@@ -325,8 +340,12 @@ async fn rebuild_returns_final_counts() {
     let h = start().await;
     let body = call(&h.process, Role::Admin, "rebuild", json!({})).await;
     assert!(body.get("error").is_none(), "rebuild error: {body}");
-    let done = body["result"]["done"].as_u64().expect("done");
-    let total = body["result"]["total"].as_u64().expect("total");
+    let done = body["result"]["structuredContent"]["done"]
+        .as_u64()
+        .expect("done");
+    let total = body["result"]["structuredContent"]["total"]
+        .as_u64()
+        .expect("total");
     // The seeded tenant has the meta-skill + customer skill, so at
     // least one page is rebuilt and the run completes (done == total).
     assert!(total > 0, "expected total>0, got {total}");
@@ -370,11 +389,16 @@ async fn tenant_export_then_import_round_trips() {
     )
     .await;
     assert!(exported.get("error").is_none(), "export error: {exported}");
-    let tarball = exported["result"]["tarball_b64"]
+    let tarball = exported["result"]["structuredContent"]["tarball_b64"]
         .as_str()
         .expect("tarball_b64");
     assert!(!tarball.is_empty(), "empty tarball");
-    assert!(exported["result"]["bytes"].as_u64().unwrap_or(0) > 0);
+    assert!(
+        exported["result"]["structuredContent"]["bytes"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
     // It is valid base64.
     assert!(B64.decode(tarball).is_ok(), "tarball_b64 must decode");
 
@@ -390,7 +414,12 @@ async fn tenant_export_then_import_round_trips() {
     )
     .await;
     assert!(imported.get("error").is_none(), "import error: {imported}");
-    assert!(imported["result"]["bytes_imported"].as_u64().unwrap_or(0) > 0);
+    assert!(
+        imported["result"]["structuredContent"]["bytes_imported"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
     // The markdown file is restored on disk.
     assert!(
         md_dir.join("skills").join("customer.md").is_file(),
@@ -418,7 +447,9 @@ async fn tenant_import_rejects_missing_tenant() {
         )
         .await
     };
-    let tarball = exported["result"]["tarball_b64"].as_str().unwrap_or("");
+    let tarball = exported["result"]["structuredContent"]["tarball_b64"]
+        .as_str()
+        .unwrap_or("");
     let body = call(
         &h.process,
         Role::Admin,
@@ -466,8 +497,8 @@ async fn compact_lanes_returns_totals() {
     )
     .await;
     assert!(body.get("error").is_none(), "compact_lanes error: {body}");
-    assert!(body["result"]["ops_compacted"].is_number());
-    assert!(body["result"]["bytes_reclaimed"].is_number());
+    assert!(body["result"]["structuredContent"]["ops_compacted"].is_number());
+    assert!(body["result"]["structuredContent"]["bytes_reclaimed"].is_number());
 
     process.shutdown().await;
 }
@@ -517,10 +548,16 @@ async fn serde_migration_keeps_quota_and_lane_blob_wire_keys() {
     // wire-key assertion is vacuous, so wire a quota-less skip.
     if quota.get("error").is_none() {
         assert!(
-            quota["result"].get("concurrent_sessions_in_use").is_some(),
+            quota["result"]["structuredContent"]
+                .get("concurrent_sessions_in_use")
+                .is_some(),
             "admin_quota must emit concurrent_sessions_in_use: {quota}"
         );
-        assert!(quota["result"].get("concurrent_sessions").is_none());
+        assert!(
+            quota["result"]["structuredContent"]
+                .get("concurrent_sessions")
+                .is_none()
+        );
     }
 
     let blob = call(
@@ -532,10 +569,15 @@ async fn serde_migration_keeps_quota_and_lane_blob_wire_keys() {
     .await;
     assert!(blob.get("error").is_none(), "lane_blob error: {blob}");
     assert!(
-        blob["result"].get("bytes_base64").is_some(),
+        blob["result"]["structuredContent"]
+            .get("bytes_base64")
+            .is_some(),
         "admin_lane_blob must emit bytes_base64: {blob}"
     );
-    assert_eq!(blob["result"]["content_type"], "text/markdown");
+    assert_eq!(
+        blob["result"]["structuredContent"]["content_type"],
+        "text/markdown"
+    );
 
     h.process.shutdown().await;
 }
