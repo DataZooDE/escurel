@@ -11,6 +11,7 @@
 #
 # Image: ghcr.io/<owner>/escurel-explore:sha-<short>
 #        + ghcr.io/<owner>/escurel-explore:latest
+#        + ghcr.io/<owner>/escurel-explore:main  (substrate deploy default)
 #
 # Operator promotes via the substrate repo's /deploy-green flow.
 # Auto-promotion to Nomad is intentionally deferred until the
@@ -101,6 +102,7 @@ jobs:
           tags: |
             ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:sha-${{ steps.meta.outputs.sha_short }}
             ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:latest
+            ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:main
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
