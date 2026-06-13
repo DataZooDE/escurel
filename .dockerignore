@@ -14,10 +14,16 @@ target
 Dockerfile
 .dockerignore
 
-# CI, docs, and the Flutter explore UI: not part of the cargo workspace.
+# CI + docs: not needed by any image build.
 .github
 docs
-apps
+
+# The Flutter explore UI is needed by apps/escurel-explore/Dockerfile (which
+# builds with `context: .`), so apps/escurel-explore stays in the context —
+# but drop its build output and the heavy Dart tool caches.
+apps/escurel-explore/build
+apps/escurel-explore/.dart_tool
+**/.dart_tool
 
 # Editor / OS cruft.
 .DS_Store
