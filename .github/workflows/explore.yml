@@ -71,10 +71,12 @@ jobs:
       - name: flutter test
         run: flutter test --reporter expanded
 
-      - name: flutter build web
+      # The shipped bundle is built inside the Dockerfile (http mode). Keep
+      # a CI smoke build so a broken web build fails fast before docker.
+      - name: flutter build web (smoke)
         run: |
           flutter build web --release \
-            --dart-define=ESCUREL_EXPLORE_MODE=fixture \
+            --dart-define=ESCUREL_EXPLORE_MODE=http \
             --dart-define=ESCUREL_EXPLORE_VERSION=${GITHUB_SHA::7}
 
       - uses: docker/setup-buildx-action@v3
@@ -85,14 +87,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Context is the REPO ROOT so the Rust workspace sources are available
+      # to the Dockerfile's BFF build stage; the Flutter bundle is built in
+      # the Dockerfile's first stage (http mode, same-origin).
       - name: docker build + push
         uses: docker/build-push-action@v6
         with:
-          context: apps/escurel-explore
+          context: .
+          file: apps/escurel-explore/Dockerfile
           push: true
           build-args: |
             BUILD_VERSION=${{ steps.meta.outputs.sha_short }}
-            ESCUREL_EXPLORE_MODE=fixture
           tags: |
             ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:sha-${{ steps.meta.outputs.sha_short }}
             ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:latest

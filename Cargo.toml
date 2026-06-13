@@ -15,6 +15,7 @@ members = [
     "crates/escurel-client",
     "crates/escurel-tui",
     "crates/escurel-demo-agent",
+    "crates/escurel-explore-bff",
     "crates/escurel-crdt",
     "crates/escurel-test-support",
     "crates/escurel-runner-core",
