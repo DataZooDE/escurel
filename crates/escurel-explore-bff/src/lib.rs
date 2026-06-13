@@ -111,8 +111,8 @@ impl Signer {
     /// configured key (vs an ephemeral one) was used, for logging.
     fn build(signing_key_pem: Option<&str>, kid: &str) -> Result<(Self, bool), BootError> {
         let (private, configured) = match signing_key_pem {
-            Some(pem) => (
-                RsaPrivateKey::from_pkcs8_pem(pem.trim()).map_err(BootError::KeyParse)?,
+            Some(raw) => (
+                RsaPrivateKey::from_pkcs8_pem(&normalize_pem(raw)).map_err(BootError::KeyParse)?,
                 true,
             ),
             None => {
@@ -367,9 +367,53 @@ fn b64url(b: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
 }
 
+/// Accept the signing key as either a raw PKCS#8 PEM or a base64-encoded
+/// PEM. The substrate seeds signing keys into Secret Manager base64-encoded
+/// (the `dz-carl` convention — PEM newlines are awkward in env vars); a raw
+/// PEM (e.g. a local `EXPLORE_BFF_SIGNING_KEY=$(cat key.pem)`) also works.
+fn normalize_pem(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.contains("-----BEGIN") {
+        return trimmed.to_owned();
+    }
+    // Not already PEM → assume base64-wrapped PEM. Strip whitespace the
+    // env var may carry, then decode; fall back to the raw string so the
+    // parse error surfaces against the original input.
+    let compact: String = trimmed.split_whitespace().collect();
+    match base64::engine::general_purpose::STANDARD.decode(compact.as_bytes()) {
+        Ok(bytes) => String::from_utf8(bytes).unwrap_or_else(|_| trimmed.to_owned()),
+        Err(_) => trimmed.to_owned(),
+    }
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock before unix epoch")
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+
+    /// A configured key accepted as raw PKCS#8 PEM *and* as base64-wrapped
+    /// PEM (the substrate's Secret-Manager seeding shape) both build a
+    /// signer with the same public modulus.
+    #[test]
+    fn signing_key_accepts_raw_and_base64_pem() {
+        let mut rng = rand::thread_rng();
+        let key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let pem = key.to_pkcs8_pem(LineEnding::LF).unwrap().to_string();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(pem.as_bytes());
+
+        let (raw_signer, configured) = Signer::build(Some(&pem), "k").unwrap();
+        assert!(configured, "explicit key → configured, not ephemeral");
+        let (b64_signer, _) = Signer::build(Some(&b64), "k").unwrap();
+        assert_eq!(
+            raw_signer.n_b64, b64_signer.n_b64,
+            "raw PEM and base64 PEM resolve to the same key"
+        );
+    }
 }
