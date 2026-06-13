@@ -48,6 +48,8 @@
 //! | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
 //! | `ESCUREL_AUTH_OIDC_ISSUER_2` | — | optional SECOND trusted issuer (e.g. Carl, for the dashboard's self-minted token); shares the audience + tenant claim |
 //! | `ESCUREL_AUTH_JWKS_URI_2` | derived from issuer #2 | explicit JWKS URL for the second issuer (e.g. Carl's `<issuer>/jwks.json`) |
+//! | `ESCUREL_AUTH_OIDC_ISSUER_3` (… `_N`) | — | further trusted issuers, read as a contiguous `_2.._N` sequence (e.g. `_3` = the escurel-explore BFF's browser auth bridge); a gap stops the scan |
+//! | `ESCUREL_AUTH_JWKS_URI_3` (… `_N`) | derived from issuer #N | explicit JWKS URL for the Nth issuer |
 //! | `ESCUREL_EMBEDDING_PROVIDER` | `zero` | `zero`, `gemini`, or `embeddinggemma` |
 //! | `ESCUREL_EMBEDDING_MODEL` | provider default | model id |
 //! | `ESCUREL_EMBEDDING_DEVICE` | `cpu` | candle device (informational; CPU only today) |
@@ -481,18 +483,29 @@ impl EscurelConfig {
                         .get("ESCUREL_AUTH_JWKS_URI")
                         .filter(|s| !s.is_empty())
                         .or(toml_cfg.auth.jwks_uri),
-                    // Optional second trusted issuer (additive; absent →
-                    // single-issuer). Its JWKS URI is explicit when set,
-                    // else derived from the issuer.
-                    additional_issuers: env
-                        .get("ESCUREL_AUTH_OIDC_ISSUER_2")
-                        .filter(|s| !s.is_empty())
-                        .map(|issuer2| {
-                            let jwks2 =
-                                env.get("ESCUREL_AUTH_JWKS_URI_2").filter(|s| !s.is_empty());
-                            vec![(issuer2, jwks2)]
-                        })
-                        .unwrap_or_default(),
+                    // Optional additional trusted issuers (additive; absent →
+                    // single-issuer). Read as a contiguous `_2.._N` sequence —
+                    // ISSUER_2 (Carl, dashboard self-mint), ISSUER_3 (the
+                    // escurel-explore BFF, browser auth bridge), and so on.
+                    // The first gap stops the scan, so a stray ISSUER_3 with no
+                    // ISSUER_2 is a misconfiguration and is not silently
+                    // promoted. Each entry's JWKS URI is explicit when set,
+                    // else derived from the issuer by the verifier.
+                    additional_issuers: {
+                        let mut extra = Vec::new();
+                        let mut n = 2;
+                        while let Some(issuer_n) = env
+                            .get(&format!("ESCUREL_AUTH_OIDC_ISSUER_{n}"))
+                            .filter(|s| !s.is_empty())
+                        {
+                            let jwks_n = env
+                                .get(&format!("ESCUREL_AUTH_JWKS_URI_{n}"))
+                                .filter(|s| !s.is_empty());
+                            extra.push((issuer_n, jwks_n));
+                            n += 1;
+                        }
+                        extra
+                    },
                 })
             }
             _ => None,

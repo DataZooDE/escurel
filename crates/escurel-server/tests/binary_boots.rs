@@ -148,6 +148,70 @@ fn from_env_second_issuer_is_additive_and_optional() {
     );
 }
 
+#[test]
+fn from_env_third_issuer_is_additive() {
+    // The full dz-escurel substrate shape: Triton (primary) + Carl
+    // (issuer 2, dashboard self-mint) + the escurel-explore BFF
+    // (issuer 3, browser auth bridge). All share the audience + tenant
+    // claim; only `iss` + JWKS differ. The verifier already supports N
+    // additional issuers — this asserts the env layer wires the third.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_AUTH_OIDC_ISSUER", "https://triton.example/"),
+        (
+            "ESCUREL_AUTH_OIDC_ISSUER_2",
+            "http://dz-carl.nonprod.int.data-zoo.de",
+        ),
+        (
+            "ESCUREL_AUTH_JWKS_URI_2",
+            "http://dz-carl.nonprod.int.data-zoo.de/jwks.json",
+        ),
+        (
+            "ESCUREL_AUTH_OIDC_ISSUER_3",
+            "http://dz-escurel-explore.nonprod.int.data-zoo.de",
+        ),
+        (
+            "ESCUREL_AUTH_JWKS_URI_3",
+            "http://dz-escurel-explore.nonprod.int.data-zoo.de/jwks.json",
+        ),
+    ])))
+    .unwrap();
+    let auth = cfg.auth.expect("auth present");
+    assert_eq!(
+        auth.additional_issuers,
+        vec![
+            (
+                "http://dz-carl.nonprod.int.data-zoo.de".to_owned(),
+                Some("http://dz-carl.nonprod.int.data-zoo.de/jwks.json".to_owned()),
+            ),
+            (
+                "http://dz-escurel-explore.nonprod.int.data-zoo.de".to_owned(),
+                Some("http://dz-escurel-explore.nonprod.int.data-zoo.de/jwks.json".to_owned()),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn from_env_third_issuer_without_second_is_skipped() {
+    // ISSUER_3 is only consulted as the slot after ISSUER_2; a gap
+    // (ISSUER_3 set but ISSUER_2 absent) must not silently promote it.
+    // We treat the additional issuers as a contiguous _2.._N sequence.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_AUTH_OIDC_ISSUER", "https://triton.example/"),
+        (
+            "ESCUREL_AUTH_OIDC_ISSUER_3",
+            "http://dz-escurel-explore.nonprod.int.data-zoo.de",
+        ),
+    ])))
+    .unwrap();
+    let auth = cfg.auth.expect("auth present");
+    assert!(
+        auth.additional_issuers.is_empty(),
+        "ISSUER_3 without ISSUER_2 is a misconfiguration → not trusted; got {:?}",
+        auth.additional_issuers
+    );
+}
+
 /// Boot the real binary, dial `/healthz`, then `/version`, then stop.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_boots_and_serves_healthz() {
