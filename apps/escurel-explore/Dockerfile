@@ -66,6 +66,11 @@ RUN apt-get update \
 COPY --from=rust /escurel-explore-bff /usr/local/bin/escurel-explore-bff
 COPY --from=flutter /src/build/web /usr/share/escurel-explore/web
 
+# Kamal refuses to boot a prebuilt image whose `service` label doesn't match
+# the deploy's service name (substrate ref 01). Must equal `service:` in
+# hetzner-agent-substrate/kamal/dz-escurel-explore/deploy.yml.
+LABEL service="dz-escurel-explore"
+
 ENV EXPLORE_BFF_LISTEN=0.0.0.0:8080 \
     EXPLORE_BFF_BUNDLE_DIR=/usr/share/escurel-explore/web
 
