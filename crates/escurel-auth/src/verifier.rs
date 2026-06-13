@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
 
 use crate::jwks::{JwksCache, JwksCacheError};
@@ -31,6 +31,13 @@ pub struct OidcConfig {
     /// verifier constructs `${issuer}/protocol/openid-connect/certs`
     /// (the Keycloak convention).
     pub jwks_uri: Option<String>,
+    /// Additional trusted issuers beyond the primary [`Self::issuer`],
+    /// each an `(issuer, jwks_uri_override)` pair. Empty by default →
+    /// single-issuer behaviour. The substrate uses one entry here so a
+    /// single Escurel trusts both Triton (the forwarded inbound bearer)
+    /// and Carl (the self-minted dashboard token); both name the same
+    /// [`Self::audience`], differing only in `iss` + signing key.
+    pub additional_issuers: Vec<(String, Option<String>)>,
 }
 
 impl OidcConfig {
@@ -46,12 +53,27 @@ impl OidcConfig {
             admin_role_value: "escurel:admin".to_owned(),
             jwks_refresh: Duration::from_secs(300),
             jwks_uri: None,
+            additional_issuers: Vec::new(),
         }
     }
 
     #[must_use]
     pub fn with_jwks_uri(mut self, uri: impl Into<String>) -> Self {
         self.jwks_uri = Some(uri.into());
+        self
+    }
+
+    /// Trust one more issuer beyond the primary, with an optional
+    /// explicit JWKS URL (derived from the issuer when `None`). The
+    /// added issuer shares the primary's audience, tenant claim, and
+    /// role config.
+    #[must_use]
+    pub fn with_additional_issuer(
+        mut self,
+        issuer: impl Into<String>,
+        jwks_uri: Option<String>,
+    ) -> Self {
+        self.additional_issuers.push((issuer.into(), jwks_uri));
         self
     }
 
@@ -69,13 +91,19 @@ impl OidcConfig {
     }
 
     fn effective_jwks_uri(&self) -> String {
-        self.jwks_uri.clone().unwrap_or_else(|| {
-            format!(
-                "{}/protocol/openid-connect/certs",
-                self.issuer.trim_end_matches('/')
-            )
-        })
+        derive_jwks_uri(&self.issuer, self.jwks_uri.as_deref())
     }
+}
+
+/// JWKS URL for an issuer: the explicit override, else the Keycloak
+/// convention `${issuer}/protocol/openid-connect/certs`.
+fn derive_jwks_uri(issuer: &str, override_uri: Option<&str>) -> String {
+    override_uri.map(ToOwned::to_owned).unwrap_or_else(|| {
+        format!(
+            "{}/protocol/openid-connect/certs",
+            issuer.trim_end_matches('/')
+        )
+    })
 }
 
 /// Resolved auth result. Downstream layers route on these three.
@@ -117,18 +145,36 @@ struct Claims {
     rest: serde_json::Map<String, serde_json::Value>,
 }
 
+/// One trusted issuer and the JWKS cache that backs it. The verifier
+/// holds one per configured issuer and routes a token to the entry
+/// whose `issuer` matches the token's `iss`.
+struct TrustEntry {
+    issuer: String,
+    jwks: JwksCache,
+}
+
 pub struct OidcVerifier {
     config: OidcConfig,
-    jwks: JwksCache,
+    /// Primary issuer first, then any additional issuers. Non-empty.
+    entries: Vec<TrustEntry>,
 }
 
 impl std::fmt::Debug for OidcVerifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let issuers: Vec<&str> = self.entries.iter().map(|e| e.issuer.as_str()).collect();
         f.debug_struct("OidcVerifier")
-            .field("issuer", &self.config.issuer)
+            .field("issuers", &issuers)
             .field("audience", &self.config.audience)
             .finish_non_exhaustive()
     }
+}
+
+/// Just the `iss` claim — read WITHOUT signature verification, only to
+/// route the token to its trust entry. The verified decode below is
+/// what authenticates; this projection is never trusted on its own.
+#[derive(Debug, Deserialize)]
+struct IssProbe {
+    iss: Option<String>,
 }
 
 impl OidcVerifier {
@@ -137,15 +183,30 @@ impl OidcVerifier {
     /// `prime_cache`).
     #[must_use]
     pub fn new(config: OidcConfig) -> Self {
-        let jwks_uri = config.effective_jwks_uri();
-        let jwks = JwksCache::new(jwks_uri, config.jwks_refresh);
-        Self { config, jwks }
+        let mut entries = Vec::with_capacity(1 + config.additional_issuers.len());
+        // Primary issuer first.
+        entries.push(TrustEntry {
+            issuer: config.issuer.clone(),
+            jwks: JwksCache::new(config.effective_jwks_uri(), config.jwks_refresh),
+        });
+        for (issuer, jwks_uri) in &config.additional_issuers {
+            entries.push(TrustEntry {
+                issuer: issuer.clone(),
+                jwks: JwksCache::new(
+                    derive_jwks_uri(issuer, jwks_uri.as_deref()),
+                    config.jwks_refresh,
+                ),
+            });
+        }
+        Self { config, entries }
     }
 
-    /// Force a JWKS fetch now (e.g. to surface JWKS errors at
-    /// startup instead of on the first request).
+    /// Force a JWKS fetch now for every trusted issuer (e.g. to
+    /// surface JWKS errors at startup instead of on the first request).
     pub async fn prime_cache(&self) -> Result<(), AuthError> {
-        self.jwks.refresh().await?;
+        for entry in &self.entries {
+            entry.jwks.refresh().await?;
+        }
         Ok(())
     }
 
@@ -163,7 +224,14 @@ impl OidcVerifier {
             return Err(AuthError::UnsupportedAlg(alg));
         }
         let kid = header.kid.ok_or(AuthError::MissingKid)?;
-        let key = self.jwks.key_for_kid(&kid).await?;
+        // Route by the token's `iss` to its trust entry. The issuer is
+        // read WITHOUT verifying the signature — purely to pick which
+        // configured JWKS + issuer to verify against. The verified
+        // `decode` below (against that entry's published key) is what
+        // authenticates; a forged `iss` only selects the wrong entry,
+        // whose key then fails to verify the signature.
+        let entry = self.select_entry(token)?;
+        let key = entry.jwks.key_for_kid(&kid).await?;
         // Validate against exactly the (already allow-listed) header
         // alg. We must not stuff the whole allow-list in here —
         // jsonwebtoken returns `InvalidAlgorithm` if any algorithm in
@@ -173,7 +241,7 @@ impl OidcVerifier {
         // its single, vetted algorithm.
         let mut validation = Validation::new(alg);
         validation.set_audience(&[self.config.audience.as_str()]);
-        validation.set_issuer(&[self.config.issuer.as_str()]);
+        validation.set_issuer(&[entry.issuer.as_str()]);
         // Required claims left at default (exp, iat); we add aud + iss above.
         let token_data = decode::<Claims>(token, &key, &validation)
             .map_err(|e| AuthError::Invalid(e.to_string()))?;
@@ -199,6 +267,30 @@ impl OidcVerifier {
             tenant_id,
             role,
         })
+    }
+
+    /// Pick the trust entry whose issuer matches the token's `iss`.
+    /// The `iss` is read without verifying the signature (routing only).
+    /// Single-issuer configs skip the probe — there is one entry and the
+    /// verified `set_issuer` check below still pins `iss`.
+    fn select_entry(&self, token: &str) -> Result<&TrustEntry, AuthError> {
+        if let [only] = self.entries.as_slice() {
+            return Ok(only);
+        }
+        let mut probe = Validation::new(Algorithm::RS256);
+        probe.insecure_disable_signature_validation();
+        probe.validate_exp = false;
+        probe.validate_aud = false;
+        probe.required_spec_claims = std::collections::HashSet::new();
+        let iss = decode::<IssProbe>(token, &DecodingKey::from_secret(&[]), &probe)
+            .map_err(|e| AuthError::Invalid(e.to_string()))?
+            .claims
+            .iss
+            .ok_or_else(|| AuthError::Invalid("token missing `iss` claim".to_owned()))?;
+        self.entries
+            .iter()
+            .find(|e| e.issuer == iss)
+            .ok_or_else(|| AuthError::Invalid(format!("untrusted issuer `{iss}`")))
     }
 
     #[must_use]

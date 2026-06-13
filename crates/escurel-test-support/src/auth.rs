@@ -45,6 +45,14 @@ pub enum AuthMode {
         issuer_url: String,
         jwks_url: String,
     },
+
+    /// Point at TWO OR MORE real issuers — the production substrate
+    /// shape where one Escurel trusts both Triton (the forwarded
+    /// inbound bearer) and Carl (the self-minted dashboard token).
+    /// The first pair is the primary issuer; the rest are additional.
+    /// Each entry is `(issuer_url, jwks_url)`. All share the audience
+    /// + tenant claim.
+    ExternalMulti { issuers: Vec<(String, String)> },
 }
 
 /// Audience claim used by the test issuer. Matches the value the

@@ -111,6 +111,43 @@ fn from_env_unauthenticated_when_no_oidc_issuer() {
     assert_eq!(auth.jwks_refresh, Duration::from_secs(120));
 }
 
+#[test]
+fn from_env_second_issuer_is_additive_and_optional() {
+    // No `_2` → single issuer, additional_issuers empty (back-compat).
+    let cfg = EscurelConfig::from_source(&source(env_map(&[(
+        "ESCUREL_AUTH_OIDC_ISSUER",
+        "https://triton.example/",
+    )])))
+    .unwrap();
+    assert!(
+        cfg.auth.unwrap().additional_issuers.is_empty(),
+        "absent ISSUER_2 → single issuer"
+    );
+
+    // `_2` set → a second trust entry with its explicit JWKS URI. This
+    // is the substrate's dz-escurel shape (Triton + Carl).
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_AUTH_OIDC_ISSUER", "https://triton.example/"),
+        (
+            "ESCUREL_AUTH_OIDC_ISSUER_2",
+            "http://dz-carl.nonprod.int.data-zoo.de",
+        ),
+        (
+            "ESCUREL_AUTH_JWKS_URI_2",
+            "http://dz-carl.nonprod.int.data-zoo.de/jwks.json",
+        ),
+    ])))
+    .unwrap();
+    let auth = cfg.auth.expect("auth present");
+    assert_eq!(
+        auth.additional_issuers,
+        vec![(
+            "http://dz-carl.nonprod.int.data-zoo.de".to_owned(),
+            Some("http://dz-carl.nonprod.int.data-zoo.de/jwks.json".to_owned()),
+        )]
+    );
+}
+
 /// Boot the real binary, dial `/healthz`, then `/version`, then stop.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_boots_and_serves_healthz() {
