@@ -46,6 +46,8 @@
 //! | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | `escurel:admin` | role value granting admin |
 //! | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | `300` | JWKS cache TTL (seconds) |
 //! | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
+//! | `ESCUREL_AUTH_OIDC_ISSUER_2` | — | optional SECOND trusted issuer (e.g. Carl, for the dashboard's self-minted token); shares the audience + tenant claim |
+//! | `ESCUREL_AUTH_JWKS_URI_2` | derived from issuer #2 | explicit JWKS URL for the second issuer (e.g. Carl's `<issuer>/jwks.json`) |
 //! | `ESCUREL_EMBEDDING_PROVIDER` | `zero` | `zero`, `gemini`, or `embeddinggemma` |
 //! | `ESCUREL_EMBEDDING_MODEL` | provider default | model id |
 //! | `ESCUREL_EMBEDDING_DEVICE` | `cpu` | candle device (informational; CPU only today) |
@@ -219,6 +221,12 @@ pub struct AuthConfig {
     /// this for issuers that publish elsewhere — e.g. Triton at
     /// `<issuer>/.well-known/jwks.json`.
     pub jwks_uri: Option<String>,
+    /// Additional trusted issuers beyond the primary, each an
+    /// `(issuer, jwks_uri_override)` pair. Empty → single-issuer (the
+    /// historical behaviour). The substrate sets one entry so a single
+    /// Escurel trusts both Triton (forwarded inbound bearer) and Carl
+    /// (self-minted dashboard token) — see `ESCUREL_AUTH_OIDC_ISSUER_2`.
+    pub additional_issuers: Vec<(String, Option<String>)>,
 }
 
 /// S3 storage config (present only when backend == s3).
@@ -473,6 +481,18 @@ impl EscurelConfig {
                         .get("ESCUREL_AUTH_JWKS_URI")
                         .filter(|s| !s.is_empty())
                         .or(toml_cfg.auth.jwks_uri),
+                    // Optional second trusted issuer (additive; absent →
+                    // single-issuer). Its JWKS URI is explicit when set,
+                    // else derived from the issuer.
+                    additional_issuers: env
+                        .get("ESCUREL_AUTH_OIDC_ISSUER_2")
+                        .filter(|s| !s.is_empty())
+                        .map(|issuer2| {
+                            let jwks2 =
+                                env.get("ESCUREL_AUTH_JWKS_URI_2").filter(|s| !s.is_empty());
+                            vec![(issuer2, jwks2)]
+                        })
+                        .unwrap_or_default(),
                 })
             }
             _ => None,
@@ -874,6 +894,9 @@ impl EscurelConfig {
             .with_admin_role(auth.admin_role_claim.clone(), auth.admin_role_value.clone());
         if let Some(uri) = auth.jwks_uri.clone() {
             cfg = cfg.with_jwks_uri(uri);
+        }
+        for (issuer, jwks_uri) in &auth.additional_issuers {
+            cfg = cfg.with_additional_issuer(issuer.clone(), jwks_uri.clone());
         }
         cfg.jwks_refresh = auth.jwks_refresh;
         Some(Arc::new(OidcVerifier::new(cfg)))

@@ -255,6 +255,18 @@ impl EscurelProcess {
                 let verifier = Arc::new(OidcVerifier::new(cfg));
                 (Some(verifier), None)
             }
+            AuthMode::ExternalMulti { issuers } => {
+                let (primary_iss, primary_jwks) = issuers
+                    .first()
+                    .expect("AuthMode::ExternalMulti requires at least one issuer");
+                let mut cfg = OidcConfig::new(primary_iss.clone(), TEST_AUDIENCE.to_owned())
+                    .with_jwks_uri(primary_jwks.clone());
+                for (iss, jwks) in &issuers[1..] {
+                    cfg = cfg.with_additional_issuer(iss.clone(), Some(jwks.clone()));
+                }
+                let verifier = Arc::new(OidcVerifier::new(cfg));
+                (Some(verifier), None)
+            }
         };
 
         // 3. Boot the server. Bound port returned in `local_addr`
