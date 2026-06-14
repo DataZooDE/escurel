@@ -12,16 +12,10 @@
 /// deployment both operate against a single tenant.
 library;
 
+import 'package:escurel_explorer_kit/escurel_explorer_kit.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
-import '../app.dart';
-import '../crm/crm_workspace.dart';
-import '../demo/demo_screen.dart';
-import '../inspector/inspector_shell.dart';
-import '../shell/app_shell.dart';
-import '../state/providers.dart';
 
 /// The route table. Extracted as a top-level constant so test
 /// overrides can build a fresh [GoRouter] with a different

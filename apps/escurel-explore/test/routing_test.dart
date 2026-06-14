@@ -1,8 +1,8 @@
 import 'package:escurel_explore/app.dart';
-import 'package:escurel_explore/client/escurel_client.dart';
-import 'package:escurel_explore/client/fixture_escurel_client.dart';
+import 'package:escurel_explorer_kit/client/escurel_client.dart';
+import 'package:escurel_explorer_kit/client/fixture_escurel_client.dart';
 import 'package:escurel_explore/routing/router.dart';
-import 'package:escurel_explore/state/providers.dart';
+import 'package:escurel_explorer_kit/state/providers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -91,13 +91,13 @@ void main() {
     await tester.pumpWidget(_appWith(client));
     await tester.pumpAndSettle();
 
-    // Start in editor — toggle should send us to inspector.
+    // Start in editor — the topbar toggle opens the inspector.
     await tester.tap(find.byKey(const ValueKey('topbar.inspector_toggle')));
     await tester.pumpAndSettle();
     expect(find.text('Dev Inspector — Markdown'), findsOneWidget);
 
-    // Toggle again — back to editor.
-    await tester.tap(find.byKey(const ValueKey('topbar.inspector_toggle')));
+    // The inspector's own Back-to-editor button returns us to the editor.
+    await tester.tap(find.byTooltip('Back to editor'));
     await tester.pumpAndSettle();
     expect(find.text('Dev Inspector — Markdown'), findsNothing);
   });
