@@ -36,8 +36,8 @@ use escurel_admin::{TenantSpec as AdminTenantSpec, TenantStore, validate_tenant_
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
-    AppendChatMessage, ChatMessage, Direction, EventInfo, Granularity, Indexer, IndexerError,
-    Issue, ListChatMessages, NewEvent, OrderDir, Severity, derive_attach_alias,
+    AclCaller, AppendChatMessage, ChatMessage, Direction, EventInfo, Granularity, Indexer,
+    IndexerError, Issue, ListChatMessages, NewEvent, OrderDir, Severity, derive_attach_alias,
     is_safe_attach_source,
 };
 use escurel_md::PageType;
@@ -231,7 +231,7 @@ async fn mcp_inner(
             // the outer `match result`) — only the success value is
             // wrapped. `initialize` / `ping` / `tools/list` are NOT
             // CallToolResults and are returned raw above.
-            let r = dispatch_tools_call(&state, &tenant_id, role, req.params)
+            let r = dispatch_tools_call(&state, &tenant_id, role, &subject, req.params)
                 .await
                 .map(wrap_tool_result);
             let status = if r.is_ok() { "ok" } else { "error" };
@@ -475,6 +475,7 @@ async fn dispatch_tools_call(
     state: &crate::server::AppState,
     tenant_id: &str,
     role: Option<Role>,
+    subject: &str,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -564,13 +565,22 @@ async fn dispatch_tools_call(
         JsonRpcError::internal("server has no indexer wired; tools/call is unavailable")
     })?;
 
+    // Deterministic per-instance ACL caller (escurel-index). The admin
+    // role bypasses owner-visibility; a missing role is dev/on-host mode
+    // (no verifier, open gateway) and likewise bypasses — there is no
+    // subject to scope against. A real Agent token is enforced.
+    let caller = AclCaller {
+        subject,
+        is_admin: matches!(role, None | Some(Role::Admin)),
+    };
+
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer).await,
-        "list_instances" => tool_list_instances(indexer, params.arguments).await,
+        "list_instances" => tool_list_instances(indexer, caller, params.arguments).await,
         "resolve" => tool_resolve(indexer, params.arguments).await,
-        "expand" => tool_expand(indexer, params.arguments).await,
+        "expand" => tool_expand(indexer, caller, params.arguments).await,
         "neighbours" => tool_neighbours(indexer, params.arguments).await,
-        "search" => tool_search(indexer, params.arguments).await,
+        "search" => tool_search(indexer, caller, params.arguments).await,
         "run_stored_query" => tool_run_stored_query(indexer, params.arguments).await,
         "validate" => tool_validate(indexer, params.arguments).await,
         "update_page" => tool_update_page(indexer, params.arguments).await,
@@ -665,7 +675,11 @@ struct ListInstancesArgs {
     scenario: Option<String>,
 }
 
-async fn tool_list_instances(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+async fn tool_list_instances(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: ListInstancesArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("list_instances: {e}")))?;
     let order = match a.order_by.as_deref() {
@@ -691,13 +705,26 @@ async fn tool_list_instances(indexer: &Indexer, args: Value) -> Result<Value, Js
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_instances: {e}")))?;
+    // Deterministic ACL filter: drop owner-private instances the caller
+    // does not own (admin bypasses). Enumeration must not leak what a
+    // direct read would deny.
+    let mut instances = Vec::with_capacity(out.len());
+    for i in &out {
+        if indexer
+            .may_read_instance(&caller, &i.skill, &i.frontmatter)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?
+        {
+            instances.push(json!({
+                "page_id": i.page_id,
+                "skill": i.skill,
+                "frontmatter": i.frontmatter,
+                "at": i.at,
+            }));
+        }
+    }
     Ok(json!({
-        "instances": out.iter().map(|i| json!({
-            "page_id": i.page_id,
-            "skill": i.skill,
-            "frontmatter": i.frontmatter,
-            "at": i.at,
-        })).collect::<Vec<_>>(),
+        "instances": instances,
         "next_cursor": Value::Null,
     }))
 }
@@ -748,13 +775,29 @@ struct ExpandArgs {
     scenario: Option<String>,
 }
 
-async fn tool_expand(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+async fn tool_expand(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: ExpandArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("expand: {e}")))?;
     let out = indexer
         .expand(&a.page_id, a.as_of.as_deref(), a.scenario.as_deref())
         .await
         .map_err(|e| JsonRpcError::internal(format!("expand: {e}")))?;
+    // Deterministic ACL: an owner-private instance the caller does not own
+    // reads as absent (null) — same shape as a missing page, so existence
+    // is not leaked. Skill pages are the public catalogue, never gated.
+    if let Some(e) = &out
+        && e.page.page_type == PageType::Instance
+        && !indexer
+            .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
+            .await
+            .map_err(|err| JsonRpcError::internal(format!("expand acl: {err}")))?
+    {
+        return Ok(json!({ "page": Value::Null }));
+    }
     match out {
         None => Ok(json!({ "page": Value::Null })),
         Some(e) => Ok(json!({
@@ -854,7 +897,11 @@ fn default_k() -> usize {
     10
 }
 
-async fn tool_search(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+async fn tool_search(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: SearchArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("search: {e}")))?;
     let pt = match a.page_type.as_deref() {
@@ -883,8 +930,20 @@ async fn tool_search(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcErr
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
-    Ok(json!({
-        "hits": hits.iter().map(|h| json!({
+    // Deterministic ACL: drop owner-private hits the caller does not own
+    // (admin bypasses); skill-page hits are the public catalogue. Search
+    // must not surface what a direct read would deny.
+    let mut out = Vec::with_capacity(hits.len());
+    for h in &hits {
+        if h.page_type == PageType::Instance
+            && !indexer
+                .may_read_instance(&caller, &h.skill, &h.frontmatter_excerpt)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("search acl: {e}")))?
+        {
+            continue;
+        }
+        out.push(json!({
             "page_id": h.page_id,
             "slug": h.slug,
             "skill": h.skill,
@@ -893,7 +952,10 @@ async fn tool_search(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcErr
             "snippet": h.snippet,
             "score": h.score,
             "frontmatter_excerpt": h.frontmatter_excerpt,
-        })).collect::<Vec<_>>(),
+        }));
+    }
+    Ok(json!({
+        "hits": out,
         "granularity": granularity.as_str(),
     }))
 }

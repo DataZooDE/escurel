@@ -139,6 +139,13 @@ impl TestIssuer {
     /// Sign a fresh bearer token for `tenant` with `role`. The
     /// 10-minute expiry is plenty for a single test run.
     pub(crate) fn mint(&self, tenant: &str, role: Role) -> String {
+        self.mint_with_sub(tenant, role, "test-subject")
+    }
+
+    /// Sign a bearer for `tenant`/`role` with an explicit `sub` claim —
+    /// for per-instance ACL tests where the subject is the owning
+    /// principal (e.g. a member credential).
+    pub(crate) fn mint_with_sub(&self, tenant: &str, role: Role, subject: &str) -> String {
         let now = now_secs();
         let role_claim = match role {
             // The gateway's default `admin_role_value` is
@@ -152,7 +159,7 @@ impl TestIssuer {
         let claims = json!({
             "iss": self.issuer_url,
             "aud": TEST_AUDIENCE,
-            "sub": "test-subject",
+            "sub": subject,
             "tenant": tenant,
             "roles": [role_claim],
             "iat": now,

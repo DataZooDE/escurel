@@ -399,6 +399,17 @@ impl EscurelProcess {
         issuer.mint(tenant, role)
     }
 
+    /// Like [`Self::mint_token`], but with an explicit `sub` claim — for
+    /// per-instance ACL tests where the caller subject is the owning
+    /// principal (e.g. a member credential).
+    #[must_use]
+    pub fn mint_token_with_sub(&self, tenant: &str, role: Role, subject: &str) -> String {
+        let issuer = self.issuer.as_ref().expect(
+            "EscurelProcess::mint_token_with_sub requires AuthMode::TestIssuer; spawned with a different mode",
+        );
+        issuer.mint_with_sub(tenant, role, subject)
+    }
+
     /// Typed MCP-over-HTTP client targeting this process's HTTP
     /// listener, pre-loaded with a bearer token minted for the default
     /// `"acme"` tenant. Cheap clone of an already-built client — no

@@ -18,6 +18,7 @@
 //! golden image (`docs/deploy/substrate.md §6`); the auto-install
 //! egress is dev-only.
 
+pub mod acl;
 pub mod chat;
 pub mod citation;
 pub mod crdt_history;
@@ -31,6 +32,7 @@ pub mod schema;
 pub mod search;
 pub mod validate;
 
+pub use acl::AclCaller;
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
 pub use events::{EVENTS_MAX_LIMIT, EventInfo, NewEvent};
@@ -42,7 +44,7 @@ pub use meta_skill::{META_SKILL_ID, META_SKILL_MD, META_SKILL_PAGE_ID};
 pub use query::{ColumnSchema, INSPECTABLE_TABLES, QueryError, StoredQueryResult};
 pub use read::{
     BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef, ResolvedWikilink,
-    SkillInfo,
+    SkillInfo, Visibility,
 };
 pub use schema::Migrator;
 pub use search::{Granularity, SearchHit};

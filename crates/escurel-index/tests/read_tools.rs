@@ -183,6 +183,41 @@ async fn list_skills_returns_one_per_skill_page() {
     assert_eq!(skills[1].id, "meeting");
 }
 
+const SKILL_MEMBER_OWNER: (&str, &str) = (
+    "markdown/skills/community_member.md",
+    "---\n\
+     type: skill\n\
+     id: community_member\n\
+     description: A member.\n\
+     visibility: owner\n\
+     owner_field: credential\n\
+     ---\n\
+     # community_member\n",
+);
+
+#[tokio::test]
+async fn list_skills_defaults_visibility_to_public() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER]).await;
+
+    let skills = h.indexer.list_skills().await.unwrap();
+    assert_eq!(skills.len(), 1);
+    // No `visibility:` declared → public, with no owner field.
+    assert_eq!(skills[0].visibility, escurel_index::Visibility::Public);
+    assert_eq!(skills[0].owner_field, None);
+}
+
+#[tokio::test]
+async fn list_skills_parses_owner_visibility_and_owner_field() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_MEMBER_OWNER]).await;
+
+    let skills = h.indexer.list_skills().await.unwrap();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].visibility, escurel_index::Visibility::Owner);
+    assert_eq!(skills[0].owner_field.as_deref(), Some("credential"));
+}
+
 #[tokio::test]
 async fn list_skills_projects_description_and_frontmatter_keys() {
     let h = fresh_harness();
