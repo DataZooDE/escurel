@@ -254,6 +254,33 @@ case of `at`).
 in `required_frontmatter`); the agent does not need to compute
 it from the field list.
 
+##### Per-instance access control (`visibility` / `owner_field`)
+
+A skill page MAY declare a read policy for its instances:
+
+```yaml
+visibility: owner        # public | owner   (default: public)
+owner_field: credential  # frontmatter field naming the owning principal
+```
+
+- `visibility: public` (the default, and the only behaviour before this
+  field existed) — any authenticated caller in the tenant may read an
+  instance of this skill.
+- `visibility: owner` — an instance is readable only by its **owning
+  principal** or the **admin role**. The owner is the verified token
+  `sub` that equals the instance's `owner_field` value: either a direct
+  value (e.g. `credential` carries the platform `sub`) or a `[[skill::id]]`
+  wikilink, resolved to the linked instance's `credential`.
+
+Enforcement is **deterministic** and applied on every read path:
+`expand` of a non-owned owner-instance returns `{"page": null}` (absence,
+not an error — existence is not leaked); `list_instances` and `search`
+**filter out** non-owned owner-instances; the admin role bypasses. The
+decision is a pure comparison on the request path — never an LLM, agent,
+or classifier. Owner-visibility is reported back on `list_skills` as
+`"visibility"` + `"owner_field"`. *(Chat-surface and write-path ACLs are
+tracked as follow-ups.)*
+
 #### `list_instances`
 
 ```jsonc

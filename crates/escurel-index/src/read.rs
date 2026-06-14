@@ -34,6 +34,37 @@ pub struct SkillInfo {
     pub required_frontmatter: Vec<String>,
     pub optional_frontmatter: Vec<String>,
     pub is_event_typed: bool,
+    /// The read policy this skill declares for its instances (the
+    /// `visibility:` frontmatter field; default [`Visibility::Public`]).
+    pub visibility: Visibility,
+    /// The frontmatter field naming the owning principal, when
+    /// `visibility` is `Owner` (the `owner_field:` field). Either a direct
+    /// value (e.g. `credential` → the platform `sub`) or a
+    /// `[[skill::id]]` wikilink resolved to the linked instance's owner.
+    pub owner_field: Option<String>,
+}
+
+/// If `raw` is a `[[skill::id]]` wikilink, return it verbatim for
+/// resolution (the owner-field indirection); `None` for a plain value.
+pub(crate) fn first_wikilink_target(raw: &str) -> Option<String> {
+    parse_wikilinks(raw)
+        .into_iter()
+        .find_map(|wl| match (wl.skill.as_deref(), wl.id.as_deref()) {
+            (Some(_), Some(id)) if !id.is_empty() => Some(raw.to_owned()),
+            _ => None,
+        })
+}
+
+/// The read policy a skill page declares via `visibility:`. Instances of
+/// an `Owner`-visibility skill are readable only by their owning principal
+/// (and the admin role); `Public` is the default and means any
+/// authenticated caller in the tenant may read. Enforced deterministically
+/// on the read path — never by an LLM or agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Visibility {
+    #[default]
+    Public,
+    Owner,
 }
 
 /// One instance page, projected for [`Indexer::list_instances`].
@@ -90,6 +121,14 @@ impl Indexer {
                 is_event_typed: string_array_field(&fm, "required_frontmatter")
                     .iter()
                     .any(|k| k == "at"),
+                visibility: match fm.get("visibility").and_then(serde_json::Value::as_str) {
+                    Some("owner") => Visibility::Owner,
+                    _ => Visibility::Public,
+                },
+                owner_field: fm
+                    .get("owner_field")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
             });
         }
         Ok(out)
