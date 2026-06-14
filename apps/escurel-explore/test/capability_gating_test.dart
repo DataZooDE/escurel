@@ -7,11 +7,11 @@
 library;
 
 import 'package:escurel_explore/app.dart';
-import 'package:escurel_explore/client/errors.dart';
-import 'package:escurel_explore/client/escurel_client.dart';
-import 'package:escurel_explore/client/fixture_escurel_client.dart';
-import 'package:escurel_explore/client/models.dart';
-import 'package:escurel_explore/state/providers.dart';
+import 'package:escurel_explorer_kit/client/errors.dart';
+import 'package:escurel_explorer_kit/client/escurel_client.dart';
+import 'package:escurel_explorer_kit/client/fixture_escurel_client.dart';
+import 'package:escurel_explorer_kit/client/models.dart';
+import 'package:escurel_explorer_kit/state/providers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

@@ -1,0 +1,37 @@
+name: escurel_explorer_kit
+description: Reusable, stylable Flutter components for exploring an Escurel knowledge base — the shared core behind escurel-explore and embedding hosts.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.12.0
+  flutter: ">=3.44.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State
+  flutter_riverpod: ^2.5.1
+
+  # Routing — the standalone-app fallback for the navigation seam
+  # (embedding hosts inject their own handler; see state/explorer_nav).
+  go_router: ^14.6.0
+
+  # Typography
+  google_fonts: ^6.2.1
+
+  # YAML for frontmatter parsing (mirrors escurel-md's serde_yaml_ng)
+  yaml: ^3.1.2
+
+  # HTTP client for the MCP-over-HTTP transport
+  dio: ^5.7.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  path: ^1.9.0
+
+flutter:
+  uses-material-design: true

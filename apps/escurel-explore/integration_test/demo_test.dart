@@ -11,9 +11,9 @@
 // Start order is owned by scripts/drive-demo.sh:
 //   server (dev mode, serving nothing special) → chromedriver →
 //   flutter drive --dart-define=ESCUREL_EXPLORE_BASE_URL=...
-import 'package:escurel_explore/client/http_escurel_client.dart';
-import 'package:escurel_explore/demo/demo_screen.dart';
-import 'package:escurel_explore/state/providers.dart';
+import 'package:escurel_explorer_kit/client/http_escurel_client.dart';
+import 'package:escurel_explorer_kit/demo/demo_screen.dart';
+import 'package:escurel_explorer_kit/state/providers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

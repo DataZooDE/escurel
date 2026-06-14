@@ -11,6 +11,11 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # The shared exploration core (client, models, md, widgets, theme,
+  # the EscurelExplorer shell). escurel-explore is now a thin host.
+  escurel_explorer_kit:
+    path: ../../packages/escurel_explorer_kit
+
   cupertino_icons: ^1.0.8
 
   # State
