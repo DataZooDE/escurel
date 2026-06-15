@@ -925,7 +925,7 @@ fn render_yaml_markup(v: &escurel_md::YamlValue) -> String {
 
 /// Convert a YAML mapping into a JSON string for the `pages.frontmatter`
 /// column. DuckDB's JSON type accepts any well-formed JSON text.
-fn mapping_to_json(mapping: &escurel_md::YamlMapping) -> Result<String, IndexerError> {
+pub(crate) fn mapping_to_json(mapping: &escurel_md::YamlMapping) -> Result<String, IndexerError> {
     let value = escurel_md::YamlValue::Mapping(mapping.clone());
     let json = serde_json::to_string(&value)?;
     Ok(json)

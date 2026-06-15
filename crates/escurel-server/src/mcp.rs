@@ -583,7 +583,7 @@ async fn dispatch_tools_call(
         "search" => tool_search(indexer, caller, params.arguments).await,
         "run_stored_query" => tool_run_stored_query(indexer, params.arguments).await,
         "validate" => tool_validate(indexer, params.arguments).await,
-        "update_page" => tool_update_page(indexer, params.arguments).await,
+        "update_page" => tool_update_page(indexer, caller, state.write_acl, params.arguments).await,
         "append_message" => tool_append_message(indexer, params.arguments).await,
         "list_messages" => tool_list_messages(indexer, params.arguments).await,
         "capture_event" => {
@@ -1034,9 +1034,48 @@ struct UpdatePageArgs {
     content: String,
 }
 
-async fn tool_update_page(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+async fn tool_update_page(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: UpdatePageArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("update_page: {e}")))?;
+
+    // Deterministic per-instance WRITE ACL (symmetric to the read ACL):
+    // only the resolved owner (or admin) may mutate an owner-private
+    // instance; public/no-owner instances are admin-write-only. `Off`
+    // skips; `Log` records a would-be denial but allows; `Enforce` rejects.
+    if write_acl != crate::server::WriteAclMode::Off {
+        let allowed = indexer
+            .may_write_page(&caller, &a.page_id, &a.content)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("update_page acl: {e}")))?;
+        if !allowed {
+            if write_acl == crate::server::WriteAclMode::Log {
+                tracing::warn!(
+                    subject = %caller.subject,
+                    page_id = %a.page_id,
+                    "write-ACL would deny this write (log mode) — allowing"
+                );
+            } else {
+                return Ok(json!({
+                    "ok": false,
+                    "issues": [{
+                        "severity": "error",
+                        "code": "forbidden",
+                        "location": "frontmatter",
+                        "message": format!(
+                            "write denied: caller `{}` does not own instance `{}`",
+                            caller.subject, a.page_id
+                        ),
+                    }],
+                }));
+            }
+        }
+    }
+
     match indexer.update_page(&a.page_id, &a.content).await {
         // The trait doesn't yet surface non-fatal validation issues
         // (M4); return the protocol `{ok, issues}` shape with an empty

@@ -13,6 +13,7 @@
 //! a `[[skill::id]]` wikilink (e.g. `event_profile.member`) is resolved to
 //! the linked instance's `credential`.
 
+use escurel_md::{PageType, YamlValue, parse};
 use serde_json::Value;
 
 use crate::read::Visibility;
@@ -57,6 +58,89 @@ impl Indexer {
         {
             Some(owner) => Ok(owner == caller.subject),
             None => Ok(false), // fail closed: owner-private but unresolved
+        }
+    }
+
+    /// Whether `caller` may WRITE (create/overwrite) the instance page at
+    /// `page_id` with `content`. Symmetric to [`Self::may_read_instance`]
+    /// but WITHOUT the public shortcut: a write is allowed only for admin,
+    /// or for the resolved owner of BOTH the existing page (no hijack) and
+    /// the incoming content (no create-for-/transfer-to another subject).
+    /// Public / no-`owner_field` instances are therefore admin-write-only.
+    ///
+    /// Only `type: instance` pages are gated here (P1); skill/other pages
+    /// return `Ok(true)` and keep the existing meta-skill protection.
+    pub async fn may_write_page(
+        &self,
+        caller: &AclCaller<'_>,
+        page_id: &str,
+        content: &str,
+    ) -> Result<bool, IndexerError> {
+        if caller.is_admin {
+            return Ok(true);
+        }
+        let parsed = parse(content)?;
+        if parsed.frontmatter.page_type != PageType::Instance {
+            return Ok(true); // P1: gate instance writes only
+        }
+        let skill = parsed
+            .frontmatter
+            .fields
+            .get("skill")
+            .and_then(YamlValue::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let incoming_fm: Value = serde_json::from_str(&crate::indexer::mapping_to_json(
+            &parsed.frontmatter.fields,
+        )?)?;
+        let existing_fm: Option<Value> = self
+            .expand(page_id, None, None)
+            .await?
+            .map(|e| e.frontmatter);
+        self.may_write_instance(caller, &skill, existing_fm.as_ref(), &incoming_fm)
+            .await
+    }
+
+    /// The deterministic write decision given the caller, the target
+    /// `skill`, the existing instance frontmatter (`None` for a create),
+    /// and the incoming frontmatter. Admin always passes; otherwise the
+    /// caller must be the resolved owner of the existing page (if any) AND
+    /// of the incoming content; an unresolved owner fails closed.
+    pub async fn may_write_instance(
+        &self,
+        caller: &AclCaller<'_>,
+        skill: &str,
+        existing_fm: Option<&Value>,
+        incoming_fm: &Value,
+    ) -> Result<bool, IndexerError> {
+        if caller.is_admin {
+            return Ok(true);
+        }
+        // Write uses the skill's `owner_field` only — there is no public
+        // write shortcut, so a public / unschema'd / no-owner_field skill
+        // resolves to no owner and is admin-write-only (fail closed).
+        let owner_field = match self.skill_acl(skill).await? {
+            Some((_, owner_field)) => owner_field,
+            None => None,
+        };
+        // No hijack: the caller must own the EXISTING page (when overwriting).
+        if let Some(existing) = existing_fm
+            && self
+                .resolve_owner_subject(owner_field.as_deref(), existing)
+                .await?
+                .as_deref()
+                != Some(caller.subject)
+        {
+            return Ok(false);
+        }
+        // No transfer/create-for-another: the caller must own the INCOMING
+        // owner too (and an unresolved owner denies).
+        match self
+            .resolve_owner_subject(owner_field.as_deref(), incoming_fm)
+            .await?
+        {
+            Some(owner) => Ok(owner == caller.subject),
+            None => Ok(false),
         }
     }
 
