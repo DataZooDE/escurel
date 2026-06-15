@@ -584,8 +584,12 @@ async fn dispatch_tools_call(
         "run_stored_query" => tool_run_stored_query(indexer, params.arguments).await,
         "validate" => tool_validate(indexer, params.arguments).await,
         "update_page" => tool_update_page(indexer, caller, state.write_acl, params.arguments).await,
-        "append_message" => tool_append_message(indexer, params.arguments).await,
-        "list_messages" => tool_list_messages(indexer, params.arguments).await,
+        "append_message" => {
+            tool_append_message(indexer, caller, state.write_acl, params.arguments).await
+        }
+        "list_messages" => {
+            tool_list_messages(indexer, caller, state.write_acl, params.arguments).await
+        }
         "capture_event" => {
             tool_capture_event(indexer, state.webhook.as_ref(), params.arguments).await
         }
@@ -1124,9 +1128,36 @@ fn default_embed() -> bool {
     true
 }
 
-async fn tool_append_message(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+async fn tool_append_message(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: AppendMessageArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("append_message: {e}")))?;
+
+    // Chat-surface ACL: only the chat group's owner (or admin) may append.
+    if write_acl != crate::server::WriteAclMode::Off {
+        let allowed = indexer
+            .may_access_chat(&caller, &a.chat_group_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("append_message acl: {e}")))?;
+        if !allowed {
+            if write_acl == crate::server::WriteAclMode::Log {
+                tracing::warn!(
+                    subject = %caller.subject, chat_group_id = %a.chat_group_id,
+                    "chat-ACL would deny this append (log mode) — allowing"
+                );
+            } else {
+                return Err(JsonRpcError::forbidden(format!(
+                    "append denied: caller `{}` does not own chat `{}`",
+                    caller.subject, a.chat_group_id
+                )));
+            }
+        }
+    }
+
     let stored = indexer
         .append_chat_message(AppendChatMessage {
             chat_group_id: &a.chat_group_id,
@@ -1165,9 +1196,34 @@ fn default_chat_limit() -> usize {
     100
 }
 
-async fn tool_list_messages(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+async fn tool_list_messages(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: ListMessagesArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("list_messages: {e}")))?;
+
+    // Chat-surface ACL: only the chat group's owner (or admin) may read its
+    // history. A denial returns an EMPTY page (non-leaking, like expand→null),
+    // never another member's transcript.
+    if write_acl != crate::server::WriteAclMode::Off {
+        let allowed = indexer
+            .may_access_chat(&caller, &a.chat_group_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_messages acl: {e}")))?;
+        if !allowed {
+            if write_acl == crate::server::WriteAclMode::Log {
+                tracing::warn!(
+                    subject = %caller.subject, chat_group_id = %a.chat_group_id,
+                    "chat-ACL would deny this read (log mode) — allowing"
+                );
+            } else {
+                return Ok(json!({ "messages": [] }));
+            }
+        }
+    }
     // Default to descending — typical "give me the most recent N"
     // call site. Consumers paging the forward log pass "asc".
     let direction = match a
@@ -2555,6 +2611,15 @@ impl JsonRpcError {
     fn internal(msg: impl Into<String>) -> Self {
         Self {
             code: -32603,
+            message: msg.into(),
+        }
+    }
+    /// The caller is authenticated but not permitted to perform the action
+    /// (per-instance / chat ACL denial). App-defined code in the
+    /// JSON-RPC implementation-defined server-error range.
+    fn forbidden(msg: impl Into<String>) -> Self {
+        Self {
+            code: -32003,
             message: msg.into(),
         }
     }

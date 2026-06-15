@@ -31,6 +31,12 @@ pub struct AclCaller<'a> {
 /// owner is reached through a `[[community_member::id]]` wikilink.
 const OWNER_CREDENTIAL_FIELD: &str = "credential";
 
+/// The skill whose instance (id == `chat_group_id`) names the owner of a
+/// chat group (ADR-13: `chat_group_id` := `community_member_id`). The
+/// chat's owner is that instance's `owner_field` value, resolved the same
+/// way as an instance owner.
+const CHAT_OWNER_SKILL: &str = "community_member";
+
 impl Indexer {
     /// Whether `caller` may read an instance of `skill` with frontmatter
     /// `fm`. Deterministic: admin and public always pass; an owner-private
@@ -142,6 +148,38 @@ impl Indexer {
                 .await?
                 .as_deref()
                 == Some(caller.subject)),
+        }
+    }
+
+    /// Whether `caller` may read/append a chat group's history. The chat is
+    /// owned by the [`CHAT_OWNER_SKILL`] instance whose id == `chat_group_id`
+    /// (its `owner_field` value, e.g. `community_member.credential`). Admin
+    /// bypasses. A `chat_group_id` with no owning instance — or an owner that
+    /// cannot be resolved — is treated as ungated (compat: non-member chat
+    /// groups keep their prior open behaviour), so only chats that DO map to
+    /// an owned member become private.
+    pub async fn may_access_chat(
+        &self,
+        caller: &AclCaller<'_>,
+        chat_group_id: &str,
+    ) -> Result<bool, IndexerError> {
+        if caller.is_admin {
+            return Ok(true);
+        }
+        let page_id = format!("markdown/instances/{CHAT_OWNER_SKILL}/{chat_group_id}.md");
+        let Some(expanded) = self.expand(&page_id, None, None).await? else {
+            return Ok(true); // no owning instance → ungated (compat)
+        };
+        let owner_field = self
+            .skill_acl(CHAT_OWNER_SKILL)
+            .await?
+            .and_then(|(_, owner_field)| owner_field);
+        match self
+            .resolve_owner_subject(owner_field.as_deref(), &expanded.frontmatter)
+            .await?
+        {
+            Some(owner) => Ok(owner == caller.subject),
+            None => Ok(true), // owner unresolvable → ungated (compat)
         }
     }
 
