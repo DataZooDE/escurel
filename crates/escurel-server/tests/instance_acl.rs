@@ -169,3 +169,68 @@ async fn admin_bypasses_and_public_is_world_readable() {
     let talk = call(&p, &bob, "expand", json!({ "page_id": KEYNOTE_PAGE })).await;
     assert!(talk["page"].is_object(), "a public talk is world-readable");
 }
+
+#[tokio::test]
+async fn resolve_hides_owner_private_instance_from_non_owner() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+    let admin = p.mint_token(TENANT, Role::Admin);
+
+    // Owner resolves her own member → found.
+    let own = call(
+        &p,
+        &alice,
+        "resolve",
+        json!({ "wikilink": "[[community_member::alice]]" }),
+    )
+    .await;
+    assert_eq!(
+        own["exists"],
+        json!(true),
+        "alice resolves her own member: {own}"
+    );
+
+    // Non-owner must NOT discover the existence/page_id → resolves to absent.
+    let other = call(
+        &p,
+        &bob,
+        "resolve",
+        json!({ "wikilink": "[[community_member::alice]]" }),
+    )
+    .await;
+    assert_eq!(
+        other["exists"],
+        json!(false),
+        "bob must not resolve alice: {other}"
+    );
+    assert!(other["page"].is_null(), "no page_id leaked to bob: {other}");
+
+    // Admin resolves anyone.
+    let as_admin = call(
+        &p,
+        &admin,
+        "resolve",
+        json!({ "wikilink": "[[community_member::alice]]" }),
+    )
+    .await;
+    assert_eq!(
+        as_admin["exists"],
+        json!(true),
+        "admin resolves any: {as_admin}"
+    );
+
+    // Public instances resolve for anyone.
+    let talk = call(
+        &p,
+        &bob,
+        "resolve",
+        json!({ "wikilink": "[[talk::keynote]]" }),
+    )
+    .await;
+    assert_eq!(
+        talk["exists"],
+        json!(true),
+        "public talk resolves for any member: {talk}"
+    );
+}
