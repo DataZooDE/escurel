@@ -51,6 +51,9 @@ pub use auth::{AuthMode, Role};
 pub use fixtures::{FixtureBuilder, MarkdownBody, TenantFixture};
 pub use mcp_client::{McpError, McpTestClient};
 pub use process::{ConfigOverrides, EscurelProcess, Opts};
+// Re-export so consumers can set `ConfigOverrides.write_acl` in their own
+// integration tests without depending on `escurel-server` directly.
+pub use escurel_server::WriteAclMode;
 
 // Re-export the request/response types the test author needs so
 // they can mirror the `Client` surface without a second
