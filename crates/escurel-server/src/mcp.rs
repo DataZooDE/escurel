@@ -581,7 +581,14 @@ async fn dispatch_tools_call(
         "expand" => tool_expand(indexer, caller, params.arguments).await,
         "neighbours" => tool_neighbours(indexer, caller, params.arguments).await,
         "search" => tool_search(indexer, caller, params.arguments).await,
-        "run_stored_query" => tool_run_stored_query(indexer, params.arguments).await,
+        "run_stored_query" => {
+            // A stored query runs pre-declared arbitrary SQL over the whole
+            // corpus and returns arbitrary projected columns (aggregates,
+            // joins) — there is no per-row owner to filter on, so the ACL is
+            // at the capability level: operator/analytics only.
+            require_admin(role)?;
+            tool_run_stored_query(indexer, params.arguments).await
+        }
         "validate" => tool_validate(indexer, params.arguments).await,
         "update_page" => tool_update_page(indexer, caller, state.write_acl, params.arguments).await,
         "append_message" => {
