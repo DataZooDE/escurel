@@ -73,8 +73,8 @@ class _AutoRefresherState extends ConsumerState<AutoRefresher> {
   Widget build(BuildContext context) {
     // Re-arm the timer whenever the operator toggles polling or changes the
     // cadence.
-    ref.listen(autoRefreshEnabledProvider, (_, __) => _reconfigure());
-    ref.listen(autoRefreshIntervalProvider, (_, __) => _reconfigure());
+    ref.listen(autoRefreshEnabledProvider, (_, _) => _reconfigure());
+    ref.listen(autoRefreshIntervalProvider, (_, _) => _reconfigure());
     return widget.child;
   }
 
