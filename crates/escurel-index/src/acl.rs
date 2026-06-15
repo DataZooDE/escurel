@@ -112,6 +112,13 @@ impl Indexer {
     /// and the incoming frontmatter. Admin always passes; otherwise the
     /// caller must be the resolved owner of the existing page (if any) AND
     /// of the incoming content; an unresolved owner fails closed.
+    ///
+    /// One refinement on the overwrite path: an owner-scoped instance
+    /// (`owner_field.is_some()`) whose existing owner is now unresolvable
+    /// (`None` — an orphaned/erased tombstone) may be RECLAIMED by a caller
+    /// who owns the incoming content, so the rightful owner can re-create
+    /// their own erased instance. Public / no-`owner_field` instances are
+    /// never reclaimable and stay admin-write-only.
     pub async fn may_write_instance(
         &self,
         caller: &AclCaller<'_>,
@@ -135,11 +142,35 @@ impl Indexer {
             // including releasing or tombstoning it (e.g. `/delete-my-data`
             // repoints the owner wikilink at a deleted placeholder), so the
             // incoming owner is NOT re-checked here.
-            Some(existing) => Ok(self
-                .resolve_owner_subject(owner_field.as_deref(), existing)
-                .await?
-                .as_deref()
-                == Some(caller.subject)),
+            Some(existing) => {
+                let existing_owner = self
+                    .resolve_owner_subject(owner_field.as_deref(), existing)
+                    .await?;
+                if existing_owner.as_deref() == Some(caller.subject) {
+                    return Ok(true);
+                }
+                // RECLAIM: an owner-scoped instance whose owner is now
+                // unresolvable (`None`) is ORPHANED — e.g. a
+                // `/delete-my-data` tombstone whose owner field was blanked
+                // or repointed at a deleted placeholder. Without this, only
+                // admin could overwrite it, permanently locking the rightful
+                // owner out of RE-CREATING their own erased instance (a member
+                // who erased their data could never re-onboard). Let a caller
+                // reclaim an orphaned instance by writing fresh content owned
+                // by THEMSELVES. Guarded by `owner_field.is_some()` so public
+                // / no-`owner_field` skills (existing owner also `None`) stay
+                // admin-write-only — they are never reclaimable. A LIVE
+                // instance owned by someone else (existing owner `Some(other)`)
+                // is unaffected and stays protected.
+                if owner_field.is_some() && existing_owner.is_none() {
+                    return Ok(self
+                        .resolve_owner_subject(owner_field.as_deref(), incoming_fm)
+                        .await?
+                        .as_deref()
+                        == Some(caller.subject));
+                }
+                Ok(false)
+            }
             // CREATE: the caller must own the INCOMING content (no
             // create-for-/transfer-to another subject). An unresolved owner
             // (public / no `owner_field`) denies → admin-create only.
