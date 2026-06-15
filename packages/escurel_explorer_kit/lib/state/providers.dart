@@ -38,9 +38,9 @@ final escurelClientProvider = Provider<EscurelClient>((ref) {
     // build-time URL baked in (CLAUDE.md: demo runs as one process
     // alongside `/mcp`).
     AppMode.http => HttpEscurelClient(
-        baseUrl: env.baseUrl.isNotEmpty ? env.baseUrl : Uri.base.origin,
-        bearerToken: env.auth == AuthMode.bearer ? null : null,
-      ),
+      baseUrl: env.baseUrl.isNotEmpty ? env.baseUrl : Uri.base.origin,
+      bearerToken: env.auth == AuthMode.bearer ? null : null,
+    ),
     AppMode.fixture => _bootstrapInlineFixture(),
   };
   ref.onDispose(client.close);
@@ -78,9 +78,23 @@ void navigateToInstance(WidgetRef ref, String pageId) {
 bool navigateBack(WidgetRef ref) {
   final stack = ref.read(navBackStackProvider);
   if (stack.isEmpty) return false;
-  ref.read(navBackStackProvider.notifier).state = stack.sublist(0, stack.length - 1);
+  ref.read(navBackStackProvider.notifier).state = stack.sublist(
+    0,
+    stack.length - 1,
+  );
   ref.read(currentPageIdProvider.notifier).state = stack.last;
   return true;
+}
+
+/// Jump focus to a specific depth in the back-stack (a breadcrumb-trail
+/// click): focus `stack[index]` and truncate the history to everything
+/// before it, so the trail to the left of the clicked crumb is preserved
+/// and everything to its right is dropped. No-op for an out-of-range index.
+void navigateToDepth(WidgetRef ref, int index) {
+  final stack = ref.read(navBackStackProvider);
+  if (index < 0 || index >= stack.length) return;
+  ref.read(navBackStackProvider.notifier).state = stack.sublist(0, index);
+  ref.read(currentPageIdProvider.notifier).state = stack[index];
 }
 
 /// Drop the navigation history (used when a fresh search jumps the focus
@@ -99,8 +113,9 @@ void clearNavHistory(WidgetRef ref) {
 Future<void> focusSkill(WidgetRef ref, String skillId) async {
   if (skillId.isEmpty) return;
   final scenario = ref.read(scenarioProvider);
-  final resolved =
-      await ref.read(escurelClientProvider).resolve('[[$skillId]]', scenario: scenario);
+  final resolved = await ref
+      .read(escurelClientProvider)
+      .resolve('[[$skillId]]', scenario: scenario);
   if (resolved.exists && resolved.pageId.isNotEmpty) {
     navigateToInstance(ref, resolved.pageId);
   }
@@ -130,7 +145,10 @@ final skillsCatalogueProvider = FutureProvider<List<SkillSummary>>((ref) {
 });
 
 /// Instances of a given skill, keyed by skill id.
-final instancesProvider = FutureProvider.family<List<InstanceSummary>, String>((ref, skillId) {
+final instancesProvider = FutureProvider.family<List<InstanceSummary>, String>((
+  ref,
+  skillId,
+) {
   return ref.watch(escurelClientProvider).listInstances(skillId);
 });
 
@@ -142,7 +160,9 @@ final currentPageProvider = FutureProvider<ExpandResult?>((ref) async {
   if (id == null) return null;
   final asOf = ref.watch(asOfStringProvider);
   final scenario = ref.watch(scenarioProvider);
-  final page = await ref.watch(escurelClientProvider).expand(id, asOf: asOf, scenario: scenario);
+  final page = await ref
+      .watch(escurelClientProvider)
+      .expand(id, asOf: asOf, scenario: scenario);
   // A time-cut page comes back with an empty pageId — treat it as "not
   // focused" so the reader falls back to its empty state.
   return page.pageId.isEmpty ? null : page;
@@ -156,19 +176,31 @@ final currentBacklinksProvider = FutureProvider<List<Neighbour>>((ref) async {
   final scenario = ref.watch(scenarioProvider);
   return ref
       .watch(escurelClientProvider)
-      .neighbours(id, direction: LinkDirection.incoming, asOf: asOf, scenario: scenario);
+      .neighbours(
+        id,
+        direction: LinkDirection.incoming,
+        asOf: asOf,
+        scenario: scenario,
+      );
 });
 
 /// Outgoing links for the current page. The server returns directionless
 /// edges, so backlinks vs outgoing are two separate `neighbours` calls.
-final currentOutgoingLinksProvider = FutureProvider<List<Neighbour>>((ref) async {
+final currentOutgoingLinksProvider = FutureProvider<List<Neighbour>>((
+  ref,
+) async {
   final id = ref.watch(currentPageIdProvider);
   if (id == null) return const <Neighbour>[];
   final asOf = ref.watch(asOfStringProvider);
   final scenario = ref.watch(scenarioProvider);
   return ref
       .watch(escurelClientProvider)
-      .neighbours(id, direction: LinkDirection.outgoing, asOf: asOf, scenario: scenario);
+      .neighbours(
+        id,
+        direction: LinkDirection.outgoing,
+        asOf: asOf,
+        scenario: scenario,
+      );
 });
 
 /// The inline boot corpus is intentionally small — two skills + two

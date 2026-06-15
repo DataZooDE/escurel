@@ -11,10 +11,17 @@ import '../client/models.dart';
 import '../md/frontmatter.dart';
 import '../state/providers.dart';
 
-/// Every instance in the tenant, flattened across skills (skips the
-/// `escurel` meta-skill, which has no instances). Powers the
-/// breadcrumb's "Instances N" count and any cross-skill listing.
-final allInstancesProvider = FutureProvider<List<InstanceSummary>>((ref) async {
+/// When `false` (the default), erased/revoked tombstones are hidden
+/// everywhere the explorer lists instances; flipping it reveals them
+/// (rendered struck-through). A pure view filter — no refetch.
+final showErasedProvider = StateProvider<bool>((ref) => false);
+
+/// Every instance in the tenant as fetched, flattened across skills (skips
+/// the `escurel` meta-skill). Includes tombstones — filtering happens in
+/// [allInstancesProvider] so toggling visibility doesn't refetch.
+final allInstancesRawProvider = FutureProvider<List<InstanceSummary>>((
+  ref,
+) async {
   final client = ref.watch(escurelClientProvider);
   final skills = await ref.watch(skillsCatalogueProvider.future);
   final out = <InstanceSummary>[];
@@ -23,6 +30,15 @@ final allInstancesProvider = FutureProvider<List<InstanceSummary>>((ref) async {
     out.addAll(await client.listInstances(s.id));
   }
   return out;
+});
+
+/// Every instance in the tenant, flattened across skills, with erased
+/// tombstones hidden unless [showErasedProvider] is on. Powers the
+/// breadcrumb's "Instances N" count and any cross-skill listing.
+final allInstancesProvider = FutureProvider<List<InstanceSummary>>((ref) async {
+  final all = await ref.watch(allInstancesRawProvider.future);
+  if (ref.watch(showErasedProvider)) return all;
+  return all.where((i) => !i.erased).toList();
 });
 
 /// The instance the workspace auto-focuses on first load: the engagement
@@ -39,8 +55,9 @@ final allInstancesProvider = FutureProvider<List<InstanceSummary>>((ref) async {
 final autoFocusTargetProvider = FutureProvider<String?>((ref) async {
   final all = await ref.watch(allInstancesProvider.future);
   if (all.isEmpty) return null;
-  final spines =
-      all.where((i) => i.skill == 'engagement' && i.id.contains('spine')).toList();
+  final spines = all
+      .where((i) => i.skill == 'engagement' && i.id.contains('spine'))
+      .toList();
   if (spines.isEmpty) return all.first.id;
   final client = ref.watch(escurelClientProvider);
   var bestId = spines.first.id;
@@ -109,7 +126,8 @@ final eventSourceFilterProvider = StateProvider<String?>((ref) => null);
 /// The distinct `label_skill`s across the focused instance's event
 /// history — the chips the SOURCES filter offers. Sorted, stable.
 final availableSourcesProvider = Provider<List<String>>((ref) {
-  final history = ref.watch(entityEventHistoryProvider).valueOrNull ?? const <Event>[];
+  final history =
+      ref.watch(entityEventHistoryProvider).valueOrNull ?? const <Event>[];
   final set = <String>{};
   for (final e in history) {
     if (e.labelSkill.isNotEmpty) set.add(e.labelSkill);
@@ -154,7 +172,8 @@ final instanceSnapshotsProvider = FutureProvider<List<String>>((ref) async {
 final openEventDetailProvider = Provider<Event?>((ref) {
   final id = ref.watch(openEventProvider);
   if (id == null) return null;
-  final history = ref.watch(entityEventHistoryProvider).valueOrNull ?? const <Event>[];
+  final history =
+      ref.watch(entityEventHistoryProvider).valueOrNull ?? const <Event>[];
   final inbox = ref.watch(inboxEventsProvider).valueOrNull ?? const <Event>[];
   for (final e in [...history, ...inbox]) {
     if (e.eventId == id) return e;
@@ -172,7 +191,12 @@ final currentNeighboursProvider = FutureProvider<List<Neighbour>>((ref) async {
   final scenario = ref.watch(scenarioProvider);
   return ref
       .watch(escurelClientProvider)
-      .neighbours(id, direction: LinkDirection.both, asOf: asOf, scenario: scenario);
+      .neighbours(
+        id,
+        direction: LinkDirection.both,
+        asOf: asOf,
+        scenario: scenario,
+      );
 });
 
 /// Resolve a typed `[[skill::slug]]` reference to its page id and focus

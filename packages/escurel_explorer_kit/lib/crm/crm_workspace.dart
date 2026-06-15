@@ -13,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../theme/app_theme.dart';
 import '../state/providers.dart';
+import 'auto_refresh.dart';
 import 'capture_bar.dart';
 import 'crm_breadcrumb.dart';
 import 'crm_providers.dart';
@@ -44,17 +45,21 @@ class _CrmWorkspaceState extends ConsumerState<CrmWorkspace> {
       });
     }
 
-    return const Scaffold(
-      backgroundColor: kSurface,
-      appBar: CrmBreadcrumb(),
-      body: Column(
-        children: [
-          WorkspaceSearchBar(),
-          Expanded(child: _SplitBody()),
-          // Time-travel lives in the instance view's STATE OVER TIME
-          // version markers; no separate bottom scrubber.
-          CaptureBar(),
-        ],
+    // AutoRefresher polls the read providers so the knowledge base stays
+    // current without a manual reload (default on; operator-toggleable).
+    return const AutoRefresher(
+      child: Scaffold(
+        backgroundColor: kSurface,
+        appBar: CrmBreadcrumb(),
+        body: Column(
+          children: [
+            WorkspaceSearchBar(),
+            Expanded(child: _SplitBody()),
+            // Time-travel lives in the instance view's STATE OVER TIME
+            // version markers; no separate bottom scrubber.
+            CaptureBar(),
+          ],
+        ),
       ),
     );
   }
@@ -108,7 +113,8 @@ class _SplitBody extends ConsumerWidget {
               child: _CollapsibleRegion(
                 label: 'region-events',
                 collapsed: leftCollapsed,
-                onToggle: () => ref.read(leftCollapsedProvider.notifier).state = !leftCollapsed,
+                onToggle: () => ref.read(leftCollapsedProvider.notifier).state =
+                    !leftCollapsed,
                 edge: _Edge.right,
                 child: const EventPane(),
               ),
@@ -125,7 +131,9 @@ class _SplitBody extends ConsumerWidget {
               child: _CollapsibleRegion(
                 label: 'region-instance',
                 collapsed: rightCollapsed,
-                onToggle: () => ref.read(rightCollapsedProvider.notifier).state = !rightCollapsed,
+                onToggle: () =>
+                    ref.read(rightCollapsedProvider.notifier).state =
+                        !rightCollapsed,
                 edge: _Edge.left,
                 child: const InstancePane(),
               ),
@@ -167,7 +175,9 @@ class _CollapsibleRegion extends StatelessWidget {
         icon: Icon(
           collapsed
               ? (edge == _Edge.right ? Icons.chevron_right : Icons.chevron_left)
-              : (edge == _Edge.right ? Icons.chevron_left : Icons.chevron_right),
+              : (edge == _Edge.right
+                    ? Icons.chevron_left
+                    : Icons.chevron_right),
         ),
       ),
     );
@@ -199,7 +209,9 @@ class _CollapsibleRegion extends StatelessWidget {
                   height: 28,
                   child: Center(
                     child: Icon(
-                      edge == _Edge.right ? Icons.chevron_right : Icons.chevron_left,
+                      edge == _Edge.right
+                          ? Icons.chevron_right
+                          : Icons.chevron_left,
                       size: 16,
                       color: kOnSurfaceVariant,
                     ),
@@ -221,7 +233,9 @@ class _CollapsibleRegion extends StatelessWidget {
           SizedBox(
             height: 28,
             child: Align(
-              alignment: edge == _Edge.right ? Alignment.centerRight : Alignment.centerLeft,
+              alignment: edge == _Edge.right
+                  ? Alignment.centerRight
+                  : Alignment.centerLeft,
               child: toggle,
             ),
           ),
