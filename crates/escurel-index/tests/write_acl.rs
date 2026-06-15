@@ -227,6 +227,142 @@ async fn owner_may_tombstone_own_instance() {
 }
 
 #[tokio::test]
+async fn owner_reclaims_own_orphaned_instance() {
+    // The full lifecycle of `/delete-my-data` then re-onboard:
+    //   1. alice owns her event_profile (resolves to alice via wikilink);
+    //   2. she tombstones it — the owner wikilink now points at a deleted
+    //      placeholder, so the existing owner resolves to None (orphaned);
+    //   3. alice re-creates it, writing fresh content owned by HERSELF.
+    // Step 3 must be ALLOWED: an owner-scoped instance whose existing owner
+    // is unresolvable may be reclaimed by the incoming owner. (Before this
+    // refinement, an orphaned instance was admin-write-only and alice could
+    // never re-onboard.)
+    let h = fresh_harness();
+    seed(
+        &h,
+        &[
+            SKILL_MEMBER,
+            SKILL_EVENT_PROFILE,
+            INST_ALICE,
+            INST_ALICE_PROFILE,
+        ],
+    )
+    .await;
+
+    // The orphaned/erased existing page: owner wikilink → deleted placeholder.
+    let orphaned = serde_json::json!({
+        "type": "instance",
+        "skill": "event_profile",
+        "id": "alice-ki-gipfel",
+        "member": "[[community_member::geloescht]]",
+        "event": "ki-gipfel",
+    });
+    // Sanity: the existing owner truly resolves to None.
+    assert!(
+        !h.indexer
+            .may_write_instance(&member(BOB), "event_profile", Some(&orphaned), &orphaned)
+            .await
+            .unwrap(),
+        "an orphaned instance is not writable by an arbitrary subject"
+    );
+
+    // alice re-creates it, pointing the owner back at her own member record.
+    let reclaimed = fm(&h, "event_profile", "alice-ki-gipfel").await; // owner → alice
+    assert!(
+        h.indexer
+            .may_write_instance(&member(ALICE), "event_profile", Some(&orphaned), &reclaimed)
+            .await
+            .unwrap(),
+        "alice may RECLAIM her own orphaned/erased instance by re-creating it"
+    );
+    // A different non-admin still cannot reclaim it for themselves.
+    assert!(
+        !h.indexer
+            .may_write_instance(&member(BOB), "event_profile", Some(&orphaned), &reclaimed)
+            .await
+            .unwrap(),
+        "bob cannot reclaim alice's orphaned instance as alice"
+    );
+}
+
+#[tokio::test]
+async fn owner_reclaims_own_blanked_direct_owner_instance() {
+    // Same reclaim, but for a direct-`owner_field` skill (community_member,
+    // owner_field = credential): the tombstone drops the credential field, so
+    // the existing owner is unresolvable (None). alice re-creates with her
+    // credential.
+    let h = fresh_harness();
+    seed(&h, &[SKILL_MEMBER, INST_ALICE]).await;
+
+    let blanked = serde_json::json!({
+        "type": "instance",
+        "skill": "community_member",
+        "id": "alice",
+    });
+    let reclaimed = fm(&h, "community_member", "alice").await; // credential → whatsapp:111
+    assert!(
+        h.indexer
+            .may_write_instance(
+                &member(ALICE),
+                "community_member",
+                Some(&blanked),
+                &reclaimed
+            )
+            .await
+            .unwrap(),
+        "alice may reclaim her own blanked/erased member record"
+    );
+    assert!(
+        !h.indexer
+            .may_write_instance(&member(BOB), "community_member", Some(&blanked), &reclaimed)
+            .await
+            .unwrap(),
+        "bob may not reclaim alice's erased record as alice"
+    );
+}
+
+#[tokio::test]
+async fn live_instance_owned_by_other_stays_protected() {
+    // The reclaim path must NOT weaken protection of a LIVE instance: its
+    // existing owner resolves to Some(alice), so a different subject is
+    // denied regardless of who the incoming content names.
+    let h = fresh_harness();
+    seed(&h, &[SKILL_MEMBER, INST_ALICE]).await;
+    let alice = fm(&h, "community_member", "alice").await;
+    // bob attempts to overwrite, even claiming it for himself.
+    let bobs = serde_json::json!({
+        "type": "instance",
+        "skill": "community_member",
+        "id": "alice",
+        "credential": BOB,
+    });
+    assert!(
+        !h.indexer
+            .may_write_instance(&member(BOB), "community_member", Some(&alice), &bobs)
+            .await
+            .unwrap(),
+        "a LIVE instance owned by alice stays protected from bob"
+    );
+}
+
+#[tokio::test]
+async fn public_orphaned_instance_stays_admin_write_only() {
+    // The reclaim guard is `owner_field.is_some()`: a public / no-`owner_field`
+    // skill has existing owner None AND incoming owner None, which must NOT be
+    // mistaken for a reclaimable orphan. It stays admin-write-only.
+    let h = fresh_harness();
+    seed(&h, &[SKILL_TALK, INST_TALK]).await;
+    let talk = fm(&h, "talk", "keynote").await;
+    assert!(
+        !h.indexer
+            .may_write_instance(&member(BOB), "talk", Some(&talk), &talk)
+            .await
+            .unwrap(),
+        "a public instance (no owner_field) is never reclaimable — admin only"
+    );
+}
+
+#[tokio::test]
 async fn owner_resolved_through_wikilink_for_write() {
     let h = fresh_harness();
     seed(
