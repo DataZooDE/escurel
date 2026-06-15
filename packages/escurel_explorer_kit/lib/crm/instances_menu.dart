@@ -19,7 +19,9 @@ class InstancesMenu extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final text = Theme.of(context).textTheme;
-    final count = ref.watch(allInstancesProvider).maybeWhen(data: (xs) => xs.length, orElse: () => null);
+    final count = ref
+        .watch(allInstancesProvider)
+        .maybeWhen(data: (xs) => xs.length, orElse: () => null);
     return BreadcrumbMenu(
       trigger: (open) => Semantics(
         label: 'instances',
@@ -57,12 +59,18 @@ class _InstancesPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final instances = ref.watch(allInstancesProvider);
     final current = ref.watch(currentPageIdProvider);
+    final showErased = ref.watch(showErasedProvider);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         MenuHeader(
-          title: 'Instances · ${instances.maybeWhen(data: (xs) => xs.length, orElse: () => '…')}',
+          title:
+              'Instances · ${instances.maybeWhen(data: (xs) => xs.length, orElse: () => '…')}',
           subtitle: 'the root directory of instances',
+        ),
+        _ShowErasedToggle(
+          value: showErased,
+          onChanged: (v) => ref.read(showErasedProvider.notifier).state = v,
         ),
         Flexible(
           child: instances.when(
@@ -85,11 +93,17 @@ class _InstancesPanel extends ConsumerWidget {
                 shrinkWrap: true,
                 children: [
                   for (final sk in skillIds) ...[
-                    MenuSectionHeader(label: sk.toUpperCase(), count: groups[sk]!.length),
-                    for (final inst in (groups[sk]!..sort((a, b) => _name(a).compareTo(_name(b)))))
+                    MenuSectionHeader(
+                      label: sk.toUpperCase(),
+                      count: groups[sk]!.length,
+                    ),
+                    for (final inst
+                        in (groups[sk]!
+                          ..sort((a, b) => _name(a).compareTo(_name(b)))))
                       _InstanceRow(
                         instance: inst,
                         selected: inst.id == current,
+                        erased: inst.erased,
                         onTap: () {
                           close();
                           navigateToInstance(ref, inst.id);
@@ -114,14 +128,64 @@ String _slug(String pageId) {
   return parts.length == 2 ? parts[1] : base;
 }
 
-String _name(InstanceSummary i) => (i.frontmatter['name'] as String?)?.trim().isNotEmpty == true
+String _name(InstanceSummary i) =>
+    (i.frontmatter['name'] as String?)?.trim().isNotEmpty == true
     ? (i.frontmatter['name'] as String).trim()
     : _slug(i.id);
 
+/// A compact "show deleted" switch at the top of the directory. Defaults
+/// off; flipping it reveals tombstones (struck-through rows).
+class _ShowErasedToggle extends StatelessWidget {
+  const _ShowErasedToggle({required this.value, required this.onChanged});
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Semantics(
+      label: 'show-erased-toggle',
+      toggled: value,
+      button: true,
+      onTap: () => onChanged(!value),
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: () => onChanged(!value),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
+          child: Row(
+            children: [
+              Icon(
+                value ? Icons.visibility : Icons.visibility_off,
+                size: 16,
+                color: kOutline,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Gelöschte anzeigen',
+                  style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+                ),
+              ),
+              Switch(value: value, onChanged: onChanged),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _InstanceRow extends StatelessWidget {
-  const _InstanceRow({required this.instance, required this.selected, required this.onTap});
+  const _InstanceRow({
+    required this.instance,
+    required this.selected,
+    required this.onTap,
+    this.erased = false,
+  });
   final InstanceSummary instance;
   final bool selected;
+  final bool erased;
   final VoidCallback onTap;
 
   @override
@@ -140,7 +204,10 @@ class _InstanceRow extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
           child: Row(
             children: [
-              SkillAvatar(skill: instance.skill, size: 20),
+              Opacity(
+                opacity: erased ? 0.55 : 1.0,
+                child: SkillAvatar(skill: instance.skill, size: 20),
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -148,13 +215,25 @@ class _InstanceRow extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: text.bodyMedium?.copyWith(
-                    color: selected ? kPrimary : kOnSurface,
+                    color: erased
+                        ? kOutline
+                        : (selected ? kPrimary : kOnSurface),
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                    decoration: erased ? TextDecoration.lineThrough : null,
                   ),
                 ),
               ),
               const SizedBox(width: 8),
-              Text(_slug(instance.id), style: text.labelSmall?.copyWith(color: kOutline)),
+              if (erased)
+                Text(
+                  'gelöscht',
+                  style: text.labelSmall?.copyWith(color: kError),
+                )
+              else
+                Text(
+                  _slug(instance.id),
+                  style: text.labelSmall?.copyWith(color: kOutline),
+                ),
             ],
           ),
         ),

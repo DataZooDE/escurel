@@ -159,11 +159,30 @@ class SkillSummary {
 }
 
 class InstanceSummary {
-  const InstanceSummary({required this.id, required this.skill, required this.frontmatter});
+  const InstanceSummary({
+    required this.id,
+    required this.skill,
+    required this.frontmatter,
+  });
 
   final String id;
   final String skill;
   final Map<String, dynamic> frontmatter;
+
+  /// Whether this instance is a tombstone (erased/revoked on user
+  /// request). Carl's `erase_member` writes `status: erased` on the member
+  /// and `status: revoked` on its consent; both keep their required keys so
+  /// the page still parses. Treated as a deletion marker the explorer hides
+  /// by default.
+  bool get erased => isErasedFrontmatter(frontmatter);
+}
+
+/// `true` when a page's frontmatter marks it as a tombstone. Shared by
+/// instance summaries and expanded pages so the "hide erased" rule is
+/// defined in exactly one place.
+bool isErasedFrontmatter(Map<String, dynamic> frontmatter) {
+  final status = (frontmatter['status'] as String?)?.trim().toLowerCase();
+  return status == 'erased' || status == 'revoked';
 }
 
 // ── events / inbox (M7) ─────────────────────────────────────────
@@ -199,17 +218,17 @@ class Event {
   bool get isInbox => status == 'inbox';
 
   static Event fromJson(Map<String, dynamic> j) => Event(
-        eventId: (j['event_id'] as String?) ?? '',
-        at: j['at'] as String?,
-        source: (j['source'] as String?) ?? '',
-        mime: (j['mime'] as String?) ?? '',
-        labelSkill: (j['label_skill'] as String?) ?? '',
-        instancePageId: j['instance_page_id'] as String?,
-        status: (j['status'] as String?) ?? 'inbox',
-        title: (j['title'] as String?) ?? '',
-        body: (j['body'] as String?) ?? '',
-        provenance: Map<String, dynamic>.from(j['provenance'] as Map? ?? const {}),
-      );
+    eventId: (j['event_id'] as String?) ?? '',
+    at: j['at'] as String?,
+    source: (j['source'] as String?) ?? '',
+    mime: (j['mime'] as String?) ?? '',
+    labelSkill: (j['label_skill'] as String?) ?? '',
+    instancePageId: j['instance_page_id'] as String?,
+    status: (j['status'] as String?) ?? 'inbox',
+    title: (j['title'] as String?) ?? '',
+    body: (j['body'] as String?) ?? '',
+    provenance: Map<String, dynamic>.from(j['provenance'] as Map? ?? const {}),
+  );
 }
 
 // ── run_stored_query ────────────────────────────────────────────
@@ -269,7 +288,12 @@ class UpdateResult {
 // ── live mode (session) — stubs until M3 transport decided ──────
 
 class Session {
-  const Session({required this.id, required this.pageId, required this.headVersion, required this.content});
+  const Session({
+    required this.id,
+    required this.pageId,
+    required this.headVersion,
+    required this.content,
+  });
   final String id;
   final String pageId;
   final String headVersion;
@@ -295,7 +319,11 @@ class CloseResult {
 }
 
 class AwarenessEvent {
-  const AwarenessEvent({required this.session, required this.kind, this.payload});
+  const AwarenessEvent({
+    required this.session,
+    required this.kind,
+    this.payload,
+  });
   final String session;
   final String kind;
   final Map<String, Object?>? payload;
@@ -304,21 +332,33 @@ class AwarenessEvent {
 // ── admin MCP tools — gated by escurel-admin role ───────────────
 
 class LaneSummary {
-  const LaneSummary({required this.name, required this.backend, required this.tenantsPresent});
+  const LaneSummary({
+    required this.name,
+    required this.backend,
+    required this.tenantsPresent,
+  });
   final String name;
   final String backend;
   final int tenantsPresent;
 }
 
 class LaneKey {
-  const LaneKey({required this.key, required this.sizeBytes, this.lastModified});
+  const LaneKey({
+    required this.key,
+    required this.sizeBytes,
+    this.lastModified,
+  });
   final String key;
   final int sizeBytes;
   final DateTime? lastModified;
 }
 
 class LaneBlob {
-  const LaneBlob({required this.key, required this.bytes, required this.contentType});
+  const LaneBlob({
+    required this.key,
+    required this.bytes,
+    required this.contentType,
+  });
   final String key;
   final Uint8List bytes;
   final String contentType;
@@ -423,5 +463,6 @@ class AuditDrift {
   final List<String> markdownNotInDuckdb;
   final List<String> indexedButNoMarkdown;
 
-  bool get isClean => markdownNotInDuckdb.isEmpty && indexedButNoMarkdown.isEmpty;
+  bool get isClean =>
+      markdownNotInDuckdb.isEmpty && indexedButNoMarkdown.isEmpty;
 }
