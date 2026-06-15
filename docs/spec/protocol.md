@@ -333,6 +333,15 @@ operators move the event records to an external DuckLake table
 and the agent reaches them through `run_stored_query` instead
 of `list_instances`. See [`storage.md`](storage.md#event-volume--scaling-beyond-1-m-events).
 
+**Access:** `run_stored_query` is **admin-only**. A stored query
+executes pre-declared arbitrary SQL over the whole corpus
+(`pages`/`blocks`/`links`) and projects arbitrary columns
+(aggregates, joins), so there is no per-row owner against which to
+apply the per-instance read ACL — the gate is therefore at the
+capability level (like the `admin_*` inspection tools). A non-admin
+caller is refused with the `admin role required` error; an
+unauthenticated dev/on-host caller (no verifier) is unaffected.
+
 ### Write tools
 
 #### `validate`
