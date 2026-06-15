@@ -234,3 +234,38 @@ async fn resolve_hides_owner_private_instance_from_non_owner() {
         "public talk resolves for any member: {talk}"
     );
 }
+
+#[tokio::test]
+async fn neighbours_filters_edges_to_owner_private_pages() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+    // alice's member has an IN-edge from her own (owner-private) event_profile
+    // (`member: [[community_member::alice]]`).
+    let own = call(
+        &p,
+        &alice,
+        "neighbours",
+        json!({ "page_id": ALICE_PAGE, "direction": "in" }),
+    )
+    .await;
+    assert!(
+        !own["edges"].as_array().unwrap().is_empty(),
+        "alice sees the edge from her own event_profile: {own}"
+    );
+
+    // bob must NOT see edges to/from alice's private event_profile.
+    let other = call(
+        &p,
+        &bob,
+        "neighbours",
+        json!({ "page_id": ALICE_PAGE, "direction": "in" }),
+    )
+    .await;
+    assert_eq!(
+        other["edges"].as_array().unwrap().len(),
+        0,
+        "bob must not see edges to alice's private records: {other}"
+    );
+}
