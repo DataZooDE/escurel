@@ -42,6 +42,7 @@
 //! | `ESCUREL_AUTH_OIDC_ISSUER` | — | OIDC issuer; unset → unauthenticated dev mode |
 //! | `ESCUREL_AUTH_OIDC_AUDIENCE` | `escurel` | OIDC audience |
 //! | `ESCUREL_AUTH_TENANT_CLAIM` | `tenant` | JWT claim carrying the tenant id |
+//! | `ESCUREL_WRITE_ACL` | `off` | per-instance write ACL: `off` (no check) \| `log` (warn but allow) \| `enforce` (reject). Symmetric to the read ACL: owner-or-admin writes; public/no-owner instances are admin-write-only. |
 //! | `ESCUREL_AUTH_ADMIN_ROLE_CLAIM` | `roles` | JWT claim listing roles |
 //! | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | `escurel:admin` | role value granting admin |
 //! | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | `300` | JWKS cache TTL (seconds) |
@@ -717,6 +718,10 @@ impl EscurelConfig {
         ));
 
         let server_config = ServerConfig {
+            // Per-instance write ACL (`ESCUREL_WRITE_ACL`): off (default) |
+            // log | enforce. Read straight from env so it can be flipped at
+            // deploy without a config-file change (safe dark→log→enforce rollout).
+            write_acl: crate::WriteAclMode::from_env(),
             listen: self.listen_http.clone(),
             version: self.version.clone(),
             readiness,

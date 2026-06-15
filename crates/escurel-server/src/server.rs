@@ -52,10 +52,46 @@ pub type EmbedderFactory = Arc<
         + Sync,
 >;
 
+/// Enforcement mode for the deterministic per-instance WRITE ACL
+/// (`ESCUREL_WRITE_ACL`). Symmetric to the read ACL: a caller may mutate
+/// an instance only if it owns it (token `sub` == resolved owner) or is
+/// admin; public/no-owner instances are admin-write-only. The mode lets
+/// the gate be deployed dark (`Off`), observed (`Log`), then enforced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WriteAclMode {
+    /// No write-ACL check (legacy behaviour; safe rollout default).
+    #[default]
+    Off,
+    /// Run the check; on a denial log a warning but ALLOW the write.
+    Log,
+    /// Run the check; on a denial REJECT the write.
+    Enforce,
+}
+
+impl WriteAclMode {
+    /// Parse `ESCUREL_WRITE_ACL` (`off` | `log` | `enforce`); unknown or
+    /// unset → [`WriteAclMode::Off`].
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var("ESCUREL_WRITE_ACL")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "enforce" => Self::Enforce,
+            "log" => Self::Log,
+            _ => Self::Off,
+        }
+    }
+}
+
 /// Gateway configuration. Built by the operator (or the test
 /// harness) and consumed by [`serve`].
 #[derive(Clone)]
 pub struct ServerConfig {
+    /// Per-instance write-ACL enforcement mode (`ESCUREL_WRITE_ACL`).
+    pub write_acl: WriteAclMode,
     /// HTTP listener — `0.0.0.0:8080` in production; tests pass
     /// `127.0.0.1:0` to let the OS pick a free port.
     pub listen: String,
@@ -144,6 +180,7 @@ impl ServerConfig {
     #[must_use]
     pub fn test_defaults() -> Self {
         Self {
+            write_acl: WriteAclMode::Off,
             listen: "127.0.0.1:0".to_owned(),
             version: "0.0.0-dev".to_owned(),
             readiness: Arc::new(AlwaysReady),
@@ -232,6 +269,7 @@ impl ServerHandle {
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    pub(crate) write_acl: WriteAclMode,
     pub(crate) version: String,
     pub(crate) readiness: Arc<dyn ReadinessProbe>,
     pub(crate) indexer: Option<Arc<Indexer>>,
@@ -278,6 +316,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
     // 1` as soon as the route is wired.
     metrics_registry.set_up(true);
     let state = AppState {
+        write_acl: config.write_acl,
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
         indexer: config.indexer.clone(),

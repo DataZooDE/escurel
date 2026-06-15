@@ -20,7 +20,7 @@ use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::{Indexer, Migrator};
 use escurel_quota::QuotaManager;
 use escurel_server::{
-    AlwaysReady, EmbedderFactory, ReadinessProbe, ServerConfig, ServerHandle, serve,
+    AlwaysReady, EmbedderFactory, ReadinessProbe, ServerConfig, ServerHandle, WriteAclMode, serve,
 };
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
@@ -38,6 +38,9 @@ use crate::mcp_client::McpTestClient;
 /// CRDT backend, readiness probe, and indexer presence.
 #[derive(Default, Clone)]
 pub struct ConfigOverrides {
+    /// Per-instance write-ACL enforcement mode. `None` → `Off` (the
+    /// production default); write-ACL tests set `Enforce`.
+    pub write_acl: Option<WriteAclMode>,
     /// Value returned by `GET /version`. Defaults to
     /// `"0.0.0-test"`.
     pub gateway_version: Option<String>,
@@ -97,6 +100,7 @@ pub struct ConfigOverrides {
 impl std::fmt::Debug for ConfigOverrides {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConfigOverrides")
+            .field("write_acl", &self.write_acl)
             .field("gateway_version", &self.gateway_version)
             .field("readiness_overridden", &self.readiness.is_some())
             .field("quota_overridden", &self.quota.is_some())
@@ -281,6 +285,7 @@ impl EscurelProcess {
             .clone()
             .unwrap_or_else(|| Arc::new(AlwaysReady) as Arc<dyn ReadinessProbe>);
         let cfg = ServerConfig {
+            write_acl: overrides.write_acl.unwrap_or_default(),
             listen: "127.0.0.1:0".to_owned(),
             version,
             readiness,
