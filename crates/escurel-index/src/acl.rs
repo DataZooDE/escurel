@@ -123,24 +123,25 @@ impl Indexer {
             Some((_, owner_field)) => owner_field,
             None => None,
         };
-        // No hijack: the caller must own the EXISTING page (when overwriting).
-        if let Some(existing) = existing_fm
-            && self
+        match existing_fm {
+            // OVERWRITE/DELETE: the caller must own the EXISTING page (no
+            // hijack). Owning it, they may rewrite it however they like —
+            // including releasing or tombstoning it (e.g. `/delete-my-data`
+            // repoints the owner wikilink at a deleted placeholder), so the
+            // incoming owner is NOT re-checked here.
+            Some(existing) => Ok(self
                 .resolve_owner_subject(owner_field.as_deref(), existing)
                 .await?
                 .as_deref()
-                != Some(caller.subject)
-        {
-            return Ok(false);
-        }
-        // No transfer/create-for-another: the caller must own the INCOMING
-        // owner too (and an unresolved owner denies).
-        match self
-            .resolve_owner_subject(owner_field.as_deref(), incoming_fm)
-            .await?
-        {
-            Some(owner) => Ok(owner == caller.subject),
-            None => Ok(false),
+                == Some(caller.subject)),
+            // CREATE: the caller must own the INCOMING content (no
+            // create-for-/transfer-to another subject). An unresolved owner
+            // (public / no `owner_field`) denies → admin-create only.
+            None => Ok(self
+                .resolve_owner_subject(owner_field.as_deref(), incoming_fm)
+                .await?
+                .as_deref()
+                == Some(caller.subject)),
         }
     }
 

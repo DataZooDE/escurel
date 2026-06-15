@@ -186,6 +186,47 @@ async fn admin_writes_any_owner_private_instance() {
 }
 
 #[tokio::test]
+async fn owner_may_tombstone_own_instance() {
+    // Self-deletion (`/delete-my-data`) repoints the owner wikilink at a
+    // deleted placeholder (unresolvable). The OWNER of the existing page may
+    // still write it — owning the existing page authorises the write, not the
+    // incoming owner. (Would be denied if the incoming owner were re-checked.)
+    let h = fresh_harness();
+    seed(
+        &h,
+        &[
+            SKILL_MEMBER,
+            SKILL_EVENT_PROFILE,
+            INST_ALICE,
+            INST_ALICE_PROFILE,
+        ],
+    )
+    .await;
+    let existing = fm(&h, "event_profile", "alice-ki-gipfel").await;
+    let tombstone = serde_json::json!({
+        "type": "instance",
+        "skill": "event_profile",
+        "id": "alice-ki-gipfel",
+        "member": "[[community_member::geloescht]]",
+        "event": "ki-gipfel",
+    });
+    assert!(
+        h.indexer
+            .may_write_instance(&member(ALICE), "event_profile", Some(&existing), &tombstone)
+            .await
+            .unwrap(),
+        "owner may tombstone/release their own record"
+    );
+    assert!(
+        !h.indexer
+            .may_write_instance(&member(BOB), "event_profile", Some(&existing), &tombstone)
+            .await
+            .unwrap(),
+        "a non-owner still cannot (existing owner is alice)"
+    );
+}
+
+#[tokio::test]
 async fn owner_resolved_through_wikilink_for_write() {
     let h = fresh_harness();
     seed(
