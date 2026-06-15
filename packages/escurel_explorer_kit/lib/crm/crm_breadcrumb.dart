@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
+import 'auto_refresh.dart';
 import 'instances_menu.dart';
 import 'scenario_switch.dart';
 import 'skills_menu.dart';
@@ -94,7 +95,11 @@ class CrmBreadcrumb extends ConsumerWidget implements PreferredSizeWidget {
             ),
         ],
       ),
-      actions: const [ScenarioSwitch(), SizedBox(width: 16)],
+      actions: const [
+        _AutoRefreshToggle(),
+        ScenarioSwitch(),
+        SizedBox(width: 16),
+      ],
     );
   }
 
@@ -161,6 +166,33 @@ class _Crumb extends StatelessWidget {
     explicitChildNodes: true,
     child: child,
   );
+}
+
+/// Pause/resume the knowledge-base auto-refresh. On by default; the icon
+/// reflects the live state.
+class _AutoRefreshToggle extends ConsumerWidget {
+  const _AutoRefreshToggle();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final on = ref.watch(autoRefreshEnabledProvider);
+    return Semantics(
+      label: 'auto-refresh-toggle',
+      toggled: on,
+      button: true,
+      excludeSemantics: true,
+      child: IconButton(
+        tooltip: on ? 'Auto-Aktualisierung an' : 'Auto-Aktualisierung aus',
+        icon: Icon(
+          on ? Icons.sync : Icons.sync_disabled,
+          size: 18,
+          color: on ? kPrimary : kOutline,
+        ),
+        onPressed: () =>
+            ref.read(autoRefreshEnabledProvider.notifier).state = !on,
+      ),
+    );
+  }
 }
 
 class _Sep extends StatelessWidget {
