@@ -577,9 +577,9 @@ async fn dispatch_tools_call(
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer).await,
         "list_instances" => tool_list_instances(indexer, caller, params.arguments).await,
-        "resolve" => tool_resolve(indexer, params.arguments).await,
+        "resolve" => tool_resolve(indexer, caller, params.arguments).await,
         "expand" => tool_expand(indexer, caller, params.arguments).await,
-        "neighbours" => tool_neighbours(indexer, params.arguments).await,
+        "neighbours" => tool_neighbours(indexer, caller, params.arguments).await,
         "search" => tool_search(indexer, caller, params.arguments).await,
         "run_stored_query" => tool_run_stored_query(indexer, params.arguments).await,
         "validate" => tool_validate(indexer, params.arguments).await,
@@ -741,13 +741,38 @@ struct ResolveArgs {
     scenario: Option<String>,
 }
 
-async fn tool_resolve(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+async fn tool_resolve(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: ResolveArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("resolve: {e}")))?;
-    let resolved = indexer
+    let mut resolved = indexer
         .resolve(&a.wikilink, a.scenario.as_deref())
         .await
         .map_err(|e| JsonRpcError::internal(format!("resolve: {e}")))?;
+    // ACL (always on, mirroring the read filters): never disclose the
+    // existence / page_id of an owner-private instance the caller cannot
+    // read — resolve it to "not found", exactly as `expand` returns null.
+    if let Some(p) = &resolved.page
+        && p.page_type == PageType::Instance
+    {
+        let readable = match indexer
+            .expand(&p.page_id, None, None)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("resolve acl: {e}")))?
+        {
+            Some(e) => indexer
+                .may_read_instance(&caller, &p.skill, &e.frontmatter)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("resolve acl: {e}")))?,
+            None => true,
+        };
+        if !readable {
+            resolved.page = None;
+        }
+    }
     let exists = resolved.exists();
     let parsed = &resolved.parsed;
     Ok(json!({
@@ -840,7 +865,11 @@ struct NeighboursArgs {
     scenario: Option<String>,
 }
 
-async fn tool_neighbours(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+async fn tool_neighbours(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: NeighboursArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("neighbours: {e}")))?;
     let dir = match a.direction.as_deref().unwrap_or("both") {
@@ -863,15 +892,38 @@ async fn tool_neighbours(indexer: &Indexer, args: Value) -> Result<Value, JsonRp
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("neighbours: {e}")))?;
-    Ok(json!({
-        "edges": edges.iter().map(|e| json!({
-            "src_page": e.src_page,
-            "dst_page": e.dst_page,
-            "link_skill": e.link_skill,
-            "link_version": e.link_version,
-            "dst_anchor": e.dst_anchor,
-        })).collect::<Vec<_>>(),
-    }))
+    // ACL (always on): drop edges whose OTHER endpoint is an owner-private
+    // instance the caller can't read — don't reveal links to/from private
+    // records. The queried page itself is the caller's vantage point.
+    let mut out = Vec::with_capacity(edges.len());
+    for e in &edges {
+        let neighbour = if e.src_page == a.page_id {
+            &e.dst_page
+        } else {
+            &e.src_page
+        };
+        let readable = match indexer
+            .expand(neighbour, None, None)
+            .await
+            .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?
+        {
+            Some(ex) if ex.page.page_type == PageType::Instance => indexer
+                .may_read_instance(&caller, &ex.page.skill, &ex.frontmatter)
+                .await
+                .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?,
+            _ => true, // non-instance / absent → not owner-gated
+        };
+        if readable {
+            out.push(json!({
+                "src_page": e.src_page,
+                "dst_page": e.dst_page,
+                "link_skill": e.link_skill,
+                "link_version": e.link_version,
+                "dst_anchor": e.dst_anchor,
+            }));
+        }
+    }
+    Ok(json!({ "edges": out }))
 }
 
 #[derive(Deserialize)]
