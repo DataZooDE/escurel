@@ -37,8 +37,8 @@ use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
     AclCaller, AppendChatMessage, ChatMessage, Direction, EventInfo, Granularity, Indexer,
-    IndexerError, Issue, ListChatMessages, NewEvent, OrderDir, Severity, derive_attach_alias,
-    is_safe_attach_source,
+    IndexerError, Issue, ListChatMessages, NewEvent, OrderDir, Severity, Visibility,
+    derive_attach_alias, is_safe_attach_source,
 };
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
@@ -656,6 +656,11 @@ async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpcError> {
                 required_frontmatter: s.required_frontmatter,
                 optional_frontmatter: s.optional_frontmatter,
                 is_event_typed: s.is_event_typed,
+                visibility: match s.visibility {
+                    Visibility::Public => "public".to_string(),
+                    Visibility::Owner => "owner".to_string(),
+                },
+                owner_field: s.owner_field,
             })
             .collect(),
     };
