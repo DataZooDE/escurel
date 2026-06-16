@@ -153,7 +153,8 @@ pub struct NeighboursResponse {
 pub struct ListSkillsRequest {}
 
 /// A Tier-1 skill. MCP wire keys: `id`, `description`,
-/// `required_frontmatter`, `optional_frontmatter`, `is_event_typed`.
+/// `required_frontmatter`, `optional_frontmatter`, `is_event_typed`,
+/// `visibility`, `owner_field`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Skill {
@@ -162,6 +163,14 @@ pub struct Skill {
     pub required_frontmatter: Vec<String>,
     pub optional_frontmatter: Vec<String>,
     pub is_event_typed: bool,
+    /// Read policy this skill declares (`public` | `owner`). Lets a
+    /// consumer (e.g. the explorer's edit gate) tell operator-editable
+    /// public skills from owner-bound ones without a second call.
+    pub visibility: String,
+    /// The frontmatter field naming the owning principal, when
+    /// `visibility` is `owner` (else `null`). An owner-bound skill is not
+    /// operator-editable.
+    pub owner_field: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

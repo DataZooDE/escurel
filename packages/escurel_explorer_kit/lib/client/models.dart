@@ -145,6 +145,8 @@ class SkillSummary {
     required this.requiredFrontmatter,
     required this.optionalFrontmatter,
     this.isEventTyped = false,
+    this.visibility = 'public',
+    this.ownerField,
   });
 
   final String id;
@@ -156,6 +158,18 @@ class SkillSummary {
   /// e.g. `email` / `meeting` / `doc`) vs entity-bound (`customer`,
   /// `contact`, …). Drives the skills-registry grouping.
   final bool isEventTyped;
+
+  /// The skill's instance-ACL visibility class as declared in its
+  /// frontmatter (`visibility:`). `"public"` (the default when absent)
+  /// means anyone may read; `"owner"` (and similar) means access is
+  /// owner-bound. Editing is only offered for public/ownerless skills.
+  final String visibility;
+
+  /// The frontmatter key naming the owning principal (`owner_field:`),
+  /// or null when the skill has no owner binding. A non-null
+  /// [ownerField] marks an owner-bound skill (e.g. `private_profile`)
+  /// that operators must never edit through the explorer.
+  final String? ownerField;
 }
 
 class InstanceSummary {

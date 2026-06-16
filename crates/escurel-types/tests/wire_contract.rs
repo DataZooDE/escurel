@@ -164,11 +164,15 @@ fn skill_wire_shape() {
         "description": "A customer record",
         "required_frontmatter": ["tier"],
         "optional_frontmatter": ["region"],
-        "is_event_typed": false
+        "is_event_typed": false,
+        "visibility": "public",
+        "owner_field": null
     });
     let skill: Skill = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(skill.id, "customer");
     assert_eq!(skill.required_frontmatter, vec!["tier"]);
+    assert_eq!(skill.visibility, "public");
+    assert_eq!(skill.owner_field, None);
     assert_eq!(serde_json::to_value(&skill).unwrap(), wire);
 }
 
