@@ -6,6 +6,7 @@ import '../md/frontmatter.dart' as md;
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
 import '../widgets/kind_chip.dart';
+import 'page_form.dart';
 
 /// Left pane — skills catalogue with their instances expandable
 /// inline. Clicking an instance opens it in the editor.
@@ -44,6 +45,7 @@ class _SkillTile extends ConsumerWidget {
     final instancesAsync = ref.watch(instancesProvider(skill.id));
     final text = Theme.of(context).textTheme;
     final selectedId = ref.watch(currentPageIdProvider);
+    final editable = ref.watch(skillEditableProvider)(skill.id);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
@@ -99,10 +101,107 @@ class _SkillTile extends ConsumerWidget {
                         style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
                       ),
                     ),
+                  if (editable)
+                    _CreateInstanceRow(
+                      skill: skill,
+                      onTap: () => _openCreate(context, ref, skill),
+                    ),
                 ],
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openCreate(BuildContext context, WidgetRef ref, SkillSummary skill) async {
+    // Seed a blank draft: every required/optional field empty, body a
+    // bare `# <id>` heading the operator fills in.
+    final fm = <String, dynamic>{
+      'type': 'instance',
+      'skill': skill.id,
+      'id': '',
+      for (final k in skill.requiredFrontmatter) k: '',
+    };
+    ref.read(pageDraftProvider.notifier).state =
+        PageDraft(frontmatter: fm, body: '# Neue Instanz\n');
+    ref.read(pageValidationProvider.notifier).state = const [];
+    ref.read(pageSaveProvider.notifier).state = SaveState.idle;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => UncontrolledProviderScope(
+        // The dialog route mounts under the root Navigator, outside the
+        // explorer's isolated ProviderScope — re-attach the same
+        // container so the form's providers resolve.
+        container: ProviderScope.containerOf(context),
+        child: Dialog(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560, maxHeight: 640),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('Neue Instanz · ${skill.id}',
+                        style: Theme.of(ctx).textTheme.titleMedium),
+                    const SizedBox(height: 16),
+                    PageEditForm(
+                      skill: skill,
+                      pageId: '',
+                      baseVersion: null,
+                      isNew: true,
+                      onDone: (focus) {
+                        Navigator.of(ctx).pop();
+                        if (focus != null) {
+                          navigateToInstance(ref, focus);
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    // If the dialog was dismissed without finishing, clear the draft.
+    ref.read(pageDraftProvider.notifier).state = null;
+  }
+}
+
+class _CreateInstanceRow extends StatelessWidget {
+  const _CreateInstanceRow({required this.skill, required this.onTap});
+
+  final SkillSummary skill;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Semantics(
+      label: 'create-instance:${skill.id}',
+      identifier: 'create-instance:${skill.id}',
+      button: true,
+      onTap: onTap,
+      excludeSemantics: true,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Row(
+            children: [
+              const Icon(Icons.add, size: 14, color: kPrimary),
+              const SizedBox(width: 6),
+              Text('Neue Instanz',
+                  style: text.bodySmall?.copyWith(color: kPrimary, fontWeight: FontWeight.w600)),
+            ],
+          ),
         ),
       ),
     );

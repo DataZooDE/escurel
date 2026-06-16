@@ -32,6 +32,7 @@ class _ParsedPage {
     required this.frontmatter,
     required this.body,
     required this.wikilinksOut,
+    this.writeSeq = 0,
   });
 
   final String id;
@@ -40,6 +41,11 @@ class _ParsedPage {
   final Map<String, dynamic> frontmatter;
   final String body;
   final List<WikilinkRef> wikilinksOut;
+
+  /// The write-counter value at which this page was last written (0 for
+  /// seeded pages). Surfaced as the page version so the editor can pass
+  /// it back as `baseVersion` for optimistic concurrency.
+  final int writeSeq;
 }
 
 class FixtureEscurelClient implements EscurelClient {
@@ -56,6 +62,7 @@ class FixtureEscurelClient implements EscurelClient {
     required Map<String, String> instanceFiles,
     List<Event> events = const [],
     Map<String, List<String>> snapshots = const {},
+    bool writeEnabled = false,
   }) {
     final pages = <String, _ParsedPage>{};
 
@@ -102,12 +109,22 @@ class FixtureEscurelClient implements EscurelClient {
       );
     });
 
-    return FixtureEscurelClient._(pages, [...events], snapshots);
+    return FixtureEscurelClient._(pages, [...events], snapshots, writeEnabled);
   }
 
-  FixtureEscurelClient._(this._pages, this._events, this._snapshots);
+  FixtureEscurelClient._(this._pages, this._events, this._snapshots, this._writeEnabled);
 
   final Map<String, _ParsedPage> _pages;
+
+  /// Whether the write path (`validate`/`update_page`) is live and
+  /// `version()` advertises [BackendCapability.agentWriteTools]. Default
+  /// false keeps read-only fixtures backward-compatible; the editing
+  /// tests opt in with `writeEnabled: true`.
+  final bool _writeEnabled;
+
+  /// Monotonic version counter bumped on every successful write — the
+  /// fixture's stand-in for the server's CRDT head version.
+  int _writeSeq = 0;
 
   /// Events keyed by their (short) instance page id; processed events
   /// form an instance's history, `inbox` events the global inbox.
@@ -168,6 +185,10 @@ class FixtureEscurelClient implements EscurelClient {
         // Mirror the backend: event-typed iff `required_frontmatter`
         // includes `at` (read.rs).
         isEventTyped: required.contains('at'),
+        // Instance-ACL hints from the skill frontmatter; default to
+        // public/ownerless when absent (→ operator-editable).
+        visibility: (p.frontmatter['visibility'] as String?) ?? 'public',
+        ownerField: p.frontmatter['owner_field'] as String?,
       );
     }).toList();
   }
@@ -263,6 +284,9 @@ class FixtureEscurelClient implements EscurelClient {
       body: p.body,
       blocks: const <Block>[],
       wikilinksOut: p.wikilinksOut.map((r) => r.toMarkup()).toList(),
+      // Surface a version once a page has been written so the editor can
+      // round-trip it as `baseVersion`. Seeded pages report none.
+      version: p.writeSeq == 0 ? null : 'fx-${p.writeSeq}',
     );
   }
 
@@ -395,12 +419,124 @@ class FixtureEscurelClient implements EscurelClient {
       throw notYetImplemented('run_stored_query');
 
   @override
-  Future<ValidationResult> validate(String content, {String? asPageId}) async =>
-      throw notYetImplemented('validate');
+  Future<ValidationResult> validate(String content, {String? asPageId}) async {
+    if (!_writeEnabled) throw notYetImplemented('validate');
+    return ValidationResult(issues: _validateContent(content));
+  }
 
   @override
-  Future<UpdateResult> updatePage(String pageId, String content, {String? baseVersion}) async =>
-      throw notYetImplemented('update_page');
+  Future<UpdateResult> updatePage(String pageId, String content, {String? baseVersion}) async {
+    if (!_writeEnabled) throw notYetImplemented('update_page');
+
+    // Mirror the server's optimistic-concurrency gate: a stale
+    // baseVersion is rejected without mutating the corpus.
+    if (baseVersion != null) {
+      final existing = _pages[pageId];
+      final head = existing == null ? null : 'fx-${existing.writeSeq}';
+      if (head != null && baseVersion != head) {
+        return UpdateResult(
+          ok: false,
+          issues: [
+            Issue(
+              severity: IssueSeverity.error,
+              code: 'stale_base_version',
+              message: 'baseVersion $baseVersion does not match head $head',
+            ),
+          ],
+        );
+      }
+    }
+
+    final issues = _validateContent(content);
+    if (issues.any((i) => i.severity == IssueSeverity.error)) {
+      return UpdateResult(ok: false, issues: issues);
+    }
+
+    final md.Page parsed;
+    try {
+      parsed = md.parse(content);
+    } on md.ParseException catch (e) {
+      return UpdateResult(
+        ok: false,
+        issues: [Issue(severity: IssueSeverity.error, code: 'parse_failed', message: e.message)],
+      );
+    }
+    final fields = parsed.frontmatter.fields;
+    final version = 'fx-${++_writeSeq}';
+
+    if (parsed.frontmatter.pageType == md.PageType.skill) {
+      final id = (fields['id'] as String?) ?? pageId;
+      _pages[id] = _ParsedPage(
+        id: id,
+        skill: id,
+        pageType: md.PageType.skill,
+        frontmatter: fields,
+        body: parsed.body,
+        wikilinksOut: parseWikilinks(parsed.body),
+        writeSeq: _writeSeq,
+      );
+      return UpdateResult(ok: true, issues: issues, newVersion: version);
+    }
+
+    final skill = fields['skill'] as String? ?? '';
+    final id = fields['id'] as String? ?? '';
+    // Key the page the way fromSources does so list/expand/resolve all
+    // see the write — `<skill>__<id>`, not the on-disk path.
+    final qualifiedId = '${skill}__$id';
+    _pages[qualifiedId] = _ParsedPage(
+      id: qualifiedId,
+      skill: skill,
+      pageType: md.PageType.instance,
+      frontmatter: fields,
+      body: parsed.body,
+      wikilinksOut: _outgoingFromInstance(fields, parsed.body),
+      writeSeq: _writeSeq,
+    );
+    return UpdateResult(ok: true, issues: issues, newVersion: version);
+  }
+
+  /// A small-but-real validation pass mirroring the indexer's hard
+  /// gates: the content must parse as frontmatter+body and carry the
+  /// structural keys (`type`, `id`, plus `skill` for instances). Returns
+  /// an `error` Issue per missing key; an empty list when the page is ok.
+  List<Issue> _validateContent(String content) {
+    final md.Page parsed;
+    try {
+      parsed = md.parse(content);
+    } on md.ParseException catch (e) {
+      return [Issue(severity: IssueSeverity.error, code: 'parse_failed', message: e.message)];
+    }
+    final fields = parsed.frontmatter.fields;
+    final issues = <Issue>[];
+    void requireKey(String key) {
+      final v = fields[key];
+      if (v == null || (v is String && v.trim().isEmpty)) {
+        issues.add(Issue(
+          severity: IssueSeverity.error,
+          code: 'missing_required',
+          message: 'frontmatter is missing required key "$key"',
+        ));
+      }
+    }
+
+    requireKey('type');
+    requireKey('id');
+    if (parsed.frontmatter.pageType == md.PageType.instance) {
+      requireKey('skill');
+      // Enforce the instance's skill-declared required frontmatter — a
+      // real gate the indexer applies, and what makes "clear a required
+      // field → error" a genuine validation path through the form.
+      final skillId = fields['skill'] as String?;
+      final skillPage = skillId == null ? null : _pages[skillId];
+      if (skillPage != null) {
+        for (final k in _stringList(skillPage.frontmatter['required_frontmatter'])) {
+          if (k == 'id') continue; // structural, already checked
+          requireKey(k);
+        }
+      }
+    }
+    return issues;
+  }
 
   @override
   Future<Session> openSession(String pageId) async => throw notYetImplemented('open_session');
@@ -510,11 +646,14 @@ class FixtureEscurelClient implements EscurelClient {
       HealthInfo(ok: true, checkedAt: DateTime.now().toUtc());
 
   @override
-  Future<VersionInfo> version() async => const VersionInfo(
+  Future<VersionInfo> version() async => VersionInfo(
         app: 'fixture-client',
         version: '0.1.0',
         gitSha: 'fixture',
-        capabilities: {BackendCapability.agentReadTools},
+        capabilities: {
+          BackendCapability.agentReadTools,
+          if (_writeEnabled) BackendCapability.agentWriteTools,
+        },
       );
 
   @override

@@ -21,6 +21,7 @@ import '../client/fixture_escurel_client.dart';
 import '../client/http_escurel_client.dart';
 import '../client/models.dart';
 import '../config/env.dart';
+import '../config/feature_flags.dart';
 
 /// The single source of truth for which backend the editor speaks to.
 ///
@@ -202,6 +203,83 @@ final currentOutgoingLinksProvider = FutureProvider<List<Neighbour>>((
         scenario: scenario,
       );
 });
+
+// ── editing (feat/explorer-editing) ──────────────────────────────
+
+/// Whether a skill is operator-editable through the explorer: write
+/// tools are enabled AND the skill exists AND it is ownerless (no
+/// `owner_field`). Owner-bound skills (e.g. `private_profile`) are never
+/// editable here regardless of the write capability. The function is
+/// resolved against the catalogue snapshot; a not-yet-loaded catalogue
+/// reads as not-editable (fail-closed for the write surface).
+final skillEditableProvider = Provider<bool Function(String skillId)>((ref) {
+  final writeEnabled = ref.watch(writeEnabledProvider);
+  final catalogue = ref.watch(skillsCatalogueProvider);
+  return (skillId) {
+    if (!writeEnabled) return false;
+    final skills = catalogue.asData?.value;
+    if (skills == null) return false;
+    final match = skills.where((s) => s.id == skillId);
+    if (match.isEmpty) return false;
+    return match.first.ownerField == null;
+  };
+});
+
+/// The skill id of the current page (from the expanded page's `skill`),
+/// or null when nothing is focused or the page hasn't loaded.
+final currentPageSkillProvider = Provider<String?>((ref) {
+  return ref.watch(currentPageProvider).asData?.value?.skill;
+});
+
+/// Whether the current page is editable (its skill is editable per
+/// [skillEditableProvider]). Drives the "Bearbeiten" affordance.
+final currentPageEditableProvider = Provider<bool>((ref) {
+  final skill = ref.watch(currentPageSkillProvider);
+  if (skill == null) return false;
+  return ref.watch(skillEditableProvider)(skill);
+});
+
+/// Whether the editor is in edit mode for the current page. Reset to
+/// false whenever the focused page changes (see [EntityEditor]).
+final editModeProvider = StateProvider<bool>((ref) => false);
+
+/// The in-progress edit of the current page: a mutable frontmatter map
+/// (string/list values) plus the body text. Null when not editing.
+class PageDraft {
+  PageDraft({required this.frontmatter, required this.body});
+
+  /// Editable frontmatter values, keyed by field name. Values are the
+  /// raw strings shown in the form inputs; list fields are carried as
+  /// `List<String>`.
+  final Map<String, dynamic> frontmatter;
+  String body;
+
+  PageDraft copy() => PageDraft(
+        frontmatter: {...frontmatter},
+        body: body,
+      );
+}
+
+/// The current page draft, or null when no edit is in progress.
+final pageDraftProvider = StateProvider<PageDraft?>((ref) => null);
+
+/// The latest validation issues for the in-progress draft (empty until
+/// a validate runs). Held imperatively so a debounced/Save validate can
+/// push results without a derived future re-running on every keystroke.
+final pageValidationProvider = StateProvider<List<Issue>>((ref) => const []);
+
+/// In-flight save state for the edit footer.
+enum SaveStatus { idle, saving, error }
+
+class SaveState {
+  const SaveState({this.status = SaveStatus.idle, this.message});
+  final SaveStatus status;
+  final String? message;
+
+  static const idle = SaveState();
+}
+
+final pageSaveProvider = StateProvider<SaveState>((ref) => SaveState.idle);
 
 /// The inline boot corpus is intentionally small — two skills + two
 /// instances — just enough for the app to render *something* on a

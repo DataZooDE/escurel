@@ -232,6 +232,11 @@ class HttpEscurelClient implements EscurelClient {
               requiredFrontmatter: (s['required_frontmatter'] as List? ?? const []).map((e) => e.toString()).toList(),
               optionalFrontmatter: (s['optional_frontmatter'] as List? ?? const []).map((e) => e.toString()).toList(),
               isEventTyped: (s['is_event_typed'] as bool?) ?? false,
+              // Instance-ACL hints. The server emits `visibility` +
+              // `owner_field`; tolerate their absence so older servers
+              // still parse (→ public/ownerless, i.e. editable).
+              visibility: (s['visibility'] as String?) ?? 'public',
+              ownerField: s['owner_field'] as String?,
             ))
         .toList();
   }
