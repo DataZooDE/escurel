@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../client/models.dart';
+import '../config/env.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
 
@@ -181,13 +182,18 @@ class _PageEditFormState extends ConsumerState<PageEditForm> {
     return 'markdown/instances/${widget.skill.id}/$id.md';
   }
 
-  /// The id to focus after a create. The fixture/explorer key instances
-  /// as `<skill>__<id>` (the catalogue/expand handle), which differs
-  /// from the markdown write path; navigate by that handle so the new
-  /// page resolves on both transports.
+  /// The id to focus after a create — whatever the active transport's
+  /// `expand`/catalogue resolves. The real server (HTTP) keys instances by
+  /// the canonical markdown page id; the in-memory fixture keys them by the
+  /// `<skill>__<id>` handle. Focus the matching one so the new page opens
+  /// (not the empty-state placeholder).
   String _focusId() {
     if (!widget.isNew) return widget.pageId;
-    return '${widget.skill.id}__${_slug(_newId.text)}';
+    final id = _slug(_newId.text);
+    if (ref.read(envProvider).mode == AppMode.http) {
+      return 'markdown/instances/${widget.skill.id}/$id.md';
+    }
+    return '${widget.skill.id}__$id';
   }
 
   String _slug(String raw) => raw.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9._-]+'), '-');

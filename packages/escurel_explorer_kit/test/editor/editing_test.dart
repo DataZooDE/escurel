@@ -220,4 +220,25 @@ void main() {
     await _openWelcome(tester);
     expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
   });
+
+  testWidgets('embedder editableSkills allowlist narrows editing (excludes an ownerless skill)',
+      (tester) async {
+    final client = _writableClient();
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    // Write is enabled and `note` is ownerless (generically editable), but the
+    // host restricts editing to a different skill — so note is read-only here.
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EscurelExplorer(client: client, editableSkills: const {'other'}),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('create-instance:note'), findsNothing);
+    await _openWelcome(tester);
+    expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
+  });
 }

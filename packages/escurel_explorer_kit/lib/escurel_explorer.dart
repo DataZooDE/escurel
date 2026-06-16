@@ -30,6 +30,7 @@ class EscurelExplorer extends StatefulWidget {
     required this.client,
     this.theme,
     this.env,
+    this.editableSkills,
   });
 
   /// The backend the explorer talks to. The host owns construction and
@@ -44,6 +45,11 @@ class EscurelExplorer extends StatefulWidget {
   /// Defaults to a neutral "live" label so an embedded explorer does not
   /// read as the standalone fixture build.
   final Env? env;
+
+  /// Optional allowlist NARROWING which skills are operator-editable, to
+  /// match a host's server-side write policy. `null` = no extra restriction
+  /// (the generic ownerless rule applies). See [editableSkillsProvider].
+  final Set<String>? editableSkills;
 
   static const Env _embeddedEnv = Env(
     mode: AppMode.http,
@@ -75,6 +81,7 @@ class _EscurelExplorerState extends State<EscurelExplorer> {
           // unaffected.
           explorerEmbeddedProvider.overrideWithValue(true),
           explorerNavigateProvider.overrideWithValue((_) {}),
+          editableSkillsProvider.overrideWithValue(widget.editableSkills),
         ],
       );
 

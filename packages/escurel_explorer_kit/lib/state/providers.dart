@@ -206,17 +206,29 @@ final currentOutgoingLinksProvider = FutureProvider<List<Neighbour>>((
 
 // ── editing (feat/explorer-editing) ──────────────────────────────
 
+/// Optional embedder-supplied allowlist of editable skill ids. `null`
+/// (the default) means "no extra restriction" — editability falls back to
+/// the generic ownerless rule. A non-null set NARROWS editing to exactly
+/// those skills, letting a host (e.g. Carl's operator dashboard) match its
+/// server-side writable-skill policy: some ownerless skills are still
+/// system-managed (e.g. the `community` card) and must not be hand-edited.
+/// Override via [EscurelExplorer.editableSkills].
+final editableSkillsProvider = Provider<Set<String>?>((ref) => null);
+
 /// Whether a skill is operator-editable through the explorer: write
 /// tools are enabled AND the skill exists AND it is ownerless (no
-/// `owner_field`). Owner-bound skills (e.g. `private_profile`) are never
-/// editable here regardless of the write capability. The function is
+/// `owner_field`) AND — when the embedder supplied an [editableSkillsProvider]
+/// allowlist — it is on that list. Owner-bound skills (e.g. `private_profile`)
+/// are never editable here regardless of the write capability. The function is
 /// resolved against the catalogue snapshot; a not-yet-loaded catalogue
 /// reads as not-editable (fail-closed for the write surface).
 final skillEditableProvider = Provider<bool Function(String skillId)>((ref) {
   final writeEnabled = ref.watch(writeEnabledProvider);
   final catalogue = ref.watch(skillsCatalogueProvider);
+  final allowlist = ref.watch(editableSkillsProvider);
   return (skillId) {
     if (!writeEnabled) return false;
+    if (allowlist != null && !allowlist.contains(skillId)) return false;
     final skills = catalogue.asData?.value;
     if (skills == null) return false;
     final match = skills.where((s) => s.id == skillId);
