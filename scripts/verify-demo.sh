@@ -114,6 +114,7 @@ present instance-pane
 present skill-wheel
 present version-markers
 present scenario-switch
+present group-members-pane
 
 # --- behaviour: drive the real backend via same-origin /mcp probes ---
 
@@ -165,6 +166,17 @@ sk_entity=$(mcp_int list_skills '{}' 'r.skills.filter(function(s){return !s.is_e
 [[ "$sk_event" -ge 1 && "$sk_entity" -ge 2 ]] \
   || fail "expected event-typed + entity-bound skills (event=$sk_event entity=$sk_entity)"
 note "probe ok: skills event-typed=$sk_event, entity-bound=$sk_entity"
+
+# --- group ACL v1: admin membership tools round-trip through the gateway -
+# The demo server runs without a verifier (dev/on-host), so admin tools
+# are open here — this proves add_group_member → list_group_members works
+# end-to-end through the served bundle's same-origin /mcp. (The auth-gated
+# path is covered by the no-mock Rust e2e group_members_acl.rs.)
+note "probe: add_group_member then list_group_members round-trips"
+add_ok=$(mcp_int add_group_member '{"group_id":"team-acme","subject":"whatsapp:probe"}' "(r.ok?'ok':'no')")
+expect_int "add_group_member" "$add_ok" "ok"
+gm_has=$(mcp_int list_group_members '{"group_id":"team-acme"}' "r.members.some(function(m){return m.subject==='whatsapp:probe'})")
+expect_int "list_group_members contains seeded subject" "$gm_has" "true"
 
 note "probe: Instances directory is multi-account (per-skill counts)"
 n_customer=$(mcp_int list_instances '{"skill_id":"customer"}' 'r.instances.length')

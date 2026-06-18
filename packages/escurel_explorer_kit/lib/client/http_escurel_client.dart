@@ -28,26 +28,28 @@ import 'escurel_client.dart';
 import 'models.dart';
 
 class HttpEscurelClient implements EscurelClient {
-  HttpEscurelClient({
-    required String baseUrl,
-    String? bearerToken,
-    Dio? dio,
-  }) : _dio = (dio ?? Dio())
-          ..options.baseUrl = baseUrl
-          ..options.connectTimeout = const Duration(seconds: 5)
-          ..options.receiveTimeout = const Duration(seconds: 15)
-          ..options.headers.addAll({
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'Authorization': ?(bearerToken != null ? 'Bearer $bearerToken' : null),
-          });
+  HttpEscurelClient({required String baseUrl, String? bearerToken, Dio? dio})
+    : _dio = (dio ?? Dio())
+        ..options.baseUrl = baseUrl
+        ..options.connectTimeout = const Duration(seconds: 5)
+        ..options.receiveTimeout = const Duration(seconds: 15)
+        ..options.headers.addAll({
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Authorization': ?(bearerToken != null
+              ? 'Bearer $bearerToken'
+              : null),
+        });
 
   final Dio _dio;
   int _jsonRpcId = 0;
 
   // ── tool dispatch (MCP-over-HTTP envelope) ──────────────────
 
-  Future<Map<String, dynamic>> _call(String tool, Map<String, dynamic> args) async {
+  Future<Map<String, dynamic>> _call(
+    String tool,
+    Map<String, dynamic> args,
+  ) async {
     final id = ++_jsonRpcId;
     final body = {
       'jsonrpc': '2.0',
@@ -60,7 +62,10 @@ class HttpEscurelClient implements EscurelClient {
     try {
       resp = await _dio.post<Map<String, dynamic>>('/mcp', data: body);
     } on DioException catch (e) {
-      throw EscurelTransportException('POST /mcp failed: ${e.message}', cause: e);
+      throw EscurelTransportException(
+        'POST /mcp failed: ${e.message}',
+        cause: e,
+      );
     }
 
     final data = resp.data;
@@ -116,12 +121,12 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   SearchHit _hitFromJson(Map<String, dynamic> j) => SearchHit(
-        pageId: j['page_id'] as String,
-        skill: j['skill'] as String? ?? '',
-        score: (j['score'] as num?)?.toDouble() ?? 0.0,
-        anchor: j['anchor'] as String?,
-        snippet: j['snippet'] as String?,
-      );
+    pageId: j['page_id'] as String,
+    skill: j['skill'] as String? ?? '',
+    score: (j['score'] as num?)?.toDouble() ?? 0.0,
+    anchor: j['anchor'] as String?,
+    snippet: j['snippet'] as String?,
+  );
 
   @override
   Future<ResolveResult> resolve(String wikilink, {String? scenario}) async {
@@ -133,9 +138,12 @@ class HttpEscurelClient implements EscurelClient {
     // flat shape too.
     final page = result['page'] as Map<String, dynamic>?;
     return ResolveResult(
-      pageId: (page?['page_id'] as String?) ?? (result['page_id'] as String?) ?? '',
+      pageId:
+          (page?['page_id'] as String?) ?? (result['page_id'] as String?) ?? '',
       skill: (page?['skill'] as String?) ?? (result['skill'] as String?) ?? '',
-      pageType: _pageTypeFromString((page?['page_type'] ?? result['page_type']) as String?),
+      pageType: _pageTypeFromString(
+        (page?['page_type'] ?? result['page_type']) as String?,
+      ),
       exists: (result['exists'] as bool?) ?? false,
       description: result['description'] as String?,
       error: result['error'] as String?,
@@ -143,8 +151,13 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<ExpandResult> expand(String pageId,
-      {String? anchor, String? version, String? asOf, String? scenario}) async {
+  Future<ExpandResult> expand(
+    String pageId, {
+    String? anchor,
+    String? version,
+    String? asOf,
+    String? scenario,
+  }) async {
     final result = await _call('expand', {
       'page_id': pageId,
       'anchor': ?anchor,
@@ -169,19 +182,30 @@ class HttpEscurelClient implements EscurelClient {
     }
     final blocks = (result['blocks'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
-        .map((b) => Block(
-              anchor: (b['anchor'] as String?) ?? '',
-              content: (b['content'] as String?) ?? '',
-            ))
+        .map(
+          (b) => Block(
+            anchor: (b['anchor'] as String?) ?? '',
+            content: (b['content'] as String?) ?? '',
+          ),
+        )
         .toList();
     return ExpandResult(
-      pageId: (page?['page_id'] as String?) ?? (result['page_id'] as String?) ?? pageId,
+      pageId:
+          (page?['page_id'] as String?) ??
+          (result['page_id'] as String?) ??
+          pageId,
       skill: (page?['skill'] as String?) ?? (result['skill'] as String?) ?? '',
-      pageType: _pageTypeFromString((page?['page_type'] ?? result['page_type']) as String?),
-      frontmatter: Map<String, dynamic>.from(result['frontmatter'] as Map? ?? const {}),
+      pageType: _pageTypeFromString(
+        (page?['page_type'] ?? result['page_type']) as String?,
+      ),
+      frontmatter: Map<String, dynamic>.from(
+        result['frontmatter'] as Map? ?? const {},
+      ),
       body: (result['body'] as String?) ?? '',
       blocks: blocks,
-      wikilinksOut: (result['wikilinks_out'] as List? ?? const []).map((e) => e.toString()).toList(),
+      wikilinksOut: (result['wikilinks_out'] as List? ?? const [])
+          .map((e) => e.toString())
+          .toList(),
       version: result['version'] as String?,
     );
   }
@@ -211,13 +235,15 @@ class HttpEscurelClient implements EscurelClient {
         .cast<Map<String, dynamic>>()
         // Server emits src_page / dst_page / dst_anchor; tolerate the
         // older src / dst / anchor shape too.
-        .map((e) => Neighbour(
-              src: (e['src_page'] as String?) ?? (e['src'] as String?) ?? '',
-              dst: (e['dst_page'] as String?) ?? (e['dst'] as String?) ?? '',
-              linkSkill: (e['link_skill'] as String?) ?? '',
-              anchor: (e['dst_anchor'] as String?) ?? (e['anchor'] as String?),
-              linkVersion: e['link_version'] as String?,
-            ))
+        .map(
+          (e) => Neighbour(
+            src: (e['src_page'] as String?) ?? (e['src'] as String?) ?? '',
+            dst: (e['dst_page'] as String?) ?? (e['dst'] as String?) ?? '',
+            linkSkill: (e['link_skill'] as String?) ?? '',
+            anchor: (e['dst_anchor'] as String?) ?? (e['anchor'] as String?),
+            linkVersion: e['link_version'] as String?,
+          ),
+        )
         .toList();
   }
 
@@ -226,18 +252,26 @@ class HttpEscurelClient implements EscurelClient {
     final result = await _call('list_skills', const {});
     return (result['skills'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
-        .map((s) => SkillSummary(
-              id: (s['id'] as String?) ?? '',
-              description: (s['description'] as String?) ?? '',
-              requiredFrontmatter: (s['required_frontmatter'] as List? ?? const []).map((e) => e.toString()).toList(),
-              optionalFrontmatter: (s['optional_frontmatter'] as List? ?? const []).map((e) => e.toString()).toList(),
-              isEventTyped: (s['is_event_typed'] as bool?) ?? false,
-              // Instance-ACL hints. The server emits `visibility` +
-              // `owner_field`; tolerate their absence so older servers
-              // still parse (→ public/ownerless, i.e. editable).
-              visibility: (s['visibility'] as String?) ?? 'public',
-              ownerField: s['owner_field'] as String?,
-            ))
+        .map(
+          (s) => SkillSummary(
+            id: (s['id'] as String?) ?? '',
+            description: (s['description'] as String?) ?? '',
+            requiredFrontmatter:
+                (s['required_frontmatter'] as List? ?? const [])
+                    .map((e) => e.toString())
+                    .toList(),
+            optionalFrontmatter:
+                (s['optional_frontmatter'] as List? ?? const [])
+                    .map((e) => e.toString())
+                    .toList(),
+            isEventTyped: (s['is_event_typed'] as bool?) ?? false,
+            // Instance-ACL hints. The server emits `visibility` +
+            // `owner_field`; tolerate their absence so older servers
+            // still parse (→ public/ownerless, i.e. editable).
+            visibility: (s['visibility'] as String?) ?? 'public',
+            ownerField: s['owner_field'] as String?,
+          ),
+        )
         .toList();
   }
 
@@ -253,7 +287,9 @@ class HttpEscurelClient implements EscurelClient {
     // The server takes a single frontmatter equality filter as a
     // (frontmatter_key, frontmatter_value) pair (PR-5). Translate the
     // first entry of `filter` into that shape; ignore the rest.
-    final fmEntry = (filter == null || filter.isEmpty) ? null : filter.entries.first;
+    final fmEntry = (filter == null || filter.isEmpty)
+        ? null
+        : filter.entries.first;
     final result = await _call('list_instances', {
       'skill_id': skillId,
       'frontmatter_key': ?fmEntry?.key,
@@ -269,11 +305,15 @@ class HttpEscurelClient implements EscurelClient {
         // returns `page_id`; older shapes used `id`. CataloguePane and
         // the CRM workspace set `currentPageIdProvider` from this, so it
         // must be the page_id, not the slug.
-        .map((i) => InstanceSummary(
-              id: (i['page_id'] as String?) ?? (i['id'] as String?) ?? '',
-              skill: (i['skill'] as String?) ?? skillId,
-              frontmatter: Map<String, dynamic>.from(i['frontmatter'] as Map? ?? const {}),
-            ))
+        .map(
+          (i) => InstanceSummary(
+            id: (i['page_id'] as String?) ?? (i['id'] as String?) ?? '',
+            skill: (i['skill'] as String?) ?? skillId,
+            frontmatter: Map<String, dynamic>.from(
+              i['frontmatter'] as Map? ?? const {},
+            ),
+          ),
+        )
         .toList();
   }
 
@@ -329,14 +369,22 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}}) async {
+  Future<QueryResult> runStoredQuery(
+    String queryId, {
+    Map<String, Object?> params = const {},
+  }) async {
     final result = await _call('run_stored_query', {
       'query_id': queryId,
       'params': params,
     });
     final columns = (result['columns'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
-        .map((c) => QueryColumn(name: (c['name'] as String?) ?? '', dartType: (c['type'] as String?) ?? 'dynamic'))
+        .map(
+          (c) => QueryColumn(
+            name: (c['name'] as String?) ?? '',
+            dartType: (c['type'] as String?) ?? 'dynamic',
+          ),
+        )
         .toList();
     final rows = (result['rows'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
@@ -360,7 +408,11 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<UpdateResult> updatePage(String pageId, String content, {String? baseVersion}) async {
+  Future<UpdateResult> updatePage(
+    String pageId,
+    String content, {
+    String? baseVersion,
+  }) async {
     final result = await _call('update_page', {
       'page_id': pageId,
       'content': content,
@@ -423,19 +475,22 @@ class HttpEscurelClient implements EscurelClient {
         .cast<Map<String, dynamic>>()
         .map(_chatMessageFromJson)
         .toList();
-    return ChatPage(messages: messages, nextCursor: result['next_cursor'] as String?);
+    return ChatPage(
+      messages: messages,
+      nextCursor: result['next_cursor'] as String?,
+    );
   }
 
   ChatMessage _chatMessageFromJson(Map<String, dynamic> j) => ChatMessage(
-        chatGroupId: (j['chat_group_id'] as String?) ?? '',
-        msgId: (j['msg_id'] as String?) ?? '',
-        ts: (j['ts'] as String?) ?? '',
-        role: (j['role'] as String?) ?? '',
-        content: (j['content'] as String?) ?? '',
-        embedded: (j['embedded'] as bool?) ?? false,
-        author: j['author'] as String?,
-        metadata: (j['metadata'] as Map?)?.cast<String, Object?>(),
-      );
+    chatGroupId: (j['chat_group_id'] as String?) ?? '',
+    msgId: (j['msg_id'] as String?) ?? '',
+    ts: (j['ts'] as String?) ?? '',
+    role: (j['role'] as String?) ?? '',
+    content: (j['content'] as String?) ?? '',
+    embedded: (j['embedded'] as bool?) ?? false,
+    author: j['author'] as String?,
+    metadata: (j['metadata'] as Map?)?.cast<String, Object?>(),
+  );
 
   // ── live mode — handled by LiveSession over /ws (see editor) ──
 
@@ -465,9 +520,13 @@ class HttpEscurelClient implements EscurelClient {
 
   @override
   Future<CloseResult> closeSession(String session, {bool commit = true}) async {
-    final result = await _call('close_session', {'session': session, 'commit': commit});
+    final result = await _call('close_session', {
+      'session': session,
+      'commit': commit,
+    });
     return CloseResult(
-      finalVersion: (result['merged_version'] as String?) ??
+      finalVersion:
+          (result['merged_version'] as String?) ??
           (result['final_version'] as String?) ??
           '',
       issues: _issuesFromJson(result['issues']),
@@ -488,7 +547,8 @@ class HttpEscurelClient implements EscurelClient {
       queriesRemaining: (r['queries_remaining'] as num?)?.toInt() ?? 0,
       writesRemaining: (r['writes_remaining'] as num?)?.toInt() ?? 0,
       embedsRemaining: (r['embeds_remaining'] as num?)?.toInt() ?? 0,
-      concurrentSessionsInUse: (r['concurrent_sessions_in_use'] as num?)?.toInt() ?? 0,
+      concurrentSessionsInUse:
+          (r['concurrent_sessions_in_use'] as num?)?.toInt() ?? 0,
     );
   }
 
@@ -496,15 +556,20 @@ class HttpEscurelClient implements EscurelClient {
   Future<AuditDrift> adminAudit() async {
     final r = await _call('admin_audit', const {});
     return AuditDrift(
-      markdownNotInDuckdb:
-          (r['markdown_not_in_duckdb'] as List? ?? const []).map((e) => e.toString()).toList(),
-      indexedButNoMarkdown:
-          (r['indexed_but_no_markdown'] as List? ?? const []).map((e) => e.toString()).toList(),
+      markdownNotInDuckdb: (r['markdown_not_in_duckdb'] as List? ?? const [])
+          .map((e) => e.toString())
+          .toList(),
+      indexedButNoMarkdown: (r['indexed_but_no_markdown'] as List? ?? const [])
+          .map((e) => e.toString())
+          .toList(),
     );
   }
 
   @override
-  Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs}) async {
+  Future<int> adminDeleteChatHistory({
+    String? chatGroupId,
+    String? beforeTs,
+  }) async {
     final r = await _call('admin_delete_chat_history', {
       'chat_group_id': ?chatGroupId,
       'before_ts': ?beforeTs,
@@ -513,27 +578,71 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<List<LaneSummary>> adminListLanes() async => throw notYetImplemented('admin_list_lanes (http)');
+  Future<void> addGroupMember(String groupId, String subject) async {
+    await _call('add_group_member', {'group_id': groupId, 'subject': subject});
+  }
 
   @override
-  Future<List<LaneKey>> adminLaneKeys(String lane, {String? prefix, int limit = 100}) async =>
-      throw notYetImplemented('admin_lane_keys (http)');
+  Future<void> removeGroupMember(String groupId, String subject) async {
+    await _call('remove_group_member', {
+      'group_id': groupId,
+      'subject': subject,
+    });
+  }
+
+  @override
+  Future<List<GroupMember>> listGroupMembers(String groupId) async {
+    final r = await _call('list_group_members', {'group_id': groupId});
+    return (r['members'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(
+          (m) => GroupMember(
+            groupId: (m['group_id'] as String?) ?? groupId,
+            subject: (m['subject'] as String?) ?? '',
+            addedAt: m['added_at'] as String?,
+            addedBy: m['added_by'] as String?,
+          ),
+        )
+        .toList();
+  }
+
+  @override
+  Future<List<LaneSummary>> adminListLanes() async =>
+      throw notYetImplemented('admin_list_lanes (http)');
+
+  @override
+  Future<List<LaneKey>> adminLaneKeys(
+    String lane, {
+    String? prefix,
+    int limit = 100,
+  }) async => throw notYetImplemented('admin_lane_keys (http)');
 
   @override
   Future<LaneBlob> adminLaneBlob(String lane, String key) async =>
       throw notYetImplemented('admin_lane_blob (http)');
 
   @override
-  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit}) async {
+  Future<QueryResult> adminIndexQuery(
+    String table, {
+    Map<String, Object?>? filter,
+    int? limit,
+  }) async {
     final result = await _call('admin_index_query', {
       'table': table,
       'limit': ?limit,
     });
     final columns = (result['schema'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
-        .map((c) => QueryColumn(name: (c['name'] as String?) ?? '', dartType: (c['type'] as String?) ?? 'dynamic'))
+        .map(
+          (c) => QueryColumn(
+            name: (c['name'] as String?) ?? '',
+            dartType: (c['type'] as String?) ?? 'dynamic',
+          ),
+        )
         .toList();
-    final rows = (result['rows'] as List? ?? const []).cast<Map<String, dynamic>>().toList();
+    final rows = (result['rows'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .toList();
     return QueryResult(columns: columns, rows: rows);
   }
 
@@ -552,8 +661,10 @@ class HttpEscurelClient implements EscurelClient {
           // change to the line/column ints.
           message: [
             (j['message'] as String?) ?? '',
-            if ((j['location'] as String?)?.isNotEmpty ?? false) '(${j['location']})',
-            if ((j['suggestion'] as String?)?.isNotEmpty ?? false) '— ${j['suggestion']}',
+            if ((j['location'] as String?)?.isNotEmpty ?? false)
+              '(${j['location']})',
+            if ((j['suggestion'] as String?)?.isNotEmpty ?? false)
+              '— ${j['suggestion']}',
           ].where((s) => s.isNotEmpty).join(' '),
         );
       }).toList();
@@ -564,7 +675,10 @@ class HttpEscurelClient implements EscurelClient {
   Future<HealthInfo> healthz() async {
     try {
       final r = await _dio.get<dynamic>('/healthz');
-      return HealthInfo(ok: r.statusCode == 200, checkedAt: DateTime.now().toUtc());
+      return HealthInfo(
+        ok: r.statusCode == 200,
+        checkedAt: DateTime.now().toUtc(),
+      );
     } on DioException {
       return HealthInfo(ok: false, checkedAt: DateTime.now().toUtc());
     }
@@ -574,7 +688,9 @@ class HttpEscurelClient implements EscurelClient {
   Future<VersionInfo> version() async {
     final r = await _dio.get<Map<String, dynamic>>('/version');
     final data = r.data ?? const {};
-    final capStrings = (data['capabilities'] as List? ?? const []).map((e) => e.toString()).toSet();
+    final capStrings = (data['capabilities'] as List? ?? const [])
+        .map((e) => e.toString())
+        .toSet();
     return VersionInfo(
       app: (data['app'] as String?) ?? 'escurel-server',
       version: (data['version'] as String?) ?? 'unknown',

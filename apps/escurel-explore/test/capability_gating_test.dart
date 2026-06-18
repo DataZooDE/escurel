@@ -188,6 +188,18 @@ class _CapStubClient implements EscurelClient {
       inner.adminDeleteChatHistory(chatGroupId: chatGroupId, beforeTs: beforeTs);
 
   @override
+  Future<void> addGroupMember(String groupId, String subject) =>
+      inner.addGroupMember(groupId, subject);
+
+  @override
+  Future<void> removeGroupMember(String groupId, String subject) =>
+      inner.removeGroupMember(groupId, subject);
+
+  @override
+  Future<List<GroupMember>> listGroupMembers(String groupId) =>
+      inner.listGroupMembers(groupId);
+
+  @override
   Future<List<LaneSummary>> adminListLanes() => inner.adminListLanes();
 
   @override

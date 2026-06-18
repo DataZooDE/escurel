@@ -15,37 +15,47 @@ void main() {
       expect(label, 'transport');
     });
 
-    test('notYetImplemented returns EscurelUnsupportedException with tool name', () {
-      final ex = notYetImplemented('search');
-      expect(ex, isA<EscurelUnsupportedException>());
-      expect(ex.message, contains('search'));
-    });
+    test(
+      'notYetImplemented returns EscurelUnsupportedException with tool name',
+      () {
+        final ex = notYetImplemented('search');
+        expect(ex, isA<EscurelUnsupportedException>());
+        expect(ex.message, contains('search'));
+      },
+    );
   });
 
   group('EscurelClient interface', () {
-    test('a partial implementation compiles and surfaces unsupported tools', () async {
-      final EscurelClient client = _StubClient();
+    test(
+      'a partial implementation compiles and surfaces unsupported tools',
+      () async {
+        final EscurelClient client = _StubClient();
 
-      // Use a tool with no implementation to assert the surface plumbs through.
-      await expectLater(
-        client.search(q: 'hello'),
-        throwsA(isA<EscurelUnsupportedException>()),
-      );
-    });
+        // Use a tool with no implementation to assert the surface plumbs through.
+        await expectLater(
+          client.search(q: 'hello'),
+          throwsA(isA<EscurelUnsupportedException>()),
+        );
+      },
+    );
   });
 
   group('DTO defaults', () {
     test('ValidationResult.isOk is true when there are no errors', () {
-      const ok = ValidationResult(issues: [
-        Issue(severity: IssueSeverity.warning, code: 'W1', message: 'minor'),
-      ]);
+      const ok = ValidationResult(
+        issues: [
+          Issue(severity: IssueSeverity.warning, code: 'W1', message: 'minor'),
+        ],
+      );
       expect(ok.isOk, isTrue);
     });
 
     test('ValidationResult.isOk is false when any error is present', () {
-      const broken = ValidationResult(issues: [
-        Issue(severity: IssueSeverity.error, code: 'E1', message: 'bad'),
-      ]);
+      const broken = ValidationResult(
+        issues: [
+          Issue(severity: IssueSeverity.error, code: 'E1', message: 'bad'),
+        ],
+      );
       expect(broken.isOk, isFalse);
     });
   });
@@ -67,11 +77,17 @@ class _StubClient implements EscurelClient {
   }) async => throw notYetImplemented('search');
 
   @override
-  Future<ResolveResult> resolve(String wikilink, {String? scenario}) async => throw notYetImplemented('resolve');
+  Future<ResolveResult> resolve(String wikilink, {String? scenario}) async =>
+      throw notYetImplemented('resolve');
 
   @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf, String? scenario}) async =>
-      throw notYetImplemented('expand');
+  Future<ExpandResult> expand(
+    String pageId, {
+    String? anchor,
+    String? version,
+    String? asOf,
+    String? scenario,
+  }) async => throw notYetImplemented('expand');
 
   @override
   Future<List<Neighbour>> neighbours(
@@ -83,7 +99,8 @@ class _StubClient implements EscurelClient {
   }) async => throw notYetImplemented('neighbours');
 
   @override
-  Future<List<SkillSummary>> listSkills() async => throw notYetImplemented('list_skills');
+  Future<List<SkillSummary>> listSkills() async =>
+      throw notYetImplemented('list_skills');
 
   @override
   Future<List<InstanceSummary>> listInstances(
@@ -96,12 +113,14 @@ class _StubClient implements EscurelClient {
   }) async => throw notYetImplemented('list_instances');
 
   @override
-  Future<List<Event>> listInbox({int? limit}) async => throw notYetImplemented('list_inbox');
+  Future<List<Event>> listInbox({int? limit}) async =>
+      throw notYetImplemented('list_inbox');
   @override
   Future<List<Event>> listEvents(String instancePageId, {int? limit}) async =>
       throw notYetImplemented('list_events');
   @override
-  Future<List<String>> listSnapshots(String pageId) async => throw notYetImplemented('list_snapshots');
+  Future<List<String>> listSnapshots(String pageId) async =>
+      throw notYetImplemented('list_snapshots');
   @override
   Future<Event> captureEvent({
     String? at,
@@ -112,31 +131,38 @@ class _StubClient implements EscurelClient {
     String title = '',
     String body = '',
     Map<String, dynamic>? provenance,
-  }) async =>
-      throw notYetImplemented('capture_event');
+  }) async => throw notYetImplemented('capture_event');
 
   @override
-  Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}}) async =>
-      throw notYetImplemented('run_stored_query');
+  Future<QueryResult> runStoredQuery(
+    String queryId, {
+    Map<String, Object?> params = const {},
+  }) async => throw notYetImplemented('run_stored_query');
 
   @override
   Future<ValidationResult> validate(String content, {String? asPageId}) async =>
       throw notYetImplemented('validate');
 
   @override
-  Future<UpdateResult> updatePage(String pageId, String content, {String? baseVersion}) async =>
-      throw notYetImplemented('update_page');
+  Future<UpdateResult> updatePage(
+    String pageId,
+    String content, {
+    String? baseVersion,
+  }) async => throw notYetImplemented('update_page');
 
   @override
-  Future<Session> openSession(String pageId) async => throw notYetImplemented('open_session');
+  Future<Session> openSession(String pageId) async =>
+      throw notYetImplemented('open_session');
 
   @override
   Future<ApplyOpResult> applyOp(String session, CrdtOp op) async =>
       throw notYetImplemented('apply_op');
 
   @override
-  Future<CloseResult> closeSession(String session, {bool commit = true}) async =>
-      throw notYetImplemented('close_session');
+  Future<CloseResult> closeSession(
+    String session, {
+    bool commit = true,
+  }) async => throw notYetImplemented('close_session');
 
   @override
   Stream<AwarenessEvent> awareness(String pageId) async* {
@@ -166,29 +192,53 @@ class _StubClient implements EscurelClient {
   }) async => throw notYetImplemented('list_messages');
 
   @override
-  Future<QuotaSnapshot> adminQuota() async => throw notYetImplemented('admin_quota');
+  Future<QuotaSnapshot> adminQuota() async =>
+      throw notYetImplemented('admin_quota');
 
   @override
-  Future<AuditDrift> adminAudit() async => throw notYetImplemented('admin_audit');
+  Future<AuditDrift> adminAudit() async =>
+      throw notYetImplemented('admin_audit');
 
   @override
-  Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs}) async =>
-      throw notYetImplemented('admin_delete_chat_history');
+  Future<int> adminDeleteChatHistory({
+    String? chatGroupId,
+    String? beforeTs,
+  }) async => throw notYetImplemented('admin_delete_chat_history');
 
   @override
-  Future<List<LaneSummary>> adminListLanes() async => throw notYetImplemented('admin_list_lanes');
+  Future<void> addGroupMember(String groupId, String subject) async =>
+      throw notYetImplemented('add_group_member');
 
   @override
-  Future<List<LaneKey>> adminLaneKeys(String lane, {String? prefix, int limit = 100}) async =>
-      throw notYetImplemented('admin_lane_keys');
+  Future<void> removeGroupMember(String groupId, String subject) async =>
+      throw notYetImplemented('remove_group_member');
+
+  @override
+  Future<List<GroupMember>> listGroupMembers(String groupId) async =>
+      throw notYetImplemented('list_group_members');
+
+  @override
+  Future<List<LaneSummary>> adminListLanes() async =>
+      throw notYetImplemented('admin_list_lanes');
+
+  @override
+  Future<List<LaneKey>> adminLaneKeys(
+    String lane, {
+    String? prefix,
+    int limit = 100,
+  }) async => throw notYetImplemented('admin_lane_keys');
 
   @override
   Future<LaneBlob> adminLaneBlob(String lane, String key) async =>
       throw notYetImplemented('admin_lane_blob');
 
   @override
-  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit, String? asOf}) async =>
-      throw notYetImplemented('admin_index_query');
+  Future<QueryResult> adminIndexQuery(
+    String table, {
+    Map<String, Object?>? filter,
+    int? limit,
+    String? asOf,
+  }) async => throw notYetImplemented('admin_index_query');
 
   @override
   Future<HealthInfo> healthz() async => throw notYetImplemented('healthz');

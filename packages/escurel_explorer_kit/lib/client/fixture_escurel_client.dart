@@ -94,10 +94,18 @@ class FixtureEscurelClient implements EscurelClient {
         );
       }
       final fields = parsed.frontmatter.fields;
-      final skill = fields['skill'] as String? ??
-          (throw EscurelToolException('missing skill: in $basename', code: 'fixture.missing_skill'));
-      final id = fields['id'] as String? ??
-          (throw EscurelToolException('missing id: in $basename', code: 'fixture.missing_id'));
+      final skill =
+          fields['skill'] as String? ??
+          (throw EscurelToolException(
+            'missing skill: in $basename',
+            code: 'fixture.missing_skill',
+          ));
+      final id =
+          fields['id'] as String? ??
+          (throw EscurelToolException(
+            'missing id: in $basename',
+            code: 'fixture.missing_id',
+          ));
       final qualifiedId = '${skill}__$id';
       pages[qualifiedId] = _ParsedPage(
         id: qualifiedId,
@@ -112,7 +120,12 @@ class FixtureEscurelClient implements EscurelClient {
     return FixtureEscurelClient._(pages, [...events], snapshots, writeEnabled);
   }
 
-  FixtureEscurelClient._(this._pages, this._events, this._snapshots, this._writeEnabled);
+  FixtureEscurelClient._(
+    this._pages,
+    this._events,
+    this._snapshots,
+    this._writeEnabled,
+  );
 
   final Map<String, _ParsedPage> _pages;
 
@@ -139,7 +152,10 @@ class FixtureEscurelClient implements EscurelClient {
     try {
       return md.parse(raw);
     } on md.ParseException catch (e) {
-      throw EscurelToolException('parse $basename: ${e.message}', code: 'fixture.parse_failed');
+      throw EscurelToolException(
+        'parse $basename: ${e.message}',
+        code: 'fixture.parse_failed',
+      );
     }
   }
 
@@ -207,10 +223,14 @@ class FixtureEscurelClient implements EscurelClient {
         .toList();
 
     if (filter != null) {
-      instances = instances.where((p) => filter.entries.every((e) {
-        final actual = p.frontmatter[e.key];
-        return _matches(actual, e.value);
-      })).toList();
+      instances = instances
+          .where(
+            (p) => filter.entries.every((e) {
+              final actual = p.frontmatter[e.key];
+              return _matches(actual, e.value);
+            }),
+          )
+          .toList();
     }
 
     if (orderBy != null) {
@@ -228,7 +248,13 @@ class FixtureEscurelClient implements EscurelClient {
     }
 
     return instances
-        .map((p) => InstanceSummary(id: p.id, skill: p.skill, frontmatter: p.frontmatter))
+        .map(
+          (p) => InstanceSummary(
+            id: p.id,
+            skill: p.skill,
+            frontmatter: p.frontmatter,
+          ),
+        )
         .toList();
   }
 
@@ -246,7 +272,8 @@ class FixtureEscurelClient implements EscurelClient {
     }
     final ref = refs.first;
     final candidates = _pages.values.where((p) {
-      if (ref.skill != null) return p.skill == ref.skill && p.id.endsWith('__${ref.id}');
+      if (ref.skill != null)
+        return p.skill == ref.skill && p.id.endsWith('__${ref.id}');
       return p.id == ref.id || p.id.endsWith('__${ref.id}');
     });
 
@@ -270,12 +297,19 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<ExpandResult> expand(String pageId,
-      {String? anchor, String? version, String? asOf, String? scenario}) async {
-    final p = _pages[pageId] ?? (throw EscurelToolException(
-      'page $pageId not found',
-      code: 'fixture.no_such_page',
-    ));
+  Future<ExpandResult> expand(
+    String pageId, {
+    String? anchor,
+    String? version,
+    String? asOf,
+    String? scenario,
+  }) async {
+    final p =
+        _pages[pageId] ??
+        (throw EscurelToolException(
+          'page $pageId not found',
+          code: 'fixture.no_such_page',
+        ));
     return ExpandResult(
       pageId: p.id,
       skill: p.skill,
@@ -308,7 +342,8 @@ class FixtureEscurelClient implements EscurelClient {
       }
     }
 
-    if (direction == LinkDirection.outgoing || direction == LinkDirection.both) {
+    if (direction == LinkDirection.outgoing ||
+        direction == LinkDirection.both) {
       final p = _pages[pageId];
       if (p != null) {
         for (final ref in p.wikilinksOut) {
@@ -320,7 +355,8 @@ class FixtureEscurelClient implements EscurelClient {
       }
     }
 
-    if (direction == LinkDirection.incoming || direction == LinkDirection.both) {
+    if (direction == LinkDirection.incoming ||
+        direction == LinkDirection.both) {
       for (final cand in _pages.values) {
         for (final ref in cand.wikilinksOut) {
           if (_resolveRef(ref) != pageId) continue;
@@ -348,24 +384,26 @@ class FixtureEscurelClient implements EscurelClient {
     final needle = q.toLowerCase();
     final hits = <SearchHit>[];
     for (final p in _pages.values) {
-      if (pageType == PageTypeFilter.skill && p.pageType != md.PageType.skill) continue;
-      if (pageType == PageTypeFilter.instance && p.pageType != md.PageType.instance) continue;
+      if (pageType == PageTypeFilter.skill && p.pageType != md.PageType.skill)
+        continue;
+      if (pageType == PageTypeFilter.instance &&
+          p.pageType != md.PageType.instance)
+        continue;
       if (skill != null && p.skill != skill) continue;
       final inBody = p.body.toLowerCase().contains(needle);
       final inSkill = p.skill.toLowerCase().contains(needle);
       final inId = p.id.toLowerCase().contains(needle);
       if (!inBody && !inSkill && !inId) continue;
-      hits.add(SearchHit(
-        pageId: p.id,
-        skill: p.skill,
-        score: inSkill ? 1.0 : (inId ? 0.8 : 0.5),
-      ));
+      hits.add(
+        SearchHit(
+          pageId: p.id,
+          skill: p.skill,
+          score: inSkill ? 1.0 : (inId ? 0.8 : 0.5),
+        ),
+      );
     }
     hits.sort((a, b) => b.score.compareTo(a.score));
-    return SearchResult(
-      hits: hits.take(k).toList(),
-      granularity: granularity,
-    );
+    return SearchResult(hits: hits.take(k).toList(), granularity: granularity);
   }
 
   // ── events / inbox / snapshots (real, over the fixture corpus) ──
@@ -373,19 +411,26 @@ class FixtureEscurelClient implements EscurelClient {
   @override
   Future<List<Event>> listInbox({int? limit}) async {
     final inbox = _events.where((e) => e.status == 'inbox').toList();
-    return (limit != null && inbox.length > limit) ? inbox.sublist(0, limit) : inbox;
+    return (limit != null && inbox.length > limit)
+        ? inbox.sublist(0, limit)
+        : inbox;
   }
 
   @override
   Future<List<Event>> listEvents(String instancePageId, {int? limit}) async {
     final hist = _events
-        .where((e) => e.status == 'processed' && e.instancePageId == instancePageId)
+        .where(
+          (e) => e.status == 'processed' && e.instancePageId == instancePageId,
+        )
         .toList();
-    return (limit != null && hist.length > limit) ? hist.sublist(0, limit) : hist;
+    return (limit != null && hist.length > limit)
+        ? hist.sublist(0, limit)
+        : hist;
   }
 
   @override
-  Future<List<String>> listSnapshots(String pageId) async => _snapshots[pageId] ?? const [];
+  Future<List<String>> listSnapshots(String pageId) async =>
+      _snapshots[pageId] ?? const [];
 
   @override
   Future<Event> captureEvent({
@@ -415,8 +460,10 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}}) async =>
-      throw notYetImplemented('run_stored_query');
+  Future<QueryResult> runStoredQuery(
+    String queryId, {
+    Map<String, Object?> params = const {},
+  }) async => throw notYetImplemented('run_stored_query');
 
   @override
   Future<ValidationResult> validate(String content, {String? asPageId}) async {
@@ -425,7 +472,11 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<UpdateResult> updatePage(String pageId, String content, {String? baseVersion}) async {
+  Future<UpdateResult> updatePage(
+    String pageId,
+    String content, {
+    String? baseVersion,
+  }) async {
     if (!_writeEnabled) throw notYetImplemented('update_page');
 
     // Mirror the server's optimistic-concurrency gate: a stale
@@ -458,7 +509,13 @@ class FixtureEscurelClient implements EscurelClient {
     } on md.ParseException catch (e) {
       return UpdateResult(
         ok: false,
-        issues: [Issue(severity: IssueSeverity.error, code: 'parse_failed', message: e.message)],
+        issues: [
+          Issue(
+            severity: IssueSeverity.error,
+            code: 'parse_failed',
+            message: e.message,
+          ),
+        ],
       );
     }
     final fields = parsed.frontmatter.fields;
@@ -504,18 +561,26 @@ class FixtureEscurelClient implements EscurelClient {
     try {
       parsed = md.parse(content);
     } on md.ParseException catch (e) {
-      return [Issue(severity: IssueSeverity.error, code: 'parse_failed', message: e.message)];
+      return [
+        Issue(
+          severity: IssueSeverity.error,
+          code: 'parse_failed',
+          message: e.message,
+        ),
+      ];
     }
     final fields = parsed.frontmatter.fields;
     final issues = <Issue>[];
     void requireKey(String key) {
       final v = fields[key];
       if (v == null || (v is String && v.trim().isEmpty)) {
-        issues.add(Issue(
-          severity: IssueSeverity.error,
-          code: 'missing_required',
-          message: 'frontmatter is missing required key "$key"',
-        ));
+        issues.add(
+          Issue(
+            severity: IssueSeverity.error,
+            code: 'missing_required',
+            message: 'frontmatter is missing required key "$key"',
+          ),
+        );
       }
     }
 
@@ -529,7 +594,9 @@ class FixtureEscurelClient implements EscurelClient {
       final skillId = fields['skill'] as String?;
       final skillPage = skillId == null ? null : _pages[skillId];
       if (skillPage != null) {
-        for (final k in _stringList(skillPage.frontmatter['required_frontmatter'])) {
+        for (final k in _stringList(
+          skillPage.frontmatter['required_frontmatter'],
+        )) {
           if (k == 'id') continue; // structural, already checked
           requireKey(k);
         }
@@ -539,15 +606,18 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<Session> openSession(String pageId) async => throw notYetImplemented('open_session');
+  Future<Session> openSession(String pageId) async =>
+      throw notYetImplemented('open_session');
 
   @override
   Future<ApplyOpResult> applyOp(String session, CrdtOp op) async =>
       throw notYetImplemented('apply_op');
 
   @override
-  Future<CloseResult> closeSession(String session, {bool commit = true}) async =>
-      throw notYetImplemented('close_session');
+  Future<CloseResult> closeSession(
+    String session, {
+    bool commit = true,
+  }) async => throw notYetImplemented('close_session');
 
   @override
   Stream<AwarenessEvent> awareness(String pageId) async* {
@@ -572,16 +642,20 @@ class FixtureEscurelClient implements EscurelClient {
   }) async {
     final id = msgId ?? 'fixture-${_chatSeq++}';
     final stamp = ts ?? DateTime.now().toUtc().toIso8601String();
-    _chat.putIfAbsent(chatGroupId, () => []).add(ChatMessage(
-          chatGroupId: chatGroupId,
-          msgId: id,
-          ts: stamp,
-          role: role,
-          content: content,
-          embedded: embed,
-          author: author,
-          metadata: metadata,
-        ));
+    _chat
+        .putIfAbsent(chatGroupId, () => [])
+        .add(
+          ChatMessage(
+            chatGroupId: chatGroupId,
+            msgId: id,
+            ts: stamp,
+            role: role,
+            content: content,
+            embedded: embed,
+            author: author,
+            metadata: metadata,
+          ),
+        );
     return AppendedMessage(msgId: id, ts: stamp);
   }
 
@@ -603,18 +677,21 @@ class FixtureEscurelClient implements EscurelClient {
 
   @override
   Future<QuotaSnapshot> adminQuota() async => const QuotaSnapshot(
-        queriesRemaining: 60,
-        writesRemaining: 30,
-        embedsRemaining: 60,
-        concurrentSessionsInUse: 0,
-      );
+    queriesRemaining: 60,
+    writesRemaining: 30,
+    embedsRemaining: 60,
+    concurrentSessionsInUse: 0,
+  );
 
   @override
   Future<AuditDrift> adminAudit() async =>
       const AuditDrift(markdownNotInDuckdb: [], indexedButNoMarkdown: []);
 
   @override
-  Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs}) async {
+  Future<int> adminDeleteChatHistory({
+    String? chatGroupId,
+    String? beforeTs,
+  }) async {
     if (chatGroupId == null) {
       final n = _chat.values.fold<int>(0, (a, l) => a + l.length);
       _chat.clear();
@@ -624,20 +701,47 @@ class FixtureEscurelClient implements EscurelClient {
     return removed;
   }
 
-  @override
-  Future<List<LaneSummary>> adminListLanes() async => throw notYetImplemented('admin_list_lanes');
+  // ── RBAC group membership (in-memory; offline-demo parity) ──
+
+  final Map<String, List<String>> _groups = {};
 
   @override
-  Future<List<LaneKey>> adminLaneKeys(String lane, {String? prefix, int limit = 100}) async =>
-      throw notYetImplemented('admin_lane_keys');
+  Future<void> addGroupMember(String groupId, String subject) async {
+    final members = _groups.putIfAbsent(groupId, () => []);
+    if (!members.contains(subject)) members.add(subject);
+  }
+
+  @override
+  Future<void> removeGroupMember(String groupId, String subject) async {
+    _groups[groupId]?.remove(subject);
+  }
+
+  @override
+  Future<List<GroupMember>> listGroupMembers(String groupId) async => [
+    ...?_groups[groupId],
+  ].map((s) => GroupMember(groupId: groupId, subject: s)).toList();
+
+  @override
+  Future<List<LaneSummary>> adminListLanes() async =>
+      throw notYetImplemented('admin_list_lanes');
+
+  @override
+  Future<List<LaneKey>> adminLaneKeys(
+    String lane, {
+    String? prefix,
+    int limit = 100,
+  }) async => throw notYetImplemented('admin_lane_keys');
 
   @override
   Future<LaneBlob> adminLaneBlob(String lane, String key) async =>
       throw notYetImplemented('admin_lane_blob');
 
   @override
-  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit}) async =>
-      throw notYetImplemented('admin_index_query');
+  Future<QueryResult> adminIndexQuery(
+    String table, {
+    Map<String, Object?>? filter,
+    int? limit,
+  }) async => throw notYetImplemented('admin_index_query');
 
   // ── health ──────────────────────────────────────────────────
 
@@ -647,14 +751,14 @@ class FixtureEscurelClient implements EscurelClient {
 
   @override
   Future<VersionInfo> version() async => VersionInfo(
-        app: 'fixture-client',
-        version: '0.1.0',
-        gitSha: 'fixture',
-        capabilities: {
-          BackendCapability.agentReadTools,
-          if (_writeEnabled) BackendCapability.agentWriteTools,
-        },
-      );
+    app: 'fixture-client',
+    version: '0.1.0',
+    gitSha: 'fixture',
+    capabilities: {
+      BackendCapability.agentReadTools,
+      if (_writeEnabled) BackendCapability.agentWriteTools,
+    },
+  );
 
   @override
   void close() {}

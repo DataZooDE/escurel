@@ -18,6 +18,7 @@ import 'capture_bar.dart';
 import 'crm_breadcrumb.dart';
 import 'crm_providers.dart';
 import 'event_pane.dart';
+import 'group_members_pane.dart';
 import 'instance_pane.dart';
 import 'search_bar.dart';
 
@@ -55,6 +56,9 @@ class _CrmWorkspaceState extends ConsumerState<CrmWorkspace> {
           children: [
             WorkspaceSearchBar(),
             Expanded(child: _SplitBody()),
+            // Admin footer — RBAC group membership (backend-gated to
+            // admins). Unobtrusive; always rendered, the server gates.
+            GroupMembersPane(),
             // Time-travel lives in the instance view's STATE OVER TIME
             // version markers; no separate bottom scrubber.
             CaptureBar(),
