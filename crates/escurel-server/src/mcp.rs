@@ -666,6 +666,21 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             tool_admin_lane_blob(indexer, params.arguments).await
         }
+        // Group ACL v1: admin-only membership mutation + read (D14). Gated
+        // here, exactly like the other operator tools; group membership is
+        // the source of truth for custom-group RBAC.
+        "add_group_member" => {
+            require_admin(role)?;
+            tool_add_group_member(indexer, subject, params.arguments).await
+        }
+        "remove_group_member" => {
+            require_admin(role)?;
+            tool_remove_group_member(indexer, params.arguments).await
+        }
+        "list_group_members" => {
+            require_admin(role)?;
+            tool_list_group_members(indexer, params.arguments).await
+        }
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
         ))),
@@ -1720,6 +1735,62 @@ async fn tool_admin_delete_chat_history(
     Ok(json!({ "deleted": deleted }))
 }
 
+#[derive(Deserialize)]
+struct GroupMemberArgs {
+    group_id: String,
+    subject: String,
+}
+
+#[derive(Deserialize)]
+struct ListGroupMembersArgs {
+    group_id: String,
+}
+
+async fn tool_add_group_member(
+    indexer: &Indexer,
+    added_by: &str,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: GroupMemberArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("add_group_member: {e}")))?;
+    indexer
+        .add_group_member(&a.group_id, &a.subject, Some(added_by))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("add_group_member: {e}")))?;
+    Ok(json!({ "ok": true }))
+}
+
+async fn tool_remove_group_member(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: GroupMemberArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("remove_group_member: {e}")))?;
+    indexer
+        .remove_group_member(&a.group_id, &a.subject)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("remove_group_member: {e}")))?;
+    Ok(json!({ "ok": true }))
+}
+
+async fn tool_list_group_members(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: ListGroupMembersArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("list_group_members: {e}")))?;
+    let members = indexer
+        .list_group_members(&a.group_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_group_members: {e}")))?;
+    let members: Vec<Value> = members
+        .into_iter()
+        .map(|m| {
+            json!({
+                "group_id": m.group_id,
+                "subject": m.subject,
+                "added_at": m.added_at,
+                "added_by": m.added_by,
+            })
+        })
+        .collect();
+    Ok(json!({ "members": members }))
+}
+
 // --- admin tenant CRUD + long-ops (admin-role gated) -----------
 //
 // These port the gRPC `EscurelAdmin` business logic verbatim; only
@@ -2546,6 +2617,47 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "lane": { "type": "string" },
                         "key": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "add_group_member",
+                "Admin: add a principal `subject` to a custom RBAC group \
+                 `group_id`. Idempotent. Membership is the source of truth \
+                 for groups escurel manages; reserved names \
+                 (public/owner/admin) are resolved structurally and ignored \
+                 if stored.",
+                json!({
+                    "type": "object",
+                    "required": ["group_id", "subject"],
+                    "properties": {
+                        "group_id": { "type": "string", "description": "The group name." },
+                        "subject": { "type": "string", "description": "The principal `sub`." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "remove_group_member",
+                "Admin: remove a principal `subject` from a custom RBAC \
+                 group `group_id`. No-op when the row is absent.",
+                json!({
+                    "type": "object",
+                    "required": ["group_id", "subject"],
+                    "properties": {
+                        "group_id": { "type": "string" },
+                        "subject": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_group_members",
+                "Admin: list the members of a custom RBAC group, with \
+                 grant time + granting admin (audit).",
+                json!({
+                    "type": "object",
+                    "required": ["group_id"],
+                    "properties": {
+                        "group_id": { "type": "string" }
                     }
                 }),
             ),
