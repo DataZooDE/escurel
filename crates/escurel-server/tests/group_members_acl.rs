@@ -90,6 +90,24 @@ async fn admin_adds_member_then_agent_gains_group_read() {
 }
 
 #[tokio::test]
+async fn list_skills_reports_resolved_acl_block() {
+    let p = start().await;
+    let agent = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let skills = call_ok(&p, &agent, "list_skills", json!({})).await;
+    let deal = skills["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "deal_note")
+        .expect("deal_note present");
+    assert_eq!(deal["acl"]["read"], json!(["owner", "team-acme"]));
+    assert_eq!(deal["acl"]["create"], json!(["owner"]));
+    assert_eq!(deal["acl"]["update"], json!(["owner"]));
+    assert_eq!(deal["acl"]["delete"], json!(["owner"]));
+    assert_eq!(deal["owner_field"], json!("author"));
+}
+
+#[tokio::test]
 async fn non_admin_cannot_mutate_membership() {
     let p = start().await;
     let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);

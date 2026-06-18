@@ -46,8 +46,8 @@ use escurel_storage::{Key, StoreError};
 use escurel_types::{
     AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
     ListSkillsResponse, QuotaGetResponse, RebuildProgress, Skill as TypesSkill,
-    TenantCreateResponse, TenantDeleteResponse, TenantGetResponse, TenantImportResponse,
-    TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
+    SkillAcl as TypesSkillAcl, TenantCreateResponse, TenantDeleteResponse, TenantGetResponse,
+    TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -708,6 +708,12 @@ async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpcError> {
                     Visibility::Owner => "owner".to_string(),
                 },
                 owner_field: s.owner_field,
+                acl: s.acl.map(|a| TypesSkillAcl {
+                    read: a.read,
+                    create: a.create,
+                    update: a.update,
+                    delete: a.delete,
+                }),
             })
             .collect(),
     };

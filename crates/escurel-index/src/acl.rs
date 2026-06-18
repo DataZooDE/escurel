@@ -314,10 +314,8 @@ impl Indexer {
         acl: Option<AclPolicy>,
         verb: Verb,
     ) -> Result<Vec<String>, IndexerError> {
-        if let Some(policy) = &acl {
-            if let Some(groups) = policy_verb(policy, verb) {
-                return Ok(groups.clone());
-            }
+        if let Some(groups) = acl.as_ref().and_then(|p| policy_verb(p, verb)) {
+            return Ok(groups.clone());
         }
         let defaults = self.tenant_acl_defaults().await?;
         Ok(policy_verb(&defaults, verb).cloned().unwrap_or_default())
