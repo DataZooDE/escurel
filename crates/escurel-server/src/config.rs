@@ -184,6 +184,7 @@ struct TomlAuth {
     tenant_claim: Option<String>,
     admin_role_claim: Option<String>,
     admin_role_value: Option<String>,
+    groups_claim: Option<String>,
     jwks_refresh_secs: Option<u64>,
     jwks_uri: Option<String>,
 }
@@ -218,6 +219,9 @@ pub struct AuthConfig {
     pub tenant_claim: String,
     pub admin_role_claim: String,
     pub admin_role_value: String,
+    /// JWT claim listing the subject's groups for the data-level ACL.
+    /// Defaults to the same `roles` claim admin derives from.
+    pub groups_claim: String,
     pub jwks_refresh: Duration,
     /// Explicit JWKS URL override. When `None`, the verifier derives one from
     /// the issuer (Keycloak's `<issuer>/protocol/openid-connect/certs`). Set
@@ -478,6 +482,11 @@ impl EscurelConfig {
                         "ESCUREL_AUTH_ADMIN_ROLE_VALUE",
                         toml_cfg.auth.admin_role_value,
                         "escurel:admin",
+                    ),
+                    groups_claim: pick(
+                        "ESCUREL_AUTH_GROUPS_CLAIM",
+                        toml_cfg.auth.groups_claim,
+                        "roles",
                     ),
                     jwks_refresh: Duration::from_secs(jwks_refresh_secs),
                     jwks_uri: env
@@ -909,7 +918,8 @@ impl EscurelConfig {
         let auth = self.auth.as_ref()?;
         let mut cfg = OidcConfig::new(auth.issuer.clone(), auth.audience.clone())
             .with_tenant_claim(auth.tenant_claim.clone())
-            .with_admin_role(auth.admin_role_claim.clone(), auth.admin_role_value.clone());
+            .with_admin_role(auth.admin_role_claim.clone(), auth.admin_role_value.clone())
+            .with_groups_claim(auth.groups_claim.clone());
         if let Some(uri) = auth.jwks_uri.clone() {
             cfg = cfg.with_jwks_uri(uri);
         }

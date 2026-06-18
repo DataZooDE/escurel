@@ -415,6 +415,25 @@ impl EscurelProcess {
         issuer.mint_with_sub(tenant, role, subject)
     }
 
+    /// Mint a bearer with an explicit `sub` and arbitrary token groups
+    /// in the `roles` claim — for RBAC tests exercising custom token
+    /// groups (`moderator`, `team-acme`, …). Set `admin` to also stamp
+    /// the `escurel:admin` marker so the verifier projects
+    /// [`Role::Admin`].
+    #[must_use]
+    pub fn mint_token_with_groups(
+        &self,
+        tenant: &str,
+        subject: &str,
+        groups: &[&str],
+        admin: bool,
+    ) -> String {
+        let issuer = self.issuer.as_ref().expect(
+            "EscurelProcess::mint_token_with_groups requires AuthMode::TestIssuer; spawned with a different mode",
+        );
+        issuer.mint_with_groups(tenant, subject, groups, admin)
+    }
+
     /// Typed MCP-over-HTTP client targeting this process's HTTP
     /// listener, pre-loaded with a bearer token minted for the default
     /// `"acme"` tenant. Cheap clone of an already-built client — no

@@ -316,6 +316,134 @@ async fn token_with_disallowed_alg_is_rejected() {
 }
 
 #[tokio::test]
+async fn groups_claim_array_projects_to_authcontext() {
+    // A `roles` claim that is a JSON array of strings projects each
+    // element into `AuthContext.groups`. Admin derivation is unchanged
+    // (no admin value present → Agent).
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let token = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "mara",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+            "roles": ["moderator"]
+        }),
+    );
+
+    let ctx = v.verify(&token).await.expect("verify");
+    assert_eq!(ctx.groups, vec!["moderator".to_owned()]);
+    assert_eq!(ctx.role, Role::Agent);
+}
+
+#[tokio::test]
+async fn groups_claim_delimited_string_splits() {
+    // A `roles` claim that is a single string is split on whitespace
+    // AND commas (Keycloak/Auth0 both occur in the wild), trimmed,
+    // empties dropped.
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let token = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "mara",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+            "roles": "moderator billing,analyst"
+        }),
+    );
+
+    let ctx = v.verify(&token).await.expect("verify");
+    assert_eq!(
+        ctx.groups,
+        vec![
+            "moderator".to_owned(),
+            "billing".to_owned(),
+            "analyst".to_owned()
+        ]
+    );
+}
+
+#[tokio::test]
+async fn groups_claim_absent_is_empty() {
+    // No `roles` claim at all (tenant still present) → empty group set.
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let token = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "alice",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+        }),
+    );
+
+    let ctx = v.verify(&token).await.expect("verify");
+    assert!(ctx.groups.is_empty(), "groups: {:?}", ctx.groups);
+    assert_eq!(ctx.role, Role::Agent);
+}
+
+#[tokio::test]
+async fn admin_unchanged_when_groups_claim_is_roles() {
+    // `groups_claim` defaults to the same `roles` claim admin derives
+    // from. The admin value rides into `groups` raw here (the verifier
+    // stays dumb); reserved-name + admin-value stripping happens later
+    // in the index's `effective_groups`, not in the verifier.
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let token = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "otis",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+            "roles": ["escurel:admin"]
+        }),
+    );
+
+    let ctx = v.verify(&token).await.expect("verify");
+    assert_eq!(ctx.role, Role::Admin);
+    assert!(
+        ctx.groups.contains(&"escurel:admin".to_owned()),
+        "groups: {:?}",
+        ctx.groups
+    );
+}
+
+#[tokio::test]
 async fn jwks_cache_serves_repeated_lookups_without_extra_fetches() {
     let server = MockServer::start().await;
     let keys = make_keys();
