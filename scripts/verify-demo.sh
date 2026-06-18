@@ -118,11 +118,15 @@ present group-members-pane
 
 # --- behaviour: drive the real backend via same-origin /mcp probes ---
 
-# Call a tool and print one integer the caller asks for. `extract` is a
-# JS expression over the JSON-RPC `result` object (bound as `r`).
+# Call a tool and print one value the caller asks for. `extract` is a JS
+# expression over the tool's structured payload (bound as `r`). A
+# `tools/call` reply is an MCP `CallToolResult`
+# (`{content, isError, structuredContent}`); the tool's own JSON is in
+# `structuredContent`, so `r` is bound there (falling back to the raw
+# result for any non-wrapped reply).
 mcp_int() {
   local tool="$1" args="$2" extract="$3"
-  "$RODNEY" js "(async()=>{const resp=await fetch('/mcp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'$tool',arguments:$args}})});const j=await resp.json();if(!j.result)return 'ERR';const r=j.result;return String($extract)})()" 2>/dev/null
+  "$RODNEY" js "(async()=>{const resp=await fetch('/mcp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'$tool',arguments:$args}})});const j=await resp.json();if(!j.result)return 'ERR';const r=j.result.structuredContent||j.result;return String($extract)})()" 2>/dev/null
 }
 expect_int() {
   local label="$1" got="$2" want="$3"
