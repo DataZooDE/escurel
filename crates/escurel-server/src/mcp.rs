@@ -200,6 +200,27 @@ async fn mcp_inner(
         .map(|c| c.subject.clone())
         .unwrap_or_else(|| "anonymous".to_owned());
 
+    // RBAC token groups, projected from the JWT `groups_claim`
+    // (escurel-auth). The configured `admin_role_value` (e.g.
+    // `escurel:admin`) is stripped here so it can never act as an ordinary
+    // group name — admin authority comes only from the verified role, never
+    // a header grant. Reserved names (public/owner/admin) are stripped
+    // again inside escurel-index as defence in depth.
+    let admin_value = state
+        .verifier
+        .as_ref()
+        .map(|v| v.config().admin_role_value.clone());
+    let token_groups: Vec<String> = auth_ctx
+        .as_ref()
+        .map(|c| {
+            c.groups
+                .iter()
+                .filter(|g| Some(g.as_str()) != admin_value.as_deref())
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
     // server acknowledges with HTTP 202 Accepted and an empty body.
@@ -231,9 +252,16 @@ async fn mcp_inner(
             // the outer `match result`) — only the success value is
             // wrapped. `initialize` / `ping` / `tools/list` are NOT
             // CallToolResults and are returned raw above.
-            let r = dispatch_tools_call(&state, &tenant_id, role, &subject, req.params)
-                .await
-                .map(wrap_tool_result);
+            let r = dispatch_tools_call(
+                &state,
+                &tenant_id,
+                role,
+                &subject,
+                &token_groups,
+                req.params,
+            )
+            .await
+            .map(wrap_tool_result);
             let status = if r.is_ok() { "ok" } else { "error" };
             let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
             state
@@ -476,6 +504,7 @@ async fn dispatch_tools_call(
     tenant_id: &str,
     role: Option<Role>,
     subject: &str,
+    token_groups: &[String],
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -569,9 +598,12 @@ async fn dispatch_tools_call(
     // role bypasses owner-visibility; a missing role is dev/on-host mode
     // (no verifier, open gateway) and likewise bypasses — there is no
     // subject to scope against. A real Agent token is enforced.
+    // `token_groups` are the RBAC groups from the JWT (admin-value already
+    // stripped by the caller in `mcp_inner`).
     let caller = AclCaller {
         subject,
         is_admin: matches!(role, None | Some(Role::Admin)),
+        token_groups,
     };
 
     match params.name.as_str() {

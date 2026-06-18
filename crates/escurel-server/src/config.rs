@@ -667,6 +667,11 @@ impl EscurelConfig {
         if fresh {
             Migrator::up(&conn)?;
         }
+        // Group ACL v1: ensure the `group_members` table on EVERY boot
+        // (idempotent), so a tenant DB provisioned before this table
+        // existed gains it on the next restart. `up` (fresh only) also
+        // creates it; the `IF NOT EXISTS` makes this a no-op there.
+        Migrator::ensure_group_members(&conn)?;
 
         let indexer = Arc::new(Indexer::new(
             Arc::clone(&store),

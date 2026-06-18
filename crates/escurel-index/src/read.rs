@@ -88,30 +88,39 @@ impl AclPolicy {
     }
 }
 
+/// Parse a named per-CRUD ACL object (`acl` on a skill, `acl_defaults`
+/// on the meta-skill) from frontmatter. Each verb present is projected;
+/// a verb omitted stays `None`. Returns `None` when `key` is absent or
+/// not an object.
+pub(crate) fn parse_named_acl(fm: &serde_json::Value, key: &str) -> Option<AclPolicy> {
+    let block = fm.get(key).and_then(serde_json::Value::as_object)?;
+    let verb = |name: &str| -> Option<Vec<String>> {
+        block
+            .get(name)
+            .and_then(serde_json::Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+    };
+    Some(AclPolicy {
+        read: verb("read"),
+        create: verb("create"),
+        update: verb("update"),
+        delete: verb("delete"),
+    })
+}
+
 /// Parse the nested `acl:` block from a skill's frontmatter, or derive
 /// it from the legacy `visibility:` field. Returns `None` when the skill
 /// declares neither (→ tenant default). An explicit `acl:` block always
 /// wins over `visibility:`; a verb omitted *within* the block stays
 /// `None` (falls through per-verb).
 fn parse_skill_acl(fm: &serde_json::Value) -> Option<AclPolicy> {
-    if let Some(block) = fm.get("acl").and_then(serde_json::Value::as_object) {
-        let verb = |name: &str| -> Option<Vec<String>> {
-            block
-                .get(name)
-                .and_then(serde_json::Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-        };
-        return Some(AclPolicy {
-            read: verb("read"),
-            create: verb("create"),
-            update: verb("update"),
-            delete: verb("delete"),
-        });
+    if let Some(block) = parse_named_acl(fm, "acl") {
+        return Some(block);
     }
     // No acl block: derive from a *present* legacy visibility field only.
     match fm.get("visibility").and_then(serde_json::Value::as_str) {
