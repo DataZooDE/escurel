@@ -9,7 +9,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use duckdb::Connection;
 use escurel_embed::{Embedder, ZeroEmbedder};
-use escurel_index::{AclCaller, Indexer, Migrator};
+use escurel_index::{AclCaller, Indexer, Migrator, SkillInfo};
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
 
@@ -104,6 +104,107 @@ fn member(subject: &str) -> AclCaller<'_> {
         subject,
         is_admin: false,
     }
+}
+
+/// The projected [`SkillInfo`] for one seeded skill id.
+async fn skill_info(h: &Harness, id: &str) -> SkillInfo {
+    h.indexer
+        .list_skills()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == id)
+        .unwrap_or_else(|| panic!("skill {id} not seeded"))
+}
+
+// ── PR2: skill-header `acl:` parse + legacy mapping ──────────────────
+
+const SKILL_INCIDENT_ACL: (&str, &str) = (
+    "markdown/skills/incident.md",
+    "---\ntype: skill\nid: incident\ndescription: A filed incident.\n\
+     owner_field: reporter\nacl:\n  read: [public]\n  create: [owner]\n\
+     \x20 update: [owner, moderator]\n  delete: [admin]\n---\n# incident\n",
+);
+const SKILL_NO_POLICY: (&str, &str) = (
+    "markdown/skills/legacy_widget.md",
+    "---\ntype: skill\nid: legacy_widget\ndescription: No acl, no visibility.\n\
+     ---\n# legacy_widget\n",
+);
+
+#[tokio::test]
+async fn acl_block_parses_per_verb_groups() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_INCIDENT_ACL]).await;
+    let acl = skill_info(&h, "incident")
+        .await
+        .acl
+        .expect("acl block parsed");
+    assert_eq!(acl.read.as_deref(), Some(&["public".to_owned()][..]));
+    assert_eq!(acl.create.as_deref(), Some(&["owner".to_owned()][..]));
+    assert_eq!(
+        acl.update.as_deref(),
+        Some(&["owner".to_owned(), "moderator".to_owned()][..])
+    );
+    assert_eq!(acl.delete.as_deref(), Some(&["admin".to_owned()][..]));
+}
+
+#[tokio::test]
+async fn legacy_visibility_public_maps_to_admin_write() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_TALK]).await; // visibility: public, no acl block
+    let acl = skill_info(&h, "talk")
+        .await
+        .acl
+        .expect("legacy mapping present");
+    assert_eq!(acl.read.as_deref(), Some(&["public".to_owned()][..]));
+    assert_eq!(acl.create.as_deref(), Some(&["admin".to_owned()][..]));
+    assert_eq!(acl.update.as_deref(), Some(&["admin".to_owned()][..]));
+    assert_eq!(acl.delete.as_deref(), Some(&["admin".to_owned()][..]));
+}
+
+#[tokio::test]
+async fn legacy_visibility_owner_maps_to_owner_all() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_MEMBER]).await; // visibility: owner, no acl block
+    let acl = skill_info(&h, "community_member")
+        .await
+        .acl
+        .expect("legacy mapping present");
+    for v in [&acl.read, &acl.create, &acl.update, &acl.delete] {
+        assert_eq!(v.as_deref(), Some(&["owner".to_owned()][..]));
+    }
+}
+
+#[tokio::test]
+async fn neither_acl_nor_visibility_leaves_policy_unset() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_NO_POLICY]).await;
+    assert!(
+        skill_info(&h, "legacy_widget").await.acl.is_none(),
+        "a skill with neither acl: nor visibility: has no per-skill policy"
+    );
+}
+
+#[tokio::test]
+async fn instance_level_acl_block_is_ignored() {
+    // R5: an `acl:` block on a `type: instance` page is reserved for
+    // phase 2 — parsed-but-not-honoured in v1. A public talk instance
+    // carrying a deny-all `acl:` stays readable per its SKILL policy.
+    let h = fresh_harness();
+    const INST_TALK_WITH_ACL: (&str, &str) = (
+        "markdown/instances/talk/locked.md",
+        "---\ntype: instance\nskill: talk\nid: locked\nevent: ki-gipfel\n\
+         acl:\n  read: []\n---\n# Locked talk\n",
+    );
+    seed(&h, &[SKILL_TALK, INST_TALK_WITH_ACL]).await;
+    let talk = fm(&h, "talk", "locked").await;
+    assert!(
+        h.indexer
+            .may_read_instance(&member(BOB), "talk", &talk)
+            .await
+            .unwrap(),
+        "instance-level acl: must be ignored in v1 — skill policy (public) wins"
+    );
 }
 
 #[tokio::test]

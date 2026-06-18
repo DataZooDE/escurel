@@ -43,8 +43,8 @@ pub use indexer::{
 pub use meta_skill::{META_SKILL_ID, META_SKILL_MD, META_SKILL_PAGE_ID};
 pub use query::{ColumnSchema, INSPECTABLE_TABLES, QueryError, StoredQueryResult};
 pub use read::{
-    BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef, ResolvedWikilink,
-    SkillInfo, Visibility,
+    AclPolicy, BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef,
+    ResolvedWikilink, SkillInfo, Visibility,
 };
 pub use schema::Migrator;
 pub use search::{Granularity, SearchHit};

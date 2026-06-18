@@ -42,6 +42,83 @@ pub struct SkillInfo {
     /// value (e.g. `credential` → the platform `sub`) or a
     /// `[[skill::id]]` wikilink resolved to the linked instance's owner.
     pub owner_field: Option<String>,
+    /// The per-CRUD group ACL this skill declares (the nested `acl:`
+    /// block), or — when no `acl:` block is present but a legacy
+    /// `visibility:` field is — the policy that field maps to (§4.3).
+    /// `None` when the skill declares neither, so the decision falls
+    /// through to the tenant default. A verb left unset inside the block
+    /// (`Some(policy)` with that verb `None`) also falls through.
+    pub acl: Option<AclPolicy>,
+}
+
+/// A skill's per-CRUD group grants. Each verb is a list of group names
+/// (`public`/`owner`/`admin` are reserved; anything else is a custom
+/// group). A verb left `None` is *omitted* — it falls through to the
+/// tenant default — which is distinct from an explicit empty list
+/// (`Some(vec![])`, "no group may", admin-only).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AclPolicy {
+    pub read: Option<Vec<String>>,
+    pub create: Option<Vec<String>>,
+    pub update: Option<Vec<String>>,
+    pub delete: Option<Vec<String>>,
+}
+
+impl AclPolicy {
+    /// Legacy `visibility: public` → open read, admin-only writes
+    /// (preserves today's "public is admin-write-only").
+    fn legacy_public() -> Self {
+        Self {
+            read: Some(vec!["public".to_owned()]),
+            create: Some(vec!["admin".to_owned()]),
+            update: Some(vec!["admin".to_owned()]),
+            delete: Some(vec!["admin".to_owned()]),
+        }
+    }
+
+    /// Legacy `visibility: owner` → owner-only for every verb.
+    fn legacy_owner() -> Self {
+        let owner = || Some(vec!["owner".to_owned()]);
+        Self {
+            read: owner(),
+            create: owner(),
+            update: owner(),
+            delete: owner(),
+        }
+    }
+}
+
+/// Parse the nested `acl:` block from a skill's frontmatter, or derive
+/// it from the legacy `visibility:` field. Returns `None` when the skill
+/// declares neither (→ tenant default). An explicit `acl:` block always
+/// wins over `visibility:`; a verb omitted *within* the block stays
+/// `None` (falls through per-verb).
+fn parse_skill_acl(fm: &serde_json::Value) -> Option<AclPolicy> {
+    if let Some(block) = fm.get("acl").and_then(serde_json::Value::as_object) {
+        let verb = |name: &str| -> Option<Vec<String>> {
+            block
+                .get(name)
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+        };
+        return Some(AclPolicy {
+            read: verb("read"),
+            create: verb("create"),
+            update: verb("update"),
+            delete: verb("delete"),
+        });
+    }
+    // No acl block: derive from a *present* legacy visibility field only.
+    match fm.get("visibility").and_then(serde_json::Value::as_str) {
+        Some("owner") => Some(AclPolicy::legacy_owner()),
+        Some(_) => Some(AclPolicy::legacy_public()),
+        None => None,
+    }
 }
 
 /// If `raw` is a `[[skill::id]]` wikilink, return it verbatim for
@@ -129,6 +206,7 @@ impl Indexer {
                     .get("owner_field")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
+                acl: parse_skill_acl(&fm),
             });
         }
         Ok(out)
