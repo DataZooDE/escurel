@@ -443,3 +443,83 @@ fn terminate(mut child: std::process::Child) {
         let _ = child.wait();
     }
 }
+
+/// Regression (DataZooDE/escurel chat-history loss): chat appends must survive
+/// a server RESTART. The CRDT backend used to be a SECOND `Connection::open`
+/// on the same DuckDB file (an independent instance); its checkpoints clobbered
+/// the indexer's committed `chat_messages` writes, so appends were visible
+/// in-process but LOST after a restart (deployed nonprod symptom: chat_messages
+/// empty for the agent AND carl). Fix: the CRDT connection is a `try_clone` of
+/// the indexer's connection (same instance). This boots the real config path,
+/// appends, shuts down, reboots on the SAME data dir, and asserts persistence.
+#[tokio::test]
+async fn chat_history_survives_server_restart() {
+    let data_dir = TempDir::new().unwrap();
+    let env = env_map(&[
+        ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
+        ("ESCUREL_TENANT", "default"),
+    ]);
+    let chat = "agent:dev-user";
+    let client = reqwest::Client::new();
+    let call = |base: String, name: &'static str, args: serde_json::Value| {
+        let client = client.clone();
+        async move {
+            client
+                .post(format!("{base}/mcp"))
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": { "name": name, "arguments": args }
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap()
+        }
+    };
+
+    // Boot #1: append two messages, confirm same-process round-trip.
+    let cfg = EscurelConfig::from_source(&source(env.clone())).unwrap();
+    let booted = cfg.build().await.expect("boot 1");
+    let base = format!("http://{}", booted.handle.local_addr);
+    for (role, body) in [("user", "remember-me"), ("assistant", "ok")] {
+        let r = call(base.clone(), "append_message",
+            serde_json::json!({ "chat_group_id": chat, "role": role, "content": body, "embed": false })).await;
+        assert!(r.get("error").is_none(), "append: {r}");
+    }
+    let r = call(
+        base.clone(),
+        "list_messages",
+        serde_json::json!({ "chat_group_id": chat }),
+    )
+    .await;
+    let n1 = r["result"]["structuredContent"]["messages"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(n1, 2, "same-process round-trip: {r}");
+    booted.handle.shutdown().await;
+
+    // Boot #2 on the SAME data dir: the messages must still be there.
+    let cfg2 = EscurelConfig::from_source(&source(env)).unwrap();
+    let booted2 = cfg2.build().await.expect("boot 2");
+    let base2 = format!("http://{}", booted2.handle.local_addr);
+    let r2 = call(
+        base2,
+        "list_messages",
+        serde_json::json!({ "chat_group_id": chat }),
+    )
+    .await;
+    let n2 = r2["result"]["structuredContent"]["messages"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    booted2.handle.shutdown().await;
+    assert_eq!(
+        n2, 2,
+        "chat history must SURVIVE a restart (was 0 before the try_clone fix): {r2}"
+    );
+}
