@@ -17,6 +17,7 @@ oidc_audience      = "escurel"
 tenant_claim       = "tenant"          # which claim names the tenant
 admin_role_claim   = "roles"           # which claim lists role memberships
 admin_role_value   = "escurel:admin"   # the role that grants admin access
+groups_claim       = "roles"           # which claim lists RBAC group/role names
 jwks_refresh_secs  = 300
 ```
 
@@ -41,7 +42,15 @@ On every request:
 5. Resolve **role** = whether `admin_role_value` is in the
    `admin_role_claim` array. Admin endpoints require it; agent
    endpoints do not check it.
-6. Stamp the resolved `(tenant_id, role, sub)` onto the request
+6. Resolve **groups** = the names in the `groups_claim` (a JSON array,
+   or a single string split on whitespace/commas). These feed the
+   data-level group ACL (see
+   [protocol.md §Group ACL](protocol.md) and
+   [ADR-0004](../adr/0004-rbac-groups.md)); the configured
+   `admin_role_value` and the reserved names `public`/`owner`/`admin`
+   are stripped so they can never act as ordinary header-grantable
+   groups.
+7. Stamp the resolved `(tenant_id, role, sub, groups)` onto the request
    context for downstream layers.
 
 The same flow handles HTTP (header on every request) and WS

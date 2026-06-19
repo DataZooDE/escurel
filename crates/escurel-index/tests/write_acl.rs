@@ -98,12 +98,14 @@ fn member(subject: &str) -> AclCaller<'_> {
     AclCaller {
         subject,
         is_admin: false,
+        token_groups: &[],
     }
 }
 fn admin<'a>() -> AclCaller<'a> {
     AclCaller {
         subject: "ops",
         is_admin: true,
+        token_groups: &[],
     }
 }
 

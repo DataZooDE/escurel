@@ -25,6 +25,10 @@ pub struct OidcConfig {
     /// The role value that grants admin access. Default
     /// `"escurel:admin"`.
     pub admin_role_value: String,
+    /// JWT claim name that lists the subject's group/role memberships
+    /// for the data-level ACL. Default `"roles"` (the same claim admin
+    /// derives from). Parsed leniently — see [`parse_groups_claim`].
+    pub groups_claim: String,
     /// TTL for the in-memory JWKS cache.
     pub jwks_refresh: Duration,
     /// Optional override for the JWKS URL. When `None`, the
@@ -51,6 +55,7 @@ impl OidcConfig {
             tenant_claim: "tenant".to_owned(),
             admin_role_claim: "roles".to_owned(),
             admin_role_value: "escurel:admin".to_owned(),
+            groups_claim: "roles".to_owned(),
             jwks_refresh: Duration::from_secs(300),
             jwks_uri: None,
             additional_issuers: Vec::new(),
@@ -90,6 +95,12 @@ impl OidcConfig {
         self
     }
 
+    #[must_use]
+    pub fn with_groups_claim(mut self, claim: impl Into<String>) -> Self {
+        self.groups_claim = claim.into();
+        self
+    }
+
     fn effective_jwks_uri(&self) -> String {
         derive_jwks_uri(&self.issuer, self.jwks_uri.as_deref())
     }
@@ -112,6 +123,10 @@ pub struct AuthContext {
     pub subject: String,
     pub tenant_id: String,
     pub role: Role,
+    /// Group/role names parsed from the configured `groups_claim`.
+    /// Raw — reserved-name and admin-value stripping is the ACL
+    /// layer's job (`escurel-index`), not the verifier's.
+    pub groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,10 +277,17 @@ impl OidcVerifier {
             Role::Agent
         };
 
+        let groups = claims
+            .rest
+            .get(&self.config.groups_claim)
+            .map(parse_groups_claim)
+            .unwrap_or_default();
+
         Ok(AuthContext {
             subject: claims.sub,
             tenant_id,
             role,
+            groups,
         })
     }
 
@@ -309,6 +331,34 @@ fn has_admin_role(claims: &serde_json::Map<String, serde_json::Value>, cfg: &Oid
             .any(|item| item.as_str() == Some(cfg.admin_role_value.as_str())),
         serde_json::Value::String(s) => s == &cfg.admin_role_value,
         _ => false,
+    }
+}
+
+/// Project the `groups_claim` value into a flat list of group names.
+///
+/// - a JSON **array of strings** → each element (non-string elements
+///   dropped);
+/// - a single **string** → split on whitespace **and** commas
+///   (Keycloak/Auth0 both occur in the wild), trimmed, empties dropped;
+/// - any other shape → empty.
+///
+/// Reserved-name (`public`/`owner`/`admin`) and admin-value stripping is
+/// deliberately NOT done here — the verifier stays dumb; the ACL layer
+/// owns that policy.
+fn parse_groups_claim(value: &serde_json::Value) -> Vec<String> {
+    match value {
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(str::to_owned)
+            .collect(),
+        serde_json::Value::String(s) => s
+            .split([' ', '\t', '\n', '\r', ','])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
     }
 }
 

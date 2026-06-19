@@ -278,8 +278,45 @@ not an error — existence is not leaked); `list_instances` and `search`
 **filter out** non-owned owner-instances; the admin role bypasses. The
 decision is a pure comparison on the request path — never an LLM, agent,
 or classifier. Owner-visibility is reported back on `list_skills` as
-`"visibility"` + `"owner_field"`. *(Chat-surface and write-path ACLs are
-tracked as follow-ups.)*
+`"visibility"` + `"owner_field"`.
+
+###### Group ACL (`acl:` block, group ACL v1)
+
+A skill MAY instead declare a **per-CRUD group ACL** — a superset of
+`visibility`/`owner_field` (see
+[ADR-0004](../adr/0004-rbac-groups.md)):
+
+```yaml
+owner_field: author       # still drives the `owner` group
+acl:
+  read:   [public]
+  create: [owner]
+  update: [owner, moderator]
+  delete: [admin]
+```
+
+Each verb lists **group names**. `public` / `owner` / `admin` are
+**reserved** special groups (always-present / structural-owner /
+verified-admin respectively, and never grantable via a token claim or a
+membership row); any other name is a **custom group**, satisfied when it
+is present in the caller's `groups_claim` JWT array **or** in the
+DuckDB-canonical `group_members` table. An action is allowed iff the
+caller's effective group set intersects the verb's list (admin always
+bypasses); empty intersection → deny (fail-closed, no deny rules in v1).
+
+A verb omitted from the block, or a skill with neither `acl:` nor
+`visibility:`, falls through to the **tenant default** — the
+`acl_defaults:` block on the `escurel` meta-skill page, or, when unset,
+the shipped default (`read:[public]`, writes `[admin]`) that reproduces
+the pre-RBAC behaviour. A legacy `visibility:` field with no `acl:` block
+maps deterministically (`public` → open read + admin writes; `owner` →
+owner-all), so existing pages are unchanged. **`delete` is enforced as
+`update` in v1** (there is no distinct delete operation at the write
+boundary). Membership is mutated by the admin-only `add_group_member` /
+`remove_group_member` / `list_group_members` tools. `list_skills` reports
+the resolved block as `"acl"` (additive; `visibility`/`owner_field`
+retained). *(Instance-level `acl:` overrides and capability-tool RBAC are
+phase 2.)*
 
 #### `list_instances`
 

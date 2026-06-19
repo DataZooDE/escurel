@@ -152,9 +152,27 @@ pub struct NeighboursResponse {
 #[serde(default)]
 pub struct ListSkillsRequest {}
 
+/// The per-CRUD group ACL a skill declares (the nested `acl:` block, or
+/// the policy a legacy `visibility:` field maps to). Each verb is a list
+/// of group names; an omitted verb (`null`) falls through to the tenant
+/// default at decision time. Reported additively alongside the legacy
+/// `visibility`/`owner_field` keys.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SkillAcl {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub create: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delete: Option<Vec<String>>,
+}
+
 /// A Tier-1 skill. MCP wire keys: `id`, `description`,
 /// `required_frontmatter`, `optional_frontmatter`, `is_event_typed`,
-/// `visibility`, `owner_field`.
+/// `visibility`, `owner_field`, `acl`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Skill {
@@ -165,12 +183,18 @@ pub struct Skill {
     pub is_event_typed: bool,
     /// Read policy this skill declares (`public` | `owner`). Lets a
     /// consumer (e.g. the explorer's edit gate) tell operator-editable
-    /// public skills from owner-bound ones without a second call.
+    /// public skills from owner-bound ones without a second call. Retained
+    /// as a derived convenience for old clients; `acl` is the full model.
     pub visibility: String,
     /// The frontmatter field naming the owning principal, when
     /// `visibility` is `owner` (else `null`). An owner-bound skill is not
     /// operator-editable.
     pub owner_field: Option<String>,
+    /// The resolved per-CRUD group ACL (group ACL v1), or `null` when the
+    /// skill declares neither an `acl:` block nor a legacy `visibility:`
+    /// field (→ tenant default applies).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acl: Option<SkillAcl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

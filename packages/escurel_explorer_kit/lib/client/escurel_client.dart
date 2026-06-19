@@ -44,8 +44,13 @@ abstract class EscurelClient {
   /// `asOf` time-travels the read: a page born after the cut resolves
   /// to a not-found result. `scenario` reads against a what-if overlay
   /// (base only when null).
-  Future<ExpandResult> expand(String pageId,
-      {String? anchor, String? version, String? asOf, String? scenario});
+  Future<ExpandResult> expand(
+    String pageId, {
+    String? anchor,
+    String? version,
+    String? asOf,
+    String? scenario,
+  });
 
   /// The link-graph primitive: backlinks (`incoming`), forward-links
   /// (`outgoing`), or both. `linkSkill` filters by the typed link
@@ -104,7 +109,10 @@ abstract class EscurelClient {
   });
 
   /// Execute a `[[query::*]]` stored query with bound parameters.
-  Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}});
+  Future<QueryResult> runStoredQuery(
+    String queryId, {
+    Map<String, Object?> params = const {},
+  });
 
   // ── write primitives ────────────────────────────────────────
 
@@ -114,7 +122,11 @@ abstract class EscurelClient {
 
   /// Whole-page write for environments without CRDT op streaming.
   /// Server diffs against current state and applies as ops.
-  Future<UpdateResult> updatePage(String pageId, String content, {String? baseVersion});
+  Future<UpdateResult> updatePage(
+    String pageId,
+    String content, {
+    String? baseVersion,
+  });
 
   // ── live mode (M3+ via WS) ──────────────────────────────────
 
@@ -173,11 +185,26 @@ abstract class EscurelClient {
   /// the number of rows removed.
   Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs});
 
+  /// Add [subject] to the RBAC group [groupId] (`add_group_member`).
+  Future<void> addGroupMember(String groupId, String subject);
+
+  /// Remove [subject] from the RBAC group [groupId]
+  /// (`remove_group_member`).
+  Future<void> removeGroupMember(String groupId, String subject);
+
+  /// List the members of the RBAC group [groupId]
+  /// (`list_group_members`).
+  Future<List<GroupMember>> listGroupMembers(String groupId);
+
   /// Enumerate the LaneStores the server has registered.
   Future<List<LaneSummary>> adminListLanes();
 
   /// List keys under [prefix] in [lane], up to [limit].
-  Future<List<LaneKey>> adminLaneKeys(String lane, {String? prefix, int limit = 100});
+  Future<List<LaneKey>> adminLaneKeys(
+    String lane, {
+    String? prefix,
+    int limit = 100,
+  });
 
   /// Fetch one raw blob from [lane] by [key]. Used by the inspector
   /// to show what the LaneStore actually has on disk / in S3.
@@ -186,7 +213,11 @@ abstract class EscurelClient {
   /// Read a range of rows from one of the six index tables
   /// (`pages`, `links`, `blocks`, `crdt_ops`, `crdt_snapshots`,
   /// `frontmatter_index`).
-  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit});
+  Future<QueryResult> adminIndexQuery(
+    String table, {
+    Map<String, Object?>? filter,
+    int? limit,
+  });
 
   // ── substrate health ────────────────────────────────────────
 

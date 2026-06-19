@@ -449,6 +449,23 @@ class AppendedMessage {
   final String ts;
 }
 
+// ── RBAC group membership (admin tools) ─────────────────────────
+
+/// One subject's membership in an RBAC group (`list_group_members`).
+class GroupMember {
+  const GroupMember({
+    required this.groupId,
+    required this.subject,
+    this.addedAt,
+    this.addedBy,
+  });
+
+  final String groupId;
+  final String subject;
+  final String? addedAt;
+  final String? addedBy;
+}
+
 // ── admin ops tools (escurel-admin role) ────────────────────────
 
 /// Per-tenant rate / concurrency budget snapshot (`admin_quota`).

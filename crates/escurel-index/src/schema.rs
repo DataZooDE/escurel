@@ -41,6 +41,18 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the `group_members` table (group ACL v1) exists. Idempotent
+    /// (`CREATE TABLE IF NOT EXISTS`) and run on EVERY connection — unlike
+    /// [`Migrator::up`], which only runs against a fresh DB. The v1 schema
+    /// has no version framework, so this is how an already-provisioned
+    /// tenant DB gains the table on the next boot. Safe to call alongside
+    /// [`Migrator::up`] (the fresh path) — the `IF NOT EXISTS` makes the
+    /// second call a no-op.
+    pub fn ensure_group_members(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_7_GROUP_MEMBERS)?;
+        Ok(())
+    }
+
     /// Apply the v1 schema. Connection should be a fresh DuckDB.
     pub fn up(conn: &Connection) -> Result<(), MigrationError> {
         // The migration is split into staged batches because the
@@ -62,6 +74,11 @@ impl Migrator {
         conn.execute_batch(STAGE_4_CHAT_MESSAGES)?;
         conn.execute_batch(STAGE_5_SCENARIOS)?;
         conn.execute_batch(STAGE_6_EVENTS)?;
+        // Group ACL v1. Idempotent (`IF NOT EXISTS`) and ALSO run on every
+        // reopen via `ensure_group_members`, so a DB provisioned before
+        // this table existed still gains it. Running it here too means a
+        // freshly-migrated connection can use it immediately.
+        conn.execute_batch(STAGE_7_GROUP_MEMBERS)?;
         Ok(())
     }
 }
@@ -72,6 +89,7 @@ const STAGE_3_FTS: &str = include_str!("../sql/0001_c_fts.sql");
 const STAGE_4_CHAT_MESSAGES: &str = include_str!("../sql/0002_chat_messages.sql");
 const STAGE_5_SCENARIOS: &str = include_str!("../sql/0003_scenarios.sql");
 const STAGE_6_EVENTS: &str = include_str!("../sql/0004_events.sql");
+const STAGE_7_GROUP_MEMBERS: &str = include_str!("../sql/0005_group_members.sql");
 
 #[cfg(test)]
 mod tests {

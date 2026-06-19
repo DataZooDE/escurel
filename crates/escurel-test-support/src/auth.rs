@@ -146,7 +146,6 @@ impl TestIssuer {
     /// for per-instance ACL tests where the subject is the owning
     /// principal (e.g. a member credential).
     pub(crate) fn mint_with_sub(&self, tenant: &str, role: Role, subject: &str) -> String {
-        let now = now_secs();
         let role_claim = match role {
             // The gateway's default `admin_role_value` is
             // `"escurel:admin"` (see `OidcConfig::new` in
@@ -156,12 +155,38 @@ impl TestIssuer {
             Role::Admin => "escurel:admin",
             Role::Agent => "escurel:agent",
         };
+        self.sign_with_roles(tenant, subject, &[role_claim.to_owned()])
+    }
+
+    /// Sign a bearer with an explicit `sub` and an arbitrary set of
+    /// group/role names in the `roles` claim — for RBAC tests that need
+    /// custom token groups (e.g. `moderator`, `team-acme`). When `admin`
+    /// is true the `escurel:admin` marker is appended so the verifier
+    /// also projects [`Role::Admin`]. The `groups_claim` and
+    /// `admin_role_claim` both default to `roles`, so a single array
+    /// drives both projections.
+    pub(crate) fn mint_with_groups(
+        &self,
+        tenant: &str,
+        subject: &str,
+        groups: &[&str],
+        admin: bool,
+    ) -> String {
+        let mut roles: Vec<String> = groups.iter().map(|g| (*g).to_owned()).collect();
+        if admin {
+            roles.push("escurel:admin".to_owned());
+        }
+        self.sign_with_roles(tenant, subject, &roles)
+    }
+
+    fn sign_with_roles(&self, tenant: &str, subject: &str, roles: &[String]) -> String {
+        let now = now_secs();
         let claims = json!({
             "iss": self.issuer_url,
             "aud": TEST_AUDIENCE,
             "sub": subject,
             "tenant": tenant,
-            "roles": [role_claim],
+            "roles": roles,
             "iat": now,
             "exp": now + 600,
         });

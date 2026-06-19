@@ -114,14 +114,19 @@ present instance-pane
 present skill-wheel
 present version-markers
 present scenario-switch
+present group-members-pane
 
 # --- behaviour: drive the real backend via same-origin /mcp probes ---
 
-# Call a tool and print one integer the caller asks for. `extract` is a
-# JS expression over the JSON-RPC `result` object (bound as `r`).
+# Call a tool and print one value the caller asks for. `extract` is a JS
+# expression over the tool's structured payload (bound as `r`). A
+# `tools/call` reply is an MCP `CallToolResult`
+# (`{content, isError, structuredContent}`); the tool's own JSON is in
+# `structuredContent`, so `r` is bound there (falling back to the raw
+# result for any non-wrapped reply).
 mcp_int() {
   local tool="$1" args="$2" extract="$3"
-  "$RODNEY" js "(async()=>{const resp=await fetch('/mcp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'$tool',arguments:$args}})});const j=await resp.json();if(!j.result)return 'ERR';const r=j.result;return String($extract)})()" 2>/dev/null
+  "$RODNEY" js "(async()=>{const resp=await fetch('/mcp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'$tool',arguments:$args}})});const j=await resp.json();if(!j.result)return 'ERR';const r=j.result.structuredContent||j.result;return String($extract)})()" 2>/dev/null
 }
 expect_int() {
   local label="$1" got="$2" want="$3"
@@ -165,6 +170,17 @@ sk_entity=$(mcp_int list_skills '{}' 'r.skills.filter(function(s){return !s.is_e
 [[ "$sk_event" -ge 1 && "$sk_entity" -ge 2 ]] \
   || fail "expected event-typed + entity-bound skills (event=$sk_event entity=$sk_entity)"
 note "probe ok: skills event-typed=$sk_event, entity-bound=$sk_entity"
+
+# --- group ACL v1: admin membership tools round-trip through the gateway -
+# The demo server runs without a verifier (dev/on-host), so admin tools
+# are open here — this proves add_group_member → list_group_members works
+# end-to-end through the served bundle's same-origin /mcp. (The auth-gated
+# path is covered by the no-mock Rust e2e group_members_acl.rs.)
+note "probe: add_group_member then list_group_members round-trips"
+add_ok=$(mcp_int add_group_member '{"group_id":"team-acme","subject":"whatsapp:probe"}' "(r.ok?'ok':'no')")
+expect_int "add_group_member" "$add_ok" "ok"
+gm_has=$(mcp_int list_group_members '{"group_id":"team-acme"}' "r.members.some(function(m){return m.subject==='whatsapp:probe'})")
+expect_int "list_group_members contains seeded subject" "$gm_has" "true"
 
 note "probe: Instances directory is multi-account (per-skill counts)"
 n_customer=$(mcp_int list_instances '{"skill_id":"customer"}' 'r.instances.length')

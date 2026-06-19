@@ -184,6 +184,7 @@ struct TomlAuth {
     tenant_claim: Option<String>,
     admin_role_claim: Option<String>,
     admin_role_value: Option<String>,
+    groups_claim: Option<String>,
     jwks_refresh_secs: Option<u64>,
     jwks_uri: Option<String>,
 }
@@ -218,6 +219,9 @@ pub struct AuthConfig {
     pub tenant_claim: String,
     pub admin_role_claim: String,
     pub admin_role_value: String,
+    /// JWT claim listing the subject's groups for the data-level ACL.
+    /// Defaults to the same `roles` claim admin derives from.
+    pub groups_claim: String,
     pub jwks_refresh: Duration,
     /// Explicit JWKS URL override. When `None`, the verifier derives one from
     /// the issuer (Keycloak's `<issuer>/protocol/openid-connect/certs`). Set
@@ -479,6 +483,11 @@ impl EscurelConfig {
                         toml_cfg.auth.admin_role_value,
                         "escurel:admin",
                     ),
+                    groups_claim: pick(
+                        "ESCUREL_AUTH_GROUPS_CLAIM",
+                        toml_cfg.auth.groups_claim,
+                        "roles",
+                    ),
                     jwks_refresh: Duration::from_secs(jwks_refresh_secs),
                     jwks_uri: env
                         .get("ESCUREL_AUTH_JWKS_URI")
@@ -658,6 +667,11 @@ impl EscurelConfig {
         if fresh {
             Migrator::up(&conn)?;
         }
+        // Group ACL v1: ensure the `group_members` table on EVERY boot
+        // (idempotent), so a tenant DB provisioned before this table
+        // existed gains it on the next restart. `up` (fresh only) also
+        // creates it; the `IF NOT EXISTS` makes this a no-op there.
+        Migrator::ensure_group_members(&conn)?;
 
         // The CRDT backend MUST share the SAME DuckDB instance as the indexer.
         // A second `Connection::open` on the same file is a separate database
@@ -921,7 +935,8 @@ impl EscurelConfig {
         let auth = self.auth.as_ref()?;
         let mut cfg = OidcConfig::new(auth.issuer.clone(), auth.audience.clone())
             .with_tenant_claim(auth.tenant_claim.clone())
-            .with_admin_role(auth.admin_role_claim.clone(), auth.admin_role_value.clone());
+            .with_admin_role(auth.admin_role_claim.clone(), auth.admin_role_value.clone())
+            .with_groups_claim(auth.groups_claim.clone());
         if let Some(uri) = auth.jwks_uri.clone() {
             cfg = cfg.with_jwks_uri(uri);
         }
