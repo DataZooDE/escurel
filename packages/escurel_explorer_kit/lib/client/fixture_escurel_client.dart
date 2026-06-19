@@ -202,9 +202,12 @@ class FixtureEscurelClient implements EscurelClient {
         // includes `at` (read.rs).
         isEventTyped: required.contains('at'),
         // Instance-ACL hints from the skill frontmatter; default to
-        // public/ownerless when absent (→ operator-editable).
+        // public/ownerless when absent (→ operator-editable). The full
+        // per-CRUD `acl:` block is parsed when present (legacy
+        // `visibility:` skills rely on the operatorEditable fallback).
         visibility: (p.frontmatter['visibility'] as String?) ?? 'public',
         ownerField: p.frontmatter['owner_field'] as String?,
+        acl: SkillAcl.fromJson(p.frontmatter['acl']),
       );
     }).toList();
   }

@@ -4,6 +4,11 @@ id: engagement
 description: A first-touch interaction with a contact, or the continuous lifecycle spine for an account.
 required_frontmatter: [at, with, channel]
 optional_frontmatter: [outcome, follow_up, notes, spine, template, phase, commercial_model, contract_value, running_margin, risk_surface, sentiment_trend, primary_sponsor, champion, orgunit, customer]
+acl:
+  read:   [public]
+  create: [admin]
+  update: [admin, agent-writer]
+  delete: [admin]
 ---
 
 # engagement
@@ -48,6 +53,17 @@ lifecycle fields:
   `sentiment_trend` — the live commercial signals
 - `primary_sponsor`, `champion` — `[[contact::*]]`
 - `orgunit`, `customer` — `[[customer::*]]` the spine belongs to
+
+## Access control (group ACL v1)
+
+This skill declares a group ACL (`acl:` in the header): instances are
+**world-readable** (`read: [public]`), created/deleted by **admins**, and
+**updated by admins OR the `agent-writer` group**. The agent-runner folds
+inbound events into the spine via `update_page` — an *update* — so under an
+auth-enforcing gateway the agent's token must carry `agent-writer` in its
+`groups_claim` (or be admin). In open dev mode the gateway has no verifier,
+so the caller is treated as admin and the fold is allowed unchanged. See
+the README's **Auth** note and [`docs/adr/0004-rbac-groups.md`].
 
 ## Processing an inbound event (agent-runner contract)
 

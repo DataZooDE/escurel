@@ -138,6 +138,35 @@ class Neighbour {
 
 // ── list_skills / list_instances ────────────────────────────────
 
+/// The per-CRUD group ACL a skill declares (group ACL v1), mirroring the
+/// server's `acl` object on `list_skills`. Each verb is a list of group
+/// names (`public`/`owner`/`admin` reserved, others custom); a verb left
+/// `null` is *omitted* and falls through to the tenant default. `null` for
+/// the whole [SkillAcl] means the skill declared neither an `acl:` block
+/// nor a legacy `visibility:` field.
+class SkillAcl {
+  const SkillAcl({this.read, this.create, this.update, this.delete});
+
+  final List<String>? read;
+  final List<String>? create;
+  final List<String>? update;
+  final List<String>? delete;
+
+  /// Parse from the server's `acl` JSON object, or `null` when absent.
+  static SkillAcl? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    List<String>? verb(String k) => raw[k] == null
+        ? null
+        : (raw[k] as List).map((e) => e.toString()).toList();
+    return SkillAcl(
+      read: verb('read'),
+      create: verb('create'),
+      update: verb('update'),
+      delete: verb('delete'),
+    );
+  }
+}
+
 class SkillSummary {
   const SkillSummary({
     required this.id,
@@ -147,6 +176,7 @@ class SkillSummary {
     this.isEventTyped = false,
     this.visibility = 'public',
     this.ownerField,
+    this.acl,
   });
 
   final String id;
@@ -162,7 +192,8 @@ class SkillSummary {
   /// The skill's instance-ACL visibility class as declared in its
   /// frontmatter (`visibility:`). `"public"` (the default when absent)
   /// means anyone may read; `"owner"` (and similar) means access is
-  /// owner-bound. Editing is only offered for public/ownerless skills.
+  /// owner-bound. Retained as a derived convenience; [acl] is the full
+  /// model.
   final String visibility;
 
   /// The frontmatter key naming the owning principal (`owner_field:`),
@@ -170,6 +201,25 @@ class SkillSummary {
   /// [ownerField] marks an owner-bound skill (e.g. `private_profile`)
   /// that operators must never edit through the explorer.
   final String? ownerField;
+
+  /// The resolved per-CRUD group ACL (group ACL v1), or `null` when the
+  /// skill declares neither an `acl:` block nor a legacy `visibility:`
+  /// field.
+  final SkillAcl? acl;
+
+  /// Whether this skill is offered as operator-editable in the explorer.
+  ///
+  /// This is a UX guardrail (the backend still enforces auth), generalised
+  /// from the legacy "ownerless ⇒ editable" rule to the group model: a
+  /// skill is editable iff its `update` policy is **not owner-scoped** —
+  /// i.e. some non-`owner` principal (admin / a custom group) may update
+  /// it, which the operator dashboard can. When the skill declares no
+  /// explicit `update` policy, fall back to the legacy ownerless check.
+  bool get operatorEditable {
+    final update = acl?.update;
+    if (update == null) return ownerField == null;
+    return !update.contains('owner');
+  }
 }
 
 class InstanceSummary {

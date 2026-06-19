@@ -229,6 +229,44 @@ void main() {
       expect(r.single.requiredFrontmatter, ['at', 'with', 'channel']);
     });
 
+    test('list_skills parses the per-CRUD acl block + operatorEditable', () async {
+      mock.toolHandlers['list_skills'] = (_) => {
+            'skills': [
+              {
+                'id': 'incident',
+                'description': 'a filed incident',
+                'owner_field': 'reporter',
+                'acl': {
+                  'read': ['public'],
+                  'create': ['owner'],
+                  'update': ['owner', 'moderator'],
+                  'delete': ['admin'],
+                },
+              },
+              {
+                'id': 'announcement',
+                'description': 'admin-writable notice',
+                'acl': {
+                  'read': ['public'],
+                  'update': ['admin'],
+                },
+              },
+            ],
+          };
+      final r = await client.listSkills();
+      final incident = r.firstWhere((s) => s.id == 'incident');
+      expect(incident.acl?.read, ['public']);
+      expect(incident.acl?.update, ['owner', 'moderator']);
+      expect(incident.acl?.delete, ['admin']);
+      // owner-scoped update ⇒ not operator-editable through the explorer.
+      expect(incident.operatorEditable, isFalse);
+
+      final announcement = r.firstWhere((s) => s.id == 'announcement');
+      // update grants `admin` (no `owner`) ⇒ operator-editable.
+      expect(announcement.operatorEditable, isTrue);
+      expect(announcement.acl?.create, isNull); // omitted verb stays null
+    });
+
     test('list_instances maps filter to frontmatter_key/value + order_by + limit', () async {
       Map<String, dynamic>? receivedArgs;
       mock.toolHandlers['list_instances'] = (args) {
