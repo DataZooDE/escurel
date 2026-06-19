@@ -184,16 +184,28 @@ These are the real sharp edges — each one cost a debugging session.
    the same real `/mcp` fold (`list_inbox`→`expand`→`update_page`→`assign_event`)
    without an LLM.
 
-5. **Auth.** Dev mode (no `ESCUREL_AUTH_OIDC_ISSUER`) accepts any bearer and
-   serves tenant `default`. Against an OIDC-enforcing gateway, `ESCUREL_RUNNER_TOKEN`
-   must be a valid JWT for that issuer (the runner forwards it to the harness;
-   short-TTL per-run scoped-token minting is future work).
+5. **Auth + RBAC.** Dev mode (no `ESCUREL_AUTH_OIDC_ISSUER`) accepts any
+   bearer and serves tenant `default`; the caller is treated as **admin**,
+   which bypasses the group ACL — so the demo folds the spine regardless of
+   policy. Against an **OIDC-enforcing** gateway, `ESCUREL_RUNNER_TOKEN` must
+   be a valid JWT for that issuer, and — because the seed `engagement` skill
+   declares `acl.update: [admin, agent-writer]` (group ACL v1) — the token's
+   `groups_claim` (default `roles`, configurable via
+   `ESCUREL_AUTH_GROUPS_CLAIM`) **must include `agent-writer`** (or the admin
+   role) for the agent's `update_page` fold to be authorised. The reserved
+   names `public`/`owner`/`admin` can't be granted via the claim; admin comes
+   only from `admin_role_value`. The runner forwards this token to the harness
+   verbatim; minting a **short-TTL per-run token that carries the right
+   groups** is the documented seam (`escurel-runner-core` `TaskContext`) and
+   remains future work. See [`docs/adr/0004-rbac-groups.md`](../../docs/adr/0004-rbac-groups.md).
 
 ## What's in `seed/`
 
 A minimal corpus so the demo is cheap and deterministic (no competing events):
 
 - `skills/engagement.md` — the `engagement` skill, with an explicit
-  **"Processing an inbound event"** contract the agent follows.
+  **"Processing an inbound event"** contract the agent follows, and a
+  **group ACL** (`acl.update: [admin, agent-writer]`) demonstrating what an
+  enforced-mode agent token must carry (see Auth note #5).
 - `skills/email.md` — a second skill (artifacts → typed instances).
 - `instances/engagement__acme-spine.md` — the target engagement spine.

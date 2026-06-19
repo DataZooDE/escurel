@@ -216,12 +216,15 @@ final currentOutgoingLinksProvider = FutureProvider<List<Neighbour>>((
 final editableSkillsProvider = Provider<Set<String>?>((ref) => null);
 
 /// Whether a skill is operator-editable through the explorer: write
-/// tools are enabled AND the skill exists AND it is ownerless (no
-/// `owner_field`) AND — when the embedder supplied an [editableSkillsProvider]
-/// allowlist — it is on that list. Owner-bound skills (e.g. `private_profile`)
-/// are never editable here regardless of the write capability. The function is
-/// resolved against the catalogue snapshot; a not-yet-loaded catalogue
-/// reads as not-editable (fail-closed for the write surface).
+/// tools are enabled AND the skill exists AND its instances are not
+/// owner-scoped (per [SkillSummary.operatorEditable] — the group-ACL-aware
+/// generalisation of the legacy "ownerless ⇒ editable" rule) AND — when the
+/// embedder supplied an [editableSkillsProvider] allowlist — it is on that
+/// list. Owner-scoped skills (legacy `owner_field`, or an `acl.update`
+/// granting `owner`) are never offered for editing here regardless of the
+/// write capability. The function is resolved against the catalogue
+/// snapshot; a not-yet-loaded catalogue reads as not-editable (fail-closed
+/// for the write surface).
 final skillEditableProvider = Provider<bool Function(String skillId)>((ref) {
   final writeEnabled = ref.watch(writeEnabledProvider);
   final catalogue = ref.watch(skillsCatalogueProvider);
@@ -233,7 +236,7 @@ final skillEditableProvider = Provider<bool Function(String skillId)>((ref) {
     if (skills == null) return false;
     final match = skills.where((s) => s.id == skillId);
     if (match.isEmpty) return false;
-    return match.first.ownerField == null;
+    return match.first.operatorEditable;
   };
 });
 

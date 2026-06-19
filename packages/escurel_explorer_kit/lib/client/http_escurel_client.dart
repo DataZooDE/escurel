@@ -266,10 +266,12 @@ class HttpEscurelClient implements EscurelClient {
                     .toList(),
             isEventTyped: (s['is_event_typed'] as bool?) ?? false,
             // Instance-ACL hints. The server emits `visibility` +
-            // `owner_field`; tolerate their absence so older servers
-            // still parse (→ public/ownerless, i.e. editable).
+            // `owner_field` + the full per-CRUD `acl` block; tolerate
+            // their absence so older servers still parse (→
+            // public/ownerless, i.e. editable).
             visibility: (s['visibility'] as String?) ?? 'public',
             ownerField: s['owner_field'] as String?,
+            acl: SkillAcl.fromJson(s['acl']),
           ),
         )
         .toList();

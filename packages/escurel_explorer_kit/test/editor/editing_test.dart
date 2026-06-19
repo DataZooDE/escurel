@@ -52,6 +52,37 @@ const _profileInstance = '---\n'
     'owner: "whatsapp:123"\n'
     '---\n\n# secret\n';
 
+// Group-ACL skills (group ACL v1) WITHOUT a legacy owner_field — the
+// operator edit-gate must read the `acl.update` policy: owner-scoped ⇒
+// read-only; admin/group-writable ⇒ editable.
+const _ticketSkill = '---\n'
+    'type: skill\n'
+    'id: ticket\n'
+    'description: An owner-scoped ticket (acl, no owner_field).\n'
+    'owner_field: reporter\n'
+    'acl:\n'
+    '  read: [public]\n'
+    '  update: [owner]\n'
+    'required_frontmatter: [reporter]\n'
+    '---\n\n# ticket\n';
+
+const _ticketInstance = '---\n'
+    'type: instance\n'
+    'skill: ticket\n'
+    'id: t1\n'
+    'reporter: "whatsapp:999"\n'
+    '---\n\n# t1\n';
+
+const _bulletinSkill = '---\n'
+    'type: skill\n'
+    'id: bulletin\n'
+    'description: An admin-writable bulletin (acl).\n'
+    'acl:\n'
+    '  read: [public]\n'
+    '  update: [admin]\n'
+    'required_frontmatter: [title]\n'
+    '---\n\n# bulletin\n';
+
 FixtureEscurelClient _writableClient() => FixtureEscurelClient.fromSources(
       writeEnabled: true,
       skillFiles: {
@@ -152,6 +183,28 @@ void main() {
     // The editable note still offers it.
     await _openWelcome(tester);
     expect(find.bySemanticsLabel(PageFormKeys.editPage), findsOneWidget);
+  });
+
+  testWidgets('group-acl gate: owner-scoped acl.update is read-only; admin-writable is editable', (tester) async {
+    final client = FixtureEscurelClient.fromSources(
+      writeEnabled: true,
+      skillFiles: {
+        'ticket.md': _ticketSkill,
+        'bulletin.md': _bulletinSkill,
+      },
+      instanceFiles: {'ticket__t1.md': _ticketInstance},
+    );
+    await _pump(tester, client);
+
+    // ticket: acl.update == [owner] ⇒ no operator edit affordance.
+    await tester.tap(find.text('t1'));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
+
+    // bulletin: acl.update == [admin] (no owner) ⇒ create is offered.
+    expect(find.bySemanticsLabel('create-instance:bulletin'), findsOneWidget);
+    // ticket, being owner-scoped, offers no create affordance.
+    expect(find.bySemanticsLabel('create-instance:ticket'), findsNothing);
   });
 
   testWidgets('create: a new instance appears in the catalogue and is navigable', (tester) async {

@@ -70,6 +70,7 @@ class _SkillTile extends ConsumerWidget {
                         const KindChip(pageType: md.PageType.skill),
                         const SizedBox(width: 8),
                         Expanded(child: Text(skill.id, style: text.titleSmall)),
+                        if (skill.acl != null) _AclBadge(acl: skill.acl!),
                       ],
                     ),
                   ),
@@ -171,6 +172,43 @@ class _SkillTile extends ConsumerWidget {
     );
     // If the dialog was dismissed without finishing, clear the draft.
     ref.read(pageDraftProvider.notifier).state = null;
+  }
+}
+
+/// Compact read-only badge of a skill's group ACL (group ACL v1), shown
+/// beside the skill id in the catalogue. A shield icon (lock when the
+/// instances are owner-scoped) keeps the row narrow; the tooltip carries
+/// the full per-CRUD block. `null` group lists render as `default` (the
+/// verb falls through to the tenant default); empty lists as `none`
+/// (admin-only). The `skill-acl` Semantics label marks its presence.
+class _AclBadge extends StatelessWidget {
+  const _AclBadge({required this.acl});
+
+  final SkillAcl acl;
+
+  static String _fmt(List<String>? g) =>
+      g == null ? 'default' : (g.isEmpty ? 'none' : g.join(', '));
+
+  @override
+  Widget build(BuildContext context) {
+    final ownerScoped = acl.update?.contains('owner') ?? false;
+    return Semantics(
+      label: 'skill-acl',
+      child: Tooltip(
+        message: 'read: ${_fmt(acl.read)}\n'
+            'create: ${_fmt(acl.create)}\n'
+            'update: ${_fmt(acl.update)}\n'
+            'delete: ${_fmt(acl.delete)}',
+        child: Padding(
+          padding: const EdgeInsets.only(left: 6),
+          child: Icon(
+            ownerScoped ? Icons.lock_outline : Icons.shield_outlined,
+            size: 14,
+            color: kOnSurfaceVariant,
+          ),
+        ),
+      ),
+    );
   }
 }
 
