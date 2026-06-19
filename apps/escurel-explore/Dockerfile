@@ -31,7 +31,13 @@
 FROM ghcr.io/cirruslabs/flutter:3.44.0 AS flutter
 
 WORKDIR /src
-COPY apps/escurel-explore/pubspec.yaml apps/escurel-explore/pubspec.lock ./
+# escurel-explore is a thin host over the escurel_explorer_kit package; its
+# pubspec references it as `../../packages/escurel_explorer_kit`. Preserve
+# the repo layout (apps/… + packages/…) so that path-dep resolves for
+# `flutter pub get` (build context is the repo root — see header).
+COPY packages/escurel_explorer_kit/ ./packages/escurel_explorer_kit/
+COPY apps/escurel-explore/pubspec.yaml apps/escurel-explore/pubspec.lock ./apps/escurel-explore/
+WORKDIR /src/apps/escurel-explore
 RUN flutter pub get
 
 COPY apps/escurel-explore/ ./
@@ -64,7 +70,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=rust /escurel-explore-bff /usr/local/bin/escurel-explore-bff
-COPY --from=flutter /src/build/web /usr/share/escurel-explore/web
+COPY --from=flutter /src/apps/escurel-explore/build/web /usr/share/escurel-explore/web
 
 # Kamal refuses to boot a prebuilt image whose `service` label doesn't match
 # the deploy's service name (substrate ref 01). Must equal `service:` in
