@@ -659,6 +659,21 @@ impl EscurelConfig {
             Migrator::up(&conn)?;
         }
 
+        // The CRDT backend MUST share the SAME DuckDB instance as the indexer.
+        // A second `Connection::open` on the same file is a separate database
+        // instance with its own buffer manager + WAL; their checkpoints race
+        // and the CRDT instance silently clobbers the indexer's committed
+        // writes — chat_messages appends commit in-process but are LOST across
+        // a restart (see docs/notes/discovered/2026-05-24-duckdb-second-connection-stale.md
+        // + 2026-05-26-server-binary-crdt-second-connection.md). `try_clone`
+        // opens a second connection to the ALREADY-OPENED database, so the two
+        // share one instance + MVCC. Clone before `conn` moves into the indexer.
+        let crdt_conn = conn.try_clone().map_err(|source| ConfigError::DuckdbOpen {
+            path: db_path.display().to_string(),
+            source,
+        })?;
+        Migrator::load_extensions(&crdt_conn)?;
+
         let indexer = Arc::new(Indexer::new(
             Arc::clone(&store),
             Arc::clone(&embedder) as Arc<dyn Embedder>,
@@ -693,13 +708,10 @@ impl EscurelConfig {
         // the tenant already carries an `escurel` skill page.
         indexer.ensure_meta_skill().await?;
 
-        // CRDT backend over a second connection to the same file.
-        let crdt_conn = Connection::open(&db_path).map_err(|source| ConfigError::DuckdbOpen {
-            path: db_path.display().to_string(),
-            source,
-        })?;
-        // Same per-connection preamble for the CRDT backend's connection.
-        Migrator::load_extensions(&crdt_conn)?;
+        // CRDT backend over a SECOND CONNECTION TO THE SAME INSTANCE (cloned
+        // above before `conn` moved into the indexer) — not a second
+        // `Connection::open`, which would be a separate instance that clobbers
+        // chat writes on checkpoint.
         let crdt_backend: Arc<dyn CrdtBackend> =
             Arc::new(DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn))));
 
