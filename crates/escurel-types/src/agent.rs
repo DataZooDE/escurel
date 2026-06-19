@@ -326,3 +326,35 @@ pub struct UpdatePageResponse {
     pub issues: Vec<ValidationIssue>,
     pub new_version: String,
 }
+
+// ── outbound webhook delivery log ─────────────────────────────────
+
+/// One outbound-webhook delivery outcome (group ACL-independent
+/// observability). MCP wire keys: `event_id`, `at_ms`, `ok`,
+/// `http_status`, `error`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WebhookDelivery {
+    pub event_id: String,
+    /// Unix-millis timestamp of the delivery outcome.
+    pub at_ms: u64,
+    pub ok: bool,
+    /// HTTP status code when a response was received; `null` on a
+    /// transport error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    /// Transport/error detail when the POST failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `admin_webhook_deliveries` response: recent outbound-webhook delivery
+/// outcomes (newest first), and whether a webhook URL is configured at all.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WebhookDeliveriesResponse {
+    /// Whether `ESCUREL_WEBHOOK_URL` is set. When false, `deliveries` is
+    /// empty because nothing is ever sent.
+    pub configured: bool,
+    pub deliveries: Vec<WebhookDelivery>,
+}

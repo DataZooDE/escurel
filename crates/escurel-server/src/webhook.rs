@@ -21,7 +21,9 @@
 //! are POSTed — so the signature the receiver recomputes over the raw
 //! request body always matches (serialize-twice could differ).
 
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hmac::{Hmac, Mac};
 use serde_json::Value;
@@ -33,6 +35,36 @@ type HmacSha256 = Hmac<Sha256>;
 /// form `sha256=<lowercase-hex>`.
 const SIGNATURE_HEADER: &str = "X-Escurel-Webhook-Signature";
 
+/// How many recent delivery records the in-memory log retains. A live
+/// observability window, not durable history — the buffer is per-process
+/// and resets on restart.
+const DELIVERY_LOG_CAP: usize = 200;
+
+/// One outbound-webhook delivery attempt and its outcome — the record the
+/// `admin_webhook_deliveries` tool surfaces so operators can see whether
+/// captures are reaching the agent runner.
+#[derive(Debug, Clone)]
+pub(crate) struct DeliveryRecord {
+    /// `event_id` of the captured event that triggered the POST.
+    pub event_id: String,
+    /// Unix-millis timestamp of the delivery outcome.
+    pub at_ms: u64,
+    /// `true` when the sink returned a 2xx.
+    pub ok: bool,
+    /// HTTP status code, when a response was received (`None` on a
+    /// transport error).
+    pub http_status: Option<u16>,
+    /// Transport/error detail, when the POST failed.
+    pub error: Option<String>,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// A configured outbound webhook target. Cheap to clone (the inner
 /// `reqwest::Client` is an `Arc`); held on `AppState`.
 #[derive(Clone)]
@@ -42,6 +74,11 @@ pub(crate) struct Webhook {
     /// signed and the signature is sent in [`SIGNATURE_HEADER`].
     secret: Option<String>,
     client: reqwest::Client,
+    /// Bounded in-memory log of recent delivery outcomes (newest last).
+    /// `Arc<Mutex<…>>` so the detached `notify` task can record into the
+    /// same buffer the `admin_webhook_deliveries` reader sees. Cheap to
+    /// clone with the rest of `Webhook`.
+    deliveries: Arc<Mutex<VecDeque<DeliveryRecord>>>,
 }
 
 impl Webhook {
@@ -57,7 +94,15 @@ impl Webhook {
             url,
             secret,
             client,
+            deliveries: Arc::new(Mutex::new(VecDeque::with_capacity(DELIVERY_LOG_CAP))),
         }
+    }
+
+    /// Recent delivery outcomes, newest first, capped at `limit` (and at
+    /// [`DELIVERY_LOG_CAP`] regardless). For the operator deliveries view.
+    pub(crate) fn recent(&self, limit: usize) -> Vec<DeliveryRecord> {
+        let log = self.deliveries.lock().expect("delivery log mutex");
+        log.iter().rev().take(limit).cloned().collect()
     }
 
     /// POST `event` as JSON, fire-and-forget. The authoritative
@@ -89,33 +134,68 @@ impl Webhook {
         };
         let signature = self.secret.as_deref().map(|secret| sign(secret, &body));
 
+        // The event_id the delivery record is keyed by (best-effort).
+        let event_id = event
+            .get("event_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+
         let url = self.url.clone();
         let client = self.client.clone();
+        let deliveries = Arc::clone(&self.deliveries);
         tokio::spawn(async move {
-            let mut req = client
-                .post(&url)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(body);
-            if let Some(sig) = signature {
-                req = req.header(SIGNATURE_HEADER, sig);
+            let (ok, http_status, error) = match req_send(&client, &url, body, signature).await {
+                Ok(status) if status < 400 => (true, Some(status), None),
+                Ok(status) => {
+                    tracing::warn!(
+                        target: "escurel", url = %url, status,
+                        "capture webhook: non-success status"
+                    );
+                    (false, Some(status), None)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "escurel", url = %url, error = %e,
+                        "capture webhook: POST failed"
+                    );
+                    (false, None, Some(e))
+                }
+            };
+            let mut log = deliveries.lock().expect("delivery log mutex");
+            if log.len() == DELIVERY_LOG_CAP {
+                log.pop_front();
             }
-            match req.send().await {
-                Ok(resp) if resp.status().is_success() => {}
-                Ok(resp) => tracing::warn!(
-                    target: "escurel",
-                    url = %url,
-                    status = %resp.status(),
-                    "capture webhook: non-success status"
-                ),
-                Err(e) => tracing::warn!(
-                    target: "escurel",
-                    url = %url,
-                    error = %e,
-                    "capture webhook: POST failed"
-                ),
-            }
+            log.push_back(DeliveryRecord {
+                event_id,
+                at_ms: now_ms(),
+                ok,
+                http_status,
+                error,
+            });
         });
     }
+}
+
+/// Send the POST, returning the HTTP status code on response or the
+/// transport error string. Factored out so `notify`'s task reads cleanly.
+async fn req_send(
+    client: &reqwest::Client,
+    url: &str,
+    body: Vec<u8>,
+    signature: Option<String>,
+) -> Result<u16, String> {
+    let mut req = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body);
+    if let Some(sig) = signature {
+        req = req.header(SIGNATURE_HEADER, sig);
+    }
+    req.send()
+        .await
+        .map(|resp| resp.status().as_u16())
+        .map_err(|e| e.to_string())
 }
 
 /// Compute `sha256=<lowercase-hex>` HMAC-SHA256 of `body` under `secret`.
