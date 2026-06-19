@@ -63,6 +63,17 @@ pub struct Config {
     /// RSA private key, PKCS#8 PEM. `None` → generate an ephemeral
     /// 2048-bit keypair at boot.
     pub signing_key_pem: Option<String>,
+    /// Group/role names to grant the explorer for escurel's group ACL
+    /// (RBAC v1), emitted under [`Self::groups_claim`]. Empty (default) →
+    /// no groups claim, so the explorer is `public`/`owner`-only +
+    /// admin-bypass exactly as before. Set to grant Carl the groups its
+    /// editable skills require.
+    pub groups: Vec<String>,
+    /// The claim name the groups are emitted under — must equal escurel's
+    /// configured `groups_claim`. Default `triton_sender_groups` (the
+    /// substrate-unified groups claim, kept distinct from `roles` so the
+    /// `roles`/admin-derivation path is never conflated with data groups).
+    pub groups_claim: String,
 }
 
 impl Config {
@@ -79,6 +90,13 @@ impl Config {
             tenant: env_or("EXPLORE_BFF_TENANT", "default"),
             kid: env_or("EXPLORE_BFF_KID", "escurel-explore"),
             signing_key_pem: std::env::var("EXPLORE_BFF_SIGNING_KEY").ok(),
+            groups: env_or("EXPLORE_BFF_GROUPS", "")
+                .split([',', ' '])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            groups_claim: env_or("EXPLORE_BFF_GROUPS_CLAIM", "triton_sender_groups"),
         }
     }
 }
@@ -168,6 +186,13 @@ impl Signer {
         // `admin_role_value` is `escurel:admin`; this deliberately differs
         // so the token projects to `Role::Agent`.
         claims.insert("roles".into(), json!(["escurel:agent"]));
+        // Group ACL v1: grant the explorer the configured groups under the
+        // claim escurel reads (`groups_claim`). Kept off `roles` so it never
+        // touches admin derivation. Omitted when no groups are configured —
+        // the explorer then resolves to `public`/`owner` only (unchanged).
+        if !cfg.groups.is_empty() {
+            claims.insert(cfg.groups_claim.clone(), json!(cfg.groups));
+        }
         claims.insert("iat".into(), json!(now));
         claims.insert("exp".into(), json!(now + 300));
         let claims = serde_json::Value::Object(claims);
