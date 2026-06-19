@@ -67,6 +67,7 @@ ESCUREL_SERVER_DATA_DIR="$DATA_DIR" \
 ESCUREL_SERVER_LISTEN_HTTP="127.0.0.1:$PORT" \
 ESCUREL_OBSERVABILITY_METRICS_LISTEN="" \
 ESCUREL_EMBEDDING_PROVIDER="zero" \
+ESCUREL_WEBHOOK_URL="$BASE/__webhook_sink" \
   cargo run -q -p escurel-server >"$ROOT/target/escurel-demo.log" 2>&1 &
 SERVER_PID=$!
 cleanup() { "$RODNEY" stop >/dev/null 2>&1 || true; kill "$SERVER_PID" >/dev/null 2>&1 || true; rm -rf "$DATA_DIR"; }
@@ -78,8 +79,8 @@ curl -fsS "$BASE/healthz" >/dev/null 2>&1 || fail "server did not come up"
 
 mkdir -p "$SHOTS"
 "$RODNEY" start >/dev/null 2>&1 || fail "rodney start"
-note "open $BASE/#/crm"
-"$RODNEY" open "$BASE/#/crm" >/dev/null 2>&1 || fail "rodney open"
+note "open $BASE/  (the editor — inbox/events/webhooks/members folded in)"
+"$RODNEY" open "$BASE/" >/dev/null 2>&1 || fail "rodney open"
 
 # --- presence: assert each CRM region's container semantics label ---
 
@@ -98,23 +99,19 @@ wait_label() {
 }
 present() { wait_label "$1" || fail "region semantics not found: $1"; note "present: $1"; }
 
-# Wait for the workspace to boot + auto-focus, then assert the container
-# regions of the M7 two-view workspace: the event view (left) with its
-# inbox, the instance view (right) with its skill-wheel + state-over-time
-# version markers. (Search/capture are TextField nodes that don't reliably
-# materialise in the static semantics DOM — see SCOPE; they're covered by
-# the flutter widget tests + the capture_event /mcp probe below.)
+# The editor (/) now folds the former CRM workspace's surfaces into a
+# tabbed right panel — Links / Events (history + inbox) / Webhooks
+# (outbound delivery log) / Members (group ACL) — plus a pinned capture
+# bar. Assert the always-rendered container chrome: the brand + the four
+# tab buttons. The tab CONTENT panes (event-pane, inbox,
+# webhook-deliveries-pane, group-members-pane) only enter the DOM when
+# their tab is active (TabBarView is lazy) and capture is a TextField that
+# doesn't reliably materialise — all covered by the flutter widget tests +
+# the /mcp behaviour probes below.
 present brand
-present region-events
-present event-pane
-present sources-filter
-present inbox
-present region-instance
-present instance-pane
-present skill-wheel
-present version-markers
-present scenario-switch
-present group-members-pane
+present tab-events
+present tab-webhooks
+present tab-members
 
 # --- behaviour: drive the real backend via same-origin /mcp probes ---
 
@@ -197,6 +194,21 @@ cap_ok=$(mcp_int capture_event '{"source":"manual","mime":"text/plain","label_sk
 inbox_after=$(mcp_int list_inbox '{}' 'r.events.length')
 [[ "$inbox_after" -gt "$inbox_before" ]] || fail "inbox did not grow after capture ($inbox_after !> $inbox_before)"
 note "probe ok: inbox $inbox_before → $inbox_after after capture"
+
+# --- outbound webhook delivery log (the new "webhook callbacks" view) ---
+# ESCUREL_WEBHOOK_URL is set above, so each capture fires a POST whose
+# outcome is recorded. Prove the admin_webhook_deliveries tool surfaces it.
+note "probe: webhook delivery log records the capture callbacks"
+wh_cfg=$(mcp_int admin_webhook_deliveries '{}' "(r.configured?'yes':'no')")
+expect_int "webhook configured" "$wh_cfg" "yes"
+wh_n=""
+for _ in $(seq 1 40); do
+  wh_n=$(mcp_int admin_webhook_deliveries '{}' 'r.deliveries.length')
+  [[ "$wh_n" =~ ^[1-9] ]] && break
+  "$RODNEY" sleep 1 >/dev/null 2>&1
+done
+[[ "$wh_n" =~ ^[1-9] ]] || fail "no outbound webhook deliveries recorded (got '$wh_n')"
+note "probe ok: webhook deliveries logged = $wh_n"
 
 note "probe: expand(as_of) re-materialises the spine's state at T"
 name_now=$(mcp_int expand "{\"page_id\":\"$spine_id\"}" "(r.frontmatter&&r.frontmatter.phase||'')")

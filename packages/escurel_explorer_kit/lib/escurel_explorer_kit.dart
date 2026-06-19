@@ -30,12 +30,11 @@ export 'state/explorer_nav.dart';
 
 // The exploration surfaces, for hosts that compose their own shell.
 export 'shell/app_shell.dart';
-export 'crm/crm_workspace.dart';
 export 'crm/group_members_pane.dart';
 export 'editor/entity_editor.dart';
 export 'editor/catalogue_pane.dart';
+export 'editor/webhook_deliveries_pane.dart';
 export 'inspector/inspector_shell.dart';
-export 'demo/demo_screen.dart';
 
 // Markdown helpers (frontmatter + wikilink parsing).
 export 'md/frontmatter.dart';

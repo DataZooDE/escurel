@@ -533,6 +533,33 @@ class QuotaSnapshot {
   final int concurrentSessionsInUse;
 }
 
+/// One outbound webhook callback attempt (`admin_webhook_deliveries`).
+class WebhookDelivery {
+  const WebhookDelivery({
+    required this.eventId,
+    required this.atMs,
+    required this.ok,
+    this.httpStatus,
+    this.error,
+  });
+
+  final String eventId;
+  final int atMs;
+  final bool ok;
+  final int? httpStatus;
+  final String? error;
+}
+
+/// The outbound webhook delivery log (`admin_webhook_deliveries`),
+/// newest first. `configured` is false when no webhook sink is set,
+/// in which case [deliveries] is empty.
+class WebhookDeliveries {
+  const WebhookDeliveries({required this.configured, required this.deliveries});
+
+  final bool configured;
+  final List<WebhookDelivery> deliveries;
+}
+
 /// Drift between canonical markdown and the DuckDB index
 /// (`admin_audit`).
 class AuditDrift {

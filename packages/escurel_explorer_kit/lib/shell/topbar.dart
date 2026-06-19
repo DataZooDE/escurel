@@ -56,12 +56,6 @@ class Topbar extends ConsumerWidget implements PreferredSizeWidget {
           // Standalone-only surfaces (reached by go_router). Hidden when
           // the shell is embedded in a host without a router.
           if (!ref.watch(explorerEmbeddedProvider)) ...[
-            const _NavLink(
-                label: 'CRM',
-                icon: Icons.account_tree_outlined,
-                to: '/crm',
-                semantics: 'open-crm'),
-            const SizedBox(width: 8),
             const _InspectorToggle(),
             const SizedBox(width: 8),
           ],
@@ -99,49 +93,11 @@ class _InspectorToggle extends ConsumerWidget {
               const SizedBox(width: 4),
               Text(
                 'inspector',
-                style: Theme.of(context)
-                    .textTheme
-                    .labelSmall
-                    ?.copyWith(color: cs.onSurface),
+                style: Theme.of(
+                  context,
+                ).textTheme.labelSmall?.copyWith(color: cs.onSurface),
               ),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _NavLink extends ConsumerWidget {
-  const _NavLink({required this.label, required this.icon, required this.to, required this.semantics});
-  final String label;
-  final IconData icon;
-  final String to;
-  final String semantics;
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final cs = Theme.of(context).colorScheme;
-    return Tooltip(
-      message: 'Open $label',
-      child: InkWell(
-        borderRadius: BorderRadius.circular(6),
-        onTap: () => explorerGo(context, ref, to),
-        child: Semantics(
-          label: semantics,
-          button: true,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: cs.surfaceContainerHigh,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Row(
-              children: [
-                Icon(icon, size: 14, color: cs.onSurface),
-                const SizedBox(width: 4),
-                Text(label, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: cs.onSurface)),
-              ],
-            ),
           ),
         ),
       ),

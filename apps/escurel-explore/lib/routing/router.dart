@@ -21,24 +21,13 @@ import 'package:go_router/go_router.dart';
 /// overrides can build a fresh [GoRouter] with a different
 /// `initialLocation` without depending on the [routerProvider].
 final List<RouteBase> appRoutes = [
-  GoRoute(
-    path: '/',
-    builder: (context, state) => const AppShell(),
-  ),
+  GoRoute(path: '/', builder: (context, state) => const AppShell()),
   GoRoute(
     path: '/p/:pageId',
     builder: (context, state) => _OpenPageEffect(
       pageId: state.pathParameters['pageId']!,
       child: const AppShell(),
     ),
-  ),
-  GoRoute(
-    path: '/demo',
-    builder: (context, state) => const DemoScreen(),
-  ),
-  GoRoute(
-    path: '/crm',
-    builder: (context, state) => const CrmWorkspace(),
   ),
   GoRoute(
     path: '/inspector',

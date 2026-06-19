@@ -148,6 +148,11 @@ class FixtureEscurelClient implements EscurelClient {
   /// state-over-time version markers.
   final Map<String, List<String>> _snapshots;
 
+  /// In-memory outbound webhook delivery log, newest first.
+  /// [captureEvent] appends a successful delivery so the webhook pane
+  /// has data to render in fixture mode.
+  final List<WebhookDelivery> _webhookDeliveries = [];
+
   static md.Page _tryParse(String basename, String raw) {
     try {
       return md.parse(raw);
@@ -462,6 +467,18 @@ class FixtureEscurelClient implements EscurelClient {
       provenance: provenance ?? const {},
     );
     _events.add(event);
+    // Mirror the server: a captured event triggers an outbound webhook
+    // callback. Record a successful delivery (newest first) so the
+    // deliveries pane has data in fixture mode.
+    _webhookDeliveries.insert(
+      0,
+      WebhookDelivery(
+        eventId: event.eventId,
+        atMs: DateTime.now().toUtc().millisecondsSinceEpoch,
+        ok: true,
+        httpStatus: 200,
+      ),
+    );
     return event;
   }
 
@@ -692,6 +709,14 @@ class FixtureEscurelClient implements EscurelClient {
   @override
   Future<AuditDrift> adminAudit() async =>
       const AuditDrift(markdownNotInDuckdb: [], indexedButNoMarkdown: []);
+
+  @override
+  Future<WebhookDeliveries> adminWebhookDeliveries({int limit = 100}) async {
+    final list = _webhookDeliveries.length > limit
+        ? _webhookDeliveries.sublist(0, limit)
+        : List<WebhookDelivery>.from(_webhookDeliveries);
+    return WebhookDeliveries(configured: true, deliveries: list);
+  }
 
   @override
   Future<int> adminDeleteChatHistory({
