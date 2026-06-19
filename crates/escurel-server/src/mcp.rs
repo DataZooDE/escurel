@@ -48,6 +48,7 @@ use escurel_types::{
     ListSkillsResponse, QuotaGetResponse, RebuildProgress, Skill as TypesSkill,
     SkillAcl as TypesSkillAcl, TenantCreateResponse, TenantDeleteResponse, TenantGetResponse,
     TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
+    WebhookDeliveriesResponse, WebhookDelivery,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -586,6 +587,12 @@ async fn dispatch_tools_call(
         "compact_lanes" => {
             require_admin(role)?;
             return tool_compact_lanes(state, params.arguments).await;
+        }
+        // Outbound-webhook delivery log (observability). Needs only the
+        // webhook handle on AppState, so it routes before the indexer gate.
+        "admin_webhook_deliveries" => {
+            require_admin(role)?;
+            return tool_admin_webhook_deliveries(state, params.arguments);
         }
         _ => {}
     }
@@ -1563,6 +1570,41 @@ fn tool_admin_quota(
         writes_remaining: s.writes_remaining,
         embeds_remaining: s.embeds_remaining,
         concurrent_sessions: s.concurrent_sessions_in_use,
+    })
+}
+
+#[derive(Deserialize)]
+struct WebhookDeliveriesArgs {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Recent outbound-webhook delivery outcomes (newest first). Observability
+/// for whether captures are reaching the agent runner. `configured: false`
+/// when no `ESCUREL_WEBHOOK_URL` is set (nothing is ever sent).
+fn tool_admin_webhook_deliveries(
+    state: &crate::server::AppState,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: WebhookDeliveriesArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("admin_webhook_deliveries: {e}")))?;
+    let limit = a.limit.unwrap_or(100).min(200);
+    let (configured, records) = match state.webhook.as_ref() {
+        Some(w) => (true, w.recent(limit)),
+        None => (false, Vec::new()),
+    };
+    to_value(WebhookDeliveriesResponse {
+        configured,
+        deliveries: records
+            .into_iter()
+            .map(|d| WebhookDelivery {
+                event_id: d.event_id,
+                at_ms: d.at_ms,
+                ok: d.ok,
+                http_status: d.http_status,
+                error: d.error,
+            })
+            .collect(),
     })
 }
 
@@ -2559,6 +2601,18 @@ fn tools_list_payload() -> Value {
                 "Admin: drift between canonical markdown and the DuckDB index \
                  (markdown_not_in_duckdb / indexed_but_no_markdown).",
                 json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "admin_webhook_deliveries",
+                "Admin: recent outbound capture-webhook delivery outcomes \
+                 (newest first) — event_id, ok, http_status, error. \
+                 `configured: false` when no ESCUREL_WEBHOOK_URL is set.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 100 }
+                    }
+                }),
             ),
             tool_entry(
                 "admin_index_query",

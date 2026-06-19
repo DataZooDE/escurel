@@ -200,6 +200,79 @@ async fn capture_event_webhook_is_hmac_signed_and_carries_tenant_id() {
 }
 
 #[tokio::test]
+async fn delivery_log_records_outbound_webhook_outcome() {
+    // A real sink that 200s the POST.
+    let sink = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&sink)
+        .await;
+
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+        config_overrides: ConfigOverrides {
+            webhook_url: Some(format!("{}/hook", sink.uri())),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    let captured = call_mcp(
+        &p,
+        Role::Agent,
+        "capture_event",
+        json!({ "source": "manual", "label_skill": "note", "title": "logged", "body": "logged" }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().expect("event_id").to_owned();
+
+    // Poll the admin delivery log until the fire-and-forget POST is recorded.
+    let mut found: Option<Value> = None;
+    for _ in 0..60 {
+        let out = call_mcp(&p, Role::Admin, "admin_webhook_deliveries", json!({})).await;
+        assert_eq!(
+            out["configured"].as_bool(),
+            Some(true),
+            "webhook configured"
+        );
+        if let Some(rec) = out["deliveries"]
+            .as_array()
+            .and_then(|a| a.iter().find(|d| d["event_id"].as_str() == Some(&event_id)))
+        {
+            found = Some(rec.clone());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let rec = found.expect("delivery recorded in the admin log");
+    assert_eq!(rec["ok"].as_bool(), Some(true), "200 sink → ok");
+    assert_eq!(
+        rec["http_status"].as_u64(),
+        Some(200),
+        "records the status code"
+    );
+
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn delivery_log_reports_unconfigured_when_no_webhook() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+        config_overrides: ConfigOverrides::default(),
+    })
+    .await;
+    let out = call_mcp(&p, Role::Admin, "admin_webhook_deliveries", json!({})).await;
+    assert_eq!(out["configured"].as_bool(), Some(false));
+    assert_eq!(out["deliveries"].as_array().map(|a| a.len()), Some(0));
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn capture_event_without_webhook_url_is_a_noop() {
     // No webhook_url configured → capture still succeeds, nothing fired.
     let p = EscurelProcess::spawn(Opts {
