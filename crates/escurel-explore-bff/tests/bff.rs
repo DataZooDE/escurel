@@ -73,6 +73,8 @@ fn config(issuer: &str, backend: &str) -> Config {
         tenant: "default".to_owned(),
         kid: "escurel-explore".to_owned(),
         signing_key_pem: None, // ephemeral keypair generated at boot
+        groups: Vec::new(),
+        groups_claim: "triton_sender_groups".to_owned(),
     }
 }
 
@@ -124,6 +126,55 @@ async fn mints_token_the_real_verifier_accepts() {
         ctx.role,
         Role::Agent,
         "explorer is least-privilege, not admin"
+    );
+}
+
+#[tokio::test]
+async fn mints_configured_groups_under_the_groups_claim() {
+    // RBAC: with EXPLORE_BFF_GROUPS set, the minted token carries them
+    // under `groups_claim` (here `triton_sender_groups`), so escurel —
+    // configured with that groups_claim — projects them into the caller's
+    // groups. Asserted through the REAL verifier, not a hand-decode.
+    let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let backend_addr = spawn_capture_backend(captured.clone()).await;
+
+    let (listener, addr) = bind_loopback().await;
+    let issuer = format!("http://{addr}");
+    let mut cfg = config(&issuer, &format!("http://{backend_addr}"));
+    cfg.groups = vec!["team-acme".to_owned(), "moderator".to_owned()];
+    spawn_bff(listener, cfg).await;
+
+    let client = reqwest::Client::new();
+    let rpc = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "list_skills", "arguments": {}}
+    });
+    let resp = client
+        .post(format!("http://{addr}/mcp"))
+        .json(&rpc)
+        .send()
+        .await
+        .expect("mcp request");
+    assert_eq!(resp.status(), 200);
+
+    let bearer = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("backend saw Authorization");
+    let token = bearer.strip_prefix("Bearer ").expect("Bearer scheme");
+
+    let jwks_url = format!("http://{addr}/jwks.json");
+    let oidc = OidcConfig::new(issuer.clone(), "escurel-nonprod")
+        .with_jwks_uri(jwks_url)
+        .with_groups_claim("triton_sender_groups");
+    let verifier = OidcVerifier::new(oidc);
+    let ctx = verifier.verify(token).await.expect("verifier accepts");
+    assert_eq!(ctx.role, Role::Agent, "still least-privilege, not admin");
+    assert_eq!(
+        ctx.groups,
+        vec!["team-acme".to_owned(), "moderator".to_owned()],
+        "configured groups projected from the groups_claim"
     );
 }
 
