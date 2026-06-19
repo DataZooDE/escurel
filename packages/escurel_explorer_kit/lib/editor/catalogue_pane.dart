@@ -62,7 +62,12 @@ class _SkillTile extends ConsumerWidget {
               Expanded(
                 child: InkWell(
                   borderRadius: BorderRadius.circular(4),
-                  onTap: () => ref.read(currentPageIdProvider.notifier).state = skill.id,
+                  // Focus the skill PAGE. `skill.id` is the bare id
+                  // (`team_doc`), not a page_id — set it directly and
+                  // `expand` finds nothing → empty page. `focusSkill`
+                  // resolves `[[id]]` → `markdown/skills/<id>.md` first
+                  // (same path the CRM skills-menu uses).
+                  onTap: () => focusSkill(ref, skill.id),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 6),
                     child: Row(
