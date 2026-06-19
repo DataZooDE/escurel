@@ -1337,10 +1337,6 @@ async fn tool_list_messages(
                     "chat-ACL would deny this read (log mode) — allowing"
                 );
             } else {
-                tracing::info!(
-                    subject = %caller.subject, chat_group_id = %a.chat_group_id,
-                    "list_messages DIAG: chat-ACL DENIED (returning empty)"
-                );
                 return Ok(json!({ "messages": [] }));
             }
         }
@@ -1373,11 +1369,6 @@ async fn tool_list_messages(
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_messages: {e}")))?;
     let messages: Vec<Value> = page.messages.iter().map(chat_message_to_json).collect();
-    tracing::info!(
-        subject = %caller.subject, chat_group_id = %a.chat_group_id,
-        write_acl = ?write_acl, limit = a.limit, returned = messages.len(),
-        "list_messages DIAG: query result"
-    );
     let mut out = json!({ "messages": messages });
     if let Some(c) = page.next_cursor {
         out["next_cursor"] = json!(c);
