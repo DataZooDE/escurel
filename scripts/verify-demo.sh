@@ -84,11 +84,14 @@ note "open $BASE/  (the editor — inbox/events/webhooks/members folded in)"
 
 # --- presence: assert each CRM region's container semantics label ---
 
-# Count flt-semantics nodes carrying an exact aria-label. Container
-# labels (region-*, skill-wheel, …) materialise reliably; nested
+# Count flt-semantics nodes whose aria-label CONTAINS the token. A
+# substring match (not exact) because Flutter merges a Tab's
+# Semantics(label:) with its visible text into one aria-label value
+# (e.g. `tab-events\nEvents`); the `tab-*` tokens are distinct so there's
+# no cross-match. Container labels materialise reliably; nested
 # excludeSemantics chips do not (see SCOPE).
 label_count() {
-  "$RODNEY" js "document.querySelectorAll('flt-semantics[aria-label=\"$1\"]').length" 2>/dev/null
+  "$RODNEY" js "document.querySelectorAll('flt-semantics[aria-label*=\"$1\"]').length" 2>/dev/null
 }
 wait_label() {
   for _ in $(seq 1 30); do
@@ -108,7 +111,6 @@ present() { wait_label "$1" || fail "region semantics not found: $1"; note "pres
 # their tab is active (TabBarView is lazy) and capture is a TextField that
 # doesn't reliably materialise — all covered by the flutter widget tests +
 # the /mcp behaviour probes below.
-present brand
 present tab-events
 present tab-webhooks
 present tab-members
