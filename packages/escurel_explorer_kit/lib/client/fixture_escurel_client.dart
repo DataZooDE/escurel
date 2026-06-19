@@ -275,8 +275,9 @@ class FixtureEscurelClient implements EscurelClient {
     }
     final ref = refs.first;
     final candidates = _pages.values.where((p) {
-      if (ref.skill != null)
+      if (ref.skill != null) {
         return p.skill == ref.skill && p.id.endsWith('__${ref.id}');
+      }
       return p.id == ref.id || p.id.endsWith('__${ref.id}');
     });
 
@@ -387,11 +388,13 @@ class FixtureEscurelClient implements EscurelClient {
     final needle = q.toLowerCase();
     final hits = <SearchHit>[];
     for (final p in _pages.values) {
-      if (pageType == PageTypeFilter.skill && p.pageType != md.PageType.skill)
+      if (pageType == PageTypeFilter.skill && p.pageType != md.PageType.skill) {
         continue;
+      }
       if (pageType == PageTypeFilter.instance &&
-          p.pageType != md.PageType.instance)
+          p.pageType != md.PageType.instance) {
         continue;
+      }
       if (skill != null && p.skill != skill) continue;
       final inBody = p.body.toLowerCase().contains(needle);
       final inSkill = p.skill.toLowerCase().contains(needle);
