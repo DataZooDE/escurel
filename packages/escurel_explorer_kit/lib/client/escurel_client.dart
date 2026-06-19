@@ -180,6 +180,11 @@ abstract class EscurelClient {
   /// Markdown ⟷ DuckDB drift (`admin_audit`).
   Future<AuditDrift> adminAudit();
 
+  /// Outbound webhook delivery log (`admin_webhook_deliveries`),
+  /// newest first. Reports `configured: false` when no webhook sink
+  /// is set.
+  Future<WebhookDeliveries> adminWebhookDeliveries({int limit = 100});
+
   /// Purge chat history (`admin_delete_chat_history`). GDPR erasure
   /// (group set), retention prune (beforeTs set), or both. Returns
   /// the number of rows removed.

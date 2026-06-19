@@ -568,6 +568,27 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<WebhookDeliveries> adminWebhookDeliveries({int limit = 100}) async {
+    final r = await _call('admin_webhook_deliveries', {'limit': limit});
+    final list = (r['deliveries'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(
+          (d) => WebhookDelivery(
+            eventId: (d['event_id'] as String?) ?? '',
+            atMs: (d['at_ms'] as num?)?.toInt() ?? 0,
+            ok: (d['ok'] as bool?) ?? false,
+            httpStatus: (d['http_status'] as num?)?.toInt(),
+            error: d['error'] as String?,
+          ),
+        )
+        .toList();
+    return WebhookDeliveries(
+      configured: (r['configured'] as bool?) ?? false,
+      deliveries: list,
+    );
+  }
+
+  @override
   Future<int> adminDeleteChatHistory({
     String? chatGroupId,
     String? beforeTs,

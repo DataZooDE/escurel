@@ -53,11 +53,11 @@ class _CapStubClient implements EscurelClient {
 
   @override
   Future<VersionInfo> version() async => VersionInfo(
-        app: 'stub',
-        version: '0.0.0',
-        gitSha: 'stub',
-        capabilities: caps,
-      );
+    app: 'stub',
+    version: '0.0.0',
+    gitSha: 'stub',
+    capabilities: caps,
+  );
 
   // Delegate everything else.
   @override
@@ -68,30 +68,74 @@ class _CapStubClient implements EscurelClient {
     PageTypeFilter pageType = PageTypeFilter.any,
     String? skill,
     String? asOf,
-  }) =>
-      inner.search(q: q, k: k, granularity: granularity, pageType: pageType, skill: skill, asOf: asOf);
+  }) => inner.search(
+    q: q,
+    k: k,
+    granularity: granularity,
+    pageType: pageType,
+    skill: skill,
+    asOf: asOf,
+  );
 
   @override
-  Future<ResolveResult> resolve(String wikilink, {String? scenario}) => inner.resolve(wikilink, scenario: scenario);
+  Future<ResolveResult> resolve(String wikilink, {String? scenario}) =>
+      inner.resolve(wikilink, scenario: scenario);
 
   @override
-  Future<ExpandResult> expand(String pageId, {String? anchor, String? version, String? asOf, String? scenario}) =>
-      inner.expand(pageId, anchor: anchor, version: version, asOf: asOf, scenario: scenario);
+  Future<ExpandResult> expand(
+    String pageId, {
+    String? anchor,
+    String? version,
+    String? asOf,
+    String? scenario,
+  }) => inner.expand(
+    pageId,
+    anchor: anchor,
+    version: version,
+    asOf: asOf,
+    scenario: scenario,
+  );
 
   @override
-  Future<List<Neighbour>> neighbours(String pageId, {LinkDirection direction = LinkDirection.both, String? linkSkill, String? asOf, String? scenario}) =>
-      inner.neighbours(pageId, direction: direction, linkSkill: linkSkill, asOf: asOf, scenario: scenario);
+  Future<List<Neighbour>> neighbours(
+    String pageId, {
+    LinkDirection direction = LinkDirection.both,
+    String? linkSkill,
+    String? asOf,
+    String? scenario,
+  }) => inner.neighbours(
+    pageId,
+    direction: direction,
+    linkSkill: linkSkill,
+    asOf: asOf,
+    scenario: scenario,
+  );
 
   @override
   Future<List<SkillSummary>> listSkills() => inner.listSkills();
 
   @override
-  Future<List<InstanceSummary>> listInstances(String skillId, {Map<String, Object?>? filter, String? orderBy, int? limit, String? asOf, String? scenario}) =>
-      inner.listInstances(skillId, filter: filter, orderBy: orderBy, limit: limit, asOf: asOf, scenario: scenario);
+  Future<List<InstanceSummary>> listInstances(
+    String skillId, {
+    Map<String, Object?>? filter,
+    String? orderBy,
+    int? limit,
+    String? asOf,
+    String? scenario,
+  }) => inner.listInstances(
+    skillId,
+    filter: filter,
+    orderBy: orderBy,
+    limit: limit,
+    asOf: asOf,
+    scenario: scenario,
+  );
 
   @override
-  Future<QueryResult> runStoredQuery(String queryId, {Map<String, Object?> params = const {}}) =>
-      inner.runStoredQuery(queryId, params: params);
+  Future<QueryResult> runStoredQuery(
+    String queryId, {
+    Map<String, Object?> params = const {},
+  }) => inner.runStoredQuery(queryId, params: params);
 
   @override
   Future<List<Event>> listInbox({int? limit}) => inner.listInbox(limit: limit);
@@ -99,7 +143,8 @@ class _CapStubClient implements EscurelClient {
   Future<List<Event>> listEvents(String instancePageId, {int? limit}) =>
       inner.listEvents(instancePageId, limit: limit);
   @override
-  Future<List<String>> listSnapshots(String pageId) => inner.listSnapshots(pageId);
+  Future<List<String>> listSnapshots(String pageId) =>
+      inner.listSnapshots(pageId);
   @override
   Future<Event> captureEvent({
     String? at,
@@ -110,31 +155,34 @@ class _CapStubClient implements EscurelClient {
     String title = '',
     String body = '',
     Map<String, dynamic>? provenance,
-  }) =>
-      inner.captureEvent(
-        at: at,
-        source: source,
-        mime: mime,
-        labelSkill: labelSkill,
-        instancePageId: instancePageId,
-        title: title,
-        body: body,
-        provenance: provenance,
-      );
+  }) => inner.captureEvent(
+    at: at,
+    source: source,
+    mime: mime,
+    labelSkill: labelSkill,
+    instancePageId: instancePageId,
+    title: title,
+    body: body,
+    provenance: provenance,
+  );
 
   @override
   Future<ValidationResult> validate(String content, {String? asPageId}) =>
       inner.validate(content, asPageId: asPageId);
 
   @override
-  Future<UpdateResult> updatePage(String pageId, String content, {String? baseVersion}) =>
-      inner.updatePage(pageId, content, baseVersion: baseVersion);
+  Future<UpdateResult> updatePage(
+    String pageId,
+    String content, {
+    String? baseVersion,
+  }) => inner.updatePage(pageId, content, baseVersion: baseVersion);
 
   @override
   Future<Session> openSession(String pageId) => inner.openSession(pageId);
 
   @override
-  Future<ApplyOpResult> applyOp(String session, CrdtOp op) => inner.applyOp(session, op);
+  Future<ApplyOpResult> applyOp(String session, CrdtOp op) =>
+      inner.applyOp(session, op);
 
   @override
   Future<CloseResult> closeSession(String session, {bool commit = true}) =>
@@ -153,17 +201,16 @@ class _CapStubClient implements EscurelClient {
     Map<String, Object?>? metadata,
     String? msgId,
     bool embed = true,
-  }) =>
-      inner.appendMessage(
-        chatGroupId: chatGroupId,
-        role: role,
-        content: content,
-        author: author,
-        ts: ts,
-        metadata: metadata,
-        msgId: msgId,
-        embed: embed,
-      );
+  }) => inner.appendMessage(
+    chatGroupId: chatGroupId,
+    role: role,
+    content: content,
+    author: author,
+    ts: ts,
+    metadata: metadata,
+    msgId: msgId,
+    embed: embed,
+  );
 
   @override
   Future<ChatPage> listMessages(
@@ -173,9 +220,14 @@ class _CapStubClient implements EscurelClient {
     int limit = 100,
     String? cursor,
     String direction = 'desc',
-  }) =>
-      inner.listMessages(chatGroupId,
-          since: since, until: until, limit: limit, cursor: cursor, direction: direction);
+  }) => inner.listMessages(
+    chatGroupId,
+    since: since,
+    until: until,
+    limit: limit,
+    cursor: cursor,
+    direction: direction,
+  );
 
   @override
   Future<QuotaSnapshot> adminQuota() => inner.adminQuota();
@@ -184,8 +236,15 @@ class _CapStubClient implements EscurelClient {
   Future<AuditDrift> adminAudit() => inner.adminAudit();
 
   @override
+  Future<WebhookDeliveries> adminWebhookDeliveries({int limit = 100}) =>
+      inner.adminWebhookDeliveries(limit: limit);
+
+  @override
   Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs}) =>
-      inner.adminDeleteChatHistory(chatGroupId: chatGroupId, beforeTs: beforeTs);
+      inner.adminDeleteChatHistory(
+        chatGroupId: chatGroupId,
+        beforeTs: beforeTs,
+      );
 
   @override
   Future<void> addGroupMember(String groupId, String subject) =>
@@ -203,15 +262,23 @@ class _CapStubClient implements EscurelClient {
   Future<List<LaneSummary>> adminListLanes() => inner.adminListLanes();
 
   @override
-  Future<List<LaneKey>> adminLaneKeys(String lane, {String? prefix, int limit = 100}) =>
-      inner.adminLaneKeys(lane, prefix: prefix, limit: limit);
+  Future<List<LaneKey>> adminLaneKeys(
+    String lane, {
+    String? prefix,
+    int limit = 100,
+  }) => inner.adminLaneKeys(lane, prefix: prefix, limit: limit);
 
   @override
-  Future<LaneBlob> adminLaneBlob(String lane, String key) => inner.adminLaneBlob(lane, key);
+  Future<LaneBlob> adminLaneBlob(String lane, String key) =>
+      inner.adminLaneBlob(lane, key);
 
   @override
-  Future<QueryResult> adminIndexQuery(String table, {Map<String, Object?>? filter, int? limit, String? asOf}) =>
-      inner.adminIndexQuery(table, filter: filter, limit: limit);
+  Future<QueryResult> adminIndexQuery(
+    String table, {
+    Map<String, Object?>? filter,
+    int? limit,
+    String? asOf,
+  }) => inner.adminIndexQuery(table, filter: filter, limit: limit);
 
   @override
   Future<HealthInfo> healthz() => inner.healthz();
@@ -228,7 +295,9 @@ Widget _appWith(EscurelClient client) {
 }
 
 void main() {
-  testWidgets('topbar shows read-only chip when write capability is absent', (tester) async {
+  testWidgets('topbar shows read-only chip when write capability is absent', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(1600, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -243,7 +312,9 @@ void main() {
     expect(find.text('read-only'), findsOneWidget);
   });
 
-  testWidgets('topbar hides read-only chip when write capability is present', (tester) async {
+  testWidgets('topbar hides read-only chip when write capability is present', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(1600, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -263,7 +334,9 @@ void main() {
     expect(find.byKey(const ValueKey('topbar.read_only_chip')), findsNothing);
   });
 
-  testWidgets('status bar reflects backend version + capability count', (tester) async {
+  testWidgets('status bar reflects backend version + capability count', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(1600, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -274,13 +347,13 @@ void main() {
     await tester.pumpWidget(_appWith(client));
     await tester.pumpAndSettle();
 
-    expect(
-      find.byKey(const ValueKey('status_bar.backend')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('status_bar.backend')), findsOneWidget);
     // Fixture client's version() reports app="fixture-client",
     // version="0.1.0", capabilities={agentReadTools} → 1 capability.
-    final label = (tester.widget(find.byKey(const ValueKey('status_bar.backend'))) as Text).data!;
+    final label =
+        (tester.widget(find.byKey(const ValueKey('status_bar.backend')))
+                as Text)
+            .data!;
     expect(label, contains('fixture-client'));
     expect(label, contains('0.1.0'));
     expect(label, contains('1 capabilities'));

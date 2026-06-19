@@ -200,6 +200,10 @@ class _StubClient implements EscurelClient {
       throw notYetImplemented('admin_audit');
 
   @override
+  Future<WebhookDeliveries> adminWebhookDeliveries({int limit = 100}) async =>
+      throw notYetImplemented('admin_webhook_deliveries');
+
+  @override
   Future<int> adminDeleteChatHistory({
     String? chatGroupId,
     String? beforeTs,
