@@ -1178,6 +1178,24 @@ async fn tool_expand(
             if let Some(proj) = sql_view_projection(indexer, &e).await {
                 page["backend_projection"] = proj;
             }
+            // Document overlay: bound the chunks returned (REQ-DOC-05) — never
+            // the full document text. With no query in `expand`, return the
+            // lead (first K chunks) and flag truncation.
+            if e.frontmatter
+                .get("backend_ref")
+                .and_then(|b| b.get("kind"))
+                .and_then(Value::as_str)
+                == Some("document")
+            {
+                const EXPAND_CHUNK_LEAD: usize = 8;
+                let total = e.blocks.len();
+                if let Some(arr) = page["blocks"].as_array().cloned() {
+                    let lead: Vec<Value> = arr.into_iter().take(EXPAND_CHUNK_LEAD).collect();
+                    page["blocks"] = Value::from(lead);
+                }
+                page["chunks_total"] = json!(total);
+                page["chunks_truncated"] = json!(total > EXPAND_CHUNK_LEAD);
+            }
             Ok(page)
         }
     }

@@ -640,7 +640,17 @@ impl Indexer {
         // must be reconstructed from each overlay's backend_ref.source so a
         // from-scratch rebuild yields a queryable index (REQ-NF-01).
         self.rebuild_sql_views().await?;
+        // Document chunks are derived from the retained blob: re-extract +
+        // re-chunk + re-embed + re-index, replacing the single overlay block
+        // the main loop wrote with the correct chunk-blocks (REQ-NF-01).
+        crate::backend::document::rebuild_documents(self).await?;
         Ok(())
+    }
+
+    /// Document-side audit reconciliation (REQ-NF-02): document overlays
+    /// whose canonical blob is missing/invalid. `(page_id, reason)` each.
+    pub async fn audit_documents(&self) -> Result<Vec<(String, String)>, IndexerError> {
+        crate::backend::document::audit_documents(self).await
     }
 
     /// Seed the tenant from an external directory of markdown files

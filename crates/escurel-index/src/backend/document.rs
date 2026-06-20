@@ -318,6 +318,124 @@ impl DocumentIngestWorker {
     }
 }
 
+/// Re-derive every document instance's chunks from its retained canonical
+/// blob (rebuild step, REQ-NF-01). The main rebuild loop re-indexes the
+/// overlay markdown as an ordinary page (one block); this runs after and
+/// re-materialises the correct chunk-blocks from the blob, so a from-scratch
+/// DuckDB over the same `pages/` + `blobs/` is fully reconstructed.
+///
+/// v1 reconstructs born-digital **text** (the only kind materialisable while
+/// kreuzberg is gated on the MSRV decision); a non-UTF-8 blob is left for the
+/// kreuzberg path and reported by `audit_documents`, not silently dropped.
+/// `extraction_failed` instances are left as-is (no chunks).
+pub(crate) async fn rebuild_documents(indexer: &Indexer) -> Result<(), IndexerError> {
+    use escurel_storage::{BlobId, Key};
+
+    let overlays = enumerate_document_overlays(indexer).await?;
+    let store = indexer.lane_store();
+    for ov in overlays {
+        if ov.status != "ok" {
+            continue;
+        }
+        let Some(blob_id) = BlobId::parse(&ov.blob_id) else {
+            continue;
+        };
+        let Ok(bytes) = indexer.read_blob(&blob_id).await else {
+            continue; // orphan blob — reported by audit_documents
+        };
+        let Ok(content) = std::str::from_utf8(&bytes) else {
+            continue; // non-text (kreuzberg-gated); not reconstructable in v1
+        };
+        // Chunk knobs from the skill binding.
+        let (max_chars, overlap) = indexer
+            .skill_backend(&ov.skill)
+            .await
+            .ok()
+            .and_then(|b| b.document)
+            .map(|d| (d.max_chars, d.overlap))
+            .unwrap_or((None, None));
+        let defaults = ChunkConfig::default();
+        let cfg = ChunkConfig {
+            max_chars: max_chars.unwrap_or(defaults.max_chars),
+            overlap: overlap.unwrap_or(defaults.overlap),
+        };
+        let chunks: Vec<String> = chunk_text(content, cfg)
+            .into_iter()
+            .map(|c| c.text)
+            .collect();
+        // The overlay markdown is already canonical on the lane (re-written by
+        // the main rebuild loop); re-materialise to replace its blocks with
+        // the freshly re-chunked content.
+        let Ok(key) = Key::new(indexer.tenant(), ov.page_id.clone()) else {
+            continue;
+        };
+        let Ok(overlay_bytes) = store.read(&key).await else {
+            continue;
+        };
+        let Ok(overlay_md) = String::from_utf8(overlay_bytes.to_vec()) else {
+            continue;
+        };
+        indexer
+            .materialize_document(&ov.page_id, &overlay_md, &chunks)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Reconcile document state for `audit` (REQ-NF-02): a document overlay whose
+/// canonical blob is missing is an orphan; a healthy one with status `ok`
+/// must have its blob retained. Returns `(page_id, reason)` for each problem.
+pub(crate) async fn audit_documents(
+    indexer: &Indexer,
+) -> Result<Vec<(String, String)>, IndexerError> {
+    use escurel_storage::BlobId;
+    let mut problems = Vec::new();
+    for ov in enumerate_document_overlays(indexer).await? {
+        match BlobId::parse(&ov.blob_id) {
+            None => problems.push((ov.page_id, format!("invalid blob_id `{}`", ov.blob_id))),
+            Some(id) => {
+                if ov.status == "ok" && indexer.read_blob(&id).await.is_err() {
+                    problems.push((
+                        ov.page_id,
+                        "canonical blob missing for ok instance".to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(problems)
+}
+
+struct DocOverlay {
+    page_id: String,
+    skill: String,
+    blob_id: String,
+    status: String,
+}
+
+async fn enumerate_document_overlays(indexer: &Indexer) -> Result<Vec<DocOverlay>, IndexerError> {
+    let conn = indexer.conn.lock().await;
+    let mut stmt = conn.prepare(
+        "SELECT page_id, skill, \
+         json_extract_string(frontmatter, '$.backend_ref.blob_id'), \
+         json_extract_string(frontmatter, '$.backend_ref.status') \
+         FROM pages \
+         WHERE page_type = 'instance' \
+           AND json_extract_string(frontmatter, '$.backend_ref.kind') = 'document'",
+    )?;
+    let rows: Vec<DocOverlay> = stmt
+        .query_map([], |r| {
+            Ok(DocOverlay {
+                page_id: r.get(0)?,
+                skill: r.get(1)?,
+                blob_id: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                status: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
 /// Build the document instance's overlay markdown with its `backend_ref`.
 fn document_overlay(
     skill: &str,

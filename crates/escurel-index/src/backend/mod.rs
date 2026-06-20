@@ -415,6 +415,17 @@ impl Indexer {
         if Capabilities::for_kind(binding.kind).writable {
             return Ok(None);
         }
+        // Document instances are fully pipeline-managed in v1: their chunks
+        // are N blocks under one page_id, which update_page's single-block
+        // path would clobber. Reject any update_page (create OR edit) on a
+        // document instance — edits flow through re-ingest + rebuild. (Overlay
+        // co-authoring without re-ingest is a phase-2 refinement.)
+        if binding.kind == BackendKind::Document {
+            return Ok(Some(format!(
+                "skill `{skill}` is a read-only `document` backend; documents are managed by the \
+                 ingest pipeline (deposit + /ingest), not update_page"
+            )));
+        }
         let has_backend_ref = parsed.frontmatter.fields.get("backend_ref").is_some();
         let exists = {
             let conn = self.conn.lock().await;

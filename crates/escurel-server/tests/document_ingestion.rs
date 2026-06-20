@@ -183,6 +183,62 @@ async fn extraction_failure_retains_blob_and_marks_instance() {
 }
 
 #[tokio::test]
+async fn expand_returns_bounded_chunk_lead_not_full_text() {
+    let s = setup().await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    // A long body → many small chunks (skill chunk.max_chars = 40).
+    let body = "lorem ipsum dolor sit amet ".repeat(30);
+    let blob = s
+        .store
+        .put_inbox_blob(TENANT, Bytes::from(body.into_bytes()), None)
+        .await
+        .unwrap();
+    let resp = post_ingest(&s.process, &token, blob.as_str(), "text/plain").await;
+    let page_id = resp["page_id"].as_str().unwrap().to_owned();
+    let total = resp["chunk_count"].as_u64().unwrap();
+    assert!(
+        total > 8,
+        "need >8 chunks to exercise truncation; got {total}"
+    );
+
+    let ex = call(&s.process, &token, "expand", json!({ "page_id": page_id })).await;
+    let page = &ex["result"]["structuredContent"];
+    // expand returns a bounded lead, never the full chunk set (REQ-DOC-05).
+    assert!(page["blocks"].as_array().unwrap().len() <= 8);
+    assert_eq!(page["chunks_truncated"], true);
+    assert_eq!(page["chunks_total"].as_u64().unwrap(), total);
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn update_page_on_document_instance_rejected() {
+    // Documents are pipeline-managed; update_page must not clobber their
+    // chunks (backend_read_only).
+    let s = setup().await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let blob = s
+        .store
+        .put_inbox_blob(TENANT, Bytes::from_static(b"some memo text"), None)
+        .await
+        .unwrap();
+    let resp = post_ingest(&s.process, &token, blob.as_str(), "text/plain").await;
+    let page_id = resp["page_id"].as_str().unwrap().to_owned();
+
+    let content = "---\ntype: instance\nskill: memo\nid: doc-x\nbackend_ref:\n  kind: document\n---\n# edited\n";
+    let body = call(
+        &s.process,
+        &token,
+        "update_page",
+        json!({ "page_id": page_id, "content": content }),
+    )
+    .await;
+    let r = &body["result"]["structuredContent"];
+    assert_eq!(r["ok"], false, "must be rejected: {body}");
+    assert_eq!(r["issues"][0]["code"], "backend_read_only");
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
 async fn ingest_is_idempotent_on_content_hash() {
     // Same bytes → same BlobId → same instance id → re-ingest overwrites.
     let s = setup().await;
