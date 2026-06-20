@@ -251,6 +251,16 @@ class _CreateInstanceRow extends StatelessWidget {
   }
 }
 
+/// The bare, human-readable slug for an instance's page id. The backend
+/// returns a path (`markdown/instances/<skill>/<slug>.md`) and the fixture
+/// client a `<skill>__<slug>` handle; both collapse to `<slug>` — showing
+/// the full path in the catalogue list is just noise.
+String instanceShortLabel(String pageId) {
+  var s = pageId.split('/').last; // drop any `markdown/instances/<skill>/` prefix
+  if (s.endsWith('.md')) s = s.substring(0, s.length - 3);
+  return s.split('__').last; // drop the fixture `<skill>__` prefix
+}
+
 class _InstanceTile extends StatelessWidget {
   const _InstanceTile({required this.instance, required this.selected, required this.onTap});
 
@@ -261,7 +271,7 @@ class _InstanceTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
-    final shortId = instance.id.split('__').last;
+    final shortId = instanceShortLabel(instance.id);
     return InkWell(
       borderRadius: BorderRadius.circular(4),
       onTap: onTap,
