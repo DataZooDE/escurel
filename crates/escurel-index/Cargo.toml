@@ -10,15 +10,14 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-# Bundled DuckDB: vendored C++ build, no system libduckdb required.
-# Uses the `cc` backend (cargo-orchestrated parallel compile) — the
-# alternative `bundled-cmake` backend cannot be used from the
-# crates.io release because the release ships only the cc-backend
-# amalgamation, not the CMake source tree. See
-# docs/notes/discovered/2026-05-24-duckdb-bundled-cmake-ninja.md.
-# Cold compile ~2–3 min on a parallel host; cached by
-# Swatinem/rust-cache for ~30s on subsequent CI runs.
-duckdb = { version = "1", features = ["bundled"] }
+# DuckDB via the downloaded precompiled libduckdb release (NOT the
+# bundled C++ compile). The `DUCKDB_DOWNLOAD_LIB=1` env in
+# `.cargo/config.toml` makes libduckdb-sys fetch the matching DuckDB
+# release from github.com/duckdb/duckdb/releases and link it, skipping
+# the ~2–3 min cold C++ amalgamation compile. Any project that builds
+# these crates MUST set that env var (there is no bundled fallback);
+# see docs/notes/discovered/2026-06-20-duckdb-download-instead-of-build.md.
+duckdb = { version = "1", default-features = false }
 anyhow = "1"
 async-trait = "0.1"
 # `escurel-crdt` is pulled in solely so we can implement its

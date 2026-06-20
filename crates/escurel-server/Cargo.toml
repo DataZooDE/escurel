@@ -33,7 +33,7 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 dashmap = "6"
-duckdb = { version = "1", features = ["bundled"] }
+duckdb = { version = "1", default-features = false }
 escurel-admin = { path = "../escurel-admin" }
 escurel-auth = { path = "../escurel-auth" }
 escurel-crdt = { path = "../escurel-crdt" }
@@ -64,7 +64,7 @@ assert_cmd = "2"
 async-trait = "0.1"
 base64 = "0.22"
 bytes = "1"
-duckdb = { version = "1", features = ["bundled"] }
+duckdb = { version = "1", default-features = false }
 escurel-admin = { path = "../escurel-admin" }
 escurel-client = { path = "../escurel-client" }
 escurel-crdt = { path = "../escurel-crdt" }

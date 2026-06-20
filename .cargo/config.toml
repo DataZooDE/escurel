@@ -1,0 +1,14 @@
+# Build DuckDB by downloading the official precompiled libduckdb release
+# instead of compiling the bundled C++ amalgamation from source (the
+# ~2-3 min cold compile). libduckdb-sys (>=1.10503) fetches the matching
+# DuckDB release from github.com/duckdb/duckdb/releases, caches it under
+# target/duckdb-download/, copies libduckdb.so next to the build artifacts
+# and sets an rpath so binaries/tests load it at runtime.
+#
+# The downloaded version is derived from the libduckdb-sys crate version,
+# so it always matches the generated bindings. Requires network access on
+# the first clean build for a given target (cached thereafter).
+#
+# See docs/notes/discovered/2026-06-20-duckdb-download-instead-of-build.md
+[env]
+DUCKDB_DOWNLOAD_LIB = "1"
