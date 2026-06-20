@@ -14,11 +14,11 @@ homepage.workspace = true
 # `LoroDoc::new` / `get_text` / `export(ExportMode::Updates...)` /
 # `import` documented at https://docs.rs/loro/1.12.0/loro/.
 loro = "1.12"
-# Bundled DuckDB to match `escurel-index`. Sharing a single
+# DuckDB (downloaded libduckdb, see escurel-index). Sharing a single
 # Connection across the indexer and the CRDT backend is the
 # production pattern (see
 # `docs/notes/discovered/2026-05-24-duckdb-second-connection-stale.md`).
-duckdb = { version = "1", features = ["bundled"] }
+duckdb = { version = "1", default-features = false }
 async-trait = "0.1"
 anyhow = "1"
 # `escurel-storage::LaneStore` is the boundary the reconciler reads

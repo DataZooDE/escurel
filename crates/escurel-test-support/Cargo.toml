@@ -22,7 +22,7 @@ escurel-storage = { path = "../escurel-storage" }
 escurel-types = { path = "../escurel-types" }
 base64 = "0.22"
 bytes = "1"
-duckdb = { version = "1", features = ["bundled"] }
+duckdb = { version = "1", default-features = false }
 jsonwebtoken = "9"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
