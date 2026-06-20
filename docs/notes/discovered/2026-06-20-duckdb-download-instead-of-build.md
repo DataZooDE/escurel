@@ -61,6 +61,40 @@ Measured: clean workspace build dropped from the multi-minute bundled
 compile to **~25s**; `cargo test -p escurel-index` (real DuckDB, vss +
 fts) green; `escurel-server` binary links and loads the lib via rpath.
 
+## CI gotcha: rust-cache hides the downloaded lib (link fails)
+
+**Symptom (escurel #189, the first warm-cache run after this merged):**
+`cargo fmt`/`clippy` pass, then `cargo test` dies with
+`/usr/bin/ld: cannot find -lduckdb` — the link search path
+`target/duckdb-download/<triple>/<ver>` is on the command line but
+`libduckdb.so` isn't in it. `clippy` passes because it never links final
+executables; `test`/`build --release` do.
+
+**Cause.** `Swatinem/rust-cache` caches `~/.cargo` + dependency artifacts
+(incl. the libduckdb-sys **build-script fingerprint + output**) but NOT
+the custom `target/duckdb-download/` dir. On a cache hit the build script
+does **not** re-run (fingerprint restored), so it never re-downloads —
+yet its cached output still emits `-L .../duckdb-download/...` and
+`-lduckdb`. The `.so` was never restored → link fails. A cold run (e.g.
+the merge commit's own run) passes because the script runs and downloads;
+the breakage only shows on the **next** run that hits the cache.
+
+**Fix (`.github/workflows/ci.yml`).** Three parts:
+1. `cache-directories: target/duckdb-download` so the lib is cached
+   alongside the fingerprint that references it.
+2. Bump `shared-key` to discard the already-poisoned caches.
+3. A safety step before the cargo steps: if
+   `target/duckdb-download/*/*/libduckdb.so` is absent, `cargo clean -p
+   libduckdb-sys` to force the script (hence the download) to re-run.
+
+**How to recognise next time.** Any `-sys` crate whose build script
+writes a prebuilt artifact into a *non-standard* `target/` subdir and
+bakes that path into its link output will hit this: rust-cache restores
+the fingerprint but not the artifact. Cache the artifact dir explicitly,
+and don't trust a green cold/merge run — verify a second (warm-cache)
+run. Consumers with their own CI (carl, agent-template) need the same
+rust-cache treatment.
+
 ## Trade-offs (why this isn't free)
 
 - **Network at first build.** A clean target for a new triple needs
