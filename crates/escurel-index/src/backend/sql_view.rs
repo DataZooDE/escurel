@@ -107,34 +107,14 @@ impl SqlViewBackend {
         overlay_body: &str,
     ) -> Result<Materialized, SqlViewError> {
         let view = view_name(skill, instance_id);
-        let source_expr = self.prepare_source(binding).await?;
-
-        let filter_sql = match binding.filter.as_deref() {
-            Some(f) if !f.trim().is_empty() => {
-                if !is_safe_sql_fragment(f) {
-                    return Err(SqlViewError::InvalidBinding(format!(
-                        "filter contains an unsafe character: {f:?}"
-                    )));
-                }
-                format!(" WHERE {f}")
-            }
-            _ => String::new(),
-        };
-
-        let fingerprint = {
-            let conn = self.indexer.conn.lock().await;
-            conn.execute_batch(&format!(
-                "CREATE OR REPLACE VIEW {view} AS SELECT * FROM {source_expr}{filter_sql}"
-            ))?;
-            schema_fingerprint(&conn, &view)?
-        };
-
+        let fingerprint = self.materialise_view(&view, binding).await?;
         let binding_hash = hash_binding(binding);
         let page_id = format!("markdown/instances/{skill}/{instance_id}.md");
         let content = overlay_markdown(
             skill,
             instance_id,
             &view,
+            binding,
             &binding_hash,
             &fingerprint,
             overlay_body,
@@ -149,6 +129,18 @@ impl SqlViewBackend {
         })
     }
 
+    /// `CREATE OR REPLACE` the named view from a binding (INSTALL/LOAD +
+    /// READ_ONLY ATTACH as needed) and return its current schema
+    /// fingerprint. Shared by create, rebuild-reconstruct, and
+    /// validate-reprobe — so the three paths can never diverge.
+    pub async fn materialise_view(
+        &self,
+        view: &str,
+        binding: &SqlViewBinding,
+    ) -> Result<String, SqlViewError> {
+        materialise_view_on(&self.indexer, view, binding, self.allow_unsigned_extensions).await
+    }
+
     /// Read up to `limit` rows from a materialised view as JSON objects.
     /// Used by the read path (PR-2c) to render a bounded projection.
     pub async fn project_rows(
@@ -159,60 +151,97 @@ impl SqlViewBackend {
         let conn = self.indexer.conn.lock().await;
         project_view_rows(&conn, view, limit)
     }
+}
 
-    /// Resolve the FROM-clause source expression, performing any required
-    /// INSTALL/LOAD + READ_ONLY ATTACH first. Directory connectors need no
-    /// credential; DB connectors dereference the admin credential registry.
-    async fn prepare_source(&self, binding: &SqlViewBinding) -> Result<String, SqlViewError> {
-        match binding.connector {
-            SqlConnector::JsonDir | SqlConnector::ParquetDir => {
-                if !is_safe_sql_fragment(&binding.relation) {
-                    return Err(SqlViewError::InvalidBinding(format!(
-                        "relation/glob contains an unsafe character: {:?}",
-                        binding.relation
-                    )));
-                }
-                let glob = directory_glob(binding.connector, &binding.relation);
-                let func = match binding.connector {
-                    SqlConnector::JsonDir => "read_json_auto",
-                    SqlConnector::ParquetDir => "read_parquet",
-                    _ => unreachable!(),
-                };
-                Ok(format!("{func}('{glob}')"))
+/// `CREATE OR REPLACE` the named view from a binding on `indexer`'s
+/// connection and return its current schema fingerprint. Free function so
+/// the create path (`SqlViewBackend`), rebuild-reconstruct, and
+/// validate-reprobe — which only hold `&Indexer` — all share one code path.
+pub(crate) async fn materialise_view_on(
+    indexer: &Indexer,
+    view: &str,
+    binding: &SqlViewBinding,
+    allow_unsigned: bool,
+) -> Result<String, SqlViewError> {
+    if !is_valid_identifier(view) {
+        return Err(SqlViewError::InvalidBinding(format!(
+            "not a valid view identifier: {view:?}"
+        )));
+    }
+    let source_expr = prepare_source(indexer, binding, allow_unsigned).await?;
+    let filter_sql = match binding.filter.as_deref() {
+        Some(f) if !f.trim().is_empty() => {
+            if !is_safe_sql_fragment(f) {
+                return Err(SqlViewError::InvalidBinding(format!(
+                    "filter contains an unsafe character: {f:?}"
+                )));
             }
-            db => {
-                let attach = binding
-                    .attach
-                    .as_deref()
-                    .ok_or(SqlViewError::MissingAttach(db.as_str()))?;
-                let cred = self
-                    .indexer
-                    .lookup_credential(attach)
-                    .await?
-                    .ok_or_else(|| SqlViewError::CredentialNotFound(attach.to_owned()))?;
-                if matches!(db, SqlConnector::Erpl) && !self.allow_unsigned_extensions {
-                    return Err(SqlViewError::UnsignedExtensionNotAllowed);
-                }
-                if !is_safe_sql_fragment(&cred.secret) {
-                    return Err(SqlViewError::InvalidBinding(
-                        "registered secret contains an unsafe character".to_owned(),
-                    ));
-                }
-                if !is_safe_sql_fragment(&binding.relation) || !is_valid_identifier(attach) {
-                    return Err(SqlViewError::InvalidBinding(
-                        "relation or attach name is unsafe".to_owned(),
-                    ));
-                }
-                let conn = self.indexer.conn.lock().await;
-                if matches!(db, SqlConnector::Erpl) && self.allow_unsigned_extensions {
-                    conn.execute_batch("SET allow_unsigned_extensions=true;")?;
-                }
-                for stmt in install_load(db) {
-                    conn.execute_batch(stmt)?;
-                }
-                conn.execute_batch(&attach_sql(db, attach, &cred.secret))?;
-                Ok(format!("{attach}.{}", binding.relation))
+            format!(" WHERE {f}")
+        }
+        _ => String::new(),
+    };
+    let conn = indexer.conn.lock().await;
+    conn.execute_batch(&format!(
+        "CREATE OR REPLACE VIEW {view} AS SELECT * FROM {source_expr}{filter_sql}"
+    ))?;
+    schema_fingerprint(&conn, view)
+}
+
+/// Resolve the FROM-clause source expression, performing any required
+/// INSTALL/LOAD + READ_ONLY ATTACH first. Directory connectors need no
+/// credential; DB connectors dereference the admin credential registry.
+async fn prepare_source(
+    indexer: &Indexer,
+    binding: &SqlViewBinding,
+    allow_unsigned: bool,
+) -> Result<String, SqlViewError> {
+    match binding.connector {
+        SqlConnector::JsonDir | SqlConnector::ParquetDir => {
+            if !is_safe_sql_fragment(&binding.relation) {
+                return Err(SqlViewError::InvalidBinding(format!(
+                    "relation/glob contains an unsafe character: {:?}",
+                    binding.relation
+                )));
             }
+            let glob = directory_glob(binding.connector, &binding.relation);
+            let func = match binding.connector {
+                SqlConnector::JsonDir => "read_json_auto",
+                SqlConnector::ParquetDir => "read_parquet",
+                _ => unreachable!(),
+            };
+            Ok(format!("{func}('{glob}')"))
+        }
+        db => {
+            let attach = binding
+                .attach
+                .as_deref()
+                .ok_or(SqlViewError::MissingAttach(db.as_str()))?;
+            let cred = indexer
+                .lookup_credential(attach)
+                .await?
+                .ok_or_else(|| SqlViewError::CredentialNotFound(attach.to_owned()))?;
+            if matches!(db, SqlConnector::Erpl) && !allow_unsigned {
+                return Err(SqlViewError::UnsignedExtensionNotAllowed);
+            }
+            if !is_safe_sql_fragment(&cred.secret) {
+                return Err(SqlViewError::InvalidBinding(
+                    "registered secret contains an unsafe character".to_owned(),
+                ));
+            }
+            if !is_safe_sql_fragment(&binding.relation) || !is_valid_identifier(attach) {
+                return Err(SqlViewError::InvalidBinding(
+                    "relation or attach name is unsafe".to_owned(),
+                ));
+            }
+            let conn = indexer.conn.lock().await;
+            if matches!(db, SqlConnector::Erpl) && allow_unsigned {
+                conn.execute_batch("SET allow_unsigned_extensions=true;")?;
+            }
+            for stmt in install_load(db) {
+                conn.execute_batch(stmt)?;
+            }
+            conn.execute_batch(&attach_sql(db, attach, &cred.secret))?;
+            Ok(format!("{attach}.{}", binding.relation))
         }
     }
 }
@@ -478,7 +507,10 @@ fn describe(conn: &duckdb::Connection, view: &str) -> Result<Vec<(String, String
 }
 
 /// Capture the view's result schema as a sha256 fingerprint (REQ-NF-06).
-fn schema_fingerprint(conn: &duckdb::Connection, view: &str) -> Result<String, SqlViewError> {
+pub(crate) fn schema_fingerprint(
+    conn: &duckdb::Connection,
+    view: &str,
+) -> Result<String, SqlViewError> {
     let mut hasher = Sha256::new();
     for (name, ty) in describe(conn, view)? {
         hasher.update(name.as_bytes());
@@ -489,14 +521,30 @@ fn schema_fingerprint(conn: &duckdb::Connection, view: &str) -> Result<String, S
     Ok(hex(&hasher.finalize()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn overlay_markdown(
     skill: &str,
     id: &str,
     view: &str,
+    binding: &SqlViewBinding,
     binding_hash: &str,
     fingerprint: &str,
     body: &str,
 ) -> String {
+    // The `source` sub-block carries everything `rebuild` needs to
+    // reconstruct the view (REQ-NF-01) — connector + relation + the
+    // credential *name* (never the secret, REQ-SQL-05) + optional filter.
+    let mut source = format!(
+        "    connector: {}\n    relation: {}\n",
+        binding.connector.as_str(),
+        binding.relation
+    );
+    if let Some(attach) = &binding.attach {
+        source.push_str(&format!("    attach: {attach}\n"));
+    }
+    if let Some(filter) = &binding.filter {
+        source.push_str(&format!("    filter: {filter:?}\n"));
+    }
     format!(
         "---\n\
          type: instance\n\
@@ -507,9 +555,133 @@ fn overlay_markdown(
         \x20 view: {view}\n\
         \x20 binding_hash: {binding_hash}\n\
         \x20 source_schema_fingerprint: {fingerprint}\n\
+        \x20 source:\n\
+         {source}\
          ---\n\
          {body}\n"
     )
+}
+
+/// Health of one SQL-view binding, from a re-probe (REQ-NF-06).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingStatus {
+    pub page_id: String,
+    pub view: String,
+    /// `ok` | `binding_degraded` | `backend_unavailable`.
+    pub status: String,
+    pub detail: Option<String>,
+}
+
+/// Parse the `backend_ref.source` sub-block back into a [`SqlViewBinding`]
+/// for reconstruction / re-probe.
+pub(crate) fn parse_source_binding(backend_ref: &serde_json::Value) -> Option<SqlViewBinding> {
+    let source = backend_ref.get("source")?.as_object()?;
+    let connector = SqlConnector::from_wire(
+        source
+            .get("connector")
+            .and_then(serde_json::Value::as_str)?,
+    )?;
+    let relation = source
+        .get("relation")
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
+    let attach = source
+        .get("attach")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let filter = source
+        .get("filter")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Some(SqlViewBinding {
+        connector,
+        attach,
+        relation,
+        filter,
+        project: std::collections::BTreeMap::new(),
+        search_text: Vec::new(),
+    })
+}
+
+/// Every `sql_view` overlay's `(page_id, skill, view, backend_ref)`.
+async fn enumerate_sql_view_overlays(
+    indexer: &Indexer,
+) -> Result<Vec<(String, String, String, serde_json::Value)>, crate::IndexerError> {
+    let conn = indexer.conn.lock().await;
+    let mut stmt = conn.prepare(
+        "SELECT page_id, skill, frontmatter::VARCHAR FROM pages \
+         WHERE page_type = 'instance' \
+           AND json_extract_string(frontmatter, '$.backend_ref.kind') = 'sql_view'",
+    )?;
+    let rows: Vec<(String, String, String)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(page_id, skill, fm_json)| {
+            let fm: serde_json::Value = serde_json::from_str(&fm_json).ok()?;
+            let view = fm.get("backend_ref")?.get("view")?.as_str()?.to_owned();
+            let backend_ref = fm.get("backend_ref")?.clone();
+            Some((page_id, skill, view, backend_ref))
+        })
+        .collect())
+}
+
+/// Reconstruct every SQL view from its overlay's `backend_ref.source`
+/// (rebuild step, REQ-NF-01). No data to rebuild — external — just the view.
+pub(crate) async fn reconstruct_views(indexer: &Indexer) -> Result<(), crate::IndexerError> {
+    let overlays = enumerate_sql_view_overlays(indexer).await?;
+    for (_page_id, _skill, view, backend_ref) in overlays {
+        if let Some(binding) = parse_source_binding(&backend_ref) {
+            // Best-effort: a source that is offline now is reported by
+            // validate_bindings, not fatal to the whole rebuild.
+            let _ = materialise_view_on(indexer, &view, &binding, false).await;
+        }
+    }
+    Ok(())
+}
+
+/// Re-probe every SQL-view binding and compare the current schema
+/// fingerprint to the one stored at create time (REQ-NF-06).
+pub(crate) async fn validate_all_bindings(
+    indexer: &Indexer,
+) -> Result<Vec<BindingStatus>, crate::IndexerError> {
+    let overlays = enumerate_sql_view_overlays(indexer).await?;
+    let mut out = Vec::new();
+    for (page_id, _skill, view, backend_ref) in overlays {
+        let stored = backend_ref
+            .get("source_schema_fingerprint")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let (status, detail) = match parse_source_binding(&backend_ref) {
+            None => (
+                "backend_unavailable".to_owned(),
+                Some("backend_ref.source missing or unparseable".to_owned()),
+            ),
+            Some(binding) => match materialise_view_on(indexer, &view, &binding, false).await {
+                Err(e) => ("backend_unavailable".to_owned(), Some(e.to_string())),
+                Ok(current) if current == stored => ("ok".to_owned(), None),
+                Ok(current) => (
+                    "binding_degraded".to_owned(),
+                    Some(format!("schema fingerprint drift: {stored} → {current}")),
+                ),
+            },
+        };
+        out.push(BindingStatus {
+            page_id,
+            view,
+            status,
+            detail,
+        });
+    }
+    Ok(out)
 }
 
 fn duck_value_to_json(row: &duckdb::Row<'_>, i: usize) -> serde_json::Value {

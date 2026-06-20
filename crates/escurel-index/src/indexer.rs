@@ -511,6 +511,10 @@ impl Indexer {
                 current_page: &path,
             });
         }
+        // SQL views are external — no data to rebuild, but the view objects
+        // must be reconstructed from each overlay's backend_ref.source so a
+        // from-scratch rebuild yields a queryable index (REQ-NF-01).
+        self.rebuild_sql_views().await?;
         Ok(())
     }
 

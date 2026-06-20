@@ -703,6 +703,10 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             tool_delete_credential(indexer, params.arguments).await
         }
+        "validate_bindings" => {
+            require_admin(role)?;
+            tool_validate_bindings(indexer).await
+        }
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
         ))),
@@ -969,6 +973,33 @@ async fn sql_view_projection(indexer: &Indexer, e: &escurel_index::ExpandedPage)
         return None;
     }
     let view = backend_ref.get("view").and_then(Value::as_str)?;
+
+    // Fail closed on schema drift (REQ-NF-06): if the view's current schema
+    // fingerprint no longer matches the one captured at create time, return
+    // an Issue instead of (possibly wrong) rows.
+    if let Some(stored) = backend_ref
+        .get("source_schema_fingerprint")
+        .and_then(Value::as_str)
+    {
+        match indexer.current_view_fingerprint(view).await {
+            Ok(current) if current != stored => {
+                return Some(json!({
+                    "view": view, "rows": [], "source": {},
+                    "issue": { "code": "binding_degraded",
+                        "message": "source schema drifted from the stored fingerprint; \
+                                    reads fail closed until the binding is re-validated" },
+                }));
+            }
+            Err(e) => {
+                return Some(json!({
+                    "view": view, "rows": [], "source": {},
+                    "issue": { "code": "source_unavailable", "message": e.to_string() },
+                }));
+            }
+            Ok(_) => {}
+        }
+    }
+
     let rows = indexer.project_view(view, PROJECTION_LIMIT).await.ok()?;
 
     // Expose projected source columns under `source.<overlay_field>` per the
@@ -2076,6 +2107,26 @@ async fn tool_delete_credential(indexer: &Indexer, args: Value) -> Result<Value,
     Ok(json!({ "ok": true }))
 }
 
+async fn tool_validate_bindings(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+    let statuses = indexer
+        .validate_bindings()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("validate_bindings: {e}")))?;
+    let degraded = statuses.iter().filter(|s| s.status != "ok").count();
+    let bindings: Vec<Value> = statuses
+        .into_iter()
+        .map(|s| {
+            json!({
+                "page_id": s.page_id,
+                "view": s.view,
+                "status": s.status,
+                "detail": s.detail,
+            })
+        })
+        .collect();
+    Ok(json!({ "ok": degraded == 0, "degraded": degraded, "bindings": bindings }))
+}
+
 // --- admin tenant CRUD + long-ops (admin-role gated) -----------
 //
 // These port the gRPC `EscurelAdmin` business logic verbatim; only
@@ -2989,6 +3040,13 @@ fn tools_list_payload() -> Value {
                     "required": ["name"],
                     "properties": { "name": { "type": "string" } }
                 }),
+            ),
+            tool_entry(
+                "validate_bindings",
+                "Admin: re-probe every SQL-view binding and report schema \
+                 drift (binding_degraded) or unreachable sources \
+                 (backend_unavailable). Reconciles views ⟂ backend_refs.",
+                json!({ "type": "object", "properties": {} }),
             ),
             // Admin tenant-lifecycle + operator tools. All require an
             // admin-role bearer (JSON-RPC -32001 otherwise) and a

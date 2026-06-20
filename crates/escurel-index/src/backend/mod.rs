@@ -50,7 +50,7 @@ use crate::{Indexer, IndexerError};
 
 pub use binding::{BackendBinding, SqlConnector, SqlViewBinding};
 pub use markdown::MarkdownBackend;
-pub use sql_view::{Materialized, SqlViewBackend, SqlViewError};
+pub use sql_view::{BindingStatus, Materialized, SqlViewBackend, SqlViewError};
 
 /// Which storage / representation strategy backs a skill's instances.
 ///
@@ -298,6 +298,26 @@ impl Indexer {
         skill_filter: Option<&str>,
     ) -> Result<Vec<SearchHit>, IndexerError> {
         sql_view::search_candidates(self, q, skill_filter).await
+    }
+
+    /// Reconstruct every SQL view from its overlay's `backend_ref.source`
+    /// (rebuild step, REQ-NF-01). Called at the tail of `rebuild`.
+    pub(crate) async fn rebuild_sql_views(&self) -> Result<(), IndexerError> {
+        sql_view::reconstruct_views(self).await
+    }
+
+    /// Re-probe every SQL-view binding and report drift (REQ-NF-06). Also
+    /// reconciles views ⟂ `backend_ref`s: a binding whose view cannot be
+    /// reconstructed is reported `backend_unavailable` (no orphans hidden).
+    pub async fn validate_bindings(&self) -> Result<Vec<sql_view::BindingStatus>, IndexerError> {
+        sql_view::validate_all_bindings(self).await
+    }
+
+    /// Current schema fingerprint of a materialised view (for the read-path
+    /// fail-closed drift check, REQ-NF-06).
+    pub async fn current_view_fingerprint(&self, view: &str) -> Result<String, SqlViewError> {
+        let conn = self.conn.lock().await;
+        sql_view::schema_fingerprint(&conn, view)
     }
 
     /// The backend a skill declares, parsed from its `backend:` block
