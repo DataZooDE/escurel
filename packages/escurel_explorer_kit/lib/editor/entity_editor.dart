@@ -295,16 +295,23 @@ class _BodyBlock extends StatelessWidget {
 /// `[[wikilink]]` pills the explorer already understood. Deliberately
 /// CommonMark-*subset* (no italics/tables/blockquotes) — it covers what
 /// the KB corpus actually uses, with no extra dependency.
-class _InlineMarkdown extends StatelessWidget {
+class _InlineMarkdown extends ConsumerWidget {
   const _InlineMarkdown({required this.text});
 
   final String text;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final base = Theme.of(context).textTheme.bodyMedium?.copyWith(color: kOnSurface);
+    // The set of known skill ids — a `` `code` `` span whose content is a
+    // skill id renders as a link to that skill (empty while the catalogue
+    // loads, so code stays inert until it resolves).
+    final skillIds = ref.watch(skillsCatalogueProvider).maybeWhen(
+          data: (skills) => skills.map((s) => s.id).toSet(),
+          orElse: () => const <String>{},
+        );
     return Text.rich(
-      TextSpan(style: base, children: inlineMarkdownSpans(context, text)),
+      TextSpan(style: base, children: inlineMarkdownSpans(context, text, skillIds)),
     );
   }
 }
@@ -323,8 +330,14 @@ final _inlinePattern = RegExp(
 );
 
 /// Tokenise [src] into styled inline spans. Exposed (package-private) so
-/// both paragraphs and link labels share one code path.
-List<InlineSpan> inlineMarkdownSpans(BuildContext context, String src) {
+/// both paragraphs and link labels share one code path. [skillIds] is the
+/// set of known skill ids; a `` `code` `` span matching one becomes a link
+/// to that skill.
+List<InlineSpan> inlineMarkdownSpans(
+  BuildContext context,
+  String src,
+  Set<String> skillIds,
+) {
   final base = Theme.of(context).textTheme.bodyMedium;
   final spans = <InlineSpan>[];
   var cursor = 0;
@@ -336,18 +349,26 @@ List<InlineSpan> inlineMarkdownSpans(BuildContext context, String src) {
     final bold = m.namedGroup('bold');
     final wiki = m.namedGroup('wiki');
     if (code != null) {
-      spans.add(TextSpan(
-        text: code.substring(1, code.length - 1),
-        style: base?.copyWith(
-          fontFamily: 'monospace',
-          fontFamilyFallback: const ['monospace'],
-          backgroundColor: kSurfaceContainerHigh,
-          color: kPrimary,
-        ),
-      ));
+      final content = code.substring(1, code.length - 1);
+      final codeStyle = base?.copyWith(
+        fontFamily: 'monospace',
+        fontFamilyFallback: const ['monospace'],
+        backgroundColor: kSurfaceContainerHigh,
+        color: kPrimary,
+      );
+      // A code span that names a skill links to that skill page; otherwise
+      // it's a plain (inert) code chip.
+      if (skillIds.contains(content)) {
+        spans.add(WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: _SkillCodeLink(id: content, style: codeStyle),
+        ));
+      } else {
+        spans.add(TextSpan(text: content, style: codeStyle));
+      }
     } else if (bold != null) {
       final inner = bold.substring(2, bold.length - 2);
-      for (final s in inlineMarkdownSpans(context, inner)) {
+      for (final s in inlineMarkdownSpans(context, inner, skillIds)) {
         spans.add(_withWeight(s, base));
       }
     } else if (wiki != null) {
@@ -407,13 +428,17 @@ class _MdLink extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final skillIds = ref.watch(skillsCatalogueProvider).maybeWhen(
+          data: (skills) => skills.map((s) => s.id).toSet(),
+          orElse: () => const <String>{},
+        );
     final linkStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
           color: kPrimary,
           decoration: TextDecoration.underline,
           decorationColor: kPrimary,
         );
     final child = Text.rich(
-      TextSpan(style: linkStyle, children: inlineMarkdownSpans(context, label)),
+      TextSpan(style: linkStyle, children: inlineMarkdownSpans(context, label, skillIds)),
     );
     if (!_internal) return Tooltip(message: target, child: child);
     // Strip a trailing `.md` and any path → the bare page id `focusSkill`
@@ -425,6 +450,39 @@ class _MdLink extends ConsumerWidget {
       borderRadius: BorderRadius.circular(4),
       onTap: () => focusSkill(ref, id),
       child: child,
+    );
+  }
+}
+
+/// A `` `code` `` span whose content is a known skill id: rendered as the
+/// monospace code chip but clickable, navigating to the skill page via the
+/// same `focusSkill` resolve seam (`[[id]]` → `markdown/skills/<id>.md`).
+/// The `skill-link:<id>` semantics label is the a11y/test contract.
+class _SkillCodeLink extends ConsumerWidget {
+  const _SkillCodeLink({required this.id, required this.style});
+
+  final String id;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Semantics(
+      label: 'skill-link:$id',
+      identifier: 'skill-link:$id',
+      button: true,
+      onTap: () => focusSkill(ref, id),
+      excludeSemantics: true,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(3),
+        onTap: () => focusSkill(ref, id),
+        child: Text(
+          id,
+          style: style?.copyWith(
+            decoration: TextDecoration.underline,
+            decorationColor: kPrimary,
+          ),
+        ),
+      ),
     );
   }
 }

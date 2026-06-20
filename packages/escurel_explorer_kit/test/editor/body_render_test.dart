@@ -130,4 +130,46 @@ void main() {
     // The raw "- " marker is replaced by a bullet glyph.
     expect(plain, contains('•'));
   });
+
+  // A code span whose content is a known skill id becomes a clickable
+  // link to that skill page; a code span that is just a field name stays
+  // inert. (The venue skill's `` `event` `` should jump to the event skill;
+  // `` `name` `` / `` `address` `` should not.)
+  testWidgets('code span matching a skill id links to that skill; a field name does not',
+      (tester) async {
+    final client = FixtureEscurelClient.fromSources(
+      skillFiles: {
+        'doc.md': _docSkill,
+        'event.md': '---\ntype: skill\nid: event\n'
+            'description: Ein Event.\n---\n\n# event\n\nEVENTBODYMARKER\n',
+      },
+      instanceFiles: {
+        'doc__venueish.md': '---\ntype: instance\nskill: doc\nid: venueish\n---\n\n'
+            '# venueish\n\n'
+            'Das Feld `event:` verweist auf das `event`, optional `name`.\n',
+      },
+    );
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(MaterialApp(home: EscurelExplorer(client: client)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('venueish'));
+    await tester.pumpAndSettle();
+
+    // `event` (a skill) is a link; `name` (a field) and `event:` (with the
+    // colon, ≠ the skill id) are not.
+    expect(find.bySemanticsLabel('skill-link:event'), findsOneWidget);
+    expect(find.bySemanticsLabel('skill-link:name'), findsNothing);
+
+    // Not yet on the event page.
+    expect(find.textContaining('EVENTBODYMARKER', findRichText: true), findsNothing);
+
+    await tester.tap(find.bySemanticsLabel('skill-link:event'));
+    await tester.pumpAndSettle();
+
+    // Navigated to the event skill page.
+    expect(find.textContaining('EVENTBODYMARKER', findRichText: true), findsWidgets);
+  });
 }
