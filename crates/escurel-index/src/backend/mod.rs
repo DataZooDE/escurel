@@ -33,6 +33,7 @@
 //!   dispatcher lands with the second searchable backend (PR-2d).
 
 mod binding;
+pub mod document;
 mod markdown;
 mod sql_view;
 
@@ -49,6 +50,10 @@ use crate::validate::Issue;
 use crate::{Indexer, IndexerError};
 
 pub use binding::{BackendBinding, SqlConnector, SqlViewBinding};
+pub use document::{
+    Chunk, ChunkConfig, DocMetadata, ExtractConfig, ExtractError, ExtractionResult, Extractor,
+    NullExtractor, OcrPolicy, PlainTextExtractor, chunk_text,
+};
 pub use markdown::MarkdownBackend;
 pub use sql_view::{BindingStatus, Materialized, SqlViewBackend, SqlViewError};
 
