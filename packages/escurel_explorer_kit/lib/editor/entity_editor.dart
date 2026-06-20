@@ -204,26 +204,44 @@ class _FrontmatterTable extends StatelessWidget {
   }
 }
 
-class _ValueRender extends StatelessWidget {
+class _ValueRender extends ConsumerWidget {
   const _ValueRender({required this.value});
 
   final dynamic value;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     if (value == null) {
       return Text('—', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kOnSurfaceVariant));
     }
-    final raw = value.toString();
-    final refs = parseWikilinks(raw);
-    if (refs.isEmpty) {
-      return Text(raw, style: Theme.of(context).textTheme.bodyMedium);
+    final skillIds = ref.watch(skillsCatalogueProvider).maybeWhen(
+          data: (skills) => skills.map((s) => s.id).toSet(),
+          orElse: () => const <String>{},
+        );
+    // Flatten a scalar or list into atomic widgets: `[[wikilink]]`s and
+    // bare skill-id values become pills (mirroring the body renderer),
+    // everything else plain text. List values (e.g.
+    // `required_frontmatter: [event]`) render item-by-item.
+    final items = (value is List) ? (value as List).map((e) => e.toString()) : [value.toString()];
+    final widgets = <Widget>[];
+    for (final raw in items) {
+      final refs = parseWikilinks(raw);
+      if (refs.isNotEmpty) {
+        widgets.addAll(refs.map((r) => WikilinkPill(ref: r)));
+      } else if (skillIds.contains(raw.trim())) {
+        widgets.add(WikilinkPill(ref: WikilinkRef(id: raw.trim())));
+      } else {
+        widgets.add(Text(raw, style: Theme.of(context).textTheme.bodyMedium));
+      }
     }
-    return Wrap(
-      spacing: 6,
-      runSpacing: 4,
-      children: refs.map((r) => WikilinkPill(ref: r)).toList(),
-    );
+    if (widgets.isEmpty) {
+      return Text('—', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kOnSurfaceVariant));
+    }
+    // A lone plain-text scalar needs no Wrap (lets long descriptions wrap
+    // naturally); anything with pills goes in a Wrap so a pill sizes to its
+    // content instead of stretching across the row's Expanded slot.
+    if (widgets.length == 1 && widgets.first is Text) return widgets.first;
+    return Wrap(spacing: 6, runSpacing: 4, children: widgets);
   }
 }
 
@@ -246,10 +264,10 @@ class _BodyBlock extends StatelessWidget {
   }
 
   Widget _renderLine(BuildContext context, String line, TextTheme text) {
-    if (line.startsWith('# ')) {
+    if (line.startsWith('### ')) {
       return Padding(
-        padding: const EdgeInsets.only(top: 12, bottom: 6),
-        child: Text(line.substring(2), style: text.headlineMedium),
+        padding: const EdgeInsets.only(top: 10, bottom: 4),
+        child: Text(line.substring(4), style: text.titleMedium),
       );
     }
     if (line.startsWith('## ')) {
@@ -258,40 +276,127 @@ class _BodyBlock extends StatelessWidget {
         child: Text(line.substring(3), style: text.titleLarge),
       );
     }
+    if (line.startsWith('# ')) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 12, bottom: 6),
+        child: Text(line.substring(2), style: text.headlineMedium),
+      );
+    }
+    // Bullet list item (`- ` / `* `): a hanging-indent row whose source
+    // marker is replaced by a bullet glyph, the content rendered inline.
+    final bullet = RegExp(r'^[-*]\s+(.*)$').firstMatch(line);
+    if (bullet != null) {
+      return Padding(
+        padding: const EdgeInsets.only(left: 8, bottom: 4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(right: 8, top: 1),
+              child: Text('•', style: text.bodyMedium?.copyWith(color: kOnSurfaceVariant)),
+            ),
+            Expanded(child: _InlineMarkdown(text: bullet.group(1)!)),
+          ],
+        ),
+      );
+    }
     if (line.isEmpty) return const SizedBox(height: 8);
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
-      child: _ParagraphWithPills(text: line),
+      child: _InlineMarkdown(text: line),
     );
   }
 }
 
-/// Inline rendering of a paragraph with `[[wikilink]]` substituted
-/// for [WikilinkPill] widgets via [WidgetSpan]. Not a full markdown
-/// renderer — heading + paragraph + pill is enough for the editor
-/// merge gate; richer renderer arrives with PR-5.
-class _ParagraphWithPills extends StatelessWidget {
-  const _ParagraphWithPills({required this.text});
+/// A paragraph (or list item) with inline markdown rendered as styled
+/// spans: `**bold**`, `` `code` ``, `[label](target)` links, and the
+/// `[[wikilink]]` pills the explorer already understood. Deliberately
+/// CommonMark-*subset* (no italics/tables/blockquotes) — it covers what
+/// the KB corpus actually uses, with no extra dependency.
+class _InlineMarkdown extends ConsumerWidget {
+  const _InlineMarkdown({required this.text});
 
   final String text;
 
   @override
-  Widget build(BuildContext context) {
-    final pattern = RegExp(r'\[\[([^\[\]\r\n]+?)\]\]');
-    final matches = pattern.allMatches(text).toList();
-    if (matches.isEmpty) {
-      return Text(text, style: Theme.of(context).textTheme.bodyMedium);
-    }
+  Widget build(BuildContext context, WidgetRef ref) {
+    final base = Theme.of(context).textTheme.bodyMedium?.copyWith(color: kOnSurface);
+    // The set of known skill ids — a `` `code` `` span whose content is a
+    // skill id renders as a link to that skill (empty while the catalogue
+    // loads, so code stays inert until it resolves).
+    final skillIds = ref.watch(skillsCatalogueProvider).maybeWhen(
+          data: (skills) => skills.map((s) => s.id).toSet(),
+          orElse: () => const <String>{},
+        );
+    return Text.rich(
+      TextSpan(style: base, children: inlineMarkdownSpans(context, text, skillIds)),
+    );
+  }
+}
 
-    final spans = <InlineSpan>[];
-    var cursor = 0;
-    for (final m in matches) {
-      if (m.start > cursor) {
-        spans.add(TextSpan(text: text.substring(cursor, m.start)));
+/// Earliest-match alternation over the four inline constructs. Order in
+/// the union doesn't matter — `allMatches` walks left→right and a link's
+/// own `[` is reached only after any preceding code/bold is consumed, so
+/// an inline code span *inside* a link label (the corpus's
+/// `` [`community`](community.md) ``) stays part of the link match and is
+/// rendered when the label recurses through this same builder.
+final _inlinePattern = RegExp(
+  r'(?<code>`[^`\n]+`)'
+  r'|(?<bold>\*\*[^\n]+?\*\*)'
+  r'|(?<wiki>\[\[[^\[\]\r\n]+?\]\])'
+  r'|(?<link>\[[^\]\n]+\]\([^)\n]+\))',
+);
+
+/// Tokenise [src] into styled inline spans. Exposed (package-private) so
+/// both paragraphs and link labels share one code path. [skillIds] is the
+/// set of known skill ids; a `` `code` `` span matching one becomes a link
+/// to that skill.
+List<InlineSpan> inlineMarkdownSpans(
+  BuildContext context,
+  String src,
+  Set<String> skillIds,
+) {
+  final base = Theme.of(context).textTheme.bodyMedium;
+  final spans = <InlineSpan>[];
+  var cursor = 0;
+  for (final m in _inlinePattern.allMatches(src)) {
+    if (m.start > cursor) {
+      spans.add(TextSpan(text: src.substring(cursor, m.start)));
+    }
+    final code = m.namedGroup('code');
+    final bold = m.namedGroup('bold');
+    final wiki = m.namedGroup('wiki');
+    if (code != null) {
+      final content = code.substring(1, code.length - 1);
+      final codeStyle = base?.copyWith(
+        fontFamily: 'monospace',
+        fontFamilyFallback: const ['monospace'],
+        backgroundColor: kSurfaceContainerHigh,
+        color: kPrimary,
+      );
+      // A code span that names a skill renders as a wikilink pill — the
+      // same affordance the frontmatter uses — so in-document skill links
+      // look identical to the header's. Otherwise it's a plain code chip.
+      if (skillIds.contains(content)) {
+        spans.add(WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: WikilinkPill(ref: WikilinkRef(id: content)),
+          ),
+        ));
+      } else {
+        spans.add(TextSpan(text: content, style: codeStyle));
       }
-      final refs = parseWikilinks(m[0]!);
+    } else if (bold != null) {
+      final inner = bold.substring(2, bold.length - 2);
+      for (final s in inlineMarkdownSpans(context, inner, skillIds)) {
+        spans.add(_withWeight(s, base));
+      }
+    } else if (wiki != null) {
+      final refs = parseWikilinks(wiki);
       if (refs.isEmpty) {
-        spans.add(TextSpan(text: m[0]));
+        spans.add(TextSpan(text: wiki));
       } else {
         spans.add(WidgetSpan(
           alignment: PlaceholderAlignment.middle,
@@ -301,16 +406,72 @@ class _ParagraphWithPills extends StatelessWidget {
           ),
         ));
       }
-      cursor = m.end;
+    } else {
+      final link = m.namedGroup('link')!;
+      final parts = RegExp(r'^\[(.+)\]\((.+)\)$').firstMatch(link)!;
+      spans.add(WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: _MdLink(label: parts.group(1)!, target: parts.group(2)!),
+      ));
     }
-    if (cursor < text.length) {
-      spans.add(TextSpan(text: text.substring(cursor)));
-    }
-    return RichText(
-      text: TextSpan(
-        style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: kOnSurface),
-        children: spans,
-      ),
+    cursor = m.end;
+  }
+  if (cursor < src.length) {
+    spans.add(TextSpan(text: src.substring(cursor)));
+  }
+  return spans;
+}
+
+/// Force bold weight onto a text run; widget spans (pills/links) pass
+/// through unchanged.
+InlineSpan _withWeight(InlineSpan s, TextStyle? base) {
+  if (s is TextSpan) {
+    return TextSpan(
+      text: s.text,
+      children: s.children,
+      style: (s.style ?? base)?.copyWith(fontWeight: FontWeight.bold),
+    );
+  }
+  return s;
+}
+
+/// A `[label](target)` link. Styled like a link (primary + underline);
+/// internal targets (a relative `*.md` page or a bare id) navigate via
+/// the same `resolve` seam the wikilink pills use, so no `url_launcher`
+/// dependency is pulled in. External `scheme://` targets render styled
+/// but inert, with the URL in a tooltip.
+class _MdLink extends ConsumerWidget {
+  const _MdLink({required this.label, required this.target});
+
+  final String label;
+  final String target;
+
+  bool get _internal => !target.contains('://') && !target.startsWith('mailto:');
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final skillIds = ref.watch(skillsCatalogueProvider).maybeWhen(
+          data: (skills) => skills.map((s) => s.id).toSet(),
+          orElse: () => const <String>{},
+        );
+    final linkStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
+          color: kPrimary,
+          decoration: TextDecoration.underline,
+          decorationColor: kPrimary,
+        );
+    final child = Text.rich(
+      TextSpan(style: linkStyle, children: inlineMarkdownSpans(context, label, skillIds)),
+    );
+    if (!_internal) return Tooltip(message: target, child: child);
+    // Strip a trailing `.md` and any path → the bare page id `focusSkill`
+    // resolves as `[[id]]` → `markdown/skills/<id>.md`.
+    final id = (target.endsWith('.md') ? target.substring(0, target.length - 3) : target)
+        .split('/')
+        .last;
+    return InkWell(
+      borderRadius: BorderRadius.circular(4),
+      onTap: () => focusSkill(ref, id),
+      child: child,
     );
   }
 }

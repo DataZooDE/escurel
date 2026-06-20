@@ -294,4 +294,55 @@ void main() {
     await _openWelcome(tester);
     expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
   });
+
+  testWidgets('visibility is a dropdown (not free text) and the selection persists',
+      (tester) async {
+    final client = FixtureEscurelClient.fromSources(
+      writeEnabled: true,
+      skillFiles: {
+        'widget.md': '---\n'
+            'type: skill\n'
+            'id: widget\n'
+            'description: A public widget.\n'
+            'required_frontmatter: [title]\n'
+            'optional_frontmatter: [visibility]\n'
+            '---\n\n# widget\n',
+      },
+      instanceFiles: {
+        'widget__w1.md': '---\n'
+            'type: instance\n'
+            'skill: widget\n'
+            'id: w1\n'
+            'title: W1\n'
+            'visibility: public\n'
+            '---\n\n# w1\n',
+      },
+    );
+    await _pump(tester, client);
+    await tester.tap(find.text('w1'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.bySemanticsLabel(PageFormKeys.editPage));
+    await tester.pumpAndSettle();
+
+    // `visibility` is a dropdown; an ordinary field (`title`) stays a TextField.
+    expect(find.byType(DropdownButtonFormField<String>), findsOneWidget);
+    // The dropdown still carries the `field:visibility` label (its selected
+    // value merges into the node, so match as a substring — same as the
+    // rodney `ax-tree | grep` contract).
+    expect(find.bySemanticsLabel(RegExp('${PageFormKeys.fieldPrefix}visibility')), findsOneWidget);
+    expect(find.bySemanticsLabel('${PageFormKeys.fieldPrefix}title'), findsOneWidget);
+
+    // Open the dropdown and pick `owner`.
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('owner').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.bySemanticsLabel(PageFormKeys.save));
+    await tester.pumpAndSettle();
+
+    final page = await client.expand('widget__w1');
+    expect(page.frontmatter['visibility'], 'owner');
+  });
 }
