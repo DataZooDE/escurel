@@ -173,4 +173,36 @@ void main() {
     // Navigated to the event skill page.
     expect(find.textContaining('EVENTBODYMARKER', findRichText: true), findsWidgets);
   });
+
+  // The frontmatter table linkifies the same way: a value (or list item)
+  // that is a known skill id renders as a pill — e.g. a skill's
+  // `required_frontmatter: [event]` lets you jump to the event skill.
+  testWidgets('frontmatter values that name a skill render as pills', (tester) async {
+    final client = FixtureEscurelClient.fromSources(
+      skillFiles: {
+        'doc.md': _docSkill,
+        'event.md': '---\ntype: skill\nid: event\ndescription: Ein Event.\n---\n\n# event\n',
+      },
+      instanceFiles: {
+        // `links` lists a skill id; `tags` lists a non-skill word.
+        'doc__fm.md': '---\ntype: instance\nskill: doc\nid: fm\n'
+            'links: [event]\ntags: [name]\n---\n\n# fm\n',
+      },
+    );
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(MaterialApp(home: EscurelExplorer(client: client)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('fm'));
+    await tester.pumpAndSettle();
+
+    final fm = find.byKey(const ValueKey('entity_editor.frontmatter'));
+    // `event` (a skill) → pill; `name` (just a word) → plain text.
+    expect(find.descendant(of: fm, matching: find.widgetWithText(WikilinkPill, 'event')),
+        findsOneWidget);
+    expect(find.descendant(of: fm, matching: find.widgetWithText(WikilinkPill, 'name')),
+        findsNothing);
+  });
 }

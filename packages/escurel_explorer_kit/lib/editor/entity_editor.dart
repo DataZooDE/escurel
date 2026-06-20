@@ -204,26 +204,52 @@ class _FrontmatterTable extends StatelessWidget {
   }
 }
 
-class _ValueRender extends StatelessWidget {
+class _ValueRender extends ConsumerWidget {
   const _ValueRender({required this.value});
 
   final dynamic value;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     if (value == null) {
       return Text('—', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kOnSurfaceVariant));
     }
-    final raw = value.toString();
-    final refs = parseWikilinks(raw);
-    if (refs.isEmpty) {
-      return Text(raw, style: Theme.of(context).textTheme.bodyMedium);
+    final skillIds = ref.watch(skillsCatalogueProvider).maybeWhen(
+          data: (skills) => skills.map((s) => s.id).toSet(),
+          orElse: () => const <String>{},
+        );
+    // A list (e.g. `required_frontmatter: [event]`) renders item-by-item,
+    // so each element can become its own pill; a scalar renders inline.
+    if (value is List) {
+      final items = (value as List).map((e) => e.toString()).toList();
+      if (items.isEmpty) {
+        return Text('—', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kOnSurfaceVariant));
+      }
+      return Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        children: [for (final it in items) _scalar(context, it, skillIds)],
+      );
     }
-    return Wrap(
-      spacing: 6,
-      runSpacing: 4,
-      children: refs.map((r) => WikilinkPill(ref: r)).toList(),
-    );
+    return _scalar(context, value.toString(), skillIds);
+  }
+
+  /// Render one scalar value: `[[wikilink]]`s become pills, a bare value
+  /// that is a known skill id becomes a pill to that skill (mirrors the
+  /// body renderer), everything else is plain text.
+  Widget _scalar(BuildContext context, String raw, Set<String> skillIds) {
+    final refs = parseWikilinks(raw);
+    if (refs.isNotEmpty) {
+      return Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        children: refs.map((r) => WikilinkPill(ref: r)).toList(),
+      );
+    }
+    if (skillIds.contains(raw.trim())) {
+      return WikilinkPill(ref: WikilinkRef(id: raw.trim()));
+    }
+    return Text(raw, style: Theme.of(context).textTheme.bodyMedium);
   }
 }
 
