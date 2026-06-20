@@ -23,6 +23,7 @@ pub mod backend;
 pub mod chat;
 pub mod citation;
 pub mod crdt_history;
+pub mod creds;
 pub mod events;
 pub mod filter;
 pub mod groups;
@@ -41,6 +42,7 @@ pub use backend::{
 };
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
+pub use creds::{CredentialInfo, CredentialRecord};
 pub use events::{EVENTS_MAX_LIMIT, EventInfo, NewEvent};
 pub use groups::GroupMember;
 pub use indexer::{

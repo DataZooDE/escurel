@@ -689,6 +689,20 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             tool_list_group_members(indexer, params.arguments).await
         }
+        // SQL-view credential registry (admin-only). Secrets live
+        // server-side in kb.duckdb, never in the markdown corpus (REQ-SQL-05).
+        "register_credential" => {
+            require_admin(role)?;
+            tool_register_credential(indexer, subject, params.arguments).await
+        }
+        "list_credentials" => {
+            require_admin(role)?;
+            tool_list_credentials(indexer).await
+        }
+        "delete_credential" => {
+            require_admin(role)?;
+            tool_delete_credential(indexer, params.arguments).await
+        }
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
         ))),
@@ -1852,6 +1866,71 @@ async fn tool_list_group_members(indexer: &Indexer, args: Value) -> Result<Value
     Ok(json!({ "members": members }))
 }
 
+#[derive(Deserialize)]
+struct RegisterCredentialArgs {
+    /// The `attach` name a `sql_view` skill references.
+    name: String,
+    /// Connector kind (`postgres`|`mysql`|`sqlite`|`erpl`|`s3`|…).
+    connector: String,
+    /// Secret material (DSN / secret spec). Stored server-side only.
+    secret: String,
+}
+
+#[derive(Deserialize)]
+struct CredentialNameArgs {
+    name: String,
+}
+
+async fn tool_register_credential(
+    indexer: &Indexer,
+    created_by: &str,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: RegisterCredentialArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("register_credential: {e}")))?;
+    if a.name.is_empty() || a.connector.is_empty() || a.secret.is_empty() {
+        return Err(JsonRpcError::invalid_params(
+            "name, connector, and secret are all required".to_owned(),
+        ));
+    }
+    indexer
+        .register_credential(&a.name, &a.connector, &a.secret, Some(created_by))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("register_credential: {e}")))?;
+    // Never echo the secret back.
+    Ok(json!({ "ok": true, "name": a.name }))
+}
+
+async fn tool_list_credentials(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+    let creds = indexer
+        .list_credentials()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_credentials: {e}")))?;
+    // The secret is intentionally absent from this view (REQ-SQL-05).
+    let creds: Vec<Value> = creds
+        .into_iter()
+        .map(|c| {
+            json!({
+                "name": c.name,
+                "connector": c.connector,
+                "created_at": c.created_at,
+                "created_by": c.created_by,
+            })
+        })
+        .collect();
+    Ok(json!({ "credentials": creds }))
+}
+
+async fn tool_delete_credential(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: CredentialNameArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("delete_credential: {e}")))?;
+    indexer
+        .delete_credential(&a.name)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("delete_credential: {e}")))?;
+    Ok(json!({ "ok": true }))
+}
+
 // --- admin tenant CRUD + long-ops (admin-role gated) -----------
 //
 // These port the gRPC `EscurelAdmin` business logic verbatim; only
@@ -2732,6 +2811,38 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "group_id": { "type": "string" }
                     }
+                }),
+            ),
+            tool_entry(
+                "register_credential",
+                "Admin: register (or replace) a named external-source \
+                 credential a sql_view skill references via \
+                 `backend.source.attach`. The secret is stored server-side \
+                 and NEVER in the markdown corpus (REQ-SQL-05).",
+                json!({
+                    "type": "object",
+                    "required": ["name", "connector", "secret"],
+                    "properties": {
+                        "name": { "type": "string", "description": "The `attach` name skills reference." },
+                        "connector": { "type": "string", "description": "postgres|mysql|sqlite|erpl|s3|…" },
+                        "secret": { "type": "string", "description": "DSN / secret material (server-side only)." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_credentials",
+                "Admin: list registered external-source credentials WITHOUT \
+                 their secrets (name, connector, registration audit).",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "delete_credential",
+                "Admin: remove a registered external-source credential by \
+                 name. No-op when absent.",
+                json!({
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": { "name": { "type": "string" } }
                 }),
             ),
             // Admin tenant-lifecycle + operator tools. All require an
