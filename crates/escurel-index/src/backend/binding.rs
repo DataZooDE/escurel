@@ -23,6 +23,24 @@ pub struct BackendBinding {
     /// Present (and `kind == SqlView`) when the skill declares a
     /// `backend.source` SQL-view binding (REQ-SQL-01).
     pub sql_view: Option<SqlViewBinding>,
+    /// Present (and `kind == Document`) when the skill declares a
+    /// `backend.accepts` document binding (REQ-DOC-01).
+    pub document: Option<DocumentBinding>,
+}
+
+/// A `document` skill's intake config (REQ-DOC-01). `accepts` is the
+/// MIME-dispatch key (REQ-DOC-06): an inbox arrival's content type selects
+/// which document skill handles it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DocumentBinding {
+    /// MIME types this skill handles, e.g. `["application/pdf", "text/plain"]`.
+    pub accepts: Vec<String>,
+    /// Chunk sizing (`chunk.max_chars` / `chunk.overlap`); defaults applied
+    /// by the worker when absent.
+    pub max_chars: Option<usize>,
+    pub overlap: Option<usize>,
+    /// `duckdb` (default) | `lance` (per-skill escape hatch; v1 = duckdb).
+    pub retrieval: Option<String>,
 }
 
 /// Which external source a `sql_view` skill materialises a read-only view
@@ -115,11 +133,46 @@ impl BackendBinding {
             Some("sql_view") => Self {
                 kind: BackendKind::SqlView,
                 sql_view: parse_sql_view(block),
+                document: None,
+            },
+            Some("document") => Self {
+                kind: BackendKind::Document,
+                sql_view: None,
+                document: Some(parse_document(block)),
             },
             // Unknown kind: lenient on the read path (markdown); the
             // create/validate path is where a bad binding is rejected.
             Some(_) => Self::default(),
         }
+    }
+}
+
+fn parse_document(block: &serde_json::Map<String, serde_json::Value>) -> DocumentBinding {
+    let accepts = block
+        .get("accepts")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let chunk = block.get("chunk").and_then(serde_json::Value::as_object);
+    let usize_field = |key: &str| -> Option<usize> {
+        chunk
+            .and_then(|c| c.get(key))
+            .and_then(serde_json::Value::as_u64)
+            .map(|n| n as usize)
+    };
+    DocumentBinding {
+        accepts,
+        max_chars: usize_field("max_chars").or_else(|| usize_field("max_tokens")),
+        overlap: usize_field("overlap"),
+        retrieval: block
+            .get("retrieval")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
     }
 }
 

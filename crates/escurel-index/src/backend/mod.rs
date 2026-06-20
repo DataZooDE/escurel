@@ -49,7 +49,7 @@ use crate::search::{Granularity, SearchHit};
 use crate::validate::Issue;
 use crate::{Indexer, IndexerError};
 
-pub use binding::{BackendBinding, SqlConnector, SqlViewBinding};
+pub use binding::{BackendBinding, DocumentBinding, SqlConnector, SqlViewBinding};
 pub use document::{
     Chunk, ChunkConfig, DocMetadata, ExtractConfig, ExtractError, ExtractionResult, Extractor,
     NullExtractor, OcrPolicy, PlainTextExtractor, chunk_text,
@@ -69,6 +69,8 @@ pub enum BackendKind {
     Markdown,
     /// Read-only DuckDB view over an external source (REQ-SQL-*).
     SqlView,
+    /// Ingested document → chunks (REQ-DOC-*).
+    Document,
 }
 
 impl BackendKind {
@@ -78,6 +80,7 @@ impl BackendKind {
         match self {
             BackendKind::Markdown => "markdown",
             BackendKind::SqlView => "sql_view",
+            BackendKind::Document => "document",
         }
     }
 }
@@ -143,6 +146,15 @@ impl Capabilities {
                 granularity: Granularity::Page,
                 search: SearchMode::LateMaterialized,
                 supports_crdt: false,
+            },
+            // Documents are created via ingestion (not update_page); their
+            // chunks are in-band `blocks` rows (hybrid search), and the
+            // overlay markdown is co-authorable.
+            BackendKind::Document => Self {
+                writable: false,
+                granularity: Granularity::Block,
+                search: SearchMode::Hybrid,
+                supports_crdt: true,
             },
         }
     }
@@ -323,6 +335,27 @@ impl Indexer {
     pub async fn current_view_fingerprint(&self, view: &str) -> Result<String, SqlViewError> {
         let conn = self.conn.lock().await;
         sql_view::schema_fingerprint(&conn, view)
+    }
+
+    /// The document skill whose `accepts:` list handles `mime` (REQ-DOC-06).
+    /// Deterministic: an exact MIME match wins; returns the first such skill
+    /// by id order. `None` ⇒ no handler (the caller parks with
+    /// `no_handler_skill` and retains the inbox blob).
+    pub async fn document_skill_for_mime(
+        &self,
+        mime: &str,
+    ) -> Result<Option<String>, IndexerError> {
+        let mut matches: Vec<String> = Vec::new();
+        for skill in self.list_skills().await? {
+            if skill.backend.kind == BackendKind::Document
+                && let Some(doc) = &skill.backend.document
+                && doc.accepts.iter().any(|m| m == mime)
+            {
+                matches.push(skill.id);
+            }
+        }
+        matches.sort();
+        Ok(matches.into_iter().next())
     }
 
     /// The backend a skill declares, parsed from its `backend:` block

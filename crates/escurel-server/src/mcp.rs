@@ -304,6 +304,144 @@ async fn mcp_inner(
     }
 }
 
+/// `POST /ingest` — the document-ingestion webhook (REQ-DOC-07, HLD §6.2).
+///
+/// An external uploader deposits the original into the inbox (content-
+/// addressed) and then POSTs `{ blob_id, content_type }`. This handler:
+/// authenticates + rate-limits per tenant (REQ-NF-07); resolves the content
+/// type to a handling document skill via its `accepts:` list (REQ-DOC-06);
+/// records an immutable **ingest Event** (the auditable arrival log) whether
+/// or not a handler matched; and dispatches the deterministic worker (PR-3d)
+/// when one did. An unmatched MIME is parked with `no_handler_skill` and the
+/// inbox blob is retained (never silently dropped).
+#[derive(Deserialize)]
+pub(crate) struct IngestRequest {
+    blob_id: String,
+    content_type: String,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+pub(crate) async fn ingest(
+    State(state): State<crate::server::AppState>,
+    headers: HeaderMap,
+    Json(req): Json<IngestRequest>,
+) -> axum::response::Response {
+    state.metrics.inc_request("/ingest", 200);
+
+    // Auth (REQ-NF-07): enforced whenever a verifier is configured.
+    let auth_ctx = match state.verifier.as_ref() {
+        Some(v) => match enforce_auth(v, &headers).await {
+            Ok(c) => Some(c),
+            Err(resp) => return resp,
+        },
+        None => None,
+    };
+    let subject = auth_ctx
+        .as_ref()
+        .map(|c| c.subject.clone())
+        .unwrap_or_default();
+
+    // Per-tenant rate limit (the Writes bucket); the Event log makes floods
+    // auditable.
+    if let (Some(quota), Some(ctx)) = (state.quota.as_ref(), auth_ctx.as_ref())
+        && let Err(err) = quota.try_consume(&ctx.tenant_id, Dimension::Writes)
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "rate_limited", "message": err.to_string() })),
+        )
+            .into_response();
+    }
+
+    let indexer = match state.indexer.as_ref() {
+        Some(i) => i,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "no indexer wired" })),
+            )
+                .into_response();
+        }
+    };
+
+    // MIME → handler skill (REQ-DOC-06).
+    let handler = match indexer.document_skill_for_mime(&req.content_type).await {
+        Ok(h) => h,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("mime resolution: {e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    // Record the immutable ingest Event (auditable) regardless of match.
+    let label_skill = handler.clone().unwrap_or_else(|| "ingest".to_owned());
+    let event = indexer
+        .capture_event(NewEvent {
+            event_id: None,
+            at: None,
+            source: "ingest".to_owned(),
+            mime: req.content_type.clone(),
+            label_skill,
+            instance_page_id: None,
+            title: req.title.clone().unwrap_or_else(|| req.blob_id.clone()),
+            body: String::new(),
+            provenance: Some(json!({
+                "blob_id": req.blob_id,
+                "content_type": req.content_type,
+                "handler_skill": handler,
+                "by": subject,
+            })),
+        })
+        .await;
+    let event = match event {
+        Ok(e) => e,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("record ingest event: {e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    match handler {
+        Some(skill) => {
+            // PR-3d dispatches the deterministic worker here; for now the
+            // arrival is recorded + queued.
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "event_id": event.event_id,
+                    "blob_id": req.blob_id,
+                    "handler_skill": skill,
+                    "status": "queued",
+                })),
+            )
+                .into_response()
+        }
+        None => (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "event_id": event.event_id,
+                "blob_id": req.blob_id,
+                "status": "no_handler",
+                "issue": {
+                    "code": "no_handler_skill",
+                    "message": format!(
+                        "no document skill accepts content type `{}`; inbox blob retained",
+                        req.content_type
+                    ),
+                },
+            })),
+        )
+            .into_response(),
+    }
+}
+
 async fn enforce_auth(
     verifier: &OidcVerifier,
     headers: &HeaderMap,

@@ -339,6 +339,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         .route("/readyz", get(readyz))
         .route("/version", get(version))
         .route("/mcp", post(mcp))
+        .route("/ingest", post(crate::mcp::ingest))
         .route("/ws", get(ws_upgrade))
         .with_state(state.clone());
 
