@@ -23,6 +23,12 @@ import '../client/models.dart';
 import '../config/env.dart';
 import '../config/feature_flags.dart';
 
+/// Widths (px) of the catalogue (left) and right-rail panes in the editor
+/// shell. Drag-resizable via the dividers; the drag handlers clamp these
+/// to sane bounds so a pane can't be dragged away entirely.
+final leftPaneWidthProvider = StateProvider<double>((ref) => 280.0);
+final rightPaneWidthProvider = StateProvider<double>((ref) => 340.0);
+
 /// The single source of truth for which backend the editor speaks to.
 ///
 /// Selects [HttpEscurelClient] when `ESCUREL_EXPLORE_MODE=http` and
@@ -269,10 +275,7 @@ class PageDraft {
   final Map<String, dynamic> frontmatter;
   String body;
 
-  PageDraft copy() => PageDraft(
-        frontmatter: {...frontmatter},
-        body: body,
-      );
+  PageDraft copy() => PageDraft(frontmatter: {...frontmatter}, body: body);
 }
 
 /// The current page draft, or null when no edit is in progress.
