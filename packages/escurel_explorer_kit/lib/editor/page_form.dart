@@ -25,6 +25,14 @@ import '../theme/app_theme.dart';
 /// the page's identity and must not be retyped by the operator.
 const _structuralKeys = {'type', 'skill', 'id'};
 
+/// Frontmatter fields with a closed value domain — rendered as a dropdown
+/// rather than a free-text box so only valid values can be entered.
+/// `visibility` is the legacy summary of the skill's `acl:` model and the
+/// backend recognises exactly these (anything else degrades to `public`).
+const _enumFields = <String, List<String>>{
+  'visibility': ['public', 'owner'],
+};
+
 /// Serialise a draft back into a canonical markdown page.
 ///
 /// Frontmatter is emitted as `key: value` lines in a stable order
@@ -444,6 +452,7 @@ class _FieldRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
+    final options = _enumFields[spec.key];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -458,14 +467,59 @@ class _FieldRow extends StatelessWidget {
         Semantics(
           label: '${PageFormKeys.fieldPrefix}${spec.key}',
           identifier: '${PageFormKeys.fieldPrefix}${spec.key}',
-          textField: true,
-          child: TextField(
-            controller: controller,
-            decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
-            onChanged: (_) => onChanged(),
-          ),
+          textField: options == null,
+          child: options == null
+              ? TextField(
+                  controller: controller,
+                  decoration:
+                      const InputDecoration(border: OutlineInputBorder(), isDense: true),
+                  onChanged: (_) => onChanged(),
+                )
+              : _EnumDropdown(controller: controller, options: options, onChanged: onChanged),
         ),
       ],
+    );
+  }
+}
+
+/// A dropdown for a closed-domain field. Bound to the same
+/// [TextEditingController] the text path uses, so save/validation read the
+/// selection back unchanged. Defaults to the first option when the field is
+/// empty, and preserves an unexpected stored value by offering it too.
+class _EnumDropdown extends StatelessWidget {
+  const _EnumDropdown({
+    required this.controller,
+    required this.options,
+    required this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final List<String> options;
+  final VoidCallback onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    var current = controller.text.trim();
+    if (current.isEmpty) {
+      // Seed the controller so an untouched save persists the default.
+      current = options.first;
+      controller.text = current;
+    }
+    final items = [
+      ...options,
+      if (!options.contains(current)) current, // keep a non-standard value selectable
+    ];
+    return DropdownButtonFormField<String>(
+      initialValue: current,
+      decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+      items: [
+        for (final o in items) DropdownMenuItem<String>(value: o, child: Text(o)),
+      ],
+      onChanged: (v) {
+        if (v == null) return;
+        controller.text = v;
+        onChanged();
+      },
     );
   }
 }
