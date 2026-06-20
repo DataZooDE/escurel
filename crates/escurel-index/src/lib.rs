@@ -38,7 +38,8 @@ pub mod validate;
 pub use acl::AclCaller;
 pub use backend::{
     BackendBinding, BackendCtx, BackendKind, BackendRegistry, Capabilities, InstanceBackend,
-    MarkdownBackend, SearchMode,
+    MarkdownBackend, Materialized, SearchMode, SqlConnector, SqlViewBackend, SqlViewBinding,
+    SqlViewError,
 };
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;

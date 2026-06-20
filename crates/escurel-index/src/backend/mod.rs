@@ -34,6 +34,7 @@
 
 mod binding;
 mod markdown;
+mod sql_view;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,18 +48,22 @@ use crate::read::{Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, Resolve
 use crate::search::{Granularity, SearchHit};
 use crate::validate::Issue;
 
-pub use binding::BackendBinding;
+pub use binding::{BackendBinding, SqlConnector, SqlViewBinding};
 pub use markdown::MarkdownBackend;
+pub use sql_view::{Materialized, SqlViewBackend, SqlViewError};
 
 /// Which storage / representation strategy backs a skill's instances.
 ///
-/// `#[non_exhaustive]` so adding `SqlView` / `Document` later is not a
-/// breaking change for downstream `match`es.
+/// `#[non_exhaustive]` so adding `Document` later is not a breaking change
+/// for downstream `match`es.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BackendKind {
     /// Native markdown page (today's default for every skill).
+    #[default]
     Markdown,
+    /// Read-only DuckDB view over an external source (REQ-SQL-*).
+    SqlView,
 }
 
 impl BackendKind {
@@ -67,6 +72,7 @@ impl BackendKind {
     pub fn as_str(self) -> &'static str {
         match self {
             BackendKind::Markdown => "markdown",
+            BackendKind::SqlView => "sql_view",
         }
     }
 }
@@ -78,6 +84,9 @@ pub enum SearchMode {
     /// Contributes block/page candidates into the shared hybrid index
     /// (markdown today; document chunks later — both are `blocks` rows).
     Hybrid,
+    /// Contributes hits late-materialised from a view's `search_text`
+    /// columns at query time (SQL-view backend).
+    LateMaterialized,
 }
 
 impl SearchMode {
@@ -86,6 +95,7 @@ impl SearchMode {
     pub fn as_str(self) -> &'static str {
         match self {
             SearchMode::Hybrid => "hybrid",
+            SearchMode::LateMaterialized => "late_materialized",
         }
     }
 }
@@ -120,6 +130,14 @@ impl Capabilities {
                 granularity: Granularity::Block,
                 search: SearchMode::Hybrid,
                 supports_crdt: true,
+            },
+            // SQL views are read-only, view-grain, late-materialised into
+            // search, and not CRDT-co-authored (the overlay markdown is).
+            BackendKind::SqlView => Self {
+                writable: false,
+                granularity: Granularity::Page,
+                search: SearchMode::LateMaterialized,
+                supports_crdt: false,
             },
         }
     }
