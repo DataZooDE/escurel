@@ -218,38 +218,30 @@ class _ValueRender extends ConsumerWidget {
           data: (skills) => skills.map((s) => s.id).toSet(),
           orElse: () => const <String>{},
         );
-    // A list (e.g. `required_frontmatter: [event]`) renders item-by-item,
-    // so each element can become its own pill; a scalar renders inline.
-    if (value is List) {
-      final items = (value as List).map((e) => e.toString()).toList();
-      if (items.isEmpty) {
-        return Text('—', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kOnSurfaceVariant));
+    // Flatten a scalar or list into atomic widgets: `[[wikilink]]`s and
+    // bare skill-id values become pills (mirroring the body renderer),
+    // everything else plain text. List values (e.g.
+    // `required_frontmatter: [event]`) render item-by-item.
+    final items = (value is List) ? (value as List).map((e) => e.toString()) : [value.toString()];
+    final widgets = <Widget>[];
+    for (final raw in items) {
+      final refs = parseWikilinks(raw);
+      if (refs.isNotEmpty) {
+        widgets.addAll(refs.map((r) => WikilinkPill(ref: r)));
+      } else if (skillIds.contains(raw.trim())) {
+        widgets.add(WikilinkPill(ref: WikilinkRef(id: raw.trim())));
+      } else {
+        widgets.add(Text(raw, style: Theme.of(context).textTheme.bodyMedium));
       }
-      return Wrap(
-        spacing: 6,
-        runSpacing: 4,
-        children: [for (final it in items) _scalar(context, it, skillIds)],
-      );
     }
-    return _scalar(context, value.toString(), skillIds);
-  }
-
-  /// Render one scalar value: `[[wikilink]]`s become pills, a bare value
-  /// that is a known skill id becomes a pill to that skill (mirrors the
-  /// body renderer), everything else is plain text.
-  Widget _scalar(BuildContext context, String raw, Set<String> skillIds) {
-    final refs = parseWikilinks(raw);
-    if (refs.isNotEmpty) {
-      return Wrap(
-        spacing: 6,
-        runSpacing: 4,
-        children: refs.map((r) => WikilinkPill(ref: r)).toList(),
-      );
+    if (widgets.isEmpty) {
+      return Text('—', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kOnSurfaceVariant));
     }
-    if (skillIds.contains(raw.trim())) {
-      return WikilinkPill(ref: WikilinkRef(id: raw.trim()));
-    }
-    return Text(raw, style: Theme.of(context).textTheme.bodyMedium);
+    // A lone plain-text scalar needs no Wrap (lets long descriptions wrap
+    // naturally); anything with pills goes in a Wrap so a pill sizes to its
+    // content instead of stretching across the row's Expanded slot.
+    if (widgets.length == 1 && widgets.first is Text) return widgets.first;
+    return Wrap(spacing: 6, runSpacing: 4, children: widgets);
   }
 }
 

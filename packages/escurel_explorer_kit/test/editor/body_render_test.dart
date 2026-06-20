@@ -184,9 +184,10 @@ void main() {
         'event.md': '---\ntype: skill\nid: event\ndescription: Ein Event.\n---\n\n# event\n',
       },
       instanceFiles: {
-        // `links` lists a skill id; `tags` lists a non-skill word.
+        // `ref` is a SCALAR skill id (reproduces the event skill's
+        // `id: event` row); `label` is a plain word.
         'doc__fm.md': '---\ntype: instance\nskill: doc\nid: fm\n'
-            'links: [event]\ntags: [name]\n---\n\n# fm\n',
+            'ref: event\nlabel: name\n---\n\n# fm\n',
       },
     );
     tester.view.physicalSize = const Size(1400, 1000);
@@ -200,9 +201,12 @@ void main() {
 
     final fm = find.byKey(const ValueKey('entity_editor.frontmatter'));
     // `event` (a skill) → pill; `name` (just a word) → plain text.
-    expect(find.descendant(of: fm, matching: find.widgetWithText(WikilinkPill, 'event')),
-        findsOneWidget);
+    final eventPill = find.descendant(of: fm, matching: find.widgetWithText(WikilinkPill, 'event'));
+    expect(eventPill, findsOneWidget);
     expect(find.descendant(of: fm, matching: find.widgetWithText(WikilinkPill, 'name')),
         findsNothing);
+    // The pill sizes to its content — it must not stretch across the row's
+    // Expanded slot (regression: a bare pill in Expanded filled the width).
+    expect(tester.getSize(eventPill).width, lessThan(200));
   });
 }
