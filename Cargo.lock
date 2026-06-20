@@ -2436,6 +2436,7 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-s3",
  "bytes",
+ "sha2 0.10.9",
  "tempfile",
  "testcontainers-modules",
  "thiserror 2.0.18",
