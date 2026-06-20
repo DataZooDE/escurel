@@ -26,7 +26,12 @@
 //! `docs/notes/discovered/2026-06-21-kreuzberg-msrv-191.md`). The trait keeps
 //! it swappable (REQ-NF-08, ELv2) once that decision lands.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use escurel_storage::BlobId;
+
+use crate::{Indexer, IndexerError};
 
 /// Extracted metadata about a document (a subset of kreuzberg's metadata).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -183,6 +188,175 @@ impl Extractor for NullExtractor {
             chunks: Vec::new(),
         })
     }
+}
+
+/// The processor seam (REQ-DOC-07): turns raw bytes into an
+/// [`ExtractionResult`]. v1 is [`DeterministicProcessor`] (an [`Extractor`]);
+/// a future LLM-driven processor slots in here without touching intake or
+/// materialize.
+#[async_trait]
+pub trait DocumentProcessor: Send + Sync {
+    /// Engine name recorded in `backend_ref.extract_engine`.
+    fn engine(&self) -> String;
+    async fn process(
+        &self,
+        bytes: &[u8],
+        mime: &str,
+        cfg: &ExtractConfig,
+    ) -> Result<ExtractionResult, ExtractError>;
+}
+
+/// v1 deterministic processor: delegates to an [`Extractor`] (no LLM).
+pub struct DeterministicProcessor {
+    extractor: Arc<dyn Extractor>,
+}
+
+impl DeterministicProcessor {
+    #[must_use]
+    pub fn new(extractor: Arc<dyn Extractor>) -> Self {
+        Self { extractor }
+    }
+}
+
+#[async_trait]
+impl DocumentProcessor for DeterministicProcessor {
+    fn engine(&self) -> String {
+        self.extractor.name().to_owned()
+    }
+    async fn process(
+        &self,
+        bytes: &[u8],
+        mime: &str,
+        cfg: &ExtractConfig,
+    ) -> Result<ExtractionResult, ExtractError> {
+        if !self.extractor.accepts(mime) {
+            return Err(ExtractError::Unsupported(mime.to_owned()));
+        }
+        self.extractor.extract(bytes, mime, cfg).await
+    }
+}
+
+/// Outcome of one document ingestion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IngestOutcome {
+    Materialised { page_id: String, chunk_count: usize },
+    ExtractionFailed { page_id: String, reason: String },
+}
+
+/// The deterministic document-ingest worker (REQ-DOC-07). Runs the slow
+/// extract/chunk/embed work **off** the per-tenant write lock, then
+/// materialises **under** a brief lock (materialize_document takes the lock
+/// only for its transaction). On extraction failure the inbox blob is
+/// retained and the instance is marked `extraction_failed` (REQ-DOC-04).
+pub struct DocumentIngestWorker {
+    indexer: Arc<Indexer>,
+    processor: Arc<dyn DocumentProcessor>,
+}
+
+impl DocumentIngestWorker {
+    #[must_use]
+    pub fn new(indexer: Arc<Indexer>, processor: Arc<dyn DocumentProcessor>) -> Self {
+        Self { indexer, processor }
+    }
+
+    /// Ingest the inbox blob `blob_id` as instance `skill::instance_id`.
+    pub async fn ingest(
+        &self,
+        blob_id: &BlobId,
+        mime: &str,
+        skill: &str,
+        instance_id: &str,
+        cfg: &ExtractConfig,
+    ) -> Result<IngestOutcome, IndexerError> {
+        let page_id = format!("markdown/instances/{skill}/{instance_id}.md");
+        let bytes = self.indexer.read_inbox_blob(blob_id).await?;
+
+        // Extract + chunk OFF the write lock.
+        match self.processor.process(&bytes, mime, cfg).await {
+            Ok(result) => {
+                let chunk_texts: Vec<String> =
+                    result.chunks.iter().map(|c| c.text.clone()).collect();
+                let overlay = document_overlay(
+                    skill,
+                    instance_id,
+                    blob_id,
+                    chunk_texts.len(),
+                    &self.processor.engine(),
+                    "ok",
+                    &result.metadata,
+                );
+                self.indexer
+                    .materialize_document(&page_id, &overlay, &chunk_texts)
+                    .await?;
+                // Promote the inbox blob to the canonical area.
+                self.indexer.promote_blob(blob_id).await?;
+                Ok(IngestOutcome::Materialised {
+                    page_id,
+                    chunk_count: chunk_texts.len(),
+                })
+            }
+            Err(e) => {
+                // Retain the inbox blob (do NOT promote); mark the instance
+                // extraction_failed with a zero-chunk overlay so it is
+                // queryable and the upload is never lost.
+                let reason = e.to_string();
+                let overlay = document_overlay(
+                    skill,
+                    instance_id,
+                    blob_id,
+                    0,
+                    &self.processor.engine(),
+                    "extraction_failed",
+                    &DocMetadata::default(),
+                );
+                self.indexer
+                    .materialize_document(&page_id, &overlay, &[])
+                    .await?;
+                Ok(IngestOutcome::ExtractionFailed { page_id, reason })
+            }
+        }
+    }
+}
+
+/// Build the document instance's overlay markdown with its `backend_ref`.
+fn document_overlay(
+    skill: &str,
+    id: &str,
+    blob_id: &BlobId,
+    chunk_count: usize,
+    engine: &str,
+    status: &str,
+    meta: &DocMetadata,
+) -> String {
+    let title = meta.title.clone().unwrap_or_else(|| id.to_owned());
+    let mut extracted = String::new();
+    if let Some(pages) = meta.page_count {
+        extracted.push_str(&format!("    pages: {pages}\n"));
+    }
+    if !meta.authors.is_empty() {
+        extracted.push_str(&format!("    authors: [{}]\n", meta.authors.join(", ")));
+    }
+    let extracted_block = if extracted.is_empty() {
+        String::new()
+    } else {
+        format!("  extracted:\n{extracted}")
+    };
+    format!(
+        "---\n\
+         type: instance\n\
+         skill: {skill}\n\
+         id: {id}\n\
+         backend_ref:\n\
+        \x20 kind: document\n\
+        \x20 blob_id: {blob}\n\
+        \x20 chunk_count: {chunk_count}\n\
+        \x20 extract_engine: {engine}\n\
+        \x20 status: {status}\n\
+         {extracted_block}\
+         ---\n\
+         # {title}\n",
+        blob = blob_id.as_str(),
+    )
 }
 
 /// Character-window chunking with overlap, split on a UTF-8 char boundary.

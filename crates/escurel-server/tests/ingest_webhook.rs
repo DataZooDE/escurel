@@ -96,7 +96,8 @@ async fn ingest_records_event_and_routes_to_handler_skill() {
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "body: {body}");
     assert_eq!(body["handler_skill"], "memo");
-    assert_eq!(body["status"], "queued");
+    // PR-3d wires the worker: a born-digital text blob materialises inline.
+    assert_eq!(body["status"], "materialised", "body: {body}");
     assert!(
         body["event_id"].as_str().is_some_and(|s| !s.is_empty()),
         "an ingest Event must be recorded: {body}"

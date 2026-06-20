@@ -403,6 +403,131 @@ impl Indexer {
         Ok(())
     }
 
+    /// Materialise a document instance: write the overlay page (its
+    /// frontmatter carries the `backend_ref`) and index `chunks` as N
+    /// `blocks` rows under the **one** `page_id` (distinct `chunk-<i>`
+    /// anchors), so a document instance is structurally a page-with-blocks
+    /// (REQ-DOC-03). Each chunk is embedded; the whole write is one
+    /// transaction under the per-tenant write lock (the brief locked phase
+    /// of REQ-DOC-07 / REQ-NF-04 — extraction already happened off-lock).
+    pub async fn materialize_document(
+        &self,
+        page_id: &str,
+        overlay_content: &str,
+        chunks: &[String],
+    ) -> Result<(), IndexerError> {
+        let _write = self.write_lock.lock().await;
+        let parsed = parse(overlay_content)?;
+
+        // Canonical markdown first (overlay), as in update_page.
+        {
+            let key = Key::new(self.tenant.as_str(), page_id.to_owned())?;
+            self.store
+                .write(&key, Bytes::from(overlay_content.to_owned()))
+                .await?;
+        }
+
+        let frontmatter_json = mapping_to_json(&parsed.frontmatter.fields)?;
+        let body_hash = hash_body(overlay_content);
+        let skill = parsed
+            .frontmatter
+            .fields
+            .get("skill")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let slug = parsed
+            .frontmatter
+            .fields
+            .get("id")
+            .and_then(escurel_md::YamlValue::as_str)
+            .map(str::to_owned);
+        let at_ts = parsed
+            .frontmatter
+            .fields
+            .get("at")
+            .and_then(escurel_md::YamlValue::as_str)
+            .map(str::to_owned);
+        let scenario = parsed
+            .frontmatter
+            .fields
+            .get("scenario")
+            .and_then(escurel_md::YamlValue::as_str)
+            .map(str::to_owned);
+
+        // Embed every chunk in one batch (off the connection mutex).
+        let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+        let embeddings = if chunk_refs.is_empty() {
+            Vec::new()
+        } else {
+            self.embedder.embed(&chunk_refs).await?
+        };
+        for e in &embeddings {
+            if e.len() != BLOCKS_DENSE_VEC_DIM {
+                return Err(IndexerError::EmbedderDimMismatch {
+                    expected: BLOCKS_DENSE_VEC_DIM,
+                    got: e.len(),
+                });
+            }
+        }
+
+        let mut conn = self.conn.lock().await;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
+        tx.execute(
+            "INSERT INTO pages \
+             (page_id, slug, skill, page_type, frontmatter, body_hash, at_ts, scenario, created_at, updated_at) \
+             VALUES (?, ?, ?, 'instance', ?::JSON, ?, TRY_CAST(? AS TIMESTAMP), ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            params![page_id, slug, skill, frontmatter_json, body_hash, at_ts, scenario],
+        )?;
+        // Chunks become the page's blocks (one row per chunk).
+        tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
+        for (i, (text, emb)) in chunks.iter().zip(embeddings.iter()).enumerate() {
+            let anchor = format!("chunk-{i}");
+            let block_id = format!("{page_id}:{anchor}");
+            let dense_vec_literal = format!(
+                "{}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]",
+                format_vector_literal(emb)
+            );
+            let sql = format!(
+                "INSERT INTO blocks \
+                 (block_id, page_id, anchor, ordinal, body, dense_vec, skill, page_type, at_ts, scenario) \
+                 VALUES (?, ?, ?, ?, ?, {dense_vec_literal}, ?, 'instance', TRY_CAST(? AS TIMESTAMP), ?)",
+            );
+            tx.execute(
+                &sql,
+                params![
+                    block_id, page_id, anchor, i as i64, text, skill, at_ts, scenario
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Read an inbox blob by id (delegates to the LaneStore). Used by the
+    /// document ingest worker, which only holds an `Arc<Indexer>`.
+    pub async fn read_inbox_blob(
+        &self,
+        id: &escurel_storage::BlobId,
+    ) -> Result<Bytes, IndexerError> {
+        Ok(self.store.get_inbox_blob(self.tenant.as_str(), id).await?)
+    }
+
+    /// Read a canonical blob by id (delegates to the LaneStore).
+    pub async fn read_blob(&self, id: &escurel_storage::BlobId) -> Result<Bytes, IndexerError> {
+        Ok(self.store.get_blob(self.tenant.as_str(), id).await?)
+    }
+
+    /// Promote an inbox blob to the canonical area after a successful
+    /// materialise (delegates to the LaneStore).
+    pub async fn promote_blob(&self, id: &escurel_storage::BlobId) -> Result<(), IndexerError> {
+        Ok(self
+            .store
+            .promote_inbox_blob(self.tenant.as_str(), id)
+            .await?)
+    }
+
     /// Idempotently ensure the mandatory `escurel` meta-skill page is
     /// present and indexed. No-op when a skill page named `escurel`
     /// already exists — operators may ship their own extended version

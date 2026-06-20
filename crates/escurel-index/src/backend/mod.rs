@@ -51,7 +51,8 @@ use crate::{Indexer, IndexerError};
 
 pub use binding::{BackendBinding, DocumentBinding, SqlConnector, SqlViewBinding};
 pub use document::{
-    Chunk, ChunkConfig, DocMetadata, ExtractConfig, ExtractError, ExtractionResult, Extractor,
+    Chunk, ChunkConfig, DeterministicProcessor, DocMetadata, DocumentIngestWorker,
+    DocumentProcessor, ExtractConfig, ExtractError, ExtractionResult, Extractor, IngestOutcome,
     NullExtractor, OcrPolicy, PlainTextExtractor, chunk_text,
 };
 pub use markdown::MarkdownBackend;

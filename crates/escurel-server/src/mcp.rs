@@ -409,20 +409,7 @@ pub(crate) async fn ingest(
     };
 
     match handler {
-        Some(skill) => {
-            // PR-3d dispatches the deterministic worker here; for now the
-            // arrival is recorded + queued.
-            (
-                StatusCode::ACCEPTED,
-                Json(json!({
-                    "event_id": event.event_id,
-                    "blob_id": req.blob_id,
-                    "handler_skill": skill,
-                    "status": "queued",
-                })),
-            )
-                .into_response()
-        }
+        Some(skill) => run_document_ingest(indexer, &skill, &req, &event.event_id).await,
         None => (
             StatusCode::ACCEPTED,
             Json(json!({
@@ -437,6 +424,100 @@ pub(crate) async fn ingest(
                     ),
                 },
             })),
+        )
+            .into_response(),
+    }
+}
+
+/// Run the deterministic ingest worker inline: extract+chunk off the write
+/// lock, materialise under a brief lock. v1 uses the born-digital text
+/// processor (kreuzberg PDF/DOCX is gated on the MSRV decision).
+async fn run_document_ingest(
+    indexer: &std::sync::Arc<Indexer>,
+    skill: &str,
+    req: &IngestRequest,
+    event_id: &str,
+) -> axum::response::Response {
+    use escurel_index::backend::{
+        ChunkConfig, DeterministicProcessor, DocumentIngestWorker, ExtractConfig, IngestOutcome,
+        OcrPolicy, PlainTextExtractor,
+    };
+    use escurel_storage::BlobId;
+
+    let Some(blob_id) = BlobId::parse(&req.blob_id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid blob_id (expected sha256:<hex>)" })),
+        )
+            .into_response();
+    };
+
+    // Chunk knobs from the skill's document binding (defaults when absent).
+    let chunk = match indexer.skill_backend(skill).await {
+        Ok(b) => b
+            .document
+            .map(|d| (d.max_chars, d.overlap))
+            .unwrap_or((None, None)),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("skill backend: {e}") })),
+            )
+                .into_response();
+        }
+    };
+    let defaults = ChunkConfig::default();
+    let cfg = ExtractConfig {
+        ocr: OcrPolicy::Off,
+        chunk: ChunkConfig {
+            max_chars: chunk.0.unwrap_or(defaults.max_chars),
+            overlap: chunk.1.unwrap_or(defaults.overlap),
+        },
+    };
+
+    // Deterministic instance id from the content hash (idempotent intake).
+    let instance_id = format!("doc-{}", &blob_id.hex()[..12.min(blob_id.hex().len())]);
+    let worker = DocumentIngestWorker::new(
+        std::sync::Arc::clone(indexer),
+        std::sync::Arc::new(DeterministicProcessor::new(std::sync::Arc::new(
+            PlainTextExtractor,
+        ))),
+    );
+
+    match worker
+        .ingest(&blob_id, &req.content_type, skill, &instance_id, &cfg)
+        .await
+    {
+        Ok(IngestOutcome::Materialised {
+            page_id,
+            chunk_count,
+        }) => (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "event_id": event_id,
+                "blob_id": req.blob_id,
+                "handler_skill": skill,
+                "status": "materialised",
+                "page_id": page_id,
+                "chunk_count": chunk_count,
+            })),
+        )
+            .into_response(),
+        Ok(IngestOutcome::ExtractionFailed { page_id, reason }) => (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "event_id": event_id,
+                "blob_id": req.blob_id,
+                "handler_skill": skill,
+                "status": "extraction_failed",
+                "page_id": page_id,
+                "issue": { "code": "extraction_failed", "message": reason },
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("ingest worker: {e}") })),
         )
             .into_response(),
     }
