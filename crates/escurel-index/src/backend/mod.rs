@@ -283,6 +283,23 @@ impl Indexer {
         sql_view::project_view_rows(&conn, view, limit)
     }
 
+    /// Late-materialised SQL-view search **candidates** for `q` (PR-2d,
+    /// INV-ACL-FUSION). For every `sql_view` instance (its overlay page
+    /// carries `backend_ref.view`), match `q` against the view's
+    /// `search_text` columns; a view with ≥1 matching row contributes its
+    /// overlay page as a page-grain candidate, ranked by match count.
+    ///
+    /// **Candidates only** — the dispatcher applies the fail-closed ACL
+    /// predicate to these (and to the native lane) *before* RRF fusion, so
+    /// no SQL hit can leak cross-owner or displace an allowed hit (spike S3).
+    pub async fn sql_view_search_candidates(
+        &self,
+        q: &str,
+        skill_filter: Option<&str>,
+    ) -> Result<Vec<SearchHit>, IndexerError> {
+        sql_view::search_candidates(self, q, skill_filter).await
+    }
+
     /// The backend a skill declares, parsed from its `backend:` block
     /// (markdown default when the skill page is absent or unannotated).
     pub async fn skill_backend(&self, skill_id: &str) -> Result<BackendBinding, IndexerError> {

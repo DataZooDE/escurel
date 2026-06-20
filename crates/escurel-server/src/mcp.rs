@@ -1116,7 +1116,9 @@ async fn tool_search(
     let granularity = Granularity::from_arg(a.granularity.as_deref().unwrap_or_default());
     // An empty `{}` filter is treated as "no filter".
     let filter = a.filter.as_ref().filter(|f| !is_empty_filter(f));
-    let hits = indexer
+
+    // Native lane: the fused hybrid (vss+fts) hits.
+    let native = indexer
         .search_with(
             &a.q,
             a.k,
@@ -1129,34 +1131,113 @@ async fn tool_search(
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
-    // Deterministic ACL: drop owner-private hits the caller does not own
-    // (admin bypasses); skill-page hits are the public catalogue. Search
-    // must not surface what a direct read would deny.
+
+    // INV-ACL-FUSION (spike S3): every lane's contribution is ACL-filtered
+    // BEFORE fusion. Deterministic ACL drops owner-private hits the caller
+    // does not own (admin bypasses); skill pages are the public catalogue.
+    let native_allowed = acl_filter_hits(indexer, &caller, native).await?;
+
+    // SQL-view lane: late-materialised candidates over each sql_view skill's
+    // search_text columns. Skipped when the search is restricted to skills.
+    let sql_allowed = if matches!(pt, Some(PageType::Skill)) {
+        Vec::new()
+    } else {
+        let candidates = indexer
+            .sql_view_search_candidates(&a.q, a.skill.as_deref())
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("search sql lane: {e}")))?;
+        acl_filter_hits(indexer, &caller, candidates).await?
+    };
+
+    // No SQL contribution → the native path is returned verbatim (the
+    // markdown-only behaviour is byte-identical to before fusion relocation).
+    // Otherwise RRF-fuse the two already-filtered lanes.
+    let final_hits = if sql_allowed.is_empty() {
+        native_allowed
+    } else {
+        rrf_fuse_lanes(native_allowed, sql_allowed, a.k)
+    };
+
+    let out: Vec<Value> = final_hits
+        .iter()
+        .map(|h| {
+            json!({
+                "page_id": h.page_id,
+                "slug": h.slug,
+                "skill": h.skill,
+                "page_type": page_type_str(h.page_type),
+                "anchor": h.anchor,
+                "snippet": h.snippet,
+                "score": h.score,
+                "frontmatter_excerpt": h.frontmatter_excerpt,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "hits": out,
+        "granularity": granularity.as_str(),
+    }))
+}
+
+/// Apply the fail-closed per-instance read ACL to one lane's candidates,
+/// preserving order. Skill-page hits are the public catalogue (never gated).
+/// A SQL-view instance whose `owner_field` cannot be resolved fails closed
+/// inside `may_read_instance` (deny to non-admins).
+async fn acl_filter_hits(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    hits: Vec<escurel_index::SearchHit>,
+) -> Result<Vec<escurel_index::SearchHit>, JsonRpcError> {
     let mut out = Vec::with_capacity(hits.len());
-    for h in &hits {
+    for h in hits {
         if h.page_type == PageType::Instance
             && !indexer
-                .may_read_instance(&caller, &h.skill, &h.frontmatter_excerpt)
+                .may_read_instance(caller, &h.skill, &h.frontmatter_excerpt)
                 .await
                 .map_err(|e| JsonRpcError::internal(format!("search acl: {e}")))?
         {
             continue;
         }
-        out.push(json!({
-            "page_id": h.page_id,
-            "slug": h.slug,
-            "skill": h.skill,
-            "page_type": page_type_str(h.page_type),
-            "anchor": h.anchor,
-            "snippet": h.snippet,
-            "score": h.score,
-            "frontmatter_excerpt": h.frontmatter_excerpt,
-        }));
+        out.push(h);
     }
-    Ok(json!({
-        "hits": out,
-        "granularity": granularity.as_str(),
-    }))
+    Ok(out)
+}
+
+/// Reciprocal-Rank-Fusion of two already-ACL-filtered, already-ranked lanes
+/// into a page-grain top-`k`. Each lane contributes `1/(K_RRF + rank)` per
+/// page; the native lane's hit is the representative when a page appears in
+/// both.
+fn rrf_fuse_lanes(
+    native: Vec<escurel_index::SearchHit>,
+    sql: Vec<escurel_index::SearchHit>,
+    k: usize,
+) -> Vec<escurel_index::SearchHit> {
+    use std::collections::HashMap;
+    const K_RRF: f64 = 60.0;
+    let mut scores: HashMap<String, f64> = HashMap::new();
+    let mut rep: HashMap<String, escurel_index::SearchHit> = HashMap::new();
+    // Native first, so it wins as the representative on a page collision.
+    for lane in [native, sql] {
+        for (rank, h) in lane.into_iter().enumerate() {
+            *scores.entry(h.page_id.clone()).or_insert(0.0) += 1.0 / (K_RRF + (rank as f64) + 1.0);
+            rep.entry(h.page_id.clone()).or_insert(h);
+        }
+    }
+    let mut fused: Vec<escurel_index::SearchHit> = rep
+        .into_values()
+        .map(|mut h| {
+            h.score = scores[&h.page_id];
+            h
+        })
+        .collect();
+    fused.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.page_id.cmp(&b.page_id))
+    });
+    fused.truncate(k);
+    fused
 }
 
 /// True for `null` or an empty `{}` filter object — both mean "no

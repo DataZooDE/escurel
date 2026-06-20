@@ -217,6 +217,120 @@ impl SqlViewBackend {
     }
 }
 
+/// Late-materialised SQL-view search candidates (PR-2d). See
+/// [`crate::Indexer::sql_view_search_candidates`]. Returns candidates only —
+/// the dispatcher ACL-filters before fusion (INV-ACL-FUSION).
+pub(crate) async fn search_candidates(
+    indexer: &Indexer,
+    q: &str,
+    skill_filter: Option<&str>,
+) -> Result<Vec<crate::search::SearchHit>, crate::IndexerError> {
+    use escurel_md::PageType;
+
+    // 1. Enumerate sql_view overlay pages (release the lock before the
+    //    per-instance work, which re-locks for skill_backend + the match
+    //    query — the connection mutex is not reentrant).
+    struct Row {
+        page_id: String,
+        slug: Option<String>,
+        skill: String,
+        frontmatter: serde_json::Value,
+        view: String,
+    }
+    let rows: Vec<Row> = {
+        let conn = indexer.conn.lock().await;
+        let mut sql = String::from(
+            "SELECT page_id, slug, skill, frontmatter::VARCHAR, \
+             json_extract_string(frontmatter, '$.backend_ref.view') AS view \
+             FROM pages \
+             WHERE page_type = 'instance' \
+               AND json_extract_string(frontmatter, '$.backend_ref.kind') = 'sql_view'",
+        );
+        if skill_filter.is_some() {
+            sql.push_str(" AND skill = ?");
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let map_row = |r: &duckdb::Row<'_>| {
+            let fm_json: String = r.get(3)?;
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, String>(2)?,
+                fm_json,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        };
+        // (page_id, slug, skill, frontmatter_json, view)
+        type RawRow = (String, Option<String>, String, String, Option<String>);
+        let raw: Vec<RawRow> = if let Some(s) = skill_filter {
+            stmt.query_map(duckdb::params![s], map_row)?
+                .collect::<Result<_, _>>()?
+        } else {
+            stmt.query_map([], map_row)?.collect::<Result<_, _>>()?
+        };
+        raw.into_iter()
+            .filter_map(|(page_id, slug, skill, fm_json, view)| {
+                let frontmatter: serde_json::Value = serde_json::from_str(&fm_json).ok()?;
+                Some(Row {
+                    page_id,
+                    slug,
+                    skill,
+                    frontmatter,
+                    view: view?,
+                })
+            })
+            .collect()
+    };
+
+    // 2. Per instance: match q against the skill's search_text columns.
+    let pattern = format!("%{q}%");
+    let mut hits = Vec::new();
+    for row in rows {
+        let Ok(binding) = indexer.skill_backend(&row.skill).await else {
+            continue;
+        };
+        let Some(sv) = binding.sql_view else { continue };
+        let cols: Vec<&String> = sv
+            .search_text
+            .iter()
+            .filter(|c| is_valid_identifier(c))
+            .collect();
+        if cols.is_empty() || !is_valid_identifier(&row.view) {
+            continue;
+        }
+        let where_clause = cols
+            .iter()
+            .map(|c| format!("{c} ILIKE ?"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let sql = format!("SELECT count(*) FROM {} WHERE {where_clause}", row.view);
+        let count: i64 = {
+            let conn = indexer.conn.lock().await;
+            let binds: Vec<&str> = cols.iter().map(|_| pattern.as_str()).collect();
+            conn.query_row(&sql, duckdb::params_from_iter(binds), |r| r.get(0))
+                .unwrap_or(0)
+        };
+        if count > 0 {
+            hits.push(crate::search::SearchHit {
+                page_id: row.page_id,
+                slug: row.slug,
+                skill: row.skill,
+                page_type: PageType::Instance,
+                anchor: None,
+                snippet: format!("[sql_view {}] matched {count} row(s)", row.view),
+                score: count as f64,
+                frontmatter_excerpt: row.frontmatter,
+            });
+        }
+    }
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(hits)
+}
+
 /// Read up to `limit` rows from a materialised view as JSON objects, on an
 /// already-locked connection. Shared by [`SqlViewBackend::project_rows`] and
 /// [`crate::Indexer::project_view`] (the read-path projection, PR-2c).
