@@ -356,12 +356,16 @@ List<InlineSpan> inlineMarkdownSpans(
         backgroundColor: kSurfaceContainerHigh,
         color: kPrimary,
       );
-      // A code span that names a skill links to that skill page; otherwise
-      // it's a plain (inert) code chip.
+      // A code span that names a skill renders as a wikilink pill — the
+      // same affordance the frontmatter uses — so in-document skill links
+      // look identical to the header's. Otherwise it's a plain code chip.
       if (skillIds.contains(content)) {
         spans.add(WidgetSpan(
           alignment: PlaceholderAlignment.middle,
-          child: _SkillCodeLink(id: content, style: codeStyle),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: WikilinkPill(ref: WikilinkRef(id: content)),
+          ),
         ));
       } else {
         spans.add(TextSpan(text: content, style: codeStyle));
@@ -450,39 +454,6 @@ class _MdLink extends ConsumerWidget {
       borderRadius: BorderRadius.circular(4),
       onTap: () => focusSkill(ref, id),
       child: child,
-    );
-  }
-}
-
-/// A `` `code` `` span whose content is a known skill id: rendered as the
-/// monospace code chip but clickable, navigating to the skill page via the
-/// same `focusSkill` resolve seam (`[[id]]` → `markdown/skills/<id>.md`).
-/// The `skill-link:<id>` semantics label is the a11y/test contract.
-class _SkillCodeLink extends ConsumerWidget {
-  const _SkillCodeLink({required this.id, required this.style});
-
-  final String id;
-  final TextStyle? style;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Semantics(
-      label: 'skill-link:$id',
-      identifier: 'skill-link:$id',
-      button: true,
-      onTap: () => focusSkill(ref, id),
-      excludeSemantics: true,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(3),
-        onTap: () => focusSkill(ref, id),
-        child: Text(
-          id,
-          style: style?.copyWith(
-            decoration: TextDecoration.underline,
-            decorationColor: kPrimary,
-          ),
-        ),
-      ),
     );
   }
 }

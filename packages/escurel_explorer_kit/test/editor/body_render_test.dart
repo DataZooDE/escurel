@@ -158,15 +158,16 @@ void main() {
     await tester.tap(find.text('venueish'));
     await tester.pumpAndSettle();
 
-    // `event` (a skill) is a link; `name` (a field) and `event:` (with the
-    // colon, ≠ the skill id) are not.
-    expect(find.bySemanticsLabel('skill-link:event'), findsOneWidget);
-    expect(find.bySemanticsLabel('skill-link:name'), findsNothing);
+    // `event` (a skill) renders as a wikilink pill — the same affordance
+    // the frontmatter uses; `name` (a field) and `event:` (trailing colon,
+    // ≠ the skill id) stay plain code, not pills.
+    expect(find.widgetWithText(WikilinkPill, 'event'), findsOneWidget);
+    expect(find.widgetWithText(WikilinkPill, 'name'), findsNothing);
 
     // Not yet on the event page.
     expect(find.textContaining('EVENTBODYMARKER', findRichText: true), findsNothing);
 
-    await tester.tap(find.bySemanticsLabel('skill-link:event'));
+    await tester.tap(find.widgetWithText(WikilinkPill, 'event'));
     await tester.pumpAndSettle();
 
     // Navigated to the event skill page.
