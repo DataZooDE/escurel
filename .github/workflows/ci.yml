@@ -35,11 +35,10 @@ jobs:
   ci:
     name: fmt + clippy + test + build
     runs-on: ubuntu-latest
-    # Cold duckdb compile is ~15 min debug + ~10 min release (LTO),
-    # and `CARGO_BUILD_JOBS=1` (the link-memory cap, see env above)
-    # serialises the rest, so a cold run needs generous headroom;
-    # once rust-cache restores libduckdb-sys both stages drop to
-    # <1 min and the cap is moot.
+    # DuckDB is no longer compiled from source — libduckdb-sys downloads
+    # the precompiled libduckdb (see .cargo/config.toml: DUCKDB_DOWNLOAD_LIB).
+    # `CARGO_BUILD_JOBS=1` (the link-memory cap, see env above) still
+    # serialises linking, so keep generous headroom for the release stage.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -53,11 +52,31 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: workspace
-          # Save the cache even when a later step fails — without
-          # this, a single test failure throws away the duckdb
-          # compile and every push re-pays the 15-min cold build.
+          # Bumped from `workspace` to invalidate caches that hold the
+          # libduckdb-sys build-script fingerprint but NOT the downloaded
+          # libduckdb (the old caches link-fail with `cannot find -lduckdb`).
+          shared-key: workspace-duckdb-dl
+          # The build script downloads libduckdb into this custom dir and
+          # bakes its path into the cached link-search output. It is NOT a
+          # standard cargo artifact, so cache it explicitly — otherwise a
+          # cache hit restores the fingerprint (script does not re-run) but
+          # not the .so, and the final test/release link fails.
+          cache-directories: target/duckdb-download
+          # Save the cache even when a later step fails — without this, a
+          # single test failure throws away the warm cache and every push
+          # re-pays the cold dependency build.
           cache-on-failure: true
+
+      # Safety net for cache restores that lack the downloaded libduckdb
+      # (e.g. an older cache, or a partial restore): the libduckdb-sys
+      # build script only re-downloads when it actually re-runs, so force
+      # that by cleaning just that crate when the .so is absent.
+      - name: Ensure libduckdb is present (cache-restore safety)
+        run: |
+          if ! ls target/duckdb-download/*/*/libduckdb.so >/dev/null 2>&1; then
+            echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
+            cargo clean -p libduckdb-sys || true
+          fi
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
