@@ -40,13 +40,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use escurel_md::PageType;
+use escurel_md::{PageType, parse};
 
-use crate::IndexerError;
 use crate::acl::AclCaller;
 use crate::read::{Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, ResolvedWikilink};
 use crate::search::{Granularity, SearchHit};
 use crate::validate::Issue;
+use crate::{Indexer, IndexerError};
 
 pub use binding::{BackendBinding, SqlConnector, SqlViewBinding};
 pub use markdown::MarkdownBackend;
@@ -263,5 +263,104 @@ impl BackendRegistry {
     #[must_use]
     pub fn markdown(&self) -> &Arc<dyn InstanceBackend> {
         &self.markdown
+    }
+}
+
+/// Read-path + write-guard helpers the dispatcher uses to make external
+/// instances behave uniformly (PR-2c). These live on [`Indexer`] so the
+/// MCP handlers, which already hold an `&Indexer`, can call them without the
+/// registry being threaded through every handler.
+impl Indexer {
+    /// Bounded projection of a materialised SQL view's rows (REQ-SQL-06).
+    /// `expand` renders this beneath the overlay body; never an unbounded
+    /// dump.
+    pub async fn project_view(
+        &self,
+        view: &str,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>, SqlViewError> {
+        let conn = self.conn.lock().await;
+        sql_view::project_view_rows(&conn, view, limit)
+    }
+
+    /// The backend a skill declares, parsed from its `backend:` block
+    /// (markdown default when the skill page is absent or unannotated).
+    pub async fn skill_backend(&self, skill_id: &str) -> Result<BackendBinding, IndexerError> {
+        let conn = self.conn.lock().await;
+        let row: Option<String> = conn
+            .query_row(
+                "SELECT frontmatter::VARCHAR FROM pages \
+                 WHERE page_type = 'skill' AND (slug = ? OR page_id = ?) LIMIT 1",
+                duckdb::params![skill_id, skill_id],
+                |r| r.get(0),
+            )
+            .ok();
+        match row {
+            Some(fm_json) => {
+                let fm: serde_json::Value = serde_json::from_str(&fm_json)?;
+                Ok(BackendBinding::parse(&fm))
+            }
+            None => Ok(BackendBinding::default()),
+        }
+    }
+
+    /// Read-only-backend write guard (REQ-BK-03). Returns `Some(reason)` when
+    /// an `update_page` of `content` at `page_id` must be rejected with a
+    /// `backend_read_only` `Issue`; `None` when the write is allowed.
+    ///
+    /// Overlay co-authoring stays allowed: editing an *existing* external
+    /// instance whose submitted content keeps its `backend_ref` is fine.
+    /// Rejected: creating a fresh instance of a read-only backend via
+    /// `update_page` (creation must go through the materialise path), and
+    /// stripping the `backend_ref` binding off an existing one.
+    pub async fn backend_read_only_rejection(
+        &self,
+        page_id: &str,
+        content: &str,
+    ) -> Result<Option<String>, IndexerError> {
+        // A malformed draft falls through to the normal validate path.
+        let Ok(parsed) = parse(content) else {
+            return Ok(None);
+        };
+        if parsed.frontmatter.page_type != PageType::Instance {
+            return Ok(None);
+        }
+        let skill = parsed
+            .frontmatter
+            .fields
+            .get("skill")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if skill.is_empty() {
+            return Ok(None);
+        }
+        let binding = self.skill_backend(&skill).await?;
+        if Capabilities::for_kind(binding.kind).writable {
+            return Ok(None);
+        }
+        let has_backend_ref = parsed.frontmatter.fields.get("backend_ref").is_some();
+        let exists = {
+            let conn = self.conn.lock().await;
+            conn.query_row(
+                "SELECT 1 FROM pages WHERE page_id = ? LIMIT 1",
+                duckdb::params![page_id],
+                |_| Ok(()),
+            )
+            .is_ok()
+        };
+        let kind = binding.kind.as_str();
+        if !exists {
+            return Ok(Some(format!(
+                "skill `{skill}` is a read-only `{kind}` backend; create instances via the \
+                 materialise path, not update_page"
+            )));
+        }
+        if !has_backend_ref {
+            return Ok(Some(format!(
+                "cannot remove the backend_ref binding of read-only `{kind}` instance `{page_id}`"
+            )));
+        }
+        Ok(None)
     }
 }

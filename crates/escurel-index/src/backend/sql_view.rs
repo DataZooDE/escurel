@@ -156,31 +156,8 @@ impl SqlViewBackend {
         view: &str,
         limit: usize,
     ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>, SqlViewError> {
-        if !is_valid_identifier(view) {
-            return Err(SqlViewError::InvalidBinding(format!(
-                "not a valid view identifier: {view:?}"
-            )));
-        }
         let conn = self.indexer.conn.lock().await;
-        // Column names come from DESCRIBE (the duckdb-rs `Statement::column_names`
-        // schema is only populated after stepping; deriving names up front
-        // keeps the row loop simple and index-aligned).
-        let cols: Vec<String> = describe(&conn, view)?
-            .into_iter()
-            .map(|(n, _t)| n)
-            .collect();
-        let sql = format!("SELECT * FROM {view} LIMIT {}", limit.min(10_000));
-        let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt.query([])?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            let mut obj = serde_json::Map::new();
-            for (i, name) in cols.iter().enumerate() {
-                obj.insert(name.clone(), duck_value_to_json(row, i));
-            }
-            out.push(obj);
-        }
-        Ok(out)
+        project_view_rows(&conn, view, limit)
     }
 
     /// Resolve the FROM-clause source expression, performing any required
@@ -238,6 +215,37 @@ impl SqlViewBackend {
             }
         }
     }
+}
+
+/// Read up to `limit` rows from a materialised view as JSON objects, on an
+/// already-locked connection. Shared by [`SqlViewBackend::project_rows`] and
+/// [`crate::Indexer::project_view`] (the read-path projection, PR-2c).
+pub(crate) fn project_view_rows(
+    conn: &duckdb::Connection,
+    view: &str,
+    limit: usize,
+) -> Result<Vec<serde_json::Map<String, serde_json::Value>>, SqlViewError> {
+    if !is_valid_identifier(view) {
+        return Err(SqlViewError::InvalidBinding(format!(
+            "not a valid view identifier: {view:?}"
+        )));
+    }
+    // Column names come from DESCRIBE (the duckdb-rs `Statement::column_names`
+    // schema is only populated after stepping; deriving names up front keeps
+    // the row loop simple and index-aligned).
+    let cols: Vec<String> = describe(conn, view)?.into_iter().map(|(n, _t)| n).collect();
+    let sql = format!("SELECT * FROM {view} LIMIT {}", limit.min(10_000));
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let mut obj = serde_json::Map::new();
+        for (i, name) in cols.iter().enumerate() {
+            obj.insert(name.clone(), duck_value_to_json(row, i));
+        }
+        out.push(obj);
+    }
+    Ok(out)
 }
 
 /// Build the READ_ONLY `ATTACH` for a database connector. Pure so the

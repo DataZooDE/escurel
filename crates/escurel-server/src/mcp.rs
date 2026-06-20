@@ -928,25 +928,69 @@ async fn tool_expand(
     }
     match out {
         None => Ok(json!({ "page": Value::Null })),
-        Some(e) => Ok(json!({
-            "page": {
-                "page_id": e.page.page_id,
-                "slug": e.page.slug,
-                "skill": e.page.skill,
-                "page_type": page_type_str(e.page.page_type),
-            },
-            "frontmatter": e.frontmatter,
-            "body": e.body,
-            "blocks": e.blocks.iter().map(|b| json!({
-                "anchor": b.anchor,
-                "content": b.content,
-            })).collect::<Vec<_>>(),
-            "wikilinks_out": e.wikilinks_out.iter().map(|w| json!({
-                "skill": w.skill, "id": w.id, "anchor": w.anchor,
-                "version": w.version, "alias": w.alias,
-            })).collect::<Vec<_>>(),
-        })),
+        Some(e) => {
+            let mut page = json!({
+                "page": {
+                    "page_id": e.page.page_id,
+                    "slug": e.page.slug,
+                    "skill": e.page.skill,
+                    "page_type": page_type_str(e.page.page_type),
+                },
+                "frontmatter": e.frontmatter,
+                "body": e.body,
+                "blocks": e.blocks.iter().map(|b| json!({
+                    "anchor": b.anchor,
+                    "content": b.content,
+                })).collect::<Vec<_>>(),
+                "wikilinks_out": e.wikilinks_out.iter().map(|w| json!({
+                    "skill": w.skill, "id": w.id, "anchor": w.anchor,
+                    "version": w.version, "alias": w.alias,
+                })).collect::<Vec<_>>(),
+            });
+            // SQL-view overlay: render a BOUNDED projection beneath the overlay
+            // body (REQ-SQL-06), and expose projected source columns under a
+            // namespaced `source` object so overlay↔source drift is visible
+            // without the overlay value being masked (REQ-OV-02). The overlay
+            // (shown first) always wins for display.
+            if let Some(proj) = sql_view_projection(indexer, &e).await {
+                page["backend_projection"] = proj;
+            }
+            Ok(page)
+        }
     }
+}
+
+/// Bounded rows + projected `source` fields for a SQL-view instance overlay,
+/// or `None` when the page is not a `sql_view` instance.
+async fn sql_view_projection(indexer: &Indexer, e: &escurel_index::ExpandedPage) -> Option<Value> {
+    const PROJECTION_LIMIT: usize = 50;
+    let backend_ref = e.frontmatter.get("backend_ref")?;
+    if backend_ref.get("kind").and_then(Value::as_str) != Some("sql_view") {
+        return None;
+    }
+    let view = backend_ref.get("view").and_then(Value::as_str)?;
+    let rows = indexer.project_view(view, PROJECTION_LIMIT).await.ok()?;
+
+    // Expose projected source columns under `source.<overlay_field>` per the
+    // skill's `project` map (drift-visible; overlay wins for display).
+    let mut source = serde_json::Map::new();
+    if let Ok(binding) = indexer.skill_backend(&e.page.skill).await
+        && let Some(sv) = binding.sql_view
+        && let Some(first) = rows.first()
+    {
+        for (src_col, overlay_field) in &sv.project {
+            if let Some(v) = first.get(src_col) {
+                source.insert(overlay_field.clone(), v.clone());
+            }
+        }
+    }
+
+    Some(json!({
+        "view": view,
+        "rows": rows,
+        "source": source,
+        "truncated": rows.len() == PROJECTION_LIMIT,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -1197,6 +1241,26 @@ async fn tool_update_page(
 ) -> Result<Value, JsonRpcError> {
     let a: UpdatePageArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("update_page: {e}")))?;
+
+    // Read-only-backend guard (REQ-BK-03): reject an attempt to write backend
+    // data for a non-writable backend (creating a sql_view/document instance
+    // via update_page, or stripping its backend_ref) with a typed
+    // `backend_read_only` Issue. Overlay co-authoring stays allowed.
+    if let Some(reason) = indexer
+        .backend_read_only_rejection(&a.page_id, &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page backend guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "backend_read_only",
+                "location": "frontmatter.backend_ref",
+                "message": reason,
+            }],
+        }));
+    }
 
     // Deterministic per-instance WRITE ACL (symmetric to the read ACL):
     // only the resolved owner (or admin) may mutate an owner-private
