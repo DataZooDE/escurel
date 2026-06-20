@@ -19,7 +19,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 // ── corpus ──────────────────────────────────────────────────────
 
-const _noteSkill = '---\n'
+const _noteSkill =
+    '---\n'
     'type: skill\n'
     'id: note\n'
     'description: A free-form note.\n'
@@ -27,7 +28,8 @@ const _noteSkill = '---\n'
     'optional_frontmatter: [tags]\n'
     '---\n\n# note\n';
 
-const _noteWelcome = '---\n'
+const _noteWelcome =
+    '---\n'
     'type: instance\n'
     'skill: note\n'
     'id: welcome\n'
@@ -36,7 +38,8 @@ const _noteWelcome = '---\n'
 
 // An owner-bound skill: a non-null owner_field marks it as never
 // operator-editable, mirroring private_profile.
-const _profileSkill = '---\n'
+const _profileSkill =
+    '---\n'
     'type: skill\n'
     'id: private_profile\n'
     'description: An owner-bound profile.\n'
@@ -45,7 +48,8 @@ const _profileSkill = '---\n'
     'required_frontmatter: [owner]\n'
     '---\n\n# private_profile\n';
 
-const _profileInstance = '---\n'
+const _profileInstance =
+    '---\n'
     'type: instance\n'
     'skill: private_profile\n'
     'id: secret\n'
@@ -55,7 +59,8 @@ const _profileInstance = '---\n'
 // Group-ACL skills (group ACL v1) WITHOUT a legacy owner_field — the
 // operator edit-gate must read the `acl.update` policy: owner-scoped ⇒
 // read-only; admin/group-writable ⇒ editable.
-const _ticketSkill = '---\n'
+const _ticketSkill =
+    '---\n'
     'type: skill\n'
     'id: ticket\n'
     'description: An owner-scoped ticket (acl, no owner_field).\n'
@@ -66,14 +71,16 @@ const _ticketSkill = '---\n'
     'required_frontmatter: [reporter]\n'
     '---\n\n# ticket\n';
 
-const _ticketInstance = '---\n'
+const _ticketInstance =
+    '---\n'
     'type: instance\n'
     'skill: ticket\n'
     'id: t1\n'
     'reporter: "whatsapp:999"\n'
     '---\n\n# t1\n';
 
-const _bulletinSkill = '---\n'
+const _bulletinSkill =
+    '---\n'
     'type: skill\n'
     'id: bulletin\n'
     'description: An admin-writable bulletin (acl).\n'
@@ -84,31 +91,26 @@ const _bulletinSkill = '---\n'
     '---\n\n# bulletin\n';
 
 FixtureEscurelClient _writableClient() => FixtureEscurelClient.fromSources(
-      writeEnabled: true,
-      skillFiles: {
-        'note.md': _noteSkill,
-        'private_profile.md': _profileSkill,
-      },
-      instanceFiles: {
-        'note__welcome.md': _noteWelcome,
-        'private_profile__secret.md': _profileInstance,
-      },
-    );
+  writeEnabled: true,
+  skillFiles: {'note.md': _noteSkill, 'private_profile.md': _profileSkill},
+  instanceFiles: {
+    'note__welcome.md': _noteWelcome,
+    'private_profile__secret.md': _profileInstance,
+  },
+);
 
 FixtureEscurelClient _readOnlyClient() => FixtureEscurelClient.fromSources(
-      // writeEnabled defaults to false → version() omits agentWriteTools.
-      skillFiles: {'note.md': _noteSkill},
-      instanceFiles: {'note__welcome.md': _noteWelcome},
-    );
+  // writeEnabled defaults to false → version() omits agentWriteTools.
+  skillFiles: {'note.md': _noteSkill},
+  instanceFiles: {'note__welcome.md': _noteWelcome},
+);
 
 Future<void> _pump(WidgetTester tester, EscurelClient client) async {
   tester.view.physicalSize = const Size(1400, 1000);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
-  await tester.pumpWidget(
-    MaterialApp(home: EscurelExplorer(client: client)),
-  );
+  await tester.pumpWidget(MaterialApp(home: EscurelExplorer(client: client)));
   await tester.pumpAndSettle();
 }
 
@@ -119,31 +121,42 @@ Future<void> _openWelcome(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('edit an editable instance: change a field + body, save persists', (tester) async {
-    final client = _writableClient();
-    await _pump(tester, client);
-    await _openWelcome(tester);
+  testWidgets(
+    'edit an editable instance: change a field + body, save persists',
+    (tester) async {
+      final client = _writableClient();
+      await _pump(tester, client);
+      await _openWelcome(tester);
 
-    // Enter edit mode.
-    expect(find.bySemanticsLabel(PageFormKeys.editPage), findsOneWidget);
-    await tester.tap(find.bySemanticsLabel(PageFormKeys.editPage));
-    await tester.pumpAndSettle();
+      // Enter edit mode.
+      expect(find.bySemanticsLabel(PageFormKeys.editPage), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel(PageFormKeys.editPage));
+      await tester.pumpAndSettle();
 
-    // Change the title field + body.
-    await tester.enterText(find.bySemanticsLabel('${PageFormKeys.fieldPrefix}title'), 'Renamed');
-    await tester.enterText(find.bySemanticsLabel(PageFormKeys.bodyEditor), '# Renamed\n\nNew body.\n');
-    await tester.pumpAndSettle();
+      // Change the title field + body.
+      await tester.enterText(
+        find.bySemanticsLabel('${PageFormKeys.fieldPrefix}title'),
+        'Renamed',
+      );
+      await tester.enterText(
+        find.bySemanticsLabel(PageFormKeys.bodyEditor),
+        '# Renamed\n\nNew body.\n',
+      );
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.bySemanticsLabel(PageFormKeys.save));
-    await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsLabel(PageFormKeys.save));
+      await tester.pumpAndSettle();
 
-    // The fixture reflects the write.
-    final page = await client.expand('note__welcome');
-    expect(page.frontmatter['title'], 'Renamed');
-    expect(page.body, contains('New body.'));
-  });
+      // The fixture reflects the write.
+      final page = await client.expand('note__welcome');
+      expect(page.frontmatter['title'], 'Renamed');
+      expect(page.body, contains('New body.'));
+    },
+  );
 
-  testWidgets('validation error blocks save and leaves the fixture unchanged', (tester) async {
+  testWidgets('validation error blocks save and leaves the fixture unchanged', (
+    tester,
+  ) async {
     final client = _writableClient();
     await _pump(tester, client);
     await _openWelcome(tester);
@@ -152,7 +165,10 @@ void main() {
     await tester.pumpAndSettle();
 
     // Clear the required `title` field (note declares it required).
-    await tester.enterText(find.bySemanticsLabel('${PageFormKeys.fieldPrefix}title'), '');
+    await tester.enterText(
+      find.bySemanticsLabel('${PageFormKeys.fieldPrefix}title'),
+      '',
+    );
     await tester.pumpAndSettle();
 
     // The inline validation status surfaces the error.
@@ -170,7 +186,9 @@ void main() {
     expect(page.body, contains('The original body.'));
   });
 
-  testWidgets('read-only guard: an owner-bound skill shows no edit button', (tester) async {
+  testWidgets('read-only guard: an owner-bound skill shows no edit button', (
+    tester,
+  ) async {
     final client = _writableClient();
     await _pump(tester, client);
 
@@ -185,164 +203,252 @@ void main() {
     expect(find.bySemanticsLabel(PageFormKeys.editPage), findsOneWidget);
   });
 
-  testWidgets('group-acl gate: owner-scoped acl.update is read-only; admin-writable is editable', (tester) async {
+  testWidgets(
+    'group-acl gate: owner-scoped acl.update is read-only; admin-writable is editable',
+    (tester) async {
+      final client = FixtureEscurelClient.fromSources(
+        writeEnabled: true,
+        skillFiles: {'ticket.md': _ticketSkill, 'bulletin.md': _bulletinSkill},
+        instanceFiles: {'ticket__t1.md': _ticketInstance},
+      );
+      await _pump(tester, client);
+
+      // ticket: acl.update == [owner] ⇒ no operator edit affordance.
+      await tester.tap(find.text('t1'));
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
+
+      // bulletin: acl.update == [admin] (no owner) ⇒ create is offered.
+      expect(find.bySemanticsLabel('create-instance:bulletin'), findsOneWidget);
+      // ticket, being owner-scoped, offers no create affordance.
+      expect(find.bySemanticsLabel('create-instance:ticket'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'create: a new instance appears in the catalogue and is navigable',
+    (tester) async {
+      final client = _writableClient();
+      await _pump(tester, client);
+
+      // The editable note skill offers a create affordance.
+      const createLabel = 'create-instance:note';
+      expect(find.bySemanticsLabel(createLabel), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel(createLabel));
+      await tester.pumpAndSettle();
+
+      // Fill the id + required title, then save.
+      await tester.enterText(
+        find.bySemanticsLabel(PageFormKeys.idField),
+        'fresh',
+      );
+      await tester.enterText(
+        find.bySemanticsLabel('${PageFormKeys.fieldPrefix}title'),
+        'Fresh Note',
+      );
+      await tester.pumpAndSettle();
+      // The Save button can sit below the dialog's scroll fold — bring it
+      // into view before tapping.
+      await tester.ensureVisible(find.bySemanticsLabel(PageFormKeys.save));
+      await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsLabel(PageFormKeys.save));
+      await tester.pumpAndSettle();
+
+      // The fixture has the new page, keyed <skill>__<id>.
+      final page = await client.expand('note__fresh');
+      expect(page.frontmatter['title'], 'Fresh Note');
+
+      // And it shows up in the catalogue listing.
+      final instances = await client.listInstances('note');
+      expect(instances.map((i) => i.id), contains('note__fresh'));
+    },
+  );
+
+  testWidgets(
+    'tombstone delete marks the instance erased (hidden by hide-erased)',
+    (tester) async {
+      final client = _writableClient();
+      await _pump(tester, client);
+      await _openWelcome(tester);
+
+      await tester.tap(find.bySemanticsLabel(PageFormKeys.editPage));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.bySemanticsLabel(PageFormKeys.delete));
+      await tester.pumpAndSettle();
+      // Confirm dialog.
+      await tester.tap(find.bySemanticsLabel(PageFormKeys.confirmDelete));
+      await tester.pumpAndSettle();
+
+      // The page is tombstoned.
+      final page = await client.expand('note__welcome');
+      expect(page.frontmatter['status'], 'erased');
+      // Default hide-erased behaviour: still present in the raw corpus but
+      // marked erased — the listing's `erased` flag is set.
+      final instances = await client.listInstances('note');
+      final welcome = instances.firstWhere((i) => i.id == 'note__welcome');
+      expect(welcome.erased, isTrue);
+    },
+  );
+
+  testWidgets(
+    'write-disabled: no edit/create affordances when version omits agentWriteTools',
+    (tester) async {
+      final client = _readOnlyClient();
+      await _pump(tester, client);
+
+      // No create affordance in the catalogue.
+      expect(find.bySemanticsLabel('create-instance:note'), findsNothing);
+
+      // No edit button on an opened instance.
+      await _openWelcome(tester);
+      expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'embedder editableSkills allowlist narrows editing (excludes an ownerless skill)',
+    (tester) async {
+      final client = _writableClient();
+      tester.view.physicalSize = const Size(1400, 1000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      // Write is enabled and `note` is ownerless (generically editable), but the
+      // host restricts editing to a different skill — so note is read-only here.
+      await tester.pumpWidget(
+        MaterialApp(
+          home: EscurelExplorer(
+            client: client,
+            editableSkills: const {'other'},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.bySemanticsLabel('create-instance:note'), findsNothing);
+      await _openWelcome(tester);
+      expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'visibility is a dropdown (not free text) and the selection persists',
+    (tester) async {
+      final client = FixtureEscurelClient.fromSources(
+        writeEnabled: true,
+        skillFiles: {
+          'widget.md':
+              '---\n'
+              'type: skill\n'
+              'id: widget\n'
+              'description: A public widget.\n'
+              'required_frontmatter: [title]\n'
+              'optional_frontmatter: [visibility]\n'
+              '---\n\n# widget\n',
+        },
+        instanceFiles: {
+          'widget__w1.md':
+              '---\n'
+              'type: instance\n'
+              'skill: widget\n'
+              'id: w1\n'
+              'title: W1\n'
+              'visibility: public\n'
+              '---\n\n# w1\n',
+        },
+      );
+      await _pump(tester, client);
+      await tester.tap(find.text('w1'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.bySemanticsLabel(PageFormKeys.editPage));
+      await tester.pumpAndSettle();
+
+      // `visibility` is a dropdown; an ordinary field (`title`) stays a TextField.
+      expect(find.byType(DropdownButtonFormField<String>), findsOneWidget);
+      // The dropdown still carries the `field:visibility` label (its selected
+      // value merges into the node, so match as a substring — same as the
+      // rodney `ax-tree | grep` contract).
+      expect(
+        find.bySemanticsLabel(RegExp('${PageFormKeys.fieldPrefix}visibility')),
+        findsOneWidget,
+      );
+      expect(
+        find.bySemanticsLabel('${PageFormKeys.fieldPrefix}title'),
+        findsOneWidget,
+      );
+
+      // Open the dropdown and pick `owner`.
+      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('owner').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.bySemanticsLabel(PageFormKeys.save));
+      await tester.pumpAndSettle();
+
+      final page = await client.expand('widget__w1');
+      expect(page.frontmatter['visibility'], 'owner');
+    },
+  );
+
+  testWidgets('skill-page editing is decoupled from instance editing', (
+    tester,
+  ) async {
     final client = FixtureEscurelClient.fromSources(
       writeEnabled: true,
       skillFiles: {
-        'ticket.md': _ticketSkill,
-        'bulletin.md': _bulletinSkill,
+        'note.md': _noteSkill,
+        'rubric.md':
+            '---\n'
+            'type: skill\n'
+            'id: rubric\n'
+            'description: A tunable rubric page.\n'
+            'required_frontmatter: [title]\n'
+            '---\n\n# rubric\n\nGuidance body.\n',
       },
-      instanceFiles: {'ticket__t1.md': _ticketInstance},
+      instanceFiles: {
+        'note__welcome.md': _noteWelcome,
+        'rubric__r1.md':
+            '---\n'
+            'type: instance\nskill: rubric\nid: r1\ntitle: R1\n---\n\n# r1\n',
+      },
     );
-    await _pump(tester, client);
-
-    // ticket: acl.update == [owner] ⇒ no operator edit affordance.
-    await tester.tap(find.text('t1'));
-    await tester.pumpAndSettle();
-    expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
-
-    // bulletin: acl.update == [admin] (no owner) ⇒ create is offered.
-    expect(find.bySemanticsLabel('create-instance:bulletin'), findsOneWidget);
-    // ticket, being owner-scoped, offers no create affordance.
-    expect(find.bySemanticsLabel('create-instance:ticket'), findsNothing);
-  });
-
-  testWidgets('create: a new instance appears in the catalogue and is navigable', (tester) async {
-    final client = _writableClient();
-    await _pump(tester, client);
-
-    // The editable note skill offers a create affordance.
-    const createLabel = 'create-instance:note';
-    expect(find.bySemanticsLabel(createLabel), findsOneWidget);
-    await tester.tap(find.bySemanticsLabel(createLabel));
-    await tester.pumpAndSettle();
-
-    // Fill the id + required title, then save.
-    await tester.enterText(find.bySemanticsLabel(PageFormKeys.idField), 'fresh');
-    await tester.enterText(find.bySemanticsLabel('${PageFormKeys.fieldPrefix}title'), 'Fresh Note');
-    await tester.pumpAndSettle();
-    // The Save button can sit below the dialog's scroll fold — bring it
-    // into view before tapping.
-    await tester.ensureVisible(find.bySemanticsLabel(PageFormKeys.save));
-    await tester.pumpAndSettle();
-    await tester.tap(find.bySemanticsLabel(PageFormKeys.save));
-    await tester.pumpAndSettle();
-
-    // The fixture has the new page, keyed <skill>__<id>.
-    final page = await client.expand('note__fresh');
-    expect(page.frontmatter['title'], 'Fresh Note');
-
-    // And it shows up in the catalogue listing.
-    final instances = await client.listInstances('note');
-    expect(instances.map((i) => i.id), contains('note__fresh'));
-  });
-
-  testWidgets('tombstone delete marks the instance erased (hidden by hide-erased)', (tester) async {
-    final client = _writableClient();
-    await _pump(tester, client);
-    await _openWelcome(tester);
-
-    await tester.tap(find.bySemanticsLabel(PageFormKeys.editPage));
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.bySemanticsLabel(PageFormKeys.delete));
-    await tester.pumpAndSettle();
-    // Confirm dialog.
-    await tester.tap(find.bySemanticsLabel(PageFormKeys.confirmDelete));
-    await tester.pumpAndSettle();
-
-    // The page is tombstoned.
-    final page = await client.expand('note__welcome');
-    expect(page.frontmatter['status'], 'erased');
-    // Default hide-erased behaviour: still present in the raw corpus but
-    // marked erased — the listing's `erased` flag is set.
-    final instances = await client.listInstances('note');
-    final welcome = instances.firstWhere((i) => i.id == 'note__welcome');
-    expect(welcome.erased, isTrue);
-  });
-
-  testWidgets('write-disabled: no edit/create affordances when version omits agentWriteTools',
-      (tester) async {
-    final client = _readOnlyClient();
-    await _pump(tester, client);
-
-    // No create affordance in the catalogue.
-    expect(find.bySemanticsLabel('create-instance:note'), findsNothing);
-
-    // No edit button on an opened instance.
-    await _openWelcome(tester);
-    expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
-  });
-
-  testWidgets('embedder editableSkills allowlist narrows editing (excludes an ownerless skill)',
-      (tester) async {
-    final client = _writableClient();
     tester.view.physicalSize = const Size(1400, 1000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    // Write is enabled and `note` is ownerless (generically editable), but the
-    // host restricts editing to a different skill — so note is read-only here.
     await tester.pumpWidget(
       MaterialApp(
-        home: EscurelExplorer(client: client, editableSkills: const {'other'}),
+        home: EscurelExplorer(
+          client: client,
+          // `note` instances are editable; the `rubric` SKILL PAGE is editable
+          // but its instances are not — the decoupling under test.
+          editableSkills: const {'note'},
+          editableSkillPages: const {'rubric'},
+        ),
       ),
     );
     await tester.pumpAndSettle();
 
-    expect(find.bySemanticsLabel('create-instance:note'), findsNothing);
-    await _openWelcome(tester);
+    // rubric: SKILL PAGE editable, but no instance-create and instances read-only.
+    await tester.tap(
+      find.text('rubric').first,
+    ); // catalogue header → skill page
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(PageFormKeys.editPage), findsOneWidget);
+    expect(find.bySemanticsLabel('create-instance:rubric'), findsNothing);
+    await tester.tap(find.text('r1')); // a rubric instance
+    await tester.pumpAndSettle();
     expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
-  });
 
-  testWidgets('visibility is a dropdown (not free text) and the selection persists',
-      (tester) async {
-    final client = FixtureEscurelClient.fromSources(
-      writeEnabled: true,
-      skillFiles: {
-        'widget.md': '---\n'
-            'type: skill\n'
-            'id: widget\n'
-            'description: A public widget.\n'
-            'required_frontmatter: [title]\n'
-            'optional_frontmatter: [visibility]\n'
-            '---\n\n# widget\n',
-      },
-      instanceFiles: {
-        'widget__w1.md': '---\n'
-            'type: instance\n'
-            'skill: widget\n'
-            'id: w1\n'
-            'title: W1\n'
-            'visibility: public\n'
-            '---\n\n# w1\n',
-      },
-    );
-    await _pump(tester, client);
-    await tester.tap(find.text('w1'));
+    // note: instances editable + creatable, but its SKILL PAGE is read-only.
+    expect(find.bySemanticsLabel('create-instance:note'), findsOneWidget);
+    await tester.tap(find.text('note').first); // catalogue header → skill page
     await tester.pumpAndSettle();
-
-    await tester.tap(find.bySemanticsLabel(PageFormKeys.editPage));
-    await tester.pumpAndSettle();
-
-    // `visibility` is a dropdown; an ordinary field (`title`) stays a TextField.
-    expect(find.byType(DropdownButtonFormField<String>), findsOneWidget);
-    // The dropdown still carries the `field:visibility` label (its selected
-    // value merges into the node, so match as a substring — same as the
-    // rodney `ax-tree | grep` contract).
-    expect(find.bySemanticsLabel(RegExp('${PageFormKeys.fieldPrefix}visibility')), findsOneWidget);
-    expect(find.bySemanticsLabel('${PageFormKeys.fieldPrefix}title'), findsOneWidget);
-
-    // Open the dropdown and pick `owner`.
-    await tester.tap(find.byType(DropdownButtonFormField<String>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('owner').last);
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.bySemanticsLabel(PageFormKeys.save));
-    await tester.pumpAndSettle();
-
-    final page = await client.expand('widget__w1');
-    expect(page.frontmatter['visibility'], 'owner');
+    expect(find.bySemanticsLabel(PageFormKeys.editPage), findsNothing);
+    await _openWelcome(tester); // a note instance
+    expect(find.bySemanticsLabel(PageFormKeys.editPage), findsOneWidget);
   });
 }

@@ -31,6 +31,7 @@ class EscurelExplorer extends StatefulWidget {
     this.theme,
     this.env,
     this.editableSkills,
+    this.editableSkillPages,
   });
 
   /// The backend the explorer talks to. The host owns construction and
@@ -46,10 +47,19 @@ class EscurelExplorer extends StatefulWidget {
   /// read as the standalone fixture build.
   final Env? env;
 
-  /// Optional allowlist NARROWING which skills are operator-editable, to
-  /// match a host's server-side write policy. `null` = no extra restriction
-  /// (the generic ownerless rule applies). See [editableSkillsProvider].
+  /// Optional allowlist NARROWING which skills' INSTANCES are
+  /// operator-editable (and creatable), to match a host's server-side write
+  /// policy. `null` = no extra restriction (the generic ownerless rule
+  /// applies). See [editableSkillsProvider].
   final Set<String>? editableSkills;
+
+  /// Optional allowlist of skill ids whose SKILL PAGE body is
+  /// operator-editable — decoupled from [editableSkills] so a host can make a
+  /// skill's rubric/policy page editable WITHOUT exposing its instances (e.g.
+  /// Carl's `community` card: the page is a tunable rubric, the cards are
+  /// system-managed and read-only). `null`/absent ⇒ no skill page is editable.
+  /// See [editableSkillPagesProvider].
+  final Set<String>? editableSkillPages;
 
   static const Env _embeddedEnv = Env(
     mode: AppMode.http,
@@ -72,18 +82,19 @@ class _EscurelExplorerState extends State<EscurelExplorer> {
   }
 
   ProviderContainer _build() => ProviderContainer(
-        overrides: [
-          escurelClientProvider.overrideWithValue(widget.client),
-          envProvider.overrideWithValue(widget.env ?? EscurelExplorer._embeddedEnv),
-          // Embedded: no go_router. Hide the standalone-only chrome (CRM,
-          // dev-inspector) and route any stray navigation through a no-op.
-          // In-page navigation (catalogue, wikilinks) is state-based and
-          // unaffected.
-          explorerEmbeddedProvider.overrideWithValue(true),
-          explorerNavigateProvider.overrideWithValue((_) {}),
-          editableSkillsProvider.overrideWithValue(widget.editableSkills),
-        ],
-      );
+    overrides: [
+      escurelClientProvider.overrideWithValue(widget.client),
+      envProvider.overrideWithValue(widget.env ?? EscurelExplorer._embeddedEnv),
+      // Embedded: no go_router. Hide the standalone-only chrome (CRM,
+      // dev-inspector) and route any stray navigation through a no-op.
+      // In-page navigation (catalogue, wikilinks) is state-based and
+      // unaffected.
+      explorerEmbeddedProvider.overrideWithValue(true),
+      explorerNavigateProvider.overrideWithValue((_) {}),
+      editableSkillsProvider.overrideWithValue(widget.editableSkills),
+      editableSkillPagesProvider.overrideWithValue(widget.editableSkillPages),
+    ],
+  );
 
   @override
   void didUpdateWidget(EscurelExplorer old) {

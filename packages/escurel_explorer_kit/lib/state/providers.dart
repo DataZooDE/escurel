@@ -22,6 +22,7 @@ import '../client/http_escurel_client.dart';
 import '../client/models.dart';
 import '../config/env.dart';
 import '../config/feature_flags.dart';
+import '../md/frontmatter.dart' show PageType;
 
 /// Widths (px) of the catalogue (left) and right-rail panes in the editor
 /// shell. Drag-resizable via the dividers; the drag handlers clamp these
@@ -221,6 +222,14 @@ final currentOutgoingLinksProvider = FutureProvider<List<Neighbour>>((
 /// Override via [EscurelExplorer.editableSkills].
 final editableSkillsProvider = Provider<Set<String>?>((ref) => null);
 
+/// Allowlist of skill ids whose SKILL PAGE body is operator-editable —
+/// decoupled from [editableSkillsProvider] (which governs INSTANCES). This
+/// lets a host make a skill's rubric/policy page editable without exposing
+/// its instances (e.g. Carl's `community`: the page is a tunable rubric, the
+/// cards stay read-only). `null` ⇒ no skill page is editable. Override via
+/// [EscurelExplorer.editableSkillPages].
+final editableSkillPagesProvider = Provider<Set<String>?>((ref) => null);
+
 /// Whether a skill is operator-editable through the explorer: write
 /// tools are enabled AND the skill exists AND its instances are not
 /// owner-scoped (per [SkillSummary.operatorEditable] — the group-ACL-aware
@@ -252,11 +261,21 @@ final currentPageSkillProvider = Provider<String?>((ref) {
   return ref.watch(currentPageProvider).asData?.value?.skill;
 });
 
-/// Whether the current page is editable (its skill is editable per
-/// [skillEditableProvider]). Drives the "Bearbeiten" affordance.
+/// Whether the current page is editable — drives the "Bearbeiten"
+/// affordance. A skill PAGE is gated by [editableSkillPagesProvider] (its
+/// body is a rubric/policy); an INSTANCE is gated by [skillEditableProvider].
+/// Keeping them separate lets a skill's page be editable while its instances
+/// stay read-only (e.g. Carl's `community` rubric vs. its system-managed
+/// cards).
 final currentPageEditableProvider = Provider<bool>((ref) {
-  final skill = ref.watch(currentPageSkillProvider);
-  if (skill == null) return false;
+  final page = ref.watch(currentPageProvider).asData?.value;
+  final skill = page?.skill;
+  if (page == null || skill == null || skill.isEmpty) return false;
+  if (page.pageType == PageType.skill) {
+    if (!ref.watch(writeEnabledProvider)) return false;
+    final pages = ref.watch(editableSkillPagesProvider);
+    return pages != null && pages.contains(skill);
+  }
   return ref.watch(skillEditableProvider)(skill);
 });
 
