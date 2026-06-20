@@ -8,6 +8,7 @@ import '../editor/catalogue_pane.dart';
 import '../editor/entity_editor.dart';
 import '../editor/right_rail.dart';
 import '../editor/webhook_deliveries_pane.dart';
+import '../state/providers.dart';
 import '../theme/app_theme.dart';
 import 'status_bar.dart';
 import 'topbar.dart';
@@ -35,22 +36,41 @@ class AppShell extends ConsumerWidget {
   }
 }
 
-class _WorkspaceRow extends StatelessWidget {
+class _WorkspaceRow extends ConsumerWidget {
   const _WorkspaceRow();
 
+  // Bounds keep a pane usable — it can't be dragged away or swallow the
+  // centre editor.
+  static const _leftMin = 180.0, _leftMax = 480.0;
+  static const _rightMin = 220.0, _rightMax = 560.0;
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return LayoutBuilder(
       builder: (context, constraints) {
         if (constraints.maxWidth >= 900) {
-          return const Row(
+          final leftW = ref.watch(leftPaneWidthProvider);
+          final rightW = ref.watch(rightPaneWidthProvider);
+          return Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SizedBox(width: 280, child: CataloguePane()),
-              VerticalDivider(width: 1),
-              Expanded(child: EntityEditor()),
-              VerticalDivider(width: 1),
-              SizedBox(width: 340, child: _RightTabs()),
+              SizedBox(width: leftW, child: const CataloguePane()),
+              // Drag right → wider catalogue.
+              _ResizeHandle(
+                semanticsLabel: 'resize-left',
+                onDrag: (dx) => ref
+                    .read(leftPaneWidthProvider.notifier)
+                    .update((w) => (w + dx).clamp(_leftMin, _leftMax)),
+              ),
+              const Expanded(child: EntityEditor()),
+              // Drag left → wider right rail (the rail is to its right).
+              _ResizeHandle(
+                semanticsLabel: 'resize-right',
+                onDrag: (dx) => ref
+                    .read(rightPaneWidthProvider.notifier)
+                    .update((w) => (w - dx).clamp(_rightMin, _rightMax)),
+              ),
+              SizedBox(width: rightW, child: const _RightTabs()),
             ],
           );
         }
@@ -64,6 +84,35 @@ class _WorkspaceRow extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+/// A thin draggable divider between two panes: a 1px rule centred in an
+/// 8px hit target, with a column-resize cursor. `onDrag` receives the
+/// horizontal delta (px) of each drag update. The `resize-*` Semantics
+/// label is the a11y/test contract.
+class _ResizeHandle extends StatelessWidget {
+  const _ResizeHandle({required this.semanticsLabel, required this.onDrag});
+
+  final String semanticsLabel;
+  final void Function(double dx) onDrag;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragUpdate: (d) => onDrag(d.delta.dx),
+        child: Semantics(
+          label: semanticsLabel,
+          child: const SizedBox(
+            width: 8,
+            child: Center(child: VerticalDivider(width: 1)),
+          ),
+        ),
+      ),
     );
   }
 }
