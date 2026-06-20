@@ -158,7 +158,9 @@ fn list_instances_request_skill_id_rename() {
 
 #[test]
 fn skill_wire_shape() {
-    // Mirrors tool_list_skills + decode_list_skills.
+    // Mirrors tool_list_skills + decode_list_skills. `backend` +
+    // `capabilities` are additive (REQ-BK-02): markdown-backed skills carry
+    // `{"kind":"markdown"}` and the markdown capability descriptor.
     let wire = json!({
         "id": "customer",
         "description": "A customer record",
@@ -166,13 +168,22 @@ fn skill_wire_shape() {
         "optional_frontmatter": ["region"],
         "is_event_typed": false,
         "visibility": "public",
-        "owner_field": null
+        "owner_field": null,
+        "backend": { "kind": "markdown" },
+        "capabilities": {
+            "writable": true,
+            "granularity": "block",
+            "search": "hybrid",
+            "supports_crdt": true
+        }
     });
     let skill: Skill = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(skill.id, "customer");
     assert_eq!(skill.required_frontmatter, vec!["tier"]);
     assert_eq!(skill.visibility, "public");
     assert_eq!(skill.owner_field, None);
+    assert_eq!(skill.backend.kind, "markdown");
+    assert!(skill.capabilities.writable);
     assert_eq!(serde_json::to_value(&skill).unwrap(), wire);
 }
 

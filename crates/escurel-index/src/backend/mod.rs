@@ -80,6 +80,16 @@ pub enum SearchMode {
     Hybrid,
 }
 
+impl SearchMode {
+    /// The wire string for this search mode.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SearchMode::Hybrid => "hybrid",
+        }
+    }
+}
+
 /// What a backend can do — reported through `list_skills` so agents and the
 /// dispatcher branch without downcasting (REQ-BK-02). `#[non_exhaustive]`
 /// so future capability flags are additive.
@@ -94,6 +104,25 @@ pub struct Capabilities {
     pub search: SearchMode,
     /// Whether CRDT `open_session` / `apply_op` applies to its pages.
     pub supports_crdt: bool,
+}
+
+impl Capabilities {
+    /// The default capability descriptor for a backend kind. Single
+    /// source of truth shared by the backend impls and the `list_skills`
+    /// surface, so the reported capabilities never drift from what the
+    /// backend actually does. A backend impl MAY still override its own
+    /// `capabilities()` (e.g. a per-instance retrieval mode).
+    #[must_use]
+    pub fn for_kind(kind: BackendKind) -> Self {
+        match kind {
+            BackendKind::Markdown => Self {
+                writable: true,
+                granularity: Granularity::Block,
+                search: SearchMode::Hybrid,
+                supports_crdt: true,
+            },
+        }
+    }
 }
 
 /// Read-context threaded through every backend call: the verified caller

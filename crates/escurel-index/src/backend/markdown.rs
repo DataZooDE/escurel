@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use escurel_md::PageType;
 
-use super::{BackendCtx, BackendKind, Capabilities, InstanceBackend, SearchMode};
+use super::{BackendCtx, BackendKind, Capabilities, InstanceBackend};
 use crate::read::{Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, ResolvedWikilink};
 use crate::search::{Granularity, SearchHit};
 use crate::validate::Issue;
@@ -36,12 +36,7 @@ impl InstanceBackend for MarkdownBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            writable: true,
-            granularity: Granularity::Block,
-            search: SearchMode::Hybrid,
-            supports_crdt: true,
-        }
+        Capabilities::for_kind(BackendKind::Markdown)
     }
 
     async fn list(

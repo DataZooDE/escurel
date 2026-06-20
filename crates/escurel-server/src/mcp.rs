@@ -36,8 +36,8 @@ use escurel_admin::{TenantSpec as AdminTenantSpec, TenantStore, validate_tenant_
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
-    AclCaller, AppendChatMessage, ChatMessage, Direction, EventInfo, Granularity, Indexer,
-    IndexerError, Issue, ListChatMessages, NewEvent, OrderDir, Severity, Visibility,
+    AclCaller, AppendChatMessage, Capabilities, ChatMessage, Direction, EventInfo, Granularity,
+    Indexer, IndexerError, Issue, ListChatMessages, NewEvent, OrderDir, Severity, Visibility,
     derive_attach_alias, is_safe_attach_source,
 };
 use escurel_md::PageType;
@@ -46,9 +46,10 @@ use escurel_storage::{Key, StoreError};
 use escurel_types::{
     AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
     ListSkillsResponse, QuotaGetResponse, RebuildProgress, Skill as TypesSkill,
-    SkillAcl as TypesSkillAcl, TenantCreateResponse, TenantDeleteResponse, TenantGetResponse,
-    TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
-    WebhookDeliveriesResponse, WebhookDelivery,
+    SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
+    SkillCapabilities as TypesSkillCapabilities, TenantCreateResponse, TenantDeleteResponse,
+    TenantGetResponse, TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec,
+    TenantUpdateResponse, WebhookDeliveriesResponse, WebhookDelivery,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -721,6 +722,18 @@ async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpcError> {
                     update: a.update,
                     delete: a.delete,
                 }),
+                backend: TypesSkillBackend {
+                    kind: s.backend.kind.as_str().to_string(),
+                },
+                capabilities: {
+                    let c = Capabilities::for_kind(s.backend.kind);
+                    TypesSkillCapabilities {
+                        writable: c.writable,
+                        granularity: c.granularity.as_str().to_string(),
+                        search: c.search.as_str().to_string(),
+                        supports_crdt: c.supports_crdt,
+                    }
+                },
             })
             .collect(),
     };

@@ -170,9 +170,35 @@ pub struct SkillAcl {
     pub delete: Option<Vec<String>>,
 }
 
+/// The backend a skill's instances live in (`markdown` | `sql_view` |
+/// `document`). Additive on the `list_skills` wire surface so a client can
+/// tell which backend a `[[skill::id]]` resolves to. Absent `backend:`
+/// block ⇒ `kind: "markdown"` (every skill today).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SkillBackend {
+    pub kind: String,
+}
+
+/// What a skill's backend can do — reported so a client learns
+/// read-only-ness, granularity, and search mode without a second call
+/// (REQ-BK-02). Additive; old clients ignore it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SkillCapabilities {
+    /// Instances can be created / overwritten via `update_page`.
+    pub writable: bool,
+    /// Finest addressable unit (`block` | `page`).
+    pub granularity: String,
+    /// How this backend contributes to search (`hybrid` | …).
+    pub search: String,
+    /// Whether CRDT co-authoring applies to its pages.
+    pub supports_crdt: bool,
+}
+
 /// A Tier-1 skill. MCP wire keys: `id`, `description`,
 /// `required_frontmatter`, `optional_frontmatter`, `is_event_typed`,
-/// `visibility`, `owner_field`, `acl`.
+/// `visibility`, `owner_field`, `acl`, `backend`, `capabilities`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Skill {
@@ -195,6 +221,10 @@ pub struct Skill {
     /// field (→ tenant default applies).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acl: Option<SkillAcl>,
+    /// The backend a skill's instances live in (markdown today).
+    pub backend: SkillBackend,
+    /// The backend's capability descriptor.
+    pub capabilities: SkillCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
