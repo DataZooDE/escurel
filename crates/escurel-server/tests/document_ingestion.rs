@@ -323,6 +323,59 @@ async fn ingest_pdf_without_kreuzberg_feature_fails_gracefully() {
     s.process.shutdown().await;
 }
 
+const DOCX_MIME: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const DOCX_SKILL: &str = "\
+---
+type: skill
+id: worddoc
+description: Word documents.
+backend:
+  kind: document
+  accepts: [application/vnd.openxmlformats-officedocument.wordprocessingml.document]
+---
+# worddoc
+";
+
+#[cfg(feature = "kreuzberg")]
+#[tokio::test]
+async fn ingest_docx_end_to_end_materialises_searchable_instance() {
+    // The full /ingest path for a real DOCX under the (default-on) kreuzberg
+    // extractor — not just the unit-level kreuzberg_extract.rs. Routes by MIME,
+    // extracts, chunks, materialises, and the chunks are reachable via expand.
+    let s = setup().await;
+    s.indexer
+        .update_page("markdown/skills/worddoc.md", DOCX_SKILL)
+        .await
+        .unwrap();
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let docx = include_bytes!("fixtures/memo.docx");
+    let blob = s
+        .store
+        .put_inbox_blob(TENANT, Bytes::from_static(docx), None)
+        .await
+        .unwrap();
+
+    let resp = post_ingest(&s.process, &token, blob.as_str(), DOCX_MIME).await;
+    assert_eq!(resp["handler_skill"], "worddoc", "route by MIME: {resp}");
+    assert_eq!(resp["status"], "materialised", "kreuzberg DOCX: {resp}");
+    let chunks = resp["chunk_count"].as_u64().unwrap();
+    assert!(chunks >= 1, "DOCX must yield chunks: {resp}");
+
+    // The materialised instance is a read-only document overlay reachable via
+    // expand, carrying the kreuzberg extract engine in its backend_ref.
+    let page_id = resp["page_id"].as_str().unwrap();
+    let ex = call(&s.process, &token, "expand", json!({ "page_id": page_id })).await;
+    let page = &ex["result"]["structuredContent"];
+    assert_eq!(page["frontmatter"]["backend_ref"]["kind"], "document");
+    assert!(
+        page["frontmatter"]["backend_ref"]["extract_engine"]
+            .as_str()
+            .is_some_and(|e| e.contains("kreuzberg")),
+        "DOCX must record the kreuzberg engine: {page}"
+    );
+    s.process.shutdown().await;
+}
+
 #[tokio::test]
 async fn list_skills_reports_document_kind_and_capabilities() {
     // G4 uniform surface for the document backend (parallel to the sql_view

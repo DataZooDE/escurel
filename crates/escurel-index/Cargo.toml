@@ -71,6 +71,10 @@ escurel-embed = { path = "../escurel-embed" }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 async-trait = "0.1"
+# Live SQL-view connector round-trip (sql_view_postgres.rs): a real Postgres
+# in a testcontainer + a real libpq client to seed it. No mocks.
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
+tokio-postgres = "0.7"
 
 [lints]
 workspace = true

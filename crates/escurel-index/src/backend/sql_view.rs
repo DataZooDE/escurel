@@ -241,6 +241,22 @@ async fn prepare_source(
                 conn.execute_batch(stmt)?;
             }
             conn.execute_batch(&attach_sql(db, attach, &cred.secret))?;
+            // The postgres/mysql scanners cache the remote catalog at ATTACH
+            // time. Because the Indexer's connection is persistent, a view
+            // re-materialised by validate_bindings / reconstruct_views would
+            // otherwise see the *stale* schema and miss source drift
+            // (REQ-NF-06). Clearing the cache forces `SELECT *` to re-expand
+            // against the live schema. (No detach — that would break any other
+            // managed view sharing this alias.)
+            match db {
+                SqlConnector::Postgres => {
+                    conn.execute_batch("CALL pg_clear_cache();")?;
+                }
+                SqlConnector::Mysql => {
+                    conn.execute_batch("CALL mysql_clear_cache();")?;
+                }
+                _ => {}
+            }
             Ok(format!("{attach}.{}", binding.relation))
         }
     }
@@ -407,7 +423,14 @@ pub fn attach_sql(connector: SqlConnector, alias: &str, secret: &str) -> String 
         SqlConnector::Erpl => "erpl",
         SqlConnector::JsonDir | SqlConnector::ParquetDir => "",
     };
-    format!("ATTACH '{secret}' AS {alias} (TYPE {ty}, READ_ONLY)")
+    // `IF NOT EXISTS`: the Indexer holds a *persistent* DuckDB connection, so
+    // an alias attached at `create_instance` is still attached when
+    // `validate_bindings` / `reconstruct_views` re-probe the same view on the
+    // same connection. A plain `ATTACH` would then fail with "database already
+    // exists" and falsely mark a *healthy* binding `backend_unavailable`
+    // (REQ-NF-06). Idempotent attach avoids that; a fresh boot/rebuild starts
+    // with nothing attached and re-attaches from the current credential.
+    format!("ATTACH IF NOT EXISTS '{secret}' AS {alias} (TYPE {ty}, READ_ONLY)")
 }
 
 /// The INSTALL/LOAD statements a DB connector needs before ATTACH.
