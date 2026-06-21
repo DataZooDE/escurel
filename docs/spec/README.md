@@ -79,8 +79,8 @@ are the ones with the largest blast radius if changed later.
 | **1** | **Language** | **Rust** (stable, edition 2024) | Per-tenant single-writer fits a Tokio runtime cleanly |
 | **2** | **Deployment** | **Single binary `escurel-server`, self-hosted; same binary scales to multi-tenant SaaS** | One process per node; multi-tenancy is in-process (see decision 8) |
 | 3 | Auth | Generic OIDC discovery; tenant id is one OIDC claim (`tenant` by default, configurable) | See [`platform.md`](platform.md#auth) |
-| 4 | Embedding model — default | **EmbeddingGemma** (`google/embeddinggemma-300m`), 768d, Matryoshka-trained, multilingual | Open weights; loads on first start, cached under `${ESCUREL_DATA_DIR}/cache/models/` |
-| 4a | Embedding model — optional | Gemini embeddings (`gemini-embedding-001`) over HTTPS, gated by `embedding.provider = gemini` | Bypasses candle; breaks air-gapped use; only enabled if explicitly configured |
+| 4 | Embedding model — default | **Gemini** (`gemini-embedding-001`) over HTTPS, 768d — the binary ships the `gemini` feature and the runtime default is `provider = gemini` | Hosted; needs `ESCUREL_GEMINI_API_KEY`. With no key it falls back to zero-vector embeddings (a warning is logged) so keyless dev/CI boots stay clean. **Not air-gappable** — see 4a |
+| 4a | Embedding model — air-gapped / local | **EmbeddingGemma** (`google/embeddinggemma-300m`), 768d, Matryoshka-trained, multilingual, via candle — `provider = embeddinggemma` | Open weights, no cloud egress; what the substrate jobspec pins. Loads on first start, cached under `${ESCUREL_DATA_DIR}/cache/models/`. `provider = zero` is the offline stub (lexical search only) |
 | 5 | Embed/rerank runtime | **candle** (pure Rust) | No external runtime; CUDA/Metal feature flags; sidecar adapter exists as a trait impl for future use |
 | **6** | **Transports** | **MCP-over-HTTP** + **WebSocket** (live mode); HTTP is the sole transport | See [`protocol.md`](protocol.md) for each |
 | 7 | Storage backend | **Local FS for dev; S3 LaneStore is the production backend.** S3-compatible stores supported via `object_store::aws` (verified: AWS S3, MinIO, Hetzner Object Storage); FS retained as a dev-only convenience | DuckDB supports object-store URLs via `httpfs`, DuckLake natively; markdown ships through the same trait |
@@ -345,8 +345,10 @@ The cut line for v1 (the binary you can run in production):
 - **S3 LaneStore is the production default** (Hetzner Object
   Storage is the reference substrate target); local FS retained
   as a dev-only convenience
-- EmbeddingGemma in candle (CPU); CUDA/Metal behind feature
-  flags
+- **Gemini (`gemini-embedding-001`) is the default embedder** (keyless →
+  zero-vector fallback); EmbeddingGemma in candle (CPU; CUDA/Metal behind
+  feature flags) is the air-gapped/local option and what the substrate
+  jobspec pins
 - Three quota dimensions enforced
 - Admin API: tenant CRUD + export/import + rebuild + audit +
   attach_external

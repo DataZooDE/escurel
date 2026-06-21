@@ -52,11 +52,11 @@
 //! | `ESCUREL_AUTH_JWKS_URI_2` | derived from issuer #2 | explicit JWKS URL for the second issuer (e.g. Carl's `<issuer>/jwks.json`) |
 //! | `ESCUREL_AUTH_OIDC_ISSUER_3` (… `_N`) | — | further trusted issuers, read as a contiguous `_2.._N` sequence (e.g. `_3` = the escurel-explore BFF's browser auth bridge); a gap stops the scan |
 //! | `ESCUREL_AUTH_JWKS_URI_3` (… `_N`) | derived from issuer #N | explicit JWKS URL for the Nth issuer |
-//! | `ESCUREL_EMBEDDING_PROVIDER` | `zero` | `zero`, `gemini`, or `embeddinggemma` |
+//! | `ESCUREL_EMBEDDING_PROVIDER` | `gemini` | `zero`, `gemini`, or `embeddinggemma` (gemini with no key → zero fallback) |
 //! | `ESCUREL_EMBEDDING_MODEL` | provider default | model id |
 //! | `ESCUREL_EMBEDDING_DEVICE` | `cpu` | candle device (informational; CPU only today) |
 //! | `ESCUREL_EMBEDDING_DIM` | `768` | vector dimension |
-//! | `ESCUREL_GEMINI_API_KEY` | — | Gemini API key (provider=gemini) |
+//! | `ESCUREL_GEMINI_API_KEY` | — | Gemini API key (provider=gemini; unset → zero fallback) |
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -523,10 +523,14 @@ impl EscurelConfig {
         };
 
         // --- embedding ---
+        // Default: hosted Gemini (the binary ships the `gemini` feature). With
+        // no API key it falls back to ZeroEmbedder (see `load_gemini`), so
+        // keyless dev/CI/air-gapped boots stay clean; air-gapped deployments
+        // set `embeddinggemma` (local) or `zero` explicitly.
         let provider_str = pick(
             "ESCUREL_EMBEDDING_PROVIDER",
             toml_cfg.embedding.provider,
-            "zero",
+            "gemini",
         );
         let embedding_provider = match provider_str.as_str() {
             "zero" => EmbeddingProvider::Zero,
@@ -885,14 +889,19 @@ impl EscurelConfig {
 
     #[cfg(feature = "gemini")]
     fn load_gemini(&self) -> Result<Arc<dyn Embedder>, ConfigError> {
-        let key = self
-            .gemini_api_key
-            .clone()
-            .filter(|k| !k.is_empty())
-            .ok_or(ConfigError::MissingEmbedderField {
-                provider: "gemini",
-                var: "ESCUREL_GEMINI_API_KEY",
-            })?;
+        // Gemini is the default provider, but a key is not always present
+        // (keyless dev, CI, air-gapped). Rather than fail the boot, fall back
+        // to a ZeroEmbedder of the configured dimension and log a warning — the
+        // server stays healthy (lexical search works); semantic search is inert
+        // until a key is set + `embedding_reload` is called.
+        let Some(key) = self.gemini_api_key.clone().filter(|k| !k.is_empty()) else {
+            tracing::warn!(
+                "ESCUREL_EMBEDDING_PROVIDER=gemini but ESCUREL_GEMINI_API_KEY is unset; \
+                 falling back to zero-vector embeddings (semantic search disabled). Set a key \
+                 (or ESCUREL_EMBEDDING_PROVIDER=embeddinggemma/zero) to silence this."
+            );
+            return Ok(Arc::new(ZeroEmbedder::new(self.embedding_dim)));
+        };
         let mut e = escurel_embed::GeminiEmbedder::new(key).with_dim(self.embedding_dim);
         if let Some(model) = &self.embedding_model {
             e = e.with_model(model.clone());

@@ -164,9 +164,11 @@ In:
 - **S3 LaneStore is the production default** (Hetzner Object
   Storage as the reference substrate target); local FS retained
   as a dev-only convenience
-- EmbeddingGemma in candle (CPU default; CUDA/Metal flags)
-- Gemini embeddings as an optional provider for environments
-  that want hosted quality
+- **Gemini (`gemini-embedding-001`) is the default embedder** (binary ships
+  the `gemini` feature; keyless → zero-vector fallback so dev/CI/air-gapped
+  boots stay clean)
+- EmbeddingGemma in candle (CPU; CUDA/Metal flags) as the air-gapped/local
+  provider (`provider = embeddinggemma`) — what the substrate jobspec pins
 - Three quota dimensions (queries, writes+embeds, concurrent
   sessions)
 - Admin API: tenant CRUD, export/import, rebuild, audit,
