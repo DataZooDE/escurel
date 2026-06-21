@@ -350,6 +350,13 @@ The cut line for v1 (the binary you can run in production):
 - Three quota dimensions enforced
 - Admin API: tenant CRUD + export/import + rebuild + audit +
   attach_external
+- **External instance backends** ([`protocol.md`](protocol.md#instance-backends)):
+  besides native markdown, instances may be backed by a read-only `sql_view`
+  (DuckDB view over postgres/mysql/sqlite/erpl/json_dir/parquet_dir, with a
+  server-side credential registry + `validate_bindings`) or a `document`
+  (PDF/DOCX/PPTX/XLSX + text uploaded via `/ingest`, extracted by the
+  in-process kreuzberg extractor and chunked/embedded). Each external instance
+  keeps a markdown overlay page, so identity/links/ACL/search are unchanged
 - OTel + JSON logs + `/metrics`
 - One client: `escurel` CLI (operator + agent-style usage)
 - One mandatory in-corpus skill: `escurel` meta-skill, shipped with

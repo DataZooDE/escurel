@@ -126,6 +126,16 @@ because the operator inspecting the index needs to issue ad-hoc
 projections. The `escurel-admin` role is the gate; without it this
 tool is invisible.
 
+A second, `escurel-admin`-gated group manages **instance backends** (see
+[Origin axis › Backend-sourced instances](#backend-sourced-instances) and
+[`../spec/protocol.md`](../spec/protocol.md#instance-backends)):
+`register_credential` / `list_credentials` / `delete_credential` (the
+server-side `sql_view` secret registry; secrets are never echoed back),
+`create_sql_instance` (materialise a read-only view-backed instance), and
+`validate_bindings` (re-probe every `sql_view` for schema drift). Document
+uploads use the authenticated `POST /ingest` / `POST /ingest/upload` HTTP
+routes rather than an MCP tool.
+
 ### What the MCP surface deliberately does NOT expose
 
 - **No direct SQL.** Agents reach the relational store only through
@@ -255,6 +265,33 @@ skills:
 
 There is no separate tool for external data. You traverse it
 with the same primitives.
+
+### Backend-sourced instances
+
+A skill may also declare an **instance backend** in its frontmatter
+(`backend: { kind: … }`), so its *instances* are sourced from outside
+markdown. `list_skills` reports each skill's `backend.kind` (`markdown` |
+`sql_view` | `document`) and a `capabilities` object. Whatever the backend,
+the instance is still a page in the referent space — you `resolve` / `expand`
+/ `neighbours` / `search` it with the same primitives — but two kinds are
+**read-only** (`capabilities.writable == false`):
+
+- **`sql_view`** — the instance projects a read-only DuckDB view over an
+  external source. `expand` returns the markdown overlay plus a bounded row
+  projection (`backend_projection`); a colliding source field appears under
+  `source.<field>`. An operator creates one with `create_sql_instance`; an
+  admin registers the source secret with `register_credential` (never in
+  markdown) and re-checks drift with `validate_bindings` (a degraded binding
+  reads fail-closed). Editing it (`update_page` / `apply_op`) returns
+  `backend_read_only`.
+- **`document`** — the instance is an uploaded file (PDF / DOCX / PPTX / XLSX /
+  text) extracted, chunked, and embedded. An external client uploads via
+  `POST /ingest` / `POST /ingest/upload`; escurel records an ingest event and
+  materialises the instance asynchronously. `expand` returns the overlay plus
+  the top-k relevant chunks (`chunks_total` / `chunks_truncated`), never the
+  full text. Read-only; the retained blob is canonical.
+
+Full wire detail in [`../spec/protocol.md`](../spec/protocol.md#instance-backends).
 
 ## Writing
 

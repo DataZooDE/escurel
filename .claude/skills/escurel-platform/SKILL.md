@@ -1,7 +1,7 @@
 ---
 name: escurel-platform
-version: 0.2.0
-description: Use when building an application that consumes the Escurel knowledge-base service as its data store — designing a tenant's skill/instance data model, calling the fourteen agent tools (search/resolve/expand/neighbours/list_skills/list_instances/run_stored_query/validate/open_session/apply_op/close_session/update_page/append_message/list_messages), or wiring escurel into an app backend and its integration tests. Covers the published surfaces (MCP-over-HTTP `/mcp`, the `escurel` CLI), the Rust `escurel-client` + `escurel-test-support` path, fixture seeding, auth/tenancy, per-chat-group conversation history (append_message/list_messages + admin DeleteChatHistory), and the no-mock dev loop. Triggers on phrases like "use escurel from my app", "escurel MCP tool", "resolve a wikilink", "run_stored_query", "seed an escurel tenant", "escurel-client", "EscurelProcess test", "author a skill page", "escurel CLI", "FixtureBuilder", "chat history", "append_message", "list_messages", "delete chat history". DO NOT use for escurel-internal work (the indexer, LaneStore, the markdown parser, the dispatcher, the embedder) — that is a PR against the escurel repo itself, not consumer-facing.
+version: 0.3.0
+description: Use when building an application that consumes the Escurel knowledge-base service as its data store — designing a tenant's skill/instance data model, calling the fourteen agent tools (search/resolve/expand/neighbours/list_skills/list_instances/run_stored_query/validate/open_session/apply_op/close_session/update_page/append_message/list_messages), or wiring escurel into an app backend and its integration tests. Covers the published surfaces (MCP-over-HTTP `/mcp`, the `escurel` CLI), the Rust `escurel-client` + `escurel-test-support` path, fixture seeding, auth/tenancy, per-chat-group conversation history (append_message/list_messages + admin DeleteChatHistory), external instance backends (read-only sql_view over an attached source; document/PDF/DOCX uploaded via /ingest), and the no-mock dev loop. Triggers on phrases like "use escurel from my app", "escurel MCP tool", "resolve a wikilink", "run_stored_query", "seed an escurel tenant", "escurel-client", "EscurelProcess test", "author a skill page", "escurel CLI", "FixtureBuilder", "chat history", "append_message", "list_messages", "delete chat history", "instance backend", "sql_view instance", "document backend", "ingest a PDF", "/ingest". DO NOT use for escurel-internal work (the indexer, LaneStore, the markdown parser, the dispatcher, the embedder) — that is a PR against the escurel repo itself, not consumer-facing.
 ---
 
 # escurel-platform — build apps that consume Escurel
@@ -18,6 +18,13 @@ typed `[[wikilinks]]`. Your application reaches that content through a
 small, stable tool surface. There is exactly one mental model: *find the
 typed page or block I need.* Same primitives across the kind, time, and
 origin axes.
+
+Instances are native markdown by default, but a skill may declare an
+**external instance backend** so its instances live elsewhere — a read-only
+`sql_view` over an attached relational source, or a `document` (PDF/DOCX/text
+uploaded via `/ingest`, extracted and chunked). They still read like ordinary
+pages (just read-only). → `references/01` §Backend axis, `references/02`
+§Instance backends.
 
 ## Two ways your app consumes Escurel
 

@@ -22,6 +22,14 @@ instance.
 | [`lead`](skills/lead.md) | qualified follow-up under BANT |
 | [`opportunity`](skills/opportunity.md) | named, valued sales motion |
 | [`project`](skills/project.md) | delivery engagement post-close |
+| [`attachment`](skills/attachment.md) | **document-backed** skill — uploaded files (PDF/DOCX/text), extracted + chunked; read-only |
+
+The [`attachment`](skills/attachment.md) skill demonstrates an **external
+instance backend** (`backend: kind: document`): rather than authoring a
+markdown page, you upload a file to `POST /ingest/upload` and escurel extracts,
+chunks, and embeds it into a read-only page-with-chunks. `scripts/verify-demo.sh`
+ingests a real PDF through it. See
+[the meta-skill](skills/escurel.md#instance-backends) for the backend concept.
 
 ## Instances — the Hoffmann chain (Brief scenario A)
 

@@ -111,6 +111,26 @@ catalogue is the `[[error-catalogue]]` page in a tenant.
   first; the dispatcher refuses non-query-page SQL.
 - Don't trust a frontmatter `mentions:` string over a typed wikilink.
 
+## Instance backends
+
+`list_skills` reports each skill's `backend.kind` (`markdown` | `sql_view` |
+`document`) + a `capabilities` object. Reading a backend-sourced instance uses
+the ordinary read tools (`expand` returns `backend_projection` for `sql_view`,
+or top-k chunks + `chunks_total` for `document`); both kinds are read-only, so
+`update_page` / `apply_op` against them return `backend_read_only`. Managing
+them is `escurel:admin`-gated and so not part of the normal agent surface:
+
+- `create_sql_instance(skill, id, [overlay_body])` — materialise a read-only
+  view-backed instance.
+- `register_credential(name, connector, secret)` / `list_credentials()` /
+  `delete_credential(name)` — the `sql_view` source-secret registry (secrets
+  never echoed back).
+- `validate_bindings()` — re-probe every `sql_view` for schema drift; a
+  `binding_degraded` view reads fail-closed.
+- Document uploads use the authenticated `POST /ingest` / `POST /ingest/upload`
+  HTTP routes (not an MCP tool). See `references/01` §Backend axis and the
+  repo's `docs/spec/protocol.md` § Instance backends.
+
 ## Not exposed (by design)
 
 No direct SQL, no raw vector/embedding access, no cross-tenant calls.

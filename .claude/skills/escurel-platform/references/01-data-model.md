@@ -96,6 +96,20 @@ citation; never treat one as a link. The link's `skill` segment is its
   - `[[query::<id>]]` — body declares an SQL view; frontmatter declares
     `db` (`relational` | `ext`) and a typed `params:` schema. Run via
     `run_stored_query(<id>, params)`. See `references/02` §run_stored_query.
+- **Backend axis.** A skill may declare an **instance backend** in its
+  frontmatter (`backend: { kind: … }`), so its *instances* are sourced from
+  outside markdown. `list_skills` reports each skill's `backend.kind`
+  (`markdown` | `sql_view` | `document`) and a `capabilities` object. You read
+  these instances with the same primitives, but `sql_view` and `document` are
+  **read-only** (`capabilities.writable == false`; `update_page` → `backend_read_only`):
+  - `sql_view` — projects a read-only DuckDB view over an external relational
+    source; `expand` returns the overlay + a bounded row projection
+    (`backend_projection`). Created with `create_sql_instance`; secrets via
+    `register_credential`; drift checked with `validate_bindings`.
+  - `document` — an uploaded PDF/DOCX/PPTX/XLSX/text file, extracted + chunked +
+    embedded into a page-with-chunks. Uploaded via `POST /ingest` /
+    `POST /ingest/upload`; `expand` returns the overlay + top-k chunks
+    (`chunks_total`), never the full text. See `references/02` §instance-backends.
 
 ## The mandatory `escurel` meta-skill
 

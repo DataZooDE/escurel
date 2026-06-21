@@ -36,7 +36,11 @@ ${ESCUREL_DATA_DIR}/tenants/<tenant_id>/
 │           └── 2026-04-12-acme-qbr.md
 ├── escurel.duckdb             # single DuckDB file: pages, links, blocks
 │                              # (with vss + fts indexes), crdt_ops,
-│                              # crdt_snapshots, frontmatter_index
+│                              # crdt_snapshots, frontmatter_index,
+│                              # external_credentials (sql_view secrets)
+├── blobs/                     # document-backend canonical originals (sha256-keyed)
+│   ├── inbox/                 # deposited-but-not-yet-processed uploads
+│   └── <sha256>               # ingested originals (PDF/DOCX/…); chunks derive from these
 ├── external/                  # DuckLake / Iceberg / Delta catalog mount-points
 │   └── ducklake.config        # ATTACH parameters per attached catalog
 └── cache/
@@ -45,8 +49,11 @@ ${ESCUREL_DATA_DIR}/tenants/<tenant_id>/
 ```
 
 This layout is *the export format*: `tenant_export` produces a
-deterministic tarball of the above directory minus `cache/`.
-`tenant_import` is the inverse.
+deterministic tarball of the above directory minus `cache/`. The `blobs/`
+subtree **is** part of the canonical corpus (a document instance's chunks are
+re-derivable from its blob, but the blob itself is not), so it is included in
+the export. The `external_credentials` table holds `sql_view` secrets and is
+exported with the DuckDB file. `tenant_import` is the inverse.
 
 Under the S3 LaneStore the same tree maps to S3 keys via:
 
@@ -188,7 +195,46 @@ client.
 Read-only. Per-tenant *read* lock; concurrent reads are fine.
 Compares two sets: markdown files on disk and page rows in
 DuckDB. Returns the two asymmetric differences as the `audit`
-admin response.
+admin response. `audit` also reconciles the external backends:
+managed `vw_` views ⟂ `sql_view` `backend_ref`s (no orphan views) and
+`blobs/` ⟂ `document` `backend_ref`s / inbox ⟂ ingest Events (no orphan
+blobs).
+
+## Instance backends — storage & indexing
+
+The [`InstanceBackend`](protocol.md#instance-backends) seam (markdown |
+`sql_view` | `document`) is a `BackendRegistry` keyed by skill id on
+`AppState` (next to the `Indexer`, *not* on it — `MarkdownBackend` holds an
+`Arc<Indexer>`, so putting the registry on the indexer would cycle). Each
+backend holds an `Arc<Indexer>` and delegates; the indexer's read/search/write
+methods stay put. Markdown is bit-identical to pre-feature behaviour.
+
+**`sql_view`.** `create_instance` runs under the per-tenant write lock:
+`INSTALL`/`LOAD` the connector, `ATTACH … (READ_ONLY)` (the engine rejects
+write-back — no app-level enforcement needed), `CREATE VIEW vw_<deterministic>`,
+then a `SELECT … LIMIT 0` to capture a `source_schema_fingerprint` stored in the
+overlay's `backend_ref`. Secrets resolve from the `external_credentials` table
+(DuckDB `CREATE SECRET`), never from markdown. `rebuild` re-`ATTACH`es +
+re-`CREATE VIEW`s from each `backend_ref`; `validate_bindings` re-probes and
+fingerprint-compares, marking drift `binding_degraded` (reads fail closed).
+Only `vw_`-prefixed managed views are ever projected, and source identifiers /
+`filter` fragments pass injection guards. ERPL is unsigned, so its connection is
+opened with `allow_unsigned_extensions` **only** behind an admin opt-in.
+
+**`document`.** `LaneStore` gains a content-addressed area —
+`put_blob(bytes) -> BlobId(sha256)`, `put_inbox_blob`, `get_blob`,
+`promote_inbox_blob`, `list_blobs` (on the trait + `FsStore` + S3) — backing
+`blobs/` and `blobs/inbox/`. Ingestion is two-phase to keep the write lock
+short: the `DocumentIngestWorker` **extracts off the lock** (an `Extractor`:
+`PlainTextExtractor` for `text/*`; `KreuzbergExtractor` for PDF/DOCX/PPTX/XLSX,
+compiled in by default — see [platform.md](platform.md)), then **materialises
+under a brief lock** — chunks become N `blocks` rows under one `page_id`,
+embedded via the `Embedder`, structurally identical to a markdown
+page-with-blocks for retrieval/ACL. A `DocumentProcessor` seam lets a future
+LLM-driven processor swap in without touching intake/materialise (v1 is
+deterministic). `rebuild` re-extracts → re-chunks → re-embeds from the retained
+blob; the FTS reindex is debounced/batched (dense HNSW is live on append, only
+BM25 lags).
 
 ## DuckDB schema
 
