@@ -18,6 +18,13 @@ name = "escurel-server"
 path = "src/main.rs"
 
 [features]
+# `kreuzberg` is ON by default: PDF/DOCX/PPTX/XLSX uploads through /ingest
+# must work out of the box (the document backend is a first-class capability,
+# not an add-on). It pulls the ELv2-licensed kreuzberg crate + bundled pdfium
+# and requires rust-version >= 1.91 (already pinned). Drop it with
+# `--no-default-features` for a lighter, born-digital-text-only build.
+default = ["kreuzberg"]
+kreuzberg = ["escurel-index/kreuzberg"]
 # Opt-in production backends. Off by default so the dev / test build
 # (FsStore + ZeroEmbedder) stays light and the cold-compile cost of
 # the AWS SDK / candle is only paid by release / substrate builds.
@@ -27,9 +34,6 @@ path = "src/main.rs"
 s3 = ["escurel-storage/s3"]
 gemini = ["escurel-embed/gemini"]
 embeddinggemma = ["escurel-embed/candle"]
-#   --features kreuzberg     → in-process PDF/DOCX extraction for /ingest
-#                              (ELv2; pulls pdfium; needs rust-version >= 1.91)
-kreuzberg = ["escurel-index/kreuzberg"]
 
 [dependencies]
 async-trait = "0.1"
