@@ -199,10 +199,11 @@ Three dimensions, all token-bucket per tenant:
 | `embeds_per_minute` | continuous | counts embedding jobs (one per new/changed block); shared bucket means a bulk import — or a multi-chunk document ingestion — triggers backpressure here |
 | `concurrent_sessions` | semaphore | counts open MCP sessions and WS connections |
 
-A per-tenant **blob-size quota** additionally bounds the document backend's
-content-addressed store (`blobs/`): an upload exceeding the cap is rejected
-before deposit, so a tenant cannot fill the host volume with uploaded
-originals.
+A per-tenant **per-upload blob-size cap** (`max_blob_bytes`, default 25 MiB;
+`0` disables) additionally bounds document ingestion: a `/ingest/upload`
+payload larger than the cap is rejected with HTTP 413 **before** the bytes are
+deposited, so a single oversize upload cannot fill the host volume. (The cap is
+per-upload, not a cumulative store ceiling.)
 
 Defaults are in the server config; per-tenant overrides in the
 manifest. On bucket exhaustion the server returns

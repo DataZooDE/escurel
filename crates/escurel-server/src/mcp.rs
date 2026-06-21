@@ -412,8 +412,28 @@ pub(crate) async fn ingest_upload(
                 .into_response();
         }
     };
+    // Per-upload blob-size quota: reject an oversize payload *before* it is
+    // deposited, so an upload can never fill the host volume. `0` = unbounded.
+    if let Some(quota) = state.quota.as_ref() {
+        let cap = quota.max_blob_bytes(indexer.tenant());
+        if cap > 0 && bytes.len() as u64 > cap {
+            state.metrics.inc_request("/ingest/upload", 413);
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({
+                    "error": "payload_too_large",
+                    "message": format!(
+                        "upload is {} bytes; the per-upload limit is {cap} bytes",
+                        bytes.len()
+                    ),
+                    "max_bytes": cap,
+                })),
+            )
+                .into_response();
+        }
+    }
     // Deposit into the inbox before processing (the canonical-before-process
-    // step; an upload is never lost). Per-blob size quota applies.
+    // step; an upload is never lost).
     let blob = match indexer
         .lane_store()
         .put_inbox_blob(indexer.tenant(), bytes::Bytes::from(bytes), None)
