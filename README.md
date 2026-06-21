@@ -9,6 +9,14 @@ and `fts` extensions, and treats a `pages/` markdown directory as the
 canonical source of truth. Live multi-author editing is backed by a
 Loro CRDT layer persisted into DuckDB.
 
+Instances are native markdown by default, but a skill can also declare an
+**external instance backend**: a read-only `sql_view` over an attached
+relational source, or a `document` (PDF/DOCX/PPTX/XLSX + text uploaded via
+`/ingest`, extracted in-process and chunked/embedded). Each external instance
+keeps a markdown overlay page, so identity, links, ACL, and search are
+unchanged — see
+[`docs/spec/protocol.md`](docs/spec/protocol.md#instance-backends).
+
 ## Status
 
 **v1 specification — no implementation yet.** The spec is settled and

@@ -4,7 +4,16 @@ id: attachment
 description: An uploaded document (text/markdown) ingested through the document backend — extracted, chunked, and embedded into one page-with-blocks. Read-only; the original blob is canonical.
 backend:
   kind: document
-  accepts: [text/plain, text/markdown]
+  # PDF/DOCX/PPTX/XLSX extract in-process via kreuzberg, which ships in the
+  # default server build (the `kreuzberg` feature is on by default). text/*
+  # needs no native deps.
+  accepts:
+    - text/plain
+    - text/markdown
+    - application/pdf
+    - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    - application/vnd.openxmlformats-officedocument.presentationml.presentation
+    - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
   chunk:
     max_chars: 800
     overlap: 80

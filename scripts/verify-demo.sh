@@ -208,6 +208,21 @@ note "probe: an unmatched MIME parks with no_handler_skill (blob retained)"
 park=$(ingest_text "application/x-binary" "$DOC_B64" "junk" "(r.issue&&r.issue.code)||r.status")
 expect_int "unmatched mime parked" "$park" "no_handler_skill"
 
+# The default server build ships the kreuzberg extractor (PDF/DOCX/PPTX/XLSX),
+# and the `attachment` skill accepts application/pdf — so a real born-digital
+# PDF must extract → chunk → materialise through the same /ingest/upload path,
+# with no feature flag. Proves the document backend is usable out of the box.
+note "probe: /ingest/upload extracts a real PDF (kreuzberg, default build)"
+PDF_FIXTURE="$ROOT/crates/escurel-server/tests/fixtures/report.pdf"
+[[ -f "$PDF_FIXTURE" ]] || fail "PDF fixture missing: $PDF_FIXTURE"
+PDF_B64=$(base64 < "$PDF_FIXTURE" | tr -d '\n')
+PDFING=$(ingest_text "application/pdf" "$PDF_B64" "report.pdf" "[r.status,r.handler_skill,r.chunk_count].join('~')")
+IFS='~' read -r pdf_status pdf_handler pdf_chunks <<< "$PDFING"
+[[ "$pdf_status" == "materialised" ]] || fail "PDF ingest did not materialise (got '$pdf_status' from '$PDFING')"
+[[ "$pdf_handler" == "attachment" ]] || fail "PDF ingest routed to wrong skill (got '$pdf_handler')"
+[[ "$pdf_chunks" =~ ^[1-9] ]] || fail "PDF ingest produced no chunks (got '$pdf_chunks')"
+note "probe ok: PDF ingest → status=$pdf_status handler=$pdf_handler chunks=$pdf_chunks"
+
 # --- group ACL v1: admin membership tools round-trip through the gateway -
 # The demo server runs without a verifier (dev/on-host), so admin tools
 # are open here — this proves add_group_member → list_group_members works

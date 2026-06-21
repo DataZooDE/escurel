@@ -179,6 +179,16 @@ In:
   `at:` denormalised to an indexed column on both the DuckDB
   `pages` and `blocks` tables; `list_instances` accepts
   `order_by` and the operator-wrapped `FilterClause` syntax
+- **External instance backends** — the `InstanceBackend` trait with three
+  impls (`markdown` | `sql_view` | `document`). `sql_view`: read-only DuckDB
+  views over postgres/mysql/sqlite/erpl/json_dir/parquet_dir, server-side
+  credential registry, `validate_bindings`, ACL-before-fusion search.
+  `document`: PDF/DOCX/PPTX/XLSX + text uploaded via `/ingest` /
+  `/ingest/upload`, extracted in-process by kreuzberg (default-on), chunked +
+  embedded. Every external instance keeps a markdown overlay page (see
+  [`protocol.md`](protocol.md#instance-backends)). Deferred to a future change
+  request: row-grain SQL instances + write-back CRDT, multi-document instances,
+  LLM-driven document processing, the LanceDB retrieval hatch
 
 Out (deferred):
 

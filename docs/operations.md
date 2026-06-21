@@ -46,6 +46,9 @@ the one exception (auth-free liveness). A missing/invalid bearer is
 | `Rebuild` (server-stream) | re-index from canonical markdown; one progress chunk per page |
 | `CompactLanes` (server-stream) | delete `crdt_ops` rows subsumed by the latest snapshot; reports ops + bytes reclaimed |
 | `AttachExternal` | wire a read-only external DuckDB/catalog into the tenant connection for `[[query::*]]` over external tables |
+| `RegisterCredential` / `ListCredentials` / `DeleteCredential` | the `sql_view` backend's external-source secret registry (DuckDB `CREATE SECRET`; secrets are never echoed back) |
+| `CreateSqlInstance` | materialise a read-only `sql_view` instance from a `sql_view` skill |
+| `ValidateBindings` | re-probe every `sql_view` for schema drift; a `binding_degraded` view reads fail-closed |
 | `EmbeddingReload` | retry the embedder model load after a degraded start |
 | `QuotaGet` | inspect remaining per-tenant token budgets + occupied session slots |
 
@@ -114,6 +117,42 @@ Over a long-lived live-editing session the `crdt_ops` table grows.
 `CompactLanes` deletes ops subsumed by the latest snapshot per page.
 Safe to run any time; it never touches ops newer than the last
 snapshot.
+
+### Document ingestion (PDF/DOCX/text)
+
+Document-backed instances are created by uploading a file to the
+authenticated `POST /ingest/upload` (`{content_type, bytes_b64, title?}`) or
+`POST /ingest` (for a blob already in `blobs/inbox/`). The server records an
+ingest event, then extracts → chunks → embeds → materialises one page. The
+default server build ships the in-process **kreuzberg** extractor
+(PDF/DOCX/PPTX/XLSX); `text/*` needs no native deps. Build
+`--no-default-features` for a born-digital-text-only server (kreuzberg is the
+`kreuzberg` Cargo feature, on by default; it requires rustc ≥ 1.91 and bundles
+pdfium). A MIME no document skill `accepts:` parks the upload with
+`no_handler_skill` (the inbox blob is retained, not lost); an extractor failure
+marks the instance `extraction_failed` and likewise retains the blob. Blobs are
+content-addressed and counted against the tenant's blob quota; re-ingesting
+identical bytes is idempotent. To re-derive chunks after an extractor upgrade,
+`Rebuild` re-extracts from the retained blob.
+
+### SQL-view binding drift
+
+`sql_view` instances project a read-only DuckDB view over an external source,
+fingerprinted at creation. Run `ValidateBindings` to re-probe every view; one
+whose source schema drifted comes back `binding_degraded` and **reads
+fail-closed** (an `Issue`, never wrong rows) until reconciled. Fix the source
+(or re-create the instance), then re-run `ValidateBindings`. `Rebuild`
+reconstructs the views (`ATTACH` + `CREATE VIEW`) from each instance's
+`backend_ref`.
+
+### Rotate an external-source credential
+
+`sql_view` source secrets live in the server-side registry, never in markdown.
+`RegisterCredential {name, connector, secret}` upserts by name (rotation =
+re-register the same name with the new secret); `ListCredentials` returns names
++ connectors only (never the secret); `DeleteCredential {name}` removes one.
+Views bound to a deleted/rotated credential reconnect on the next `Rebuild` or
+read.
 
 ## Dependency / license audit
 

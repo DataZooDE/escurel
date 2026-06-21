@@ -4,6 +4,26 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.3.0 — External instance backends (SQL views + Document/RAG)
+
+- New **Backend axis** in the data model: a skill may declare
+  `backend: { kind: markdown | sql_view | document }`, so its instances are
+  sourced from outside markdown. `list_skills` now reports each skill's
+  `backend.kind` + a `capabilities` object (`writable`, `granularity`,
+  `search`, `supports_crdt`).
+  - `sql_view` — read-only DuckDB view over an attached relational source.
+    `expand` returns the overlay + a bounded row projection
+    (`backend_projection`). Admin-gated lifecycle: `create_sql_instance`,
+    `register_credential` / `list_credentials` / `delete_credential`,
+    `validate_bindings` (schema-drift → `binding_degraded`, reads fail-closed).
+  - `document` — PDF/DOCX/PPTX/XLSX/text uploaded via `POST /ingest` /
+    `POST /ingest/upload`, extracted (kreuzberg, default-on) + chunked +
+    embedded into a page-with-chunks. `expand` returns the overlay + top-k
+    chunks (`chunks_total` / `chunks_truncated`), never the full text.
+  - Both backends are read-only: `update_page` / `apply_op` → `backend_read_only`.
+- Docs: `references/01` (Backend axis) + `references/02` (Instance backends).
+  Full wire contract in the repo's `docs/spec/protocol.md` § Instance backends.
+
 ## 0.2.0 — M-Chat: per-chat-group conversation history (issue #63)
 
 - Agent tool surface bumped **12 → 14**. New tools:

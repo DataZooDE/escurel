@@ -163,7 +163,11 @@ Returns the parsed link plus the resolved page metadata.
   "body":   "...markdown body...",
   "blocks": [ { "anchor": "blk-acme-signals", "content": "..." }, ... ],
   "wikilinks_out": [ WikilinkParsed, ... ],
-  "snapshot_version": "v14"        // populated only when version/as_of replayed a snapshot
+  "snapshot_version": "v14",       // populated only when version/as_of replayed a snapshot
+  // external-backend instances only (see Instance backends):
+  "backend_projection": null,      // sql_view: { view, rows, source, truncated, issue? }
+  "chunks_total": null,            // document: total chunk count
+  "chunks_truncated": false        // document: blocks are a bounded lead of chunks_total
 }
 ```
 
@@ -236,14 +240,20 @@ case of `at`).
       "description": "...",
       "required_frontmatter": ["tier", "opened", "status"],
       "optional_frontmatter": ["mrr_band", "owner", ...],
-      "is_event_typed": false       // true iff `at` is in required_frontmatter
+      "is_event_typed": false,      // true iff `at` is in required_frontmatter
+      "backend": { "kind": "markdown" },
+      "capabilities": { "writable": true, "granularity": "block",
+                        "search": "hybrid", "supports_crdt": true }
     },
     {
-      "id": "meeting",
-      "description": "An in-person or remote meeting...",
-      "required_frontmatter": ["at", "modality", "with", "participants"],
-      "optional_frontmatter": ["location", "duration_minutes", ...],
-      "is_event_typed": true
+      "id": "erp_customer",
+      "description": "...",
+      "required_frontmatter": [...],
+      "optional_frontmatter": [...],
+      "is_event_typed": false,
+      "backend": { "kind": "sql_view" },        // or "document"
+      "capabilities": { "writable": false, "granularity": "page",
+                        "search": "late_materialized", "supports_crdt": false }
     },
     ...
   ]
@@ -253,6 +263,13 @@ case of `at`).
 `is_event_typed` is a derived convenience flag (true iff `at` is
 in `required_frontmatter`); the agent does not need to compute
 it from the field list.
+
+`backend.kind` (`markdown` | `sql_view` | `document`) and the
+`capabilities` object tell the agent *where* a skill's instances live and
+what may be done with them — see [Instance backends](#instance-backends).
+A skill that declares no `backend:` block is `markdown` with the writable,
+block-grain, CRDT capabilities above (the historical default, so existing
+clients are unaffected).
 
 ##### Per-instance access control (`visibility` / `owner_field`)
 
@@ -433,6 +450,12 @@ unresolvable conflict, the response is `{ok: false,
 issues: [{code: "conflict", ...}], head_content: "..."}` —
 the client re-drafts against `head_content`.
 
+`update_page` (and `apply_op`) against an instance whose skill is a
+**non-writable backend** (`sql_view`, `document`) is rejected with
+`{ok: false, issues: [{code: "backend_read_only", ...}]}` — the external
+source/blob is canonical and is never written back through the page API.
+See [Instance backends](#instance-backends).
+
 ### Events / inbox (M7 — Event-sourcing surface)
 
 Events are the dynamic input of the memory triad (Events · Skills ·
@@ -484,6 +507,121 @@ missing/mismatched signature (a constant-time compare). With no secret
 configured the POST is unsigned (dev). This is the only ingress trust
 anchor between the gateway and the external runner.
 
+## Instance backends
+
+By default an instance's data is native **markdown** (writable, block-grain,
+CRDT-backed). Two **external backends** let an instance's data live elsewhere
+while every escurel invariant holds — single referent space, markdown-canonical,
+derivable index, fail-closed ACL, single-writer:
+
+- **`sql_view`** — a read-only DuckDB `VIEW` over an external relational source
+  (postgres / mysql / sqlite / erpl / json_dir / parquet_dir).
+- **`document`** — an uploaded file (PDF / DOCX / PPTX / XLSX, or text)
+  extracted, chunked, and embedded into one page-with-blocks.
+
+The unifying idea: **every external instance keeps a markdown overlay page** —
+the page *is* the instance in the referent space (identity, links, ACL, history
+all reuse the existing machinery), and a `backend_ref` frontmatter block binds
+it to the external data. All novelty is confined to *where the body/data comes
+from*, so `resolve` / `expand` / `neighbours` / `list_*` / `search` route
+through the backend transparently and no dispatcher or wire change is needed to
+add one. A skill selects its backend in frontmatter:
+
+```yaml
+backend:
+  kind: sql_view            # markdown (default) | sql_view | document
+  # …kind-specific config (see below)…
+```
+
+`list_skills` reports each skill's `backend.kind` + a `capabilities` object
+(`writable`, `granularity`, `search`, `supports_crdt`); `sql_view` and
+`document` are `writable: false`, so `update_page` / `apply_op` against them
+return `backend_read_only` (the overlay/source is not editable through the page
+API).
+
+### `sql_view`
+
+Skill frontmatter declares the source, a projection, and the columns that feed
+search:
+
+```yaml
+backend:
+  kind: sql_view
+  source: { connector: postgres, attach: crm_pg, relation: public.customers,
+            filter: "region = 'EU'" }      # filter is optional, injection-guarded
+  project: { customer_id: id, display_name: name }   # source col → overlay field
+  search_text: [name, notes]               # columns that enter late FTS
+```
+
+- **Secrets never live in markdown.** `source.attach` names a credential
+  registered out-of-band via `register_credential` (admin), realised as a
+  DuckDB `CREATE SECRET`. `list_credentials` returns names only.
+- **`create_sql_instance`** `{skill, id, overlay_body?}` materialises the
+  instance under the write lock: it `ATTACH`es the source `READ_ONLY`, creates a
+  managed `vw_<…>` view, captures a `source_schema_fingerprint`, and writes the
+  overlay page with `backend_ref { kind: "sql_view", view, binding_hash,
+  source_schema_fingerprint }`.
+- **Reads** (`expand`) merge the overlay (which wins) with a **bounded**
+  projection of the view (`expand.backend_projection = {view, rows, source,
+  truncated, issue?}`); a colliding source field is exposed under
+  `source.<field>`. Never an unbounded dump.
+- **`validate_bindings`** (admin) re-probes each view and compares the stored
+  fingerprint; on drift the binding is marked `binding_degraded` and that view's
+  reads **fail closed** (an `Issue`, not wrong rows).
+- **Search** contributes *candidates only* (late-materialised FTS over
+  `search_text`); the dispatcher applies the fail-closed ACL predicate to every
+  lane **before** RRF fusion (INV-ACL-FUSION), and a view whose owner can't be
+  resolved denies non-admins. See [storage.md](storage.md).
+
+### `document`
+
+Skill frontmatter declares accepted MIME types and chunking:
+
+```yaml
+backend:
+  kind: document
+  accepts: [application/pdf, text/plain]
+  chunk: { max_chars: 800, overlap: 80 }
+```
+
+Ingestion is **event-driven**, deposited-before-processed (an upload is never
+lost), and runs the extractor off the per-tenant write lock:
+
+1. An external client deposits a blob and notifies escurel via one of two
+   authenticated HTTP endpoints (see below).
+2. The MIME is routed to a `document` skill whose `accepts:` lists it; an
+   unmatched MIME is parked with `Issue(no_handler_skill)` and the inbox blob is
+   retained.
+3. escurel records an **immutable ingest `Event`** (auditable; same event log as
+   `capture_event`).
+4. A deterministic worker **extracts** (kreuzberg for PDF/DOCX/PPTX/XLSX — on by
+   default; plain-text for `text/*`) → **chunks** → **embeds** → **materialises**
+   one instance = one page with N chunk blocks, under a brief write lock. The
+   blob is canonical (content-addressed, retained); chunks are derivable
+   (`rebuild` re-extracts).
+
+`expand` returns the overlay + the **top-k relevant chunks** (`chunks_total`,
+`chunks_truncated`), never the full text. `backend_ref` carries
+`{ kind: "document", blob_id, extract_engine, chunk_count, status }`. Document
+chunks are ordinary `blocks`, so search rides the same ACL-before-fusion path as
+markdown.
+
+#### Ingest endpoints
+
+Two authenticated HTTP routes (not MCP tools), rate-limited per tenant as
+Writes:
+
+| route | body | purpose |
+|---|---|---|
+| `POST /ingest` | `{ blob_id, content_type, title? }` | ingest a blob already deposited in the tenant's `blobs/inbox/` area |
+| `POST /ingest/upload` | `{ content_type, bytes_b64, title? }` | deposit (base64) **and** ingest in one call |
+
+Both return the pipeline outcome:
+`{ status, event_id, blob_id, page_id?, handler_skill?, chunk_count?, issue? }`
+where `status` ∈ `materialised` | `extraction_failed` | `no_handler`. On
+extraction failure the inbox blob is retained and the instance is marked
+`extraction_failed` (the upload is never lost).
+
 ## Admin surface
 
 The admin/operator capabilities are exposed as admin-role-gated MCP
@@ -507,6 +645,11 @@ in each call rather than taken from the token's `tenant` claim
 | `audit` | `{tenant, scope?}` | `{drift: {markdown_not_in_duckdb: [...], indexed_but_no_markdown: [...]}}` | drift detection (two-way diff) |
 | `rebuild` | `{tenant, scope?}` | `{done, total}` | recover from canonical markdown (blocking) |
 | `attach_external` | `{tenant, catalog_uri, name}` | `{ok}` | wire a DuckLake catalog into `external.ducklake` |
+| `register_credential` | `{name, connector, secret}` | `{ok}` | register a named external-source credential (server-side; secret never echoed) — see [Instance backends](#instance-backends) |
+| `list_credentials` | `{}` | `{credentials: [{name, connector, created_at, created_by}]}` | enumerate registered credentials (names only) |
+| `delete_credential` | `{name}` | `{ok}` | remove a credential |
+| `create_sql_instance` | `{skill, id, overlay_body?}` | `{page_id, view}` | materialise a read-only `sql_view` instance from a `sql_view` skill |
+| `validate_bindings` | `{}` | `{bindings: [{page_id, view, status, detail?}]}` | re-probe every `sql_view`; `binding_degraded` ⇒ that view reads fail closed |
 | `embedding_reload` | `{tenant?}` | `{ok}` | retry model load after a degraded start |
 | `compact_lanes` | `{tenant}` | `{ops_compacted, bytes_reclaimed}` | force a DuckDB `CHECKPOINT` + `VACUUM` + `PRAGMA hnsw_compact_index` (blocking) |
 | `quota_get` | `{tenant}` | `{quotas: {...}, current_usage: {...}}` | inspect |

@@ -18,6 +18,24 @@ This tenant is a small **CRM example**. Two kinds of pages live here:
   carries the required fields, and may link to other pages with
   `[[skill::id]]` wikilinks.
 
+## Instance backends
+
+Most skills here are **markdown** — their instances are authored pages you
+can edit. A skill can instead declare an **external backend** in its
+frontmatter (`backend: { kind: … }`), and then its instances are *read-only*
+and sourced from outside markdown:
+
+- **`document`** — uploaded files (PDF/DOCX/text) extracted, chunked, and
+  embedded. The [`attachment`](attachment.md) skill is the example: upload a
+  file via `/ingest/upload` and it materialises as one page-with-chunks.
+- **`sql_view`** — a read-only DuckDB view over an attached relational source
+  (needs a registered credential, so it isn't seeded in this offline demo).
+
+Either way the instance is still a normal page: you `expand` it, link to it,
+and search it the same way. It just can't be edited (the source/blob is
+canonical). See
+[`docs/spec/protocol.md`](../../../docs/spec/protocol.md#instance-backends).
+
 ## Reading order
 
 1. Start at `skills/` to see the entity model.
