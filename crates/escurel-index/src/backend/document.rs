@@ -17,14 +17,15 @@
 //! - [`NullExtractor`] — a no-op for tests that exercise the *pipeline*
 //!   without caring about extraction output.
 //!
-//! ## kreuzberg (PDF/DOCX) — gated on an MSRV decision
+//! ## kreuzberg (PDF/DOCX) — behind the `kreuzberg` feature
 //!
-//! `KreuzbergExtractor` (PDF/DOCX/PPTX via the in-process kreuzberg crate,
-//! `bundled-pdfium`) is **not wired yet**: kreuzberg 4.9.9 requires
-//! `rust-version = 1.91`, but this workspace pins `1.88`. Adopting it needs a
-//! workspace MSRV bump (see
+//! [`KreuzbergExtractor`] (PDF/DOCX/PPTX via the in-process kreuzberg crate,
+//! `bundled-pdfium`) is wired behind the **`kreuzberg`** cargo feature
+//! (off by default — the heavy ELv2-licensed native dep is opt-in; the
+//! default build stays light + offline). Enabling it required bumping the
+//! workspace MSRV to 1.91 (see
 //! `docs/notes/discovered/2026-06-21-kreuzberg-msrv-191.md`). The trait keeps
-//! it swappable (REQ-NF-08, ELv2) once that decision lands.
+//! the extractor swappable (REQ-NF-08, ELv2).
 
 use std::sync::Arc;
 
@@ -186,6 +187,96 @@ impl Extractor for NullExtractor {
             content: String::new(),
             metadata: DocMetadata::default(),
             chunks: Vec::new(),
+        })
+    }
+}
+
+/// In-process PDF/DOCX/PPTX extractor via the kreuzberg crate (REQ-DOC-02,
+/// HLD §8). ELv2-licensed; behind the `kreuzberg` cargo feature so the
+/// default build stays light. `bundled-pdfium` makes the PDF path
+/// self-contained (no system libpdfium). OCR is opt-in: with the `ocr`
+/// feature absent, an `OcrPolicy::Force` request returns `ocr_unavailable`
+/// rather than silently extracting nothing from a scanned PDF.
+#[cfg(feature = "kreuzberg")]
+#[derive(Debug, Default)]
+pub struct KreuzbergExtractor;
+
+#[cfg(feature = "kreuzberg")]
+#[async_trait]
+impl Extractor for KreuzbergExtractor {
+    fn name(&self) -> &str {
+        "kreuzberg@4.9.9"
+    }
+
+    fn accepts(&self, mime: &str) -> bool {
+        matches!(
+            mime,
+            "application/pdf"
+                | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    }
+
+    async fn extract(
+        &self,
+        bytes: &[u8],
+        mime: &str,
+        cfg: &ExtractConfig,
+    ) -> Result<ExtractionResult, ExtractError> {
+        use kreuzberg::{ChunkingConfig, ExtractionConfig, PageConfig};
+
+        // OCR is not compiled in (no `ocr`/`paddle-ocr` feature); a Force
+        // request on scanned/image content can't be honoured → fail loudly
+        // rather than return empty text.
+        if matches!(cfg.ocr, OcrPolicy::Force) {
+            return Err(ExtractError::OcrUnavailable);
+        }
+
+        let kcfg = ExtractionConfig {
+            chunking: Some(ChunkingConfig {
+                max_characters: cfg.chunk.max_chars,
+                overlap: cfg.chunk.overlap,
+                ..Default::default()
+            }),
+            pages: Some(PageConfig {
+                extract_pages: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let r = kreuzberg::extract_bytes(bytes, mime, &kcfg)
+            .await
+            .map_err(|e| ExtractError::ExtractionFailed(e.to_string()))?;
+
+        let metadata = DocMetadata {
+            title: r.metadata.title.clone(),
+            authors: r.metadata.authors.clone().unwrap_or_default(),
+            page_count: r.metadata.pages.as_ref().map(|p| p.total_count as u32),
+            created: None,
+        };
+
+        // Prefer kreuzberg's chunks (they carry page provenance); fall back to
+        // our own char-window chunker if it produced none (tiny docs).
+        let chunks: Vec<Chunk> = match r.chunks.as_ref() {
+            Some(ks) if !ks.is_empty() => ks
+                .iter()
+                .map(|c| Chunk {
+                    ordinal: c.metadata.chunk_index as u32,
+                    byte_start: c.metadata.byte_start,
+                    byte_end: c.metadata.byte_end,
+                    page: c.metadata.first_page.map(|p| p as u32),
+                    text: c.content.clone(),
+                })
+                .collect(),
+            _ => chunk_text(&r.content, cfg.chunk),
+        };
+
+        Ok(ExtractionResult {
+            content: r.content,
+            metadata,
+            chunks,
         })
     }
 }

@@ -31,7 +31,18 @@ external contributor's toolchain), so it is an explicit decision, not an
 incidental dependency add. Recognise it by the resolver error above on any
 crate that has moved its MSRV ahead of ours.
 
-## What PR-3b did instead
+## Resolution (PR-3f, 2026-06-21)
+
+The MSRV was bumped to `1.91` (root `Cargo.toml [workspace.package]`) and
+`KreuzbergExtractor` wired behind the **`kreuzberg`** cargo feature
+(off by default — the heavy ELv2 native dep is opt-in; the default build stays
+light + offline). `html-to-markdown-rs` is pinned `=3.5.7` and `Cargo.lock`
+committed. The ELv2 license is allow-listed in `deny.toml`. Real PDF/DOCX
+extraction is covered by `crates/escurel-index/tests/kreuzberg_extract.rs`
+(run with `--features kreuzberg`). Operators/CI building the document path must
+use Rust ≥ 1.91 and `--features kreuzberg`.
+
+## What PR-3b did originally (pre-resolution)
 
 Landed the `Extractor` trait + `ExtractionResult` contract (the kreuzberg
 shape) + a real born-digital `PlainTextExtractor` (`text/*`) + `NullExtractor`
