@@ -262,3 +262,86 @@ async fn ingest_is_idempotent_on_content_hash() {
     let _ = BlobId::parse(&id).expect("valid id");
     s.process.shutdown().await;
 }
+
+const REPORT_SKILL: &str = "\
+---
+type: skill
+id: report
+description: PDF reports.
+backend:
+  kind: document
+  accepts: [application/pdf]
+---
+# report
+";
+
+/// Seed a PDF-accepting document skill on the shared indexer.
+async fn seed_report_skill(s: &Setup) {
+    s.indexer
+        .update_page("markdown/skills/report.md", REPORT_SKILL)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn ingest_pdf_without_kreuzberg_feature_fails_gracefully() {
+    // /ingest must ROUTE by content type. Without the kreuzberg feature there
+    // is no PDF extractor, so a PDF must fail closed (extraction_failed, blob
+    // retained) — not be silently mis-extracted as text. This is the wiring
+    // the "always-PlainText" bug broke.
+    let s = setup().await;
+    seed_report_skill(&s).await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let pdf = include_bytes!("fixtures/report.pdf");
+    let blob = s
+        .store
+        .put_inbox_blob(TENANT, Bytes::from_static(pdf), None)
+        .await
+        .unwrap();
+    let resp = post_ingest(&s.process, &token, blob.as_str(), "application/pdf").await;
+    assert_eq!(
+        resp["handler_skill"], "report",
+        "must route to the pdf skill: {resp}"
+    );
+    #[cfg(not(feature = "kreuzberg"))]
+    {
+        assert_eq!(
+            resp["status"], "extraction_failed",
+            "no PDF extractor without the feature: {resp}"
+        );
+        // The original is retained for reprocessing once the feature is on.
+        assert!(s.indexer.read_inbox_blob(&blob).await.is_ok());
+    }
+    #[cfg(feature = "kreuzberg")]
+    {
+        assert_eq!(
+            resp["status"], "materialised",
+            "kreuzberg should extract the PDF: {resp}"
+        );
+        assert!(resp["chunk_count"].as_u64().unwrap() >= 1);
+    }
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn list_skills_reports_document_kind_and_capabilities() {
+    // G4 uniform surface for the document backend (parallel to the sql_view
+    // capability test): read-only, block-grain, hybrid search, overlay-CRDT.
+    let s = setup().await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let r = call(&s.process, &token, "list_skills", json!({})).await;
+    let skills = r["result"]["structuredContent"]["skills"]
+        .as_array()
+        .unwrap();
+    let memo = skills
+        .iter()
+        .find(|sk| sk["id"] == "memo")
+        .expect("memo skill");
+    assert_eq!(memo["backend"]["kind"], "document");
+    let caps = &memo["capabilities"];
+    assert_eq!(caps["writable"], false);
+    assert_eq!(caps["granularity"], "block");
+    assert_eq!(caps["search"], "hybrid");
+    assert_eq!(caps["supports_crdt"], true);
+    s.process.shutdown().await;
+}

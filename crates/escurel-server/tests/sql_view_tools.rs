@@ -233,3 +233,59 @@ async fn update_page_cannot_repoint_backend_ref_to_secrets_table() {
 
     s.process.shutdown().await;
 }
+
+#[tokio::test]
+async fn list_skills_reports_sql_view_kind_and_capabilities() {
+    // G4 uniform surface: clients learn a skill's backend kind + read-only-ness
+    // from list_skills. This was only covered for markdown before.
+    let s = setup().await;
+    let result = call(&s.process, "list_skills", json!({}));
+    let result = result.await;
+    let skills = result["result"]["structuredContent"]["skills"]
+        .as_array()
+        .unwrap();
+    let customers = skills
+        .iter()
+        .find(|sk| sk["id"] == "customers")
+        .expect("customers skill present");
+    assert_eq!(customers["backend"]["kind"], "sql_view");
+    let caps = &customers["capabilities"];
+    assert_eq!(caps["writable"], false, "sql_view is read-only");
+    assert_eq!(caps["granularity"], "page");
+    assert_eq!(caps["search"], "late_materialized");
+    assert_eq!(caps["supports_crdt"], false);
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn resolve_and_list_surface_sql_instance_uniformly() {
+    // The external instance is an overlay page, so resolve + list_instances
+    // must surface it exactly like a native instance (G4) — no special-casing
+    // by the client.
+    let s = setup().await;
+
+    let resolved = call(
+        &s.process,
+        "resolve",
+        json!({ "wikilink": "[[customers::eu]]" }),
+    )
+    .await;
+    let page = &resolved["result"]["structuredContent"]["page"];
+    assert_eq!(page["skill"], "customers");
+    assert_eq!(page["slug"], "eu");
+
+    let listed = call(
+        &s.process,
+        "list_instances",
+        json!({ "skill_id": "customers" }),
+    )
+    .await;
+    let inst = listed["result"]["structuredContent"]["instances"]
+        .as_array()
+        .unwrap();
+    assert!(
+        inst.iter().any(|i| i["page_id"] == s.page_id),
+        "list_instances must include the sql_view instance: {inst:?}"
+    );
+    s.process.shutdown().await;
+}

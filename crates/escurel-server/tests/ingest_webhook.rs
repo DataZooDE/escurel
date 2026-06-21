@@ -156,3 +156,24 @@ async fn ingest_rate_limited_per_tenant() {
     );
     s.process.shutdown().await;
 }
+
+#[tokio::test]
+async fn ingest_with_undeposited_blob_fails_gracefully() {
+    // Race / client error: the webhook is POSTed before (or without) the blob
+    // landing in the inbox. The worker must fail gracefully (no panic/hang),
+    // not 2xx-materialise a phantom instance.
+    let s = setup(None).await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let phantom = format!("sha256:{}", "0".repeat(64)); // valid shape, never deposited
+    let (status, body) = post_ingest(
+        &s.process,
+        Some(&token),
+        json!({ "blob_id": phantom, "content_type": "text/plain" }),
+    )
+    .await;
+    assert!(
+        !status.is_success(),
+        "an undeposited blob must not materialise: {status} {body}"
+    );
+    s.process.shutdown().await;
+}

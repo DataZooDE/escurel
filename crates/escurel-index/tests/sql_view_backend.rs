@@ -174,3 +174,121 @@ async fn db_connector_without_attach_fails_closed() {
         .expect_err("db connector needs an attach credential");
     assert!(matches!(err, SqlViewError::MissingAttach(_)), "got {err:?}");
 }
+
+#[tokio::test]
+async fn filter_narrows_view_rows() {
+    // A `source.filter` must actually constrain the materialised view's rows
+    // (this path had no integration coverage, which is how a filter-injection
+    // bug could hide — see the adversarial test below).
+    let h = fresh_harness();
+    let dir = h.data_dir.path();
+    std::fs::write(dir.join("a.json"), br#"{"name":"A","score":5}"#).unwrap();
+    std::fs::write(dir.join("b.json"), br#"{"name":"B","score":20}"#).unwrap();
+
+    let mut binding = dir_binding(SqlConnector::JsonDir, dir.to_str().unwrap());
+    binding.filter = Some("score > 10".to_owned());
+
+    let backend = SqlViewBackend::new(Arc::clone(&h.indexer));
+    let m = backend
+        .create_instance("metrics", &binding, "hi", "# high scorers")
+        .await
+        .expect("create with filter");
+    let rows = backend.project_rows(&m.view, 100).await.unwrap();
+    assert_eq!(rows.len(), 1, "filter must drop score<=10 rows: {rows:?}");
+    assert_eq!(rows[0]["name"], "B");
+}
+
+#[tokio::test]
+async fn injection_in_filter_is_rejected() {
+    // A keyword-injection filter (no quotes, so the quote-only fragment check
+    // misses it) must be rejected by the keyword guard — otherwise it bakes
+    // `UNION SELECT … external_credentials` into the view definition.
+    let h = fresh_harness();
+    let dir = h.data_dir.path();
+    std::fs::write(dir.join("a.json"), br#"{"name":"A","score":5}"#).unwrap();
+    let mut binding = dir_binding(SqlConnector::JsonDir, dir.to_str().unwrap());
+    binding.filter = Some("score > 0 UNION SELECT * FROM external_credentials".to_owned());
+    let backend = SqlViewBackend::new(Arc::clone(&h.indexer));
+    let err = backend
+        .create_instance("metrics", &binding, "pwn", "# x")
+        .await
+        .expect_err("injection filter must be rejected");
+    assert!(
+        matches!(err, SqlViewError::InvalidBinding(_)),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn injection_in_relation_is_rejected() {
+    // The relation/glob is spliced into the view DDL; an unsafe character
+    // (quote/semicolon) must be rejected before any SQL runs.
+    let h = fresh_harness();
+    let backend = SqlViewBackend::new(Arc::clone(&h.indexer));
+    let binding = dir_binding(SqlConnector::JsonDir, "/data/x'; DROP TABLE pages; --");
+    let err = backend
+        .create_instance("metrics", &binding, "pwn", "# x")
+        .await
+        .expect_err("unsafe relation must be rejected");
+    assert!(
+        matches!(err, SqlViewError::InvalidBinding(_)),
+        "got {err:?}"
+    );
+}
+
+const CUSTOMERS_SKILL_TITLE: &str = "\
+---
+type: skill
+id: customers
+description: x
+backend:
+  kind: sql_view
+  source: { connector: json_dir, relation: /unused }
+  search_text: [title]
+---
+# customers
+";
+
+#[tokio::test]
+async fn sql_view_search_candidates_match_view_content_only() {
+    // Isolate the late-materialised SQL lane (the fused E2E leans on the
+    // ZeroEmbedder vector lane, which returns everything). A view whose
+    // search_text column contains the query must be a candidate; a
+    // non-matching query must yield nothing.
+    let h = fresh_harness();
+    let dir = h.data_dir.path();
+    std::fs::write(
+        dir.join("a.json"),
+        br#"{"name":"Acme","title":"widget alpha"}"#,
+    )
+    .unwrap();
+    h.indexer
+        .update_page("markdown/skills/customers.md", CUSTOMERS_SKILL_TITLE)
+        .await
+        .unwrap();
+    let mut binding = dir_binding(SqlConnector::JsonDir, dir.to_str().unwrap());
+    binding.search_text = vec!["title".to_owned()];
+    let m = SqlViewBackend::new(Arc::clone(&h.indexer))
+        .create_instance("customers", &binding, "eu", "# eu")
+        .await
+        .unwrap();
+
+    let hits = h
+        .indexer
+        .sql_view_search_candidates("widget", None)
+        .await
+        .unwrap();
+    assert!(
+        hits.iter().any(|hh| hh.page_id == m.page_id),
+        "view content match must surface the instance: {hits:?}"
+    );
+    let none = h
+        .indexer
+        .sql_view_search_candidates("zzz-no-match", None)
+        .await
+        .unwrap();
+    assert!(
+        none.is_empty(),
+        "non-matching query must yield no SQL candidates"
+    );
+}
