@@ -251,7 +251,12 @@ final skillEditableProvider = Provider<bool Function(String skillId)>((ref) {
     if (skills == null) return false;
     final match = skills.where((s) => s.id == skillId);
     if (match.isEmpty) return false;
-    return match.first.operatorEditable;
+    final skill = match.first;
+    // An external backend (sql_view / document) is read-only: the server
+    // rejects `update_page` for any non-writable backend, so the explorer
+    // must not offer the edit/create affordance for its instances.
+    if (!skill.capabilities.writable) return false;
+    return skill.operatorEditable;
   };
 });
 

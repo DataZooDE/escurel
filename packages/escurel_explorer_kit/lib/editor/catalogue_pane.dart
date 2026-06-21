@@ -5,6 +5,7 @@ import '../client/models.dart';
 import '../md/frontmatter.dart' as md;
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
+import '../widgets/backend_badge.dart';
 import '../widgets/kind_chip.dart';
 import 'page_form.dart';
 
@@ -22,13 +23,12 @@ class CataloguePane extends ConsumerWidget {
       key: const ValueKey('pane.catalogue'),
       color: scheme.surfaceContainerLow,
       child: async.when(
-        loading: () => const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        loading: () =>
+            const Center(child: CircularProgressIndicator(strokeWidth: 2)),
         error: (e, _) => _ErrorBlock(message: '$e'),
         data: (skills) => ListView(
           padding: const EdgeInsets.all(8),
-          children: [
-            for (final s in skills) _SkillTile(skill: s),
-          ],
+          children: [for (final s in skills) _SkillTile(skill: s)],
         ),
       ),
     );
@@ -75,6 +75,14 @@ class _SkillTile extends ConsumerWidget {
                         const KindChip(pageType: md.PageType.skill),
                         const SizedBox(width: 8),
                         Expanded(child: Text(skill.id, style: text.titleSmall)),
+                        if (skill.backendKind != 'markdown') ...[
+                          BackendBadge(
+                            skillId: skill.id,
+                            backendKind: skill.backendKind,
+                            writable: skill.capabilities.writable,
+                          ),
+                          const SizedBox(width: 4),
+                        ],
                         if (skill.acl != null) _AclBadge(acl: skill.acl!),
                       ],
                     ),
@@ -87,7 +95,11 @@ class _SkillTile extends ConsumerWidget {
             instancesAsync.when(
               loading: () => const Padding(
                 padding: EdgeInsets.symmetric(vertical: 4),
-                child: SizedBox(height: 12, width: 12, child: CircularProgressIndicator(strokeWidth: 1.5)),
+                child: SizedBox(
+                  height: 12,
+                  width: 12,
+                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                ),
               ),
               error: (e, _) => _ErrorBlock(message: '$e'),
               data: (instances) => Column(
@@ -97,14 +109,20 @@ class _SkillTile extends ConsumerWidget {
                     _InstanceTile(
                       instance: i,
                       selected: i.id == selectedId,
-                      onTap: () => ref.read(currentPageIdProvider.notifier).state = i.id,
+                      onTap: () =>
+                          ref.read(currentPageIdProvider.notifier).state = i.id,
                     ),
                   if (instances.isEmpty)
                     Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 4,
+                        horizontal: 8,
+                      ),
                       child: Text(
                         'no instances yet',
-                        style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+                        style: text.bodySmall?.copyWith(
+                          color: kOnSurfaceVariant,
+                        ),
                       ),
                     ),
                   if (editable)
@@ -121,7 +139,11 @@ class _SkillTile extends ConsumerWidget {
     );
   }
 
-  Future<void> _openCreate(BuildContext context, WidgetRef ref, SkillSummary skill) async {
+  Future<void> _openCreate(
+    BuildContext context,
+    WidgetRef ref,
+    SkillSummary skill,
+  ) async {
     // Seed a blank draft: every required/optional field empty, body a
     // bare `# <id>` heading the operator fills in.
     final fm = <String, dynamic>{
@@ -130,8 +152,10 @@ class _SkillTile extends ConsumerWidget {
       'id': '',
       for (final k in skill.requiredFrontmatter) k: '',
     };
-    ref.read(pageDraftProvider.notifier).state =
-        PageDraft(frontmatter: fm, body: '# Neue Instanz\n');
+    ref.read(pageDraftProvider.notifier).state = PageDraft(
+      frontmatter: fm,
+      body: '# Neue Instanz\n',
+    );
     ref.read(pageValidationProvider.notifier).state = const [];
     ref.read(pageSaveProvider.notifier).state = SaveState.idle;
 
@@ -152,8 +176,10 @@ class _SkillTile extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text('Neue Instanz · ${skill.id}',
-                        style: Theme.of(ctx).textTheme.titleMedium),
+                    Text(
+                      'Neue Instanz · ${skill.id}',
+                      style: Theme.of(ctx).textTheme.titleMedium,
+                    ),
                     const SizedBox(height: 16),
                     PageEditForm(
                       skill: skill,
@@ -200,7 +226,8 @@ class _AclBadge extends StatelessWidget {
     return Semantics(
       label: 'skill-acl',
       child: Tooltip(
-        message: 'read: ${_fmt(acl.read)}\n'
+        message:
+            'read: ${_fmt(acl.read)}\n'
             'create: ${_fmt(acl.create)}\n'
             'update: ${_fmt(acl.update)}\n'
             'delete: ${_fmt(acl.delete)}',
@@ -241,8 +268,13 @@ class _CreateInstanceRow extends StatelessWidget {
             children: [
               const Icon(Icons.add, size: 14, color: kPrimary),
               const SizedBox(width: 6),
-              Text('Neue Instanz',
-                  style: text.bodySmall?.copyWith(color: kPrimary, fontWeight: FontWeight.w600)),
+              Text(
+                'Neue Instanz',
+                style: text.bodySmall?.copyWith(
+                  color: kPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ],
           ),
         ),
@@ -256,13 +288,19 @@ class _CreateInstanceRow extends StatelessWidget {
 /// client a `<skill>__<slug>` handle; both collapse to `<slug>` — showing
 /// the full path in the catalogue list is just noise.
 String instanceShortLabel(String pageId) {
-  var s = pageId.split('/').last; // drop any `markdown/instances/<skill>/` prefix
+  var s = pageId
+      .split('/')
+      .last; // drop any `markdown/instances/<skill>/` prefix
   if (s.endsWith('.md')) s = s.substring(0, s.length - 3);
   return s.split('__').last; // drop the fixture `<skill>__` prefix
 }
 
 class _InstanceTile extends StatelessWidget {
-  const _InstanceTile({required this.instance, required this.selected, required this.onTap});
+  const _InstanceTile({
+    required this.instance,
+    required this.selected,
+    required this.onTap,
+  });
 
   final InstanceSummary instance;
   final bool selected;
