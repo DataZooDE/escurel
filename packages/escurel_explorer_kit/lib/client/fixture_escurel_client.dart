@@ -914,7 +914,8 @@ class FixtureEscurelClient implements EscurelClient {
         'backend_ref': {
           'kind': 'document',
           'blob_id': 'sha256:fixture-$id',
-          'status': 'materialised',
+          // Mirror the server: a healthy materialised page stamps `ok`.
+          'status': 'ok',
           'extract_engine': 'fixture',
         },
       },

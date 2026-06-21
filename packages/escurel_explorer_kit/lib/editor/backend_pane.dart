@@ -238,7 +238,10 @@ class _StatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ok = status == 'materialised';
+    // The server stamps a healthy document's backend_ref `status: ok`; the
+    // ingest pipeline's outcome calls the same success `materialised`. Treat
+    // both as green so a freshly-ingested page doesn't read as failed.
+    final ok = status == 'ok' || status == 'materialised';
     final (bg, fg) = ok
         ? (kSecondaryContainer, kOnSecondaryContainer)
         : (kError, kSurfaceContainerLowest);

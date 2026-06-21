@@ -144,4 +144,26 @@ void main() {
     expect(find.textContaining('via kreuzberg'), findsOneWidget);
     expect(find.text('showing 2 of 42 chunks'), findsOneWidget);
   });
+
+  testWidgets('the server `ok` document status renders as healthy', (
+    tester,
+  ) async {
+    // The server stamps a healthy document `status: ok` (not `materialised`).
+    const page = ExpandResult(
+      pageId: 'document/skills/contract/instances/d-2',
+      skill: 'contract',
+      pageType: PageType.instance,
+      frontmatter: {
+        'backend_ref': {'kind': 'document', 'status': 'ok'},
+      },
+      body: '',
+      blocks: [Block(anchor: 'c0', content: 'only chunk')],
+      wikilinksOut: [],
+      chunksTotal: 1,
+    );
+    await _pump(tester, page);
+    expect(find.bySemanticsLabel('document-chunks'), findsOneWidget);
+    expect(find.text('ok'), findsOneWidget);
+    expect(find.text('1 chunks'), findsOneWidget);
+  });
 }

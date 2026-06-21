@@ -170,6 +170,44 @@ sk_entity=$(mcp_int list_skills '{}' 'r.skills.filter(function(s){return !s.is_e
   || fail "expected event-typed + entity-bound skills (event=$sk_event entity=$sk_entity)"
 note "probe ok: skills event-typed=$sk_event, entity-bound=$sk_entity"
 
+# --- external instance backends: wire surface + document ingestion -----
+# The `attachment` skill (examples/crm-demo/skills/attachment.md) declares a
+# `document` backend, so list_skills must carry the additive backend +
+# capabilities wire (PR-1b) and report it read-only. (The sql_view backend
+# needs an attached external DB + a registered credential — out of scope for
+# the air-gapped demo; it's covered by the no-mock Rust e2e
+# sql_view_backend.rs / fusion_acl.rs. Noted here so the gap is explicit.)
+note "probe: list_skills carries the backend + capabilities wire (PR-1b)"
+attach="r.skills.find(function(s){return s.id==='attachment'})"
+bk_doc=$(mcp_int list_skills '{}' "(($attach)&&($attach).backend&&($attach).backend.kind)||''")
+expect_int "attachment backend kind" "$bk_doc" "document"
+caps_ro=$(mcp_int list_skills '{}' "String((($attach)&&($attach).capabilities&&($attach).capabilities.writable))")
+expect_int "attachment is read-only" "$caps_ro" "false"
+
+# POST a born-digital text blob through the real /ingest/upload endpoint
+# (same origin as the served bundle, no auth in the demo) and read the
+# evented pipeline's structured outcome.
+ingest_text() {
+  local ct="$1" b64="$2" title="$3" extract="$4"
+  "$RODNEY" js "(async()=>{const resp=await fetch('/ingest/upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content_type:'$ct',bytes_b64:'$b64',title:'$title'})});const r=await resp.json();return String($extract)})()" 2>/dev/null
+}
+note "probe: /ingest/upload extracts → chunks → materialises a document instance"
+DOC_B64=$(printf 'Acme master services agreement.\n\nClause 1: term is 24 months.\n\nClause 2: net-30 payment terms apply.' | base64 | tr -d '\n')
+ING=$(ingest_text "text/plain" "$DOC_B64" "msa probe" "[r.status,r.handler_skill,r.chunk_count,r.page_id].join('~')")
+IFS='~' read -r ing_status ing_handler ing_chunks ing_page <<< "$ING"
+[[ "$ing_status" == "materialised" ]] || fail "ingest did not materialise (got '$ing_status' from '$ING')"
+[[ "$ing_handler" == "attachment" ]] || fail "ingest routed to wrong skill (got '$ing_handler')"
+[[ "$ing_chunks" =~ ^[1-9] ]] || fail "ingest produced no chunks (got '$ing_chunks')"
+note "probe ok: ingest → status=$ing_status handler=$ing_handler chunks=$ing_chunks page=$ing_page"
+
+note "probe: the ingested page is a read-only document instance (backend_ref)"
+ing_kind=$(mcp_int expand "{\"page_id\":\"$ing_page\"}" "(r.frontmatter&&r.frontmatter.backend_ref&&r.frontmatter.backend_ref.kind)||''")
+expect_int "ingested page backend kind" "$ing_kind" "document"
+
+note "probe: an unmatched MIME parks with no_handler_skill (blob retained)"
+park=$(ingest_text "application/x-binary" "$DOC_B64" "junk" "(r.issue&&r.issue.code)||r.status")
+expect_int "unmatched mime parked" "$park" "no_handler_skill"
+
 # --- group ACL v1: admin membership tools round-trip through the gateway -
 # The demo server runs without a verifier (dev/on-host), so admin tools
 # are open here — this proves add_group_member → list_group_members works
