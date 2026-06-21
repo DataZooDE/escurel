@@ -49,6 +49,7 @@ async fn start() -> Harness {
         writes_per_minute: 50,
         embeds_per_minute: 25,
         concurrent_sessions: 4,
+        max_blob_bytes: 25 * 1024 * 1024,
     }));
     let process = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,

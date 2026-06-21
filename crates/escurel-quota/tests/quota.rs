@@ -14,6 +14,7 @@ fn tiny_config() -> QuotaConfig {
         writes_per_minute: 6_000, // 100/s
         embeds_per_minute: 6_000,
         concurrent_sessions: 2,
+        max_blob_bytes: 25 * 1024 * 1024,
     }
 }
 
@@ -77,6 +78,7 @@ async fn per_tenant_override_replaces_defaults() {
             writes_per_minute: 60,
             embeds_per_minute: 60,
             concurrent_sessions: 10,
+            max_blob_bytes: 25 * 1024 * 1024,
         },
     );
     for _ in 0..60 {
@@ -97,6 +99,7 @@ async fn buckets_refill_with_time() {
         writes_per_minute: 6_000,
         embeds_per_minute: 6_000,
         concurrent_sessions: 2,
+        max_blob_bytes: 25 * 1024 * 1024,
     });
     for _ in 0..6_000 {
         qm.try_consume("acme", Dimension::Queries).unwrap();

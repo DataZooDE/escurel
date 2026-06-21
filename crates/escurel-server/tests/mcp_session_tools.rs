@@ -360,6 +360,7 @@ async fn quota_caps_concurrent_sessions() {
     // still alive, and accept it once the first closes.
     let q = QuotaConfig {
         concurrent_sessions: 1,
+        max_blob_bytes: 25 * 1024 * 1024,
         ..QuotaConfig::defaults()
     };
     let h = start(Some(Arc::new(QuotaManager::new(q))), true).await;
