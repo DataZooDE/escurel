@@ -171,9 +171,9 @@ pub(crate) async fn materialise_view_on(
     let source_expr = prepare_source(indexer, binding, allow_unsigned).await?;
     let filter_sql = match binding.filter.as_deref() {
         Some(f) if !f.trim().is_empty() => {
-            if !is_safe_sql_fragment(f) {
+            if !is_safe_sql_fragment(f) || !is_safe_filter(f) {
                 return Err(SqlViewError::InvalidBinding(format!(
-                    "filter contains an unsafe character: {f:?}"
+                    "filter contains an unsafe character or keyword: {f:?}"
                 )));
             }
             format!(" WHERE {f}")
@@ -228,7 +228,7 @@ async fn prepare_source(
                     "registered secret contains an unsafe character".to_owned(),
                 ));
             }
-            if !is_safe_sql_fragment(&binding.relation) || !is_valid_identifier(attach) {
+            if !is_valid_db_relation(&binding.relation) || !is_valid_identifier(attach) {
                 return Err(SqlViewError::InvalidBinding(
                     "relation or attach name is unsafe".to_owned(),
                 ));
@@ -324,7 +324,7 @@ pub(crate) async fn search_candidates(
             .iter()
             .filter(|c| is_valid_identifier(c))
             .collect();
-        if cols.is_empty() || !is_valid_identifier(&row.view) {
+        if cols.is_empty() || !is_managed_view(&row.view) {
             continue;
         }
         let where_clause = cols
@@ -368,9 +368,13 @@ pub(crate) fn project_view_rows(
     view: &str,
     limit: usize,
 ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>, SqlViewError> {
-    if !is_valid_identifier(view) {
+    // Defence in depth (with the backend_ref-immutability guard): the read
+    // path only ever projects escurel-managed views (the deterministic `vw_`
+    // names from `view_name`), so a tampered binding can never make `expand`
+    // `SELECT *` a server-side table like `external_credentials`.
+    if !is_managed_view(view) {
         return Err(SqlViewError::InvalidBinding(format!(
-            "not a valid view identifier: {view:?}"
+            "not a managed sql-view identifier (expected `vw_…`): {view:?}"
         )));
     }
     // Column names come from DESCRIBE (the duckdb-rs `Statement::column_names`
@@ -453,6 +457,14 @@ fn sanitize_ident(s: &str) -> String {
     out
 }
 
+/// Whether `view` is an escurel-managed SQL view: a safe identifier with the
+/// deterministic `vw_` prefix that `view_name` produces. The read path only
+/// projects these, so a tampered `backend_ref.view` can't point the read path
+/// at an arbitrary server-side table.
+fn is_managed_view(view: &str) -> bool {
+    is_valid_identifier(view) && view.starts_with("vw_")
+}
+
 /// Whether `s` is a safe unquoted DuckDB identifier (view name / alias).
 fn is_valid_identifier(s: &str) -> bool {
     !s.is_empty()
@@ -469,6 +481,53 @@ fn is_valid_identifier(s: &str) -> bool {
 fn is_safe_sql_fragment(s: &str) -> bool {
     !s.chars()
         .any(|c| c == '\'' || c == '"' || c == ';' || c == '`' || c == '\\' || c.is_control())
+}
+
+/// Validate that a relation name is strictly a dot-separated sequence of
+/// valid unquoted identifiers.
+fn is_valid_db_relation(s: &str) -> bool {
+    !s.is_empty() && s.split('.').all(is_valid_identifier)
+}
+
+/// Reject comments and SQL command keywords in filters.
+fn is_safe_filter(s: &str) -> bool {
+    let s_lower = s.to_lowercase();
+    if s_lower.contains("--") || s_lower.contains("/*") || s_lower.contains("*/") {
+        return false;
+    }
+    let forbidden_keywords = [
+        "select", "union", "insert", "update", "delete", "drop", "alter", "create", "replace",
+        "from",
+    ];
+    for kw in forbidden_keywords {
+        if let Some(mut idx) = s_lower.find(kw) {
+            while idx != usize::MAX {
+                let before = if idx == 0 {
+                    ' '
+                } else {
+                    s_lower.as_bytes()[idx - 1] as char
+                };
+                let after = if idx + kw.len() == s_lower.len() {
+                    ' '
+                } else {
+                    s_lower.as_bytes()[idx + kw.len()] as char
+                };
+                if !before.is_alphanumeric()
+                    && before != '_'
+                    && !after.is_alphanumeric()
+                    && after != '_'
+                {
+                    return false;
+                }
+                if let Some(next) = s_lower[idx + 1..].find(kw) {
+                    idx = idx + 1 + next;
+                } else {
+                    idx = usize::MAX;
+                }
+            }
+        }
+    }
+    true
 }
 
 fn hash_binding(b: &SqlViewBinding) -> String {
@@ -759,8 +818,36 @@ mod tests {
     }
 
     #[test]
+    fn only_vw_prefixed_views_are_projectable() {
+        // Defence in depth: the read path must refuse server-side tables.
+        assert!(is_managed_view("vw_customers__eu"));
+        assert!(!is_managed_view("external_credentials"));
+        assert!(!is_managed_view("pages"));
+        assert!(!is_managed_view("group_members"));
+        assert!(!is_managed_view("blocks"));
+    }
+
+    #[test]
     fn rejects_unsafe_sql_fragments() {
         assert!(!is_safe_sql_fragment("x'; DROP TABLE pages; --"));
         assert!(is_safe_sql_fragment("region = EU"));
+    }
+
+    #[test]
+    fn validates_db_relations() {
+        assert!(is_valid_db_relation("public.customers"));
+        assert!(is_valid_db_relation("customers"));
+        assert!(!is_valid_db_relation(
+            "my_table UNION SELECT * FROM external_credentials"
+        ));
+    }
+
+    #[test]
+    fn validates_filters() {
+        assert!(is_safe_filter("region = EU"));
+        assert!(!is_safe_filter(
+            "id = 0 UNION SELECT * FROM external_credentials"
+        ));
+        assert!(!is_safe_filter("id = 1 -- comment"));
     }
 }

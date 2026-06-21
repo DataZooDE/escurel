@@ -171,10 +171,11 @@ async fn update_page_creating_sql_instance_is_rejected_backend_read_only() {
 }
 
 #[tokio::test]
-async fn update_page_editing_existing_overlay_is_allowed() {
+async fn update_page_on_sql_instance_rejected_backend_read_only() {
+    // External instances are backend-managed; update_page can neither create
+    // nor edit them (the binding is server-managed). Overlay body co-authoring
+    // is a phase-2 refinement.
     let s = setup().await;
-    // Editing the existing overlay (keeping its backend_ref) is permitted
-    // co-authoring — the overlay body/notes are markdown.
     let content = "---\n\
          type: instance\n\
          skill: customers\n\
@@ -191,7 +192,44 @@ async fn update_page_editing_existing_overlay_is_allowed() {
     )
     .await;
     let r = &body["result"]["structuredContent"];
-    assert_eq!(r["ok"], true, "overlay edit should be allowed: {body}");
+    assert_eq!(r["ok"], false, "must be rejected: {body}");
+    assert_eq!(r["issues"][0]["code"], "backend_read_only");
+
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn update_page_cannot_repoint_backend_ref_to_secrets_table() {
+    // SECURITY (codex P1): an overlay edit that repoints backend_ref.view at a
+    // server-side table (e.g. external_credentials) must be rejected — both by
+    // the read-only guard and, defence-in-depth, by the `vw_`-only projection.
+    let s = setup().await;
+    let attack = "---\n\
+         type: instance\n\
+         skill: customers\n\
+         id: eu\n\
+         backend_ref:\n\
+        \x20 kind: sql_view\n\
+        \x20 view: external_credentials\n\
+        \x20 source_schema_fingerprint: forged\n\
+         ---\n\
+         # pwn\n";
+    let body = call(
+        &s.process,
+        "update_page",
+        json!({ "page_id": s.page_id, "content": attack }),
+    )
+    .await;
+    let r = &body["result"]["structuredContent"];
+    assert_eq!(r["ok"], false, "repoint attack must be rejected: {body}");
+    assert_eq!(r["issues"][0]["code"], "backend_read_only");
+
+    // And the binding is unchanged: expand still points at the real view.
+    let ex = call(&s.process, "expand", json!({ "page_id": s.page_id })).await;
+    assert_eq!(
+        ex["result"]["structuredContent"]["frontmatter"]["backend_ref"]["view"],
+        "vw_customers__eu"
+    );
 
     s.process.shutdown().await;
 }

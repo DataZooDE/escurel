@@ -439,8 +439,8 @@ async fn run_document_ingest(
     event_id: &str,
 ) -> axum::response::Response {
     use escurel_index::backend::{
-        ChunkConfig, DeterministicProcessor, DocumentIngestWorker, ExtractConfig, IngestOutcome,
-        OcrPolicy, PlainTextExtractor,
+        ChunkConfig, DeterministicProcessor, DocumentIngestWorker, ExtractConfig, Extractor,
+        IngestOutcome, OcrPolicy, PlainTextExtractor,
     };
     use escurel_storage::BlobId;
 
@@ -477,11 +477,21 @@ async fn run_document_ingest(
 
     // Deterministic instance id from the content hash (idempotent intake).
     let instance_id = format!("doc-{}", &blob_id.hex()[..12.min(blob_id.hex().len())]);
+    let extractor: std::sync::Arc<dyn Extractor> = if req.content_type.starts_with("text/") {
+        std::sync::Arc::new(PlainTextExtractor)
+    } else {
+        #[cfg(feature = "kreuzberg")]
+        {
+            std::sync::Arc::new(escurel_index::backend::KreuzbergExtractor)
+        }
+        #[cfg(not(feature = "kreuzberg"))]
+        {
+            std::sync::Arc::new(PlainTextExtractor)
+        }
+    };
     let worker = DocumentIngestWorker::new(
         std::sync::Arc::clone(indexer),
-        std::sync::Arc::new(DeterministicProcessor::new(std::sync::Arc::new(
-            PlainTextExtractor,
-        ))),
+        std::sync::Arc::new(DeterministicProcessor::new(extractor)),
     );
 
     match worker
@@ -1406,8 +1416,13 @@ async fn tool_search(
     let native_allowed = acl_filter_hits(indexer, &caller, native).await?;
 
     // SQL-view lane: late-materialised candidates over each sql_view skill's
-    // search_text columns. Skipped when the search is restricted to skills.
-    let sql_allowed = if matches!(pt, Some(PageType::Skill)) {
+    // search_text columns. Skipped when the search is restricted to skills,
+    // OR when the caller set constraints the late-materialised lane does not
+    // yet honor (`as_of` time-travel, `scenario` overlay, frontmatter
+    // `filter`) — fusing unconstrained SQL hits would violate them, so skip
+    // the lane (conservative + correct) until it can apply the constraints.
+    let constrained = a.as_of.is_some() || a.scenario.is_some() || filter.is_some();
+    let sql_allowed = if matches!(pt, Some(PageType::Skill)) || constrained {
         Vec::new()
     } else {
         let candidates = indexer

@@ -386,14 +386,20 @@ impl Indexer {
     /// an `update_page` of `content` at `page_id` must be rejected with a
     /// `backend_read_only` `Issue`; `None` when the write is allowed.
     ///
-    /// Overlay co-authoring stays allowed: editing an *existing* external
-    /// instance whose submitted content keeps its `backend_ref` is fine.
-    /// Rejected: creating a fresh instance of a read-only backend via
-    /// `update_page` (creation must go through the materialise path), and
-    /// stripping the `backend_ref` binding off an existing one.
+    /// Rejected: any `update_page` targeting an instance of a non-writable
+    /// backend (`sql_view` | `document`). Those instances are fully
+    /// backend-managed — created and updated through the materialise / ingest
+    /// pipelines, which write the server-managed `backend_ref` + the view /
+    /// chunk-blocks. Allowing `update_page` would let a caller (a) fabricate
+    /// an external instance, (b) clobber a document's chunk-blocks with the
+    /// single-block markdown path, or (c) **repoint `backend_ref.view` at a
+    /// server-side table like `external_credentials` and read it out via
+    /// `expand`** (the security hole). Overlay body co-authoring that
+    /// preserves the binding is a phase-2 refinement (proper field-level
+    /// merge); v1 keeps the binding immutable by refusing the path entirely.
     pub async fn backend_read_only_rejection(
         &self,
-        page_id: &str,
+        _page_id: &str,
         content: &str,
     ) -> Result<Option<String>, IndexerError> {
         // A malformed draft falls through to the normal validate path.
@@ -417,39 +423,14 @@ impl Indexer {
         if Capabilities::for_kind(binding.kind).writable {
             return Ok(None);
         }
-        // Document instances are fully pipeline-managed in v1: their chunks
-        // are N blocks under one page_id, which update_page's single-block
-        // path would clobber. Reject any update_page (create OR edit) on a
-        // document instance — edits flow through re-ingest + rebuild. (Overlay
-        // co-authoring without re-ingest is a phase-2 refinement.)
-        if binding.kind == BackendKind::Document {
-            return Ok(Some(format!(
-                "skill `{skill}` is a read-only `document` backend; documents are managed by the \
-                 ingest pipeline (deposit + /ingest), not update_page"
-            )));
-        }
-        let has_backend_ref = parsed.frontmatter.fields.get("backend_ref").is_some();
-        let exists = {
-            let conn = self.conn.lock().await;
-            conn.query_row(
-                "SELECT 1 FROM pages WHERE page_id = ? LIMIT 1",
-                duckdb::params![page_id],
-                |_| Ok(()),
-            )
-            .is_ok()
-        };
         let kind = binding.kind.as_str();
-        if !exists {
-            return Ok(Some(format!(
-                "skill `{skill}` is a read-only `{kind}` backend; create instances via the \
-                 materialise path, not update_page"
-            )));
-        }
-        if !has_backend_ref {
-            return Ok(Some(format!(
-                "cannot remove the backend_ref binding of read-only `{kind}` instance `{page_id}`"
-            )));
-        }
-        Ok(None)
+        let how = match binding.kind {
+            BackendKind::Document => "the ingest pipeline (deposit + /ingest)",
+            _ => "the materialise path",
+        };
+        Ok(Some(format!(
+            "skill `{skill}` is a read-only `{kind}` backend; its instances are managed by \
+             {how}, not update_page (the binding is server-managed and immutable)"
+        )))
     }
 }

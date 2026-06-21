@@ -474,6 +474,7 @@ impl Indexer {
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
+        tx.execute("DELETE FROM links WHERE src_page = ?", params![page_id])?;
         tx.execute(
             "INSERT INTO pages \
              (page_id, slug, skill, page_type, frontmatter, body_hash, at_ts, scenario, created_at, updated_at) \
