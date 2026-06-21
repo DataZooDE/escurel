@@ -152,6 +152,13 @@ final skillsCatalogueProvider = FutureProvider<List<SkillSummary>>((ref) {
   return ref.watch(escurelClientProvider).listSkills();
 });
 
+/// The registered external-source credentials (admin). Names + connectors
+/// only — the secret never leaves the server. Invalidated after a
+/// register/delete so the registry list refreshes.
+final credentialsProvider = FutureProvider<List<CredentialInfo>>((ref) {
+  return ref.watch(escurelClientProvider).listCredentials();
+});
+
 /// Instances of a given skill, keyed by skill id.
 final instancesProvider = FutureProvider.family<List<InstanceSummary>, String>((
   ref,

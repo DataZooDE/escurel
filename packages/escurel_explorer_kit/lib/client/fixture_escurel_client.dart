@@ -16,6 +16,8 @@
 /// read-only and not a real server.
 library;
 
+import 'dart:convert';
+
 import '../md/frontmatter.dart' as md;
 import '../md/wikilink.dart';
 import 'errors.dart';
@@ -846,14 +848,87 @@ class FixtureEscurelClient implements EscurelClient {
     required String skill,
     required String id,
     String? overlayBody,
-  }) async => throw notYetImplemented('create_sql_instance');
+  }) async {
+    final view = 'vw_${skill}_$id';
+    final qualifiedId = '${skill}__$id';
+    _pages[qualifiedId] = _ParsedPage(
+      id: qualifiedId,
+      skill: skill,
+      pageType: md.PageType.instance,
+      frontmatter: {
+        'type': 'instance',
+        'skill': skill,
+        'id': id,
+        'name': id,
+        'backend_ref': {'kind': 'sql_view', 'view': view},
+      },
+      body: overlayBody ?? '# $id',
+      wikilinksOut: const [],
+      writeSeq: ++_writeSeq,
+    );
+    return qualifiedId;
+  }
 
   @override
   Future<IngestOutcome> ingestUpload({
     required String contentType,
     required List<int> bytes,
     String? title,
-  }) async => throw notYetImplemented('ingest/upload');
+  }) async {
+    // Resolve a document-backed handler skill by content type; with none
+    // declared, park the upload the way the server does (no_handler_skill).
+    final handlers = _pages.values
+        .where(
+          (p) =>
+              p.pageType == md.PageType.skill &&
+              _backendKind(p.frontmatter) == 'document',
+        )
+        .map((p) => p.skill)
+        .toList();
+    final handler = handlers.isEmpty ? null : handlers.first;
+    if (handler == null) {
+      return const IngestOutcome(
+        status: 'no_handler',
+        issueCode: 'no_handler_skill',
+        issueMessage: 'no document skill accepts this content type',
+      );
+    }
+    // Deterministic "extraction": split the decoded text into chunk blocks.
+    final text = utf8.decode(bytes, allowMalformed: true);
+    final chunks = text
+        .split(RegExp(r'\n{2,}'))
+        .map((c) => c.trim())
+        .where((c) => c.isNotEmpty)
+        .toList();
+    final id = 'doc-${++_writeSeq}';
+    final qualifiedId = '${handler}__$id';
+    _pages[qualifiedId] = _ParsedPage(
+      id: qualifiedId,
+      skill: handler,
+      pageType: md.PageType.instance,
+      frontmatter: {
+        'type': 'instance',
+        'skill': handler,
+        'id': id,
+        'name': title ?? id,
+        'backend_ref': {
+          'kind': 'document',
+          'blob_id': 'sha256:fixture-$id',
+          'status': 'materialised',
+          'extract_engine': 'fixture',
+        },
+      },
+      body: title ?? id,
+      wikilinksOut: const [],
+      writeSeq: _writeSeq,
+    );
+    return IngestOutcome(
+      status: 'materialised',
+      pageId: qualifiedId,
+      handlerSkill: handler,
+      chunkCount: chunks.isEmpty ? 1 : chunks.length,
+    );
+  }
 
   // ── helpers ─────────────────────────────────────────────────
 
