@@ -224,6 +224,46 @@ abstract class EscurelClient {
     int? limit,
   });
 
+  // ── external instance backends (SQL-view + document) ────────
+
+  /// Register (or replace) an external-source credential a `sql_view`
+  /// skill references via `backend.source.attach` (`register_credential`,
+  /// admin). The secret is stored server-side, never echoed.
+  Future<void> registerCredential({
+    required String name,
+    required String connector,
+    required String secret,
+  });
+
+  /// List registered external-source credentials WITHOUT secrets
+  /// (`list_credentials`, admin).
+  Future<List<CredentialInfo>> listCredentials();
+
+  /// Remove a registered credential by name (`delete_credential`, admin).
+  Future<void> deleteCredential(String name);
+
+  /// Re-probe every SQL-view binding; report drift / unreachable sources
+  /// (`validate_bindings`, admin).
+  Future<List<BindingStatus>> validateBindings();
+
+  /// Materialise a `sql_view` instance from its skill's `backend.source`
+  /// binding (`create_sql_instance`, admin). Returns the new page id.
+  Future<String> createSqlInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  });
+
+  /// Upload a document for ingestion (`POST /ingest/upload`): the backend
+  /// deposits the bytes into the inbox, records an ingest Event, and runs
+  /// the worker. Returns the outcome (materialised / extraction_failed /
+  /// no_handler).
+  Future<IngestOutcome> ingestUpload({
+    required String contentType,
+    required List<int> bytes,
+    String? title,
+  });
+
   // ── substrate health ────────────────────────────────────────
 
   /// `GET /healthz` — dependency-free liveness probe.

@@ -49,6 +49,10 @@ pub struct SkillInfo {
     /// through to the tenant default. A verb left unset inside the block
     /// (`Some(policy)` with that verb `None`) also falls through.
     pub acl: Option<AclPolicy>,
+    /// The backend that materialises and reads this skill's instances,
+    /// parsed from the skill page's `backend:` block. Absent block ⇒
+    /// [`BackendKind::Markdown`](crate::BackendKind) (every skill today).
+    pub backend: crate::backend::BackendBinding,
 }
 
 /// A skill's per-CRUD group grants. Each verb is a list of group names
@@ -216,6 +220,7 @@ impl Indexer {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
                 acl: parse_skill_acl(&fm),
+                backend: crate::backend::BackendBinding::parse(&fm),
             });
         }
         Ok(out)

@@ -8,11 +8,13 @@
 //!
 //! See `docs/spec/storage.md §The LaneStore trait` for the contract.
 
+pub mod blob;
 pub mod fs;
 mod key;
 #[cfg(feature = "s3")]
 pub mod s3;
 
+pub use blob::{BLOB_PREFIX, BlobId, INBOX_PREFIX};
 pub use fs::FsStore;
 pub use key::{Key, KeyError};
 #[cfg(feature = "s3")]
@@ -37,6 +39,10 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error("invalid file URL for {0:?}")]
     InvalidFileUrl(Key),
+    #[error("blob exceeds the {limit}-byte per-blob quota (was {actual})")]
+    BlobTooLarge { limit: u64, actual: u64 },
+    #[error("invalid blob id: {0}")]
+    InvalidBlobId(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -84,4 +90,97 @@ pub trait LaneStore: Send + Sync + 'static {
     async fn size(&self, key: &Key) -> Result<u64> {
         Ok(self.read(key).await?.len() as u64)
     }
+
+    // ── Content-addressed blobs (Document/RAG backend) ────────────────
+    // Default impls ride the read/write/list primitives, so every backend
+    // gets them for free. Keyed by sha256 (see [`blob`]).
+
+    /// Store `body` as a canonical content-addressed blob and return its
+    /// [`BlobId`]. Idempotent — the same bytes always map to the same key.
+    /// `max_bytes` is the per-blob size quota (`None` = unlimited);
+    /// oversize bodies are rejected with [`StoreError::BlobTooLarge`]
+    /// before any write (REQ-NF-07).
+    async fn put_blob(&self, tenant: &str, body: Bytes, max_bytes: Option<u64>) -> Result<BlobId> {
+        if let Some(limit) = max_bytes
+            && body.len() as u64 > limit
+        {
+            return Err(StoreError::BlobTooLarge {
+                limit,
+                actual: body.len() as u64,
+            });
+        }
+        let id = BlobId::of(&body);
+        let key = blob_key(tenant, BLOB_PREFIX, &id)?;
+        self.write(&key, body).await?;
+        Ok(id)
+    }
+
+    /// Deposit `body` into the inbox (staging) area before processing —
+    /// the canonical original lands here first so an upload is never lost
+    /// (REQ-DOC-02/04). Same content-addressing + size quota as [`put_blob`].
+    async fn put_inbox_blob(
+        &self,
+        tenant: &str,
+        body: Bytes,
+        max_bytes: Option<u64>,
+    ) -> Result<BlobId> {
+        if let Some(limit) = max_bytes
+            && body.len() as u64 > limit
+        {
+            return Err(StoreError::BlobTooLarge {
+                limit,
+                actual: body.len() as u64,
+            });
+        }
+        let id = BlobId::of(&body);
+        let key = blob_key(tenant, INBOX_PREFIX, &id)?;
+        self.write(&key, body).await?;
+        Ok(id)
+    }
+
+    /// Read a canonical blob by id.
+    async fn get_blob(&self, tenant: &str, id: &BlobId) -> Result<Bytes> {
+        self.read(&blob_key(tenant, BLOB_PREFIX, id)?).await
+    }
+
+    /// Read an inbox blob by id.
+    async fn get_inbox_blob(&self, tenant: &str, id: &BlobId) -> Result<Bytes> {
+        self.read(&blob_key(tenant, INBOX_PREFIX, id)?).await
+    }
+
+    /// Promote an inbox blob to the canonical area (after a successful
+    /// materialise). Idempotent; the inbox copy is removed.
+    async fn promote_inbox_blob(&self, tenant: &str, id: &BlobId) -> Result<()> {
+        let body = self.get_inbox_blob(tenant, id).await?;
+        self.write(&blob_key(tenant, BLOB_PREFIX, id)?, body)
+            .await?;
+        self.delete(&blob_key(tenant, INBOX_PREFIX, id)?).await
+    }
+
+    /// List canonical blob ids for a tenant.
+    async fn list_blobs(&self, tenant: &str) -> Result<Vec<BlobId>> {
+        let prefix = Key::new(tenant, BLOB_PREFIX).map_err(key_err)?;
+        let keys = self.list(&prefix).await?;
+        Ok(keys
+            .iter()
+            .filter_map(|k| {
+                // Skip the inbox subtree; keep only blobs/<hex>.
+                let path = k.path();
+                let name = path.strip_prefix("blobs/")?;
+                if name.contains('/') {
+                    return None; // inbox/<hex> etc.
+                }
+                BlobId::parse(&format!("sha256:{name}"))
+            })
+            .collect())
+    }
+}
+
+/// The `Key` for a blob id under `prefix` (`blobs` or `blobs/inbox`).
+fn blob_key(tenant: &str, prefix: &str, id: &BlobId) -> Result<Key> {
+    Key::new(tenant, format!("{prefix}/{}", id.hex())).map_err(key_err)
+}
+
+fn key_err(e: KeyError) -> StoreError {
+    StoreError::InvalidBlobId(e.to_string())
 }

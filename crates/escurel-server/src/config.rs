@@ -672,6 +672,10 @@ impl EscurelConfig {
         // existed gains it on the next restart. `up` (fresh only) also
         // creates it; the `IF NOT EXISTS` makes this a no-op there.
         Migrator::ensure_group_members(&conn)?;
+        // SQL-view credential registry: ensure on EVERY boot (idempotent),
+        // like group_members. A separate canonical input, never dropped by
+        // rebuild.
+        Migrator::ensure_external_credentials(&conn)?;
 
         // The CRDT backend MUST share the SAME DuckDB instance as the indexer.
         // A second `Connection::open` on the same file is a separate database

@@ -16,6 +16,8 @@
 /// read-only and not a real server.
 library;
 
+import 'dart:convert';
+
 import '../md/frontmatter.dart' as md;
 import '../md/wikilink.dart';
 import 'errors.dart';
@@ -213,6 +215,8 @@ class FixtureEscurelClient implements EscurelClient {
         visibility: (p.frontmatter['visibility'] as String?) ?? 'public',
         ownerField: p.frontmatter['owner_field'] as String?,
         acl: SkillAcl.fromJson(p.frontmatter['acl']),
+        backendKind: _backendKind(p.frontmatter),
+        capabilities: _capabilitiesFor(_backendKind(p.frontmatter)),
       );
     }).toList();
   }
@@ -794,7 +798,163 @@ class FixtureEscurelClient implements EscurelClient {
   @override
   void close() {}
 
+  // ── external instance backends (in-memory demo) ─────────────
+
+  @override
+  Future<void> registerCredential({
+    required String name,
+    required String connector,
+    required String secret,
+  }) async {
+    _credentials[name] = CredentialInfo(
+      name: name,
+      connector: connector,
+      createdBy: 'fixture',
+    );
+  }
+
+  @override
+  Future<List<CredentialInfo>> listCredentials() async =>
+      _credentials.values.toList();
+
+  @override
+  Future<void> deleteCredential(String name) async {
+    _credentials.remove(name);
+  }
+
+  @override
+  Future<List<BindingStatus>> validateBindings() async {
+    // Report every sql_view instance as healthy in the fixture.
+    return _pages.values
+        .where(
+          (p) =>
+              p.pageType == md.PageType.instance &&
+              (p.frontmatter['backend_ref'] as Map?)?['kind'] == 'sql_view',
+        )
+        .map(
+          (p) => BindingStatus(
+            pageId: p.id,
+            view:
+                ((p.frontmatter['backend_ref'] as Map?)?['view'] as String?) ??
+                '',
+            status: 'ok',
+          ),
+        )
+        .toList();
+  }
+
+  @override
+  Future<String> createSqlInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) async {
+    final view = 'vw_${skill}_$id';
+    final qualifiedId = '${skill}__$id';
+    _pages[qualifiedId] = _ParsedPage(
+      id: qualifiedId,
+      skill: skill,
+      pageType: md.PageType.instance,
+      frontmatter: {
+        'type': 'instance',
+        'skill': skill,
+        'id': id,
+        'name': id,
+        'backend_ref': {'kind': 'sql_view', 'view': view},
+      },
+      body: overlayBody ?? '# $id',
+      wikilinksOut: const [],
+      writeSeq: ++_writeSeq,
+    );
+    return qualifiedId;
+  }
+
+  @override
+  Future<IngestOutcome> ingestUpload({
+    required String contentType,
+    required List<int> bytes,
+    String? title,
+  }) async {
+    // Resolve a document-backed handler skill by content type; with none
+    // declared, park the upload the way the server does (no_handler_skill).
+    final handlers = _pages.values
+        .where(
+          (p) =>
+              p.pageType == md.PageType.skill &&
+              _backendKind(p.frontmatter) == 'document',
+        )
+        .map((p) => p.skill)
+        .toList();
+    final handler = handlers.isEmpty ? null : handlers.first;
+    if (handler == null) {
+      return const IngestOutcome(
+        status: 'no_handler',
+        issueCode: 'no_handler_skill',
+        issueMessage: 'no document skill accepts this content type',
+      );
+    }
+    // Deterministic "extraction": split the decoded text into chunk blocks.
+    final text = utf8.decode(bytes, allowMalformed: true);
+    final chunks = text
+        .split(RegExp(r'\n{2,}'))
+        .map((c) => c.trim())
+        .where((c) => c.isNotEmpty)
+        .toList();
+    final id = 'doc-${++_writeSeq}';
+    final qualifiedId = '${handler}__$id';
+    _pages[qualifiedId] = _ParsedPage(
+      id: qualifiedId,
+      skill: handler,
+      pageType: md.PageType.instance,
+      frontmatter: {
+        'type': 'instance',
+        'skill': handler,
+        'id': id,
+        'name': title ?? id,
+        'backend_ref': {
+          'kind': 'document',
+          'blob_id': 'sha256:fixture-$id',
+          // Mirror the server: a healthy materialised page stamps `ok`.
+          'status': 'ok',
+          'extract_engine': 'fixture',
+        },
+      },
+      body: title ?? id,
+      wikilinksOut: const [],
+      writeSeq: _writeSeq,
+    );
+    return IngestOutcome(
+      status: 'materialised',
+      pageId: qualifiedId,
+      handlerSkill: handler,
+      chunkCount: chunks.isEmpty ? 1 : chunks.length,
+    );
+  }
+
   // ── helpers ─────────────────────────────────────────────────
+
+  final Map<String, CredentialInfo> _credentials = {};
+
+  static String _backendKind(Map<String, dynamic> fm) {
+    final backend = fm['backend'] as Map?;
+    return (backend?['kind'] as String?) ?? 'markdown';
+  }
+
+  static SkillCapabilities _capabilitiesFor(String kind) => switch (kind) {
+    'sql_view' => const SkillCapabilities(
+      writable: false,
+      granularity: 'page',
+      search: 'late_materialized',
+      supportsCrdt: false,
+    ),
+    'document' => const SkillCapabilities(
+      writable: false,
+      granularity: 'block',
+      search: 'hybrid',
+      supportsCrdt: true,
+    ),
+    _ => const SkillCapabilities(),
+  };
 
   String? _resolveRef(WikilinkRef ref) {
     if (ref.id == null) return null;

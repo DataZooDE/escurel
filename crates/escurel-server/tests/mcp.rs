@@ -148,6 +148,29 @@ async fn list_skills_returns_seeded_skills_plus_meta_skill() {
 }
 
 #[tokio::test]
+async fn list_skills_reports_markdown_backend_kind() {
+    let p = start_with_seeded_indexer().await;
+    let result = call_tool(&p, "list_skills", json!({})).await;
+    let skills = result["skills"].as_array().expect("skills array");
+    assert!(!skills.is_empty());
+    // Every skill is markdown-backed today: it carries an additive
+    // `backend` block and a `capabilities` descriptor (REQ-BK-02).
+    for s in skills {
+        assert_eq!(
+            s["backend"]["kind"], "markdown",
+            "skill {:?} should report markdown backend",
+            s["id"]
+        );
+        let caps = &s["capabilities"];
+        assert_eq!(caps["writable"], true);
+        assert_eq!(caps["supports_crdt"], true);
+        assert_eq!(caps["granularity"], "block");
+        assert_eq!(caps["search"], "hybrid");
+    }
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn list_instances_returns_filtered_by_skill() {
     let p = start_with_seeded_indexer().await;
     let result = call_tool(&p, "list_instances", json!({ "skill_id": "customer" })).await;

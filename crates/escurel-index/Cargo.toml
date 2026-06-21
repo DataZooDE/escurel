@@ -9,6 +9,15 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+# In-process PDF/DOCX/PPTX extraction via the kreuzberg crate (ELv2-licensed;
+# `bundled-pdfium` vendors pdfium so the PDF path is self-contained). Gated
+# OFF by default — the default build stays light + offline (born-digital text
+# extraction needs no native deps). Substrate builds enable it. Pulls a heavy
+# native dependency (pdfium); requires rust-version >= 1.91. See
+# docs/notes/discovered/2026-06-21-kreuzberg-msrv-191.md.
+kreuzberg = ["dep:kreuzberg", "dep:html-to-markdown-rs"]
+
 [dependencies]
 # DuckDB via the downloaded precompiled libduckdb release (NOT the
 # bundled C++ compile). The `DUCKDB_DOWNLOAD_LIB=1` env in
@@ -42,6 +51,19 @@ tokio = { version = "1", features = ["rt", "sync"] }
 ulid = "1"
 # Base64 cursor encoding for list_chat_messages pagination.
 base64 = "0.22"
+# In-process document extractor (PDF/DOCX/PPTX), behind the `kreuzberg`
+# feature. ELv2-licensed (see deny.toml). `bundled-pdfium` vendors pdfium.
+kreuzberg = { version = "4.9.9", default-features = false, features = [
+    "tokio-runtime",
+    "pdf",
+    "bundled-pdfium",
+    "office",
+    "chunking",
+], optional = true }
+# Transitive pin: kreuzberg 4.9.9's `^3.5.7` on html-to-markdown-rs resolves
+# to 3.6.0+, which does NOT compile (image `dimensions` tuple→struct break).
+# 3.5.7 is the last working version (spike S5).
+html-to-markdown-rs = { version = "=3.5.7", optional = true }
 
 [dev-dependencies]
 bytes = "1"

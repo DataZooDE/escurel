@@ -284,6 +284,40 @@ class _CapStubClient implements EscurelClient {
   Future<HealthInfo> healthz() => inner.healthz();
 
   @override
+  Future<void> registerCredential({
+    required String name,
+    required String connector,
+    required String secret,
+  }) => inner.registerCredential(
+    name: name,
+    connector: connector,
+    secret: secret,
+  );
+
+  @override
+  Future<List<CredentialInfo>> listCredentials() => inner.listCredentials();
+
+  @override
+  Future<void> deleteCredential(String name) => inner.deleteCredential(name);
+
+  @override
+  Future<List<BindingStatus>> validateBindings() => inner.validateBindings();
+
+  @override
+  Future<String> createSqlInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) => inner.createSqlInstance(skill: skill, id: id, overlayBody: overlayBody);
+
+  @override
+  Future<IngestOutcome> ingestUpload({
+    required String contentType,
+    required List<int> bytes,
+    String? title,
+  }) => inner.ingestUpload(contentType: contentType, bytes: bytes, title: title);
+
+  @override
   void close() => inner.close();
 }
 

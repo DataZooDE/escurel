@@ -55,7 +55,11 @@ async fn spawn_capture_backend(captured: Arc<Mutex<Option<String>>>) -> SocketAd
         }))
     }
 
-    let app = Router::new().route("/mcp", post(mcp)).with_state(captured);
+    let app = Router::new()
+        .route("/mcp", post(mcp))
+        .route("/ingest", post(mcp))
+        .route("/ingest/upload", post(mcp))
+        .with_state(captured);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -75,6 +79,7 @@ fn config(issuer: &str, backend: &str) -> Config {
         signing_key_pem: None, // ephemeral keypair generated at boot
         groups: Vec::new(),
         groups_claim: "triton_sender_groups".to_owned(),
+        admin: false,
     }
 }
 
@@ -214,4 +219,66 @@ async fn jwks_endpoint_publishes_the_signing_key() {
     assert_eq!(keys[0]["kid"], "escurel-explore");
     assert_eq!(keys[0]["kty"], "RSA");
     assert_eq!(keys[0]["alg"], "RS256");
+}
+
+#[tokio::test]
+async fn proxies_ingest_upload_with_minted_token() {
+    // A2: the BFF forwards /ingest/upload to the backend with a minted bearer
+    // (the SPA can't sign a token), same as /mcp.
+    let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let backend_addr = spawn_capture_backend(captured.clone()).await;
+
+    let (listener, addr) = bind_loopback().await;
+    let issuer = format!("http://{addr}");
+    let cfg = config(&issuer, &format!("http://{backend_addr}"));
+    spawn_bff(listener, cfg).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/ingest/upload"))
+        .json(&serde_json::json!({ "content_type": "text/plain", "bytes_b64": "aGk=" }))
+        .send()
+        .await
+        .expect("ingest/upload request");
+    assert_eq!(resp.status(), 200);
+
+    let bearer = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("backend saw Authorization on /ingest/upload");
+    assert!(bearer.starts_with("Bearer "), "minted bearer forwarded");
+}
+
+#[tokio::test]
+async fn admin_mode_mints_admin_role() {
+    // Opt-in: with cfg.admin the BFF mints an admin-role token (verified by
+    // the real OidcVerifier) so the explorer can drive admin-gated actions.
+    let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let backend_addr = spawn_capture_backend(captured.clone()).await;
+    let (listener, addr) = bind_loopback().await;
+    let issuer = format!("http://{addr}");
+    let mut cfg = config(&issuer, &format!("http://{backend_addr}"));
+    cfg.admin = true;
+    spawn_bff(listener, cfg).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/mcp"))
+        .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_skills","arguments":{}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bearer = captured.lock().unwrap().clone().unwrap();
+    let token = bearer.strip_prefix("Bearer ").unwrap();
+    let oidc = OidcConfig::new(issuer.clone(), "escurel-nonprod")
+        .with_jwks_uri(format!("http://{addr}/jwks.json"));
+    let ctx = OidcVerifier::new(oidc)
+        .verify(token)
+        .await
+        .expect("verifier accepts");
+    assert_eq!(
+        ctx.role,
+        Role::Admin,
+        "admin-mode token projects to Role::Admin"
+    );
 }

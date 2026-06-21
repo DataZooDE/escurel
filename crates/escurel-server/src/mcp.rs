@@ -36,8 +36,8 @@ use escurel_admin::{TenantSpec as AdminTenantSpec, TenantStore, validate_tenant_
 use escurel_auth::{AuthContext, OidcVerifier, Role};
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
-    AclCaller, AppendChatMessage, ChatMessage, Direction, EventInfo, Granularity, Indexer,
-    IndexerError, Issue, ListChatMessages, NewEvent, OrderDir, Severity, Visibility,
+    AclCaller, AppendChatMessage, Capabilities, ChatMessage, Direction, EventInfo, Granularity,
+    Indexer, IndexerError, Issue, ListChatMessages, NewEvent, OrderDir, Severity, Visibility,
     derive_attach_alias, is_safe_attach_source,
 };
 use escurel_md::PageType;
@@ -46,9 +46,10 @@ use escurel_storage::{Key, StoreError};
 use escurel_types::{
     AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
     ListSkillsResponse, QuotaGetResponse, RebuildProgress, Skill as TypesSkill,
-    SkillAcl as TypesSkillAcl, TenantCreateResponse, TenantDeleteResponse, TenantGetResponse,
-    TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
-    WebhookDeliveriesResponse, WebhookDelivery,
+    SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
+    SkillCapabilities as TypesSkillCapabilities, TenantCreateResponse, TenantDeleteResponse,
+    TenantGetResponse, TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec,
+    TenantUpdateResponse, WebhookDeliveriesResponse, WebhookDelivery,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -300,6 +301,315 @@ async fn mcp_inner(
         )
             .into_response(),
         Err(err) => err.into_response(req.id),
+    }
+}
+
+/// `POST /ingest` — the document-ingestion webhook (REQ-DOC-07, HLD §6.2).
+///
+/// An external uploader deposits the original into the inbox (content-
+/// addressed) and then POSTs `{ blob_id, content_type }`. This handler:
+/// authenticates + rate-limits per tenant (REQ-NF-07); resolves the content
+/// type to a handling document skill via its `accepts:` list (REQ-DOC-06);
+/// records an immutable **ingest Event** (the auditable arrival log) whether
+/// or not a handler matched; and dispatches the deterministic worker (PR-3d)
+/// when one did. An unmatched MIME is parked with `no_handler_skill` and the
+/// inbox blob is retained (never silently dropped).
+#[derive(Deserialize)]
+pub(crate) struct IngestRequest {
+    blob_id: String,
+    content_type: String,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+/// Auth (REQ-NF-07) + per-tenant Writes rate-limit gate shared by `/ingest`
+/// and `/ingest/upload`. Returns a cloned indexer handle + the caller subject,
+/// or an error response.
+async fn ingest_gate(
+    state: &crate::server::AppState,
+    headers: &HeaderMap,
+) -> Result<(std::sync::Arc<Indexer>, String), axum::response::Response> {
+    let auth_ctx = match state.verifier.as_ref() {
+        Some(v) => match enforce_auth(v, headers).await {
+            Ok(c) => Some(c),
+            Err(resp) => return Err(resp),
+        },
+        None => None,
+    };
+    let subject = auth_ctx
+        .as_ref()
+        .map(|c| c.subject.clone())
+        .unwrap_or_default();
+    if let (Some(quota), Some(ctx)) = (state.quota.as_ref(), auth_ctx.as_ref())
+        && let Err(err) = quota.try_consume(&ctx.tenant_id, Dimension::Writes)
+    {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "rate_limited", "message": err.to_string() })),
+        )
+            .into_response());
+    }
+    match state.indexer.as_ref() {
+        Some(i) => Ok((std::sync::Arc::clone(i), subject)),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "no indexer wired" })),
+        )
+            .into_response()),
+    }
+}
+
+pub(crate) async fn ingest(
+    State(state): State<crate::server::AppState>,
+    headers: HeaderMap,
+    Json(req): Json<IngestRequest>,
+) -> axum::response::Response {
+    state.metrics.inc_request("/ingest", 200);
+    let (indexer, subject) = match ingest_gate(&state, &headers).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    record_and_dispatch_ingest(
+        &indexer,
+        &req.blob_id,
+        &req.content_type,
+        req.title,
+        &subject,
+    )
+    .await
+}
+
+/// `POST /ingest/upload` — browser-friendly intake: deposit inline base64
+/// bytes into the inbox (content-addressed), then run the same ingest path.
+/// The SPA can't deposit a content-addressed blob itself; the BFF proxies this
+/// with JWT minting.
+#[derive(Deserialize)]
+pub(crate) struct IngestUploadRequest {
+    content_type: String,
+    /// base64-encoded file bytes.
+    bytes_b64: String,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+pub(crate) async fn ingest_upload(
+    State(state): State<crate::server::AppState>,
+    headers: HeaderMap,
+    Json(req): Json<IngestUploadRequest>,
+) -> axum::response::Response {
+    state.metrics.inc_request("/ingest/upload", 200);
+    let (indexer, subject) = match ingest_gate(&state, &headers).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let bytes = match B64.decode(req.bytes_b64.as_bytes()) {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("bytes_b64 is not base64: {e}") })),
+            )
+                .into_response();
+        }
+    };
+    // Deposit into the inbox before processing (the canonical-before-process
+    // step; an upload is never lost). Per-blob size quota applies.
+    let blob = match indexer
+        .lane_store()
+        .put_inbox_blob(indexer.tenant(), bytes::Bytes::from(bytes), None)
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("deposit: {e}") })),
+            )
+                .into_response();
+        }
+    };
+    record_and_dispatch_ingest(
+        &indexer,
+        blob.as_str(),
+        &req.content_type,
+        req.title,
+        &subject,
+    )
+    .await
+}
+
+/// Shared tail: resolve MIME→skill (REQ-DOC-06), record the immutable ingest
+/// Event (auditable), then dispatch the worker or park `no_handler_skill`.
+async fn record_and_dispatch_ingest(
+    indexer: &std::sync::Arc<Indexer>,
+    blob_id: &str,
+    content_type: &str,
+    title: Option<String>,
+    subject: &str,
+) -> axum::response::Response {
+    let handler = match indexer.document_skill_for_mime(content_type).await {
+        Ok(h) => h,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("mime resolution: {e}") })),
+            )
+                .into_response();
+        }
+    };
+    let label_skill = handler.clone().unwrap_or_else(|| "ingest".to_owned());
+    let event = indexer
+        .capture_event(NewEvent {
+            event_id: None,
+            at: None,
+            source: "ingest".to_owned(),
+            mime: content_type.to_owned(),
+            label_skill,
+            instance_page_id: None,
+            title: title.unwrap_or_else(|| blob_id.to_owned()),
+            body: String::new(),
+            provenance: Some(json!({
+                "blob_id": blob_id,
+                "content_type": content_type,
+                "handler_skill": handler,
+                "by": subject,
+            })),
+        })
+        .await;
+    let event = match event {
+        Ok(e) => e,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("record ingest event: {e}") })),
+            )
+                .into_response();
+        }
+    };
+    match handler {
+        Some(skill) => {
+            run_document_ingest(indexer, &skill, blob_id, content_type, &event.event_id).await
+        }
+        None => (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "event_id": event.event_id,
+                "blob_id": blob_id,
+                "status": "no_handler",
+                "issue": {
+                    "code": "no_handler_skill",
+                    "message": format!(
+                        "no document skill accepts content type `{content_type}`; inbox blob retained"
+                    ),
+                },
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// Run the deterministic ingest worker inline: extract+chunk off the write
+/// lock, materialise under a brief lock. v1 uses the born-digital text
+/// processor (kreuzberg PDF/DOCX is gated on the MSRV decision).
+async fn run_document_ingest(
+    indexer: &std::sync::Arc<Indexer>,
+    skill: &str,
+    blob_id_str: &str,
+    content_type: &str,
+    event_id: &str,
+) -> axum::response::Response {
+    use escurel_index::backend::{
+        ChunkConfig, DeterministicProcessor, DocumentIngestWorker, ExtractConfig, Extractor,
+        IngestOutcome, OcrPolicy, PlainTextExtractor,
+    };
+    use escurel_storage::BlobId;
+
+    let Some(blob_id) = BlobId::parse(blob_id_str) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid blob_id (expected sha256:<hex>)" })),
+        )
+            .into_response();
+    };
+
+    // Chunk knobs from the skill's document binding (defaults when absent).
+    let chunk = match indexer.skill_backend(skill).await {
+        Ok(b) => b
+            .document
+            .map(|d| (d.max_chars, d.overlap))
+            .unwrap_or((None, None)),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("skill backend: {e}") })),
+            )
+                .into_response();
+        }
+    };
+    let defaults = ChunkConfig::default();
+    let cfg = ExtractConfig {
+        ocr: OcrPolicy::Off,
+        chunk: ChunkConfig {
+            max_chars: chunk.0.unwrap_or(defaults.max_chars),
+            overlap: chunk.1.unwrap_or(defaults.overlap),
+        },
+    };
+
+    // Deterministic instance id from the content hash (idempotent intake).
+    let instance_id = format!("doc-{}", &blob_id.hex()[..12.min(blob_id.hex().len())]);
+    let extractor: std::sync::Arc<dyn Extractor> = if content_type.starts_with("text/") {
+        std::sync::Arc::new(PlainTextExtractor)
+    } else {
+        #[cfg(feature = "kreuzberg")]
+        {
+            std::sync::Arc::new(escurel_index::backend::KreuzbergExtractor)
+        }
+        #[cfg(not(feature = "kreuzberg"))]
+        {
+            std::sync::Arc::new(PlainTextExtractor)
+        }
+    };
+    let worker = DocumentIngestWorker::new(
+        std::sync::Arc::clone(indexer),
+        std::sync::Arc::new(DeterministicProcessor::new(extractor)),
+    );
+
+    match worker
+        .ingest(&blob_id, content_type, skill, &instance_id, &cfg)
+        .await
+    {
+        Ok(IngestOutcome::Materialised {
+            page_id,
+            chunk_count,
+        }) => (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "event_id": event_id,
+                "blob_id": blob_id_str,
+                "handler_skill": skill,
+                "status": "materialised",
+                "page_id": page_id,
+                "chunk_count": chunk_count,
+            })),
+        )
+            .into_response(),
+        Ok(IngestOutcome::ExtractionFailed { page_id, reason }) => (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "event_id": event_id,
+                "blob_id": blob_id_str,
+                "handler_skill": skill,
+                "status": "extraction_failed",
+                "page_id": page_id,
+                "issue": { "code": "extraction_failed", "message": reason },
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("ingest worker: {e}") })),
+        )
+            .into_response(),
     }
 }
 
@@ -688,6 +998,28 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             tool_list_group_members(indexer, params.arguments).await
         }
+        // SQL-view credential registry (admin-only). Secrets live
+        // server-side in kb.duckdb, never in the markdown corpus (REQ-SQL-05).
+        "register_credential" => {
+            require_admin(role)?;
+            tool_register_credential(indexer, subject, params.arguments).await
+        }
+        "list_credentials" => {
+            require_admin(role)?;
+            tool_list_credentials(indexer).await
+        }
+        "delete_credential" => {
+            require_admin(role)?;
+            tool_delete_credential(indexer, params.arguments).await
+        }
+        "validate_bindings" => {
+            require_admin(role)?;
+            tool_validate_bindings(indexer).await
+        }
+        "create_sql_instance" => {
+            require_admin(role)?;
+            tool_create_sql_instance(indexer, params.arguments).await
+        }
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
         ))),
@@ -721,6 +1053,18 @@ async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpcError> {
                     update: a.update,
                     delete: a.delete,
                 }),
+                backend: TypesSkillBackend {
+                    kind: s.backend.kind.as_str().to_string(),
+                },
+                capabilities: {
+                    let c = Capabilities::for_kind(s.backend.kind);
+                    TypesSkillCapabilities {
+                        writable: c.writable,
+                        granularity: c.granularity.as_str().to_string(),
+                        search: c.search.as_str().to_string(),
+                        supports_crdt: c.supports_crdt,
+                    }
+                },
             })
             .collect(),
     };
@@ -901,25 +1245,114 @@ async fn tool_expand(
     }
     match out {
         None => Ok(json!({ "page": Value::Null })),
-        Some(e) => Ok(json!({
-            "page": {
-                "page_id": e.page.page_id,
-                "slug": e.page.slug,
-                "skill": e.page.skill,
-                "page_type": page_type_str(e.page.page_type),
-            },
-            "frontmatter": e.frontmatter,
-            "body": e.body,
-            "blocks": e.blocks.iter().map(|b| json!({
-                "anchor": b.anchor,
-                "content": b.content,
-            })).collect::<Vec<_>>(),
-            "wikilinks_out": e.wikilinks_out.iter().map(|w| json!({
-                "skill": w.skill, "id": w.id, "anchor": w.anchor,
-                "version": w.version, "alias": w.alias,
-            })).collect::<Vec<_>>(),
-        })),
+        Some(e) => {
+            let mut page = json!({
+                "page": {
+                    "page_id": e.page.page_id,
+                    "slug": e.page.slug,
+                    "skill": e.page.skill,
+                    "page_type": page_type_str(e.page.page_type),
+                },
+                "frontmatter": e.frontmatter,
+                "body": e.body,
+                "blocks": e.blocks.iter().map(|b| json!({
+                    "anchor": b.anchor,
+                    "content": b.content,
+                })).collect::<Vec<_>>(),
+                "wikilinks_out": e.wikilinks_out.iter().map(|w| json!({
+                    "skill": w.skill, "id": w.id, "anchor": w.anchor,
+                    "version": w.version, "alias": w.alias,
+                })).collect::<Vec<_>>(),
+            });
+            // SQL-view overlay: render a BOUNDED projection beneath the overlay
+            // body (REQ-SQL-06), and expose projected source columns under a
+            // namespaced `source` object so overlay↔source drift is visible
+            // without the overlay value being masked (REQ-OV-02). The overlay
+            // (shown first) always wins for display.
+            if let Some(proj) = sql_view_projection(indexer, &e).await {
+                page["backend_projection"] = proj;
+            }
+            // Document overlay: bound the chunks returned (REQ-DOC-05) — never
+            // the full document text. With no query in `expand`, return the
+            // lead (first K chunks) and flag truncation.
+            if e.frontmatter
+                .get("backend_ref")
+                .and_then(|b| b.get("kind"))
+                .and_then(Value::as_str)
+                == Some("document")
+            {
+                const EXPAND_CHUNK_LEAD: usize = 8;
+                let total = e.blocks.len();
+                if let Some(arr) = page["blocks"].as_array().cloned() {
+                    let lead: Vec<Value> = arr.into_iter().take(EXPAND_CHUNK_LEAD).collect();
+                    page["blocks"] = Value::from(lead);
+                }
+                page["chunks_total"] = json!(total);
+                page["chunks_truncated"] = json!(total > EXPAND_CHUNK_LEAD);
+            }
+            Ok(page)
+        }
     }
+}
+
+/// Bounded rows + projected `source` fields for a SQL-view instance overlay,
+/// or `None` when the page is not a `sql_view` instance.
+async fn sql_view_projection(indexer: &Indexer, e: &escurel_index::ExpandedPage) -> Option<Value> {
+    const PROJECTION_LIMIT: usize = 50;
+    let backend_ref = e.frontmatter.get("backend_ref")?;
+    if backend_ref.get("kind").and_then(Value::as_str) != Some("sql_view") {
+        return None;
+    }
+    let view = backend_ref.get("view").and_then(Value::as_str)?;
+
+    // Fail closed on schema drift (REQ-NF-06): if the view's current schema
+    // fingerprint no longer matches the one captured at create time, return
+    // an Issue instead of (possibly wrong) rows.
+    if let Some(stored) = backend_ref
+        .get("source_schema_fingerprint")
+        .and_then(Value::as_str)
+    {
+        match indexer.current_view_fingerprint(view).await {
+            Ok(current) if current != stored => {
+                return Some(json!({
+                    "view": view, "rows": [], "source": {},
+                    "issue": { "code": "binding_degraded",
+                        "message": "source schema drifted from the stored fingerprint; \
+                                    reads fail closed until the binding is re-validated" },
+                }));
+            }
+            Err(e) => {
+                return Some(json!({
+                    "view": view, "rows": [], "source": {},
+                    "issue": { "code": "source_unavailable", "message": e.to_string() },
+                }));
+            }
+            Ok(_) => {}
+        }
+    }
+
+    let rows = indexer.project_view(view, PROJECTION_LIMIT).await.ok()?;
+
+    // Expose projected source columns under `source.<overlay_field>` per the
+    // skill's `project` map (drift-visible; overlay wins for display).
+    let mut source = serde_json::Map::new();
+    if let Ok(binding) = indexer.skill_backend(&e.page.skill).await
+        && let Some(sv) = binding.sql_view
+        && let Some(first) = rows.first()
+    {
+        for (src_col, overlay_field) in &sv.project {
+            if let Some(v) = first.get(src_col) {
+                source.insert(overlay_field.clone(), v.clone());
+            }
+        }
+    }
+
+    Some(json!({
+        "view": view,
+        "rows": rows,
+        "source": source,
+        "truncated": rows.len() == PROJECTION_LIMIT,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -1045,7 +1478,9 @@ async fn tool_search(
     let granularity = Granularity::from_arg(a.granularity.as_deref().unwrap_or_default());
     // An empty `{}` filter is treated as "no filter".
     let filter = a.filter.as_ref().filter(|f| !is_empty_filter(f));
-    let hits = indexer
+
+    // Native lane: the fused hybrid (vss+fts) hits.
+    let native = indexer
         .search_with(
             &a.q,
             a.k,
@@ -1058,34 +1493,118 @@ async fn tool_search(
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
-    // Deterministic ACL: drop owner-private hits the caller does not own
-    // (admin bypasses); skill-page hits are the public catalogue. Search
-    // must not surface what a direct read would deny.
+
+    // INV-ACL-FUSION (spike S3): every lane's contribution is ACL-filtered
+    // BEFORE fusion. Deterministic ACL drops owner-private hits the caller
+    // does not own (admin bypasses); skill pages are the public catalogue.
+    let native_allowed = acl_filter_hits(indexer, &caller, native).await?;
+
+    // SQL-view lane: late-materialised candidates over each sql_view skill's
+    // search_text columns. Skipped when the search is restricted to skills,
+    // OR when the caller set constraints the late-materialised lane does not
+    // yet honor (`as_of` time-travel, `scenario` overlay, frontmatter
+    // `filter`) — fusing unconstrained SQL hits would violate them, so skip
+    // the lane (conservative + correct) until it can apply the constraints.
+    let constrained = a.as_of.is_some() || a.scenario.is_some() || filter.is_some();
+    let sql_allowed = if matches!(pt, Some(PageType::Skill)) || constrained {
+        Vec::new()
+    } else {
+        let candidates = indexer
+            .sql_view_search_candidates(&a.q, a.skill.as_deref())
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("search sql lane: {e}")))?;
+        acl_filter_hits(indexer, &caller, candidates).await?
+    };
+
+    // No SQL contribution → the native path is returned verbatim (the
+    // markdown-only behaviour is byte-identical to before fusion relocation).
+    // Otherwise RRF-fuse the two already-filtered lanes.
+    let final_hits = if sql_allowed.is_empty() {
+        native_allowed
+    } else {
+        rrf_fuse_lanes(native_allowed, sql_allowed, a.k)
+    };
+
+    let out: Vec<Value> = final_hits
+        .iter()
+        .map(|h| {
+            json!({
+                "page_id": h.page_id,
+                "slug": h.slug,
+                "skill": h.skill,
+                "page_type": page_type_str(h.page_type),
+                "anchor": h.anchor,
+                "snippet": h.snippet,
+                "score": h.score,
+                "frontmatter_excerpt": h.frontmatter_excerpt,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "hits": out,
+        "granularity": granularity.as_str(),
+    }))
+}
+
+/// Apply the fail-closed per-instance read ACL to one lane's candidates,
+/// preserving order. Skill-page hits are the public catalogue (never gated).
+/// A SQL-view instance whose `owner_field` cannot be resolved fails closed
+/// inside `may_read_instance` (deny to non-admins).
+async fn acl_filter_hits(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    hits: Vec<escurel_index::SearchHit>,
+) -> Result<Vec<escurel_index::SearchHit>, JsonRpcError> {
     let mut out = Vec::with_capacity(hits.len());
-    for h in &hits {
+    for h in hits {
         if h.page_type == PageType::Instance
             && !indexer
-                .may_read_instance(&caller, &h.skill, &h.frontmatter_excerpt)
+                .may_read_instance(caller, &h.skill, &h.frontmatter_excerpt)
                 .await
                 .map_err(|e| JsonRpcError::internal(format!("search acl: {e}")))?
         {
             continue;
         }
-        out.push(json!({
-            "page_id": h.page_id,
-            "slug": h.slug,
-            "skill": h.skill,
-            "page_type": page_type_str(h.page_type),
-            "anchor": h.anchor,
-            "snippet": h.snippet,
-            "score": h.score,
-            "frontmatter_excerpt": h.frontmatter_excerpt,
-        }));
+        out.push(h);
     }
-    Ok(json!({
-        "hits": out,
-        "granularity": granularity.as_str(),
-    }))
+    Ok(out)
+}
+
+/// Reciprocal-Rank-Fusion of two already-ACL-filtered, already-ranked lanes
+/// into a page-grain top-`k`. Each lane contributes `1/(K_RRF + rank)` per
+/// page; the native lane's hit is the representative when a page appears in
+/// both.
+fn rrf_fuse_lanes(
+    native: Vec<escurel_index::SearchHit>,
+    sql: Vec<escurel_index::SearchHit>,
+    k: usize,
+) -> Vec<escurel_index::SearchHit> {
+    use std::collections::HashMap;
+    const K_RRF: f64 = 60.0;
+    let mut scores: HashMap<String, f64> = HashMap::new();
+    let mut rep: HashMap<String, escurel_index::SearchHit> = HashMap::new();
+    // Native first, so it wins as the representative on a page collision.
+    for lane in [native, sql] {
+        for (rank, h) in lane.into_iter().enumerate() {
+            *scores.entry(h.page_id.clone()).or_insert(0.0) += 1.0 / (K_RRF + (rank as f64) + 1.0);
+            rep.entry(h.page_id.clone()).or_insert(h);
+        }
+    }
+    let mut fused: Vec<escurel_index::SearchHit> = rep
+        .into_values()
+        .map(|mut h| {
+            h.score = scores[&h.page_id];
+            h
+        })
+        .collect();
+    fused.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.page_id.cmp(&b.page_id))
+    });
+    fused.truncate(k);
+    fused
 }
 
 /// True for `null` or an empty `{}` filter object — both mean "no
@@ -1170,6 +1689,26 @@ async fn tool_update_page(
 ) -> Result<Value, JsonRpcError> {
     let a: UpdatePageArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("update_page: {e}")))?;
+
+    // Read-only-backend guard (REQ-BK-03): reject an attempt to write backend
+    // data for a non-writable backend (creating a sql_view/document instance
+    // via update_page, or stripping its backend_ref) with a typed
+    // `backend_read_only` Issue. Overlay co-authoring stays allowed.
+    if let Some(reason) = indexer
+        .backend_read_only_rejection(&a.page_id, &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page backend guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "backend_read_only",
+                "location": "frontmatter.backend_ref",
+                "message": reason,
+            }],
+        }));
+    }
 
     // Deterministic per-instance WRITE ACL (symmetric to the read ACL):
     // only the resolved owner (or admin) may mutate an owner-private
@@ -1837,6 +2376,126 @@ async fn tool_list_group_members(indexer: &Indexer, args: Value) -> Result<Value
         })
         .collect();
     Ok(json!({ "members": members }))
+}
+
+#[derive(Deserialize)]
+struct RegisterCredentialArgs {
+    /// The `attach` name a `sql_view` skill references.
+    name: String,
+    /// Connector kind (`postgres`|`mysql`|`sqlite`|`erpl`|`s3`|…).
+    connector: String,
+    /// Secret material (DSN / secret spec). Stored server-side only.
+    secret: String,
+}
+
+#[derive(Deserialize)]
+struct CredentialNameArgs {
+    name: String,
+}
+
+async fn tool_register_credential(
+    indexer: &Indexer,
+    created_by: &str,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: RegisterCredentialArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("register_credential: {e}")))?;
+    if a.name.is_empty() || a.connector.is_empty() || a.secret.is_empty() {
+        return Err(JsonRpcError::invalid_params(
+            "name, connector, and secret are all required".to_owned(),
+        ));
+    }
+    indexer
+        .register_credential(&a.name, &a.connector, &a.secret, Some(created_by))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("register_credential: {e}")))?;
+    // Never echo the secret back.
+    Ok(json!({ "ok": true, "name": a.name }))
+}
+
+async fn tool_list_credentials(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+    let creds = indexer
+        .list_credentials()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_credentials: {e}")))?;
+    // The secret is intentionally absent from this view (REQ-SQL-05).
+    let creds: Vec<Value> = creds
+        .into_iter()
+        .map(|c| {
+            json!({
+                "name": c.name,
+                "connector": c.connector,
+                "created_at": c.created_at,
+                "created_by": c.created_by,
+            })
+        })
+        .collect();
+    Ok(json!({ "credentials": creds }))
+}
+
+async fn tool_delete_credential(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    let a: CredentialNameArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("delete_credential: {e}")))?;
+    indexer
+        .delete_credential(&a.name)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("delete_credential: {e}")))?;
+    Ok(json!({ "ok": true }))
+}
+
+async fn tool_validate_bindings(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+    let statuses = indexer
+        .validate_bindings()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("validate_bindings: {e}")))?;
+    let degraded = statuses.iter().filter(|s| s.status != "ok").count();
+    let bindings: Vec<Value> = statuses
+        .into_iter()
+        .map(|s| {
+            json!({
+                "page_id": s.page_id,
+                "view": s.view,
+                "status": s.status,
+                "detail": s.detail,
+            })
+        })
+        .collect();
+    Ok(json!({ "ok": degraded == 0, "degraded": degraded, "bindings": bindings }))
+}
+
+#[derive(Deserialize)]
+struct CreateSqlInstanceArgs {
+    skill: String,
+    id: String,
+    #[serde(default)]
+    overlay_body: Option<String>,
+}
+
+/// Admin: materialise a sql_view instance from the UI. The binding comes from
+/// the skill's `backend.source` block (not the caller), so this can only
+/// create instances of skills that already declare a sql_view source.
+async fn tool_create_sql_instance(
+    indexer: &std::sync::Arc<Indexer>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: CreateSqlInstanceArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("create_sql_instance: {e}")))?;
+    let binding = indexer
+        .skill_backend(&a.skill)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_sql_instance: {e}")))?;
+    let sql_view = binding.sql_view.ok_or_else(|| {
+        JsonRpcError::invalid_params(format!(
+            "skill `{}` does not declare a sql_view backend.source",
+            a.skill
+        ))
+    })?;
+    let body = a.overlay_body.unwrap_or_else(|| format!("# {}\n", a.id));
+    let m = escurel_index::backend::SqlViewBackend::new(std::sync::Arc::clone(indexer))
+        .create_instance(&a.skill, &sql_view, &a.id, &body)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_sql_instance: {e}")))?;
+    Ok(json!({ "page_id": m.page_id, "view": m.view }))
 }
 
 // --- admin tenant CRUD + long-ops (admin-role gated) -----------
@@ -2718,6 +3377,60 @@ fn tools_list_payload() -> Value {
                     "required": ["group_id"],
                     "properties": {
                         "group_id": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "register_credential",
+                "Admin: register (or replace) a named external-source \
+                 credential a sql_view skill references via \
+                 `backend.source.attach`. The secret is stored server-side \
+                 and NEVER in the markdown corpus (REQ-SQL-05).",
+                json!({
+                    "type": "object",
+                    "required": ["name", "connector", "secret"],
+                    "properties": {
+                        "name": { "type": "string", "description": "The `attach` name skills reference." },
+                        "connector": { "type": "string", "description": "postgres|mysql|sqlite|erpl|s3|…" },
+                        "secret": { "type": "string", "description": "DSN / secret material (server-side only)." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_credentials",
+                "Admin: list registered external-source credentials WITHOUT \
+                 their secrets (name, connector, registration audit).",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "delete_credential",
+                "Admin: remove a registered external-source credential by \
+                 name. No-op when absent.",
+                json!({
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": { "name": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "validate_bindings",
+                "Admin: re-probe every SQL-view binding and report schema \
+                 drift (binding_degraded) or unreachable sources \
+                 (backend_unavailable). Reconciles views ⟂ backend_refs.",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "create_sql_instance",
+                "Admin: materialise a sql_view instance — the binding comes \
+                 from the skill's backend.source block (read-only view + \
+                 overlay page).",
+                json!({
+                    "type": "object",
+                    "required": ["skill", "id"],
+                    "properties": {
+                        "skill": { "type": "string", "description": "A skill declaring backend.kind=sql_view." },
+                        "id": { "type": "string", "description": "New instance id." },
+                        "overlay_body": { "type": "string", "description": "Optional overlay markdown body." }
                     }
                 }),
             ),

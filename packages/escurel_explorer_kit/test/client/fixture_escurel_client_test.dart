@@ -68,12 +68,15 @@ role: VP Engineering
 ''';
 
 FixtureEscurelClient _inlineClient() => FixtureEscurelClient.fromSources(
-      skillFiles: const {'customer.md': _customerSkill, 'contact.md': _contactSkill},
-      instanceFiles: const {
-        'customer__acme.md': _customerInst,
-        'contact__dora.md': _contactInst,
-      },
-    );
+  skillFiles: const {
+    'customer.md': _customerSkill,
+    'contact.md': _contactSkill,
+  },
+  instanceFiles: const {
+    'customer__acme.md': _customerInst,
+    'contact__dora.md': _contactInst,
+  },
+);
 
 void main() {
   group('FixtureEscurelClient (inline corpus)', () {
@@ -88,7 +91,9 @@ void main() {
     });
 
     test('listSkills carries required_frontmatter from yaml', () async {
-      final contact = (await client.listSkills()).firstWhere((s) => s.id == 'contact');
+      final contact = (await client.listSkills()).firstWhere(
+        (s) => s.id == 'contact',
+      );
       expect(contact.requiredFrontmatter, ['name', 'customer']);
     });
 
@@ -98,9 +103,15 @@ void main() {
     });
 
     test('listInstances filters by frontmatter equality', () async {
-      final de = await client.listInstances('customer', filter: const {'country': 'DE'});
+      final de = await client.listInstances(
+        'customer',
+        filter: const {'country': 'DE'},
+      );
       expect(de, hasLength(1));
-      final us = await client.listInstances('customer', filter: const {'country': 'US'});
+      final us = await client.listInstances(
+        'customer',
+        filter: const {'country': 'US'},
+      );
       expect(us, isEmpty);
     });
 
@@ -130,20 +141,32 @@ void main() {
     });
 
     test('neighbours: outgoing edges from customer reach contact', () async {
-      final out = await client.neighbours('customer__acme', direction: LinkDirection.outgoing);
+      final out = await client.neighbours(
+        'customer__acme',
+        direction: LinkDirection.outgoing,
+      );
       // `dst` is the link's slug (matching the gateway wire shape).
       expect(out.map((n) => n.dst), contains('dora'));
     });
 
-    test('neighbours: incoming edges into customer include the contact', () async {
-      final inc = await client.neighbours('customer__acme', direction: LinkDirection.incoming);
-      expect(inc.map((n) => n.src), contains('contact__dora'));
-    });
+    test(
+      'neighbours: incoming edges into customer include the contact',
+      () async {
+        final inc = await client.neighbours(
+          'customer__acme',
+          direction: LinkDirection.incoming,
+        );
+        expect(inc.map((n) => n.src), contains('contact__dora'));
+      },
+    );
 
-    test('search hits via case-insensitive substring across body + id + skill', () async {
-      final r = await client.search(q: 'dora');
-      expect(r.hits.map((h) => h.pageId), contains('contact__dora'));
-    });
+    test(
+      'search hits via case-insensitive substring across body + id + skill',
+      () async {
+        final r = await client.search(q: 'dora');
+        expect(r.hits.map((h) => h.pageId), contains('contact__dora'));
+      },
+    );
 
     test('write tools surface as EscurelUnsupportedException', () async {
       await expectLater(
@@ -183,18 +206,32 @@ void main() {
       final ids = (await client.listSkills()).map((s) => s.id).toSet();
       expect(
         ids,
-        containsAll(['escurel', 'customer', 'contact', 'engagement', 'lead', 'opportunity', 'project']),
+        containsAll([
+          'escurel',
+          'customer',
+          'contact',
+          'engagement',
+          'lead',
+          'opportunity',
+          'project',
+        ]),
       );
     });
 
     test('the Hoffmann chain traverses end-to-end', () async {
-      final inc = await client.neighbours('contact__hoffmann', direction: LinkDirection.incoming);
+      final inc = await client.neighbours(
+        'contact__hoffmann',
+        direction: LinkDirection.incoming,
+      );
       final srcs = inc.map((n) => n.src).toSet();
-      expect(srcs, containsAll([
-        'engagement__hoffmann-intro',
-        'lead__hoffmann-followup',
-        'opportunity__hoffmann-pilot',
-      ]));
+      expect(
+        srcs,
+        containsAll([
+          'engagement__hoffmann-intro',
+          'lead__hoffmann-followup',
+          'opportunity__hoffmann-pilot',
+        ]),
+      );
     });
   });
 }

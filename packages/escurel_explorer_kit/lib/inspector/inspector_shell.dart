@@ -6,6 +6,7 @@ import '../shell/status_bar.dart';
 import '../shell/topbar.dart';
 import '../state/explorer_nav.dart';
 import '../theme/app_theme.dart';
+import 'backend_admin_panel.dart';
 import 'md_inspector_panel.dart';
 
 /// The dev inspector drawer — surfaces escurel's primitives directly
@@ -61,6 +62,13 @@ class InspectorShell extends ConsumerWidget {
                   selected: panelId == 'index',
                   disabled: !ref.watch(adminEnabledProvider),
                 ),
+                const SizedBox(width: 4),
+                _PanelChip(
+                  id: 'backends',
+                  label: 'Backends',
+                  selected: panelId == 'backends',
+                  disabled: !ref.watch(adminEnabledProvider),
+                ),
               ],
             ),
           ),
@@ -74,16 +82,18 @@ class InspectorShell extends ConsumerWidget {
   Widget _panelFor(String id) {
     return switch (id) {
       'md' => const MdInspectorPanel(),
+      'backends' => const BackendAdminPanel(),
       _ => _ComingSoonPanel(panelId: id),
     };
   }
 
   String _label(String id) => switch (id) {
-        'md' => 'Markdown',
-        'lanes' => 'LaneStore',
-        'index' => 'Index',
-        _ => id,
-      };
+    'md' => 'Markdown',
+    'lanes' => 'LaneStore',
+    'index' => 'Index',
+    'backends' => 'Backends',
+    _ => id,
+  };
 }
 
 class _PanelChip extends ConsumerWidget {
@@ -101,13 +111,18 @@ class _PanelChip extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final fg = disabled ? kOnSurfaceVariant : (selected ? Colors.white : kOnSurface);
+    final fg = disabled
+        ? kOnSurfaceVariant
+        : (selected ? Colors.white : kOnSurface);
     final bg = disabled
         ? kSurfaceContainer
         : (selected ? kPrimary : kSurfaceContainerHigh);
     final chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(6)),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+      ),
       child: Text(
         disabled ? '$label · admin' : label,
         style: Theme.of(context).textTheme.labelSmall?.copyWith(color: fg),

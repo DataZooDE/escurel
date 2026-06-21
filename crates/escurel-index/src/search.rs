@@ -440,12 +440,35 @@ fn snippet_from_body(body: &str) -> String {
     // when possible. Real query-aware snippet generation lands
     // later — agents currently get enough context from the full
     // body via `expand` if they want more.
-    const MAX: usize = 200;
-    if body.len() <= MAX {
+    const MAX_CHARS: usize = 200;
+    let char_indices: Vec<_> = body.char_indices().collect();
+    if char_indices.len() <= MAX_CHARS {
         return body.trim().to_owned();
     }
-    let cut = body[..MAX].rfind(char::is_whitespace).unwrap_or(MAX);
+    let limit_byte_idx = char_indices[MAX_CHARS].0;
+    let sliced = &body[..limit_byte_idx];
+    let cut = sliced.rfind(char::is_whitespace).unwrap_or(limit_byte_idx);
     let mut s = body[..cut].trim().to_owned();
     s.push('…');
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snippet_from_body;
+
+    #[test]
+    fn snippet_does_not_panic_on_multibyte_truncation() {
+        // A >200-char body of 3-byte chars: the old `body[..200]` sliced mid
+        // UTF-8 char and panicked. The fix truncates on a char boundary.
+        let body = "☃".repeat(201); // 201 chars, 603 bytes
+        let s = snippet_from_body(&body);
+        assert!(s.ends_with('…'));
+        assert!(s.starts_with('☃'));
+    }
+
+    #[test]
+    fn snippet_short_body_returned_verbatim() {
+        assert_eq!(snippet_from_body("  hi there  "), "hi there");
+    }
 }

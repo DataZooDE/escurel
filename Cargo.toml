@@ -26,7 +26,10 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.88"
+# Bumped 1.88 -> 1.91 to admit the `kreuzberg` document extractor crate
+# (4.9.9 declares rust-version 1.91). Built toolchains + the substrate golden
+# image must be >= 1.91. See docs/notes/discovered/2026-06-21-kreuzberg-msrv-191.md.
+rust-version = "1.91"
 version = "1.0.0"
 license = "BUSL-1.1"
 authors = ["DataZoo GmbH <hello@data-zoo.de>"]

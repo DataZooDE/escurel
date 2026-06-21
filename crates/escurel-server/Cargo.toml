@@ -27,11 +27,15 @@ path = "src/main.rs"
 s3 = ["escurel-storage/s3"]
 gemini = ["escurel-embed/gemini"]
 embeddinggemma = ["escurel-embed/candle"]
+#   --features kreuzberg     → in-process PDF/DOCX extraction for /ingest
+#                              (ELv2; pulls pdfium; needs rust-version >= 1.91)
+kreuzberg = ["escurel-index/kreuzberg"]
 
 [dependencies]
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
+bytes = "1"
 dashmap = "6"
 duckdb = { version = "1", default-features = false }
 escurel-admin = { path = "../escurel-admin" }

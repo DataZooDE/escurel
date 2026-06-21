@@ -44,6 +44,13 @@ allow = [
     "CDLA-Permissive-2.0",
     # The workspace's own crates ship under BUSL-1.1 (source-available).
     "BUSL-1.1",
+    # kreuzberg (the in-process PDF/DOCX extractor, behind the `kreuzberg`
+    # feature) is Elastic-2.0. ELv2 forbids offering the software AS A MANAGED
+    # SERVICE to third parties and circumventing license-key features — a
+    # compliance constraint accepted for escurel's own deployment (spike S5 /
+    # REQ-NF-08). The `Extractor` trait keeps an alternative extractor
+    # swappable if ELv2 becomes unacceptable for a deployment.
+    "Elastic-2.0",
 ]
 
 # ---------------------------------------------------------------------------
