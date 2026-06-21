@@ -551,6 +551,7 @@ backend:
             filter: "region = 'EU'" }      # filter is optional, injection-guarded
   project: { customer_id: id, display_name: name }   # source col → overlay field
   search_text: [name, notes]               # columns that enter late FTS
+  projection_limit: 50                     # optional; rows expand renders (default 50)
 ```
 
 - **Secrets never live in markdown.** `source.attach` names a credential
@@ -582,6 +583,7 @@ backend:
   kind: document
   accepts: [application/pdf, text/plain]
   chunk: { max_chars: 800, overlap: 80 }
+  lead_chunks: 8                           # optional; chunk lead expand returns (default 8)
 ```
 
 Ingestion is **event-driven**, deposited-before-processed (an upload is never

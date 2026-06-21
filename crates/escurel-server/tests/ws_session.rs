@@ -432,6 +432,7 @@ async fn op_debits_writes_quota() {
         writes_per_minute: 1,
         embeds_per_minute: 300,
         concurrent_sessions: 8,
+        max_blob_bytes: 25 * 1024 * 1024,
     };
     let h = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
     let t = h.process.mint_token(TENANT, Role::Agent);

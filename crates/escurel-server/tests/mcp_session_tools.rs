@@ -359,10 +359,8 @@ async fn quota_caps_concurrent_sessions() {
     // semaphore must refuse the second open while the first is
     // still alive, and accept it once the first closes.
     let q = QuotaConfig {
-        queries_per_minute: 600,
-        writes_per_minute: 120,
-        embeds_per_minute: 300,
         concurrent_sessions: 1,
+        ..QuotaConfig::defaults()
     };
     let h = start(Some(Arc::new(QuotaManager::new(q))), true).await;
 
