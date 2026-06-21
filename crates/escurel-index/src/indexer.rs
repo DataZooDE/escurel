@@ -645,11 +645,17 @@ impl Indexer {
         // re-chunk + re-embed + re-index, replacing the single overlay block
         // the main loop wrote with the correct chunk-blocks (REQ-NF-01).
         crate::backend::document::rebuild_documents(self).await?;
+        // Reclaim canonical blobs no overlay references — dead weight from a
+        // materialise that failed after promotion, or a deleted instance
+        // (REQ-NF-02). Runs after the overlays are re-indexed so the
+        // referenced-set is authoritative. Inbox blobs are retained.
+        crate::backend::document::reclaim_orphan_blobs(self).await?;
         Ok(())
     }
 
     /// Document-side audit reconciliation (REQ-NF-02): document overlays
-    /// whose canonical blob is missing/invalid. `(page_id, reason)` each.
+    /// whose canonical blob is missing/invalid, plus orphan blobs no overlay
+    /// references. `(page_id_or_blob_id, reason)` each.
     pub async fn audit_documents(&self) -> Result<Vec<(String, String)>, IndexerError> {
         crate::backend::document::audit_documents(self).await
     }

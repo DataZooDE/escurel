@@ -76,6 +76,7 @@ async fn start_with_quota() -> EscurelProcess {
         writes_per_minute: QUOTA_WRITES,
         embeds_per_minute: QUOTA_EMBEDS,
         concurrent_sessions: 4,
+        max_blob_bytes: 25 * 1024 * 1024,
     }));
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,

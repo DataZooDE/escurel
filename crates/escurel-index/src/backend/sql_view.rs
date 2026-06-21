@@ -241,6 +241,22 @@ async fn prepare_source(
                 conn.execute_batch(stmt)?;
             }
             conn.execute_batch(&attach_sql(db, attach, &cred.secret))?;
+            // The postgres/mysql scanners cache the remote catalog at ATTACH
+            // time. Because the Indexer's connection is persistent, a view
+            // re-materialised by validate_bindings / reconstruct_views would
+            // otherwise see the *stale* schema and miss source drift
+            // (REQ-NF-06). Clearing the cache forces `SELECT *` to re-expand
+            // against the live schema. (No detach — that would break any other
+            // managed view sharing this alias.)
+            match db {
+                SqlConnector::Postgres => {
+                    conn.execute_batch("CALL pg_clear_cache();")?;
+                }
+                SqlConnector::Mysql => {
+                    conn.execute_batch("CALL mysql_clear_cache();")?;
+                }
+                _ => {}
+            }
             Ok(format!("{attach}.{}", binding.relation))
         }
     }
@@ -360,6 +376,11 @@ pub(crate) async fn search_candidates(
     Ok(hits)
 }
 
+/// Policy cap on the rows a bounded projection renders (REQ-SQL-06). A skill's
+/// `projection_limit` is clamped to this; the read path passes `limit + 1` to
+/// decide `truncated`, so the row reader allows one past this (see below).
+pub const MAX_PROJECTION_ROWS: usize = 10_000;
+
 /// Read up to `limit` rows from a materialised view as JSON objects, on an
 /// already-locked connection. Shared by [`SqlViewBackend::project_rows`] and
 /// [`crate::Indexer::project_view`] (the read-path projection, PR-2c).
@@ -381,7 +402,14 @@ pub(crate) fn project_view_rows(
     // schema is only populated after stepping; deriving names up front keeps
     // the row loop simple and index-aligned).
     let cols: Vec<String> = describe(conn, view)?.into_iter().map(|(n, _t)| n).collect();
-    let sql = format!("SELECT * FROM {view} LIMIT {}", limit.min(10_000));
+    // `+ 1` headroom so the read path can fetch one row past its policy cap
+    // ([`MAX_PROJECTION_ROWS`]) to decide `truncated` exactly. The caller
+    // clamps the configured `projection_limit` to the policy cap; this is just
+    // a runaway backstop.
+    let sql = format!(
+        "SELECT * FROM {view} LIMIT {}",
+        limit.min(MAX_PROJECTION_ROWS + 1)
+    );
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();
@@ -407,7 +435,22 @@ pub fn attach_sql(connector: SqlConnector, alias: &str, secret: &str) -> String 
         SqlConnector::Erpl => "erpl",
         SqlConnector::JsonDir | SqlConnector::ParquetDir => "",
     };
-    format!("ATTACH '{secret}' AS {alias} (TYPE {ty}, READ_ONLY)")
+    // `IF NOT EXISTS`: the Indexer holds a *persistent* DuckDB connection, so
+    // an alias attached at `create_instance` is still attached when
+    // `validate_bindings` / `reconstruct_views` re-probe the same view on the
+    // same connection. A plain `ATTACH` would then fail with "database already
+    // exists" and falsely mark a *healthy* binding `backend_unavailable`
+    // (REQ-NF-06). Idempotent attach avoids that; a fresh boot/rebuild starts
+    // with nothing attached and re-attaches from the current credential.
+    //
+    // KNOWN LIMITATION (credential rotation): if an admin re-registers the
+    // SAME name with a NEW secret on a live process, this keeps the existing
+    // attachment until restart/rebuild — reads continue against the old DSN.
+    // Revocation is safe (delete_credential ⇒ lookup fails ⇒ this code is never
+    // reached ⇒ `backend_unavailable`); only re-pointing is stale. A full fix
+    // (drop dependent managed views + DETACH on secret change, then re-attach)
+    // is tracked as a follow-up — see the discovered note.
+    format!("ATTACH IF NOT EXISTS '{secret}' AS {alias} (TYPE {ty}, READ_ONLY)")
 }
 
 /// The INSTALL/LOAD statements a DB connector needs before ATTACH.

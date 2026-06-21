@@ -412,8 +412,28 @@ pub(crate) async fn ingest_upload(
                 .into_response();
         }
     };
+    // Per-upload blob-size quota: reject an oversize payload *before* it is
+    // deposited, so an upload can never fill the host volume. `0` = unbounded.
+    if let Some(quota) = state.quota.as_ref() {
+        let cap = quota.max_blob_bytes(indexer.tenant());
+        if cap > 0 && bytes.len() as u64 > cap {
+            state.metrics.inc_request("/ingest/upload", 413);
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({
+                    "error": "payload_too_large",
+                    "message": format!(
+                        "upload is {} bytes; the per-upload limit is {cap} bytes",
+                        bytes.len()
+                    ),
+                    "max_bytes": cap,
+                })),
+            )
+                .into_response();
+        }
+    }
     // Deposit into the inbox before processing (the canonical-before-process
-    // step; an upload is never lost). Per-blob size quota applies.
+    // step; an upload is never lost).
     let blob = match indexer
         .lane_store()
         .put_inbox_blob(indexer.tenant(), bytes::Bytes::from(bytes), None)
@@ -1281,14 +1301,22 @@ async fn tool_expand(
                 .and_then(Value::as_str)
                 == Some("document")
             {
-                const EXPAND_CHUNK_LEAD: usize = 8;
+                // The skill's `lead_chunks` caps the lead returned (REQ-DOC-05);
+                // fall back to the server default. The full text lives in the blob.
+                const DEFAULT_CHUNK_LEAD: usize = 8;
+                let lead_n = indexer
+                    .skill_backend(&e.page.skill)
+                    .await
+                    .ok()
+                    .and_then(|b| b.document.and_then(|d| d.lead_chunks))
+                    .unwrap_or(DEFAULT_CHUNK_LEAD);
                 let total = e.blocks.len();
                 if let Some(arr) = page["blocks"].as_array().cloned() {
-                    let lead: Vec<Value> = arr.into_iter().take(EXPAND_CHUNK_LEAD).collect();
+                    let lead: Vec<Value> = arr.into_iter().take(lead_n).collect();
                     page["blocks"] = Value::from(lead);
                 }
                 page["chunks_total"] = json!(total);
-                page["chunks_truncated"] = json!(total > EXPAND_CHUNK_LEAD);
+                page["chunks_truncated"] = json!(total > lead_n);
             }
             Ok(page)
         }
@@ -1298,7 +1326,8 @@ async fn tool_expand(
 /// Bounded rows + projected `source` fields for a SQL-view instance overlay,
 /// or `None` when the page is not a `sql_view` instance.
 async fn sql_view_projection(indexer: &Indexer, e: &escurel_index::ExpandedPage) -> Option<Value> {
-    const PROJECTION_LIMIT: usize = 50;
+    /// Default rows rendered when the skill declares no `projection_limit`.
+    const DEFAULT_PROJECTION_LIMIT: usize = 50;
     let backend_ref = e.frontmatter.get("backend_ref")?;
     if backend_ref.get("kind").and_then(Value::as_str) != Some("sql_view") {
         return None;
@@ -1331,13 +1360,24 @@ async fn sql_view_projection(indexer: &Indexer, e: &escurel_index::ExpandedPage)
         }
     }
 
-    let rows = indexer.project_view(view, PROJECTION_LIMIT).await.ok()?;
+    // The skill's `projection_limit` caps the rows rendered (REQ-SQL-06); fall
+    // back to the server default, and never exceed the policy cap (so the
+    // `limit + 1` truncation sentinel can't be silently clamped by the row
+    // reader). Fetch one extra row so `truncated` is exact.
+    let binding = indexer.skill_backend(&e.page.skill).await.ok();
+    let limit = binding
+        .as_ref()
+        .and_then(|b| b.projection_limit)
+        .unwrap_or(DEFAULT_PROJECTION_LIMIT)
+        .min(escurel_index::backend::MAX_PROJECTION_ROWS);
+    let mut rows = indexer.project_view(view, limit + 1).await.ok()?;
+    let truncated = rows.len() > limit;
+    rows.truncate(limit);
 
     // Expose projected source columns under `source.<overlay_field>` per the
     // skill's `project` map (drift-visible; overlay wins for display).
     let mut source = serde_json::Map::new();
-    if let Ok(binding) = indexer.skill_backend(&e.page.skill).await
-        && let Some(sv) = binding.sql_view
+    if let Some(sv) = binding.and_then(|b| b.sql_view)
         && let Some(first) = rows.first()
     {
         for (src_col, overlay_field) in &sv.project {
@@ -1351,7 +1391,7 @@ async fn sql_view_projection(indexer: &Indexer, e: &escurel_index::ExpandedPage)
         "view": view,
         "rows": rows,
         "source": source,
-        "truncated": rows.len() == PROJECTION_LIMIT,
+        "truncated": truncated,
     }))
 }
 

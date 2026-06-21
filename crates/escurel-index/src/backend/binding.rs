@@ -26,6 +26,9 @@ pub struct BackendBinding {
     /// Present (and `kind == Document`) when the skill declares a
     /// `backend.accepts` document binding (REQ-DOC-01).
     pub document: Option<DocumentBinding>,
+    /// `sql_view` read cap: the maximum rows `expand` renders in the bounded
+    /// projection (`backend.projection_limit`). `None` ⇒ the server default.
+    pub projection_limit: Option<usize>,
 }
 
 /// A `document` skill's intake config (REQ-DOC-01). `accepts` is the
@@ -41,6 +44,9 @@ pub struct DocumentBinding {
     pub overlap: Option<usize>,
     /// `duckdb` (default) | `lance` (per-skill escape hatch; v1 = duckdb).
     pub retrieval: Option<String>,
+    /// Read cap: the maximum chunk lead `expand` returns (`backend.lead_chunks`).
+    /// `None` ⇒ the server default. The full text always lives in the blob.
+    pub lead_chunks: Option<usize>,
 }
 
 /// Which external source a `sql_view` skill materialises a read-only view
@@ -128,17 +134,25 @@ impl BackendBinding {
         let Some(block) = fm.get("backend").and_then(serde_json::Value::as_object) else {
             return Self::default();
         };
+        let read_usize = |key: &str| -> Option<usize> {
+            block
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .map(|n| n as usize)
+        };
         match block.get("kind").and_then(serde_json::Value::as_str) {
             Some("markdown") | None => Self::default(),
             Some("sql_view") => Self {
                 kind: BackendKind::SqlView,
                 sql_view: parse_sql_view(block),
                 document: None,
+                projection_limit: read_usize("projection_limit"),
             },
             Some("document") => Self {
                 kind: BackendKind::Document,
                 sql_view: None,
                 document: Some(parse_document(block)),
+                projection_limit: None,
             },
             // Unknown kind: lenient on the read path (markdown); the
             // create/validate path is where a bad binding is rejected.
@@ -173,6 +187,10 @@ fn parse_document(block: &serde_json::Map<String, serde_json::Value>) -> Documen
             .get("retrieval")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned),
+        lead_chunks: block
+            .get("lead_chunks")
+            .and_then(serde_json::Value::as_u64)
+            .map(|n| n as usize),
     }
 }
 

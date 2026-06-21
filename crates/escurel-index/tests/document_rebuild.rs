@@ -136,6 +136,60 @@ async fn audit_documents_detects_missing_blob() {
 }
 
 #[tokio::test]
+async fn rebuild_reclaims_orphan_blobs() {
+    // A canonical blob with no overlay referencing it (e.g. materialise failed
+    // after promotion, or the instance was deleted) is dead weight on the host
+    // volume. rebuild reclaims it; a blob a live instance references is kept.
+    let store_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let db = TempDir::new().unwrap();
+    let i = indexer_on(Arc::clone(&store), &db);
+    i.update_page("markdown/skills/memo.md", MEMO_SKILL)
+        .await
+        .unwrap();
+
+    // A healthy instance → its canonical blob is referenced by the overlay.
+    let kept = store
+        .put_inbox_blob(TENANT, Bytes::from_static(b"a referenced body"), None)
+        .await
+        .unwrap();
+    let page_id = match worker(&i)
+        .ingest(&kept, "text/plain", "memo", "doc-keep", &cfg())
+        .await
+        .unwrap()
+    {
+        IngestOutcome::Materialised { page_id, .. } => page_id,
+        other => panic!("expected materialised, got {other:?}"),
+    };
+
+    // An orphan canonical blob: no overlay references it.
+    let orphan = store
+        .put_blob(
+            TENANT,
+            Bytes::from_static(b"orphaned bytes, no overlay"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(store.get_blob(TENANT, &kept).await.is_ok());
+    assert!(store.get_blob(TENANT, &orphan).await.is_ok());
+
+    i.rebuild().await.expect("rebuild");
+
+    assert!(
+        store.get_blob(TENANT, &orphan).await.is_err(),
+        "rebuild must reclaim the orphan blob"
+    );
+    assert!(
+        store.get_blob(TENANT, &kept).await.is_ok(),
+        "rebuild must retain a referenced blob"
+    );
+    // The healthy instance still round-trips after the reclaim pass.
+    assert!(i.expand(&page_id, None, None).await.unwrap().is_some());
+}
+
+#[tokio::test]
 async fn rebuild_reconstructs_mixed_corpus() {
     // Derivability across ALL backend kinds at once: a from-scratch DuckDB over
     // one corpus + blobs must reconstruct markdown, sql_view, AND document

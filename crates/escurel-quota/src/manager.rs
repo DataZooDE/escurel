@@ -18,11 +18,15 @@ pub struct QuotaConfig {
     pub writes_per_minute: u32,
     pub embeds_per_minute: u32,
     pub concurrent_sessions: u32,
+    /// Maximum bytes accepted for a single document upload (`/ingest/upload`).
+    /// A larger payload is rejected *before* deposit so an upload can't fill
+    /// the host volume. `0` disables the cap (unbounded).
+    pub max_blob_bytes: u64,
 }
 
 impl QuotaConfig {
     /// Spec defaults: 600 queries, 120 writes, 300 embeds per minute,
-    /// 32 concurrent sessions.
+    /// 32 concurrent sessions, 25 MiB per uploaded document.
     #[must_use]
     pub fn defaults() -> Self {
         Self {
@@ -30,6 +34,7 @@ impl QuotaConfig {
             writes_per_minute: 120,
             embeds_per_minute: 300,
             concurrent_sessions: 32,
+            max_blob_bytes: 25 * 1024 * 1024,
         }
     }
 }
@@ -136,6 +141,14 @@ impl QuotaManager {
             .entry(tenant.to_owned())
             .or_insert(new)
             .clone()
+    }
+
+    /// The per-upload blob-size cap (bytes) for `tenant`; `0` means
+    /// unbounded. Used by `/ingest/upload` to reject an oversize payload
+    /// *before* it is deposited into the inbox.
+    #[must_use]
+    pub fn max_blob_bytes(&self, tenant: &str) -> u64 {
+        self.tenant(tenant).cfg.max_blob_bytes
     }
 
     /// Debit one token from the named dimension's bucket for

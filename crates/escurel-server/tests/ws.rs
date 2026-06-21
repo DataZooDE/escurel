@@ -233,6 +233,7 @@ async fn concurrent_session_quota_caps_open_connections() {
         writes_per_minute: 120,
         embeds_per_minute: 300,
         concurrent_sessions: 1,
+        max_blob_bytes: 25 * 1024 * 1024,
     };
     let p = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
     let t = p.mint_token(TENANT, Role::Agent);

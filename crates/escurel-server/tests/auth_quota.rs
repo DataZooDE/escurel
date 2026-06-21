@@ -97,6 +97,7 @@ async fn quota_exhaustion_returns_429_with_retry_after_header() {
         writes_per_minute: 60,
         embeds_per_minute: 60,
         concurrent_sessions: 32,
+        max_blob_bytes: 25 * 1024 * 1024,
     };
     let p = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
     let t = p.mint_token(TENANT, Role::Agent);
@@ -127,6 +128,7 @@ async fn write_tool_debits_writes_dimension_independently() {
         writes_per_minute: 1,
         embeds_per_minute: 60,
         concurrent_sessions: 32,
+        max_blob_bytes: 25 * 1024 * 1024,
     };
     let p = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
     let t = p.mint_token(TENANT, Role::Agent);
@@ -173,6 +175,7 @@ async fn tools_list_does_not_debit_quota() {
         writes_per_minute: 60,
         embeds_per_minute: 60,
         concurrent_sessions: 32,
+        max_blob_bytes: 25 * 1024 * 1024,
     };
     let p = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
     let t = p.mint_token(TENANT, Role::Agent);
@@ -204,6 +207,7 @@ async fn tenants_have_independent_quota_state() {
         writes_per_minute: 60,
         embeds_per_minute: 60,
         concurrent_sessions: 32,
+        max_blob_bytes: 25 * 1024 * 1024,
     };
     let p = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
 
