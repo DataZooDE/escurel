@@ -8,6 +8,12 @@
 //! Here a real table round-trips through `create_instance` → `project_view`,
 //! and the live source is mutated to prove `validate_bindings` fails closed on
 //! schema drift and on a deleted credential.
+//!
+//! Opt-in: gated behind the `live-postgres` feature (needs Docker), mirroring
+//! the `s3`-gated MinIO test, so a default `cargo test` on a Docker-less box
+//! doesn't fail. Run with
+//! `cargo test -p escurel-index --features live-postgres --test sql_view_postgres`.
+#![cfg(feature = "live-postgres")]
 
 use std::sync::Arc;
 

@@ -17,6 +17,11 @@ homepage.workspace = true
 # native dependency (pdfium); requires rust-version >= 1.91. See
 # docs/notes/discovered/2026-06-21-kreuzberg-msrv-191.md.
 kreuzberg = ["dep:kreuzberg", "dep:html-to-markdown-rs"]
+# Opt-in live SQL-connector integration test (sql_view_postgres.rs) — boots a
+# real Postgres testcontainer, so it needs Docker. OFF by default (like the
+# escurel-storage `s3` MinIO test) so a default `cargo test` on a Docker-less
+# box doesn't fail. Run with `--features live-postgres`.
+live-postgres = []
 
 [dependencies]
 # DuckDB via the downloaded precompiled libduckdb release (NOT the

@@ -58,7 +58,9 @@ pub use document::{
     NullExtractor, OcrPolicy, PlainTextExtractor, chunk_text,
 };
 pub use markdown::MarkdownBackend;
-pub use sql_view::{BindingStatus, Materialized, SqlViewBackend, SqlViewError};
+pub use sql_view::{
+    BindingStatus, MAX_PROJECTION_ROWS, Materialized, SqlViewBackend, SqlViewError,
+};
 
 /// Which storage / representation strategy backs a skill's instances.
 ///

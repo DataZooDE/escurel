@@ -38,3 +38,23 @@ long-lived per-tenant connection (validate, rebuild) must assume the alias is
 already attached and the remote catalog is cached. Test DB connectors against a
 **real** server (testcontainer) — `crates/escurel-index/tests/sql_view_postgres.rs`
 is the guard; the directory-connector tests structurally cannot catch either bug.
+
+## Known limitation — credential *rotation* (not yet fixed)
+
+`ATTACH IF NOT EXISTS` is idempotent, which is correct for re-probing but means
+re-registering the **same credential name with a new secret** on a live process
+keeps the *old* attachment until restart/rebuild — reads continue against the
+old DSN. Surfaced by the codex review of the Phase-1 PR.
+
+- **Revocation is safe:** `delete_credential` makes `lookup_credential` return
+  `None`, so `prepare_source` errors with `CredentialNotFound` *before* the
+  attach is reached → `backend_unavailable` (proven by
+  `sql_view_postgres.rs` step 8). Only *re-pointing* a still-registered name is
+  stale.
+- **Proper fix (follow-up):** on a secret change, drop the managed views bound
+  to that credential (enumerate `sql_view` overlays whose `source.attach`
+  matches) + `DETACH` the alias, so the next read/validate/rebuild re-attaches
+  from the current secret. Dropping the dependent views first is required
+  because DuckDB refuses to `DETACH` a database a view depends on — and it must
+  cover *all* views sharing the alias, which is why a blind `DETACH` in the
+  attach path is unsafe.

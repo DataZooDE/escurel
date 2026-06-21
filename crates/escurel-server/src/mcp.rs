@@ -1361,13 +1361,15 @@ async fn sql_view_projection(indexer: &Indexer, e: &escurel_index::ExpandedPage)
     }
 
     // The skill's `projection_limit` caps the rows rendered (REQ-SQL-06); fall
-    // back to the server default. Fetch one extra row so `truncated` is exact
-    // (rather than the imprecise "row count == limit").
+    // back to the server default, and never exceed the policy cap (so the
+    // `limit + 1` truncation sentinel can't be silently clamped by the row
+    // reader). Fetch one extra row so `truncated` is exact.
     let binding = indexer.skill_backend(&e.page.skill).await.ok();
     let limit = binding
         .as_ref()
         .and_then(|b| b.projection_limit)
-        .unwrap_or(DEFAULT_PROJECTION_LIMIT);
+        .unwrap_or(DEFAULT_PROJECTION_LIMIT)
+        .min(escurel_index::backend::MAX_PROJECTION_ROWS);
     let mut rows = indexer.project_view(view, limit + 1).await.ok()?;
     let truncated = rows.len() > limit;
     rows.truncate(limit);
