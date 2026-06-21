@@ -289,3 +289,46 @@ async fn resolve_and_list_surface_sql_instance_uniformly() {
     );
     s.process.shutdown().await;
 }
+
+#[tokio::test]
+async fn create_sql_instance_materialises_from_skill_binding() {
+    // A1: the admin tool materialises a sql_view instance using the skill's
+    // backend.source binding (the customers skill declares json_dir).
+    let s = setup().await;
+    let created = call(
+        &s.process,
+        "create_sql_instance",
+        json!({ "skill": "customers", "id": "us", "overlay_body": "# US customers" }),
+    )
+    .await;
+    assert!(created.get("error").is_none(), "create error: {created}");
+    let r = &created["result"]["structuredContent"];
+    assert_eq!(r["view"], "vw_customers__us");
+    let page_id = r["page_id"].as_str().unwrap();
+
+    // The new instance is a read-only sql_view overlay, queryable via expand.
+    let ex = call(&s.process, "expand", json!({ "page_id": page_id })).await;
+    assert_eq!(
+        ex["result"]["structuredContent"]["frontmatter"]["backend_ref"]["kind"],
+        "sql_view"
+    );
+
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn create_sql_instance_rejects_non_sql_skill() {
+    // The meta-skill `escurel` is markdown; create_sql_instance must refuse it.
+    let s = setup().await;
+    let body = call(
+        &s.process,
+        "create_sql_instance",
+        json!({ "skill": "escurel", "id": "x" }),
+    )
+    .await;
+    assert!(
+        body.get("error").is_some(),
+        "must reject non-sql_view skill: {body}"
+    );
+    s.process.shutdown().await;
+}

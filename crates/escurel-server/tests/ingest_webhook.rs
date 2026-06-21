@@ -177,3 +177,46 @@ async fn ingest_with_undeposited_blob_fails_gracefully() {
     );
     s.process.shutdown().await;
 }
+
+#[tokio::test]
+async fn ingest_upload_deposits_and_materialises() {
+    // A2: the browser-friendly endpoint deposits inline base64 bytes into the
+    // inbox itself, then runs the same ingest path → materialised instance.
+    use base64::Engine as _;
+    let s = setup(None).await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(b"an uploaded memo body");
+    let resp = reqwest::Client::new()
+        .post(format!("{}/ingest/upload", s.process.base_url()))
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "content_type": "text/plain", "bytes_b64": b64, "title": "memo.txt" }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(status, StatusCode::ACCEPTED, "body: {body}");
+    assert_eq!(body["status"], "materialised", "body: {body}");
+    assert_eq!(body["handler_skill"], "memo");
+    assert!(
+        body["page_id"]
+            .as_str()
+            .is_some_and(|p| p.contains("memo/doc-"))
+    );
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn ingest_upload_unauthenticated_rejected() {
+    use base64::Engine as _;
+    let s = setup(None).await;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(b"x");
+    let resp = reqwest::Client::new()
+        .post(format!("{}/ingest/upload", s.process.base_url()))
+        .json(&json!({ "content_type": "text/plain", "bytes_b64": b64 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    s.process.shutdown().await;
+}

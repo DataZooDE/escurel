@@ -322,18 +322,17 @@ pub(crate) struct IngestRequest {
     title: Option<String>,
 }
 
-pub(crate) async fn ingest(
-    State(state): State<crate::server::AppState>,
-    headers: HeaderMap,
-    Json(req): Json<IngestRequest>,
-) -> axum::response::Response {
-    state.metrics.inc_request("/ingest", 200);
-
-    // Auth (REQ-NF-07): enforced whenever a verifier is configured.
+/// Auth (REQ-NF-07) + per-tenant Writes rate-limit gate shared by `/ingest`
+/// and `/ingest/upload`. Returns a cloned indexer handle + the caller subject,
+/// or an error response.
+async fn ingest_gate(
+    state: &crate::server::AppState,
+    headers: &HeaderMap,
+) -> Result<(std::sync::Arc<Indexer>, String), axum::response::Response> {
     let auth_ctx = match state.verifier.as_ref() {
-        Some(v) => match enforce_auth(v, &headers).await {
+        Some(v) => match enforce_auth(v, headers).await {
             Ok(c) => Some(c),
-            Err(resp) => return resp,
+            Err(resp) => return Err(resp),
         },
         None => None,
     };
@@ -341,32 +340,114 @@ pub(crate) async fn ingest(
         .as_ref()
         .map(|c| c.subject.clone())
         .unwrap_or_default();
-
-    // Per-tenant rate limit (the Writes bucket); the Event log makes floods
-    // auditable.
     if let (Some(quota), Some(ctx)) = (state.quota.as_ref(), auth_ctx.as_ref())
         && let Err(err) = quota.try_consume(&ctx.tenant_id, Dimension::Writes)
     {
-        return (
+        return Err((
             StatusCode::TOO_MANY_REQUESTS,
             Json(json!({ "error": "rate_limited", "message": err.to_string() })),
         )
-            .into_response();
+            .into_response());
     }
+    match state.indexer.as_ref() {
+        Some(i) => Ok((std::sync::Arc::clone(i), subject)),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "no indexer wired" })),
+        )
+            .into_response()),
+    }
+}
 
-    let indexer = match state.indexer.as_ref() {
-        Some(i) => i,
-        None => {
+pub(crate) async fn ingest(
+    State(state): State<crate::server::AppState>,
+    headers: HeaderMap,
+    Json(req): Json<IngestRequest>,
+) -> axum::response::Response {
+    state.metrics.inc_request("/ingest", 200);
+    let (indexer, subject) = match ingest_gate(&state, &headers).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    record_and_dispatch_ingest(
+        &indexer,
+        &req.blob_id,
+        &req.content_type,
+        req.title,
+        &subject,
+    )
+    .await
+}
+
+/// `POST /ingest/upload` — browser-friendly intake: deposit inline base64
+/// bytes into the inbox (content-addressed), then run the same ingest path.
+/// The SPA can't deposit a content-addressed blob itself; the BFF proxies this
+/// with JWT minting.
+#[derive(Deserialize)]
+pub(crate) struct IngestUploadRequest {
+    content_type: String,
+    /// base64-encoded file bytes.
+    bytes_b64: String,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+pub(crate) async fn ingest_upload(
+    State(state): State<crate::server::AppState>,
+    headers: HeaderMap,
+    Json(req): Json<IngestUploadRequest>,
+) -> axum::response::Response {
+    state.metrics.inc_request("/ingest/upload", 200);
+    let (indexer, subject) = match ingest_gate(&state, &headers).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let bytes = match B64.decode(req.bytes_b64.as_bytes()) {
+        Ok(b) => b,
+        Err(e) => {
             return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "error": "no indexer wired" })),
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("bytes_b64 is not base64: {e}") })),
             )
                 .into_response();
         }
     };
+    // Deposit into the inbox before processing (the canonical-before-process
+    // step; an upload is never lost). Per-blob size quota applies.
+    let blob = match indexer
+        .lane_store()
+        .put_inbox_blob(indexer.tenant(), bytes::Bytes::from(bytes), None)
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("deposit: {e}") })),
+            )
+                .into_response();
+        }
+    };
+    record_and_dispatch_ingest(
+        &indexer,
+        blob.as_str(),
+        &req.content_type,
+        req.title,
+        &subject,
+    )
+    .await
+}
 
-    // MIME → handler skill (REQ-DOC-06).
-    let handler = match indexer.document_skill_for_mime(&req.content_type).await {
+/// Shared tail: resolve MIME→skill (REQ-DOC-06), record the immutable ingest
+/// Event (auditable), then dispatch the worker or park `no_handler_skill`.
+async fn record_and_dispatch_ingest(
+    indexer: &std::sync::Arc<Indexer>,
+    blob_id: &str,
+    content_type: &str,
+    title: Option<String>,
+    subject: &str,
+) -> axum::response::Response {
+    let handler = match indexer.document_skill_for_mime(content_type).await {
         Ok(h) => h,
         Err(e) => {
             return (
@@ -376,22 +457,20 @@ pub(crate) async fn ingest(
                 .into_response();
         }
     };
-
-    // Record the immutable ingest Event (auditable) regardless of match.
     let label_skill = handler.clone().unwrap_or_else(|| "ingest".to_owned());
     let event = indexer
         .capture_event(NewEvent {
             event_id: None,
             at: None,
             source: "ingest".to_owned(),
-            mime: req.content_type.clone(),
+            mime: content_type.to_owned(),
             label_skill,
             instance_page_id: None,
-            title: req.title.clone().unwrap_or_else(|| req.blob_id.clone()),
+            title: title.unwrap_or_else(|| blob_id.to_owned()),
             body: String::new(),
             provenance: Some(json!({
-                "blob_id": req.blob_id,
-                "content_type": req.content_type,
+                "blob_id": blob_id,
+                "content_type": content_type,
                 "handler_skill": handler,
                 "by": subject,
             })),
@@ -407,20 +486,20 @@ pub(crate) async fn ingest(
                 .into_response();
         }
     };
-
     match handler {
-        Some(skill) => run_document_ingest(indexer, &skill, &req, &event.event_id).await,
+        Some(skill) => {
+            run_document_ingest(indexer, &skill, blob_id, content_type, &event.event_id).await
+        }
         None => (
             StatusCode::ACCEPTED,
             Json(json!({
                 "event_id": event.event_id,
-                "blob_id": req.blob_id,
+                "blob_id": blob_id,
                 "status": "no_handler",
                 "issue": {
                     "code": "no_handler_skill",
                     "message": format!(
-                        "no document skill accepts content type `{}`; inbox blob retained",
-                        req.content_type
+                        "no document skill accepts content type `{content_type}`; inbox blob retained"
                     ),
                 },
             })),
@@ -435,7 +514,8 @@ pub(crate) async fn ingest(
 async fn run_document_ingest(
     indexer: &std::sync::Arc<Indexer>,
     skill: &str,
-    req: &IngestRequest,
+    blob_id_str: &str,
+    content_type: &str,
     event_id: &str,
 ) -> axum::response::Response {
     use escurel_index::backend::{
@@ -444,7 +524,7 @@ async fn run_document_ingest(
     };
     use escurel_storage::BlobId;
 
-    let Some(blob_id) = BlobId::parse(&req.blob_id) else {
+    let Some(blob_id) = BlobId::parse(blob_id_str) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "invalid blob_id (expected sha256:<hex>)" })),
@@ -477,7 +557,7 @@ async fn run_document_ingest(
 
     // Deterministic instance id from the content hash (idempotent intake).
     let instance_id = format!("doc-{}", &blob_id.hex()[..12.min(blob_id.hex().len())]);
-    let extractor: std::sync::Arc<dyn Extractor> = if req.content_type.starts_with("text/") {
+    let extractor: std::sync::Arc<dyn Extractor> = if content_type.starts_with("text/") {
         std::sync::Arc::new(PlainTextExtractor)
     } else {
         #[cfg(feature = "kreuzberg")]
@@ -495,7 +575,7 @@ async fn run_document_ingest(
     );
 
     match worker
-        .ingest(&blob_id, &req.content_type, skill, &instance_id, &cfg)
+        .ingest(&blob_id, content_type, skill, &instance_id, &cfg)
         .await
     {
         Ok(IngestOutcome::Materialised {
@@ -505,7 +585,7 @@ async fn run_document_ingest(
             StatusCode::ACCEPTED,
             Json(json!({
                 "event_id": event_id,
-                "blob_id": req.blob_id,
+                "blob_id": blob_id_str,
                 "handler_skill": skill,
                 "status": "materialised",
                 "page_id": page_id,
@@ -517,7 +597,7 @@ async fn run_document_ingest(
             StatusCode::ACCEPTED,
             Json(json!({
                 "event_id": event_id,
-                "blob_id": req.blob_id,
+                "blob_id": blob_id_str,
                 "handler_skill": skill,
                 "status": "extraction_failed",
                 "page_id": page_id,
@@ -935,6 +1015,10 @@ async fn dispatch_tools_call(
         "validate_bindings" => {
             require_admin(role)?;
             tool_validate_bindings(indexer).await
+        }
+        "create_sql_instance" => {
+            require_admin(role)?;
+            tool_create_sql_instance(indexer, params.arguments).await
         }
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
@@ -2379,6 +2463,41 @@ async fn tool_validate_bindings(indexer: &Indexer) -> Result<Value, JsonRpcError
     Ok(json!({ "ok": degraded == 0, "degraded": degraded, "bindings": bindings }))
 }
 
+#[derive(Deserialize)]
+struct CreateSqlInstanceArgs {
+    skill: String,
+    id: String,
+    #[serde(default)]
+    overlay_body: Option<String>,
+}
+
+/// Admin: materialise a sql_view instance from the UI. The binding comes from
+/// the skill's `backend.source` block (not the caller), so this can only
+/// create instances of skills that already declare a sql_view source.
+async fn tool_create_sql_instance(
+    indexer: &std::sync::Arc<Indexer>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: CreateSqlInstanceArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("create_sql_instance: {e}")))?;
+    let binding = indexer
+        .skill_backend(&a.skill)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_sql_instance: {e}")))?;
+    let sql_view = binding.sql_view.ok_or_else(|| {
+        JsonRpcError::invalid_params(format!(
+            "skill `{}` does not declare a sql_view backend.source",
+            a.skill
+        ))
+    })?;
+    let body = a.overlay_body.unwrap_or_else(|| format!("# {}\n", a.id));
+    let m = escurel_index::backend::SqlViewBackend::new(std::sync::Arc::clone(indexer))
+        .create_instance(&a.skill, &sql_view, &a.id, &body)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_sql_instance: {e}")))?;
+    Ok(json!({ "page_id": m.page_id, "view": m.view }))
+}
+
 // --- admin tenant CRUD + long-ops (admin-role gated) -----------
 //
 // These port the gRPC `EscurelAdmin` business logic verbatim; only
@@ -3299,6 +3418,21 @@ fn tools_list_payload() -> Value {
                  drift (binding_degraded) or unreachable sources \
                  (backend_unavailable). Reconciles views ⟂ backend_refs.",
                 json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "create_sql_instance",
+                "Admin: materialise a sql_view instance — the binding comes \
+                 from the skill's backend.source block (read-only view + \
+                 overlay page).",
+                json!({
+                    "type": "object",
+                    "required": ["skill", "id"],
+                    "properties": {
+                        "skill": { "type": "string", "description": "A skill declaring backend.kind=sql_view." },
+                        "id": { "type": "string", "description": "New instance id." },
+                        "overlay_body": { "type": "string", "description": "Optional overlay markdown body." }
+                    }
+                }),
             ),
             // Admin tenant-lifecycle + operator tools. All require an
             // admin-role bearer (JSON-RPC -32001 otherwise) and a

@@ -74,6 +74,12 @@ pub struct Config {
     /// substrate-unified groups claim, kept distinct from `roles` so the
     /// `roles`/admin-derivation path is never conflated with data groups).
     pub groups_claim: String,
+    /// Mint an **admin-role** token instead of the least-privilege Agent.
+    /// Default `false` (least-privilege). An operator/debug explorer
+    /// deployment sets `EXPLORE_BFF_ADMIN=1` to enable the admin-gated
+    /// actions (credential registry, validate_bindings, create_sql_instance).
+    /// A widened trust boundary — opt-in only.
+    pub admin: bool,
 }
 
 impl Config {
@@ -97,6 +103,10 @@ impl Config {
                 .map(str::to_owned)
                 .collect(),
             groups_claim: env_or("EXPLORE_BFF_GROUPS_CLAIM", "triton_sender_groups"),
+            admin: matches!(
+                env_or("EXPLORE_BFF_ADMIN", "0").trim(),
+                "1" | "true" | "yes"
+            ),
         }
     }
 }
@@ -182,10 +192,16 @@ impl Signer {
         claims.insert("sub".into(), json!("escurel-explore"));
         // The tenant claim name escurel verifies against (default `tenant`).
         claims.insert(TENANT_CLAIM.into(), json!(cfg.tenant));
-        // Least privilege: a non-admin role. The verifier's default
-        // `admin_role_value` is `escurel:admin`; this deliberately differs
-        // so the token projects to `Role::Agent`.
-        claims.insert("roles".into(), json!(["escurel:agent"]));
+        // Role: least-privilege Agent by default (`escurel:agent` ≠ the
+        // verifier's `escurel:admin` admin_role_value). An opt-in admin
+        // deployment (`EXPLORE_BFF_ADMIN`) mints `escurel:admin` so the
+        // admin-gated actions work — a deliberately widened trust boundary.
+        let role = if cfg.admin {
+            "escurel:admin"
+        } else {
+            "escurel:agent"
+        };
+        claims.insert("roles".into(), json!([role]));
         // Group ACL v1: grant the explorer the configured groups under the
         // claim escurel reads (`groups_claim`). Kept off `roles` so it never
         // touches admin derivation. Omitted when no groups are configured —
@@ -261,6 +277,8 @@ pub fn try_app(cfg: Config) -> Result<Router, BootError> {
         .route("/version", get(version))
         .route("/jwks.json", get(jwks))
         .route("/mcp", post(mcp))
+        .route("/ingest", post(ingest))
+        .route("/ingest/upload", post(ingest_upload))
         .fallback_service(serve_dir)
         .with_state(state))
 }
@@ -292,6 +310,28 @@ async fn version(State(state): State<Arc<AppState>>) -> Response {
 /// `POST /mcp` — mint a fresh JWT and forward the verbatim body to
 /// `${backend}/mcp`, relaying escurel's response.
 async fn mcp(State(state): State<Arc<AppState>>, _headers: HeaderMap, body: Bytes) -> Response {
+    proxy_post(&state, "/mcp", body).await
+}
+
+/// `POST /ingest` — proxy the document-ingestion webhook with JWT minting.
+async fn ingest(State(state): State<Arc<AppState>>, _headers: HeaderMap, body: Bytes) -> Response {
+    proxy_post(&state, "/ingest", body).await
+}
+
+/// `POST /ingest/upload` — proxy browser document uploads with JWT minting
+/// (the SPA can't deposit a content-addressed blob, so the backend deposits
+/// the inline bytes then ingests).
+async fn ingest_upload(
+    State(state): State<Arc<AppState>>,
+    _headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    proxy_post(&state, "/ingest/upload", body).await
+}
+
+/// Mint a fresh JWT and forward the verbatim body to `${backend}{path}`,
+/// relaying escurel's response. Shared by every authed POST passthrough.
+async fn proxy_post(state: &Arc<AppState>, path: &str, body: Bytes) -> Response {
     let token = match state.signer.mint(&state.cfg) {
         Ok(t) => t,
         Err(e) => {
@@ -299,7 +339,7 @@ async fn mcp(State(state): State<Arc<AppState>>, _headers: HeaderMap, body: Byte
             return (StatusCode::INTERNAL_SERVER_ERROR, "token mint failed").into_response();
         }
     };
-    let url = format!("{}/mcp", state.cfg.backend.trim_end_matches('/'));
+    let url = format!("{}{path}", state.cfg.backend.trim_end_matches('/'));
     let sent = state
         .http
         .post(&url)
@@ -311,7 +351,7 @@ async fn mcp(State(state): State<Arc<AppState>>, _headers: HeaderMap, body: Byte
     match sent {
         Ok(resp) => relay(resp).await,
         Err(e) => {
-            tracing::warn!(error = %e, "backend /mcp unreachable");
+            tracing::warn!(error = %e, path, "backend unreachable");
             (StatusCode::BAD_GATEWAY, "backend unreachable").into_response()
         }
     }
