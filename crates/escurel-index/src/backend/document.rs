@@ -494,7 +494,47 @@ pub(crate) async fn audit_documents(
             }
         }
     }
+    // The mirror direction: a canonical blob no overlay references (a
+    // materialise that failed after promotion, or a deleted instance). Keyed
+    // by the blob id so the operator can see what `rebuild` will reclaim.
+    let referenced = referenced_blob_ids(indexer).await?;
+    for id in indexer.lane_store().list_blobs(indexer.tenant()).await? {
+        if !referenced.contains(id.as_str()) {
+            problems.push((
+                id.as_str().to_owned(),
+                "orphan blob (no overlay)".to_owned(),
+            ));
+        }
+    }
     Ok(problems)
+}
+
+/// The set of canonical blob ids referenced by a live document overlay.
+async fn referenced_blob_ids(
+    indexer: &Indexer,
+) -> Result<std::collections::HashSet<String>, IndexerError> {
+    Ok(enumerate_document_overlays(indexer)
+        .await?
+        .into_iter()
+        .map(|o| o.blob_id)
+        .collect())
+}
+
+/// Reclaim canonical blobs no overlay references (REQ-NF-02). Returns the
+/// count removed. Inbox blobs are *not* touched — an `extraction_failed`
+/// upload is deliberately retained there for reprocessing (REQ-DOC-04).
+pub(crate) async fn reclaim_orphan_blobs(indexer: &Indexer) -> Result<usize, IndexerError> {
+    let referenced = referenced_blob_ids(indexer).await?;
+    let store = indexer.lane_store();
+    let tenant = indexer.tenant();
+    let mut removed = 0;
+    for id in store.list_blobs(tenant).await? {
+        if !referenced.contains(id.as_str()) {
+            store.delete_blob(tenant, &id).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 struct DocOverlay {

@@ -157,6 +157,12 @@ pub trait LaneStore: Send + Sync + 'static {
         self.delete(&blob_key(tenant, INBOX_PREFIX, id)?).await
     }
 
+    /// Delete a canonical blob by id. Used by `rebuild` to reclaim orphan
+    /// blobs no overlay references.
+    async fn delete_blob(&self, tenant: &str, id: &BlobId) -> Result<()> {
+        self.delete(&blob_key(tenant, BLOB_PREFIX, id)?).await
+    }
+
     /// List canonical blob ids for a tenant.
     async fn list_blobs(&self, tenant: &str) -> Result<Vec<BlobId>> {
         let prefix = Key::new(tenant, BLOB_PREFIX).map_err(key_err)?;
