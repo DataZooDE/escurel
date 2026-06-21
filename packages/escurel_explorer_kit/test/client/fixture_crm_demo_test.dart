@@ -34,10 +34,14 @@ void main() {
   });
 
   test('the spine is a richly-connected hub (backlinks + outgoing)', () async {
-    final backlinks =
-        await client.neighbours(crmDemoSpineId, direction: LinkDirection.incoming);
-    final outgoing =
-        await client.neighbours(crmDemoSpineId, direction: LinkDirection.outgoing);
+    final backlinks = await client.neighbours(
+      crmDemoSpineId,
+      direction: LinkDirection.incoming,
+    );
+    final outgoing = await client.neighbours(
+      crmDemoSpineId,
+      direction: LinkDirection.outgoing,
+    );
     expect(backlinks.length, greaterThanOrEqualTo(7));
     expect(outgoing.length, greaterThanOrEqualTo(5));
   });
@@ -57,7 +61,11 @@ void main() {
 
   test('captureEvent appends to the inbox', () async {
     final before = (await client.listInbox()).length;
-    final ev = await client.captureEvent(source: 'manual', title: 'probe', body: 'probe');
+    final ev = await client.captureEvent(
+      source: 'manual',
+      title: 'probe',
+      body: 'probe',
+    );
     expect(ev.status, 'inbox');
     expect((await client.listInbox()).length, before + 1);
   });

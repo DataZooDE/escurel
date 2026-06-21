@@ -213,6 +213,8 @@ class FixtureEscurelClient implements EscurelClient {
         visibility: (p.frontmatter['visibility'] as String?) ?? 'public',
         ownerField: p.frontmatter['owner_field'] as String?,
         acl: SkillAcl.fromJson(p.frontmatter['acl']),
+        backendKind: _backendKind(p.frontmatter),
+        capabilities: _capabilitiesFor(_backendKind(p.frontmatter)),
       );
     }).toList();
   }
@@ -794,7 +796,89 @@ class FixtureEscurelClient implements EscurelClient {
   @override
   void close() {}
 
+  // ── external instance backends (in-memory demo) ─────────────
+
+  @override
+  Future<void> registerCredential({
+    required String name,
+    required String connector,
+    required String secret,
+  }) async {
+    _credentials[name] = CredentialInfo(
+      name: name,
+      connector: connector,
+      createdBy: 'fixture',
+    );
+  }
+
+  @override
+  Future<List<CredentialInfo>> listCredentials() async =>
+      _credentials.values.toList();
+
+  @override
+  Future<void> deleteCredential(String name) async {
+    _credentials.remove(name);
+  }
+
+  @override
+  Future<List<BindingStatus>> validateBindings() async {
+    // Report every sql_view instance as healthy in the fixture.
+    return _pages.values
+        .where(
+          (p) =>
+              p.pageType == md.PageType.instance &&
+              (p.frontmatter['backend_ref'] as Map?)?['kind'] == 'sql_view',
+        )
+        .map(
+          (p) => BindingStatus(
+            pageId: p.id,
+            view:
+                ((p.frontmatter['backend_ref'] as Map?)?['view'] as String?) ??
+                '',
+            status: 'ok',
+          ),
+        )
+        .toList();
+  }
+
+  @override
+  Future<String> createSqlInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) async => throw notYetImplemented('create_sql_instance');
+
+  @override
+  Future<IngestOutcome> ingestUpload({
+    required String contentType,
+    required List<int> bytes,
+    String? title,
+  }) async => throw notYetImplemented('ingest/upload');
+
   // ── helpers ─────────────────────────────────────────────────
+
+  final Map<String, CredentialInfo> _credentials = {};
+
+  static String _backendKind(Map<String, dynamic> fm) {
+    final backend = fm['backend'] as Map?;
+    return (backend?['kind'] as String?) ?? 'markdown';
+  }
+
+  static SkillCapabilities _capabilitiesFor(String kind) => switch (kind) {
+    'sql_view' => const SkillCapabilities(
+      writable: false,
+      granularity: 'page',
+      search: 'late_materialized',
+      supportsCrdt: false,
+    ),
+    'document' => const SkillCapabilities(
+      writable: false,
+      granularity: 'block',
+      search: 'hybrid',
+      supportsCrdt: true,
+    ),
+    _ => const SkillCapabilities(),
+  };
 
   String? _resolveRef(WikilinkRef ref) {
     if (ref.id == null) return null;

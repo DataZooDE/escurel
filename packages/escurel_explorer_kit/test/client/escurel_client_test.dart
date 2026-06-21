@@ -251,5 +251,38 @@ class _StubClient implements EscurelClient {
   Future<VersionInfo> version() async => throw notYetImplemented('version');
 
   @override
+  Future<void> registerCredential({
+    required String name,
+    required String connector,
+    required String secret,
+  }) async => throw notYetImplemented('register_credential');
+
+  @override
+  Future<List<CredentialInfo>> listCredentials() async =>
+      throw notYetImplemented('list_credentials');
+
+  @override
+  Future<void> deleteCredential(String name) async =>
+      throw notYetImplemented('delete_credential');
+
+  @override
+  Future<List<BindingStatus>> validateBindings() async =>
+      throw notYetImplemented('validate_bindings');
+
+  @override
+  Future<String> createSqlInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) async => throw notYetImplemented('create_sql_instance');
+
+  @override
+  Future<IngestOutcome> ingestUpload({
+    required String contentType,
+    required List<int> bytes,
+    String? title,
+  }) async => throw notYetImplemented('ingest/upload');
+
+  @override
   void close() {}
 }

@@ -106,6 +106,9 @@ class ExpandResult {
     required this.blocks,
     required this.wikilinksOut,
     this.version,
+    this.backendProjection,
+    this.chunksTotal,
+    this.chunksTruncated = false,
   });
 
   final String pageId;
@@ -116,6 +119,147 @@ class ExpandResult {
   final List<Block> blocks;
   final List<String> wikilinksOut;
   final String? version;
+
+  /// For a `sql_view` instance: the bounded projection of the view's rows
+  /// rendered beneath the overlay (REQ-SQL-06). `null` for other backends.
+  final BackendProjection? backendProjection;
+
+  /// For a `document` instance: the total chunk count (the `blocks` returned
+  /// are a bounded lead, REQ-DOC-05). `null` for non-document instances.
+  final int? chunksTotal;
+
+  /// Whether the returned `blocks` are a truncated lead of `chunksTotal`.
+  final bool chunksTruncated;
+
+  /// The `backend_ref` block off the frontmatter, or `null` for native
+  /// markdown instances. Tells the UI which backend rendered this instance.
+  Map<String, dynamic>? get backendRef =>
+      frontmatter['backend_ref'] as Map<String, dynamic>?;
+
+  /// The backend kind (`sql_view` | `document`), or `null` for markdown.
+  String? get backendKind => backendRef?['kind'] as String?;
+}
+
+/// The bounded projection of a `sql_view` instance's view (`expand`'s
+/// `backend_projection`): rows, the projected `source.<field>` map, and an
+/// optional Issue (e.g. `binding_degraded` — reads fail closed on drift).
+class BackendProjection {
+  const BackendProjection({
+    required this.view,
+    required this.rows,
+    required this.source,
+    this.truncated = false,
+    this.issueCode,
+    this.issueMessage,
+  });
+
+  final String view;
+  final List<Map<String, dynamic>> rows;
+  final Map<String, dynamic> source;
+  final bool truncated;
+  final String? issueCode;
+  final String? issueMessage;
+
+  bool get degraded => issueCode != null;
+
+  factory BackendProjection.fromJson(Map<String, dynamic> j) {
+    final issue = j['issue'] as Map<String, dynamic>?;
+    return BackendProjection(
+      view: (j['view'] as String?) ?? '',
+      rows: (j['rows'] as List? ?? const [])
+          .cast<Map<String, dynamic>>()
+          .toList(),
+      source: Map<String, dynamic>.from(j['source'] as Map? ?? const {}),
+      truncated: (j['truncated'] as bool?) ?? false,
+      issueCode: issue?['code'] as String?,
+      issueMessage: issue?['message'] as String?,
+    );
+  }
+}
+
+/// A registered external-source credential — name/connector only, never the
+/// secret (`list_credentials`).
+class CredentialInfo {
+  const CredentialInfo({
+    required this.name,
+    required this.connector,
+    this.createdAt,
+    this.createdBy,
+  });
+
+  final String name;
+  final String connector;
+  final String? createdAt;
+  final String? createdBy;
+
+  factory CredentialInfo.fromJson(Map<String, dynamic> j) => CredentialInfo(
+    name: (j['name'] as String?) ?? '',
+    connector: (j['connector'] as String?) ?? '',
+    createdAt: j['created_at'] as String?,
+    createdBy: j['created_by'] as String?,
+  );
+}
+
+/// Health of one SQL-view binding from `validate_bindings`: `ok` |
+/// `binding_degraded` | `backend_unavailable`.
+class BindingStatus {
+  const BindingStatus({
+    required this.pageId,
+    required this.view,
+    required this.status,
+    this.detail,
+  });
+
+  final String pageId;
+  final String view;
+  final String status;
+  final String? detail;
+
+  bool get healthy => status == 'ok';
+
+  factory BindingStatus.fromJson(Map<String, dynamic> j) => BindingStatus(
+    pageId: (j['page_id'] as String?) ?? '',
+    view: (j['view'] as String?) ?? '',
+    status: (j['status'] as String?) ?? 'unknown',
+    detail: j['detail'] as String?,
+  );
+}
+
+/// The outcome of a document ingestion (`/ingest` or `/ingest/upload`):
+/// `materialised` | `extraction_failed` | `no_handler` | `queued`.
+class IngestOutcome {
+  const IngestOutcome({
+    required this.status,
+    this.eventId,
+    this.pageId,
+    this.handlerSkill,
+    this.chunkCount,
+    this.issueCode,
+    this.issueMessage,
+  });
+
+  final String status;
+  final String? eventId;
+  final String? pageId;
+  final String? handlerSkill;
+  final int? chunkCount;
+  final String? issueCode;
+  final String? issueMessage;
+
+  bool get materialised => status == 'materialised';
+
+  factory IngestOutcome.fromJson(Map<String, dynamic> j) {
+    final issue = j['issue'] as Map<String, dynamic>?;
+    return IngestOutcome(
+      status: (j['status'] as String?) ?? 'unknown',
+      eventId: j['event_id'] as String?,
+      pageId: j['page_id'] as String?,
+      handlerSkill: j['handler_skill'] as String?,
+      chunkCount: (j['chunk_count'] as num?)?.toInt(),
+      issueCode: issue?['code'] as String?,
+      issueMessage: issue?['message'] as String?,
+    );
+  }
 }
 
 // ── neighbours ──────────────────────────────────────────────────
@@ -167,6 +311,30 @@ class SkillAcl {
   }
 }
 
+/// What a skill's backend can do (from `list_skills`). Drives read-only-ness
+/// + how an instance is rendered. Absent on older servers → markdown defaults.
+class SkillCapabilities {
+  const SkillCapabilities({
+    this.writable = true,
+    this.granularity = 'block',
+    this.search = 'hybrid',
+    this.supportsCrdt = true,
+  });
+
+  final bool writable;
+  final String granularity;
+  final String search;
+  final bool supportsCrdt;
+
+  factory SkillCapabilities.fromJson(Map<String, dynamic> j) =>
+      SkillCapabilities(
+        writable: (j['writable'] as bool?) ?? true,
+        granularity: (j['granularity'] as String?) ?? 'block',
+        search: (j['search'] as String?) ?? 'hybrid',
+        supportsCrdt: (j['supports_crdt'] as bool?) ?? true,
+      );
+}
+
 class SkillSummary {
   const SkillSummary({
     required this.id,
@@ -177,7 +345,16 @@ class SkillSummary {
     this.visibility = 'public',
     this.ownerField,
     this.acl,
+    this.backendKind = 'markdown',
+    this.capabilities = const SkillCapabilities(),
   });
+
+  /// The backend a skill's instances live in (`markdown` | `sql_view` |
+  /// `document`); `markdown` when the skill declares no `backend:` block.
+  final String backendKind;
+
+  /// The backend's capability descriptor (read-only-ness, granularity, …).
+  final SkillCapabilities capabilities;
 
   final String id;
   final String description;

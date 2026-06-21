@@ -19,6 +19,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
@@ -207,6 +208,15 @@ class HttpEscurelClient implements EscurelClient {
           .map((e) => e.toString())
           .toList(),
       version: result['version'] as String?,
+      // sql_view: a bounded projection beneath the overlay (REQ-SQL-06).
+      backendProjection: result['backend_projection'] is Map<String, dynamic>
+          ? BackendProjection.fromJson(
+              result['backend_projection'] as Map<String, dynamic>,
+            )
+          : null,
+      // document: the returned blocks are a bounded chunk lead (REQ-DOC-05).
+      chunksTotal: (result['chunks_total'] as num?)?.toInt(),
+      chunksTruncated: (result['chunks_truncated'] as bool?) ?? false,
     );
   }
 
@@ -272,9 +282,98 @@ class HttpEscurelClient implements EscurelClient {
             visibility: (s['visibility'] as String?) ?? 'public',
             ownerField: s['owner_field'] as String?,
             acl: SkillAcl.fromJson(s['acl']),
+            // External-backend surfacing (REQ-BK-02); markdown defaults on
+            // older servers that don't emit `backend`/`capabilities`.
+            backendKind:
+                (s['backend'] as Map<String, dynamic>?)?['kind'] as String? ??
+                'markdown',
+            capabilities: s['capabilities'] is Map<String, dynamic>
+                ? SkillCapabilities.fromJson(
+                    s['capabilities'] as Map<String, dynamic>,
+                  )
+                : const SkillCapabilities(),
           ),
         )
         .toList();
+  }
+
+  // ── external instance backends ──────────────────────────────
+
+  @override
+  Future<void> registerCredential({
+    required String name,
+    required String connector,
+    required String secret,
+  }) async {
+    await _call('register_credential', {
+      'name': name,
+      'connector': connector,
+      'secret': secret,
+    });
+  }
+
+  @override
+  Future<List<CredentialInfo>> listCredentials() async {
+    final result = await _call('list_credentials', const {});
+    return (result['credentials'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(CredentialInfo.fromJson)
+        .toList();
+  }
+
+  @override
+  Future<void> deleteCredential(String name) async {
+    await _call('delete_credential', {'name': name});
+  }
+
+  @override
+  Future<List<BindingStatus>> validateBindings() async {
+    final result = await _call('validate_bindings', const {});
+    return (result['bindings'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(BindingStatus.fromJson)
+        .toList();
+  }
+
+  @override
+  Future<String> createSqlInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) async {
+    final result = await _call('create_sql_instance', {
+      'skill': skill,
+      'id': id,
+      'overlay_body': ?overlayBody,
+    });
+    return (result['page_id'] as String?) ?? '';
+  }
+
+  @override
+  Future<IngestOutcome> ingestUpload({
+    required String contentType,
+    required List<int> bytes,
+    String? title,
+  }) async {
+    // Not an MCP tool — a dedicated authed endpoint the BFF proxies. The
+    // backend deposits the inline bytes into the inbox, then ingests.
+    Response<Map<String, dynamic>> resp;
+    try {
+      resp = await _dio.post<Map<String, dynamic>>(
+        '/ingest/upload',
+        data: {
+          'content_type': contentType,
+          'bytes_b64': base64Encode(bytes),
+          'title': ?title,
+        },
+      );
+    } on DioException catch (e) {
+      throw EscurelTransportException(
+        'POST /ingest/upload failed: ${e.message}',
+        cause: e,
+      );
+    }
+    return IngestOutcome.fromJson(resp.data ?? const {});
   }
 
   @override
