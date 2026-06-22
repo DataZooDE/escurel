@@ -36,9 +36,9 @@ Read it in the order below.
    plus the pre-deployment empirical gate that must pass before any
    production rollout.
 9. **[`deploy/substrate.md`](deploy/substrate.md)** — deployment
-   binding for the DataZoo Hetzner agent substrate; paired with
-   **[`deploy/escurel.nomad.hcl`](deploy/escurel.nomad.hcl)** as a
-   concrete Nomad jobspec.
+   binding for the DataZoo Hetzner substrate (Kamal + ghcr + GCP); the
+   image is the repo-root [`Dockerfile`](../Dockerfile) and the Kamal
+   deploy contract lives in the substrate repo.
 
 ## What this is not
 

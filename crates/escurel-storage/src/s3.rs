@@ -29,7 +29,7 @@ use crate::{Key, LaneStore, Result, StoreError, Version};
 /// Static configuration for an [`S3Store`].
 ///
 /// All fields are required and supplied by the caller (12-factor:
-/// the binary translates `ESCUREL_*` env / Vault secrets into this
+/// the binary translates `ESCUREL_*` env / Secret Manager secrets into this
 /// struct). No ambient AWS credential chain is consulted — the
 /// substrate target injects an explicit access key / secret.
 #[derive(Debug, Clone)]

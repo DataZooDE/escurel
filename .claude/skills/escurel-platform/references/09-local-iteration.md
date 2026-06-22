@@ -5,8 +5,9 @@
 The workspace builds exactly **one** binary — the `escurel` CLI
 (`crates/escurel-cli`), which is a *client*, not a server. `escurel-server`
 is a **library** consumed by `escurel-test-support` (in-process) and, in
-production, by a golden-image binary at `/usr/local/bin/escurel-server`
-that the Nomad jobspec launches (`docs/deploy/escurel.nomad.hcl`). There is
+production, by the `escurel-server` binary in the repo's container image
+(`Dockerfile` → ghcr) that the substrate Kamal deploy launches
+(`docs/deploy/substrate.md`). There is
 **no `escurel serve` you can run locally today.** Plan your dev loop
 around that. (If this changes, this reference is the thing to update.)
 

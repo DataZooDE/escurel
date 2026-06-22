@@ -55,7 +55,7 @@ fn from_env_builds_fs_config_with_defaults() {
 
 #[test]
 fn from_env_selects_s3_backend_when_configured() {
-    // The exact var names the substrate Nomad jobspec pins.
+    // The exact var names the substrate Kamal deploy contract pins.
     let cfg = EscurelConfig::from_source(&source(env_map(&[
         ("ESCUREL_STORAGE_BACKEND", "s3"),
         ("ESCUREL_STORAGE_S3_BUCKET", "datazoo-substrate-app-nonprod"),

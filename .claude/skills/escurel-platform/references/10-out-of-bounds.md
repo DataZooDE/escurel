@@ -72,7 +72,6 @@ with a hack in your app; raise it.
   the integration point. `triton-tests::TritonProcess` composes with
   `EscurelProcess` in one harness.
 - **`substrate-platform`** — deploying your app and Escurel on the DataZoo
-  Hetzner substrate (Nomad/Consul/Vault/Fabio). Escurel itself is a pet
-  stateful service (`docs/deploy/substrate.md`,
-  `docs/deploy/escurel.nomad.hcl`); that skill covers the runtime contract
-  for your app's own job.
+  Hetzner substrate (Kamal + OpenTofu + ghcr + GCP backplane). Escurel itself
+  is a Kamal stateful pet (`docs/deploy/substrate.md`); that skill covers the
+  runtime + deploy contract for your app's own service.

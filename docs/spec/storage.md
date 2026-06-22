@@ -475,9 +475,9 @@ so on the next open the index is consistent with the
 committed `blocks` rows without further work.
 
 If the DuckDB file is missing but the canonical markdown is
-intact on the LaneStore — the cattle-node-loss case, where
-a Nomad client was destroyed and the next allocation lands on
-a fresh host with no local state — the server detects the
+intact on the LaneStore — the cattle-node-loss case, where a
+host was recreated and the data Volume reattaches to a survivor
+with no local DuckDB state — the server detects the
 missing file on first tenant access and runs `rebuild(tenant)`
 automatically before serving the first request. Cost ~32 ms/page:
 a 1000-page tenant rebuilds in ~32 s, a 10 000-page
@@ -518,7 +518,7 @@ behaviour).
 | External edit mid-session (live mode) | Two-stage reconciler: for cited pages the CRDT snapshot wins; for new or uncited pages the external edit wins |
 | DuckDB file corruption (rare) | Auto-suspend tenant (`status: suspended_corrupt`); admin runs `rebuild --tenant <id>` to recreate from canonical markdown |
 | `vss` or `fts` index corruption | `PRAGMA drop_index` plus rebuild — the index is derivable from `blocks.dense_vec` and `blocks.body` without re-embedding |
-| S3 backend timeout | Local spool under `${ESCUREL_DATA_DIR}/spool/<tenant>/` — **host-local, not synced to the LaneStore**; queue flushes on reconnect. On Nomad reschedule to a new host the previous host's spool is lost; the markdown source-of-truth is preserved (writes only enter the spool after a successful DuckDB commit per the row above), so recovery is a client re-submit |
+| S3 backend timeout | Local spool under `${ESCUREL_DATA_DIR}/spool/<tenant>/` — **host-local, not synced to the LaneStore**; queue flushes on reconnect. On a host recreate the previous host's spool is lost; the markdown source-of-truth is preserved (writes only enter the spool after a successful DuckDB commit per the row above), so recovery is a client re-submit |
 | Cattle node destroyed; `escurel.duckdb` gone; markdown intact on LaneStore | First request to the tenant triggers automatic `rebuild` from canonical markdown on the LaneStore (~32 ms/page; ~32 s for 1000 pages); transparent to agent except for one-time first-request latency |
 
 The two recovery primitives (`audit`, `rebuild`) are the full
