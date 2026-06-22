@@ -18,21 +18,24 @@ name = "escurel-server"
 path = "src/main.rs"
 
 [features]
-# `kreuzberg` is ON by default: PDF/DOCX/PPTX/XLSX uploads through /ingest
-# must work out of the box (the document backend is a first-class capability,
-# not an add-on). It pulls the ELv2-licensed kreuzberg crate + bundled pdfium
-# and requires rust-version >= 1.91 (already pinned). Drop it with
-# `--no-default-features` for a lighter, born-digital-text-only build.
-default = ["kreuzberg"]
+# Default-on:
+#   `kreuzberg` — PDF/DOCX/PPTX/XLSX uploads through /ingest work out of the
+#     box (ELv2 + bundled pdfium; needs rust-version >= 1.91).
+#   `gemini`    — the default embedder is hosted Gemini. The binary ships the
+#     Gemini HTTP embedder, and the runtime provider default is `gemini`; with
+#     no ESCUREL_GEMINI_API_KEY it falls back to ZeroEmbedder (a warning is
+#     logged) so keyless dev/CI/air-gapped boots stay clean. Air-gapped
+#     deployments should set ESCUREL_EMBEDDING_PROVIDER=embeddinggemma (local
+#     candle) or `zero`.
+# `--no-default-features` gives a light, offline, text-only build.
+default = ["kreuzberg", "gemini"]
 kreuzberg = ["escurel-index/kreuzberg"]
-# Opt-in production backends. Off by default so the dev / test build
-# (FsStore + ZeroEmbedder) stays light and the cold-compile cost of
-# the AWS SDK / candle is only paid by release / substrate builds.
-#   --features s3            → S3-backed LaneStore (Hetzner OS / MinIO)
-#   --features gemini        → Gemini HTTP embedder
-#   --features embeddinggemma → local candle EmbeddingGemma embedder
-s3 = ["escurel-storage/s3"]
 gemini = ["escurel-embed/gemini"]
+# Opt-in backends. Off by default so the dev / test build stays light and the
+# cold-compile cost of the AWS SDK / candle is only paid when selected.
+#   --features s3             → S3-backed LaneStore (Hetzner OS / MinIO)
+#   --features embeddinggemma → local candle EmbeddingGemma embedder (air-gap)
+s3 = ["escurel-storage/s3"]
 embeddinggemma = ["escurel-embed/candle"]
 
 [dependencies]

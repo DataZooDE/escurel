@@ -48,7 +48,10 @@ fn from_env_builds_fs_config_with_defaults() {
     assert_eq!(cfg.listen_http, "0.0.0.0:8080");
     assert_eq!(cfg.tenant, "default");
     assert_eq!(cfg.version, "0.0.0-dev");
-    assert_eq!(cfg.embedding_provider, EmbeddingProvider::Zero);
+    // Default embedder is hosted Gemini (the binary ships the `gemini`
+    // feature); with no key it falls back to zero at build time — see
+    // `gemini_default_without_key_falls_back_to_zero`.
+    assert_eq!(cfg.embedding_provider, EmbeddingProvider::Gemini);
     assert_eq!(cfg.embedding_dim, 768);
     assert!(cfg.auth.is_none());
 }
@@ -259,13 +262,15 @@ async fn binary_boots_and_serves_healthz() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn degraded_embedder_start_boots_with_readyz_false() {
     let data_dir = TempDir::new().unwrap();
-    // gemini provider with no `gemini` feature compiled into the test
-    // build → load fails → degraded ZeroEmbedder, embedder=false.
+    // `embeddinggemma` provider with no `embeddinggemma` (candle) feature
+    // compiled into the default test build → load fails → degraded
+    // ZeroEmbedder, embedder=false. (gemini is now a default feature with a
+    // keyless zero-fallback, so it no longer degrades — see the fallback test.)
     let cfg = EscurelConfig::from_source(&source(env_map(&[
         ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
         ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
         ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
-        ("ESCUREL_EMBEDDING_PROVIDER", "gemini"),
+        ("ESCUREL_EMBEDDING_PROVIDER", "embeddinggemma"),
     ])))
     .unwrap();
 
@@ -291,6 +296,40 @@ async fn degraded_embedder_start_boots_with_readyz_false() {
         body["components"]["lane_store"], true,
         "FsStore should be reachable"
     );
+
+    booted.handle.shutdown().await;
+}
+
+/// Gemini is the default provider, but with no API key the build must fall
+/// back to a (loaded) ZeroEmbedder — NOT degrade — so keyless dev/CI/air-gapped
+/// boots stay clean: `/readyz` is 200 with `embedder: true`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gemini_default_without_key_falls_back_to_zero() {
+    let data_dir = TempDir::new().unwrap();
+    // Default provider (gemini), no ESCUREL_GEMINI_API_KEY set.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
+    ])))
+    .unwrap();
+    assert_eq!(cfg.embedding_provider, EmbeddingProvider::Gemini);
+
+    let booted = cfg.build().await.expect("server boots");
+    assert!(
+        booted.embedder.is_loaded(),
+        "keyless gemini must fall back to a loaded ZeroEmbedder, not degrade"
+    );
+    let base = format!("http://{}", booted.handle.local_addr);
+    let ready = reqwest::Client::new()
+        .get(format!("{base}/readyz"))
+        .send()
+        .await
+        .unwrap();
+    // 200 (all components up) — the fallback embedder counts as loaded. The
+    // ready path returns an empty body; the 503 path is what carries the
+    // component JSON (see degraded test above).
+    assert_eq!(ready.status(), 200, "keyless gemini boot must be ready");
 
     booted.handle.shutdown().await;
 }
