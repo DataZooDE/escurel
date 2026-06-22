@@ -42,12 +42,16 @@ spec into running code.
 
 4. **Substrate alignment.** Match the
    [`substrate-platform`](file:///home/jr/.claude/skills/substrate-platform)
-   skill's runtime contract: `/healthz` (liveness, dependency-free),
-   `/version`, `/metrics`; Vault template for secrets; host volume
-   mounted at `/data`; structured JSON logs with `ts`, `level`,
-   `msg`, `app`, `env`, `version`, `request_id`. The Nomad jobspec
-   forks `templates/stateful-service.nomad.hcl` (escurel is a pet —
-   single replica, host-volume-pinned).
+   skill's runtime contract (ADR-0013: Kamal + OpenTofu + private ghcr +
+   GCP backplane): `/healthz` (liveness, dependency-free), `/version`,
+   `/metrics`; secrets from **GCP Secret Manager** → env at deploy; the
+   host-1 data **Volume** bind-mounted at `/data`; structured JSON logs to
+   stdout (`ts`, `level`, `msg`, `app`, `env`, `version`, `request_id`) →
+   Cloud Logging. escurel deploys as a **Kamal stateful pet** — pinned to
+   host-1, **STOP-FIRST** (single-writer DuckDB). The image is this repo's
+   `Dockerfile` → ghcr; the `kamal/dz-escurel/deploy.yml` + `apps/registry.yml`
+   row live in the **substrate repo** (two-actor model). Nomad/Consul/Vault/
+   Fabio/Packer are retired — see [`docs/deploy/`](docs/deploy/).
 
 5. **SOLID + clean code.** Boundaries are traits (`LaneStore`,
    `Embedder`, `Reranker`, …); dependencies point inward; one Cargo
@@ -135,12 +139,15 @@ A PR cycle:
 - **M1 acceptance:** our own spec-derived integration tests; no
   port of the Python prototype's 28-assertion suite (prototype not
   located at bootstrap time).
-- **Substrate naming:** to be reconciled onto the substrate skill's
-  `dz-escurel` / `apps-dz` / shared
-  `datazoo-substrate-app-<env>/dz/escurel/` prefix in a small PR
-  before M5. The deploy doc and Nomad jobspec under `docs/deploy/`
-  still reflect the old names today; do not propagate them to new
-  code.
+- **Substrate naming:** the substrate surface is `dz-escurel` /
+  `datazoo-substrate-app-<env>/dz/escurel/` (the `apps-dz` Vault policy is
+  gone with Vault). The binary surface stays `ESCUREL_*` / `escurel.*`. See
+  [`docs/deploy/substrate.md § Naming convention`](docs/deploy/substrate.md).
+- **Deployment concept (ADR-0013):** the Hetzner substrate is Kamal +
+  OpenTofu + ghcr + a GCP backplane (two-actor PR model). The prior
+  HashiCorp stack (Nomad/Consul/Vault/Fabio + Packer) is retired; its
+  jobspecs/image fragments were removed from `docs/deploy/`. The per-app
+  Kamal deploy contract + registry row live in the substrate repo.
 
 ## Demo app + browser verification (rodney)
 

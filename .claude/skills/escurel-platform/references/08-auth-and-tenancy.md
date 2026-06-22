@@ -68,7 +68,7 @@ crate has no business signing tokens for a real realm.
 ## In production
 
 Your app obtains its bearer from the real issuer your deployment names
-(on the substrate, a Vault OIDC role or a Dex/Keycloak instance —
+(on the substrate, the shared OIDC root — Triton / Carl / the explore BFF;
 `substrate-platform` + `docs/deploy/substrate.md` §1), then passes it to
 `Client::connect(endpoint, SecretString::from(token))` (`references/05`)
 or as the `Bearer` header (`references/03`). Wrap it in `SecretString`;

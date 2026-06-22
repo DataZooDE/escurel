@@ -25,8 +25,7 @@ The OIDC issuer is an external dependency; this spec does not
 ship one. Per-target deployment bindings (e.g.
 [`../deploy/substrate.md`](../deploy/substrate.md)) name the
 concrete issuer source — for the substrate target this is the
-Vault OIDC role or a Dex/Keycloak Nomad job classified as a
-pet.
+shared OIDC root (Triton / Carl / the explore BFF).
 
 On every request:
 
@@ -331,11 +330,10 @@ output; useful for local development, not production.
 - `health` MCP tool — richer JSON with version, embedding
   status, tenant count, lane stats
 
-Substrate orchestrators (Nomad) wire `/readyz` as the
-deployment readiness probe; blue/green canary promotion
-respects it, so a green allocation receives public traffic only
-after embedding is loaded, storage is reachable, and OTel has
-connected.
+The substrate (Kamal / kamal-proxy) wires `/readyz` as the
+deployment readiness probe; blue/green promotion respects it, so a
+green container receives traffic only after embedding is loaded,
+storage is reachable, and OTel has connected.
 
 ## Failure modes recap
 

@@ -56,7 +56,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Block until SIGTERM (Nomad's graceful-stop signal) or SIGINT
+/// Block until SIGTERM (the orchestrator's graceful-stop signal) or SIGINT
 /// (Ctrl-C in a dev shell). On non-unix targets, only Ctrl-C.
 #[cfg(unix)]
 async fn wait_for_shutdown() {

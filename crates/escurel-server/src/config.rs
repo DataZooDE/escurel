@@ -4,8 +4,9 @@
 //! [`EscurelConfig::from_env`] reads the 12-factor config surface
 //! (principle 3): a TOML base file at `$ESCUREL_CONFIG` (optional)
 //! overlaid by `ESCUREL_*` environment variables. The variable names
-//! are the ones the substrate Nomad jobspec pins
-//! (`docs/deploy/escurel.nomad.hcl`) and the spec config table
+//! are the ones the substrate Kamal deploy contract pins
+//! (`kamal/dz-escurel/deploy.yml` in the substrate repo, via Secret
+//! Manager) and the spec config table
 //! (`docs/spec/README.md §Configuration`) — they are the binary's
 //! locked config surface.
 //!

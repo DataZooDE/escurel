@@ -21,7 +21,7 @@ flutter run -d chrome --dart-define=ESCUREL_EXPLORE_MODE=fixture
 ```bash
 flutter run -d chrome \
   --dart-define=ESCUREL_EXPLORE_MODE=http \
-  --dart-define=ESCUREL_EXPLORE_BASE_URL=http://escurel.service.consul:8080
+  --dart-define=ESCUREL_EXPLORE_BASE_URL=http://dz-escurel.nonprod.int:8080
 ```
 
 ## Test

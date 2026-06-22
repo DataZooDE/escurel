@@ -92,7 +92,7 @@ are the ones with the largest blast radius if changed later.
 | 13 | Observability | **OpenTelemetry traces + metrics (OTLP)**, **JSON logs to stdout**, **`/metrics` Prometheus fallback** | See [`platform.md`](platform.md#observability) |
 | 14 | Quotas (v1) | **Query rate limit**, **write + embed rate limit**, **concurrent sessions cap** | All three are token-bucket per tenant; defaults configurable, overridable per tenant |
 | 15 | Page IDs | **ULID** is canonical; **mutable slug** stored as metadata for human-friendly URLs | Wikilinks reference ULID at storage layer; slug → ULID resolved at parse time |
-| 16 | Deployment target binding | The core spec is target-agnostic; concrete bindings for any specific runtime live in [`../deploy/`](../deploy/). v1 ships [`../deploy/substrate.md`](../deploy/substrate.md) for the `DataZooDE/hetzner-agent-substrate` target | Names the OIDC issuer source, S3 LaneStore config, audit/backup shippers, placement-group sizing, golden-image content, Tailscale tags, and ingress proxy (Fabio) for that target. New deployment targets get their own sibling doc; the core spec stays unchanged. |
+| 16 | Deployment target binding | The core spec is target-agnostic; concrete bindings for any specific runtime live in [`../deploy/`](../deploy/). v1 ships [`../deploy/substrate.md`](../deploy/substrate.md) for the `DataZooDE/hetzner-agent-substrate` target (Kamal + OpenTofu + ghcr + GCP backplane) | Names the OIDC issuer source, the host-1 data-Volume store, GCP Secret Manager secrets, internal/external exposure, Cloud Logging + Managed Prometheus, and restic→GCS Volume backups. The image is the repo `Dockerfile`→ghcr; the Kamal deploy + registry row live in the substrate repo. New targets get a sibling doc; the core spec is unchanged. |
 
 **Two intentional extensions beyond a strict tool-surface-only contract.** Decisions 6 (transports) and 10 (admin/operator surface) broaden the agent contract: live mode benefits from WebSocket, while the admin/operator capabilities are exposed as additional MCP tools on the same `/mcp` endpoint, gated by an OIDC `admin` role claim. The CLI becomes a thin client over the same surface rather than a separate channel. The contract — twelve agent tools, no direct SQL, no raw vector access, no cross-tenant operations — is preserved.
 
@@ -214,8 +214,8 @@ latency on writes acceptable.
   copy in `${ESCUREL_DATA_DIR}/spool/<tenant>/`. Writes queue;
   reads fall back to the last cached lane snapshot. Quotas
   apply normally. The spool dir is **host-local** and never
-  synced to the LaneStore. On a Nomad reschedule to a new host,
-  queued spool entries are lost; the markdown source-of-truth
+  synced to the LaneStore. On a host recreate (the Volume
+  reattaches to a survivor), queued spool entries are lost; the markdown source-of-truth
   on the LaneStore is preserved (writes only enter the spool
   after a successful DuckDB commit per the crash-recovery
   matrix), so recovery is a client re-submit. Substrate
@@ -319,7 +319,7 @@ log_format = "json"               # "json" or "text"
 
 Environment variable overrides follow `ESCUREL_<UPPER_SNAKE>`
 derived from the TOML key path (e.g. `[server] data_dir` →
-`ESCUREL_SERVER_DATA_DIR`). Substrate Nomad jobspecs pin the
+`ESCUREL_SERVER_DATA_DIR`). The substrate Kamal deploy pins the
 sizing knobs explicitly so capacity planning is one place:
 
 | env var | TOML | default | what it bounds |

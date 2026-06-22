@@ -1,7 +1,7 @@
 //! `/readyz` probe + per-dependency report.
 //!
 //! The gateway calls into a single [`ReadinessProbe`] when
-//! `/readyz` is requested. Substrate orchestrators (Nomad) wire
+//! `/readyz` is requested. Substrate orchestrators (Kamal / kamal-proxy) wire
 //! `/readyz` as the deployment readiness probe; blue/green
 //! canary promotion respects it (a green allocation receives
 //! public traffic only after every probed dependency reports

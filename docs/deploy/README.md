@@ -6,17 +6,21 @@ agnostic; the files here bind it to concrete targets.
 
 | File | What it is |
 |---|---|
-| [`substrate.md`](substrate.md) | The DataZoo Hetzner substrate binding (naming, identity, storage, ingress, backup, placement). Read this for the substrate target. |
-| [`escurel.nomad.hcl`](escurel.nomad.hcl) | Nomad jobspec for the substrate target — `dz-escurel`, single-replica stateful service. |
-| [`escurel.pkr.hcl`](escurel.pkr.hcl) | Golden-image bake **fragment** (candle + EmbeddingGemma + DuckDB extensions + the binary). A fragment of the substrate's Packer pipeline, not a standalone build. |
-| [`escurel-export-shipper.nomad.hcl`](escurel-export-shipper.nomad.hcl) | Periodic tenant-export shipper — the substrate-side half of the backup contract. |
-| [`escurel.tailscale-acl.json`](escurel.tailscale-acl.json) | Tailscale ACL fragment (forward-looking per-app tag). |
-| [`escurel-explore.nomad.hcl`](escurel-explore.nomad.hcl) | The Flutter editor companion app (separate workload). |
+| [`substrate.md`](substrate.md) | The DataZoo Hetzner substrate binding (Kamal/ghcr/OpenTofu/GCP) — naming, identity, secrets, storage-as-a-pet, exposure, backup. Read this for the substrate target. |
+| [`../../Dockerfile`](../../Dockerfile) | The `escurel-server` container image (build → slim runtime). Published to private ghcr by [`../../.github/workflows/publish-image.yml`](../../.github/workflows/publish-image.yml). |
 | [`../../deny.toml`](../../deny.toml) | `cargo-deny` config — the machine-enforced license + advisory + source gate. See [§ License + advisory audit](#license--advisory-audit-cargo-deny). |
+
+> **Deployment is the DataZoo substrate (ADR-0013): Kamal on Hetzner cattle
+> hosts + OpenTofu + private ghcr + a GCP backplane**, two-actor PR model. The
+> per-app **Kamal deploy contract (`kamal/dz-escurel/deploy.yml`) and registry
+> row (`apps/registry.yml`) live in the substrate repo**, not here — see
+> [`substrate.md`](substrate.md) and the `substrate-platform` skill. The old
+> Nomad jobspecs, Packer golden-image fragment, and per-app Tailscale ACL were
+> removed (the HashiCorp stack is retired).
 
 > **Two naming surfaces.** The **binary surface** keeps the project
 > name: `ESCUREL_*` env vars, `escurel.toml`. The **substrate surface**
-> uses the shared `dz-escurel` / `apps-dz` / `datazoo-substrate-app-<env>/dz/escurel/`
+> uses the shared `dz-escurel` / `datazoo-substrate-app-<env>/dz/escurel/`
 > convention so substrate tooling sees one product. See
 > [`substrate.md § Naming convention`](substrate.md).
 
@@ -150,48 +154,33 @@ sudo systemctl status escurel.service
 journalctl -u escurel.service -f      # JSON lines on stdout
 ```
 
-### Target C — substrate `nonprod` (S3 LaneStore, OTLP to substrate collector)
+### Target C — the DataZoo substrate (Kamal, stateful pet)
 
-The production shape: S3 LaneStore on Hetzner Object Storage, OTLP to
-the substrate collector, cattle-node-loss → auto-rebuild from canonical
-markdown. This target is **not** a hand-run binary — it is the Nomad
-jobspec [`escurel.nomad.hcl`](escurel.nomad.hcl), deployed operator-side
-from the substrate repo. The `ESCUREL_*` env set lives in that jobspec;
-secrets (S3 keys) come from Vault via the `template` stanza, not env
-files.
-
-```sh
-# Operator-side, from the substrate repo. Names per substrate.md.
-nomad job run \
-  -var datacenter=nonprod \
-  -var version=<build-version> \
-  -var image=<golden-image-ref> \
-  -var public_hostname=escurel.nonprod.<domain> \
-  -var oidc_issuer=https://oidc.nonprod.<domain>/ \
-  -var s3_bucket=datazoo-substrate-app-nonprod \
-  -var s3_endpoint=https://nbg1.your-objectstorage.com \
-  -var host_volume_name=escurel-tenants \
-  docs/deploy/escurel.nomad.hcl
-```
+The production shape. **Not** a hand-run binary and **not** in this repo's
+artefacts: escurel deploys as a Kamal app from the **substrate repo** under the
+two-actor model (a PR adds `kamal/dz-escurel/deploy.yml` + an `apps/registry.yml`
+row; a GitHub Action runs `kamal deploy`). The full binding — host-1 data
+Volume + FsStore, STOP-FIRST deploys, Secret Manager secrets, internal exposure,
+restic→GCS Volume backups, cattle-node-loss auto-rebuild — is in
+[`substrate.md`](substrate.md). The image is this repo's
+[`Dockerfile`](../../Dockerfile) → private ghcr.
 
 Distinctive behaviours of this target (vs A/B):
 
-- **S3 LaneStore.** `ESCUREL_STORAGE_BACKEND=s3`, bucket
-  `datazoo-substrate-app-nonprod`, prefix `dz/escurel/lanes/tenants/`.
-  The endpoint hostname is used end-to-end (LaneStore + DuckDB httpfs
-  secret) per the storage.md hostname-equality constraint.
-- **Baked model, no egress.** `ESCUREL_EMBEDDING_MODEL` is the baked
-  golden-image path `/opt/escurel/models/embeddinggemma-300m`
-  ([`escurel.pkr.hcl`](escurel.pkr.hcl)).
-- **OTLP to the substrate collector** at
-  `http://otel-collector.service.consul:4317`.
-- **Cattle-node-loss → auto-rebuild.** On `/recreate-node` the next
-  allocation reconstructs each tenant's `escurel.duckdb` from canonical
-  markdown on the LaneStore on first request, with no operator action
-  (storage.md HNSW persistence model). This is the M5 substrate
-  acceptance gate (substrate.md §10).
-- **Backups.** The [`escurel-export-shipper`](escurel-export-shipper.nomad.hcl)
-  periodic job ships per-tenant `tenant_export` tarballs to GCS.
+- **Stateful pet on the host-1 Volume.** `ESCUREL_SERVER_DATA_DIR=/data` bind-
+  mounts the Hetzner data Volume; DuckDB + markdown + blobs live there, single-
+  writer, **STOP-FIRST** deploys (DuckDB's exclusive lock). (Hetzner Object
+  Storage / `STORAGE_BACKEND=s3` is available for blob offload but not required.)
+- **Secrets from GCP Secret Manager** → env at deploy (no Vault). Rotation =
+  redeploy.
+- **Logs → Cloud Logging, `/metrics` → Managed Prometheus** (no per-app
+  collector job).
+- **Cattle-node-loss → auto-rebuild.** Volume auto-reattaches to a survivor;
+  escurel reconstructs `escurel.duckdb` from canonical markdown on first boot,
+  no operator action (storage.md crash-recovery; substrate.md §7).
+- **Backups** are the substrate's Volume backup (`backup-data.yml`, restic→GCS)
+  with a verified `restore-dryrun`; escurel's `tenant_export` remains the
+  logical per-tenant export.
 
 ## License + advisory audit (`cargo deny`)
 
@@ -244,18 +233,18 @@ Deps are frozen via the committed `Cargo.lock` (a locked decision in
 specific bump, change that one crate in `Cargo.toml` and `cargo update -p
 <crate>` only.
 
-## Placeholders you (or the operator) must fill
+## Placeholders the operator supplies (all via substrate-repo PRs)
 
 | Placeholder | Who supplies it | Where |
 |---|---|---|
-| `<domain>` | operator (DNS) | `public_hostname`, `oidc_issuer` |
-| Hetzner OS access/secret key | operator (Vault `kv/data/apps/dz/escurel/<env>/objstore`) | jobspec `template` |
-| `host_volume_name` | operator (substrate PR pre-allocates the host volume) | `-var host_volume_name` |
-| golden-image ref | operator (Packer build) | `-var image` |
-| `escurel-class` node class | operator (substrate `infra/modules/nodes`) | jobspec `constraint` |
-| GCS backup bucket + SA key | operator (Vault `.../backups-gcs`) | shipper `template` |
-| model-artefact mirror URL | operator (substrate internal store) | `escurel.pkr.hcl` |
+| `<env>` / internal hostname (`dz-escurel.<env>.int`) | operator (substrate DNS) | `apps/registry.yml` exposure |
+| image tag (`ghcr.io/datazoode/escurel-server:<tag>`) | this repo's `publish-image.yml` build | `apps/registry.yml` / `deploy.yml` |
+| `ghcr-pull-token` | operator (Secret Manager) | substrate host pull auth |
+| `/data` Volume subdir on host-1 | operator (substrate PR) | `kamal/dz-escurel/deploy.yml` `volumes:` |
+| Gemini key / webhook secret / (optional) S3 keys | operator (Secret Manager) | `deploy.yml` `env.secret` |
+| OIDC issuer(s) + audience | operator (substrate auth) | `deploy.yml` `env.clear` |
 
-None of these are invented here; each resolves to a substrate-repo PR
-or a Vault write (see [`substrate.md §9`](substrate.md) dependency
-matrix).
+None of these are invented here; each resolves to a **substrate-repo PR** (a
+deploy/registry change or a Secret Manager entry) — see
+[`substrate.md §6`](substrate.md) dependency matrix and the `substrate-platform`
+skill.

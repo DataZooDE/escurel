@@ -11,8 +11,10 @@ Three modes, dispatched by `--dart-define=ESCUREL_EXPLORE_AUTH=…`:
 
 - **`none`** (default) — no `Authorization` header. Works for
   tailnet-only deployments where the substrate's tailnet ACL is the
-  auth boundary. This is the v0 deployment shape per
-  `docs/deploy/escurel-explore.nomad.hcl`.
+  auth boundary. This was the v0 deployment shape. (Historical note:
+  the original Nomad jobspec it referenced was removed in the
+  Kamal-substrate migration; internal/tailnet exposure is now declared
+  in the substrate repo's `apps/registry.yml` — see `docs/deploy/substrate.md`.)
 - **`bearer`** — read a static token from
   `--dart-define=ESCUREL_EXPLORE_TOKEN=…` and ride it as
   `Authorization: Bearer <token>`. Used by the rare dev who wants to

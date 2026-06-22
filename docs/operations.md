@@ -1,7 +1,7 @@
 # Operating escurel (v1)
 
 Day-2 operator guide. For first deploy (env vars, the three deploy
-targets, Nomad/Packer/Tailscale artefacts) start at
+targets, the substrate Kamal binding) start at
 [`deploy/README.md`](deploy/README.md). For the wire surface see
 [`spec/protocol.md`](spec/protocol.md); for the storage / recovery
 model see [`spec/storage.md`](spec/storage.md).
@@ -15,10 +15,10 @@ on first boot of a fresh host (see [Node loss](#node-loss--fresh-host)).
 
 | Endpoint | Meaning |
 |---|---|
-| `GET /healthz` | Liveness. Always `200 OK` while the process is up; dependency-free. Wire this to the Nomad/Consul check. |
+| `GET /healthz` | Liveness. Always `200 OK` while the process is up; dependency-free. Wire this to the kamal-proxy healthcheck. |
 | `GET /readyz` | Readiness. `200` only when LaneStore + indexer + embedder are all up; `503` with a per-component JSON body otherwise. A degraded embedder (model failed to load) shows here as `{"components":{"embedder":false}}` — the process still serves liveness and read traffic. |
 | `GET /version` | The build version (`VERSION` / `ESCUREL_VERSION`). |
-| `GET /metrics` | Prometheus exposition on a **dedicated listener** (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default `:9090`) — *not* the main HTTP port. Exposes `escurel_up`, `escurel_requests_total{route,status}`, and the per-tool families `escurel_tool_calls{tenant,tool,transport,status}`, `escurel_tool_latency_ms`, `escurel_live_sessions_open`, `escurel_audit_drift`. Scrape via the tailnet-only `escurel-metrics` Consul service. |
+| `GET /metrics` | Prometheus exposition on a **dedicated listener** (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default `:9090`) — *not* the main HTTP port. Exposes `escurel_up`, `escurel_requests_total{route,status}`, and the per-tool families `escurel_tool_calls{tenant,tool,transport,status}`, `escurel_tool_latency_ms`, `escurel_live_sessions_open`, `escurel_audit_drift`. Scraped into Managed Prometheus via the substrate's metrics path. |
 
 Logs are structured JSON on stdout with `ts`, `level`, `msg`, `app`,
 `env`, `version`, `request_id` (per [`spec/platform.md`](spec/platform.md)).
@@ -62,10 +62,10 @@ is rejected, not used to escape the tenant root.
 
 `TenantExport` streams a tar+gz of the tenant's `markdown/` tree (the
 canonical corpus — CRDT runtime state is deliberately *not* exported;
-it resets to markdown head on import). The substrate ships these to
-the backups bucket on a schedule via the periodic
-`escurel-export-shipper` Nomad job
-([`deploy/escurel-export-shipper.nomad.hcl`](deploy/escurel-export-shipper.nomad.hcl)).
+it resets to markdown head on import) — the *logical* per-tenant export.
+Durable DR is the substrate's **Volume** backup: `backup-data.yml`
+(restic → GCS) snapshots the whole `/data` Volume on a 6h cron, with a
+verified `restore-dryrun` (see [`deploy/substrate.md §4`](deploy/substrate.md)).
 
 ### Restore a tenant
 

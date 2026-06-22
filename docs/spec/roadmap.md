@@ -100,12 +100,12 @@ milestone (`S3Store` has moved to M1).
 - License audit re-run; deps frozen.
 - End-to-end deploy doc.
 - **Substrate-target artefacts** (per
-  [`../deploy/substrate.md`](../deploy/substrate.md)): Packer
-  image fragment (candle libs + EmbeddingGemma model bake);
-  Nomad jobspec set (`escurel-class` placement group, Vault
-  template, OIDC env, Fabio `urlprefix-` tags); tenant-export
-  shipper Nomad periodic job; Tailscale `tag:escurel` ACL
-  fragment.
+  [`../deploy/substrate.md`](../deploy/substrate.md)): the repo
+  container image (`Dockerfile` → ghcr); the substrate-repo Kamal
+  deploy contract (`kamal/dz-escurel/deploy.yml` — host-1 pin,
+  STOP-FIRST, `/data` Volume) + `apps/registry.yml` row (external
+  build, exposure, Secret Manager secrets); inclusion in the
+  substrate Volume backup.
 
 **Acceptance.** End-to-end smoke against three deploys:
 single-binary on a laptop (FS, no OTLP); systemd unit on a VM
@@ -293,10 +293,10 @@ The shape of the v1.5 / v2 directions:
    tasks. The CLI stays for scripting.
 7. **Multi-region S3 backends** — read-replica datasets for
    geographic distribution; the writer remains single-region.
-8. **Substrate-target package** — Terraform module + Nomad
-   jobspec set + Packer image fragment published as release
-   artefacts, so substrate operators consume `escurel-server` as a
-   turnkey workload. Per-target binding docs grow as new
+8. **Substrate-target package** — a published container image +
+   reusable Kamal deploy/registry fragments, so substrate operators
+   consume `escurel-server` as a turnkey workload. Per-target binding
+   docs grow as new
    substrate targets are adopted (managed-K8s, single-VM, etc.).
 
 None of these break the v1 contract. The Rust crate layout was

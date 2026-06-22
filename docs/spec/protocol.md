@@ -22,9 +22,9 @@ is the same (one tenant per token claim). Quotas apply uniformly.
 ingress behind a reverse proxy + authentication terminator
 (the proxy may also terminate TLS). The choice of which transports
 a particular deployment exposes is per-target; see
-[`../deploy/substrate.md §8`](../deploy/substrate.md#8--ingress-fabio)
-for the substrate-target binding (MCP+WS via Fabio `urlprefix-`
-tags).
+[`../deploy/substrate.md §5`](../deploy/substrate.md#5--exposure)
+for the substrate-target binding (typically internal/tailnet-only
+via kamal-proxy, declared in `apps/registry.yml`).
 
 ## Shared types
 

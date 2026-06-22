@@ -1,236 +1,154 @@
-# Deployment binding — DataZoo Hetzner agent substrate
+# Deployment binding — DataZoo Hetzner substrate
 
-**Status:** Binding doc for one deployment target. The core spec
-under [`../spec/`](../spec/) is deployment-target-agnostic; this
-file names the concrete bindings for the
+**Status:** Binding doc for one deployment target. The core spec under
+[`../spec/`](../spec/) is deployment-target-agnostic; this file names the
+concrete bindings for the
 [`DataZooDE/hetzner-agent-substrate`](https://github.com/DataZooDE/hetzner-agent-substrate)
-target. A concrete Nomad jobspec implementing this binding lives
-in [`escurel.nomad.hcl`](escurel.nomad.hcl).
+target.
 
-New deployment targets (managed-K8s, single-VM for small
-operators, etc.) live in sibling `<target>.md` files under
-[`../deploy/`](../deploy/); the core spec stays unchanged.
+The substrate is **Kamal on 3 Hetzner cattle hosts + OpenTofu (CI-applied) +
+private ghcr.io + a GCP backplane** (Secret Manager, GCS, Cloud Logging, Managed
+Prometheus), operated under a **two-actor model**: changes are PRs against the
+substrate repo; a GitHub Action is the sole mutator. For the platform mechanics
+read the **`substrate-platform`** skill (`references/01-deploy-an-app`,
+`04-stateful-and-storage`, `03-secrets`, `02-exposure`, `05-observability`,
+`07-operating`). This doc only names escurel's bindings.
+
+> **The HashiCorp stack (Nomad / Consul / Vault / Fabio) and the Packer golden
+> image are retired** (archived on the substrate's `hashicorp` branch). Earlier
+> revisions of this doc described them; they no longer apply.
 
 ---
+
+## What escurel is on the substrate
+
+escurel-server is a **stateful pet** — a single-writer DuckDB + a canonical
+markdown corpus + content-addressed blobs, all on one host's disk. So it follows
+the substrate's single-writer-stateful pattern
+(`substrate-platform/references/04`):
+
+- **Pinned to the data-primary host** (`servers.web.hosts: [<env>-host-1]`),
+  bind-mounting a subdir of the host-1 **Hetzner data Volume** at `/data`
+  (`ESCUREL_SERVER_DATA_DIR=/data`). The Volume `prevent_destroy`s and
+  auto-reattaches to a survivor on host loss.
+- **STOP-FIRST deploys.** DuckDB takes an exclusive file lock, so blue/green
+  (old + new container both bind-mounting the Volume) would deadlock. The
+  `kamal/dz-escurel/deploy.yml` uses the `STOP_FIRST` path (`kamal app stop`
+  then deploy) — a brief deploy-time gap, acceptable for a single-host pet.
+  (escurel is the substrate skill's canonical example of this.)
+- **Default store is the Volume (FsStore).** Markdown, `escurel.duckdb`, and
+  `blobs/` live on the Volume; backups are the substrate's Volume backup
+  (below), not an app-level shipper. Hetzner Object Storage (S3) remains
+  available for blob offload (`ESCUREL_STORAGE_BACKEND=s3`) but is not required.
+
+## Image + deploy
+
+| | |
+|---|---|
+| Image | `ghcr.io/datazoode/escurel-server`, built by **this repo's** [`Dockerfile`](../../Dockerfile) + [`.github/workflows/publish-image.yml`](../../.github/workflows/publish-image.yml) (an *external build* registry entry — Kamal pulls, doesn't build) |
+| Deploy contract | `kamal/dz-escurel/deploy.yml` in the **substrate repo** (fork `substrate-platform/templates/kamal-deploy.yml`); `kamal deploy` runs on merge |
+| Registry row | `apps/registry.yml` in the substrate repo (fork `templates/registry-entry.yml`): `image`, `build: external`, `exposure`, `port: 8080`, `kamal`, `secrets` |
+| Health | `GET /healthz` (liveness, dependency-free), `GET /readyz` (readiness), `GET /version`, `GET /metrics` — the substrate health contract (`references/05`) |
+| `LABEL service=dz-escurel` | required on the image for kamal-proxy routing (see [`2026-06-13-kamal-service-label`](../notes/discovered/2026-06-13-kamal-service-label.md)) |
 
 ## Naming convention
 
-Two surfaces, two conventions, both load-bearing.
+Two surfaces, both load-bearing.
 
-**Binary surface — `ESCUREL_*` / `escurel.*`.** The runtime config
-(CLI flags, environment variables, TOML keys) keeps the project
-name. These are the identifiers the spec README enumerates and the
-implementation locks. They don't change when the deployment
-substrate changes.
+**Binary surface — `ESCUREL_*` / `escurel.*`.** Runtime config (env vars, TOML
+keys) keeps the project name; these are what the spec locks and don't change
+with the substrate.
 
-**Substrate surface — the substrate-platform skill's shared
-convention.** Vault policy, Nomad job, Consul service, object-
-storage prefix all use the substrate skill's shared naming so the
-substrate's tooling (`/promote`, `/recreate-node`, deploy
-dashboards) sees one product across all DataZoo apps:
+**Substrate surface — the substrate-platform shared convention**, so substrate
+tooling sees one product:
 
 | Substrate surface | Value |
 |---|---|
-| Nomad job + Consul service | `dz-escurel` |
-| Vault policy | `apps-dz` |
-| Tailscale tag | `tag:dz-escurel` |
-| Fabio host tag | `escurel.<env>.<domain>` (DNS-shaped; routes still use the product name) |
-| S3 prefix (Hetzner OS) | `datazoo-substrate-app-<env>/dz/escurel/lanes/` |
-| GCS prefix (backups) | `datazoo-substrate-app-<env>/dz/escurel/backups/` |
+| Kamal app / registry id / service label | `dz-escurel` |
+| Secrets | GCP **Secret Manager**, fetched at deploy → container env (no Vault) |
+| Tailscale tag | `tag:dz-escurel` (substrate-managed ACLs; no per-app ACL file) |
+| Internal hostname | `dz-escurel.<env>.int` (tailnet wildcard) |
+| S3 prefix (Hetzner OS, if used) | `datazoo-substrate-app-<env>/dz/escurel/lanes/` |
+| GCS prefix (Volume backups) | `…/dz/escurel/` under the substrate backup bucket |
 
-Operator dashboards, Tailscale ACLs, Fabio routing tables, env-var
-stanzas, OTel metric queries, and alert rules all key off these.
-The binary surface (`ESCUREL_*` / `escurel.*`) is the *application's*
-identity; the substrate surface is the *deployment's*.
+## §1 — Identity (OIDC)
 
----
-
-## §1 — Identity (OIDC issuer)
+escurel shares the substrate OIDC root with Triton (and Carl, and the
+escurel-explore BFF) — principals are interchangeable. The trust set is the
+`ESCUREL_AUTH_OIDC_ISSUER` (+ `_2`, `_3`, …) chain (see
+[`escurel-explore-live-bff`] usage). Secrets/keys come from Secret Manager.
 
 | Knob | Value |
 |---|---|
-| `auth.oidc_issuer` | `https://oidc.<env>.<domain>/` — substrate-provided. Recommended source: Vault OIDC role (substrate already runs Vault per `SPEC.md §2`). Alternative: Dex/Keycloak Nomad job classified as a pet (substrate v2 SPEC delta `Δ-1`) |
+| `auth.oidc_issuer` (+ `_2`/`_3`) | the substrate's issuers (Triton primary; Carl; the explore BFF) |
 | `auth.oidc_audience` | `escurel` |
 | `auth.tenant_claim` | `escurel_tenant` |
-| `auth.admin_role_claim` | `roles` |
-| `auth.admin_role_value` | `escurel:admin` |
-| `auth.jwks_refresh_secs` | `300` |
+| `auth.admin_role_claim` / `_value` | `roles` / `escurel:admin` |
 
-Triton — the deployed agent ingress — uses the same issuer.
-Escurel and Triton share the OIDC root so principals are
-interchangeable across services.
+[`escurel-explore-live-bff`]: ../notes/
 
----
+## §2 — Secrets (GCP Secret Manager)
 
-## §2 — Storage (LaneStore)
+No Vault. Each secret is a Secret Manager entry fetched at deploy into the
+container env (`references/03`); rotation = redeploy. escurel's secret-bearing
+env:
 
-| Knob | Value |
+| Secret | Env var |
 |---|---|
-| `storage.backend` | `s3` |
-| `storage.s3.bucket` | `datazoo-substrate-app-<env>/dz/escurel/lanes` (one bucket per env; `prevent_destroy = true` per substrate `SPEC.md §9`) |
-| `storage.s3.region` | Hetzner Object Storage region for the single German location (substrate `SPEC.md §2`) |
-| `storage.s3.endpoint` | The Hetzner OS hostname for the env. Used end-to-end (LaneStore config + DuckDB `TYPE s3` secret) per the [`storage.md`](../spec/storage.md#the-lanestore-trait) hostname-equality constraint. No `/etc/hosts` rewrites |
-| `storage.s3.prefix` | `tenants/` |
-| `storage.s3.path_style` | `true` |
-| Bucket lifecycle | no expiry on `markdown/` and `escurel.duckdb`; `cache/` and `spool/` never exist on S3 |
-| Bucket versioning | enabled |
+| Gemini API key (when `EMBEDDING_PROVIDER=gemini`) | `ESCUREL_GEMINI_API_KEY` |
+| Capture-webhook HMAC secret | `ESCUREL_WEBHOOK_SECRET` |
+| S3 keys (only if `STORAGE_BACKEND=s3`) | `ESCUREL_STORAGE_S3_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` |
 
-**Operator action required:** bucket provisioning is a
-substrate-repo PR. The bucket must be created with
-`prevent_destroy = true` and versioning enabled before Escurel
-can deploy to the corresponding env.
+Air-gap note: an air-gapped env sets `ESCUREL_EMBEDDING_PROVIDER=embeddinggemma`
+(local weights, no egress) or `zero`; only the `gemini` provider needs a key +
+cloud egress.
 
----
+## §3 — Observability (GCP backplane)
 
-## §3 — Audit collector contract
+Structured JSON logs on **stdout** → **Cloud Logging** (no per-app collector
+job). `/metrics` (Prometheus exposition on the dedicated listener) → **Managed
+Prometheus**. Per-record audit fields (`tenant`, `tool`, `subject`, `trace_id`,
+`duration_ms`) ride the log lines (`platform.md §Logs`).
 
-The substrate ships a Nomad periodic job that tails `escurel-server`
-allocation stdout, filters by `level ∈ {info, notice, critical}`,
-and writes one JSON line per record to the GCS audit bucket
-(versioned + retention-locked, `europe-west3`).
+## §4 — Backups + DR (the data Volume)
 
-The collector relies on the
-[`platform.md §Logs`](../spec/platform.md#logs) shape: every line
-carries `ts, level, msg, tenant, tool, transport, subject,
-trace_id, duration_ms, env`. Ingestion target:
-`gs://datazoo-audit-<env>/escurel/<YYYY>/<MM>/<DD>/`.
+Backups are the substrate's **Volume** backup, not an app shipper: the
+substrate `backup-data.yml` (6h cron) rsyncs the Volume over Tailscale SSH and
+runs **restic → GCS**; `-f mode=restore-dryrun` is the verified restore path
+(`references/04`, `07`). escurel's own `tenant_export` MCP tool remains the
+*logical* per-tenant export, but durable DR is the Volume snapshot.
 
-Triton emits paired audit lines for each call (one at ingress,
-one per upstream agent dispatch) carrying the same `trace_id` —
-this collector ingests both shapes.
+Cattle-node-loss DR is intrinsic: on a fresh host the Volume reattaches and
+escurel rebuilds `escurel.duckdb` from the canonical markdown on first boot
+(`storage.md` crash-recovery).
 
----
+## §5 — Exposure
 
-## §4 — Backup shipper contract
+The required `internal | external` choice lives in `apps/registry.yml`
+(`references/02`; always ask, fail-closed). escurel's MCP/HTTP + WS surface on
+`:8080` is typically **internal** (tailnet-only via `dz-escurel.<env>.int`),
+reached by Triton/Carl/the BFF and by operators for the admin-role-gated MCP
+tools. Public exposure (Hetzner LB + Let's Encrypt) only if a browser client
+talks to it directly.
 
-The substrate ships a tenant-export shipper Nomad periodic job
-that calls the `tenant_export` admin tool per active tenant on a
-configurable cadence, validates the SHA-256 terminator per the
-[`protocol.md` tenant_export contract](../spec/protocol.md#tenant_export-as-the-backup-contract-producer),
-and uploads each tarball to GCS as a single object.
+## §6 — Substrate dependency matrix
 
-| Knob | Value |
+| Substrate-repo change | escurel binding |
 |---|---|
-| Cadence | 1×/24 h per active tenant; per-tenant override via shipper config |
-| Target bucket | `gs://datazoo-substrate-app-<env>/dz/escurel/backups/` (versioned + retention-locked) |
-| Key format | `<tenant_id>/<YYYY>-<MM>-<DD>T<HH><MM><SS>Z.tar` |
-| Retention | per substrate backplane policy (`SPEC.md §5`) — never deleted within the window |
-| Audit | one shipment = one audit line with `tool: tenant_export_shipped` |
+| `kamal/dz-escurel/deploy.yml` (host-1 pin, STOP_FIRST, `/data` Volume mount) | host pin + store |
+| `apps/registry.yml` row (external build, exposure, port, secrets) | image + exposure |
+| Secret Manager entries (`gemini-api-key`, `webhook-secret`, optional S3 keys) | §2 |
+| `ghcr-pull-token` for the private image | image |
+| Tailscale `tag:dz-escurel` ACL + `dz-escurel.<env>.int` DNS | §5 |
+| Volume subdir for `/data` + inclusion in `backup-data.yml` | store + §4 |
 
-`escurel-server` stays a producer-only; the shipper is the
-substrate-side completion of the backup contract.
+## §7 — Acceptance (substrate `nonprod`)
 
-**Operator action required:** bucket provisioning is a
-substrate-repo PR (`prevent_destroy = true`).
-
----
-
-## §5 — Placement group sizing (`escurel-class`)
-
-Substrate adds a new Nomad client placement group `escurel-class`
-(defined in `infra/modules/nodes`):
-
-| Resource | Floor | Notes |
-|---|---|---|
-| RAM | ≥ 8 GiB | EmbeddingGemma resident (~600 MiB) + per-tenant HNSW working-set (~10 MiB / 1000 blocks) + DuckDB page cache (default 2 GiB) + headroom; scales with active-tenant LRU |
-| vCPU | ≥ 4 | HNSW rebuild on cold tenant access and `update_page` embedding are CPU-bound; candle CPU path is the default |
-| Local disk | ≥ 50 GiB | spool + embedding cache + transient DuckDB scratch; host-local, not relied on across reschedules per [`storage.md` crash recovery](../spec/storage.md#crash-recovery-summary) |
-| Hetzner class | CCX-class or larger | not CX22 |
-
-Spread placement group preserved for HA across hosts.
-
----
-
-## §6 — Golden image content
-
-The substrate Packer image (`packer/golden.pkr.hcl`) gains:
-
-- candle runtime libs (pure-Rust build — avoids
-  `libtorch`/`onnxruntime` dependency)
-- EmbeddingGemma model artefact baked at
-  `/opt/escurel/models/embeddinggemma-300m/` (~600 MiB)
-- DuckDB pinned with `vss` + `fts` extensions pre-loaded
-- `escurel-server` static Rust binary at `/usr/local/bin/escurel-server`
-
-Bake-into-image (not pull-on-start) per the substrate air-gap
-defaults — pulling the model at boot needs egress allowance and
-breaks `SPEC.md §6` default-deny posture.
-
----
-
-## §7 — Tailscale tag policy
-
-| Tag | Holder | ACL |
-|---|---|---|
-| `tag:escurel` | Escurel Nomad allocations | Reaches `tag:srv` for Vault template only; does *not* initiate to `tag:agents` (Escurel is not behind Triton) |
-| `tag:ops` | Operators + CI ops identity | May reach Escurel's HTTP `:8080` over the tailnet for admin tooling (admin-role-gated MCP tools) |
-| `tag:agents` | Agent pool | Escurel does NOT reach `tag:agents`; only Triton (`tag:cli`) does |
-
----
-
-## §8 — Ingress (Fabio)
-
-The substrate uses **Fabio** as the ingress router. Escurel
-declares public listeners via Consul tags:
-
-```hcl
-service { name = "escurel-mcp";  port = "mcp";  tags = ["urlprefix-escurel.<env>.<domain>/mcp"] }
-service { name = "escurel-ws";   port = "ws";   tags = ["urlprefix-escurel.<env>.<domain>/ws"]  }
-service { name = "escurel-rest"; port = "rest"; tags = ["urlprefix-escurel.<env>.<domain>/"]    }
-service { name = "escurel-http"; port = "http"  /* MCP/HTTP + WS; urlprefix tag for Fabio */ }
-```
-
-Fabio reads the Consul catalog and materialises one route per
-tag. Operator tooling reaches the HTTP surface via
-`escurel-http.service.consul` (admin-role-gated MCP tools)
-over the tailnet.
-
-The transport-exposure policy this binding implements is the one
-[`protocol.md §Transport-summary`](../spec/protocol.md#transport-summary)
-names as the default: MCP/HTTP and WS public via Fabio
-tailnet-only.
-
----
-
-## §9 — Substrate dependency matrix
-
-The Escurel binding depends on the following substrate-side
-provisions. Until they land, `escurel-server` cannot deploy to
-substrate `prod`; `nonprod` deployment becomes possible once the
-identity, ingress, lanes bucket, and golden-image entries are
-merged.
-
-| Substrate change | Escurel binding section |
-|---|---|
-| Shared OIDC issuer (Vault role or Dex/Keycloak job) | §1 |
-| Fabio as ingress router | §8 |
-| Audit-log collector → GCS audit bucket | §3 |
-| `datazoo-substrate-app-<env>/dz/escurel/lanes` bucket on Hetzner OS | §2 |
-| `datazoo-substrate-app-<env>/dz/escurel/backups` GCS bucket | §4 |
-| Tenant-export shipper periodic job | §4 |
-| Tailscale `tag:escurel` ACL | §7 |
-| EmbeddingGemma + candle baked into golden image | §6 |
-| `escurel-class` Nomad client placement group | §5 |
-| DR acceptance gate (cattle-node-loss → auto-rebuild) | [`storage.md` HNSW persistence model](../spec/storage.md#hnsw-persistence-model) |
-
----
-
-## §10 — Acceptance test (per-tenant on substrate `nonprod`)
-
-1. Deploy `escurel-server` with one tenant on `nonprod` via
-   `/deploy-green`.
-2. Create a page via `update_page`; assert canonical markdown
-   lands at
-   `s3://datazoo-substrate-app-nonprod/dz/escurel/lanes/tenants/<tenant>/markdown/...`
-   on Hetzner OS.
-3. Call `tenant_export`; assert the tarball lands in
-   `gs://datazoo-substrate-app-nonprod/dz/escurel/backups/<tenant>/<ts>.tar`
-   within 60 s.
-4. Trigger `/recreate-node` on the `escurel-class` allocation
-   host; assert `escurel-server` reconstructs the tenant's
-   `escurel.duckdb` from canonical markdown on first request without
-   operator action (per
-   [`storage.md` HNSW persistence model](../spec/storage.md#hnsw-persistence-model)).
-5. Restore the GCS tarball into a scratch tenant via
-   `/restore-dryrun`; assert page count + embedding-search
-   recall match the pre-export baseline.
+1. Merge the registry row + `kamal/dz-escurel/deploy.yml`; the deploy Action
+   runs `kamal deploy` (STOP-FIRST) green across host-1.
+2. `update_page` a page; assert canonical markdown lands under `/data` on the
+   host-1 Volume.
+3. Run `backup-data.yml`; then `-f mode=restore-dryrun` and assert the snapshot
+   restores + `restic check` passes.
+4. Recreate host-1 (`replace_targets`); assert the Volume reattaches and escurel
+   rebuilds `escurel.duckdb` from markdown on first request, no operator action.

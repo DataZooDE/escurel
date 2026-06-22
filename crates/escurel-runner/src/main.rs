@@ -1295,7 +1295,7 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Block until SIGTERM (Nomad's graceful-stop signal) or SIGINT
+/// Block until SIGTERM (the orchestrator's graceful-stop signal) or SIGINT
 /// (Ctrl-C in a dev shell), then flip the `draining` flag so ingress stops
 /// admitting new triggers and the poller releases its queue handle (#158). On
 /// non-unix targets, only Ctrl-C.
