@@ -18,9 +18,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use escurel_embed::Embedder;
+use escurel_embed::ZeroEmbedder;
 use escurel_index::backend::{
     DeterministicProcessor, DocumentIngestWorker, ExtractConfig, Extractor, IngestOutcome,
 };
+use escurel_index::indexer::{MergeReport, OnCollision};
 use escurel_index::schema::Migrator;
 use escurel_index::{Indexer, IndexerError};
 use escurel_storage::{FsStore, Key, LaneStore};
@@ -48,6 +50,8 @@ pub enum LoaderError {
     Key(#[from] escurel_storage::KeyError),
     #[error("serialize manifest: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("incompatible loader artifact: {0}")]
+    Incompatible(String),
 }
 
 /// Artifact manifest — the compatibility contract the transfer validates.
@@ -278,6 +282,103 @@ pub async fn copy_files(
     }
 
     Ok(report)
+}
+
+/// Alias the loader DuckDB is `ATTACH`ed under during a transfer.
+const TRANSFER_ALIAS: &str = "loader_src";
+
+/// Outcome of a [`transfer`].
+#[derive(Debug, Clone)]
+pub struct TransferReport {
+    /// The validated source manifest.
+    pub manifest: Manifest,
+    /// Blobs + overlays copied into the live tenant.
+    pub files: FileCopyReport,
+    /// Rows merged DuckDB→DuckDB.
+    pub merge: MergeReport,
+}
+
+/// Transfer a loader artifact at `from` into the live escurel data dir at `to`,
+/// under `live_tenant`, carrying embeddings as data (NO re-embed).
+///
+/// `expect_model` is the live tenant's embedder identity (`Embedder::model_id`);
+/// the manifest's `model_id`/`dim`/`schema_version` are validated against it +
+/// this binary's [`Migrator::SCHEMA_VERSION`] **before** anything is touched.
+/// A mismatch aborts with [`LoaderError::Incompatible`] — mixing embedding
+/// spaces silently destroys retrieval, so we fail closed.
+///
+/// Order (crash-safe): validate → copy blobs + overlays (files first) → attach
+/// the loader DuckDB read-only → `merge_from_attached` (rows last, in one
+/// transaction). A crash before the merge leaves orphan blobs the audit
+/// reclaims, never rows pointing at missing content.
+pub async fn transfer(
+    from: &Path,
+    to: &Path,
+    live_tenant: &str,
+    expect_model: &str,
+    on_collision: OnCollision,
+) -> Result<TransferReport, LoaderError> {
+    let manifest = read_manifest(from)?;
+    if manifest.model_id != expect_model {
+        return Err(LoaderError::Incompatible(format!(
+            "embedder model mismatch: artifact was built with '{}', live tenant expects '{}'",
+            manifest.model_id, expect_model
+        )));
+    }
+    if manifest.dim != escurel_index::indexer::BLOCKS_DENSE_VEC_DIM {
+        return Err(LoaderError::Incompatible(format!(
+            "embedding dim {} != live schema dim {}",
+            manifest.dim,
+            escurel_index::indexer::BLOCKS_DENSE_VEC_DIM
+        )));
+    }
+    if manifest.schema_version != Migrator::SCHEMA_VERSION {
+        return Err(LoaderError::Incompatible(format!(
+            "artifact schema version {} != this binary's {}",
+            manifest.schema_version,
+            Migrator::SCHEMA_VERSION
+        )));
+    }
+
+    // Open the live tenant index. The merge copies vectors verbatim and never
+    // embeds, so a ZeroEmbedder placeholder (768-dim) is all Indexer::new needs.
+    let live_store: Arc<dyn LaneStore> = Arc::new(FsStore::new(to.to_path_buf()));
+    let db_path = to.join("escurel.duckdb");
+    // Mirror the server boot recipe (config.rs): the schema DDL (`up`) is
+    // one-time, so run it ONLY for a fresh DB; load_extensions + ensure_* are
+    // idempotent and run every time (a transfer into an existing tenant must
+    // not re-CREATE the tables).
+    let fresh = !db_path.exists();
+    let conn = duckdb::Connection::open(&db_path)?;
+    Migrator::load_extensions(&conn)?;
+    if fresh {
+        Migrator::up(&conn)?;
+    }
+    Migrator::ensure_group_members(&conn)?;
+    Migrator::ensure_external_credentials(&conn)?;
+    let live = Indexer::new(
+        Arc::clone(&live_store),
+        Arc::new(ZeroEmbedder::default()),
+        conn,
+        live_tenant,
+    )?;
+
+    // Files first (idempotent), then the DuckDB rows.
+    let files = copy_files(from, live_store.as_ref(), live_tenant).await?;
+    live.attach_external(
+        TRANSFER_ALIAS,
+        from.join("escurel.duckdb").to_string_lossy().as_ref(),
+    )
+    .await?;
+    let merge = live
+        .merge_from_attached(TRANSFER_ALIAS, on_collision)
+        .await?;
+
+    Ok(TransferReport {
+        manifest,
+        files,
+        merge,
+    })
 }
 
 /// Read a loader [`Manifest`] from a loader directory.
