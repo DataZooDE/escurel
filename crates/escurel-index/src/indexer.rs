@@ -586,6 +586,36 @@ impl Indexer {
     /// overlay markdown are NOT moved here — copy them into the LaneStore
     /// first (content-addressed, idempotent), then call this so a crash never
     /// leaves rows referencing missing blobs.
+    ///
+    /// Only the row INSERTs are transactional. The HNSW drop/recreate and the
+    /// FTS refresh sit OUTSIDE that transaction, so a crash after the commit but
+    /// before they finish can leave committed rows with a missing HNSW index or
+    /// a stale FTS snapshot. Both are self-healing: vector search stays correct
+    /// without HNSW (a cosine scan; see `search.rs`), and simply re-running the
+    /// merge (or `reindex_vectors` + `refresh_fts`, or a `rebuild`) restores the
+    /// index + snapshot — the row state is never corrupted, only its indexes.
+    /// Count source `page_id`s in an already-attached DuckDB (`alias`) that
+    /// already exist in this tenant. Lets a caller preflight a transfer (e.g.
+    /// abort an `error`-collision policy BEFORE copying any files) without
+    /// running the merge. Cheap, read-only.
+    pub async fn attached_page_collisions(&self, alias: &str) -> Result<usize, IndexerError> {
+        if !is_valid_attach_alias(alias) {
+            return Err(IndexerError::InvalidExternalSource {
+                reason: "attach alias is not a valid identifier",
+            });
+        }
+        let conn = self.conn.lock().await;
+        let n: i64 = conn.query_row(
+            &format!(
+                "SELECT count(*) FROM {alias}.pages a \
+                 WHERE a.page_id IN (SELECT page_id FROM pages)"
+            ),
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
     pub async fn merge_from_attached(
         &self,
         alias: &str,
@@ -635,8 +665,11 @@ impl Indexer {
                 // Import only new page_ids. Snapshot the pre-existing ids so
                 // pages/links/blocks all filter against the SAME set (pages is
                 // inserted first, which would otherwise shift the filter).
+                // CREATE OR REPLACE so a `_existing` left over from a merge that
+                // crashed between CREATE and DROP on this long-lived connection
+                // doesn't wedge every subsequent merge.
                 tx.execute_batch(&format!(
-                    "CREATE TEMP TABLE _existing AS SELECT page_id FROM pages; \
+                    "CREATE OR REPLACE TEMP TABLE _existing AS SELECT page_id FROM pages; \
                      INSERT INTO pages  BY NAME SELECT * FROM {alias}.pages  \
                        WHERE page_id  NOT IN (SELECT page_id FROM _existing); \
                      INSERT INTO links  BY NAME SELECT * FROM {alias}.links  \

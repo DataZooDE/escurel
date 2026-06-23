@@ -125,6 +125,44 @@ async fn transfer_carries_embeddings_verbatim_and_is_idempotent() {
 }
 
 #[tokio::test]
+async fn transfer_error_policy_aborts_on_collision_without_mutating() {
+    let loader_dir = TempDir::new().unwrap();
+    build_loader(loader_dir.path()).await;
+    let live = TempDir::new().unwrap();
+
+    // Seed the tenant.
+    transfer(
+        loader_dir.path(),
+        live.path(),
+        "acme",
+        "hash",
+        OnCollision::Skip,
+    )
+    .await
+    .expect("seed transfer");
+    let live_db = live.path().join("escurel.duckdb");
+    let before = vec_heads(&live_db);
+
+    // A second transfer with on_collision=error must abort (every page collides)
+    // and report that nothing was copied — the row state is unchanged.
+    let err = transfer(
+        loader_dir.path(),
+        live.path(),
+        "acme",
+        "hash",
+        OnCollision::Error,
+    )
+    .await
+    .expect_err("error policy must abort on collision");
+    assert!(format!("{err}").contains("nothing was copied"), "got {err}");
+    assert_eq!(
+        vec_heads(&live_db),
+        before,
+        "row state unchanged after aborted error transfer"
+    );
+}
+
+#[tokio::test]
 async fn transfer_aborts_on_embedder_model_mismatch() {
     let loader_dir = TempDir::new().unwrap();
     build_loader(loader_dir.path()).await;

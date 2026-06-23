@@ -363,13 +363,27 @@ pub async fn transfer(
         live_tenant,
     )?;
 
-    // Files first (idempotent), then the DuckDB rows.
-    let files = copy_files(from, live_store.as_ref(), live_tenant).await?;
+    // Attach the source read-only up front so an `error`-collision policy can
+    // preflight BEFORE we mutate the live store: `error` means "abort if
+    // anything collides", so it must not have copied files by the time it
+    // aborts.
     live.attach_external(
         TRANSFER_ALIAS,
         from.join("escurel.duckdb").to_string_lossy().as_ref(),
     )
     .await?;
+    if matches!(on_collision, OnCollision::Error) {
+        let collisions = live.attached_page_collisions(TRANSFER_ALIAS).await?;
+        if collisions > 0 {
+            return Err(LoaderError::Incompatible(format!(
+                "{collisions} page_id(s) already exist in tenant '{live_tenant}' \
+                 (on_collision=error); nothing was copied"
+            )));
+        }
+    }
+
+    // Files first (idempotent), then the DuckDB rows.
+    let files = copy_files(from, live_store.as_ref(), live_tenant).await?;
     let merge = live
         .merge_from_attached(TRANSFER_ALIAS, on_collision)
         .await?;
