@@ -120,6 +120,30 @@ pub enum IndexerError {
     },
     #[error("meta-skill protected: {reason}")]
     MetaSkillProtected { reason: String },
+    #[error("transfer rejected: {0}")]
+    Transfer(String),
+}
+
+/// What a DuckDB→DuckDB merge does on a `page_id` already in the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnCollision {
+    /// Default: import only new `page_id`s, leave existing rows untouched
+    /// (additive, idempotent — a re-run resumes cleanly).
+    Skip,
+    /// Delete the colliding instances in the target, then insert the source's.
+    Replace,
+    /// Abort the whole merge if any `page_id` collides (safest for a one-shot
+    /// migration into a fresh tenant).
+    Error,
+}
+
+/// Summary of a [`Indexer::merge_from_attached`] run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MergeReport {
+    /// Instance pages in the attached source.
+    pub source_pages: usize,
+    /// Source `page_id`s that already existed in the target.
+    pub collisions: usize,
 }
 
 impl Indexer {
@@ -416,6 +440,50 @@ impl Indexer {
         overlay_content: &str,
         chunks: &[String],
     ) -> Result<(), IndexerError> {
+        // Embed every chunk in one batch (off the connection mutex), then hand
+        // the precomputed vectors to the write path. Splitting embed from write
+        // lets the offline batch loader supply vectors from a separate (e.g.
+        // Gemini Batch API) pass and lets a DuckDB→DuckDB transfer carry
+        // vectors verbatim without ever re-embedding.
+        let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+        let embeddings = if chunk_refs.is_empty() {
+            Vec::new()
+        } else {
+            self.embedder.embed(&chunk_refs).await?
+        };
+        self.write_document_blocks(page_id, overlay_content, chunks, &embeddings)
+            .await
+    }
+
+    /// Write a document instance (overlay page + N chunk `blocks`) from
+    /// **precomputed** chunk vectors — the embed-free half of
+    /// [`Self::materialize_document`]. Each `vectors[i]` is the embedding of
+    /// `chunks[i]` and is stored verbatim in `blocks.dense_vec` (no embedder is
+    /// consulted), so callers that embedded elsewhere (offline batch loader)
+    /// pay the embedding cost exactly once. `vectors.len()` must equal
+    /// `chunks.len()` and each vector must be [`BLOCKS_DENSE_VEC_DIM`] long.
+    pub async fn write_document_blocks(
+        &self,
+        page_id: &str,
+        overlay_content: &str,
+        chunks: &[String],
+        vectors: &[Vec<f32>],
+    ) -> Result<(), IndexerError> {
+        if vectors.len() != chunks.len() {
+            return Err(IndexerError::EmbedderDimMismatch {
+                expected: chunks.len(),
+                got: vectors.len(),
+            });
+        }
+        for v in vectors {
+            if v.len() != BLOCKS_DENSE_VEC_DIM {
+                return Err(IndexerError::EmbedderDimMismatch {
+                    expected: BLOCKS_DENSE_VEC_DIM,
+                    got: v.len(),
+                });
+            }
+        }
+
         let _write = self.write_lock.lock().await;
         let parsed = parse(overlay_content)?;
 
@@ -455,22 +523,6 @@ impl Indexer {
             .and_then(escurel_md::YamlValue::as_str)
             .map(str::to_owned);
 
-        // Embed every chunk in one batch (off the connection mutex).
-        let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
-        let embeddings = if chunk_refs.is_empty() {
-            Vec::new()
-        } else {
-            self.embedder.embed(&chunk_refs).await?
-        };
-        for e in &embeddings {
-            if e.len() != BLOCKS_DENSE_VEC_DIM {
-                return Err(IndexerError::EmbedderDimMismatch {
-                    expected: BLOCKS_DENSE_VEC_DIM,
-                    got: e.len(),
-                });
-            }
-        }
-
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
@@ -483,7 +535,7 @@ impl Indexer {
         )?;
         // Chunks become the page's blocks (one row per chunk).
         tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
-        for (i, (text, emb)) in chunks.iter().zip(embeddings.iter()).enumerate() {
+        for (i, (text, emb)) in chunks.iter().zip(vectors.iter()).enumerate() {
             let anchor = format!("chunk-{i}");
             let block_id = format!("{page_id}:{anchor}");
             let dense_vec_literal = format!(
@@ -504,6 +556,145 @@ impl Indexer {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Drop + recreate the `blocks` HNSW vector index. Per-row HNSW
+    /// maintenance is the slow path on a large bulk load (the offline batch
+    /// loader, or a DuckDB→DuckDB merge); the fast pattern is to insert all
+    /// rows first and rebuild the index once at the end. Vector search stays
+    /// *correct* throughout — `search_with` ranks by `array_cosine_distance`,
+    /// the HNSW index only accelerates it — so this is purely a speed knob.
+    pub async fn reindex_vectors(&self) -> Result<(), IndexerError> {
+        let conn = self.conn.lock().await;
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS hnsw_blocks_vec; \
+             CREATE INDEX hnsw_blocks_vec ON blocks USING HNSW (dense_vec) \
+             WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);",
+        )?;
+        Ok(())
+    }
+
+    /// Merge `pages`/`links`/`blocks` from an already-[`attach_external`]ed
+    /// read-only DuckDB (`alias`) into this tenant — the import half of the
+    /// offline batch loader. Rows (including `blocks.dense_vec`) copy verbatim
+    /// DuckDB→DuckDB, so **no re-embedding** happens. The caller must have
+    /// validated the source's embedder `model_id`/`dim` + schema version
+    /// against this tenant (see the loader manifest) BEFORE calling.
+    ///
+    /// HNSW is dropped before the bulk insert and recreated after (the
+    /// bulk-load fast path); the BM25 FTS snapshot is refreshed once. Blobs +
+    /// overlay markdown are NOT moved here — copy them into the LaneStore
+    /// first (content-addressed, idempotent), then call this so a crash never
+    /// leaves rows referencing missing blobs.
+    ///
+    /// Only the row INSERTs are transactional. The HNSW drop/recreate and the
+    /// FTS refresh sit OUTSIDE that transaction, so a crash after the commit but
+    /// before they finish can leave committed rows with a missing HNSW index or
+    /// a stale FTS snapshot. Both are self-healing: vector search stays correct
+    /// without HNSW (a cosine scan; see `search.rs`), and simply re-running the
+    /// merge (or `reindex_vectors` + `refresh_fts`, or a `rebuild`) restores the
+    /// index + snapshot — the row state is never corrupted, only its indexes.
+    /// Count source `page_id`s in an already-attached DuckDB (`alias`) that
+    /// already exist in this tenant. Lets a caller preflight a transfer (e.g.
+    /// abort an `error`-collision policy BEFORE copying any files) without
+    /// running the merge. Cheap, read-only.
+    pub async fn attached_page_collisions(&self, alias: &str) -> Result<usize, IndexerError> {
+        if !is_valid_attach_alias(alias) {
+            return Err(IndexerError::InvalidExternalSource {
+                reason: "attach alias is not a valid identifier",
+            });
+        }
+        let conn = self.conn.lock().await;
+        let n: i64 = conn.query_row(
+            &format!(
+                "SELECT count(*) FROM {alias}.pages a \
+                 WHERE a.page_id IN (SELECT page_id FROM pages)"
+            ),
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    pub async fn merge_from_attached(
+        &self,
+        alias: &str,
+        on_collision: OnCollision,
+    ) -> Result<MergeReport, IndexerError> {
+        if !is_valid_attach_alias(alias) {
+            return Err(IndexerError::InvalidExternalSource {
+                reason: "attach alias is not a valid identifier",
+            });
+        }
+        let mut conn = self.conn.lock().await;
+
+        let source_pages: i64 =
+            conn.query_row(&format!("SELECT count(*) FROM {alias}.pages"), [], |r| {
+                r.get(0)
+            })?;
+        let collisions: i64 = conn.query_row(
+            &format!(
+                "SELECT count(*) FROM {alias}.pages a \
+                 WHERE a.page_id IN (SELECT page_id FROM pages)"
+            ),
+            [],
+            |r| r.get(0),
+        )?;
+        if matches!(on_collision, OnCollision::Error) && collisions > 0 {
+            return Err(IndexerError::Transfer(format!(
+                "{collisions} page_id(s) already exist in the target (on_collision=error)"
+            )));
+        }
+
+        // Per-row HNSW maintenance is slow; drop the index, bulk-insert, rebuild.
+        conn.execute_batch("DROP INDEX IF EXISTS hnsw_blocks_vec;")?;
+        let tx = conn.transaction()?;
+        match on_collision {
+            OnCollision::Replace => {
+                // Delete the colliding instances, then insert ALL source rows.
+                tx.execute_batch(&format!(
+                    "DELETE FROM blocks WHERE page_id IN (SELECT page_id FROM {alias}.pages); \
+                     DELETE FROM links  WHERE src_page IN (SELECT page_id FROM {alias}.pages); \
+                     DELETE FROM pages  WHERE page_id IN (SELECT page_id FROM {alias}.pages); \
+                     INSERT INTO pages  BY NAME SELECT * FROM {alias}.pages; \
+                     INSERT INTO links  BY NAME SELECT * FROM {alias}.links; \
+                     INSERT INTO blocks BY NAME SELECT * FROM {alias}.blocks;"
+                ))?;
+            }
+            OnCollision::Skip | OnCollision::Error => {
+                // Import only new page_ids. Snapshot the pre-existing ids so
+                // pages/links/blocks all filter against the SAME set (pages is
+                // inserted first, which would otherwise shift the filter).
+                // CREATE OR REPLACE so a `_existing` left over from a merge that
+                // crashed between CREATE and DROP on this long-lived connection
+                // doesn't wedge every subsequent merge.
+                tx.execute_batch(&format!(
+                    "CREATE OR REPLACE TEMP TABLE _existing AS SELECT page_id FROM pages; \
+                     INSERT INTO pages  BY NAME SELECT * FROM {alias}.pages  \
+                       WHERE page_id  NOT IN (SELECT page_id FROM _existing); \
+                     INSERT INTO links  BY NAME SELECT * FROM {alias}.links  \
+                       WHERE src_page NOT IN (SELECT page_id FROM _existing); \
+                     INSERT INTO blocks BY NAME SELECT * FROM {alias}.blocks \
+                       WHERE page_id  NOT IN (SELECT page_id FROM _existing); \
+                     DROP TABLE _existing;"
+                ))?;
+            }
+        }
+        tx.commit()?;
+
+        // Rebuild the vector index (same DDL as the schema), then drop the lock
+        // before refreshing FTS (which re-locks the connection).
+        conn.execute_batch(
+            "CREATE INDEX hnsw_blocks_vec ON blocks USING HNSW (dense_vec) \
+             WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);",
+        )?;
+        drop(conn);
+        self.refresh_fts().await?;
+
+        Ok(MergeReport {
+            source_pages: source_pages as usize,
+            collisions: collisions as usize,
+        })
     }
 
     /// Read an inbox blob by id (delegates to the LaneStore). Used by the

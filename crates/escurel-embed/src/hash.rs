@@ -45,6 +45,10 @@ impl Embedder for HashEmbedder {
         self.dim
     }
 
+    fn model_id(&self) -> String {
+        "hash".to_owned()
+    }
+
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {
         Ok(texts.iter().map(|t| hash_to_vec(t, self.dim)).collect())
     }

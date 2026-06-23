@@ -1,0 +1,40 @@
+[package]
+name = "escurel-loader"
+description = "Offline batch document loader for Escurel — builds a standalone loader DuckDB + blobs an operator transfers into a live tenant without re-embedding."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# Forward the in-process PDF/DOCX/PPTX/XLSX extractor so a loader build can
+# ingest office documents. Off by default (light, text-only build).
+kreuzberg = ["escurel-index/kreuzberg"]
+
+[[bin]]
+name = "escurel-loader"
+path = "src/main.rs"
+
+[dependencies]
+escurel-index = { path = "../escurel-index" }
+escurel-storage = { path = "../escurel-storage" }
+escurel-embed = { path = "../escurel-embed" }
+duckdb = { version = "1", default-features = false }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+walkdir = "2"
+thiserror = "2"
+tracing = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

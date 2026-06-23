@@ -71,7 +71,52 @@ pub trait Embedder: Send + Sync + 'static {
     /// embedder whose `dim()` does not match at indexer setup.
     fn dim(&self) -> usize;
 
+    /// A stable identity for the embedding *model* this embedder uses, e.g.
+    /// `gemini-embedding-001`, `google/embeddinggemma-300m`, `hash`, `zero`.
+    /// Together with [`Self::dim`] it pins the embedding space: vectors from
+    /// two embedders are interchangeable only when both `model_id()` and
+    /// `dim()` match. The offline batch loader records this in its artifact
+    /// manifest and the transfer refuses a tenant whose embedder disagrees
+    /// (mixing embedding spaces silently destroys retrieval).
+    ///
+    /// Owned (not `&str`) so wrappers like `ReloadableEmbedder` can delegate
+    /// through their swap guard. Called rarely (manifest write / validation).
+    fn model_id(&self) -> String;
+
     /// Embed a batch of texts. The returned `Vec<Vec<f32>>` has
     /// exactly `texts.len()` rows, each of length [`Self::dim`].
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError>;
+}
+
+#[cfg(test)]
+mod model_id_tests {
+    use super::*;
+
+    #[test]
+    fn stub_embedders_report_stable_distinct_model_ids() {
+        // The transfer pins the embedding space on (model_id, dim); these must
+        // be stable + distinct so a mismatched artifact is rejected.
+        assert_eq!(ZeroEmbedder::new(768).model_id(), "zero");
+        assert_eq!(HashEmbedder::new(768).model_id(), "hash");
+        // Two equivalent embedders agree (idempotent identity).
+        assert_eq!(
+            HashEmbedder::default().model_id(),
+            HashEmbedder::new(768).model_id()
+        );
+        assert_ne!(
+            ZeroEmbedder::new(768).model_id(),
+            HashEmbedder::new(768).model_id()
+        );
+    }
+
+    #[cfg(feature = "gemini")]
+    #[test]
+    fn gemini_model_id_is_the_model_name() {
+        let e = GeminiEmbedder::new("k".to_owned());
+        assert_eq!(e.model_id(), "gemini-embedding-001");
+        assert_eq!(
+            e.with_model("text-embedding-004").model_id(),
+            "text-embedding-004"
+        );
+    }
 }

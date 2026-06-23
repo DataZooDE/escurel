@@ -2705,6 +2705,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "escurel-loader"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "duckdb",
+ "escurel-embed",
+ "escurel-index",
+ "escurel-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "escurel-md"
 version = "1.0.0"
 dependencies = [

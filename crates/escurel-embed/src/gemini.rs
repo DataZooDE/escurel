@@ -69,6 +69,10 @@ impl Embedder for GeminiEmbedder {
         self.dim
     }
 
+    fn model_id(&self) -> String {
+        self.model.clone()
+    }
+
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {
         if texts.is_empty() {
             return Ok(Vec::new());

@@ -109,6 +109,10 @@ impl Embedder for ReloadableEmbedder {
         self.inner.load().0.dim()
     }
 
+    fn model_id(&self) -> String {
+        self.inner.load().0.model_id()
+    }
+
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {
         // Pin the current inner for the duration of the call so a
         // concurrent `reload` cannot drop it mid-`embed`. Cloning the
