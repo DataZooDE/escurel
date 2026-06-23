@@ -416,6 +416,50 @@ impl Indexer {
         overlay_content: &str,
         chunks: &[String],
     ) -> Result<(), IndexerError> {
+        // Embed every chunk in one batch (off the connection mutex), then hand
+        // the precomputed vectors to the write path. Splitting embed from write
+        // lets the offline batch loader supply vectors from a separate (e.g.
+        // Gemini Batch API) pass and lets a DuckDB→DuckDB transfer carry
+        // vectors verbatim without ever re-embedding.
+        let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+        let embeddings = if chunk_refs.is_empty() {
+            Vec::new()
+        } else {
+            self.embedder.embed(&chunk_refs).await?
+        };
+        self.write_document_blocks(page_id, overlay_content, chunks, &embeddings)
+            .await
+    }
+
+    /// Write a document instance (overlay page + N chunk `blocks`) from
+    /// **precomputed** chunk vectors — the embed-free half of
+    /// [`Self::materialize_document`]. Each `vectors[i]` is the embedding of
+    /// `chunks[i]` and is stored verbatim in `blocks.dense_vec` (no embedder is
+    /// consulted), so callers that embedded elsewhere (offline batch loader)
+    /// pay the embedding cost exactly once. `vectors.len()` must equal
+    /// `chunks.len()` and each vector must be [`BLOCKS_DENSE_VEC_DIM`] long.
+    pub async fn write_document_blocks(
+        &self,
+        page_id: &str,
+        overlay_content: &str,
+        chunks: &[String],
+        vectors: &[Vec<f32>],
+    ) -> Result<(), IndexerError> {
+        if vectors.len() != chunks.len() {
+            return Err(IndexerError::EmbedderDimMismatch {
+                expected: chunks.len(),
+                got: vectors.len(),
+            });
+        }
+        for v in vectors {
+            if v.len() != BLOCKS_DENSE_VEC_DIM {
+                return Err(IndexerError::EmbedderDimMismatch {
+                    expected: BLOCKS_DENSE_VEC_DIM,
+                    got: v.len(),
+                });
+            }
+        }
+
         let _write = self.write_lock.lock().await;
         let parsed = parse(overlay_content)?;
 
@@ -455,22 +499,6 @@ impl Indexer {
             .and_then(escurel_md::YamlValue::as_str)
             .map(str::to_owned);
 
-        // Embed every chunk in one batch (off the connection mutex).
-        let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
-        let embeddings = if chunk_refs.is_empty() {
-            Vec::new()
-        } else {
-            self.embedder.embed(&chunk_refs).await?
-        };
-        for e in &embeddings {
-            if e.len() != BLOCKS_DENSE_VEC_DIM {
-                return Err(IndexerError::EmbedderDimMismatch {
-                    expected: BLOCKS_DENSE_VEC_DIM,
-                    got: e.len(),
-                });
-            }
-        }
-
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
@@ -483,7 +511,7 @@ impl Indexer {
         )?;
         // Chunks become the page's blocks (one row per chunk).
         tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
-        for (i, (text, emb)) in chunks.iter().zip(embeddings.iter()).enumerate() {
+        for (i, (text, emb)) in chunks.iter().zip(vectors.iter()).enumerate() {
             let anchor = format!("chunk-{i}");
             let block_id = format!("{page_id}:{anchor}");
             let dense_vec_literal = format!(
