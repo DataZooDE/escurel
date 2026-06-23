@@ -23,7 +23,7 @@ use escurel_index::backend::{
 };
 use escurel_index::schema::Migrator;
 use escurel_index::{Indexer, IndexerError};
-use escurel_storage::{FsStore, LaneStore};
+use escurel_storage::{FsStore, Key, LaneStore};
 use serde::{Deserialize, Serialize};
 
 /// The loader tenant name. The transfer re-keys blobs/overlays into the live
@@ -44,6 +44,8 @@ pub enum LoaderError {
     Indexer(#[from] IndexerError),
     #[error("storage: {0}")]
     Storage(#[from] escurel_storage::StoreError),
+    #[error("invalid key: {0}")]
+    Key(#[from] escurel_storage::KeyError),
     #[error("serialize manifest: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -228,6 +230,54 @@ pub fn mime_for(path: &Path) -> Option<String> {
         _ => return None,
     };
     Some(mime.to_owned())
+}
+
+/// Tally of a [`copy_files`] run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileCopyReport {
+    /// Canonical blobs copied into the live tenant.
+    pub blobs: usize,
+    /// Overlay markdown keys copied into the live tenant.
+    pub overlays: usize,
+}
+
+/// Copy the loader's canonical blobs + overlay markdown into a live tenant's
+/// LaneStore — the **files-first** half of a transfer, run BEFORE
+/// [`Indexer::merge_from_attached`] copies the DuckDB rows. Both writes are
+/// content-addressed / key-deterministic, so a re-run (or a crash + retry) is
+/// idempotent: at worst it leaves orphan blobs the existing
+/// `audit_documents`/`reclaim_orphan_blobs` reclaim — never rows pointing at a
+/// missing blob.
+///
+/// `loader_dir` is the directory a [`LoaderBuilder::build`] wrote (its FsStore
+/// root); `live` is the destination store; `live_tenant` the target tenant.
+pub async fn copy_files(
+    loader_dir: &Path,
+    live: &dyn LaneStore,
+    live_tenant: &str,
+) -> Result<FileCopyReport, LoaderError> {
+    let loader: Arc<dyn LaneStore> = Arc::new(FsStore::new(loader_dir.to_path_buf()));
+    let mut report = FileCopyReport::default();
+
+    // Blobs first: every chunk block references a canonical blob by id, so the
+    // blob must exist before the rows land.
+    for id in loader.list_blobs(LOADER_TENANT).await? {
+        let bytes = loader.get_blob(LOADER_TENANT, &id).await?;
+        // put_blob is content-addressed → re-deriving the same id is idempotent.
+        live.put_blob(live_tenant, bytes, None).await?;
+        report.blobs += 1;
+    }
+
+    // Overlay markdown: re-key each loader path under the live tenant verbatim
+    // (the path — markdown/instances/<skill>/<id>.md — is tenant-independent).
+    for key in loader.list(&Key::new(LOADER_TENANT, "markdown")?).await? {
+        let body = loader.read(&key).await?;
+        live.write(&Key::new(live_tenant, key.path())?, body)
+            .await?;
+        report.overlays += 1;
+    }
+
+    Ok(report)
 }
 
 /// Read a loader [`Manifest`] from a loader directory.
