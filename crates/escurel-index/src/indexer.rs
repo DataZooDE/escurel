@@ -534,6 +534,22 @@ impl Indexer {
         Ok(())
     }
 
+    /// Drop + recreate the `blocks` HNSW vector index. Per-row HNSW
+    /// maintenance is the slow path on a large bulk load (the offline batch
+    /// loader, or a DuckDB→DuckDB merge); the fast pattern is to insert all
+    /// rows first and rebuild the index once at the end. Vector search stays
+    /// *correct* throughout — `search_with` ranks by `array_cosine_distance`,
+    /// the HNSW index only accelerates it — so this is purely a speed knob.
+    pub async fn reindex_vectors(&self) -> Result<(), IndexerError> {
+        let conn = self.conn.lock().await;
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS hnsw_blocks_vec; \
+             CREATE INDEX hnsw_blocks_vec ON blocks USING HNSW (dense_vec) \
+             WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);",
+        )?;
+        Ok(())
+    }
+
     /// Read an inbox blob by id (delegates to the LaneStore). Used by the
     /// document ingest worker, which only holds an `Arc<Indexer>`.
     pub async fn read_inbox_blob(

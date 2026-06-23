@@ -21,6 +21,7 @@ members = [
     "crates/escurel-runner-core",
     "crates/escurel-runner-harness",
     "crates/escurel-runner",
+    "crates/escurel-loader",
     "examples/echo-app",
 ]
 

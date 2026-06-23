@@ -25,6 +25,15 @@ pub enum MigrationError {
 pub struct Migrator;
 
 impl Migrator {
+    /// Logical schema version of the per-tenant DuckDB layout. No
+    /// migration-tracking table exists yet; this constant is the manual
+    /// stand-in. **Bump it whenever the schema changes** (a new
+    /// `sql/000N_*` migration). The offline batch loader records it in its
+    /// artifact manifest and a DuckDB→DuckDB transfer refuses an artifact
+    /// whose `SCHEMA_VERSION` differs from the live tenant's (the row shapes
+    /// wouldn't line up).
+    pub const SCHEMA_VERSION: u32 = 5;
+
     /// Load the per-connection extension/session state Escurel relies on:
     /// auto-install/-load, `INSTALL`+`LOAD` of `vss`+`fts`, and the
     /// experimental-HNSW-persistence flag (see `sql/0001_a_autoload.sql`).
