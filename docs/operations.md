@@ -135,6 +135,40 @@ content-addressed and counted against the tenant's blob quota; re-ingesting
 identical bytes is idempotent. To re-derive chunks after an extractor upgrade,
 `Rebuild` re-extracts from the retained blob.
 
+### Bulk-loading a large corpus (offline loader + transfer)
+
+Ingesting a large corpus (tens of thousands of PDFs) through `POST /ingest/upload`
+is hopeless: each chunk is one embed, so the per-tenant Embeds quota turns it into
+a multi-week trickle. Instead do the heavy work **offline** with the
+`escurel-loader` binary, then **transfer** the result into the live tenant
+carrying the embeddings as data — production never re-embeds.
+
+```
+# 1. Build a throwaway loader instance from a directory of documents, at full
+#    speed with an offline embedder (no server, no quota).
+escurel-loader build \
+    --src /data/corpus --out /data/loader --skill attachment \
+    --embedder hash            # use the SAME embedder model the live tenant runs
+
+# 2. Transfer into the live data dir. --expect-model asserts the live tenant's
+#    embedder identity; a manifest mismatch aborts before any rows move.
+escurel-loader transfer \
+    --from /data/loader --to /var/lib/escurel/tenants/acme \
+    --tenant acme --expect-model hash \
+    --on-collision skip        # additive + idempotent (default); replace | error
+```
+
+The transfer validates the loader manifest (`model_id` / `dim` /
+`schema_version`) against the live tenant, copies blobs + overlay markdown
+(files first), then merges `pages`/`links`/`blocks` DuckDB→DuckDB with the
+vector index rebuilt once. `skip` is idempotent: a re-run resumes cleanly and
+never duplicates a `page_id` (the per-document `instance_id` is the file's
+content sha256). It is **host-side** operator work (it `ATTACH`es two DuckDB
+files on disk), so it runs from the loader binary, not the gateway HTTP CLI.
+The `--embedder` you build with **must** match the live tenant's model, or
+retrieval silently degrades — the `--expect-model` gate is the safety net. See
+[`docs/notes/2026-06-23-batch-loader.md`](notes/2026-06-23-batch-loader.md).
+
 ### SQL-view binding drift
 
 `sql_view` instances project a read-only DuckDB view over an external source,
