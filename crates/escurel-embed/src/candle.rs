@@ -35,6 +35,7 @@ struct Inner {
     tokenizer: Tokenizer,
     device: Device,
     declared_dim: usize,
+    model_id: String,
 }
 
 impl std::fmt::Debug for CandleEmbedder {
@@ -73,7 +74,13 @@ impl CandleEmbedder {
             .await
             .map_err(|e| EmbedError::Backend(format!("fetch model.safetensors: {e}")))?;
 
-        Self::from_local(&config_path, &tokenizer_path, &weights_path, expected_dim)
+        Self::from_local(
+            &config_path,
+            &tokenizer_path,
+            &weights_path,
+            expected_dim,
+            repo_id,
+        )
     }
 
     /// Build from three local files. Substrate production calls
@@ -85,6 +92,7 @@ impl CandleEmbedder {
         tokenizer_path: &Path,
         weights_path: &Path,
         expected_dim: usize,
+        model_id: &str,
     ) -> Result<Self, EmbedError> {
         let device = Device::Cpu;
 
@@ -132,6 +140,7 @@ impl CandleEmbedder {
                 tokenizer,
                 device,
                 declared_dim: loaded_dim,
+                model_id: model_id.to_owned(),
             }),
         })
     }
@@ -141,6 +150,10 @@ impl CandleEmbedder {
 impl Embedder for CandleEmbedder {
     fn dim(&self) -> usize {
         self.inner.declared_dim
+    }
+
+    fn model_id(&self) -> String {
+        self.inner.model_id.clone()
     }
 
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {

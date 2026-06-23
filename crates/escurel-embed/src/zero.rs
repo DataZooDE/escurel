@@ -46,6 +46,10 @@ impl Embedder for ZeroEmbedder {
         self.dim
     }
 
+    fn model_id(&self) -> String {
+        "zero".to_owned()
+    }
+
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {
         Ok((0..texts.len()).map(|_| vec![0.0_f32; self.dim]).collect())
     }

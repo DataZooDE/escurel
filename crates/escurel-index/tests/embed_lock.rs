@@ -43,6 +43,10 @@ impl Embedder for SlowEmbedder {
         DIM
     }
 
+    fn model_id(&self) -> String {
+        "slow-test".to_owned()
+    }
+
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {
         if self.slow.load(Ordering::SeqCst) {
             self.started.notify_one();
