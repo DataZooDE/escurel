@@ -120,6 +120,30 @@ pub enum IndexerError {
     },
     #[error("meta-skill protected: {reason}")]
     MetaSkillProtected { reason: String },
+    #[error("transfer rejected: {0}")]
+    Transfer(String),
+}
+
+/// What a DuckDB→DuckDB merge does on a `page_id` already in the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnCollision {
+    /// Default: import only new `page_id`s, leave existing rows untouched
+    /// (additive, idempotent — a re-run resumes cleanly).
+    Skip,
+    /// Delete the colliding instances in the target, then insert the source's.
+    Replace,
+    /// Abort the whole merge if any `page_id` collides (safest for a one-shot
+    /// migration into a fresh tenant).
+    Error,
+}
+
+/// Summary of a [`Indexer::merge_from_attached`] run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MergeReport {
+    /// Instance pages in the attached source.
+    pub source_pages: usize,
+    /// Source `page_id`s that already existed in the target.
+    pub collisions: usize,
 }
 
 impl Indexer {
@@ -548,6 +572,96 @@ impl Indexer {
              WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);",
         )?;
         Ok(())
+    }
+
+    /// Merge `pages`/`links`/`blocks` from an already-[`attach_external`]ed
+    /// read-only DuckDB (`alias`) into this tenant — the import half of the
+    /// offline batch loader. Rows (including `blocks.dense_vec`) copy verbatim
+    /// DuckDB→DuckDB, so **no re-embedding** happens. The caller must have
+    /// validated the source's embedder `model_id`/`dim` + schema version
+    /// against this tenant (see the loader manifest) BEFORE calling.
+    ///
+    /// HNSW is dropped before the bulk insert and recreated after (the
+    /// bulk-load fast path); the BM25 FTS snapshot is refreshed once. Blobs +
+    /// overlay markdown are NOT moved here — copy them into the LaneStore
+    /// first (content-addressed, idempotent), then call this so a crash never
+    /// leaves rows referencing missing blobs.
+    pub async fn merge_from_attached(
+        &self,
+        alias: &str,
+        on_collision: OnCollision,
+    ) -> Result<MergeReport, IndexerError> {
+        if !is_valid_attach_alias(alias) {
+            return Err(IndexerError::InvalidExternalSource {
+                reason: "attach alias is not a valid identifier",
+            });
+        }
+        let mut conn = self.conn.lock().await;
+
+        let source_pages: i64 =
+            conn.query_row(&format!("SELECT count(*) FROM {alias}.pages"), [], |r| {
+                r.get(0)
+            })?;
+        let collisions: i64 = conn.query_row(
+            &format!(
+                "SELECT count(*) FROM {alias}.pages a \
+                 WHERE a.page_id IN (SELECT page_id FROM pages)"
+            ),
+            [],
+            |r| r.get(0),
+        )?;
+        if matches!(on_collision, OnCollision::Error) && collisions > 0 {
+            return Err(IndexerError::Transfer(format!(
+                "{collisions} page_id(s) already exist in the target (on_collision=error)"
+            )));
+        }
+
+        // Per-row HNSW maintenance is slow; drop the index, bulk-insert, rebuild.
+        conn.execute_batch("DROP INDEX IF EXISTS hnsw_blocks_vec;")?;
+        let tx = conn.transaction()?;
+        match on_collision {
+            OnCollision::Replace => {
+                // Delete the colliding instances, then insert ALL source rows.
+                tx.execute_batch(&format!(
+                    "DELETE FROM blocks WHERE page_id IN (SELECT page_id FROM {alias}.pages); \
+                     DELETE FROM links  WHERE src_page IN (SELECT page_id FROM {alias}.pages); \
+                     DELETE FROM pages  WHERE page_id IN (SELECT page_id FROM {alias}.pages); \
+                     INSERT INTO pages  BY NAME SELECT * FROM {alias}.pages; \
+                     INSERT INTO links  BY NAME SELECT * FROM {alias}.links; \
+                     INSERT INTO blocks BY NAME SELECT * FROM {alias}.blocks;"
+                ))?;
+            }
+            OnCollision::Skip | OnCollision::Error => {
+                // Import only new page_ids. Snapshot the pre-existing ids so
+                // pages/links/blocks all filter against the SAME set (pages is
+                // inserted first, which would otherwise shift the filter).
+                tx.execute_batch(&format!(
+                    "CREATE TEMP TABLE _existing AS SELECT page_id FROM pages; \
+                     INSERT INTO pages  BY NAME SELECT * FROM {alias}.pages  \
+                       WHERE page_id  NOT IN (SELECT page_id FROM _existing); \
+                     INSERT INTO links  BY NAME SELECT * FROM {alias}.links  \
+                       WHERE src_page NOT IN (SELECT page_id FROM _existing); \
+                     INSERT INTO blocks BY NAME SELECT * FROM {alias}.blocks \
+                       WHERE page_id  NOT IN (SELECT page_id FROM _existing); \
+                     DROP TABLE _existing;"
+                ))?;
+            }
+        }
+        tx.commit()?;
+
+        // Rebuild the vector index (same DDL as the schema), then drop the lock
+        // before refreshing FTS (which re-locks the connection).
+        conn.execute_batch(
+            "CREATE INDEX hnsw_blocks_vec ON blocks USING HNSW (dense_vec) \
+             WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);",
+        )?;
+        drop(conn);
+        self.refresh_fts().await?;
+
+        Ok(MergeReport {
+            source_pages: source_pages as usize,
+            collisions: collisions as usize,
+        })
     }
 
     /// Read an inbox blob by id (delegates to the LaneStore). Used by the
