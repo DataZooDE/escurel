@@ -13,6 +13,9 @@ homepage.workspace = true
 # Forward the in-process PDF/DOCX/PPTX/XLSX extractor so a loader build can
 # ingest office documents. Off by default (light, text-only build).
 kreuzberg = ["escurel-index/kreuzberg"]
+# Forward the Gemini HTTP embedder so a loader build can embed offline with the
+# SAME model a Gemini-backed live tenant uses (no escurel-server / no quota).
+gemini = ["escurel-embed/gemini"]
 
 [[bin]]
 name = "escurel-loader"
