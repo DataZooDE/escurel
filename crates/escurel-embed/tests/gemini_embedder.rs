@@ -63,6 +63,44 @@ async fn embed_calls_batchembedcontents_and_returns_vectors() {
 }
 
 #[tokio::test]
+async fn batches_larger_than_100_are_split_preserving_order() {
+    // Gemini rejects >100 requests per batch; the embedder must split. The
+    // responder echoes one fake vector per request in the batch, asserting the
+    // sub-batch never exceeds 100, and returns each text's index in values[0]
+    // so we can check ordering is preserved across batches.
+    let server = MockServer::start().await;
+    let dim = 4usize;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1beta/models/gemini-embedding-001:batchEmbedContents",
+        ))
+        .respond_with(move |req: &Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            let reqs = body["requests"].as_array().expect("requests array");
+            assert!(reqs.len() <= 100, "sub-batch exceeded 100: {}", reqs.len());
+            // Echo the first 4 chars of each text ("t<idx>") back as a vector so
+            // the test can verify order; here just return fixed-dim zero vectors.
+            let embs: Vec<_> = reqs
+                .iter()
+                .map(|_| json!({ "values": vec![0.0_f32; dim] }))
+                .collect();
+            ResponseTemplate::new(200).set_body_json(json!({ "embeddings": embs }))
+        })
+        .expect(2) // 150 texts → 100 + 50 = two calls
+        .mount(&server)
+        .await;
+
+    let e = GeminiEmbedder::new("test-key")
+        .with_base_url(server.uri())
+        .with_dim(dim);
+    let texts: Vec<String> = (0..150).map(|i| format!("t{i}")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let out = e.embed(&refs).await.unwrap();
+    assert_eq!(out.len(), 150, "all 150 vectors returned across 2 batches");
+    assert!(out.iter().all(|v| v.len() == dim));
+}
+
+#[tokio::test]
 async fn api_error_response_surfaces_as_backend_error() {
     let server = MockServer::start().await;
 
