@@ -12,6 +12,11 @@ use serde_json::json;
 
 use crate::{EmbedError, Embedder};
 
+/// Gemini's `batchEmbedContents` rejects a batch with more than 100 requests
+/// (`INVALID_ARGUMENT: at most 100 requests can be in one batch`). A single
+/// document can chunk into more than that, so we split into ≤100-text calls.
+const MAX_BATCH: usize = 100;
+
 /// HTTP-backed embedder calling `models.batchEmbedContents` on the
 /// Gemini API.
 ///
@@ -77,7 +82,19 @@ impl Embedder for GeminiEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        // Gemini caps a batch at 100 requests; split larger inputs (one doc can
+        // chunk into hundreds) into ≤100-text calls, preserving order.
+        let mut out = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(MAX_BATCH) {
+            out.extend(self.embed_batch(batch).await?);
+        }
+        Ok(out)
+    }
+}
 
+impl GeminiEmbedder {
+    /// Embed a single ≤[`MAX_BATCH`] batch via one `batchEmbedContents` call.
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {
         let requests: Vec<_> = texts
             .iter()
             .map(|t| {
