@@ -342,8 +342,13 @@ pub async fn transfer(
 
     // Open the live tenant index. The merge copies vectors verbatim and never
     // embeds, so a ZeroEmbedder placeholder (768-dim) is all Indexer::new needs.
+    // `to` is the escurel data dir; each tenant's DuckDB + LaneStore live under
+    // `<data_dir>/tenants/<tenant>/` (escurel-server config.rs), so the DB path
+    // must match — the FsStore below keys blobs/overlays under the same prefix.
     let live_store: Arc<dyn LaneStore> = Arc::new(FsStore::new(to.to_path_buf()));
-    let db_path = to.join("escurel.duckdb");
+    let tenant_dir = to.join("tenants").join(live_tenant);
+    std::fs::create_dir_all(&tenant_dir)?;
+    let db_path = tenant_dir.join("escurel.duckdb");
     // Mirror the server boot recipe (config.rs): the schema DDL (`up`) is
     // one-time, so run it ONLY for a fresh DB; load_extensions + ensure_* are
     // idempotent and run every time (a transfer into an existing tenant must

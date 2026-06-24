@@ -84,7 +84,11 @@ async fn transfer_carries_embeddings_verbatim_and_is_idempotent() {
     assert_eq!(report.files.overlays, 2);
 
     // Vectors copied byte-for-byte — the no-re-embed guarantee.
-    let live_db = live.path().join("escurel.duckdb");
+    let live_db = live
+        .path()
+        .join("tenants")
+        .join("acme")
+        .join("escurel.duckdb");
     assert_eq!(
         vec_heads(&live_db),
         loader_heads,
@@ -140,7 +144,11 @@ async fn transfer_error_policy_aborts_on_collision_without_mutating() {
     )
     .await
     .expect("seed transfer");
-    let live_db = live.path().join("escurel.duckdb");
+    let live_db = live
+        .path()
+        .join("tenants")
+        .join("acme")
+        .join("escurel.duckdb");
     let before = vec_heads(&live_db);
 
     // A second transfer with on_collision=error must abort (every page collides)
@@ -182,7 +190,11 @@ async fn transfer_aborts_on_embedder_model_mismatch() {
     assert!(format!("{err}").contains("model mismatch"));
 
     // Nothing was merged: the live DB has no instance rows (abort before attach).
-    let live_db = live.path().join("escurel.duckdb");
+    let live_db = live
+        .path()
+        .join("tenants")
+        .join("acme")
+        .join("escurel.duckdb");
     if live_db.exists() {
         assert!(vec_heads(&live_db).is_empty(), "no rows merged on abort");
     }
