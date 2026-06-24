@@ -67,6 +67,10 @@ enum Cmd {
         /// Gemini API key (embedder=gemini). Falls back to GEMINI_API_KEY.
         #[arg(long, env = "ESCUREL_GEMINI_API_KEY")]
         api_key: Option<String>,
+        /// Optional metadata sidecar (JSON object keyed by source file name →
+        /// extra instance frontmatter, e.g. nummer/titel/wp/doctype/stand).
+        #[arg(long)]
+        metadata: Option<PathBuf>,
         /// Max characters per chunk.
         #[arg(long, default_value_t = 1200)]
         chunk_max: usize,
@@ -186,10 +190,21 @@ async fn run(cli: Cli) -> Result<()> {
             embed_model,
             embed_dim,
             api_key,
+            metadata,
             chunk_max,
             chunk_overlap,
         } => {
             let embedder = embedder_for(embedder, &embed_model, embed_dim, api_key)?;
+            // Load the optional metadata sidecar (JSON object → per-file extra
+            // frontmatter).
+            let meta_map = match metadata {
+                Some(p) => {
+                    let raw = std::fs::read(&p).with_context(|| format!("read sidecar {p:?}"))?;
+                    serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&raw)
+                        .with_context(|| format!("parse sidecar {p:?} as a JSON object"))?
+                }
+                None => serde_json::Map::new(),
+            };
             let report = LoaderBuilder::new(out, skill, extractor(), embedder)
                 .with_extract_config(ExtractConfig {
                     ocr: OcrPolicy::Off,
@@ -198,6 +213,7 @@ async fn run(cli: Cli) -> Result<()> {
                         overlap: chunk_overlap,
                     },
                 })
+                .with_metadata(meta_map)
                 .build(&src)
                 .await
                 .context("loader build")?;

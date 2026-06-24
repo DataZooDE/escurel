@@ -595,7 +595,14 @@ async fn run_document_ingest(
     );
 
     match worker
-        .ingest(&blob_id, content_type, skill, &instance_id, &cfg)
+        .ingest(
+            &blob_id,
+            content_type,
+            skill,
+            &instance_id,
+            &cfg,
+            &serde_json::Value::Null,
+        )
         .await
     {
         Ok(IngestOutcome::Materialised {

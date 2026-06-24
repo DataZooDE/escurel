@@ -70,7 +70,14 @@ async fn rebuild_reextracts_document_chunks_from_retained_blob() {
             .await
             .unwrap();
         let out = worker(&i1)
-            .ingest(&blob, "text/plain", "memo", "doc-q3", &cfg())
+            .ingest(
+                &blob,
+                "text/plain",
+                "memo",
+                "doc-q3",
+                &cfg(),
+                &serde_json::Value::Null,
+            )
             .await
             .unwrap();
         match out {
@@ -118,7 +125,14 @@ async fn audit_documents_detects_missing_blob() {
         .await
         .unwrap();
     worker(&i)
-        .ingest(&blob, "text/plain", "memo", "doc-x", &cfg())
+        .ingest(
+            &blob,
+            "text/plain",
+            "memo",
+            "doc-x",
+            &cfg(),
+            &serde_json::Value::Null,
+        )
         .await
         .unwrap();
 
@@ -154,7 +168,14 @@ async fn rebuild_reclaims_orphan_blobs() {
         .await
         .unwrap();
     let page_id = match worker(&i)
-        .ingest(&kept, "text/plain", "memo", "doc-keep", &cfg())
+        .ingest(
+            &kept,
+            "text/plain",
+            "memo",
+            "doc-keep",
+            &cfg(),
+            &serde_json::Value::Null,
+        )
         .await
         .unwrap()
     {
@@ -243,7 +264,14 @@ async fn rebuild_reconstructs_mixed_corpus() {
             .await
             .unwrap();
         let out = worker(&i1)
-            .ingest(&blob, "text/plain", "memo", "doc-m", &cfg())
+            .ingest(
+                &blob,
+                "text/plain",
+                "memo",
+                "doc-m",
+                &cfg(),
+                &serde_json::Value::Null,
+            )
             .await
             .unwrap();
         let page_id = match out {

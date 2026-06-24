@@ -89,6 +89,11 @@ pub struct LoaderBuilder {
     extractor: Arc<dyn Extractor>,
     embedder: Arc<dyn Embedder>,
     cfg: ExtractConfig,
+    /// Per-document extra frontmatter, keyed by source file name (e.g.
+    /// `16_100_D.pdf` → `{nummer, titel, wp, doctype, stand, sachgebiet}`).
+    /// Written verbatim into each instance's frontmatter, so a `drucksache`
+    /// corpus carries facetable metadata + real titles.
+    metadata: serde_json::Map<String, serde_json::Value>,
 }
 
 impl LoaderBuilder {
@@ -109,6 +114,7 @@ impl LoaderBuilder {
             extractor,
             embedder,
             cfg: ExtractConfig::default(),
+            metadata: serde_json::Map::new(),
         }
     }
 
@@ -118,6 +124,15 @@ impl LoaderBuilder {
     #[must_use]
     pub fn with_extract_config(mut self, cfg: ExtractConfig) -> Self {
         self.cfg = cfg;
+        self
+    }
+
+    /// Per-document extra frontmatter keyed by source file name (the sidecar).
+    /// Each entry must be a JSON object; it is merged verbatim into the
+    /// materialised instance's frontmatter.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: serde_json::Map<String, serde_json::Value>) -> Self {
+        self.metadata = metadata;
         self
     }
 
@@ -178,8 +193,16 @@ impl LoaderBuilder {
                 .await?;
             let instance_id = format!("doc-{}", &blob.hex()[..12.min(blob.hex().len())]);
 
+            // Per-doc extra frontmatter from the sidecar, keyed by file name.
+            let extra = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| self.metadata.get(n))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+
             match worker
-                .ingest(&blob, &mime, &self.skill, &instance_id, &self.cfg)
+                .ingest(&blob, &mime, &self.skill, &instance_id, &self.cfg, &extra)
                 .await?
             {
                 IngestOutcome::Materialised { chunk_count: n, .. } => {

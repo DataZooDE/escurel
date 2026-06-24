@@ -358,6 +358,7 @@ impl DocumentIngestWorker {
         skill: &str,
         instance_id: &str,
         cfg: &ExtractConfig,
+        extra: &serde_json::Value,
     ) -> Result<IngestOutcome, IndexerError> {
         let page_id = format!("markdown/instances/{skill}/{instance_id}.md");
         let bytes = self.indexer.read_inbox_blob(blob_id).await?;
@@ -375,6 +376,7 @@ impl DocumentIngestWorker {
                     &self.processor.engine(),
                     "ok",
                     &result.metadata,
+                    extra,
                 );
                 self.indexer
                     .materialize_document(&page_id, &overlay, &chunk_texts)
@@ -399,6 +401,7 @@ impl DocumentIngestWorker {
                     &self.processor.engine(),
                     "extraction_failed",
                     &DocMetadata::default(),
+                    extra,
                 );
                 self.indexer
                     .materialize_document(&page_id, &overlay, &[])
@@ -568,6 +571,7 @@ async fn enumerate_document_overlays(indexer: &Indexer) -> Result<Vec<DocOverlay
 }
 
 /// Build the document instance's overlay markdown with its `backend_ref`.
+#[allow(clippy::too_many_arguments)]
 fn document_overlay(
     skill: &str,
     id: &str,
@@ -576,8 +580,27 @@ fn document_overlay(
     engine: &str,
     status: &str,
     meta: &DocMetadata,
+    extra: &serde_json::Value,
 ) -> String {
-    let title = meta.title.clone().unwrap_or_else(|| id.to_owned());
+    // Extra caller-supplied top-level frontmatter (e.g. the offline loader's
+    // per-doc metadata: nummer/titel/wp/doctype/…). Each JSON value serialises
+    // to a valid YAML flow scalar; a `titel`/`title` here wins the heading.
+    let mut extra_block = String::new();
+    if let Some(obj) = extra.as_object() {
+        for (k, v) in obj {
+            extra_block.push_str(&format!(
+                "{k}: {}\n",
+                serde_json::to_string(v).unwrap_or_default()
+            ));
+        }
+    }
+    let title = extra
+        .get("titel")
+        .or_else(|| extra.get("title"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .or_else(|| meta.title.clone())
+        .unwrap_or_else(|| id.to_owned());
     let mut extracted = String::new();
     if let Some(pages) = meta.page_count {
         extracted.push_str(&format!("    pages: {pages}\n"));
@@ -602,6 +625,7 @@ fn document_overlay(
         \x20 extract_engine: {engine}\n\
         \x20 status: {status}\n\
          {extracted_block}\
+         {extra_block}\
          ---\n\
          # {title}\n",
         blob = blob_id.as_str(),
