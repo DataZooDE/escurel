@@ -320,6 +320,13 @@ pub(crate) struct IngestRequest {
     content_type: String,
     #[serde(default)]
     title: Option<String>,
+    /// Optional explicit target document skill. When absent, the skill is
+    /// resolved from the MIME (REQ-DOC-06). When present it must be a
+    /// `document`-backend skill that `accepts` the MIME, else the request is
+    /// rejected — this is how an upload reaches a *specific* document skill
+    /// (e.g. a per-fraktion collection) when several accept the same MIME.
+    #[serde(default)]
+    skill: Option<String>,
 }
 
 /// Auth (REQ-NF-07) + per-tenant Writes rate-limit gate shared by `/ingest`
@@ -374,6 +381,7 @@ pub(crate) async fn ingest(
         &req.blob_id,
         &req.content_type,
         req.title,
+        req.skill.as_deref(),
         &subject,
     )
     .await
@@ -390,6 +398,9 @@ pub(crate) struct IngestUploadRequest {
     bytes_b64: String,
     #[serde(default)]
     title: Option<String>,
+    /// Optional explicit target document skill (see [`IngestRequest::skill`]).
+    #[serde(default)]
+    skill: Option<String>,
 }
 
 pub(crate) async fn ingest_upload(
@@ -453,6 +464,7 @@ pub(crate) async fn ingest_upload(
         blob.as_str(),
         &req.content_type,
         req.title,
+        req.skill.as_deref(),
         &subject,
     )
     .await
@@ -465,17 +477,55 @@ async fn record_and_dispatch_ingest(
     blob_id: &str,
     content_type: &str,
     title: Option<String>,
+    target_skill: Option<&str>,
     subject: &str,
 ) -> axum::response::Response {
-    let handler = match indexer.document_skill_for_mime(content_type).await {
-        Ok(h) => h,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("mime resolution: {e}") })),
-            )
-                .into_response();
+    // Resolve the handler skill: an explicit `target_skill` (validated to be a
+    // document-backend skill that accepts the MIME) wins; otherwise route by
+    // MIME (REQ-DOC-06). An explicit skill that is missing, not a document
+    // backend, or does not accept the MIME is a 422 (never silently re-routed
+    // — that would land an upload in the wrong, possibly wider-visible skill).
+    let handler = match target_skill {
+        Some(sk) => {
+            let accepts = match indexer.skill_backend(sk).await {
+                Ok(b) => {
+                    b.kind == escurel_index::backend::BackendKind::Document
+                        && b.document
+                            .as_ref()
+                            .is_some_and(|d| d.accepts.iter().any(|m| m == content_type))
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("skill backend: {e}") })),
+                    )
+                        .into_response();
+                }
+            };
+            if !accepts {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(json!({
+                        "error": "invalid_target_skill",
+                        "message": format!(
+                            "skill `{sk}` is not a document skill that accepts `{content_type}`"
+                        ),
+                    })),
+                )
+                    .into_response();
+            }
+            Some(sk.to_owned())
         }
+        None => match indexer.document_skill_for_mime(content_type).await {
+            Ok(h) => h,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("mime resolution: {e}") })),
+                )
+                    .into_response();
+            }
+        },
     };
     let label_skill = handler.clone().unwrap_or_else(|| "ingest".to_owned());
     let event = indexer
@@ -508,7 +558,8 @@ async fn record_and_dispatch_ingest(
     };
     match handler {
         Some(skill) => {
-            run_document_ingest(indexer, &skill, blob_id, content_type, &event.event_id).await
+            run_document_ingest(indexer, &skill, blob_id, content_type, &event.event_id, subject)
+                .await
         }
         None => (
             StatusCode::ACCEPTED,
@@ -537,6 +588,7 @@ async fn run_document_ingest(
     blob_id_str: &str,
     content_type: &str,
     event_id: &str,
+    subject: &str,
 ) -> axum::response::Response {
     use escurel_index::backend::{
         ChunkConfig, DeterministicProcessor, DocumentIngestWorker, ExtractConfig, Extractor,
@@ -594,15 +646,24 @@ async fn run_document_ingest(
         std::sync::Arc::new(DeterministicProcessor::new(extractor)),
     );
 
+    // Stamp the uploader as the instance owner so owner-scoped document skills
+    // work: a personal skill (`read: [owner]`) stays visible only to its
+    // uploader, and a group-shared skill (`read: [owner, <group>]`) is owned by
+    // the uploader but readable by the group. Resolved from the skill's
+    // `owner_field`; skipped for skills without one (or an anonymous caller).
+    let extra = match indexer.list_skills().await {
+        Ok(skills) => skills
+            .into_iter()
+            .find(|s| s.id == skill)
+            .and_then(|s| s.owner_field)
+            .filter(|_| !subject.is_empty())
+            .map(|field| json!({ field: subject }))
+            .unwrap_or(serde_json::Value::Null),
+        Err(_) => serde_json::Value::Null,
+    };
+
     match worker
-        .ingest(
-            &blob_id,
-            content_type,
-            skill,
-            &instance_id,
-            &cfg,
-            &serde_json::Value::Null,
-        )
+        .ingest(&blob_id, content_type, skill, &instance_id, &cfg, &extra)
         .await
     {
         Ok(IngestOutcome::Materialised {
