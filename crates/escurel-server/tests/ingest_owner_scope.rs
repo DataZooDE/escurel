@@ -23,7 +23,7 @@ use tempfile::TempDir;
 
 const TENANT: &str = "herkules";
 
-// A personal document skill: uploads are visible only to the uploader.
+// A personal document skill: anyone may create their own; only the uploader reads.
 const PERSONAL_SKILL: &str = "\
 ---
 type: skill
@@ -32,6 +32,7 @@ description: Persönliche Ablage.
 owner_field: author
 acl:
   read: [owner]
+  create: [owner]
 backend:
   kind: document
   accepts: [text/plain]
@@ -236,6 +237,31 @@ async fn unknown_or_incompatible_target_skill_is_rejected() {
     assert_eq!(
         status, 422,
         "a target skill that is not a document skill accepting the MIME is rejected: {resp}"
+    );
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn ingest_into_a_skill_the_caller_cannot_create_in_is_forbidden() {
+    // A caller outside `fraktion:gruene` must NOT be able to inject a (group-
+    // readable) document into `fraktion_gruene_dok` by naming it explicitly —
+    // the explicit-target path enforces the skill's `create` ACL.
+    let s = setup().await;
+    let outsider = s
+        .process
+        .mint_token_with_groups(TENANT, "mallory", &["fraktion:cdu"], false);
+    let blob = deposit(&s, "Versuchte Fremd-Einschleusung.").await;
+    let (status, resp) = post_ingest(
+        &s.process,
+        &outsider,
+        &blob,
+        "text/plain",
+        Some("fraktion_gruene_dok"),
+    )
+    .await;
+    assert_eq!(
+        status, 403,
+        "a non-GRÜNE caller must be forbidden from creating in fraktion_gruene_dok: {resp}"
     );
     s.process.shutdown().await;
 }
