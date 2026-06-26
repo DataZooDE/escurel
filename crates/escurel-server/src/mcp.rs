@@ -1379,6 +1379,11 @@ struct ExpandArgs {
     /// Scenario overlay to read against; null/absent = base only.
     #[serde(default)]
     scenario: Option<String>,
+    /// Return ALL chunks of a document instance instead of the bounded lead
+    /// (REQ-DOC-05). For a single-document detail view (relevance heatmap over
+    /// the whole text), not the default grounding/preview path.
+    #[serde(default)]
+    full: bool,
 }
 
 async fn tool_expand(
@@ -1452,12 +1457,16 @@ async fn tool_expand(
                     .and_then(|b| b.document.and_then(|d| d.lead_chunks))
                     .unwrap_or(DEFAULT_CHUNK_LEAD);
                 let total = e.blocks.len();
-                if let Some(arr) = page["blocks"].as_array().cloned() {
+                // `full` returns every chunk (detail/heatmap view); otherwise
+                // bound to the lead (REQ-DOC-05).
+                if !a.full
+                    && let Some(arr) = page["blocks"].as_array().cloned()
+                {
                     let lead: Vec<Value> = arr.into_iter().take(lead_n).collect();
                     page["blocks"] = Value::from(lead);
                 }
                 page["chunks_total"] = json!(total);
-                page["chunks_truncated"] = json!(total > lead_n);
+                page["chunks_truncated"] = json!(!a.full && total > lead_n);
             }
             Ok(page)
         }
@@ -1633,6 +1642,9 @@ struct SearchArgs {
     /// Frontmatter post-filter object (see `escurel_index::filter`).
     #[serde(default)]
     filter: Option<Value>,
+    /// Restrict the search to a single page's blocks (relevance heatmap).
+    #[serde(default)]
+    page_id: Option<String>,
 }
 
 fn default_k() -> usize {
@@ -1671,6 +1683,7 @@ async fn tool_search(
             a.scenario.as_deref(),
             granularity,
             filter,
+            a.page_id.as_deref().filter(|s| !s.is_empty()),
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
@@ -1686,7 +1699,8 @@ async fn tool_search(
     // yet honor (`as_of` time-travel, `scenario` overlay, frontmatter
     // `filter`) — fusing unconstrained SQL hits would violate them, so skip
     // the lane (conservative + correct) until it can apply the constraints.
-    let constrained = a.as_of.is_some() || a.scenario.is_some() || filter.is_some();
+    let constrained =
+        a.as_of.is_some() || a.scenario.is_some() || filter.is_some() || a.page_id.is_some();
     let sql_allowed = if matches!(pt, Some(PageType::Skill)) || constrained {
         Vec::new()
     } else {
@@ -1717,6 +1731,7 @@ async fn tool_search(
                 "anchor": h.anchor,
                 "snippet": h.snippet,
                 "score": h.score,
+                "similarity": h.similarity,
                 "frontmatter_excerpt": h.frontmatter_excerpt,
             })
         })

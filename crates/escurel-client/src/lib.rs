@@ -152,6 +152,9 @@ impl Client {
         if !req.scenario.is_empty() {
             args["scenario"] = json!(req.scenario);
         }
+        if !req.page_id.is_empty() {
+            args["page_id"] = json!(req.page_id);
+        }
         self.transport.call_typed("search", args).await
     }
 
@@ -170,6 +173,9 @@ impl Client {
         }
         if !req.version.is_empty() {
             args["version"] = json!(req.version);
+        }
+        if req.full {
+            args["full"] = json!(true);
         }
         self.transport.call_typed("expand", args).await
     }

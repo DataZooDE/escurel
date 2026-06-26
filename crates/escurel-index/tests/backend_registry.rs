@@ -138,6 +138,7 @@ async fn markdown_backend_search_matches_indexer_search() {
             None,
             Granularity::Block,
             None,
+            None,
         )
         .await
         .expect("indexer search");

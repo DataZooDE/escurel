@@ -364,6 +364,7 @@ pub(crate) async fn search_candidates(
                 anchor: None,
                 snippet: format!("[sql_view {}] matched {count} row(s)", row.view),
                 score: count as f64,
+                similarity: 0.0, // structured-row match; no vector similarity
                 frontmatter_excerpt: row.frontmatter,
             });
         }

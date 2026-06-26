@@ -28,6 +28,9 @@ pub struct SearchRequest {
     pub filter: Value,
     pub as_of: String,
     pub scenario: String,
+    /// Restrict the search to a single page's blocks (relevance heatmap).
+    /// Empty = no restriction.
+    pub page_id: String,
 }
 
 /// One block-granularity hit. MCP wire keys: `page_id`, `slug`,
@@ -43,6 +46,9 @@ pub struct SearchHit {
     pub anchor: String,
     pub snippet: String,
     pub score: f64,
+    /// Absolute vector cosine similarity to the query (0..1); 0 for BM25-only
+    /// hits. Honest relevance signal, independent of the RRF rank.
+    pub similarity: f64,
     /// MCP wire key `frontmatter_excerpt` carries a real JSON object
     /// (the proto encoded this as the string `frontmatter_excerpt_json`).
     pub frontmatter_excerpt: Value,
@@ -87,6 +93,9 @@ pub struct ExpandRequest {
     pub version: String,
     pub as_of: String,
     pub scenario: String,
+    /// Return ALL chunks of a document instance (detail/heatmap view) instead
+    /// of the bounded lead. Default `false` (grounding/preview).
+    pub full: bool,
 }
 
 /// One body block. MCP wire keys: `anchor`, `content`.

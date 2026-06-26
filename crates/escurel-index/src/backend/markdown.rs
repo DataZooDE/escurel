@@ -106,6 +106,7 @@ impl InstanceBackend for MarkdownBackend {
                 ctx.scenario,
                 granularity,
                 filter,
+                None,
             )
             .await
     }

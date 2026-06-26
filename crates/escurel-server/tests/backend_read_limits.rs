@@ -195,3 +195,47 @@ async fn document_expand_honours_skill_lead_chunks() {
     );
     s.process.shutdown().await;
 }
+
+#[tokio::test]
+async fn document_expand_full_returns_all_chunks() {
+    let s = setup().await;
+    // Same multi-chunk body as the lead-chunks test (lead_chunks:2).
+    let body_text = "Clause one is the first. \
+        Clause two is the second. \
+        Clause three is the third. \
+        Clause four is the fourth. \
+        Clause five is the fifth.";
+    let resp = reqwest::Client::new()
+        .post(format!("{}/ingest/upload", s.process.base_url()))
+        .json(&json!({ "content_type": "text/plain", "bytes_b64": B64.encode(body_text) }))
+        .send()
+        .await
+        .expect("upload");
+    let out: Value = resp.json().await.unwrap();
+    assert_eq!(out["status"], "materialised", "ingest: {out}");
+    let page_id = out["page_id"].as_str().expect("page_id").to_owned();
+
+    // `full: true` bypasses the lead cap (the detail/heatmap view needs every
+    // chunk) — returns all chunks_total blocks and does NOT flag truncation.
+    let ex = call(
+        &s.process,
+        "expand",
+        json!({ "page_id": page_id, "full": true }),
+    )
+    .await;
+    let page = &ex["result"]["structuredContent"];
+    let blocks = page["blocks"].as_array().expect("blocks");
+    let total = page["chunks_total"].as_u64().expect("chunks_total");
+    assert!(total > 2, "the document must have >2 chunks total: {page}");
+    assert_eq!(
+        blocks.len() as u64,
+        total,
+        "full=true must return ALL chunks, not the lead: {page}"
+    );
+    assert_eq!(
+        page["chunks_truncated"],
+        json!(false),
+        "full=true must not flag chunks_truncated: {page}"
+    );
+    s.process.shutdown().await;
+}

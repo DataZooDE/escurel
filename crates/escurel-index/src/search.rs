@@ -89,9 +89,263 @@ pub struct SearchHit {
     pub snippet: String,
     /// RRF-fused score.
     pub score: f64,
+    /// Absolute vector cosine similarity to the query (0..1), independent of
+    /// the RRF rank. 0 for a hit that entered only via the BM25 arm (outside
+    /// the vector candidate pool). Lets callers show an honest relevance and
+    /// cut weak matches; the optional similarity floor uses the same measure.
+    pub similarity: f64,
     /// Frontmatter projected as a JSON object.
     pub frontmatter_excerpt: serde_json::Value,
 }
+
+/// Minimum vector cosine similarity a candidate must clear to enter the vector
+/// arm — drops off-topic nearest-neighbours that the unbounded KNN would
+/// otherwise pad into the result set (and, after RRF, present as high-relevance).
+/// `ESCUREL_SEARCH_MIN_SIMILARITY` (unset = no floor, the shipped default; BM25
+/// matches are never affected). 12-factor: env overrides the default.
+fn min_similarity() -> f64 {
+    std::env::var("ESCUREL_SEARCH_MIN_SIMILARITY")
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(f64::NEG_INFINITY)
+}
+
+/// German stopwords (snowball list) loaded into the FTS index so common
+/// function words don't dominate BM25. Lowercase; the tokenizer lowercases
+/// first. No apostrophes, so safe to inline into the INSERT.
+const GERMAN_STOPWORDS: &[&str] = &[
+    "aber",
+    "alle",
+    "allem",
+    "allen",
+    "aller",
+    "alles",
+    "als",
+    "also",
+    "am",
+    "an",
+    "ander",
+    "andere",
+    "anderem",
+    "anderen",
+    "anderer",
+    "anderes",
+    "anderm",
+    "andern",
+    "anderr",
+    "anders",
+    "auch",
+    "auf",
+    "aus",
+    "bei",
+    "bin",
+    "bis",
+    "bist",
+    "da",
+    "damit",
+    "dann",
+    "der",
+    "den",
+    "des",
+    "dem",
+    "die",
+    "das",
+    "dass",
+    "daß",
+    "derselbe",
+    "derselben",
+    "denselben",
+    "desselben",
+    "demselben",
+    "dieselbe",
+    "dieselben",
+    "dasselbe",
+    "dazu",
+    "dein",
+    "deine",
+    "deinem",
+    "deinen",
+    "deiner",
+    "deines",
+    "denn",
+    "derer",
+    "dessen",
+    "dich",
+    "dir",
+    "du",
+    "dies",
+    "diese",
+    "diesem",
+    "diesen",
+    "dieser",
+    "dieses",
+    "doch",
+    "dort",
+    "durch",
+    "ein",
+    "eine",
+    "einem",
+    "einen",
+    "einer",
+    "eines",
+    "einig",
+    "einige",
+    "einigem",
+    "einigen",
+    "einiger",
+    "einiges",
+    "einmal",
+    "er",
+    "ihn",
+    "ihm",
+    "es",
+    "etwas",
+    "euer",
+    "eure",
+    "eurem",
+    "euren",
+    "eurer",
+    "eures",
+    "für",
+    "gegen",
+    "gewesen",
+    "hab",
+    "habe",
+    "haben",
+    "hat",
+    "hatte",
+    "hatten",
+    "hier",
+    "hin",
+    "hinter",
+    "ich",
+    "mich",
+    "mir",
+    "ihr",
+    "ihre",
+    "ihrem",
+    "ihren",
+    "ihrer",
+    "ihres",
+    "euch",
+    "im",
+    "in",
+    "indem",
+    "ins",
+    "ist",
+    "jede",
+    "jedem",
+    "jeden",
+    "jeder",
+    "jedes",
+    "jene",
+    "jenem",
+    "jenen",
+    "jener",
+    "jenes",
+    "jetzt",
+    "kann",
+    "kein",
+    "keine",
+    "keinem",
+    "keinen",
+    "keiner",
+    "keines",
+    "können",
+    "könnte",
+    "machen",
+    "man",
+    "manche",
+    "manchem",
+    "manchen",
+    "mancher",
+    "manches",
+    "mein",
+    "meine",
+    "meinem",
+    "meinen",
+    "meiner",
+    "meines",
+    "mit",
+    "muss",
+    "musste",
+    "nach",
+    "nicht",
+    "nichts",
+    "noch",
+    "nun",
+    "nur",
+    "ob",
+    "oder",
+    "ohne",
+    "sehr",
+    "sein",
+    "seine",
+    "seinem",
+    "seinen",
+    "seiner",
+    "seines",
+    "selbst",
+    "sich",
+    "sie",
+    "so",
+    "solche",
+    "solchem",
+    "solchen",
+    "solcher",
+    "solches",
+    "soll",
+    "sollte",
+    "sondern",
+    "sonst",
+    "über",
+    "um",
+    "und",
+    "uns",
+    "unse",
+    "unsem",
+    "unsen",
+    "unser",
+    "unses",
+    "unter",
+    "viel",
+    "vom",
+    "von",
+    "vor",
+    "während",
+    "war",
+    "waren",
+    "warst",
+    "was",
+    "weg",
+    "weil",
+    "weiter",
+    "welche",
+    "welchem",
+    "welchen",
+    "welcher",
+    "welches",
+    "wenn",
+    "werde",
+    "werden",
+    "wie",
+    "wieder",
+    "will",
+    "wir",
+    "wird",
+    "wirst",
+    "wo",
+    "wollen",
+    "wollte",
+    "würde",
+    "würden",
+    "zu",
+    "zum",
+    "zur",
+    "zwar",
+    "zwischen",
+];
 
 /// Reciprocal Rank Fusion constant. 60 is the canonical default;
 /// later PRs may make this tunable.
@@ -116,10 +370,25 @@ impl Indexer {
     /// tests call it directly between seeding and search.
     pub async fn refresh_fts(&self) -> Result<(), IndexerError> {
         let conn = self.conn.lock().await;
+        // German full-text config (the corpus + UI are German): the snowball
+        // `german` stemmer, a German stopword list (so function words like
+        // der/die/von/bei don't pollute BM25), and an `ignore` regex that KEEPS
+        // umlauts + digits (the old `[^a-z]` deleted ä/ö/ü/ß and Drs-numbers,
+        // mangling German tokens). `lower = 1` lowercases first, so the lower-
+        // case umlaut class suffices.
+        let values: String = GERMAN_STOPWORDS
+            .iter()
+            .map(|w| format!("('{w}')"))
+            .collect::<Vec<_>>()
+            .join(",");
+        conn.execute_batch(&format!(
+            "CREATE OR REPLACE TABLE german_stopwords(sw VARCHAR); \
+             INSERT INTO german_stopwords VALUES {values};"
+        ))?;
         conn.execute_batch(
             "PRAGMA create_fts_index('blocks', 'block_id', 'body', \
-             stemmer = 'porter', stopwords = 'english', \
-             ignore = '(\\.|[^a-z])+', lower = 1, overwrite = 1);",
+             stemmer = 'german', stopwords = 'german_stopwords', \
+             ignore = '(\\.|[^a-z0-9äöüß])+', lower = 1, overwrite = 1);",
         )?;
         Ok(())
     }
@@ -146,6 +415,7 @@ impl Indexer {
             scenario,
             Granularity::Block,
             None,
+            None,
         )
         .await
     }
@@ -169,6 +439,7 @@ impl Indexer {
         scenario: Option<&str>,
         granularity: Granularity,
         filter: Option<&serde_json::Value>,
+        page_id: Option<&str>,
     ) -> Result<Vec<SearchHit>, IndexerError> {
         if k == 0 {
             return Ok(Vec::new());
@@ -191,19 +462,51 @@ impl Indexer {
         let q_lit = crate::indexer::format_vector_literal(&q_vec);
 
         // 2. Build filter SQL + params shared by both halves.
-        let (filter_sql, filter_params) = build_filters(page_type, skill, as_of, scenario);
+        let (filter_sql, filter_params) = build_filters(page_type, skill, as_of, scenario, page_id);
         let n_candidates = candidate_pool(k);
 
         let conn = self.conn.lock().await;
 
-        // 3. Vector candidates.
+        // 3. Vector candidates — keep the cosine distance so we can expose an
+        // absolute similarity and drop weak (off-topic) neighbours below the
+        // configured floor before they earn an RRF rank.
+        //
+        // A page-scoped search drops the `LIMIT`, forcing a brute-force scan of
+        // that one page's (few) blocks. The `vss` HNSW index does approximate,
+        // query-biased traversal: `ORDER BY <distance> LIMIT k` over a filtered
+        // set only surfaces page blocks that are *globally* near the query — so
+        // a relevance heatmap would be blank whenever the document isn't a top
+        // global match. The unbounded scan scores every block exactly.
+        let vec_limit = if page_id.is_some() {
+            String::new()
+        } else {
+            format!(" LIMIT {n_candidates}")
+        };
         let vec_sql = format!(
-            "SELECT block_id FROM blocks \
+            "SELECT block_id, \
+                    array_cosine_distance(dense_vec, {q_lit}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]) AS dist \
+             FROM blocks \
              WHERE 1=1{filter_sql} \
-             ORDER BY array_cosine_distance(dense_vec, {q_lit}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]) \
-             LIMIT {n_candidates}",
+             ORDER BY dist{vec_limit}",
         );
-        let vec_ranked = run_ranking(&conn, &vec_sql, &filter_params)?;
+        // The floor trims off-topic neighbours from a *global* search; a
+        // page-scoped search (relevance heatmap) wants every block's cosine, so
+        // it bypasses the floor.
+        let floor = if page_id.is_some() {
+            f64::NEG_INFINITY
+        } else {
+            min_similarity()
+        };
+        let mut sim_by_block: HashMap<String, f64> = HashMap::new();
+        let mut vec_ranked: Vec<String> = Vec::new();
+        for (block_id, dist) in run_vec_ranking(&conn, &vec_sql, &filter_params)? {
+            let sim = 1.0 - dist;
+            if sim < floor {
+                continue;
+            }
+            sim_by_block.insert(block_id.clone(), sim);
+            vec_ranked.push(block_id);
+        }
 
         // 4. FTS candidates.
         let fts_sql = format!(
@@ -242,7 +545,8 @@ impl Indexer {
             let Some(parts) = hydrated.get(&block_id) else {
                 continue;
             };
-            let hit = parts.clone().into_hit(score);
+            let similarity = sim_by_block.get(&block_id).copied().unwrap_or(0.0);
+            let hit = parts.clone().into_hit(score, similarity);
             if let Some(f) = filter
                 && !crate::filter::matches_filter(f, &hit.frontmatter_excerpt)
             {
@@ -277,9 +581,17 @@ fn build_filters(
     skill: Option<&str>,
     as_of: Option<&str>,
     scenario: Option<&str>,
+    page_id: Option<&str>,
 ) -> (String, Vec<String>) {
     let mut sql = String::new();
     let mut params = Vec::new();
+    // Scope both arms to a single page — lets a caller score *that* document's
+    // blocks against the query (the relevance heatmap), instead of relying on
+    // the document ranking in the global top-k.
+    if let Some(pid) = page_id {
+        sql.push_str(" AND blocks.page_id = ?");
+        params.push(pid.to_owned());
+    }
     if let Some(pt) = page_type {
         sql.push_str(" AND blocks.page_type = ?");
         params.push(
@@ -308,15 +620,17 @@ fn build_filters(
     (sql, params)
 }
 
-fn run_ranking(
+/// Vector ranking that also returns the cosine distance per block (col 1), so
+/// the caller can derive an absolute similarity and apply the floor.
+fn run_vec_ranking(
     conn: &duckdb::Connection,
     sql: &str,
     filter_params: &[String],
-) -> Result<Vec<String>, IndexerError> {
+) -> Result<Vec<(String, f64)>, IndexerError> {
     let mut stmt = conn.prepare(sql)?;
     Ok(collect(stmt.query_map(
         duckdb::params_from_iter(filter_params.iter()),
-        |r| r.get(0),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
     )?))
 }
 
@@ -368,7 +682,7 @@ struct HydratedBlock {
 }
 
 impl HydratedBlock {
-    fn into_hit(self, score: f64) -> SearchHit {
+    fn into_hit(self, score: f64, similarity: f64) -> SearchHit {
         SearchHit {
             page_id: self.page_id,
             slug: self.slug,
@@ -377,6 +691,7 @@ impl HydratedBlock {
             anchor: self.anchor,
             snippet: self.snippet,
             score,
+            similarity,
             frontmatter_excerpt: self.frontmatter_excerpt,
         }
     }
