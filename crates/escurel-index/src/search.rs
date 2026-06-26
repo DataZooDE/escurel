@@ -89,8 +89,26 @@ pub struct SearchHit {
     pub snippet: String,
     /// RRF-fused score.
     pub score: f64,
+    /// Absolute vector cosine similarity to the query (0..1), independent of
+    /// the RRF rank. 0 for a hit that entered only via the BM25 arm (outside
+    /// the vector candidate pool). Lets callers show an honest relevance and
+    /// cut weak matches; the optional similarity floor uses the same measure.
+    pub similarity: f64,
     /// Frontmatter projected as a JSON object.
     pub frontmatter_excerpt: serde_json::Value,
+}
+
+/// Minimum vector cosine similarity a candidate must clear to enter the vector
+/// arm — drops off-topic nearest-neighbours that the unbounded KNN would
+/// otherwise pad into the result set (and, after RRF, present as high-relevance).
+/// `ESCUREL_SEARCH_MIN_SIMILARITY` (unset = no floor, the shipped default; BM25
+/// matches are never affected). 12-factor: env overrides the default.
+fn min_similarity() -> f64 {
+    std::env::var("ESCUREL_SEARCH_MIN_SIMILARITY")
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(f64::NEG_INFINITY)
 }
 
 /// Reciprocal Rank Fusion constant. 60 is the canonical default;
@@ -196,14 +214,28 @@ impl Indexer {
 
         let conn = self.conn.lock().await;
 
-        // 3. Vector candidates.
+        // 3. Vector candidates — keep the cosine distance so we can expose an
+        // absolute similarity and drop weak (off-topic) neighbours below the
+        // configured floor before they earn an RRF rank.
         let vec_sql = format!(
-            "SELECT block_id FROM blocks \
+            "SELECT block_id, \
+                    array_cosine_distance(dense_vec, {q_lit}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]) AS dist \
+             FROM blocks \
              WHERE 1=1{filter_sql} \
-             ORDER BY array_cosine_distance(dense_vec, {q_lit}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]) \
+             ORDER BY dist \
              LIMIT {n_candidates}",
         );
-        let vec_ranked = run_ranking(&conn, &vec_sql, &filter_params)?;
+        let floor = min_similarity();
+        let mut sim_by_block: HashMap<String, f64> = HashMap::new();
+        let mut vec_ranked: Vec<String> = Vec::new();
+        for (block_id, dist) in run_vec_ranking(&conn, &vec_sql, &filter_params)? {
+            let sim = 1.0 - dist;
+            if sim < floor {
+                continue;
+            }
+            sim_by_block.insert(block_id.clone(), sim);
+            vec_ranked.push(block_id);
+        }
 
         // 4. FTS candidates.
         let fts_sql = format!(
@@ -242,7 +274,8 @@ impl Indexer {
             let Some(parts) = hydrated.get(&block_id) else {
                 continue;
             };
-            let hit = parts.clone().into_hit(score);
+            let similarity = sim_by_block.get(&block_id).copied().unwrap_or(0.0);
+            let hit = parts.clone().into_hit(score, similarity);
             if let Some(f) = filter
                 && !crate::filter::matches_filter(f, &hit.frontmatter_excerpt)
             {
@@ -308,15 +341,17 @@ fn build_filters(
     (sql, params)
 }
 
-fn run_ranking(
+/// Vector ranking that also returns the cosine distance per block (col 1), so
+/// the caller can derive an absolute similarity and apply the floor.
+fn run_vec_ranking(
     conn: &duckdb::Connection,
     sql: &str,
     filter_params: &[String],
-) -> Result<Vec<String>, IndexerError> {
+) -> Result<Vec<(String, f64)>, IndexerError> {
     let mut stmt = conn.prepare(sql)?;
     Ok(collect(stmt.query_map(
         duckdb::params_from_iter(filter_params.iter()),
-        |r| r.get(0),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
     )?))
 }
 
@@ -368,7 +403,7 @@ struct HydratedBlock {
 }
 
 impl HydratedBlock {
-    fn into_hit(self, score: f64) -> SearchHit {
+    fn into_hit(self, score: f64, similarity: f64) -> SearchHit {
         SearchHit {
             page_id: self.page_id,
             slug: self.slug,
@@ -377,6 +412,7 @@ impl HydratedBlock {
             anchor: self.anchor,
             snippet: self.snippet,
             score,
+            similarity,
             frontmatter_excerpt: self.frontmatter_excerpt,
         }
     }

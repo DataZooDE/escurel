@@ -43,6 +43,9 @@ pub struct SearchHit {
     pub anchor: String,
     pub snippet: String,
     pub score: f64,
+    /// Absolute vector cosine similarity to the query (0..1); 0 for BM25-only
+    /// hits. Honest relevance signal, independent of the RRF rank.
+    pub similarity: f64,
     /// MCP wire key `frontmatter_excerpt` carries a real JSON object
     /// (the proto encoded this as the string `frontmatter_excerpt_json`).
     pub frontmatter_excerpt: Value,

@@ -1717,6 +1717,7 @@ async fn tool_search(
                 "anchor": h.anchor,
                 "snippet": h.snippet,
                 "score": h.score,
+                "similarity": h.similarity,
                 "frontmatter_excerpt": h.frontmatter_excerpt,
             })
         })
