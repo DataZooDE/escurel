@@ -1379,6 +1379,11 @@ struct ExpandArgs {
     /// Scenario overlay to read against; null/absent = base only.
     #[serde(default)]
     scenario: Option<String>,
+    /// Return ALL chunks of a document instance instead of the bounded lead
+    /// (REQ-DOC-05). For a single-document detail view (relevance heatmap over
+    /// the whole text), not the default grounding/preview path.
+    #[serde(default)]
+    full: bool,
 }
 
 async fn tool_expand(
@@ -1452,12 +1457,16 @@ async fn tool_expand(
                     .and_then(|b| b.document.and_then(|d| d.lead_chunks))
                     .unwrap_or(DEFAULT_CHUNK_LEAD);
                 let total = e.blocks.len();
-                if let Some(arr) = page["blocks"].as_array().cloned() {
+                // `full` returns every chunk (detail/heatmap view); otherwise
+                // bound to the lead (REQ-DOC-05).
+                if !a.full
+                    && let Some(arr) = page["blocks"].as_array().cloned()
+                {
                     let lead: Vec<Value> = arr.into_iter().take(lead_n).collect();
                     page["blocks"] = Value::from(lead);
                 }
                 page["chunks_total"] = json!(total);
-                page["chunks_truncated"] = json!(total > lead_n);
+                page["chunks_truncated"] = json!(!a.full && total > lead_n);
             }
             Ok(page)
         }

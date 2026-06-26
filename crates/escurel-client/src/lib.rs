@@ -174,6 +174,9 @@ impl Client {
         if !req.version.is_empty() {
             args["version"] = json!(req.version);
         }
+        if req.full {
+            args["full"] = json!(true);
+        }
         self.transport.call_typed("expand", args).await
     }
 

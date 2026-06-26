@@ -93,6 +93,9 @@ pub struct ExpandRequest {
     pub version: String,
     pub as_of: String,
     pub scenario: String,
+    /// Return ALL chunks of a document instance (detail/heatmap view) instead
+    /// of the bounded lead. Default `false` (grounding/preview).
+    pub full: bool,
 }
 
 /// One body block. MCP wire keys: `anchor`, `content`.
