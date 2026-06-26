@@ -12,7 +12,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use duckdb::Connection;
 use escurel_embed::{Embedder, HashEmbedder};
-use escurel_index::{Indexer, Migrator};
+use escurel_index::{Granularity, Indexer, Migrator};
 use escurel_md::PageType;
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
@@ -314,6 +314,107 @@ async fn search_scores_are_monotonic_decreasing() {
             "scores must be non-increasing: {} then {}",
             w[0].score,
             w[1].score,
+        );
+    }
+}
+
+// A German instance whose distinctive terms are an umlaut word ("Wärmewende")
+// and an inflected one ("Förderungen", plural). Drives the German-FTS tests.
+const FOERDER: (&str, &str) = (
+    "markdown/instances/customer/foerderprogramm.md",
+    "---\n\
+     type: instance\n\
+     skill: customer\n\
+     id: foerderprogramm\n\
+     ---\n\
+     # Förderprogramm\n\
+     \n\
+     Die Wärmewende erhält mehrere Förderungen vom Land Baden-Württemberg.\n",
+);
+
+#[tokio::test]
+async fn page_scoped_search_is_confined_to_one_page() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER, ACME, GLOBEX, MEETING]).await;
+
+    // "Stuttgart" is in BOTH Acme and Globex. Scoped to Globex, the result set
+    // must contain ONLY Globex's block — the relevance heatmap scores one chosen
+    // document and never leaks other pages.
+    let scoped = h
+        .indexer
+        .search_with(
+            "Stuttgart",
+            20,
+            None,
+            None,
+            None,
+            None,
+            Granularity::Block,
+            None,
+            Some(GLOBEX.0),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !scoped.is_empty(),
+        "page-scoped search returns the page's blocks"
+    );
+    assert!(
+        scoped.iter().all(|x| x.page_id == GLOBEX.0),
+        "scoped search must not leak other pages: {:?}",
+        scoped.iter().map(|x| x.page_id.clone()).collect::<Vec<_>>()
+    );
+
+    // And it returns the chosen page's blocks EVEN when another page is the
+    // better global match ("manufacturing" is Acme-only) — the heatmap needs
+    // every block of the page scored regardless of global ranking (guards the
+    // page-scoped brute-force / floor bypass).
+    let off_global = h
+        .indexer
+        .search_with(
+            "manufacturing",
+            20,
+            None,
+            None,
+            None,
+            None,
+            Granularity::Block,
+            None,
+            Some(GLOBEX.0),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !off_global.is_empty() && off_global.iter().all(|x| x.page_id == GLOBEX.0),
+        "page-scoped search returns the chosen page regardless of global ranking: {:?}",
+        off_global
+            .iter()
+            .map(|x| x.page_id.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn german_fts_stems_inflections_and_keeps_umlauts() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER, FOERDER, ACME, GLOBEX]).await;
+
+    // The German config must (a) stem inflections — the singular query
+    // "Förderung" finds the plural "Förderungen" (porter/English would not) —
+    // and (b) keep umlauts — "Wärmewende" tokenises intact (the old `[^a-z]`
+    // ignore deleted ä/ö/ü). The umlaut word is unique to FOERDER, so an FTS
+    // hit ranks it first; a mangled tokenizer would not.
+    for q in ["Förderung", "Wärmewende"] {
+        let hits = h
+            .indexer
+            .search(q, 5, None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            hits.first().map(|x| x.page_id.as_str()),
+            Some(FOERDER.0),
+            "German FTS must rank the Förder/Wärme document first for {q:?}: {:?}",
+            hits.iter().map(|x| x.page_id.clone()).collect::<Vec<_>>()
         );
     }
 }
