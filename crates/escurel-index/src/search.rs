@@ -219,13 +219,24 @@ impl Indexer {
         // 3. Vector candidates — keep the cosine distance so we can expose an
         // absolute similarity and drop weak (off-topic) neighbours below the
         // configured floor before they earn an RRF rank.
+        //
+        // A page-scoped search drops the `LIMIT`, forcing a brute-force scan of
+        // that one page's (few) blocks. The `vss` HNSW index does approximate,
+        // query-biased traversal: `ORDER BY <distance> LIMIT k` over a filtered
+        // set only surfaces page blocks that are *globally* near the query — so
+        // a relevance heatmap would be blank whenever the document isn't a top
+        // global match. The unbounded scan scores every block exactly.
+        let vec_limit = if page_id.is_some() {
+            String::new()
+        } else {
+            format!(" LIMIT {n_candidates}")
+        };
         let vec_sql = format!(
             "SELECT block_id, \
                     array_cosine_distance(dense_vec, {q_lit}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]) AS dist \
              FROM blocks \
              WHERE 1=1{filter_sql} \
-             ORDER BY dist \
-             LIMIT {n_candidates}",
+             ORDER BY dist{vec_limit}",
         );
         // The floor trims off-topic neighbours from a *global* search; a
         // page-scoped search (relevance heatmap) wants every block's cosine, so
