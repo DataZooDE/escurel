@@ -1633,6 +1633,9 @@ struct SearchArgs {
     /// Frontmatter post-filter object (see `escurel_index::filter`).
     #[serde(default)]
     filter: Option<Value>,
+    /// Restrict the search to a single page's blocks (relevance heatmap).
+    #[serde(default)]
+    page_id: Option<String>,
 }
 
 fn default_k() -> usize {
@@ -1671,6 +1674,7 @@ async fn tool_search(
             a.scenario.as_deref(),
             granularity,
             filter,
+            a.page_id.as_deref().filter(|s| !s.is_empty()),
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
@@ -1686,7 +1690,8 @@ async fn tool_search(
     // yet honor (`as_of` time-travel, `scenario` overlay, frontmatter
     // `filter`) — fusing unconstrained SQL hits would violate them, so skip
     // the lane (conservative + correct) until it can apply the constraints.
-    let constrained = a.as_of.is_some() || a.scenario.is_some() || filter.is_some();
+    let constrained =
+        a.as_of.is_some() || a.scenario.is_some() || filter.is_some() || a.page_id.is_some();
     let sql_allowed = if matches!(pt, Some(PageType::Skill)) || constrained {
         Vec::new()
     } else {

@@ -28,6 +28,9 @@ pub struct SearchRequest {
     pub filter: Value,
     pub as_of: String,
     pub scenario: String,
+    /// Restrict the search to a single page's blocks (relevance heatmap).
+    /// Empty = no restriction.
+    pub page_id: String,
 }
 
 /// One block-granularity hit. MCP wire keys: `page_id`, `slug`,

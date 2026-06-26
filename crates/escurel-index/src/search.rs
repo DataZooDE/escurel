@@ -164,6 +164,7 @@ impl Indexer {
             scenario,
             Granularity::Block,
             None,
+            None,
         )
         .await
     }
@@ -187,6 +188,7 @@ impl Indexer {
         scenario: Option<&str>,
         granularity: Granularity,
         filter: Option<&serde_json::Value>,
+        page_id: Option<&str>,
     ) -> Result<Vec<SearchHit>, IndexerError> {
         if k == 0 {
             return Ok(Vec::new());
@@ -209,7 +211,7 @@ impl Indexer {
         let q_lit = crate::indexer::format_vector_literal(&q_vec);
 
         // 2. Build filter SQL + params shared by both halves.
-        let (filter_sql, filter_params) = build_filters(page_type, skill, as_of, scenario);
+        let (filter_sql, filter_params) = build_filters(page_type, skill, as_of, scenario, page_id);
         let n_candidates = candidate_pool(k);
 
         let conn = self.conn.lock().await;
@@ -225,7 +227,14 @@ impl Indexer {
              ORDER BY dist \
              LIMIT {n_candidates}",
         );
-        let floor = min_similarity();
+        // The floor trims off-topic neighbours from a *global* search; a
+        // page-scoped search (relevance heatmap) wants every block's cosine, so
+        // it bypasses the floor.
+        let floor = if page_id.is_some() {
+            f64::NEG_INFINITY
+        } else {
+            min_similarity()
+        };
         let mut sim_by_block: HashMap<String, f64> = HashMap::new();
         let mut vec_ranked: Vec<String> = Vec::new();
         for (block_id, dist) in run_vec_ranking(&conn, &vec_sql, &filter_params)? {
@@ -310,9 +319,17 @@ fn build_filters(
     skill: Option<&str>,
     as_of: Option<&str>,
     scenario: Option<&str>,
+    page_id: Option<&str>,
 ) -> (String, Vec<String>) {
     let mut sql = String::new();
     let mut params = Vec::new();
+    // Scope both arms to a single page — lets a caller score *that* document's
+    // blocks against the query (the relevance heatmap), instead of relying on
+    // the document ranking in the global top-k.
+    if let Some(pid) = page_id {
+        sql.push_str(" AND blocks.page_id = ?");
+        params.push(pid.to_owned());
+    }
     if let Some(pt) = page_type {
         sql.push_str(" AND blocks.page_type = ?");
         params.push(
