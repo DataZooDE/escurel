@@ -320,15 +320,31 @@ pub(crate) struct IngestRequest {
     content_type: String,
     #[serde(default)]
     title: Option<String>,
+    /// Optional explicit target document skill. When absent, the skill is
+    /// resolved from the MIME (REQ-DOC-06). When present it must be a
+    /// `document`-backend skill that `accepts` the MIME, else the request is
+    /// rejected — this is how an upload reaches a *specific* document skill
+    /// (e.g. a per-fraktion collection) when several accept the same MIME.
+    #[serde(default)]
+    skill: Option<String>,
+}
+
+/// The authenticated caller of an ingest request — the bits needed to enforce
+/// create-ACL on an explicit target skill (mirrors the tools path).
+struct IngestCaller {
+    subject: String,
+    /// RBAC token groups (admin role value already stripped).
+    groups: Vec<String>,
+    is_admin: bool,
 }
 
 /// Auth (REQ-NF-07) + per-tenant Writes rate-limit gate shared by `/ingest`
-/// and `/ingest/upload`. Returns a cloned indexer handle + the caller subject,
-/// or an error response.
+/// and `/ingest/upload`. Returns a cloned indexer handle + the caller (subject,
+/// groups, admin) for downstream ACL checks, or an error response.
 async fn ingest_gate(
     state: &crate::server::AppState,
     headers: &HeaderMap,
-) -> Result<(std::sync::Arc<Indexer>, String), axum::response::Response> {
+) -> Result<(std::sync::Arc<Indexer>, IngestCaller), axum::response::Response> {
     let auth_ctx = match state.verifier.as_ref() {
         Some(v) => match enforce_auth(v, headers).await {
             Ok(c) => Some(c),
@@ -340,6 +356,26 @@ async fn ingest_gate(
         .as_ref()
         .map(|c| c.subject.clone())
         .unwrap_or_default();
+    // RBAC groups (strip the admin role value so it can't act as a group),
+    // mirroring `mcp_inner`. No verifier (dev / on-host mode) → admin bypass.
+    let admin_value = state
+        .verifier
+        .as_ref()
+        .map(|v| v.config().admin_role_value.clone());
+    let groups: Vec<String> = auth_ctx
+        .as_ref()
+        .map(|c| {
+            c.groups
+                .iter()
+                .filter(|g| Some(g.as_str()) != admin_value.as_deref())
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let is_admin = match &auth_ctx {
+        Some(c) => matches!(c.role, Role::Admin),
+        None => true,
+    };
     if let (Some(quota), Some(ctx)) = (state.quota.as_ref(), auth_ctx.as_ref())
         && let Err(err) = quota.try_consume(&ctx.tenant_id, Dimension::Writes)
     {
@@ -350,7 +386,14 @@ async fn ingest_gate(
             .into_response());
     }
     match state.indexer.as_ref() {
-        Some(i) => Ok((std::sync::Arc::clone(i), subject)),
+        Some(i) => Ok((
+            std::sync::Arc::clone(i),
+            IngestCaller {
+                subject,
+                groups,
+                is_admin,
+            },
+        )),
         None => Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "no indexer wired" })),
@@ -365,7 +408,7 @@ pub(crate) async fn ingest(
     Json(req): Json<IngestRequest>,
 ) -> axum::response::Response {
     state.metrics.inc_request("/ingest", 200);
-    let (indexer, subject) = match ingest_gate(&state, &headers).await {
+    let (indexer, caller) = match ingest_gate(&state, &headers).await {
         Ok(v) => v,
         Err(resp) => return resp,
     };
@@ -374,7 +417,8 @@ pub(crate) async fn ingest(
         &req.blob_id,
         &req.content_type,
         req.title,
-        &subject,
+        req.skill.as_deref(),
+        &caller,
     )
     .await
 }
@@ -390,6 +434,9 @@ pub(crate) struct IngestUploadRequest {
     bytes_b64: String,
     #[serde(default)]
     title: Option<String>,
+    /// Optional explicit target document skill (see [`IngestRequest::skill`]).
+    #[serde(default)]
+    skill: Option<String>,
 }
 
 pub(crate) async fn ingest_upload(
@@ -398,7 +445,7 @@ pub(crate) async fn ingest_upload(
     Json(req): Json<IngestUploadRequest>,
 ) -> axum::response::Response {
     state.metrics.inc_request("/ingest/upload", 200);
-    let (indexer, subject) = match ingest_gate(&state, &headers).await {
+    let (indexer, caller) = match ingest_gate(&state, &headers).await {
         Ok(v) => v,
         Err(resp) => return resp,
     };
@@ -453,7 +500,8 @@ pub(crate) async fn ingest_upload(
         blob.as_str(),
         &req.content_type,
         req.title,
-        &subject,
+        req.skill.as_deref(),
+        &caller,
     )
     .await
 }
@@ -465,17 +513,92 @@ async fn record_and_dispatch_ingest(
     blob_id: &str,
     content_type: &str,
     title: Option<String>,
-    subject: &str,
+    target_skill: Option<&str>,
+    caller: &IngestCaller,
 ) -> axum::response::Response {
-    let handler = match indexer.document_skill_for_mime(content_type).await {
-        Ok(h) => h,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("mime resolution: {e}") })),
-            )
-                .into_response();
+    let subject = caller.subject.as_str();
+    // Resolve the handler skill: an explicit `target_skill` (validated to be a
+    // document-backend skill that accepts the MIME) wins; otherwise route by
+    // MIME (REQ-DOC-06). An explicit skill that is missing, not a document
+    // backend, or does not accept the MIME is a 422 (never silently re-routed
+    // — that would land an upload in the wrong, possibly wider-visible skill).
+    let handler = match target_skill {
+        Some(sk) => {
+            let accepts = match indexer.skill_backend(sk).await {
+                Ok(b) => {
+                    b.kind == escurel_index::backend::BackendKind::Document
+                        && b.document
+                            .as_ref()
+                            .is_some_and(|d| d.accepts.iter().any(|m| m == content_type))
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("skill backend: {e}") })),
+                    )
+                        .into_response();
+                }
+            };
+            if !accepts {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(json!({
+                        "error": "invalid_target_skill",
+                        "message": format!(
+                            "skill `{sk}` is not a document skill that accepts `{content_type}`"
+                        ),
+                    })),
+                )
+                    .into_response();
+            }
+            // AUTHORIZATION: the caller *chose* this skill, and the document
+            // materialise path bypasses the normal `update_page` write gate — so
+            // enforce the skill's `create` ACL here. Otherwise an authenticated
+            // user could inject a (group-readable) document into a skill they may
+            // not write, e.g. another fraktion's collection. The would-be owner
+            // (`owner_field` ← subject) is part of the create decision.
+            let owner_field = indexer.list_skills().await.ok().and_then(|ss| {
+                ss.into_iter()
+                    .find(|s| s.id == sk)
+                    .and_then(|s| s.owner_field)
+            });
+            let mut incoming = serde_json::Map::new();
+            if let Some(field) = &owner_field
+                && !subject.is_empty()
+            {
+                incoming.insert(field.clone(), json!(subject));
+            }
+            let acl_caller = AclCaller {
+                subject,
+                is_admin: caller.is_admin,
+                token_groups: &caller.groups,
+            };
+            let may_create = indexer
+                .may_write_instance(&acl_caller, sk, None, &Value::Object(incoming))
+                .await
+                .unwrap_or(false);
+            if !may_create {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({
+                        "error": "forbidden",
+                        "message": format!("not authorised to create documents in skill `{sk}`"),
+                    })),
+                )
+                    .into_response();
+            }
+            Some(sk.to_owned())
         }
+        None => match indexer.document_skill_for_mime(content_type).await {
+            Ok(h) => h,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("mime resolution: {e}") })),
+                )
+                    .into_response();
+            }
+        },
     };
     let label_skill = handler.clone().unwrap_or_else(|| "ingest".to_owned());
     let event = indexer
@@ -508,7 +631,8 @@ async fn record_and_dispatch_ingest(
     };
     match handler {
         Some(skill) => {
-            run_document_ingest(indexer, &skill, blob_id, content_type, &event.event_id).await
+            run_document_ingest(indexer, &skill, blob_id, content_type, &event.event_id, subject)
+                .await
         }
         None => (
             StatusCode::ACCEPTED,
@@ -537,6 +661,7 @@ async fn run_document_ingest(
     blob_id_str: &str,
     content_type: &str,
     event_id: &str,
+    subject: &str,
 ) -> axum::response::Response {
     use escurel_index::backend::{
         ChunkConfig, DeterministicProcessor, DocumentIngestWorker, ExtractConfig, Extractor,
@@ -594,15 +719,24 @@ async fn run_document_ingest(
         std::sync::Arc::new(DeterministicProcessor::new(extractor)),
     );
 
+    // Stamp the uploader as the instance owner so owner-scoped document skills
+    // work: a personal skill (`read: [owner]`) stays visible only to its
+    // uploader, and a group-shared skill (`read: [owner, <group>]`) is owned by
+    // the uploader but readable by the group. Resolved from the skill's
+    // `owner_field`; skipped for skills without one (or an anonymous caller).
+    let extra = match indexer.list_skills().await {
+        Ok(skills) => skills
+            .into_iter()
+            .find(|s| s.id == skill)
+            .and_then(|s| s.owner_field)
+            .filter(|_| !subject.is_empty())
+            .map(|field| json!({ field: subject }))
+            .unwrap_or(serde_json::Value::Null),
+        Err(_) => serde_json::Value::Null,
+    };
+
     match worker
-        .ingest(
-            &blob_id,
-            content_type,
-            skill,
-            &instance_id,
-            &cfg,
-            &serde_json::Value::Null,
-        )
+        .ingest(&blob_id, content_type, skill, &instance_id, &cfg, &extra)
         .await
     {
         Ok(IngestOutcome::Materialised {
