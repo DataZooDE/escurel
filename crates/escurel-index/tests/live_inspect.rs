@@ -15,12 +15,11 @@ fn live() {
     );
     if let Ok(mut s) = conn.prepare(
         "SELECT chat_group_id,count(*) FROM chat_messages GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
-    ) {
-        if let Ok(rs) = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
-            for x in rs {
-                let (g, n) = x.unwrap();
-                println!("  {g} = {n}");
-            }
+    ) && let Ok(rs) = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+    {
+        for x in rs {
+            let (g, n) = x.unwrap();
+            println!("  {g} = {n}");
         }
     }
 }
