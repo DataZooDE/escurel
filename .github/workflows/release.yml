@@ -58,22 +58,15 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-${{ matrix.target_name }}
-          # The libduckdb-sys build script bakes this download dir into its
-          # cached link-search output, so cache it explicitly (a warm
-          # fingerprint + cold lib link-fails) — same contract as ci.yml.
-          cache-directories: target/duckdb-download
-          cache-on-failure: true
-
-      - name: Ensure libduckdb is present (cache-restore safety)
-        shell: bash
-        run: |
-          if ! ls target/duckdb-download/*/*/libduckdb.* target/duckdb-download/*/*/duckdb.dll >/dev/null 2>&1; then
-            echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
-            cargo clean -p libduckdb-sys || true
-          fi
+      # NOTE: deliberately NO rust-cache here. The libduckdb-sys build script
+      # downloads the shared libduckdb into target/duckdb-download and links
+      # against it; rust-cache prunes that downloaded .so/.dll when it saves
+      # the cache, so a *restored* cache link-fails with `unable to find
+      # library -lduckdb` (the search path is set, but the lib is gone). The
+      # first, cache-less run linked fine on every platform — the cache was
+      # the sole culprit. Release builds are infrequent (tag pushes only), so
+      # a clean from-scratch build per platform is the right trade for
+      # guaranteed-correct linking.
 
       - name: Resolve version
         id: ver
