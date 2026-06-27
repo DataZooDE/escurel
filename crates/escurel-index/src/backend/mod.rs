@@ -61,6 +61,9 @@ pub use markdown::MarkdownBackend;
 pub use sql_view::{
     BindingStatus, MAX_PROJECTION_ROWS, Materialized, SqlViewBackend, SqlViewError,
 };
+// Crate-internal: `query_instance` allow-lists the `{{target}}` view
+// identifier through the same `vw_`-prefix guard the projection path uses.
+pub(crate) use sql_view::is_managed_view;
 
 /// Which storage / representation strategy backs a skill's instances.
 ///

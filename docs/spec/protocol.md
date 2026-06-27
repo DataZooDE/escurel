@@ -396,6 +396,52 @@ capability level (like the `admin_*` inspection tools). A non-admin
 caller is refused with the `admin role required` error; an
 unauthenticated dev/on-host caller (no verifier) is unaffected.
 
+#### `query_instance`
+
+A parameterised, full-result-set read over **one `sql_view` instance's**
+view — the agent-surface counterpart of `run_stored_query`. The query page
+(a `[[query::*]]` instance) declares a `target: [[skill::id]]` naming the
+`sql_view` instance and references its view via the `{{target}}` placeholder:
+
+```yaml
+# markdown/instances/query/sales-by-category.md
+type: instance
+skill: query
+id: sales-by-category
+target: "[[sales::eu-2026]]"        # the sql_view instance to read
+params:
+  - {name: min, type: number, required: true}
+sql: "SELECT category, SUM(amount)::BIGINT AS total
+      FROM {{target}} WHERE amount >= :min GROUP BY category"
+```
+
+```jsonc
+// request                          // response
+{                                   {
+  "ref":    "sales-by-category",      "rows":      [ { "category": "hw", "total": 50 } ],
+  "params": { "min": 10 }             "schema":    [ { "name": "total", "type": "BIGINT" } ],
+}                                     "truncated": false
+                                    }
+```
+
+`ref` is the query id or its `[[query::id]]` wikilink. Two trust boundaries
+are kept separate by construction:
+
+- **Value position** — every `:param` runtime value is bound as a positional
+  DuckDB prepared-statement parameter (the `run_stored_query` pattern), so
+  injection through a param value is impossible and it never flows through the
+  `sql_view` filter-interpolation path.
+- **Identifier position** — `{{target}}` resolves to the target's managed
+  `vw_…` view name, allow-listed through the same `vw_`-prefix guard the
+  projection path uses (never a bound value).
+
+**Access:** unlike `run_stored_query`, `query_instance` is an **agent tool**
+gated by the **per-instance read ACL on the target instance**
+(`may_read_instance`, fail-closed): the caller must be allowed to read the
+underlying data, not merely the query template. Admin bypasses; a denied
+caller gets an authorisation error. The result set is capped at
+`MAX_RESULT_ROWS` (10 000) with `truncated` set when the cap clipped the tail.
+
 ### Write tools
 
 #### `validate`
