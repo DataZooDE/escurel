@@ -6,10 +6,18 @@ name: CI
 # was the merge gate per CLAUDE.md "How we work". With the workspace
 # stabilised at v1 the GitHub Actions safety net is back on for
 # every push to main and every PR.
+# Platform coverage:
+#   * Linux (`ci` job) runs on every PR, every push to main, and every
+#     release tag — it is the full fmt/clippy/test/build gate.
+#   * Windows + macOS (`release-build` job) build the release binaries
+#     ONLY for releases (a `v*` tag push), not on PRs. PRs stay
+#     Linux-only so the cross-platform link cost is paid once per release
+#     rather than on every push.
 on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 concurrency:
@@ -86,6 +94,50 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --all-targets
+
+      - name: cargo build --release
+        run: cargo build --workspace --release
+
+  # Release-only cross-platform binaries. Gated on `v*` tag pushes, so PRs
+  # and main pushes never trigger it — they get the Linux `ci` job only.
+  release-build:
+    name: release build (${{ matrix.os }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: ci
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the channel (1.91.0, minimal profile);
+      # a release build needs neither rustfmt nor clippy.
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.os }}
+          # Same libduckdb-download caching contract as the Linux job: the
+          # build script bakes this path into its cached link-search output,
+          # so cache it explicitly or a warm-fingerprint/cold-lib restore
+          # link-fails (see the safety step below).
+          cache-directories: target/duckdb-download
+          cache-on-failure: true
+
+      # Cross-platform mirror of the Linux safety net: if the cache restored
+      # the libduckdb-sys fingerprint but not the downloaded lib (.dll on
+      # Windows, .dylib on macOS), force the build script to re-download.
+      - name: Ensure libduckdb is present (cache-restore safety)
+        shell: bash
+        run: |
+          if ! ls target/duckdb-download/*/*/libduckdb.* >/dev/null 2>&1; then
+            echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
+            cargo clean -p libduckdb-sys || true
+          fi
 
       - name: cargo build --release
         run: cargo build --workspace --release
