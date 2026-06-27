@@ -171,9 +171,9 @@ pub(crate) async fn materialise_view_on(
     let source_expr = prepare_source(indexer, binding, allow_unsigned).await?;
     let filter_sql = match binding.filter.as_deref() {
         Some(f) if !f.trim().is_empty() => {
-            if !is_safe_sql_fragment(f) || !is_safe_filter(f) {
+            if !is_allowed_filter(f) {
                 return Err(SqlViewError::InvalidBinding(format!(
-                    "filter contains an unsafe character or keyword: {f:?}"
+                    "filter is not an allowed comparison expression: {f:?}"
                 )));
             }
             format!(" WHERE {f}")
@@ -504,8 +504,9 @@ fn sanitize_ident(s: &str) -> String {
 /// Whether `view` is an escurel-managed SQL view: a safe identifier with the
 /// deterministic `vw_` prefix that `view_name` produces. The read path only
 /// projects these, so a tampered `backend_ref.view` can't point the read path
-/// at an arbitrary server-side table.
-fn is_managed_view(view: &str) -> bool {
+/// at an arbitrary server-side table. Reused by `query_instance` to allow-list
+/// the `{{target}}` identifier substitution (issue #205).
+pub(crate) fn is_managed_view(view: &str) -> bool {
     is_valid_identifier(view) && view.starts_with("vw_")
 }
 
@@ -533,45 +534,281 @@ fn is_valid_db_relation(s: &str) -> bool {
     !s.is_empty() && s.split('.').all(is_valid_identifier)
 }
 
-/// Reject comments and SQL command keywords in filters.
-fn is_safe_filter(s: &str) -> bool {
-    let s_lower = s.to_lowercase();
-    if s_lower.contains("--") || s_lower.contains("/*") || s_lower.contains("*/") {
-        return false;
+/// Whether an author-supplied `filter` is an **allow-listed** boolean
+/// expression: a conjunction/disjunction of simple comparison predicates over
+/// allow-listed column identifiers and literal values. This replaces the old
+/// keyword *blocklist* (issue #205 #2) — a blocklist is inherently
+/// bypass-prone (function-based exfiltration / DoS like `x > pg_sleep(10)`
+/// carries none of the forbidden keywords and no quotes, so it slipped
+/// through). The allow-list inverts the default: only the recognised grammar
+/// is accepted; anything else — function calls, subqueries, stacked
+/// statements, comments, arithmetic — is rejected.
+///
+/// Grammar (case-insensitive keywords):
+///
+/// ```text
+/// filter    := or
+/// or        := and (OR and)*
+/// and       := pred (AND pred)*
+/// pred      := ident ( cmp value | IS [NOT] NULL | IN ( value (, value)* ) )
+/// cmp       := = | != | <> | < | <= | > | >= | LIKE | ILIKE
+/// value     := [-] number | 'string' | TRUE | FALSE
+/// ident     := dotted sequence of unquoted identifiers (is_valid_identifier)
+/// ```
+fn is_allowed_filter(s: &str) -> bool {
+    match lex_filter(s) {
+        Some(toks) if !toks.is_empty() => {
+            let mut p = FilterParser { t: &toks, i: 0 };
+            p.or_expr() && p.i == toks.len()
+        }
+        _ => false,
     }
-    let forbidden_keywords = [
-        "select", "union", "insert", "update", "delete", "drop", "alter", "create", "replace",
-        "from",
-    ];
-    for kw in forbidden_keywords {
-        if let Some(mut idx) = s_lower.find(kw) {
-            while idx != usize::MAX {
-                let before = if idx == 0 {
-                    ' '
-                } else {
-                    s_lower.as_bytes()[idx - 1] as char
-                };
-                let after = if idx + kw.len() == s_lower.len() {
-                    ' '
-                } else {
-                    s_lower.as_bytes()[idx + kw.len()] as char
-                };
-                if !before.is_alphanumeric()
-                    && before != '_'
-                    && !after.is_alphanumeric()
-                    && after != '_'
-                {
-                    return false;
+}
+
+/// A lexer token of the filter grammar. All variants are unit (the parser
+/// validates structure, not values), so identifier/number/string validity is
+/// checked during lexing — an invalid identifier or stray character makes
+/// `lex_filter` return `None` (reject).
+#[derive(Debug, PartialEq, Eq)]
+enum FilterTok {
+    Ident,
+    Num,
+    Str,
+    Bool,
+    Cmp,
+    Like,
+    Minus,
+    LParen,
+    RParen,
+    Comma,
+    And,
+    Or,
+    Is,
+    Not,
+    Null,
+    In,
+}
+
+/// Tokenise a filter fragment, or `None` if it contains any character or word
+/// outside the grammar (`'`, `;`, `*`, `/`, `%`, `+`, backtick, `"`, control,
+/// an unterminated/escaped string, an invalid identifier, …).
+fn lex_filter(s: &str) -> Option<Vec<FilterTok>> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut out = Vec::new();
+    while i < b.len() {
+        let c = b[i] as char;
+        if c.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' => {
+                // Single-quoted string literal: scan to the closing quote.
+                // No escapes (a backslash or control byte ⇒ reject), and no
+                // embedded quote (the first `'` closes it) — so the literal we
+                // re-splice can't break out.
+                let mut j = i + 1;
+                loop {
+                    let cj = *b.get(j)? as char;
+                    if cj == '\'' {
+                        break;
+                    }
+                    if cj == '\\' || (cj as u32) < 0x20 {
+                        return None;
+                    }
+                    j += 1;
                 }
-                if let Some(next) = s_lower[idx + 1..].find(kw) {
-                    idx = idx + 1 + next;
+                out.push(FilterTok::Str);
+                i = j + 1;
+            }
+            '(' => {
+                out.push(FilterTok::LParen);
+                i += 1;
+            }
+            ')' => {
+                out.push(FilterTok::RParen);
+                i += 1;
+            }
+            ',' => {
+                out.push(FilterTok::Comma);
+                i += 1;
+            }
+            '=' => {
+                out.push(FilterTok::Cmp);
+                i += 1;
+            }
+            '!' => {
+                if b.get(i + 1) == Some(&b'=') {
+                    out.push(FilterTok::Cmp);
+                    i += 2;
                 } else {
-                    idx = usize::MAX;
+                    return None;
                 }
             }
+            '<' => {
+                if matches!(b.get(i + 1), Some(&b'=') | Some(&b'>')) {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                out.push(FilterTok::Cmp);
+            }
+            '>' => {
+                if b.get(i + 1) == Some(&b'=') {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                out.push(FilterTok::Cmp);
+            }
+            '-' => {
+                out.push(FilterTok::Minus);
+                i += 1;
+            }
+            d if d.is_ascii_digit() => {
+                let mut j = i + 1;
+                while j < b.len() && (b[j].is_ascii_digit() || b[j] == b'.') {
+                    j += 1;
+                }
+                if !is_number(&s[i..j]) {
+                    return None;
+                }
+                out.push(FilterTok::Num);
+                i = j;
+            }
+            a if a == '_' || a.is_ascii_alphabetic() => {
+                let mut j = i + 1;
+                while j < b.len() {
+                    let cj = b[j] as char;
+                    if cj == '_' || cj == '.' || cj.is_ascii_alphanumeric() {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                out.push(word_token(&s[i..j])?);
+                i = j;
+            }
+            _ => return None,
         }
     }
-    true
+    Some(out)
+}
+
+/// Classify a word: a grammar keyword, or an allow-listed (dotted) identifier.
+/// A word that is neither a keyword nor a valid identifier ⇒ `None` (reject).
+fn word_token(w: &str) -> Option<FilterTok> {
+    Some(match w.to_ascii_uppercase().as_str() {
+        "AND" => FilterTok::And,
+        "OR" => FilterTok::Or,
+        "IS" => FilterTok::Is,
+        "NOT" => FilterTok::Not,
+        "NULL" => FilterTok::Null,
+        "IN" => FilterTok::In,
+        "LIKE" | "ILIKE" => FilterTok::Like,
+        "TRUE" | "FALSE" => FilterTok::Bool,
+        _ if w.split('.').all(is_valid_identifier) => FilterTok::Ident,
+        _ => return None,
+    })
+}
+
+/// A non-empty run of digits with at most one decimal point.
+fn is_number(s: &str) -> bool {
+    let mut seen_dot = false;
+    let mut digits = 0u32;
+    for c in s.chars() {
+        match c {
+            '.' if !seen_dot => seen_dot = true,
+            '.' => return false,
+            c if c.is_ascii_digit() => digits += 1,
+            _ => return false,
+        }
+    }
+    digits > 0
+}
+
+/// Recursive-descent parser over the lexed filter tokens.
+struct FilterParser<'a> {
+    t: &'a [FilterTok],
+    i: usize,
+}
+
+impl FilterParser<'_> {
+    fn peek(&self) -> Option<&FilterTok> {
+        self.t.get(self.i)
+    }
+    fn eat(&mut self, want: &FilterTok) -> bool {
+        if self.peek() == Some(want) {
+            self.i += 1;
+            true
+        } else {
+            false
+        }
+    }
+    fn or_expr(&mut self) -> bool {
+        if !self.and_expr() {
+            return false;
+        }
+        while self.eat(&FilterTok::Or) {
+            if !self.and_expr() {
+                return false;
+            }
+        }
+        true
+    }
+    fn and_expr(&mut self) -> bool {
+        if !self.predicate() {
+            return false;
+        }
+        while self.eat(&FilterTok::And) {
+            if !self.predicate() {
+                return false;
+            }
+        }
+        true
+    }
+    fn predicate(&mut self) -> bool {
+        if !self.eat(&FilterTok::Ident) {
+            return false;
+        }
+        match self.peek() {
+            Some(FilterTok::Cmp | FilterTok::Like) => {
+                self.i += 1;
+                self.value()
+            }
+            Some(FilterTok::Is) => {
+                self.i += 1;
+                self.eat(&FilterTok::Not); // optional
+                self.eat(&FilterTok::Null)
+            }
+            Some(FilterTok::In) => {
+                self.i += 1;
+                if !self.eat(&FilterTok::LParen) || !self.value() {
+                    return false;
+                }
+                while self.eat(&FilterTok::Comma) {
+                    if !self.value() {
+                        return false;
+                    }
+                }
+                self.eat(&FilterTok::RParen)
+            }
+            _ => false,
+        }
+    }
+    fn value(&mut self) -> bool {
+        if self.eat(&FilterTok::Minus) {
+            return self.eat(&FilterTok::Num);
+        }
+        matches!(
+            self.peek(),
+            Some(FilterTok::Num | FilterTok::Str | FilterTok::Bool)
+        ) && {
+            self.i += 1;
+            true
+        }
+    }
 }
 
 fn hash_binding(b: &SqlViewBinding) -> String {
@@ -887,11 +1124,42 @@ mod tests {
     }
 
     #[test]
-    fn validates_filters() {
-        assert!(is_safe_filter("region = EU"));
-        assert!(!is_safe_filter(
+    fn allowlist_accepts_real_author_filters() {
+        // The shapes a skill author actually writes — comparisons, ranges,
+        // membership, null checks, LIKE — all parse.
+        for ok in [
+            "score > 10",
+            "score > -5",
+            "region = 'EU'",
+            "amount >= 1 AND amount < 100",
+            "tier IN ('gold', 'silver')",
+            "name LIKE 'A%'",
+            "deleted_at IS NULL",
+            "owner IS NOT NULL",
+            "active = TRUE OR tier = 'gold'",
+            "public.flag = false",
+        ] {
+            assert!(is_allowed_filter(ok), "should accept: {ok:?}");
+        }
+    }
+
+    #[test]
+    fn allowlist_rejects_function_and_injection_filters() {
+        // The function-based bypass the OLD keyword blocklist MISSED: no
+        // quotes, none of the forbidden keywords, yet a side-effecting /
+        // DoS function call. The allow-list rejects it because a function
+        // call is not a value.
+        assert!(!is_allowed_filter("score > pg_sleep(10)"));
+        assert!(!is_allowed_filter("name = current_setting('x')"));
+        // And the classics: stacked statements, UNION exfiltration, comments,
+        // tautology with a bare literal LHS, arithmetic, star.
+        assert!(!is_allowed_filter(
             "id = 0 UNION SELECT * FROM external_credentials"
         ));
-        assert!(!is_safe_filter("id = 1 -- comment"));
+        assert!(!is_allowed_filter("id = 1; DROP TABLE pages"));
+        assert!(!is_allowed_filter("id = 1 -- comment"));
+        assert!(!is_allowed_filter("1 = 1 OR name = 'x'"));
+        assert!(!is_allowed_filter("score > 1 + 1"));
+        assert!(!is_allowed_filter("col = 'unterminated"));
     }
 }

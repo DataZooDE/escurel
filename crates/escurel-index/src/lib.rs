@@ -51,7 +51,10 @@ pub use indexer::{
     is_valid_attach_alias,
 };
 pub use meta_skill::{META_SKILL_ID, META_SKILL_MD, META_SKILL_PAGE_ID};
-pub use query::{ColumnSchema, INSPECTABLE_TABLES, QueryError, StoredQueryResult};
+pub use query::{
+    ColumnSchema, INSPECTABLE_TABLES, MAX_RESULT_ROWS, QueryError, QueryInstanceResult,
+    StoredQueryResult,
+};
 pub use read::{
     AclPolicy, BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef,
     ResolvedWikilink, SkillInfo, Visibility,

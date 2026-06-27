@@ -315,6 +315,30 @@ pub struct RunStoredQueryResponse {
     pub schema: Vec<StoredQueryColumn>,
 }
 
+// ── query_instance (issue #205) ───────────────────────────────────
+
+/// `query_instance` arguments. MCP wire keys: `ref` (the query id or its
+/// `[[query::id]]` wikilink, whose `target` names a sql_view instance) and
+/// `params` (object; bound as prepared-statement values, never interpolated).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct QueryInstanceRequest {
+    /// MCP wire key `ref` (a Rust keyword, hence the field rename).
+    #[serde(rename = "ref")]
+    pub query_ref: String,
+    pub params: Value,
+}
+
+/// MCP wire keys: `rows` (array), `schema` (columns), `truncated` (bool —
+/// the result set hit the server row cap and was clipped).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct QueryInstanceResponse {
+    pub rows: Value,
+    pub schema: Vec<StoredQueryColumn>,
+    pub truncated: bool,
+}
+
 // ── validate ──────────────────────────────────────────────────────
 
 /// `validate` arguments. MCP wire keys: `content`, `as_page_id`.

@@ -9,8 +9,8 @@ use clap::{Args, Subcommand};
 use escurel_client::{
     AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, ExpandRequest,
     ListEventsRequest, ListInboxRequest, ListInstancesRequest, ListMessagesRequest,
-    ListSkillsRequest, NeighboursRequest, ResolveRequest, RunStoredQueryRequest, SearchRequest,
-    UpdatePageRequest, ValidateRequest,
+    ListSkillsRequest, NeighboursRequest, QueryInstanceRequest, ResolveRequest,
+    RunStoredQueryRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
 };
 use serde_json::{Value, json};
 
@@ -149,12 +149,26 @@ pub struct CaptureArgs {
 pub enum QueryCmd {
     /// Execute a `[[query::<id>]]` instance with named parameters.
     Run(QueryRunArgs),
+    /// Run a `[[query::<id>]]` report (declaring `target: [[skill::id]]`)
+    /// against that sql_view instance's view; params are bound, not
+    /// interpolated (issue #205).
+    Instance(QueryInstanceArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct QueryRunArgs {
     pub query_id: String,
     /// JSON object of parameters, e.g. `{"skill":"customer"}`.
+    #[arg(long, default_value = "{}")]
+    pub params: String,
+}
+
+#[derive(Args, Debug)]
+pub struct QueryInstanceArgs {
+    /// Query id or its `[[query::id]]` wikilink; its `target` names the
+    /// sql_view instance to read.
+    pub query_ref: String,
+    /// JSON object of runtime parameters, e.g. `{"from":"2026-01-01"}`.
     #[arg(long, default_value = "{}")]
     pub params: String,
 }
@@ -230,6 +244,7 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Link(LinkCmd::Neighbours(a)) => neighbours(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Query(QueryCmd::Run(a)) => run_query(client, a).await,
+        Command::Query(QueryCmd::Instance(a)) => query_instance(client, a).await,
         Command::Chat(ChatCmd::Append(a)) => chat_append(client, a).await,
         Command::Chat(ChatCmd::List(a)) => chat_list(client, a).await,
         // Admin / Ui are dispatched in main before reaching here.
@@ -500,6 +515,23 @@ async fn run_query(client: &Client, a: QueryRunArgs) -> Result<Value> {
             "name": c.name,
             "type": c.type_name,
         })).collect::<Vec<_>>(),
+    }))
+}
+
+async fn query_instance(client: &Client, a: QueryInstanceArgs) -> Result<Value> {
+    let resp = client
+        .query_instance(QueryInstanceRequest {
+            query_ref: a.query_ref,
+            params: parse_json_arg(Some(a.params)),
+        })
+        .await?;
+    Ok(json!({
+        "rows": json_or_null(&resp.rows),
+        "schema": resp.schema.into_iter().map(|c| json!({
+            "name": c.name,
+            "type": c.type_name,
+        })).collect::<Vec<_>>(),
+        "truncated": resp.truncated,
     }))
 }
 

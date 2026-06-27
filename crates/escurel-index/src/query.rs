@@ -47,7 +47,7 @@ use duckdb::{ToSql, params_from_iter};
 use regex::Regex;
 use thiserror::Error;
 
-use crate::{Indexer, IndexerError};
+use crate::{AclCaller, Indexer, IndexerError};
 
 /// Result of [`Indexer::run_stored_query`].
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +61,22 @@ pub struct ColumnSchema {
     pub name: String,
     pub type_name: String,
 }
+
+/// Result of [`Indexer::query_instance`] — the full (aggregated) result set
+/// of a parameterised read over a `sql_view` instance's managed view, capped
+/// at [`MAX_RESULT_ROWS`] with `truncated` set when the cap clipped the tail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueryInstanceResult {
+    pub rows: Vec<serde_json::Map<String, serde_json::Value>>,
+    pub schema: Vec<ColumnSchema>,
+    /// True when the result set hit [`MAX_RESULT_ROWS`] and rows were dropped.
+    pub truncated: bool,
+}
+
+/// Backstop on the rows [`Indexer::query_instance`] returns. Reports are
+/// expected to be aggregated (small), but a misauthored report must never
+/// stream an unbounded result set into a single response.
+pub const MAX_RESULT_ROWS: usize = 10_000;
 
 #[derive(Debug, Error)]
 pub enum QueryError {
@@ -81,6 +97,24 @@ pub enum QueryError {
 
     #[error("[[query::{id}]] declares db = {db:?} but only 'relational' is supported today")]
     UnsupportedDb { id: String, db: String },
+
+    #[error("[[query::{id}]] declares no `target` instance (query_instance requires one)")]
+    MissingTarget { id: String },
+
+    #[error("[[query::{id}]] target {target} does not resolve to an instance in this tenant")]
+    TargetNotFound { id: String, target: String },
+
+    #[error("[[query::{id}]] target {target} is not a readable sql_view instance")]
+    TargetNotSqlView { id: String, target: String },
+
+    #[error("[[query::{id}]] caller is not authorised to read target {target}")]
+    Forbidden { id: String, target: String },
+
+    #[error(
+        "[[query::{id}]] sql contains an unsupported placeholder {placeholder:?} \
+         (only {{{{target}}}} is allowed)"
+    )]
+    UnknownPlaceholder { id: String, placeholder: String },
 
     #[error("table {table:?} is not inspectable; allowed: {allowed}")]
     UnknownTable { table: String, allowed: String },
@@ -126,19 +160,13 @@ impl Indexer {
             });
         }
 
-        // 2. Re-fetch the page's frontmatter (resolve doesn't include
-        // it).
-        let conn = self.conn.lock().await;
-        let fm_json: String = conn
-            .query_row(
-                "SELECT frontmatter::VARCHAR FROM pages WHERE page_id = ?",
-                duckdb::params![page.page_id],
-                |row| row.get(0),
-            )
-            .map_err(|_| QueryError::NotFound {
-                id: query_id.to_owned(),
-            })?;
-        let fm: serde_json::Value = serde_json::from_str(&fm_json)?;
+        // 2. Re-fetch the page's frontmatter (resolve doesn't include it).
+        let fm =
+            self.page_frontmatter(&page.page_id)
+                .await?
+                .ok_or_else(|| QueryError::NotFound {
+                    id: query_id.to_owned(),
+                })?;
 
         // 3. Validate `db`.
         let db = fm
@@ -152,7 +180,7 @@ impl Indexer {
             });
         }
 
-        // 4. Extract `sql`.
+        // 4. Extract `sql` + the declared params.
         let sql = fm
             .get("sql")
             .and_then(serde_json::Value::as_str)
@@ -160,80 +188,167 @@ impl Indexer {
                 id: query_id.to_owned(),
             })?
             .to_owned();
-
-        // 5. Extract declared param names (the order in the `params:`
-        // array). Unknown args and missing required args are rejected
-        // here before any DB call.
         let declared = declared_params(&fm);
-        for (name, _val) in args {
-            if !declared.iter().any(|p| &p.name == name) {
-                return Err(QueryError::UnknownParam {
-                    id: query_id.to_owned(),
-                    name: name.clone(),
-                });
-            }
-        }
-        for p in &declared {
-            if p.required && !args.contains_key(&p.name) {
-                return Err(QueryError::MissingParam {
-                    id: query_id.to_owned(),
-                    name: p.name.clone(),
-                });
-            }
-        }
 
-        // 6. Substitute `:name` → `?` and build positional bind order.
-        let (rewritten_sql, bind_order) = rewrite_named_params(&sql);
-
-        // 7. Build the positional value vector in bind_order.
-        let mut bound_values: Vec<DuckValue> = Vec::with_capacity(bind_order.len());
-        for name in &bind_order {
-            let v = args.get(name).cloned().unwrap_or(serde_json::Value::Null);
-            bound_values.push(json_to_duck(v));
-        }
-
-        // 8. Execute. Column metadata is only available after
-        // query() in duckdb-rs (prepare alone leaves the statement
-        // un-executed; calling column_count() before query panics
-        // with "statement not executed yet").
-        let mut stmt = conn.prepare(&rewritten_sql)?;
-        let params_refs: Vec<&dyn ToSql> = bound_values.iter().map(|v| v as &dyn ToSql).collect();
-        let mut rows_iter = stmt.query(params_from_iter(params_refs.iter()))?;
-
-        let (col_count, col_names, col_type_names): (usize, Vec<String>, Vec<String>) =
-            match rows_iter.as_ref() {
-                None => (0, Vec::new(), Vec::new()),
-                Some(s) => {
-                    let n = s.column_count();
-                    let names: Vec<String> = (0..n)
-                        .map(|i| s.column_name(i).map(|v| v.to_string()).unwrap_or_default())
-                        .collect();
-                    let types: Vec<String> =
-                        (0..n).map(|i| format!("{:?}", s.column_type(i))).collect();
-                    (n, names, types)
-                }
-            };
-        let _ = col_count;
-        let schema: Vec<ColumnSchema> = col_names
-            .iter()
-            .zip(col_type_names.iter())
-            .map(|(name, ty)| ColumnSchema {
-                name: name.clone(),
-                type_name: ty.clone(),
-            })
-            .collect();
-
-        let mut rows = Vec::new();
-        while let Some(row) = rows_iter.next()? {
-            let mut obj = serde_json::Map::new();
-            for (i, name) in col_names.iter().enumerate() {
-                let v: DuckValue = row.get(i)?;
-                obj.insert(name.clone(), duck_to_json(v));
-            }
-            rows.push(obj);
-        }
-
+        // 5. Validate args, bind `:name` → positional `?`, and execute.
+        // No row cap: a stored query is admin-gated and may legitimately
+        // project a large corpus-wide aggregate.
+        let conn = self.conn.lock().await;
+        let (rows, schema, _truncated) =
+            execute_bound_query(&conn, query_id, &sql, &declared, args, None)?;
         Ok(StoredQueryResult { rows, schema })
+    }
+
+    /// Execute a `[[query::query_id]]` page that declares a
+    /// `target: [[skill::id]]` **against that instance's managed `vw_…`
+    /// view**, returning the full (aggregated) result set (issue #205).
+    ///
+    /// Two trust boundaries are kept separate, by construction:
+    ///
+    /// - **Identifier position** — the `{{target}}` placeholder is replaced
+    ///   with the target's `backend_ref.view`, which is allow-listed through
+    ///   [`crate::backend::is_managed_view`] (the deterministic `vw_` prefix).
+    ///   It is never a bound value.
+    /// - **Value position** — every `:param` runtime value supplied by the
+    ///   caller is bound as a positional DuckDB prepared-statement parameter
+    ///   (the [`Self::run_stored_query`] pattern). Runtime input never reaches
+    ///   the SQL text, so injection through a param value is impossible and it
+    ///   never flows through the `sql_view` blocklist-interpolation path.
+    ///
+    /// The per-instance ACL is applied **fail-closed** to the *target*
+    /// instance via [`Indexer::may_read_instance`]: the caller must be allowed
+    /// to read the underlying data, not merely the query template.
+    pub async fn query_instance(
+        &self,
+        query_id: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+        caller: &AclCaller<'_>,
+    ) -> Result<QueryInstanceResult, QueryError> {
+        // 1. Resolve the query page and confirm it is a `query` instance.
+        let resolved = self
+            .resolve(&format!("[[query::{query_id}]]"), None)
+            .await
+            .map_err(|err| QueryError::Indexer(Box::new(err)))?;
+        let page = resolved.page.ok_or_else(|| QueryError::NotFound {
+            id: query_id.to_owned(),
+        })?;
+        if page.skill != "query" {
+            return Err(QueryError::WrongType {
+                id: query_id.to_owned(),
+            });
+        }
+
+        // 2. Read its frontmatter: the `target` ref, the `sql`, the params.
+        let fm =
+            self.page_frontmatter(&page.page_id)
+                .await?
+                .ok_or_else(|| QueryError::NotFound {
+                    id: query_id.to_owned(),
+                })?;
+        let target_raw = fm
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| QueryError::MissingTarget {
+                id: query_id.to_owned(),
+            })?;
+        let target_link =
+            crate::read::first_wikilink_target(target_raw).unwrap_or_else(|| target_raw.to_owned());
+        let sql = fm
+            .get("sql")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| QueryError::MissingSql {
+                id: query_id.to_owned(),
+            })?
+            .to_owned();
+        let declared = declared_params(&fm);
+
+        // 3. Resolve + expand the target instance (its frontmatter carries the
+        //    managed view name and is the input to the ACL decision).
+        let target_page = self
+            .resolve(&target_link, None)
+            .await
+            .map_err(|err| QueryError::Indexer(Box::new(err)))?
+            .page
+            .ok_or_else(|| QueryError::TargetNotFound {
+                id: query_id.to_owned(),
+                target: target_link.clone(),
+            })?;
+        let expanded = self
+            .expand(&target_page.page_id, None, None)
+            .await
+            .map_err(|err| QueryError::Indexer(Box::new(err)))?
+            .ok_or_else(|| QueryError::TargetNotFound {
+                id: query_id.to_owned(),
+                target: target_link.clone(),
+            })?;
+
+        // 4. ACL — fail closed on the TARGET instance (read the data, not just
+        //    the template). Admin bypasses inside `may_read_instance`.
+        if !self
+            .may_read_instance(caller, &expanded.page.skill, &expanded.frontmatter)
+            .await
+            .map_err(|err| QueryError::Indexer(Box::new(err)))?
+        {
+            return Err(QueryError::Forbidden {
+                id: query_id.to_owned(),
+                target: target_link,
+            });
+        }
+
+        // 5. Recover + allow-list the managed view (`vw_…`). A target that is
+        //    not a readable sql_view instance — or a tampered backend_ref that
+        //    points at a server-side table — is refused here.
+        let view = expanded
+            .frontmatter
+            .get("backend_ref")
+            .filter(|b| b.get("kind").and_then(serde_json::Value::as_str) == Some("sql_view"))
+            .and_then(|b| b.get("view"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|v| crate::backend::is_managed_view(v))
+            .ok_or_else(|| QueryError::TargetNotSqlView {
+                id: query_id.to_owned(),
+                target: target_link,
+            })?;
+
+        // 6. Splice the allow-listed view into the `{{target}}` placeholder,
+        //    then bind runtime `:param` values and execute (row-capped).
+        let sql = substitute_target(&sql, view, query_id)?;
+        let conn = self.conn.lock().await;
+        let (rows, schema, truncated) = execute_bound_query(
+            &conn,
+            query_id,
+            &sql,
+            &declared,
+            args,
+            Some(MAX_RESULT_ROWS),
+        )?;
+        Ok(QueryInstanceResult {
+            rows,
+            schema,
+            truncated,
+        })
+    }
+
+    /// The frontmatter object of an indexed page, or `None` when no such page
+    /// exists. Shared by `run_stored_query` / `query_instance`; takes and
+    /// releases the connection lock so the caller can re-lock for execution.
+    async fn page_frontmatter(
+        &self,
+        page_id: &str,
+    ) -> Result<Option<serde_json::Value>, QueryError> {
+        let conn = self.conn.lock().await;
+        let fm_json: Option<String> = conn
+            .query_row(
+                "SELECT frontmatter::VARCHAR FROM pages WHERE page_id = ?",
+                duckdb::params![page_id],
+                |row| row.get(0),
+            )
+            .ok();
+        drop(conn);
+        match fm_json {
+            Some(j) => Ok(Some(serde_json::from_str(&j)?)),
+            None => Ok(None),
+        }
     }
 
     /// Read up to `limit` rows from an allow-listed index table for
@@ -337,6 +452,120 @@ fn declared_params(fm: &serde_json::Value) -> Vec<DeclaredParam> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Validate `args` against the declared params, rewrite `:name` → positional
+/// `?`, bind each value as a DuckDB prepared-statement parameter, and execute
+/// against `conn`. Returns the rows, the result schema, and whether `row_cap`
+/// clipped the tail. Shared by [`Indexer::run_stored_query`] (no cap) and
+/// [`Indexer::query_instance`] (capped at [`MAX_RESULT_ROWS`]).
+///
+/// Runtime values flow ONLY through the positional-bind path here — they are
+/// never spliced into the SQL text — so injection through a param value is
+/// impossible regardless of caller (issue #205).
+///
+/// Returns `(rows, schema, truncated)` — see [`ExecutedRows`].
+type ExecutedRows = (
+    Vec<serde_json::Map<String, serde_json::Value>>,
+    Vec<ColumnSchema>,
+    bool,
+);
+fn execute_bound_query(
+    conn: &duckdb::Connection,
+    id: &str,
+    sql: &str,
+    declared: &[DeclaredParam],
+    args: &serde_json::Map<String, serde_json::Value>,
+    row_cap: Option<usize>,
+) -> Result<ExecutedRows, QueryError> {
+    // Unknown args and missing required args are rejected before any DB call.
+    for (name, _val) in args {
+        if !declared.iter().any(|p| &p.name == name) {
+            return Err(QueryError::UnknownParam {
+                id: id.to_owned(),
+                name: name.clone(),
+            });
+        }
+    }
+    for p in declared {
+        if p.required && !args.contains_key(&p.name) {
+            return Err(QueryError::MissingParam {
+                id: id.to_owned(),
+                name: p.name.clone(),
+            });
+        }
+    }
+
+    // Substitute `:name` → `?` and build the positional value vector.
+    let (rewritten_sql, bind_order) = rewrite_named_params(sql);
+    let mut bound_values: Vec<DuckValue> = Vec::with_capacity(bind_order.len());
+    for name in &bind_order {
+        let v = args.get(name).cloned().unwrap_or(serde_json::Value::Null);
+        bound_values.push(json_to_duck(v));
+    }
+
+    // Execute. Column metadata is only available after query() in duckdb-rs
+    // (prepare alone leaves the statement un-executed; column_count() before
+    // query panics with "statement not executed yet").
+    let mut stmt = conn.prepare(&rewritten_sql)?;
+    let params_refs: Vec<&dyn ToSql> = bound_values.iter().map(|v| v as &dyn ToSql).collect();
+    let mut rows_iter = stmt.query(params_from_iter(params_refs.iter()))?;
+
+    let (col_names, col_type_names): (Vec<String>, Vec<String>) = match rows_iter.as_ref() {
+        None => (Vec::new(), Vec::new()),
+        Some(s) => {
+            let n = s.column_count();
+            let names: Vec<String> = (0..n)
+                .map(|i| s.column_name(i).map(|v| v.to_string()).unwrap_or_default())
+                .collect();
+            let types: Vec<String> = (0..n).map(|i| format!("{:?}", s.column_type(i))).collect();
+            (names, types)
+        }
+    };
+    let schema: Vec<ColumnSchema> = col_names
+        .iter()
+        .zip(col_type_names.iter())
+        .map(|(name, ty)| ColumnSchema {
+            name: name.clone(),
+            type_name: ty.clone(),
+        })
+        .collect();
+
+    let mut rows = Vec::new();
+    let mut truncated = false;
+    while let Some(row) = rows_iter.next()? {
+        if let Some(cap) = row_cap
+            && rows.len() >= cap
+        {
+            truncated = true;
+            break;
+        }
+        let mut obj = serde_json::Map::new();
+        for (i, name) in col_names.iter().enumerate() {
+            let v: DuckValue = row.get(i)?;
+            obj.insert(name.clone(), duck_to_json(v));
+        }
+        rows.push(obj);
+    }
+
+    Ok((rows, schema, truncated))
+}
+
+/// Replace the `{{target}}` placeholder with the allow-listed `view`
+/// identifier. `view` MUST already be validated by
+/// [`crate::backend::is_managed_view`] (the caller does this) — it is the only
+/// identifier-position substitution permitted, so any other `{{…}}` token is
+/// rejected rather than silently left in the SQL.
+fn substitute_target(sql: &str, view: &str, id: &str) -> Result<String, QueryError> {
+    let replaced = sql.replace("{{target}}", view);
+    if let Some(pos) = replaced.find("{{") {
+        let placeholder: String = replaced[pos..].chars().take(32).collect();
+        return Err(QueryError::UnknownPlaceholder {
+            id: id.to_owned(),
+            placeholder,
+        });
+    }
+    Ok(replaced)
 }
 
 /// Rewrite `:name` placeholders in `sql` to positional `?` and

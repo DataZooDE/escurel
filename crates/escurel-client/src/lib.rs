@@ -67,10 +67,10 @@ pub use escurel_types::{
     InstanceInfo, ListEventsRequest, ListEventsResponse, ListInboxRequest, ListInboxResponse,
     ListInstancesRequest, ListInstancesResponse, ListMessagesRequest, ListMessagesResponse,
     ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse,
-    PageRef, ResolveRequest, ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse,
-    SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn, TenantSpec,
-    UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse, ValidationIssue,
-    WikilinkParsed,
+    PageRef, QueryInstanceRequest, QueryInstanceResponse, ResolveRequest, ResolveResponse,
+    RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill,
+    StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest,
+    ValidateResponse, ValidationIssue, WikilinkParsed,
 };
 // Re-exported so callers don't need to depend on `secrecy` directly
 // just to spell out a token. Keeping the version in sync with this
@@ -231,6 +231,26 @@ impl Client {
             .call_typed(
                 "run_stored_query",
                 json!({ "query_id": req.query_id, "params": params }),
+            )
+            .await
+    }
+
+    /// Run a `[[query::<id>]]` report against its `target` sql_view
+    /// instance's view, binding `params` as prepared-statement values
+    /// (issue #205). The per-instance ACL gates the target, fail-closed.
+    pub async fn query_instance(
+        &self,
+        req: QueryInstanceRequest,
+    ) -> Result<QueryInstanceResponse, Error> {
+        let params = if req.params.is_null() {
+            json!({})
+        } else {
+            req.params
+        };
+        self.transport
+            .call_typed(
+                "query_instance",
+                json!({ "ref": req.query_ref, "params": params }),
             )
             .await
     }
