@@ -67,13 +67,18 @@ jobs:
           cache-directories: target/duckdb-download
           cache-on-failure: true
 
-      - name: Ensure libduckdb is present (cache-restore safety)
+      # Force the libduckdb-sys build script to re-run every release build.
+      # A restored cache keeps the script's fingerprint warm, so cargo skips
+      # it and never re-emits the `cargo:rustc-link-search` directive — the
+      # final link then fails with `unable to find library -lduckdb` even
+      # though the .so/.dll is sitting in the (cached) download dir. Cleaning
+      # the crate forces the script to run; it reuses the cached download
+      # (target/duckdb-download), so this only costs a quick re-link, not a
+      # re-download. Unconditional on purpose: a presence check on the lib is
+      # NOT sufficient (the lib can be present yet the link path unset).
+      - name: Force libduckdb relink (cache-restore safety)
         shell: bash
-        run: |
-          if ! ls target/duckdb-download/*/*/libduckdb.* target/duckdb-download/*/*/duckdb.dll >/dev/null 2>&1; then
-            echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
-            cargo clean -p libduckdb-sys || true
-          fi
+        run: cargo clean -p libduckdb-sys || true
 
       - name: Resolve version
         id: ver
