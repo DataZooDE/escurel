@@ -58,27 +58,15 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-${{ matrix.target_name }}
-          # The libduckdb-sys build script bakes this download dir into its
-          # cached link-search output, so cache it explicitly (a warm
-          # fingerprint + cold lib link-fails) — same contract as ci.yml.
-          cache-directories: target/duckdb-download
-          cache-on-failure: true
-
-      # Force the libduckdb-sys build script to re-run every release build.
-      # A restored cache keeps the script's fingerprint warm, so cargo skips
-      # it and never re-emits the `cargo:rustc-link-search` directive — the
-      # final link then fails with `unable to find library -lduckdb` even
-      # though the .so/.dll is sitting in the (cached) download dir. Cleaning
-      # the crate forces the script to run; it reuses the cached download
-      # (target/duckdb-download), so this only costs a quick re-link, not a
-      # re-download. Unconditional on purpose: a presence check on the lib is
-      # NOT sufficient (the lib can be present yet the link path unset).
-      - name: Force libduckdb relink (cache-restore safety)
-        shell: bash
-        run: cargo clean -p libduckdb-sys || true
+      # NOTE: deliberately NO rust-cache here. The libduckdb-sys build script
+      # downloads the shared libduckdb into target/duckdb-download and links
+      # against it; rust-cache prunes that downloaded .so/.dll when it saves
+      # the cache, so a *restored* cache link-fails with `unable to find
+      # library -lduckdb` (the search path is set, but the lib is gone). The
+      # first, cache-less run linked fine on every platform — the cache was
+      # the sole culprit. Release builds are infrequent (tag pushes only), so
+      # a clean from-scratch build per platform is the right trade for
+      # guaranteed-correct linking.
 
       - name: Resolve version
         id: ver
