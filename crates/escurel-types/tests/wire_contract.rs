@@ -26,6 +26,7 @@ fn search_hit_wire_shape() {
         "anchor": "overview",
         "snippet": "Acme is a customer",
         "score": 0.87,
+        "similarity": 0.0,
         "frontmatter_excerpt": { "tier": "gold" }
     });
     let hit: SearchHit = serde_json::from_value(wire.clone()).unwrap();

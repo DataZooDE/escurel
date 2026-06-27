@@ -19,9 +19,13 @@ unchanged — see
 
 ## Status
 
-**v1 specification — no implementation yet.** The spec is settled and
-the architecture is locked. The Rust implementation will land in this
-repo alongside the spec.
+**v1 implementation in active development.** The spec is settled and the
+architecture is locked; a substantial, tested Rust implementation lives in
+this repo alongside it — the indexer, LaneStore, embedder, CRDT layer, the
+MCP/HTTP/WS gateway, the `escurel` CLI, and the external instance backends
+(`sql_view`, `document`) are all implemented and exercised by no-mock
+integration tests. The bootstrap sequence is ongoing (see
+[`CLAUDE.md`](CLAUDE.md) for the working contract and CI policy).
 
 ## Read the spec
 

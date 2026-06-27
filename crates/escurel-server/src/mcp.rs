@@ -1099,6 +1099,11 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             tool_run_stored_query(indexer, params.arguments).await
         }
+        // A parameterized read over ONE sql_view instance's view. Unlike
+        // run_stored_query this is an agent-surface tool: the per-instance
+        // ACL gates the target instance (the data), so it is not admin-gated
+        // (issue #205).
+        "query_instance" => tool_query_instance(indexer, caller, params.arguments).await,
         "validate" => tool_validate(indexer, params.arguments).await,
         "update_page" => tool_update_page(indexer, caller, state.write_acl, params.arguments).await,
         "append_message" => {
@@ -1829,6 +1834,48 @@ async fn tool_run_stored_query(indexer: &Indexer, args: Value) -> Result<Value, 
             "name": c.name,
             "type": c.type_name,
         })).collect::<Vec<_>>(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct QueryInstanceArgs {
+    /// The query page: a bare id, `query::id`, or its `[[query::id]]`
+    /// wikilink. `ref` is the documented key; `query_id` is accepted as an
+    /// alias for symmetry with `run_stored_query`.
+    #[serde(rename = "ref", alias = "query_id")]
+    query_ref: String,
+    #[serde(default)]
+    params: serde_json::Map<String, Value>,
+}
+
+/// Normalise a query reference to the bare slug the indexer expects:
+/// `[[query::sales]]` / `query::sales` / `sales` all become `sales`.
+fn normalize_query_ref(raw: &str) -> String {
+    let s = raw.trim();
+    let s = s.strip_prefix("[[").unwrap_or(s);
+    let s = s.strip_suffix("]]").unwrap_or(s);
+    s.strip_prefix("query::").unwrap_or(s).to_owned()
+}
+
+async fn tool_query_instance(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: QueryInstanceArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("query_instance: {e}")))?;
+    let query_id = normalize_query_ref(&a.query_ref);
+    let out = indexer
+        .query_instance(&query_id, &a.params, &caller)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("query_instance: {e}")))?;
+    Ok(json!({
+        "rows": out.rows,
+        "schema": out.schema.iter().map(|c| json!({
+            "name": c.name,
+            "type": c.type_name,
+        })).collect::<Vec<_>>(),
+        "truncated": out.truncated,
     }))
 }
 
@@ -3251,6 +3298,22 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "query_id": { "type": "string" },
                         "params": { "type": "object" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "query_instance",
+                "Run a [[query::*]] report that declares `target: [[skill::id]]` \
+                 against that sql_view instance's view. Runtime `params` are bound \
+                 as prepared-statement values (never interpolated); the report's \
+                 aggregation runs in the view and the full result set is returned. \
+                 The per-instance ACL gates the target instance, fail-closed.",
+                json!({
+                    "type": "object",
+                    "required": ["ref"],
+                    "properties": {
+                        "ref": { "type": "string", "description": "Query id or [[query::id]] wikilink; its `target` names the sql_view instance to read." },
+                        "params": { "type": "object", "description": "Runtime values bound to the report's `:param` placeholders." }
                     }
                 }),
             ),
