@@ -1,0 +1,263 @@
+name: release
+
+# Cross-platform release binaries, the DataZoo scheme (cf. ../flapi
+# build.yaml → create-release): on a `v*` tag we build the `escurel` CLI
+# and `escurel-server` for Linux / Windows / macOS, smoke-test each, and
+# publish a GitHub Release with the platform archives attached. The
+# version is taken from the tag (no Cargo.toml commit needed).
+#
+# `workflow_dispatch` runs the same build + smoke + package as a DRY RUN
+# (artifacts only, no Release created) so the cross-platform build can be
+# validated before cutting a real tag.
+#
+# NOTE on DuckDB: escurel links libduckdb *dynamically* (the download
+# backend in .cargo/config.toml). The downloaded `libduckdb_static.a` is
+# a core-only lib missing the extension-loader symbols the bindings need,
+# so static linking is not viable — instead we bundle the shared
+# libduckdb next to `escurel-server` and fix its rpath to load it from
+# its own directory. The `escurel` CLI does not link DuckDB, so it ships
+# as a single self-contained binary.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  # Release binaries: drop debuginfo to keep link memory + artifact size down.
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
+
+jobs:
+  build:
+    name: build ${{ matrix.target_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target_name: linux-amd64
+            archive: tar.gz
+          - os: windows-latest
+            target_name: windows-amd64
+            archive: zip
+          - os: macos-latest
+            target_name: macos-arm64
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the channel (1.91.0, minimal profile);
+      # a release build needs neither rustfmt nor clippy.
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target_name }}
+          # The libduckdb-sys build script bakes this download dir into its
+          # cached link-search output, so cache it explicitly (a warm
+          # fingerprint + cold lib link-fails) — same contract as ci.yml.
+          cache-directories: target/duckdb-download
+          cache-on-failure: true
+
+      - name: Ensure libduckdb is present (cache-restore safety)
+        shell: bash
+        run: |
+          if ! ls target/duckdb-download/*/*/libduckdb.* target/duckdb-download/*/*/duckdb.dll >/dev/null 2>&1; then
+            echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
+            cargo clean -p libduckdb-sys || true
+          fi
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+          else
+            V="0.0.0-dev"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Release version: $V"
+
+      # Inject the tag version into [workspace.package] so `escurel --version`
+      # reports the release (flapi's version-override, but uncommitted). Only
+      # the first top-level `version = "..."` line is touched. python3 ships on
+      # all three runner images, sidestepping GNU/BSD `sed -i` differences.
+      - name: Inject version (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          python3 - "$VERSION" <<'PY'
+          import re, sys
+          v = sys.argv[1]
+          s = open("Cargo.toml", encoding="utf-8").read()
+          s, n = re.subn(r'(?m)^version = "[^"]*"', f'version = "{v}"', s, count=1)
+          assert n == 1, "no top-level version line found in Cargo.toml"
+          open("Cargo.toml", "w", encoding="utf-8").write(s)
+          print("workspace.package version ->", v)
+          PY
+
+      - name: Build release binaries
+        run: cargo build --release --bin escurel --bin escurel-server
+
+      # Stage both binaries, bundle the dynamic libduckdb next to the server,
+      # and fix the rpath so the server loads libduckdb from its own dir.
+      - name: Stage + bundle
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          STAGE="escurel-${VERSION}-${{ matrix.target_name }}"
+          mkdir -p "$STAGE"
+
+          EXE=""
+          [[ "$RUNNER_OS" == "Windows" ]] && EXE=".exe"
+          cp "target/release/escurel${EXE}"        "$STAGE/"
+          cp "target/release/escurel-server${EXE}" "$STAGE/"
+
+          # Locate the downloaded shared libduckdb (copied next to the build
+          # artifacts by libduckdb-sys; name differs per platform).
+          lib="$(ls target/release/deps/libduckdb.so \
+                    target/release/deps/libduckdb.dylib \
+                    target/release/deps/duckdb.dll \
+                    target/duckdb-download/*/*/libduckdb.so \
+                    target/duckdb-download/*/*/libduckdb.dylib \
+                    target/duckdb-download/*/*/duckdb.dll 2>/dev/null | head -1 || true)"
+          if [[ -z "$lib" ]]; then
+            echo "ERROR: could not locate libduckdb shared library"; find target -name 'libduckdb*' -o -name 'duckdb.dll' | head; exit 1
+          fi
+          echo "Bundling libduckdb: $lib"
+          cp "$lib" "$STAGE/"
+
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update -qq && sudo apt-get install -y -qq patchelf
+              patchelf --set-rpath '$ORIGIN' "$STAGE/escurel-server"
+              ;;
+            macOS)
+              # Repoint the libduckdb load command at @rpath and add the
+              # executable's own dir as an rpath so it resolves the bundled dylib.
+              ref="$(otool -L "$STAGE/escurel-server" | awk '/libduckdb/{print $1; exit}')"
+              if [[ -n "$ref" && "$ref" != "@rpath/libduckdb.dylib" ]]; then
+                install_name_tool -change "$ref" "@rpath/libduckdb.dylib" "$STAGE/escurel-server"
+              fi
+              install_name_tool -add_rpath "@executable_path" "$STAGE/escurel-server" || true
+              ;;
+            Windows)
+              : # Windows resolves DLLs from the executable's directory — nothing to do.
+              ;;
+          esac
+
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+          ls -l "$STAGE"
+
+      # Boot the real server over a temp DuckDB and hit /healthz — proves the
+      # bundled libduckdb actually loads on this platform (the whole point of
+      # the cross-platform packaging). Mirrors the binary_boots integration test.
+      - name: Smoke test (server boots + libduckdb loads)
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -uo pipefail
+          STAGE="${{ steps.stage.outputs.stage }}"
+          EXE=""
+          [[ "$RUNNER_OS" == "Windows" ]] && EXE=".exe"
+          mkdir -p smokedata
+          ESCUREL_SERVER_DATA_DIR="smokedata" \
+          ESCUREL_SERVER_LISTEN_HTTP="127.0.0.1:18080" \
+          ESCUREL_OBSERVABILITY_METRICS_LISTEN="127.0.0.1:0" \
+          VERSION="$VERSION" \
+            "./$STAGE/escurel-server${EXE}" > smoke.log 2>&1 &
+          pid=$!
+
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fsS "http://127.0.0.1:18080/healthz" >/dev/null 2>&1; then ok=1; break; fi
+            kill -0 "$pid" 2>/dev/null || { echo "server process exited early"; break; }
+            sleep 1
+          done
+
+          if [[ "$ok" == "1" ]]; then
+            echo "healthz OK"
+            echo "version endpoint: $(curl -fsS http://127.0.0.1:18080/version || echo '?')"
+          fi
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+
+          if [[ "$ok" != "1" ]]; then
+            echo "=== SMOKE FAILED — server did not become healthy ==="
+            cat smoke.log || true
+            exit 1
+          fi
+
+      - name: Archive
+        id: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="${{ steps.stage.outputs.stage }}"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            7z a -tzip "${STAGE}.zip" "$STAGE" >/dev/null
+            echo "asset=${STAGE}.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar czf "${STAGE}.tar.gz" "$STAGE"
+            echo "asset=${STAGE}.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.stage }}
+          path: ${{ steps.archive.outputs.asset }}
+          if-no-files-found: error
+
+  # Publish the GitHub Release with all platform archives (tag pushes only;
+  # a workflow_dispatch dry-run stops after `build`).
+  create-release:
+    name: create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: "escurel-*"
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -R dist
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          MSG="$(git tag -l --format='%(contents)' "$TAG")"
+          [[ -z "$MSG" ]] && MSG="Release $TAG"
+          # Mark pre-releases (rc/alpha/beta tags) so they are not "Latest".
+          PRE=""
+          case "$TAG" in *-rc*|*-alpha*|*-beta*) PRE="--prerelease" ;; esac
+          gh release create "$TAG" \
+            dist/*.tar.gz dist/*.zip \
+            --title "$TAG" \
+            --notes "$MSG" \
+            $PRE
