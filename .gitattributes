@@ -1,0 +1,10 @@
+# Keep LF line endings in the working tree on every platform.
+#
+# Windows CI runners default to `core.autocrlf=true`, which rewrites text
+# files to CRLF on checkout. Several assets are embedded into the binary
+# verbatim via `include_str!` (e.g. crates/escurel-index/src/meta_skill.md)
+# and parsed as markdown at boot — CRLF breaks that parse and the server
+# fails to start ("the `escurel` meta-skill must remain valid markdown").
+# Forcing `eol=lf` keeps those assets byte-for-byte identical across
+# platforms; `text=auto` still lets git auto-detect and leave binaries alone.
+* text=auto eol=lf
