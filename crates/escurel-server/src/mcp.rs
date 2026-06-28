@@ -717,7 +717,8 @@ async fn run_document_ingest(
     let worker = DocumentIngestWorker::new(
         std::sync::Arc::clone(indexer),
         std::sync::Arc::new(DeterministicProcessor::new(extractor)),
-    );
+    )
+    .with_contextualize(indexer.contextualize_mode());
 
     // Stamp the uploader as the instance owner so owner-scoped document skills
     // work: a personal skill (`read: [owner]`) stays visible only to its

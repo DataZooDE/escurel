@@ -60,6 +60,12 @@ pub struct Indexer {
     pub(crate) reranker: Arc<dyn Reranker>,
     /// Rerank-stage knobs. Disabled by default — see [`RetrievalConfig`].
     pub(crate) retrieval: RetrievalConfig,
+    /// Contextual-retrieval mode applied when (re)materialising document
+    /// chunks (GH #216, Variant A). Defaults to
+    /// [`ContextualizeMode::Structural`]; the server overrides it from
+    /// `ESCUREL_INGEST_CONTEXTUALIZE`. Read by `rebuild_documents` so a
+    /// from-scratch rebuild reproduces the same stored chunk text.
+    pub(crate) contextualize: crate::backend::ContextualizeMode,
 }
 
 /// Per-page progress event emitted by
@@ -185,6 +191,7 @@ impl Indexer {
             tenant: tenant.into(),
             reranker: Arc::new(NoopReranker),
             retrieval: RetrievalConfig::disabled(),
+            contextualize: crate::backend::ContextualizeMode::default(),
         })
     }
 
@@ -221,6 +228,20 @@ impl Indexer {
         } else {
             k
         }
+    }
+
+    /// Set the document contextual-retrieval mode (GH #216, Variant A).
+    /// Builder style; defaults to [`crate::backend::ContextualizeMode::Structural`].
+    #[must_use]
+    pub fn with_contextualize(mut self, mode: crate::backend::ContextualizeMode) -> Self {
+        self.contextualize = mode;
+        self
+    }
+
+    /// The document contextual-retrieval mode this indexer applies.
+    #[must_use]
+    pub fn contextualize_mode(&self) -> crate::backend::ContextualizeMode {
+        self.contextualize
     }
 
     /// Tenant id this indexer was bound to at construction.
