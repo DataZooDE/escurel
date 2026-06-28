@@ -42,7 +42,8 @@
 
 use std::sync::LazyLock;
 
-use duckdb::types::Value as DuckValue;
+use chrono::{DateTime, NaiveTime, SecondsFormat};
+use duckdb::types::{TimeUnit, Value as DuckValue};
 use duckdb::{ToSql, params_from_iter};
 use regex::Regex;
 use thiserror::Error;
@@ -631,10 +632,92 @@ fn duck_to_json(v: DuckValue) -> serde_json::Value {
             .unwrap_or(Value::Null),
         DuckValue::Text(s) => Value::String(s),
         DuckValue::Blob(b) => Value::String(format!("0x{}", hex_str(&b))),
-        // Date/time/etc.: render via Debug for now (RFC 3339 round-
-        // trip is a separate concern handled at the API layer).
+        // Temporal types render as ISO-8601 / RFC-3339 strings so
+        // consumers get usable, sortable, Vega-friendly values rather
+        // than the Rust `Debug` form (`"Date32(9862)"`). See issue #211.
+        DuckValue::Date32(days) => date_to_json(days),
+        DuckValue::Timestamp(unit, v) => timestamp_to_json(unit, v),
+        DuckValue::Time64(unit, v) => time_to_json(unit, v),
+        DuckValue::Interval {
+            months,
+            days,
+            nanos,
+        } => Value::String(interval_to_iso8601(months, days, nanos)),
+        // Remaining composite/exotic types (List, Struct, Map, …):
+        // render via Debug for now.
         other => Value::String(format!("{other:?}")),
     }
+}
+
+/// Split a count of `unit`s into whole seconds + leftover nanoseconds,
+/// using Euclidean division so values before the epoch (negative `v`)
+/// still yield a non-negative nanosecond remainder.
+fn unit_to_secs_nanos(unit: TimeUnit, v: i64) -> (i64, u32) {
+    let (per_sec, nanos_per): (i64, i64) = match unit {
+        TimeUnit::Second => (1, 1_000_000_000),
+        TimeUnit::Millisecond => (1_000, 1_000_000),
+        TimeUnit::Microsecond => (1_000_000, 1_000),
+        TimeUnit::Nanosecond => (1_000_000_000, 1),
+    };
+    let secs = v.div_euclid(per_sec);
+    let nanos = (v.rem_euclid(per_sec) * nanos_per) as u32;
+    (secs, nanos)
+}
+
+/// `DATE` → `"YYYY-MM-DD"` (days since the Unix epoch).
+fn date_to_json(days: i32) -> serde_json::Value {
+    match DateTime::from_timestamp(i64::from(days) * 86_400, 0) {
+        Some(dt) => serde_json::Value::String(dt.format("%Y-%m-%d").to_string()),
+        None => serde_json::Value::String(format!("Date32({days})")),
+    }
+}
+
+/// `TIMESTAMP` → `"YYYY-MM-DDTHH:MM:SS[.fraction]Z"` (RFC-3339, UTC).
+fn timestamp_to_json(unit: TimeUnit, v: i64) -> serde_json::Value {
+    let (secs, nanos) = unit_to_secs_nanos(unit, v);
+    match DateTime::from_timestamp(secs, nanos) {
+        Some(dt) => serde_json::Value::String(dt.to_rfc3339_opts(SecondsFormat::AutoSi, true)),
+        None => serde_json::Value::String(format!("Timestamp({unit:?}, {v})")),
+    }
+}
+
+/// `TIME` → `"HH:MM:SS[.fraction]"` (time of day).
+fn time_to_json(unit: TimeUnit, v: i64) -> serde_json::Value {
+    let (secs, nanos) = unit_to_secs_nanos(unit, v);
+    match u32::try_from(secs)
+        .ok()
+        .and_then(|s| NaiveTime::from_num_seconds_from_midnight_opt(s, nanos))
+    {
+        Some(t) => serde_json::Value::String(t.format("%H:%M:%S%.f").to_string()),
+        None => serde_json::Value::String(format!("Time64({unit:?}, {v})")),
+    }
+}
+
+/// `INTERVAL` → an ISO-8601 duration string (`P[n]M[n]DT[n]S`). DuckDB
+/// keeps months, days and sub-day nanoseconds as independent fields
+/// (months/days are not normalised to seconds), so each maps to its own
+/// ISO component. The zero interval renders as `"PT0S"`.
+fn interval_to_iso8601(months: i32, days: i32, nanos: i64) -> String {
+    let mut out = String::from("P");
+    if months != 0 {
+        out.push_str(&format!("{months}M"));
+    }
+    if days != 0 {
+        out.push_str(&format!("{days}D"));
+    }
+    let secs = nanos / 1_000_000_000;
+    let frac = (nanos % 1_000_000_000).abs();
+    if nanos != 0 || out == "P" {
+        out.push('T');
+        if frac != 0 {
+            // Trim trailing zeros from the fractional-second part.
+            let frac_str = format!("{frac:09}");
+            out.push_str(&format!("{secs}.{}S", frac_str.trim_end_matches('0')));
+        } else {
+            out.push_str(&format!("{secs}S"));
+        }
+    }
+    out
 }
 
 fn hex_str(bytes: &[u8]) -> String {
@@ -645,4 +728,65 @@ fn hex_str(bytes: &[u8]) -> String {
         out.push(HEX[(b & 0xf) as usize] as char);
     }
     out
+}
+
+#[cfg(test)]
+mod temporal_tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn s(v: Value) -> String {
+        match v {
+            Value::String(s) => s,
+            other => panic!("expected string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn date_renders_iso_including_pre_epoch() {
+        // 9862 days after 1970-01-01 is the issue's repro value.
+        assert_eq!(s(date_to_json(9862)), "1997-01-01");
+        assert_eq!(s(date_to_json(0)), "1970-01-01");
+        // Negative day counts (before the epoch) must not underflow.
+        assert_eq!(s(date_to_json(-1)), "1969-12-31");
+    }
+
+    #[test]
+    fn timestamp_renders_rfc3339_utc_with_z() {
+        // Whole-second timestamp → no fractional part, trailing `Z`.
+        // 1997-01-01T13:45:30Z = 9862*86400 + 49530 seconds.
+        assert_eq!(
+            s(timestamp_to_json(TimeUnit::Second, 852_126_330)),
+            "1997-01-01T13:45:30Z",
+        );
+        // Microsecond unit, sub-second value preserved.
+        assert_eq!(
+            s(timestamp_to_json(
+                TimeUnit::Microsecond,
+                852_126_330_500_000
+            )),
+            "1997-01-01T13:45:30.500Z",
+        );
+    }
+
+    #[test]
+    fn time_renders_iso_time_of_day() {
+        // 13:45:30 in microseconds since midnight.
+        let micros = (13 * 3600 + 45 * 60 + 30) * 1_000_000;
+        assert_eq!(s(time_to_json(TimeUnit::Microsecond, micros)), "13:45:30");
+        assert_eq!(s(time_to_json(TimeUnit::Second, 0)), "00:00:00");
+    }
+
+    #[test]
+    fn interval_renders_iso8601_duration() {
+        // 1 month, 2 days, 03:04:05 → independent ISO components.
+        let nanos = ((3 * 3600 + 4 * 60 + 5) as i64) * 1_000_000_000;
+        assert_eq!(interval_to_iso8601(1, 2, nanos), "P1M2DT11045S");
+        // The zero interval is the canonical "PT0S".
+        assert_eq!(interval_to_iso8601(0, 0, 0), "PT0S");
+        // Months/days only — no time component.
+        assert_eq!(interval_to_iso8601(14, 0, 0), "P14M");
+        // Sub-second fraction, trailing zeros trimmed.
+        assert_eq!(interval_to_iso8601(0, 0, 500_000_000), "PT0.5S");
+    }
 }

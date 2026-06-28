@@ -84,6 +84,21 @@ const QUERY_SLUGS_FOR_SKILL: (&str, &str) = (
      # slugs-for-skill\n",
 );
 
+/// Query that projects temporal literals (DATE / TIMESTAMP / TIME),
+/// used to assert ISO-8601 / RFC-3339 serialization (issue #211).
+const QUERY_TEMPORAL: (&str, &str) = (
+    "markdown/instances/query/temporal.md",
+    "---\n\
+     type: instance\n\
+     skill: query\n\
+     id: temporal\n\
+     db: relational\n\
+     params: []\n\
+     sql: \"SELECT DATE '1997-01-01' AS d, TIMESTAMP '1997-01-01 00:00:00' AS ts, TIME '13:45:30' AS t\"\n\
+     ---\n\
+     # temporal\n",
+);
+
 /// Query that declares `db: ext` to verify the unsupported-db error.
 const QUERY_EXT_DB: (&str, &str) = (
     "markdown/instances/query/external-db.md",
@@ -272,6 +287,42 @@ async fn optional_param_null_when_omitted() {
         out.rows.is_empty(),
         "no customer-skilled SKILL pages exist; got: {:?}",
         out.rows,
+    );
+}
+
+#[tokio::test]
+async fn temporal_columns_serialize_as_iso8601() {
+    // DATE / TIMESTAMP / TIME columns must come back as usable
+    // ISO-8601 / RFC-3339 strings, not the Rust `Debug` form of
+    // DuckDB's `Value` (e.g. "Date32(9862)"). See issue #211.
+    let h = fresh_harness();
+    seed(&h, &[SKILL_QUERY, QUERY_TEMPORAL]).await;
+
+    let out = h
+        .indexer
+        .run_stored_query("temporal", &args(&[]))
+        .await
+        .expect("query runs");
+
+    assert_eq!(out.rows.len(), 1);
+    let row = &out.rows[0];
+    assert_eq!(
+        row["d"].as_str(),
+        Some("1997-01-01"),
+        "DATE → ISO date; got {:?}",
+        row["d"],
+    );
+    assert_eq!(
+        row["ts"].as_str(),
+        Some("1997-01-01T00:00:00Z"),
+        "TIMESTAMP → RFC-3339 UTC; got {:?}",
+        row["ts"],
+    );
+    assert_eq!(
+        row["t"].as_str(),
+        Some("13:45:30"),
+        "TIME → ISO time; got {:?}",
+        row["t"],
     );
 }
 
