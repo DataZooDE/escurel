@@ -407,6 +407,11 @@ impl Indexer {
     /// only (no skill constraint), so it succeeds for any page in
     /// any skill whose `frontmatter.id` matches.
     ///
+    /// The `skill::` namespace is reserved: `[[skill::<id>]]` resolves
+    /// the skill *definition* page (`page_type = 'skill'`), so the typed
+    /// form mirrors instances — `[[<skill>::<id>]]` for an instance,
+    /// `[[skill::<skill>]]` for the skill itself (issue #212).
+    ///
     /// `scenario` mirrors [`Self::list_instances`]: `None` resolves
     /// against the base only; `Some("B")` prefers the `B` overlay over
     /// its base twin (`ORDER BY scenario NULLS LAST`), so a typed link
@@ -436,8 +441,20 @@ impl Indexer {
             String::from("SELECT page_id, slug, skill, page_type FROM pages WHERE slug = ?");
         let mut binds: Vec<String> = vec![id];
         if let Some(skill) = parsed.skill.as_deref() {
-            sql.push_str(" AND skill = ?");
-            binds.push(skill.to_owned());
+            if skill == "skill" {
+                // `skill::` is a reserved namespace meaning "the skill
+                // *definition* page itself". A skill page's `skill`
+                // column holds its own id (not the literal "skill"), so
+                // `[[skill::<id>]]` must constrain `page_type = 'skill'`
+                // rather than `skill = 'skill'` (which never matches).
+                // This makes the typed form uniform with instances:
+                // `[[<skill>::<id>]]` for an instance, `[[skill::<skill>]]`
+                // for the definition. See issue #212.
+                sql.push_str(" AND page_type = 'skill'");
+            } else {
+                sql.push_str(" AND skill = ?");
+                binds.push(skill.to_owned());
+            }
         }
         // Scenario overlay wins over base for the same slug; without a
         // scenario, resolve only the shared base.
