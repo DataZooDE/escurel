@@ -26,6 +26,20 @@ candle = [
     "dep:tokenizers",
     "dep:tokio",
 ]
+# Pulls in candle + tokenizers + hf-hub for the local cross-encoder
+# `CrossEncoderReranker` (an XLM-RoBERTa sequence classifier, e.g.
+# `BAAI/bge-reranker-v2-m3`). Same heavy dep set as `candle`; off by
+# default. Like `candle`, it is verified locally — CI builds default
+# features only.
+rerank = [
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:candle-transformers",
+    "dep:hf-hub",
+    "dep:serde",
+    "dep:tokenizers",
+    "dep:tokio",
+]
 
 [dependencies]
 arc-swap = "1"
