@@ -166,6 +166,8 @@ struct TomlConfig {
     #[serde(default)]
     embedding: TomlEmbedding,
     #[serde(default)]
+    retrieval: TomlRetrieval,
+    #[serde(default)]
     observability: TomlObservability,
 }
 
@@ -208,8 +210,26 @@ struct TomlEmbedding {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct TomlRetrieval {
+    rerank: Option<String>,
+    rerank_candidates: Option<usize>,
+    rerank_model: Option<String>,
+    rerank_device: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct TomlObservability {
     metrics_listen: Option<String>,
+}
+
+/// Second-stage rerank selector. `Off` returns the first-stage fused
+/// order; `Bge` loads the candle cross-encoder ([`escurel_embed::CrossEncoderReranker`],
+/// behind the `rerank` build feature). The runtime default is `Bge` when the
+/// binary is built `--features rerank`, else `Off` — "default-on where built".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RerankMode {
+    Off,
+    Bge,
 }
 
 /// Auth config (present only when an OIDC issuer is set).
@@ -264,6 +284,17 @@ pub struct EscurelConfig {
     pub embedding_device: String,
     pub embedding_dim: usize,
     pub gemini_api_key: Option<String>,
+    /// Second-stage rerank mode (`[retrieval].rerank`, default-on where the
+    /// `rerank` feature is built). `Off` reproduces first-stage-only ranking.
+    pub rerank_mode: RerankMode,
+    /// How many fused candidates feed the reranker (`rerank_candidates`).
+    pub rerank_candidates: usize,
+    /// Reranker model — an HF repo id (e.g. `BAAI/bge-reranker-v2-m3`) or a
+    /// local directory holding `config.json` + `tokenizer.json` +
+    /// `model.safetensors` (the air-gapped substrate bake).
+    pub rerank_model: String,
+    /// Inference device for the reranker (informational; candle is CPU today).
+    pub rerank_device: String,
     /// Optional built demo bundle (Flutter web `build/web`) to serve
     /// at `/`. `None` → no static serving. Set from
     /// `ESCUREL_SERVE_DEMO_DIR`.
@@ -560,6 +591,51 @@ impl EscurelConfig {
         };
         let gemini_api_key = env.get("ESCUREL_GEMINI_API_KEY");
 
+        // --- retrieval (rerank) ---
+        // Default-on where built: a `--features rerank` binary defaults to the
+        // bge cross-encoder; a default (rerank-less) binary defaults to `off`.
+        let default_rerank = if cfg!(feature = "rerank") {
+            "bge"
+        } else {
+            "off"
+        };
+        let rerank_str = pick(
+            "ESCUREL_RETRIEVAL_RERANK",
+            toml_cfg.retrieval.rerank,
+            default_rerank,
+        );
+        let rerank_mode = match rerank_str.as_str() {
+            "off" => RerankMode::Off,
+            "bge" => RerankMode::Bge,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    var: "ESCUREL_RETRIEVAL_RERANK",
+                    value: other.to_owned(),
+                    reason: "expected `off` or `bge`",
+                });
+            }
+        };
+        let rerank_candidates = match env.get("ESCUREL_RETRIEVAL_RERANK_CANDIDATES") {
+            Some(raw) => raw
+                .parse::<usize>()
+                .map_err(|_| ConfigError::InvalidValue {
+                    var: "ESCUREL_RETRIEVAL_RERANK_CANDIDATES",
+                    value: raw,
+                    reason: "expected a positive integer",
+                })?,
+            None => toml_cfg.retrieval.rerank_candidates.unwrap_or(100),
+        };
+        let rerank_model = pick(
+            "ESCUREL_RETRIEVAL_RERANK_MODEL",
+            toml_cfg.retrieval.rerank_model,
+            "BAAI/bge-reranker-v2-m3",
+        );
+        let rerank_device = pick(
+            "ESCUREL_RETRIEVAL_RERANK_DEVICE",
+            toml_cfg.retrieval.rerank_device,
+            "cpu",
+        );
+
         Ok(Self {
             version,
             env: server_env,
@@ -574,6 +650,10 @@ impl EscurelConfig {
             embedding_device,
             embedding_dim,
             gemini_api_key,
+            rerank_mode,
+            rerank_candidates,
+            rerank_model,
+            rerank_device,
             demo_dir,
             seed_dir,
             webhook_url,
@@ -697,12 +777,17 @@ impl EscurelConfig {
         })?;
         Migrator::load_extensions(&crdt_conn)?;
 
-        let indexer = Arc::new(Indexer::new(
+        // Second-stage reranker (issue #215): attach a cross-encoder when
+        // `[retrieval].rerank` is on (default-on where the `rerank` feature is
+        // built). A load failure is degraded-start — log + run without rerank,
+        // never fatal — mirroring the embedder.
+        let base_indexer = Indexer::new(
             Arc::clone(&store),
             Arc::clone(&embedder) as Arc<dyn Embedder>,
             conn,
             self.tenant.clone(),
-        )?);
+        )?;
+        let indexer = Arc::new(self.attach_reranker(base_indexer).await);
 
         // Cattle-node-loss recovery: when the DuckDB file was just
         // created but the LaneStore still holds canonical markdown
@@ -945,6 +1030,71 @@ impl EscurelConfig {
         })
     }
 
+    /// Attach the configured reranker to a freshly built indexer. `Off` (or a
+    /// load failure) leaves the indexer reranker-less; `Bge` loads the
+    /// cross-encoder and wires the rerank stage. Never fatal — a model load
+    /// failure degrades to first-stage-only ranking with a warning.
+    async fn attach_reranker(&self, base: Indexer) -> Indexer {
+        if self.rerank_mode == RerankMode::Off {
+            return base;
+        }
+        match self.load_reranker().await {
+            Ok(reranker) => {
+                tracing::info!(
+                    model = %self.rerank_model,
+                    candidates = self.rerank_candidates,
+                    "cross-encoder rerank enabled",
+                );
+                base.with_reranker(
+                    reranker,
+                    escurel_index::RetrievalConfig::enabled(self.rerank_candidates),
+                )
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    model = %self.rerank_model,
+                    "reranker failed to load; serving first-stage ranking (rerank disabled)",
+                );
+                base
+            }
+        }
+    }
+
+    /// Load the candle cross-encoder reranker. The `rerank_model` is a local
+    /// directory (air-gapped bake) when it exists on disk, else an HF repo id
+    /// fetched into the hub cache on first boot.
+    #[cfg(feature = "rerank")]
+    async fn load_reranker(&self) -> Result<Arc<dyn escurel_embed::Reranker>, ConfigError> {
+        use escurel_embed::CrossEncoderReranker;
+        let model = &self.rerank_model;
+        let dir = std::path::Path::new(model);
+        let loaded = if dir.is_dir() {
+            CrossEncoderReranker::from_local(
+                &dir.join("config.json"),
+                &dir.join("tokenizer.json"),
+                &dir.join("model.safetensors"),
+                model,
+            )
+        } else {
+            CrossEncoderReranker::from_hf_hub(model).await
+        }
+        .map_err(|e| ConfigError::InvalidValue {
+            var: "ESCUREL_RETRIEVAL_RERANK_MODEL",
+            value: e.to_string(),
+            reason: "failed to load the cross-encoder reranker",
+        })?;
+        Ok(Arc::new(loaded))
+    }
+
+    #[cfg(not(feature = "rerank"))]
+    async fn load_reranker(&self) -> Result<Arc<dyn escurel_embed::Reranker>, ConfigError> {
+        Err(ConfigError::EmbedderFeatureDisabled {
+            provider: "rerank",
+            feature: "rerank",
+        })
+    }
+
     fn build_verifier(&self) -> Option<Arc<OidcVerifier>> {
         let auth = self.auth.as_ref()?;
         let mut cfg = OidcConfig::new(auth.issuer.clone(), auth.audience.clone())
@@ -959,5 +1109,65 @@ impl EscurelConfig {
         }
         cfg.jwks_refresh = auth.jwks_refresh;
         Some(Arc::new(OidcVerifier::new(cfg)))
+    }
+}
+
+#[cfg(test)]
+mod rerank_config_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn cfg_from(pairs: &[(&str, &str)]) -> Result<EscurelConfig, ConfigError> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        EscurelConfig::from_source(&move |k: &str| map.get(k).cloned())
+    }
+
+    #[test]
+    fn rerank_default_matches_build_feature_and_knobs() {
+        let c = cfg_from(&[]).expect("config builds");
+        // "default-on where built": Bge under `--features rerank`, else Off.
+        let expected = if cfg!(feature = "rerank") {
+            RerankMode::Bge
+        } else {
+            RerankMode::Off
+        };
+        assert_eq!(c.rerank_mode, expected);
+        assert_eq!(c.rerank_candidates, 100);
+        assert_eq!(c.rerank_model, "BAAI/bge-reranker-v2-m3");
+        assert_eq!(c.rerank_device, "cpu");
+    }
+
+    #[test]
+    fn rerank_env_overrides_take_effect() {
+        let c = cfg_from(&[
+            ("ESCUREL_RETRIEVAL_RERANK", "bge"),
+            ("ESCUREL_RETRIEVAL_RERANK_CANDIDATES", "50"),
+            ("ESCUREL_RETRIEVAL_RERANK_MODEL", "BAAI/bge-reranker-base"),
+        ])
+        .expect("config builds");
+        assert_eq!(c.rerank_mode, RerankMode::Bge);
+        assert_eq!(c.rerank_candidates, 50);
+        assert_eq!(c.rerank_model, "BAAI/bge-reranker-base");
+    }
+
+    #[test]
+    fn rerank_explicit_off() {
+        let c = cfg_from(&[("ESCUREL_RETRIEVAL_RERANK", "off")]).expect("config builds");
+        assert_eq!(c.rerank_mode, RerankMode::Off);
+    }
+
+    #[test]
+    fn rerank_invalid_value_errors() {
+        let err = cfg_from(&[("ESCUREL_RETRIEVAL_RERANK", "bogus")]).expect_err("must reject");
+        assert!(matches!(
+            err,
+            ConfigError::InvalidValue {
+                var: "ESCUREL_RETRIEVAL_RERANK",
+                ..
+            }
+        ));
     }
 }
