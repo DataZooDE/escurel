@@ -149,6 +149,49 @@ async fn resolve_bare_wikilink_matches_on_slug_alone() {
 }
 
 #[tokio::test]
+async fn resolve_skill_namespace_finds_the_skill_page() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER, INSTANCE_ACME]).await;
+
+    // `skill::` is a reserved namespace meaning "the skill page itself".
+    // `[[skill::customer]]` must resolve the `customer` skill definition,
+    // matching the bare `[[customer]]` form. See issue #212.
+    let r = h
+        .indexer
+        .resolve("[[skill::customer]]", None)
+        .await
+        .unwrap();
+    assert!(
+        r.exists(),
+        "[[skill::customer]] should resolve the skill page"
+    );
+    let page = r.page.unwrap();
+    assert_eq!(page.slug.as_deref(), Some("customer"));
+    assert_eq!(page.page_type, PageType::Skill);
+    assert_eq!(r.parsed.skill.as_deref(), Some("skill"));
+    assert_eq!(r.parsed.id.as_deref(), Some("customer"));
+}
+
+#[tokio::test]
+async fn resolve_skill_namespace_does_not_match_instances() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER, INSTANCE_ACME]).await;
+
+    // `acme-corp` is an instance, not a skill. The reserved `skill::`
+    // namespace must only resolve skill pages, so this finds nothing.
+    let r = h
+        .indexer
+        .resolve("[[skill::acme-corp]]", None)
+        .await
+        .unwrap();
+    assert!(
+        !r.exists(),
+        "[[skill::acme-corp]] must not resolve an instance"
+    );
+    assert!(r.page.is_none());
+}
+
+#[tokio::test]
 async fn resolve_skill_only_no_id_returns_no_target() {
     let h = fresh_harness();
     seed(&h, &[SKILL_CUSTOMER]).await;
