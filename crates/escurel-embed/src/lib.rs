@@ -25,6 +25,8 @@
 
 #[cfg(feature = "candle")]
 mod candle;
+#[cfg(feature = "rerank")]
+mod cross_encoder;
 #[cfg(feature = "gemini")]
 mod gemini;
 mod hash;
@@ -34,6 +36,8 @@ mod zero;
 
 #[cfg(feature = "candle")]
 pub use crate::candle::CandleEmbedder;
+#[cfg(feature = "rerank")]
+pub use cross_encoder::CrossEncoderReranker;
 #[cfg(feature = "gemini")]
 pub use gemini::GeminiEmbedder;
 pub use hash::HashEmbedder;
