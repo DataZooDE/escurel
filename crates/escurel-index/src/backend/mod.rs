@@ -53,9 +53,10 @@ pub use binding::{BackendBinding, DocumentBinding, SqlConnector, SqlViewBinding}
 #[cfg(feature = "kreuzberg")]
 pub use document::KreuzbergExtractor;
 pub use document::{
-    Chunk, ChunkConfig, DeterministicProcessor, DocMetadata, DocumentIngestWorker,
-    DocumentProcessor, ExtractConfig, ExtractError, ExtractionResult, Extractor, IngestOutcome,
-    NullExtractor, OcrPolicy, PlainTextExtractor, chunk_text,
+    Chunk, ChunkConfig, ContextualizeMode, DeterministicProcessor, DocMetadata,
+    DocumentIngestWorker, DocumentProcessor, ExtractConfig, ExtractError, ExtractionResult,
+    Extractor, IngestOutcome, NullExtractor, OcrPolicy, PlainTextExtractor, chunk_text,
+    contextualize_chunk, structural_context_prefix,
 };
 pub use markdown::MarkdownBackend;
 pub use sql_view::{

@@ -67,6 +67,7 @@ use escurel_admin::FsTenantStore;
 use escurel_auth::{OidcConfig, OidcVerifier};
 use escurel_crdt::{CrdtBackend, DuckdbCrdtBackend};
 use escurel_embed::{Embedder, ReloadableEmbedder, ZeroEmbedder};
+use escurel_index::backend::ContextualizeMode;
 use escurel_index::{Indexer, Migrator};
 use escurel_quota::{QuotaConfig, QuotaManager};
 use escurel_storage::{FsStore, LaneStore};
@@ -167,6 +168,8 @@ struct TomlConfig {
     embedding: TomlEmbedding,
     #[serde(default)]
     observability: TomlObservability,
+    #[serde(default)]
+    ingest: TomlIngest,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -210,6 +213,14 @@ struct TomlEmbedding {
 #[derive(Debug, Default, Deserialize)]
 struct TomlObservability {
     metrics_listen: Option<String>,
+}
+
+/// `[ingest]` TOML section. Document-ingest knobs. Only the contextual
+/// retrieval mode (GH #216, Variant A) is modelled today.
+#[derive(Debug, Default, Deserialize)]
+struct TomlIngest {
+    /// `"off"` | `"structural"`. Overlaid by `ESCUREL_INGEST_CONTEXTUALIZE`.
+    contextualize: Option<String>,
 }
 
 /// Auth config (present only when an OIDC issuer is set).
@@ -288,6 +299,12 @@ pub struct EscurelConfig {
     /// `0.0.0.0:9090`). `None` when explicitly emptied — disables
     /// scraping.
     pub metrics_listen: Option<String>,
+    /// Document contextual-retrieval mode (GH #216, Variant A). Set from
+    /// `ESCUREL_INGEST_CONTEXTUALIZE` (`off` | `structural`); default
+    /// `structural`. Threaded into the per-tenant `Indexer` so both the live
+    /// ingest worker and the rebuild path prefix chunks with
+    /// `[<title> › p.<page>]`.
+    pub ingest_contextualize: ContextualizeMode,
 }
 
 /// Source of an environment lookup — abstracted so `from_env` is
@@ -560,6 +577,15 @@ impl EscurelConfig {
         };
         let gemini_api_key = env.get("ESCUREL_GEMINI_API_KEY");
 
+        // --- ingest (GH #216, Variant A) ---
+        // Default `structural`; `off` restores verbatim chunk text. Unknown
+        // values fall back to the default (parse is lenient by design).
+        let ingest_contextualize = ContextualizeMode::parse(&pick(
+            "ESCUREL_INGEST_CONTEXTUALIZE",
+            toml_cfg.ingest.contextualize,
+            "structural",
+        ));
+
         Ok(Self {
             version,
             env: server_env,
@@ -579,6 +605,7 @@ impl EscurelConfig {
             webhook_url,
             webhook_secret,
             metrics_listen,
+            ingest_contextualize,
         })
     }
 }
@@ -697,12 +724,15 @@ impl EscurelConfig {
         })?;
         Migrator::load_extensions(&crdt_conn)?;
 
-        let indexer = Arc::new(Indexer::new(
-            Arc::clone(&store),
-            Arc::clone(&embedder) as Arc<dyn Embedder>,
-            conn,
-            self.tenant.clone(),
-        )?);
+        let indexer = Arc::new(
+            Indexer::new(
+                Arc::clone(&store),
+                Arc::clone(&embedder) as Arc<dyn Embedder>,
+                conn,
+                self.tenant.clone(),
+            )?
+            .with_contextualize(self.ingest_contextualize),
+        );
 
         // Cattle-node-loss recovery: when the DuckDB file was just
         // created but the LaneStore still holds canonical markdown
@@ -959,5 +989,31 @@ impl EscurelConfig {
         }
         cfg.jwks_refresh = auth.jwks_refresh;
         Some(Arc::new(OidcVerifier::new(cfg)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn cfg_from(vars: &[(&str, &str)]) -> EscurelConfig {
+        let map: HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        EscurelConfig::from_source(&|k: &str| map.get(k).cloned()).unwrap()
+    }
+
+    #[test]
+    fn ingest_contextualize_defaults_to_structural() {
+        let cfg = cfg_from(&[]);
+        assert_eq!(cfg.ingest_contextualize, ContextualizeMode::Structural);
+    }
+
+    #[test]
+    fn ingest_contextualize_env_override_off() {
+        let cfg = cfg_from(&[("ESCUREL_INGEST_CONTEXTUALIZE", "off")]);
+        assert_eq!(cfg.ingest_contextualize, ContextualizeMode::Off);
     }
 }

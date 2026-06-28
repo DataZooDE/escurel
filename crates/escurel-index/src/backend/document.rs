@@ -64,6 +64,59 @@ pub struct ExtractionResult {
     pub chunks: Vec<Chunk>,
 }
 
+/// Contextual-retrieval mode (GH #216, Variant A). When `Structural`, each
+/// chunk's stored text is prefixed with a small `[<title> › p.<page>]` header
+/// derived from the document title + the chunk's page, so the prefix feeds
+/// **both** retrieval lanes (FTS over `blocks.body` and the dense embedding,
+/// which is taken over the same text). `Off` is byte-for-byte the legacy
+/// behaviour. Variant B (LLM-generated context) is a deferred follow-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContextualizeMode {
+    /// No contextualisation; the chunk text is stored verbatim.
+    Off,
+    /// Prefix each chunk with `[<title> › p.<page>]` (structural context).
+    #[default]
+    Structural,
+}
+
+impl ContextualizeMode {
+    /// Parse the `ESCUREL_INGEST_CONTEXTUALIZE` value (`off` | `structural`);
+    /// unknown / empty → the default ([`ContextualizeMode::Structural`]).
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Self::Off,
+            _ => Self::Structural,
+        }
+    }
+}
+
+/// Build the structural-context prefix for one chunk, or `None` when there is
+/// nothing to prefix with (no title AND no page). Format:
+/// `[<title> › p.<page>]` — the ` › p.<page>` part is omitted when the chunk
+/// has no page; the title alone is used when there is a title but no page; a
+/// page alone (no title) yields `[p.<page>]`.
+#[must_use]
+pub fn structural_context_prefix(title: Option<&str>, page: Option<u32>) -> Option<String> {
+    let title = title.map(str::trim).filter(|t| !t.is_empty());
+    match (title, page) {
+        (Some(t), Some(p)) => Some(format!("[{t} \u{203a} p.{p}]")),
+        (Some(t), None) => Some(format!("[{t}]")),
+        (None, Some(p)) => Some(format!("[p.{p}]")),
+        (None, None) => None,
+    }
+}
+
+/// Apply the structural prefix to a chunk body: `"<prefix>\n<text>"`, or the
+/// unchanged `text` when there is no prefix to apply.
+#[must_use]
+pub fn contextualize_chunk(title: Option<&str>, page: Option<u32>, text: &str) -> String {
+    match structural_context_prefix(title, page) {
+        Some(prefix) => format!("{prefix}\n{text}"),
+        None => text.to_owned(),
+    }
+}
+
 /// OCR policy for scanned/image PDFs (REQ-NF-05). `Off` ⇒ born-digital only
 /// (no OCR runtime needed); scanned PDFs then degrade to `ocr_unavailable`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -342,12 +395,27 @@ pub enum IngestOutcome {
 pub struct DocumentIngestWorker {
     indexer: Arc<Indexer>,
     processor: Arc<dyn DocumentProcessor>,
+    contextualize: ContextualizeMode,
 }
 
 impl DocumentIngestWorker {
+    /// Build a worker with the default contextualisation mode
+    /// ([`ContextualizeMode::Structural`], GH #216 Variant A).
     #[must_use]
     pub fn new(indexer: Arc<Indexer>, processor: Arc<dyn DocumentProcessor>) -> Self {
-        Self { indexer, processor }
+        Self {
+            indexer,
+            processor,
+            contextualize: ContextualizeMode::default(),
+        }
+    }
+
+    /// Override the contextualisation mode (builder style). `Off` restores the
+    /// legacy byte-for-byte chunk text.
+    #[must_use]
+    pub fn with_contextualize(mut self, mode: ContextualizeMode) -> Self {
+        self.contextualize = mode;
+        self
     }
 
     /// Ingest the inbox blob `blob_id` as instance `skill::instance_id`.
@@ -366,8 +434,21 @@ impl DocumentIngestWorker {
         // Extract + chunk OFF the write lock.
         match self.processor.process(&bytes, mime, cfg).await {
             Ok(result) => {
-                let chunk_texts: Vec<String> =
-                    result.chunks.iter().map(|c| c.text.clone()).collect();
+                // Contextual Retrieval, Variant A: prefix each chunk's stored
+                // text with `[<title> › p.<page>]` so the prefix feeds both the
+                // FTS lane (over `blocks.body`) and the dense embedding (taken
+                // over the same text). `Off` keeps the verbatim chunk text.
+                let title = result.metadata.title.as_deref();
+                let chunk_texts: Vec<String> = match self.contextualize {
+                    ContextualizeMode::Off => {
+                        result.chunks.iter().map(|c| c.text.clone()).collect()
+                    }
+                    ContextualizeMode::Structural => result
+                        .chunks
+                        .iter()
+                        .map(|c| contextualize_chunk(title, c.page, &c.text))
+                        .collect(),
+                };
                 let overlay = document_overlay(
                     skill,
                     instance_id,
@@ -453,10 +534,7 @@ pub(crate) async fn rebuild_documents(indexer: &Indexer) -> Result<(), IndexerEr
             max_chars: max_chars.unwrap_or(defaults.max_chars),
             overlap: overlap.unwrap_or(defaults.overlap),
         };
-        let chunks: Vec<String> = chunk_text(content, cfg)
-            .into_iter()
-            .map(|c| c.text)
-            .collect();
+        let raw_chunks = chunk_text(content, cfg);
         // The overlay markdown is already canonical on the lane (re-written by
         // the main rebuild loop); re-materialise to replace its blocks with
         // the freshly re-chunked content.
@@ -469,6 +547,24 @@ pub(crate) async fn rebuild_documents(indexer: &Indexer) -> Result<(), IndexerEr
         let Ok(overlay_md) = String::from_utf8(overlay_bytes.to_vec()) else {
             continue;
         };
+        // Apply the same structural contextualisation as the live ingest path
+        // (GH #216, Variant A) so a from-scratch rebuild reproduces identical
+        // stored chunk text. The title comes from the overlay's `# <title>`
+        // heading; a plain re-chunk has no per-chunk page, so the prefix is
+        // title-only here.
+        let title = match indexer.contextualize {
+            ContextualizeMode::Off => None,
+            ContextualizeMode::Structural => overlay_heading_title(&overlay_md),
+        };
+        let chunks: Vec<String> = raw_chunks
+            .into_iter()
+            .map(|c| match indexer.contextualize {
+                ContextualizeMode::Off => c.text,
+                ContextualizeMode::Structural => {
+                    contextualize_chunk(title.as_deref(), c.page, &c.text)
+                }
+            })
+            .collect();
         indexer
             .materialize_document(&ov.page_id, &overlay_md, &chunks)
             .await?;
@@ -632,6 +728,20 @@ fn document_overlay(
     )
 }
 
+/// Extract the document title from a document overlay's `# <title>` heading
+/// (the line `document_overlay` writes). Returns `None` when no `# ` heading
+/// is present in the body. Used by the rebuild path, which only has the
+/// canonical overlay markdown to recover the title from.
+fn overlay_heading_title(overlay_md: &str) -> Option<String> {
+    let body = escurel_md::parse(overlay_md).ok()?.body;
+    body.lines().find_map(|l| {
+        l.strip_prefix("# ")
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+    })
+}
+
 /// Character-window chunking with overlap, split on a UTF-8 char boundary.
 /// Each chunk carries its `byte_start..byte_end` span into `content` and a
 /// 0-based ordinal. A single-page (no page map) document leaves `page = None`.
@@ -737,5 +847,79 @@ mod tests {
     #[test]
     fn chunk_text_empty_is_no_chunks() {
         assert!(chunk_text("", ChunkConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn structural_prefix_title_and_page() {
+        assert_eq!(
+            structural_context_prefix(Some("Q3 Report"), Some(4)).as_deref(),
+            Some("[Q3 Report \u{203a} p.4]")
+        );
+    }
+
+    #[test]
+    fn structural_prefix_title_only() {
+        assert_eq!(
+            structural_context_prefix(Some("Q3 Report"), None).as_deref(),
+            Some("[Q3 Report]")
+        );
+        // An empty/blank title is treated as absent.
+        assert_eq!(structural_context_prefix(Some("  "), None), None);
+    }
+
+    #[test]
+    fn structural_prefix_page_only() {
+        assert_eq!(
+            structural_context_prefix(None, Some(9)).as_deref(),
+            Some("[p.9]")
+        );
+    }
+
+    #[test]
+    fn structural_prefix_neither_is_none() {
+        assert_eq!(structural_context_prefix(None, None), None);
+    }
+
+    #[test]
+    fn contextualize_chunk_prepends_prefix_then_newline() {
+        assert_eq!(
+            contextualize_chunk(Some("Manual"), Some(2), "wind speed data"),
+            "[Manual \u{203a} p.2]\nwind speed data"
+        );
+        // No prefix → text unchanged (byte-for-byte legacy behaviour).
+        assert_eq!(
+            contextualize_chunk(None, None, "wind speed data"),
+            "wind speed data"
+        );
+    }
+
+    #[test]
+    fn contextualize_mode_parse() {
+        assert_eq!(ContextualizeMode::parse("off"), ContextualizeMode::Off);
+        assert_eq!(
+            ContextualizeMode::parse("structural"),
+            ContextualizeMode::Structural
+        );
+        assert_eq!(
+            ContextualizeMode::parse("OFF"),
+            ContextualizeMode::Off,
+            "case-insensitive"
+        );
+        assert_eq!(
+            ContextualizeMode::parse("bogus"),
+            ContextualizeMode::Structural,
+            "unknown → default"
+        );
+    }
+
+    #[test]
+    fn overlay_heading_title_reads_h1() {
+        let md = "---\ntype: instance\nid: x\n---\n# My Document Title\n";
+        assert_eq!(
+            overlay_heading_title(md).as_deref(),
+            Some("My Document Title")
+        );
+        let no_heading = "---\ntype: instance\nid: x\n---\njust body\n";
+        assert_eq!(overlay_heading_title(no_heading), None);
     }
 }
