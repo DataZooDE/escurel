@@ -97,6 +97,42 @@ mod tests {
     }
 
     #[test]
+    fn canonical_markdown_carries_searching_effectively_guidance() {
+        let sections = section_headers(META_SKILL_MD);
+        // The new section is present and lands between the tool-surface
+        // summary and the anti-patterns.
+        let surface = sections
+            .iter()
+            .position(|s| s == "## Tool surface summary")
+            .expect("tool surface summary present");
+        let searching = sections
+            .iter()
+            .position(|s| s == "## Searching effectively")
+            .expect("searching-effectively section present");
+        let anti = sections
+            .iter()
+            .position(|s| s == "## Anti-patterns")
+            .expect("anti-patterns present");
+        assert!(
+            surface < searching && searching < anti,
+            "## Searching effectively must sit after the tool surface \
+             summary and before the anti-patterns; got {sections:?}"
+        );
+        // Key guidance tokens are spelled out for consuming agents.
+        for token in [
+            "HyDE",
+            "Rewrite before searching",
+            "Multi-query",
+            "exact tokens",
+        ] {
+            assert!(
+                META_SKILL_MD.contains(token),
+                "searching guidance must mention {token:?}"
+            );
+        }
+    }
+
+    #[test]
     fn canonical_markdown_declares_the_escurel_skill() {
         let parsed = parse(META_SKILL_MD).expect("meta-skill parses");
         assert_eq!(parsed.frontmatter.page_type, PageType::Skill);
