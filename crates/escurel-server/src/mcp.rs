@@ -1628,7 +1628,15 @@ async fn tool_neighbours(
 
 #[derive(Deserialize)]
 struct SearchArgs {
-    q: String,
+    /// Single query string (unchanged). Optional now that `queries`
+    /// exists; at least one of `q` / `queries` must be present.
+    #[serde(default)]
+    q: Option<String>,
+    /// Multi-query variants (#217 Part 2). When supplied, each variant
+    /// is embedded and run through both lanes; their ACL-filtered
+    /// candidate lists are RRF-fused into one ranking before rerank.
+    #[serde(default)]
+    queries: Option<Vec<String>>,
     #[serde(default = "default_k")]
     k: usize,
     #[serde(default)]
@@ -1656,6 +1664,41 @@ fn default_k() -> usize {
     10
 }
 
+/// Upper bound on query variants fused in one `search` call — guards
+/// against an unbounded fan-out of first-stage retrievals.
+const MAX_QUERY_VARIANTS: usize = 8;
+
+/// The de-duplicated, order-preserving list of query variants to run.
+/// Falls back to the scalar `q` when `queries` is absent/empty; errors
+/// when neither yields a non-empty string. Capped at
+/// [`MAX_QUERY_VARIANTS`].
+fn effective_queries(a: &SearchArgs) -> Result<Vec<String>, JsonRpcError> {
+    let mut variants: Vec<String> = a
+        .queries
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if variants.is_empty()
+        && let Some(q) = a.q.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    {
+        variants.push(q.to_owned());
+    }
+    if variants.is_empty() {
+        return Err(JsonRpcError::invalid_params(
+            "search: provide `q` or a non-empty `queries`",
+        ));
+    }
+    // Drop duplicate phrasings so the same query can't double-weight a
+    // page through RRF; preserve first-seen order.
+    let mut seen = std::collections::HashSet::new();
+    variants.retain(|v| seen.insert(v.clone()));
+    variants.truncate(MAX_QUERY_VARIANTS);
+    Ok(variants)
+}
+
 async fn tool_search(
     indexer: &Indexer,
     caller: AclCaller<'_>,
@@ -1677,67 +1720,78 @@ async fn tool_search(
     // An empty `{}` filter is treated as "no filter".
     let filter = a.filter.as_ref().filter(|f| !is_empty_filter(f));
 
+    // Query variants (#217 Part 2): one for a scalar `q`, or several for
+    // a `queries` list. Their candidate lists are fused below.
+    let variants = effective_queries(&a)?;
+
     // When the rerank stage is on, fetch a larger fused candidate pool
     // so the cross-encoder has more than the caller's `k` to reorder;
     // we truncate back to `k` after reranking. With rerank off this is
-    // `a.k`, so the path below is byte-identical to before.
+    // `a.k`, so the single-variant path stays byte-identical to before.
     let pool = indexer.rerank_candidate_pool(a.k);
 
-    // Native lane: the fused hybrid (vss+fts) hits.
-    let native = indexer
-        .search_with(
-            &a.q,
-            pool,
-            pt,
-            a.skill.as_deref(),
-            a.as_of.as_deref(),
-            a.scenario.as_deref(),
-            granularity,
-            filter,
-            a.page_id.as_deref().filter(|s| !s.is_empty()),
-        )
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
-
-    // INV-ACL-FUSION (spike S3): every lane's contribution is ACL-filtered
-    // BEFORE fusion. Deterministic ACL drops owner-private hits the caller
-    // does not own (admin bypasses); skill pages are the public catalogue.
-    let native_allowed = acl_filter_hits(indexer, &caller, native).await?;
-
-    // SQL-view lane: late-materialised candidates over each sql_view skill's
-    // search_text columns. Skipped when the search is restricted to skills,
+    // The SQL-view lane is skipped when the search is restricted to skills,
     // OR when the caller set constraints the late-materialised lane does not
     // yet honor (`as_of` time-travel, `scenario` overlay, frontmatter
-    // `filter`) — fusing unconstrained SQL hits would violate them, so skip
-    // the lane (conservative + correct) until it can apply the constraints.
+    // `filter`, `page_id`) — fusing unconstrained SQL hits would violate
+    // them, so skip the lane (conservative + correct) until it can apply
+    // the constraints.
     let constrained =
         a.as_of.is_some() || a.scenario.is_some() || filter.is_some() || a.page_id.is_some();
-    let sql_allowed = if matches!(pt, Some(PageType::Skill)) || constrained {
-        Vec::new()
-    } else {
-        let candidates = indexer
-            .sql_view_search_candidates(&a.q, a.skill.as_deref())
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("search sql lane: {e}")))?;
-        acl_filter_hits(indexer, &caller, candidates).await?
-    };
+    let sql_lane_enabled = !matches!(pt, Some(PageType::Skill)) && !constrained;
+    let page_id = a.page_id.as_deref().filter(|s| !s.is_empty());
 
-    // No SQL contribution → the native path is returned verbatim (the
-    // markdown-only behaviour is byte-identical to before fusion relocation).
-    // Otherwise RRF-fuse the two already-filtered lanes (over the wider
-    // `pool` so the rerank stage sees them all).
-    let fused = if sql_allowed.is_empty() {
-        native_allowed
+    // Run every variant through both lanes. INV-ACL-FUSION (spike S3):
+    // EVERY lane's contribution — for EVERY variant — is ACL-filtered
+    // BEFORE it enters the fusion. Deterministic ACL drops owner-private
+    // hits the caller does not own (admin bypasses); skill pages are the
+    // public catalogue.
+    let mut lanes: Vec<Vec<escurel_index::SearchHit>> = Vec::with_capacity(variants.len() * 2);
+    for q in &variants {
+        let native = indexer
+            .search_with(
+                q,
+                pool,
+                pt,
+                a.skill.as_deref(),
+                a.as_of.as_deref(),
+                a.scenario.as_deref(),
+                granularity,
+                filter,
+                page_id,
+            )
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("search: {e}")))?;
+        lanes.push(acl_filter_hits(indexer, &caller, native).await?);
+
+        if sql_lane_enabled {
+            let candidates = indexer
+                .sql_view_search_candidates(q, a.skill.as_deref())
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("search sql lane: {e}")))?;
+            let sql_allowed = acl_filter_hits(indexer, &caller, candidates).await?;
+            if !sql_allowed.is_empty() {
+                lanes.push(sql_allowed);
+            }
+        }
+    }
+
+    // A single lane (one variant, no SQL contribution) is returned verbatim
+    // — the markdown-only single-query behaviour is byte-identical to before.
+    // Otherwise RRF-fuse all variant × lane lists into one ranking (over the
+    // wider `pool` so the rerank stage sees them all).
+    let fused = if lanes.len() == 1 {
+        lanes.pop().unwrap_or_default()
     } else {
-        rrf_fuse_lanes(native_allowed, sql_allowed, pool)
+        rrf_fuse_many(lanes, pool)
     };
 
     // Cross-encoder rerank — runs AFTER the per-lane ACL filter and RRF
     // fusion (INV-ACL-FUSION): it only reorders rows the caller may
-    // already see. A no-op when rerank is disabled. Then truncate to the
-    // caller's `k`.
+    // already see. A no-op when rerank is disabled. Reranks against the
+    // primary variant, then truncate to the caller's `k`.
     let mut final_hits = indexer
-        .rerank_hits(&a.q, fused)
+        .rerank_hits(&variants[0], fused)
         .await
         .map_err(|e| JsonRpcError::internal(format!("search rerank: {e}")))?;
     final_hits.truncate(a.k);
@@ -1788,21 +1842,21 @@ async fn acl_filter_hits(
     Ok(out)
 }
 
-/// Reciprocal-Rank-Fusion of two already-ACL-filtered, already-ranked lanes
-/// into a page-grain top-`k`. Each lane contributes `1/(K_RRF + rank)` per
-/// page; the native lane's hit is the representative when a page appears in
-/// both.
-fn rrf_fuse_lanes(
-    native: Vec<escurel_index::SearchHit>,
-    sql: Vec<escurel_index::SearchHit>,
-    k: usize,
+/// Reciprocal-Rank-Fusion of N already-ACL-filtered, already-ranked lanes
+/// into a page-grain top-`cap`. Each lane contributes `1/(K_RRF + rank)`
+/// per page; the first lane to surface a page is its representative on a
+/// collision (lanes are pushed native-before-SQL, primary-variant-first,
+/// so the strongest source wins the representative). Generalises the
+/// two-lane fuse to the multi-query case (#217 Part 2).
+fn rrf_fuse_many(
+    lanes: Vec<Vec<escurel_index::SearchHit>>,
+    cap: usize,
 ) -> Vec<escurel_index::SearchHit> {
     use std::collections::HashMap;
     const K_RRF: f64 = 60.0;
     let mut scores: HashMap<String, f64> = HashMap::new();
     let mut rep: HashMap<String, escurel_index::SearchHit> = HashMap::new();
-    // Native first, so it wins as the representative on a page collision.
-    for lane in [native, sql] {
+    for lane in lanes {
         for (rank, h) in lane.into_iter().enumerate() {
             *scores.entry(h.page_id.clone()).or_insert(0.0) += 1.0 / (K_RRF + (rank as f64) + 1.0);
             rep.entry(h.page_id.clone()).or_insert(h);
@@ -1821,7 +1875,7 @@ fn rrf_fuse_lanes(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.page_id.cmp(&b.page_id))
     });
-    fused.truncate(k);
+    fused.truncate(cap);
     fused
 }
 
@@ -3290,12 +3344,14 @@ fn tools_list_payload() -> Value {
             ),
             tool_entry(
                 "search",
-                "Hybrid vector + FTS search, RRF-fused.",
+                "Hybrid vector + FTS search, RRF-fused. Pass `q` for a single \
+                 query, or `queries` with 2-3 phrasings to fuse their results \
+                 in one ranking (provide exactly one of the two).",
                 json!({
                     "type": "object",
-                    "required": ["q"],
                     "properties": {
-                        "q": { "type": "string" },
+                        "q": { "type": "string", "description": "Single query string. Provide this OR `queries`." },
+                        "queries": { "type": "array", "items": { "type": "string" }, "description": "Multiple query variants fused into one ranking (RRF across all variants × lanes). Provide this OR `q`." },
                         "k": { "type": "integer", "minimum": 0, "maximum": 1000 },
                         "granularity": { "type": "string", "enum": ["block", "page"], "description": "Result granularity; `page` collapses block hits to one per page. Default `block`." },
                         "page_type": { "type": "string", "enum": ["skill", "instance", "any"] },
@@ -3908,4 +3964,88 @@ fn error_response(id: Value, code: i32, msg: impl Into<String>) -> axum::respons
         message: msg.into(),
     }
     .into_response(id)
+}
+
+#[cfg(test)]
+mod search_fusion_tests {
+    use super::*;
+
+    fn args(q: Option<&str>, queries: Option<Vec<&str>>) -> SearchArgs {
+        SearchArgs {
+            q: q.map(str::to_owned),
+            queries: queries.map(|v| v.into_iter().map(str::to_owned).collect()),
+            k: 10,
+            page_type: None,
+            skill: None,
+            as_of: None,
+            scenario: None,
+            granularity: None,
+            filter: None,
+            page_id: None,
+        }
+    }
+
+    #[test]
+    fn effective_queries_falls_back_to_scalar_q() {
+        assert_eq!(
+            effective_queries(&args(Some("hello"), None)).unwrap(),
+            ["hello"]
+        );
+    }
+
+    #[test]
+    fn effective_queries_uses_plural_and_dedups_preserving_order() {
+        let v = effective_queries(&args(None, Some(vec!["a", "b", "a", " ", "c"]))).unwrap();
+        assert_eq!(
+            v,
+            ["a", "b", "c"],
+            "blank dropped, dup 'a' removed, order kept"
+        );
+    }
+
+    #[test]
+    fn effective_queries_caps_variant_count() {
+        let many: Vec<&str> = ["q0", "q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9"].to_vec();
+        let v = effective_queries(&args(None, Some(many))).unwrap();
+        assert_eq!(v.len(), MAX_QUERY_VARIANTS);
+    }
+
+    #[test]
+    fn effective_queries_errors_when_nothing_supplied() {
+        assert!(effective_queries(&args(None, None)).is_err());
+        assert!(effective_queries(&args(Some("  "), Some(vec![" "]))).is_err());
+    }
+
+    fn hit(page_id: &str) -> escurel_index::SearchHit {
+        escurel_index::SearchHit {
+            page_id: page_id.to_owned(),
+            slug: None,
+            skill: "note".to_owned(),
+            page_type: PageType::Instance,
+            anchor: None,
+            snippet: String::new(),
+            score: 0.0,
+            similarity: 0.0,
+            frontmatter_excerpt: json!({}),
+        }
+    }
+
+    #[test]
+    fn rrf_fuse_many_rewards_pages_found_by_multiple_lanes() {
+        // `p_shared` is rank-0 in two lanes; `p_a`/`p_b` appear once each.
+        // The page two lanes agree on must outrank the singletons.
+        let lane_a = vec![hit("p_shared"), hit("p_a")];
+        let lane_b = vec![hit("p_shared"), hit("p_b")];
+        let fused = rrf_fuse_many(vec![lane_a, lane_b], 10);
+        assert_eq!(fused[0].page_id, "p_shared");
+        assert_eq!(fused.len(), 3, "exactly the union of distinct pages");
+        assert!(fused.windows(2).all(|w| w[0].score >= w[1].score));
+    }
+
+    #[test]
+    fn rrf_fuse_many_caps_to_requested_size() {
+        let lane: Vec<_> = (0..20).map(|i| hit(&format!("p{i}"))).collect();
+        let fused = rrf_fuse_many(vec![lane], 5);
+        assert_eq!(fused.len(), 5);
+    }
 }
