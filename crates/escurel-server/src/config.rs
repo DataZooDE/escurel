@@ -218,6 +218,9 @@ struct TomlRetrieval {
     rerank_candidates: Option<usize>,
     rerank_model: Option<String>,
     rerank_device: Option<String>,
+    two_pass: Option<bool>,
+    coarse_dim: Option<usize>,
+    coarse_candidates: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -306,6 +309,14 @@ pub struct EscurelConfig {
     pub rerank_model: String,
     /// Inference device for the reranker (informational; candle is CPU today).
     pub rerank_device: String,
+    /// Matryoshka two-pass vector search (`[retrieval].two_pass`, issue #218).
+    /// `false` (default) keeps single-pass full-dimension search.
+    pub two_pass: bool,
+    /// Truncated dimension for the two-pass coarse shortlist (`coarse_dim`).
+    pub coarse_dim: usize,
+    /// Coarse-pass shortlist size handed to the full-dim rescore
+    /// (`coarse_candidates`).
+    pub coarse_candidates: usize,
     /// Optional built demo bundle (Flutter web `build/web`) to serve
     /// at `/`. `None` → no static serving. Set from
     /// `ESCUREL_SERVE_DEMO_DIR`.
@@ -662,6 +673,36 @@ impl EscurelConfig {
             "cpu",
         );
 
+        // Matryoshka two-pass (issue #218): off by default. `ESCUREL_RETRIEVAL_TWO_PASS`
+        // accepts `true`/`1`/`yes`/`on` (case-insensitive); anything else is false.
+        let two_pass = match env.get("ESCUREL_RETRIEVAL_TWO_PASS") {
+            Some(raw) => matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            ),
+            None => toml_cfg.retrieval.two_pass.unwrap_or(false),
+        };
+        let coarse_dim = match env.get("ESCUREL_RETRIEVAL_COARSE_DIM") {
+            Some(raw) => raw
+                .parse::<usize>()
+                .map_err(|_| ConfigError::InvalidValue {
+                    var: "ESCUREL_RETRIEVAL_COARSE_DIM",
+                    value: raw,
+                    reason: "expected a positive integer (a Matryoshka prefix, e.g. 128|256|512)",
+                })?,
+            None => toml_cfg.retrieval.coarse_dim.unwrap_or(128),
+        };
+        let coarse_candidates = match env.get("ESCUREL_RETRIEVAL_COARSE_CANDIDATES") {
+            Some(raw) => raw
+                .parse::<usize>()
+                .map_err(|_| ConfigError::InvalidValue {
+                    var: "ESCUREL_RETRIEVAL_COARSE_CANDIDATES",
+                    value: raw,
+                    reason: "expected a positive integer",
+                })?,
+            None => toml_cfg.retrieval.coarse_candidates.unwrap_or(500),
+        };
+
         Ok(Self {
             version,
             env: server_env,
@@ -680,6 +721,9 @@ impl EscurelConfig {
             rerank_candidates,
             rerank_model,
             rerank_device,
+            two_pass,
+            coarse_dim,
+            coarse_candidates,
             demo_dir,
             seed_dir,
             webhook_url,
@@ -805,10 +849,12 @@ impl EscurelConfig {
         Migrator::load_extensions(&crdt_conn)?;
 
         // Build the indexer with the contextual-retrieval mode (GH #216), then
-        // attach a second-stage cross-encoder when `[retrieval].rerank` is on
-        // (issue #215, default-on where the `rerank` feature is built). A
-        // reranker load failure is degraded-start — log + run without rerank,
-        // never fatal — mirroring the embedder.
+        // attach the retrieval stages: a second-stage cross-encoder when
+        // `[retrieval].rerank` is on (issue #215, default-on where the `rerank`
+        // feature is built) and/or Matryoshka two-pass vector search when
+        // `[retrieval].two_pass` is on (issue #218). A reranker load failure is
+        // degraded-start — log + run without rerank, never fatal — mirroring
+        // the embedder.
         let base_indexer = Indexer::new(
             Arc::clone(&store),
             Arc::clone(&embedder) as Arc<dyn Embedder>,
@@ -816,7 +862,7 @@ impl EscurelConfig {
             self.tenant.clone(),
         )?
         .with_contextualize(self.ingest_contextualize);
-        let indexer = Arc::new(self.attach_reranker(base_indexer).await);
+        let indexer = Arc::new(self.attach_retrieval(base_indexer).await);
 
         // Cattle-node-loss recovery: when the DuckDB file was just
         // created but the LaneStore still holds canonical markdown
@@ -1063,30 +1109,51 @@ impl EscurelConfig {
     /// load failure) leaves the indexer reranker-less; `Bge` loads the
     /// cross-encoder and wires the rerank stage. Never fatal — a model load
     /// failure degrades to first-stage-only ranking with a warning.
-    async fn attach_reranker(&self, base: Indexer) -> Indexer {
-        if self.rerank_mode == RerankMode::Off {
-            return base;
+    async fn attach_retrieval(&self, base: Indexer) -> Indexer {
+        // Load the cross-encoder when rerank is on; a load failure is
+        // degraded-start (warn + run without rerank), never fatal.
+        let reranker = if self.rerank_mode == RerankMode::Bge {
+            match self.load_reranker().await {
+                Ok(r) => {
+                    tracing::info!(
+                        model = %self.rerank_model,
+                        candidates = self.rerank_candidates,
+                        "cross-encoder rerank enabled",
+                    );
+                    Some(r)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        model = %self.rerank_model,
+                        "reranker failed to load; serving first-stage ranking (rerank disabled)",
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // One RetrievalConfig carries both stages: rerank is enabled only if a
+        // reranker actually loaded; two-pass is independent (issue #218).
+        let mut retrieval = if reranker.is_some() {
+            escurel_index::RetrievalConfig::enabled(self.rerank_candidates)
+        } else {
+            escurel_index::RetrievalConfig::disabled()
+        };
+        if self.two_pass {
+            tracing::info!(
+                coarse_dim = self.coarse_dim,
+                coarse_candidates = self.coarse_candidates,
+                "matryoshka two-pass vector search enabled",
+            );
+            retrieval = retrieval.with_two_pass(self.coarse_dim, self.coarse_candidates);
         }
-        match self.load_reranker().await {
-            Ok(reranker) => {
-                tracing::info!(
-                    model = %self.rerank_model,
-                    candidates = self.rerank_candidates,
-                    "cross-encoder rerank enabled",
-                );
-                base.with_reranker(
-                    reranker,
-                    escurel_index::RetrievalConfig::enabled(self.rerank_candidates),
-                )
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    model = %self.rerank_model,
-                    "reranker failed to load; serving first-stage ranking (rerank disabled)",
-                );
-                base
-            }
+
+        match reranker {
+            Some(r) => base.with_reranker(r, retrieval),
+            None => base.with_retrieval(retrieval),
         }
     }
 
@@ -1221,6 +1288,59 @@ mod rerank_config_tests {
             err,
             ConfigError::InvalidValue {
                 var: "ESCUREL_RETRIEVAL_RERANK",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn two_pass_defaults_off_with_standard_knobs() {
+        let c = cfg_from(&[]).expect("config builds");
+        assert!(!c.two_pass);
+        assert_eq!(c.coarse_dim, 128);
+        assert_eq!(c.coarse_candidates, 500);
+    }
+
+    #[test]
+    fn two_pass_env_overrides_take_effect() {
+        let c = cfg_from(&[
+            ("ESCUREL_RETRIEVAL_TWO_PASS", "true"),
+            ("ESCUREL_RETRIEVAL_COARSE_DIM", "256"),
+            ("ESCUREL_RETRIEVAL_COARSE_CANDIDATES", "800"),
+        ])
+        .expect("config builds");
+        assert!(c.two_pass);
+        assert_eq!(c.coarse_dim, 256);
+        assert_eq!(c.coarse_candidates, 800);
+    }
+
+    #[test]
+    fn two_pass_truthy_and_falsy_values() {
+        for v in ["1", "yes", "on", "TRUE"] {
+            assert!(
+                cfg_from(&[("ESCUREL_RETRIEVAL_TWO_PASS", v)])
+                    .unwrap()
+                    .two_pass,
+                "{v:?} should enable two-pass",
+            );
+        }
+        for v in ["false", "0", "off", ""] {
+            assert!(
+                !cfg_from(&[("ESCUREL_RETRIEVAL_TWO_PASS", v)])
+                    .unwrap()
+                    .two_pass,
+                "{v:?} should leave two-pass off",
+            );
+        }
+    }
+
+    #[test]
+    fn coarse_dim_invalid_value_errors() {
+        let err = cfg_from(&[("ESCUREL_RETRIEVAL_COARSE_DIM", "lots")]).expect_err("must reject");
+        assert!(matches!(
+            err,
+            ConfigError::InvalidValue {
+                var: "ESCUREL_RETRIEVAL_COARSE_DIM",
                 ..
             }
         ));
