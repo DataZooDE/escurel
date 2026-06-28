@@ -156,6 +156,31 @@ wikilink — the catalogue is itself a `note` instance).
 | `open_session` / `apply_op` / `close_session` | live CRDT editing (when the MCP client supports the op stream) |
 | `update_page` | whole-page write fallback (no CRDT op stream required) |
 
+## Searching effectively
+
+`search` runs a hybrid lane (dense embedding + BM25). A few habits
+make it land on the right passage instead of a near-miss.
+
+- **Rewrite before searching.** Expand abbreviations, spell out
+  acronyms, and add likely synonyms before you query. Prefer the
+  corpus's own vocabulary: if the tenant says "churn risk", search
+  that, not "customers about to leave". A terse user question is
+  rarely the best query string.
+- **HyDE for conceptual questions.** When the question is about a
+  concept rather than a known token, write a hypothetical 1–2
+  sentence *answer* and search with that instead of the question.
+  The embedding of a plausible answer sits nearer the target
+  passages than the embedding of a short question does.
+- **Multi-query for broad or ambiguous questions.** Issue 2–3
+  different phrasings (e.g. a literal one, a synonym-rich one, a
+  HyDE answer) and merge the hits. One phrasing risks anchoring on
+  a single sub-topic; several widen recall.
+- **Use exact tokens for exact things.** Pass product codes, page
+  ids, person/company names, and error codes verbatim — do not
+  paraphrase them. The BM25 lane fires on exact tokens, so a
+  literal `ESC-4012` or `acme-corp` retrieves the precise instance
+  that a fuzzy description would miss.
+
 ## Anti-patterns
 
 - Do NOT call `expand` on every search hit; it's the most
