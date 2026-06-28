@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use duckdb::{Connection, params};
-use escurel_embed::{EmbedError, Embedder};
+use escurel_embed::{EmbedError, Embedder, NoopReranker, Reranker};
+
+use crate::retrieval::RetrievalConfig;
 use escurel_md::wikilink::parse_wikilinks;
 use escurel_md::{PageType, parse};
 use escurel_storage::{Key, LaneStore};
@@ -51,6 +53,13 @@ pub struct Indexer {
     /// lock (`docs/spec/platform.md §Concurrency`).
     write_lock: Mutex<()>,
     tenant: String,
+    /// Second-stage cross-encoder reranker. [`NoopReranker`] by default
+    /// (identity), so the rerank stage is a no-op until a real reranker
+    /// is injected via [`Self::with_reranker`]. Only consulted when
+    /// [`Self::retrieval`] has rerank enabled.
+    pub(crate) reranker: Arc<dyn Reranker>,
+    /// Rerank-stage knobs. Disabled by default — see [`RetrievalConfig`].
+    pub(crate) retrieval: RetrievalConfig,
 }
 
 /// Per-page progress event emitted by
@@ -174,7 +183,44 @@ impl Indexer {
             conn: Mutex::new(conn),
             write_lock: Mutex::new(()),
             tenant: tenant.into(),
+            reranker: Arc::new(NoopReranker),
+            retrieval: RetrievalConfig::disabled(),
         })
+    }
+
+    /// Attach a second-stage reranker and its [`RetrievalConfig`].
+    /// Without this the indexer reranks with [`NoopReranker`] and the
+    /// rerank stage is disabled (today's first-stage-only behaviour).
+    /// The server calls this when the `[retrieval]` config enables
+    /// rerank and a concrete cross-encoder has loaded.
+    #[must_use]
+    pub fn with_reranker(
+        mut self,
+        reranker: Arc<dyn Reranker>,
+        retrieval: RetrievalConfig,
+    ) -> Self {
+        self.reranker = reranker;
+        self.retrieval = retrieval;
+        self
+    }
+
+    /// Whether the post-fusion rerank stage runs.
+    #[must_use]
+    pub fn rerank_enabled(&self) -> bool {
+        self.retrieval.rerank_enabled()
+    }
+
+    /// First-stage candidate-pool size for caller `k`: the larger
+    /// rerank pool when rerank is on, else `k` unchanged. The search
+    /// dispatcher fetches this many fused candidates, reranks them, then
+    /// truncates back to `k`.
+    #[must_use]
+    pub fn rerank_candidate_pool(&self, k: usize) -> usize {
+        if self.retrieval.rerank_enabled() {
+            k.max(self.retrieval.rerank_candidates())
+        } else {
+            k
+        }
     }
 
     /// Tenant id this indexer was bound to at construction.

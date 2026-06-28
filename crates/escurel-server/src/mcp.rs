@@ -1677,11 +1677,17 @@ async fn tool_search(
     // An empty `{}` filter is treated as "no filter".
     let filter = a.filter.as_ref().filter(|f| !is_empty_filter(f));
 
+    // When the rerank stage is on, fetch a larger fused candidate pool
+    // so the cross-encoder has more than the caller's `k` to reorder;
+    // we truncate back to `k` after reranking. With rerank off this is
+    // `a.k`, so the path below is byte-identical to before.
+    let pool = indexer.rerank_candidate_pool(a.k);
+
     // Native lane: the fused hybrid (vss+fts) hits.
     let native = indexer
         .search_with(
             &a.q,
-            a.k,
+            pool,
             pt,
             a.skill.as_deref(),
             a.as_of.as_deref(),
@@ -1718,12 +1724,23 @@ async fn tool_search(
 
     // No SQL contribution → the native path is returned verbatim (the
     // markdown-only behaviour is byte-identical to before fusion relocation).
-    // Otherwise RRF-fuse the two already-filtered lanes.
-    let final_hits = if sql_allowed.is_empty() {
+    // Otherwise RRF-fuse the two already-filtered lanes (over the wider
+    // `pool` so the rerank stage sees them all).
+    let fused = if sql_allowed.is_empty() {
         native_allowed
     } else {
-        rrf_fuse_lanes(native_allowed, sql_allowed, a.k)
+        rrf_fuse_lanes(native_allowed, sql_allowed, pool)
     };
+
+    // Cross-encoder rerank — runs AFTER the per-lane ACL filter and RRF
+    // fusion (INV-ACL-FUSION): it only reorders rows the caller may
+    // already see. A no-op when rerank is disabled. Then truncate to the
+    // caller's `k`.
+    let mut final_hits = indexer
+        .rerank_hits(&a.q, fused)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("search rerank: {e}")))?;
+    final_hits.truncate(a.k);
 
     let out: Vec<Value> = final_hits
         .iter()

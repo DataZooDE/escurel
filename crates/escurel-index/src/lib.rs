@@ -31,6 +31,7 @@ pub mod indexer;
 pub mod meta_skill;
 pub mod query;
 pub mod read;
+pub mod retrieval;
 pub mod schema;
 pub mod search;
 pub mod validate;
@@ -59,6 +60,7 @@ pub use read::{
     AclPolicy, BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef,
     ResolvedWikilink, SkillInfo, Visibility,
 };
+pub use retrieval::RetrievalConfig;
 pub use schema::Migrator;
 pub use search::{Granularity, SearchHit};
 pub use validate::{Issue, Severity};
