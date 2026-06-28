@@ -37,6 +37,10 @@ gemini = ["escurel-embed/gemini"]
 #   --features embeddinggemma → local candle EmbeddingGemma embedder (air-gap)
 s3 = ["escurel-storage/s3"]
 embeddinggemma = ["escurel-embed/candle"]
+#   --features rerank        → candle XLM-RoBERTa cross-encoder reranker
+#     (issue #215). Opt-in build (heavy candle compile + ~GB model at boot);
+#     when built, the runtime default is rerank=bge ("default-on where built").
+rerank = ["escurel-embed/rerank"]
 
 [dependencies]
 async-trait = "0.1"
