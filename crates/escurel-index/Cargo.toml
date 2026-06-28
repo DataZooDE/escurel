@@ -44,6 +44,11 @@ escurel-embed = { path = "../escurel-embed" }
 escurel-md = { path = "../escurel-md" }
 escurel-storage = { path = "../escurel-storage" }
 bytes = "1"
+# Calendar arithmetic for rendering DuckDB temporal `Value`s (DATE /
+# TIMESTAMP / TIME / INTERVAL) as ISO-8601 / RFC-3339 strings in the
+# query JSON projection (issue #211). `default-features = false` keeps
+# the `clock`/timezone machinery out — we only format fixed values.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
