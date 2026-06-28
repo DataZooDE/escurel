@@ -104,13 +104,22 @@ async fn seed_deal(
 }
 
 async fn search(p: &EscurelProcess, sub: &str, q: &str) -> Vec<String> {
+    search_args(p, sub, json!({ "q": q, "k": 25 })).await
+}
+
+/// Multi-query search: pass the `queries` plural with no scalar `q`.
+async fn search_multi(p: &EscurelProcess, sub: &str, queries: &[&str]) -> Vec<String> {
+    search_args(p, sub, json!({ "queries": queries, "k": 25 })).await
+}
+
+async fn search_args(p: &EscurelProcess, sub: &str, arguments: Value) -> Vec<String> {
     let token = p.mint_token_with_sub(TENANT, Role::Agent, sub);
     let body: Value = reqwest::Client::new()
         .post(p.mcp_url())
         .header("authorization", format!("Bearer {token}"))
         .json(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "search", "arguments": { "q": q, "k": 25 } },
+            "params": { "name": "search", "arguments": arguments },
         }))
         .send()
         .await
@@ -215,6 +224,28 @@ async fn fused_search_never_leaks_cross_owner_sql_hits() {
     assert!(
         !bob_hits.iter().any(|p| p.contains("deal/alice-deal")),
         "CROSS-OWNER LEAK: bob saw alice's SQL deal; got {bob_hits:?}"
+    );
+
+    // Multi-query (#217 Part 2): alice issues two phrasings in one call.
+    // The variants are fused (union) and EACH variant's contribution is
+    // ACL-filtered before fusion — INV-ACL-FUSION extends to the plural
+    // path, so still no cross-owner / unresolved-owner leakage.
+    let alice_multi = search_multi(&p, "alice-sub", &["widget", "alpha deal"]).await;
+    assert!(
+        alice_multi.iter().any(|p| p.contains("deal/alice-deal")),
+        "multi-query must surface alice's own deal; got {alice_multi:?}"
+    );
+    assert!(
+        alice_multi.iter().any(|p| p.contains("note/public")),
+        "multi-query must fuse the public native hit; got {alice_multi:?}"
+    );
+    assert!(
+        !alice_multi.iter().any(|p| p.contains("deal/bob-deal")),
+        "CROSS-OWNER LEAK (multi-query): alice saw bob's deal; got {alice_multi:?}"
+    );
+    assert!(
+        !alice_multi.iter().any(|p| p.contains("deal/orphan-deal")),
+        "DEFAULT-DENY (multi-query): alice saw the unresolved-owner deal; got {alice_multi:?}"
     );
 
     p.shutdown().await;
