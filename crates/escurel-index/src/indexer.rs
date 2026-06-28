@@ -211,6 +211,15 @@ impl Indexer {
         self
     }
 
+    /// Set the [`RetrievalConfig`] directly, keeping the current reranker
+    /// ([`NoopReranker`] unless [`Self::with_reranker`] was used). Lets the
+    /// server enable Matryoshka two-pass vector search without a reranker.
+    #[must_use]
+    pub fn with_retrieval(mut self, retrieval: RetrievalConfig) -> Self {
+        self.retrieval = retrieval;
+        self
+    }
+
     /// Whether the post-fusion rerank stage runs.
     #[must_use]
     pub fn rerank_enabled(&self) -> bool {

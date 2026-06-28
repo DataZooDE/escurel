@@ -7,13 +7,23 @@
 //! truncates to the caller's `k`. Disabled is the default and is
 //! byte-for-byte today's behaviour (the stage is skipped entirely).
 
-/// Knobs for the post-fusion rerank stage. Built by the server from the
+/// The full vector dimension stored in `blocks.dense_vec`. A Matryoshka
+/// coarse pass truncates to a prefix of this. Mirrors
+/// [`crate::indexer::BLOCKS_DENSE_VEC_DIM`].
+const FULL_DIM: usize = crate::indexer::BLOCKS_DENSE_VEC_DIM;
+
+/// Knobs for the retrieval pipeline: the post-fusion rerank stage and the
+/// Matryoshka two-pass vector search. Built by the server from the
 /// `[retrieval]` config section and handed to the [`crate::Indexer`]
-/// alongside the concrete reranker via [`crate::Indexer::with_reranker`].
+/// (alongside a reranker via [`crate::Indexer::with_reranker`], or on its
+/// own via [`crate::Indexer::with_retrieval`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetrievalConfig {
     rerank_enabled: bool,
     rerank_candidates: usize,
+    two_pass: bool,
+    coarse_dim: usize,
+    coarse_candidates: usize,
 }
 
 impl Default for RetrievalConfig {
@@ -23,21 +33,40 @@ impl Default for RetrievalConfig {
 }
 
 impl RetrievalConfig {
-    /// Rerank off — first-stage fused order is returned as-is.
+    /// Rerank off, single-pass vector search — byte-for-byte today's behaviour.
     pub fn disabled() -> Self {
         Self {
             rerank_enabled: false,
             rerank_candidates: 0,
+            two_pass: false,
+            coarse_dim: 128,
+            coarse_candidates: 500,
         }
     }
 
     /// Rerank on, scoring the top `rerank_candidates` fused hits. The
-    /// count is clamped to at least 1.
+    /// count is clamped to at least 1. (Two-pass stays off; compose with
+    /// [`Self::with_two_pass`].)
     pub fn enabled(rerank_candidates: usize) -> Self {
         Self {
             rerank_enabled: true,
             rerank_candidates: rerank_candidates.max(1),
+            ..Self::disabled()
         }
+    }
+
+    /// Enable the Matryoshka two-pass vector search: a coarse ANN shortlist
+    /// of `coarse_candidates` blocks scored on the truncated `coarse_dim`
+    /// prefix of the stored vector, then exact full-dimension rescoring of
+    /// that shortlist (issue #218). `coarse_dim` is clamped to
+    /// `[1, FULL_DIM]` and `coarse_candidates` to at least 1. Builder-style,
+    /// so it composes with [`Self::enabled`].
+    #[must_use]
+    pub fn with_two_pass(mut self, coarse_dim: usize, coarse_candidates: usize) -> Self {
+        self.two_pass = true;
+        self.coarse_dim = coarse_dim.clamp(1, FULL_DIM);
+        self.coarse_candidates = coarse_candidates.max(1);
+        self
     }
 
     /// Whether the rerank stage runs.
@@ -48,6 +77,23 @@ impl RetrievalConfig {
     /// How many fused candidates feed the reranker.
     pub fn rerank_candidates(&self) -> usize {
         self.rerank_candidates
+    }
+
+    /// Whether the two-pass (coarse-then-full) vector search runs. A
+    /// `coarse_dim` of [`FULL_DIM`] makes the coarse pass identical to the
+    /// full pass, so two-pass is treated as off in that degenerate case.
+    pub fn two_pass(&self) -> bool {
+        self.two_pass && self.coarse_dim < FULL_DIM
+    }
+
+    /// Truncated dimension used for the coarse pass.
+    pub fn coarse_dim(&self) -> usize {
+        self.coarse_dim
+    }
+
+    /// Shortlist size handed from the coarse pass to the full-dim rescoring.
+    pub fn coarse_candidates(&self) -> usize {
+        self.coarse_candidates
     }
 }
 

@@ -497,9 +497,30 @@ impl Indexer {
         } else {
             min_similarity()
         };
+        // Matryoshka two-pass (issue #218): when enabled (and not page-scoped),
+        // first shortlist `coarse_candidates` blocks by cosine distance on the
+        // truncated `coarse_dim` prefix of the stored vector, then rescore that
+        // shortlist EXACTLY at the full dimension. The final ranking is the
+        // full-dim ranking restricted to the shortlist — identical to
+        // single-pass whenever the shortlist covers the relevant set, so
+        // `two_pass = false` (the default) is byte-for-byte today's behaviour.
+        let vec_pairs = if self.retrieval.two_pass() && page_id.is_none() {
+            two_pass_vec_ranking(
+                &conn,
+                &q_vec,
+                &filter_sql,
+                &filter_params,
+                self.retrieval.coarse_dim(),
+                self.retrieval.coarse_candidates(),
+                n_candidates,
+            )?
+        } else {
+            run_vec_ranking(&conn, &vec_sql, &filter_params)?
+        };
+
         let mut sim_by_block: HashMap<String, f64> = HashMap::new();
         let mut vec_ranked: Vec<String> = Vec::new();
-        for (block_id, dist) in run_vec_ranking(&conn, &vec_sql, &filter_params)? {
+        for (block_id, dist) in vec_pairs {
             let sim = 1.0 - dist;
             if sim < floor {
                 continue;
@@ -632,6 +653,70 @@ fn run_vec_ranking(
         duckdb::params_from_iter(filter_params.iter()),
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
     )?))
+}
+
+/// Matryoshka two-pass vector ranking (issue #218, truncate-on-read variant).
+///
+/// Pass 1 (coarse): rank all filtered blocks by cosine distance on the first
+/// `coarse_dim` components of `dense_vec` (the Matryoshka prefix), keeping the
+/// nearest `coarse_candidates` block ids. No extra storage — the prefix is
+/// sliced from the existing full vector on read.
+///
+/// Pass 2 (full): rescore ONLY that shortlist at the full dimension and return
+/// the nearest `n_candidates` as `(block_id, full_dim_distance)` — the same
+/// shape `run_vec_ranking` returns, so the caller's similarity-floor + RRF path
+/// is unchanged. Because pass 2 is exact, the result equals single-pass ranking
+/// restricted to the shortlist (identical when the shortlist covers the
+/// relevant set).
+///
+/// The coarse pass is a (cheaper-per-row) scan at `coarse_dim`, not an ANN
+/// index lookup — a second low-dimension HNSW index is the higher-throughput
+/// alternative, deferred. Runtime values are bound; identifiers (`coarse_dim`,
+/// limits) are integers formatted into the SQL, never caller input.
+#[allow(clippy::too_many_arguments)]
+fn two_pass_vec_ranking(
+    conn: &duckdb::Connection,
+    q_vec: &[f32],
+    filter_sql: &str,
+    filter_params: &[String],
+    coarse_dim: usize,
+    coarse_candidates: usize,
+    n_candidates: usize,
+) -> Result<Vec<(String, f64)>, IndexerError> {
+    let full_dim = q_vec.len();
+    let q_full = crate::indexer::format_vector_literal(q_vec);
+    let q_coarse = crate::indexer::format_vector_literal(&q_vec[..coarse_dim]);
+
+    // Pass 1: coarse shortlist on the truncated prefix.
+    let coarse_sql = format!(
+        "SELECT block_id, \
+                array_cosine_distance(\
+                    CAST(dense_vec[1:{coarse_dim}] AS FLOAT[{coarse_dim}]), \
+                    {q_coarse}::FLOAT[{coarse_dim}]) AS dist \
+         FROM blocks \
+         WHERE 1=1{filter_sql} \
+         ORDER BY dist LIMIT {coarse_candidates}",
+    );
+    let shortlist: Vec<String> = run_vec_ranking(conn, &coarse_sql, filter_params)?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    if shortlist.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Pass 2: exact full-dimension rescore of the shortlist.
+    let placeholders = std::iter::repeat_n("?", shortlist.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let full_sql = format!(
+        "SELECT block_id, \
+                array_cosine_distance(dense_vec, {q_full}::FLOAT[{full_dim}]) AS dist \
+         FROM blocks \
+         WHERE block_id IN ({placeholders}) \
+         ORDER BY dist LIMIT {n_candidates}",
+    );
+    run_vec_ranking(conn, &full_sql, &shortlist)
 }
 
 fn run_fts_ranking(
