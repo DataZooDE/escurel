@@ -1090,6 +1090,7 @@ async fn dispatch_tools_call(
         "list_instances" => tool_list_instances(indexer, caller, params.arguments).await,
         "resolve" => tool_resolve(indexer, caller, params.arguments).await,
         "expand" => tool_expand(indexer, caller, params.arguments).await,
+        "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,
         "neighbours" => tool_neighbours(indexer, caller, params.arguments).await,
         "search" => tool_search(indexer, caller, params.arguments).await,
         "run_stored_query" => {
@@ -1477,6 +1478,104 @@ async fn tool_expand(
             Ok(page)
         }
     }
+}
+
+/// Hard cap on a single `fetch_blob` transfer (25 MiB). Original documents are
+/// larger than the admin lane cap but still bounded for a browser preview.
+const FETCH_BLOB_MAX_BYTES: usize = 25 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct FetchBlobArgs {
+    page_id: String,
+}
+
+/// Return the ORIGINAL retained file bytes for a `document`-backed instance —
+/// the blob behind `backend_ref.blob_id` — base64-encoded with a sniffed
+/// content type, for a faithful client-side preview of the source document.
+///
+/// ACL mirrors `expand`: an instance the caller may not read resolves to a null
+/// blob (existence is not leaked). Non-document pages and missing pages also
+/// resolve to null. The transfer is size-capped.
+async fn tool_fetch_blob(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: FetchBlobArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("fetch_blob: {e}")))?;
+    let out = indexer
+        .expand(&a.page_id, None, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("fetch_blob expand: {e}")))?;
+    let Some(e) = out else {
+        return Ok(json!({ "blob": Value::Null }));
+    };
+    if e.page.page_type == PageType::Instance
+        && !indexer
+            .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
+            .await
+            .map_err(|err| JsonRpcError::internal(format!("fetch_blob acl: {err}")))?
+    {
+        return Ok(json!({ "blob": Value::Null }));
+    }
+    let backend_ref = e.frontmatter.get("backend_ref");
+    let is_doc = backend_ref
+        .and_then(|b| b.get("kind"))
+        .and_then(Value::as_str)
+        == Some("document");
+    let blob_id_str = backend_ref
+        .and_then(|b| b.get("blob_id"))
+        .and_then(Value::as_str);
+    if !is_doc || blob_id_str.is_none() {
+        return Ok(json!({ "blob": Value::Null }));
+    }
+    let blob_id = escurel_storage::BlobId::parse(blob_id_str.unwrap())
+        .ok_or_else(|| JsonRpcError::internal("fetch_blob: malformed blob_id"))?;
+    let bytes = indexer
+        .read_blob(&blob_id)
+        .await
+        .map_err(|err| JsonRpcError::internal(format!("fetch_blob read: {err}")))?;
+    if bytes.len() > FETCH_BLOB_MAX_BYTES {
+        return Err(JsonRpcError::invalid_params(format!(
+            "blob is {} bytes, over the {FETCH_BLOB_MAX_BYTES}-byte fetch cap",
+            bytes.len()
+        )));
+    }
+    Ok(json!({
+        "blob": {
+            "page_id": e.page.page_id,
+            "content_type": sniff_content_type(&bytes),
+            "size": bytes.len(),
+            "bytes_base64": B64.encode(&bytes),
+        }
+    }))
+}
+
+/// Best-effort content-type sniff for a retained blob: PDF, OOXML
+/// (docx/pptx/xlsx by their part markers), then UTF-8 text.
+fn sniff_content_type(bytes: &[u8]) -> &'static str {
+    fn contains(hay: &[u8], needle: &[u8]) -> bool {
+        needle.len() <= hay.len() && hay.windows(needle.len()).any(|w| w == needle)
+    }
+    if bytes.starts_with(b"%PDF") {
+        return "application/pdf";
+    }
+    if bytes.starts_with(b"PK\x03\x04") {
+        if contains(bytes, b"word/document.xml") {
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        }
+        if contains(bytes, b"ppt/presentation.xml") {
+            return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        }
+        if contains(bytes, b"xl/workbook.xml") {
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        }
+        return "application/zip";
+    }
+    if std::str::from_utf8(bytes).is_ok() {
+        return "text/plain";
+    }
+    "application/octet-stream"
 }
 
 /// Bounded rows + projected `source` fields for a SQL-view instance overlay,
@@ -3325,6 +3424,17 @@ fn tools_list_payload() -> Value {
                         "page_id": { "type": "string" },
                         "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." },
                         "scenario": { "type": "string", "description": "What-if overlay to read against; absent = base only." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "fetch_blob",
+                "Fetch the original retained file bytes of a document-backed instance (base64 + content type) for a faithful client preview.",
+                json!({
+                    "type": "object",
+                    "required": ["page_id"],
+                    "properties": {
+                        "page_id": { "type": "string" }
                     }
                 }),
             ),
