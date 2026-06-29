@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use escurel_embed::{Embedder, HashEmbedder};
+use escurel_embed::{Candidate, EmbedError, Embedder, HashEmbedder, Ranked, Reranker};
 use escurel_eval::config::RunConfig;
 use escurel_eval::dataset::Dataset;
 use escurel_eval::{QpsParams, run_matrix};
@@ -19,6 +19,32 @@ use tempfile::TempDir;
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tiny")
+}
+
+/// Deterministic reranker that REVERSES the first-stage order. Used only to
+/// prove the harness actually invokes the rerank stage (`rerank_hits`) — if the
+/// rerank config were a silent no-op, its ranking would equal single_pass.
+#[derive(Debug)]
+struct ReverseReranker;
+
+#[async_trait::async_trait]
+impl Reranker for ReverseReranker {
+    async fn rerank(
+        &self,
+        _query: &str,
+        candidates: &[Candidate],
+    ) -> Result<Vec<Ranked>, EmbedError> {
+        let n = candidates.len();
+        Ok(candidates
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(i, c)| Ranked {
+                id: c.id.clone(),
+                score: (n - i) as f32,
+            })
+            .collect())
+    }
 }
 
 #[tokio::test]
@@ -38,6 +64,7 @@ async fn end_to_end_over_tiny_fixture() {
             coarse_dim: 128,
             coarse_candidates: 500,
         },
+        RunConfig::Rerank { candidates: 10 },
     ];
 
     let report = run_matrix(
@@ -45,7 +72,7 @@ async fn end_to_end_over_tiny_fixture() {
         &db_path,
         &store_dir,
         Arc::clone(&embedder),
-        None, // no reranker (rerank configs would be skipped)
+        Some(Arc::new(ReverseReranker)),
         &configs,
         "doc",
         10,
@@ -62,7 +89,7 @@ async fn end_to_end_over_tiny_fixture() {
     assert_eq!(report.dim, 768);
     assert_eq!(report.corpus_docs, 8);
     assert_eq!(report.queries, 4);
-    assert_eq!(report.results.len(), 2, "single_pass + two_pass");
+    assert_eq!(report.results.len(), 3, "single_pass + two_pass + rerank");
 
     for r in &report.results {
         // Every metric is a probability-like value.
@@ -84,20 +111,41 @@ async fn end_to_end_over_tiny_fixture() {
         assert_eq!(r.latency.n, 4, "{} latency samples", r.config);
         // All 8 docs fit in k=10, so every query's relevant doc is found.
         assert_eq!(r.recall_at_10, 1.0, "{} recall@10", r.config);
-        // The BM25 lane ranks the matching doc near the top.
-        assert!(r.ndcg_at_10 >= 0.5, "{} ndcg@10={}", r.config, r.ndcg_at_10);
         // The concurrent QPS pass completed some searches.
         let qps = r.qps.as_ref().expect("qps measured");
         assert!(qps.completed > 0, "{} qps completed 0", r.config);
     }
 
+    let by = |name: &str| {
+        report
+            .results
+            .iter()
+            .find(|r| r.config == name)
+            .unwrap_or_else(|| panic!("config {name} present"))
+    };
+    let single = by("single_pass");
+    let two = by("two_pass");
+    let rerank = by("rerank");
+
+    // The BM25 lane ranks the matching doc near the top for first-stage configs.
+    assert!(
+        single.ndcg_at_10 >= 0.5,
+        "single ndcg@10={}",
+        single.ndcg_at_10
+    );
     // Two-pass with a corpus-covering shortlist preserves single-pass recall.
-    assert_eq!(
-        report.results[0].recall_at_10,
-        report.results[1].recall_at_10
+    assert_eq!(single.recall_at_10, two.recall_at_10);
+    // The rerank stage is actually APPLIED: the ReverseReranker flips the order,
+    // so the rerank ranking must differ from single_pass (it does not silently
+    // no-op). Reversal pushes the relevant doc down, so nDCG drops.
+    assert!(
+        rerank.ndcg_at_10 < single.ndcg_at_10,
+        "rerank must change the ranking (applied={}, single={})",
+        rerank.ndcg_at_10,
+        single.ndcg_at_10
     );
 
-    // JSON renders.
+    // JSON renders all three configs.
     let json = report.to_json();
-    assert_eq!(json["results"].as_array().unwrap().len(), 2);
+    assert_eq!(json["results"].as_array().unwrap().len(), 3);
 }
