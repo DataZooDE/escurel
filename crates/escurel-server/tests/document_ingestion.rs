@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use base64::Engine as _;
 use bytes::Bytes;
 use duckdb::Connection;
 use escurel_embed::{Embedder, ZeroEmbedder};
@@ -141,6 +142,65 @@ async fn ingest_text_end_to_end_materialises_searchable_instance() {
         "search miss: {ids:?}"
     );
 
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn fetch_blob_returns_original_bytes_for_a_document_instance() {
+    // The retained original file is fetchable byte-for-byte via fetch_blob
+    // (for a faithful client-side preview), with a sniffed content type.
+    let s = setup().await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let body = "The original bytes of the source document, verbatim.";
+    let blob = s
+        .store
+        .put_inbox_blob(TENANT, Bytes::from_static(body.as_bytes()), None)
+        .await
+        .unwrap();
+    let resp = post_ingest(&s.process, &token, blob.as_str(), "text/plain").await;
+    let page_id = resp["page_id"].as_str().unwrap().to_owned();
+
+    let r = call(
+        &s.process,
+        &token,
+        "fetch_blob",
+        json!({ "page_id": page_id }),
+    )
+    .await;
+    let got = &r["result"]["structuredContent"]["blob"];
+    assert_eq!(got["content_type"], "text/plain", "sniffed type: {r}");
+    assert_eq!(got["size"].as_u64().unwrap(), body.len() as u64);
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(got["bytes_base64"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(decoded, body.as_bytes(), "bytes must round-trip verbatim");
+
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn fetch_blob_is_null_for_missing_or_non_document_page() {
+    let s = setup().await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    // A skill page (catalogue, not a document instance) → null blob.
+    let r = call(
+        &s.process,
+        &token,
+        "fetch_blob",
+        json!({ "page_id": "markdown/skills/memo.md" }),
+    )
+    .await;
+    assert!(r["result"]["structuredContent"]["blob"].is_null(), "{r}");
+
+    // A page that does not exist → null blob.
+    let r2 = call(
+        &s.process,
+        &token,
+        "fetch_blob",
+        json!({ "page_id": "markdown/instances/memo/nope.md" }),
+    )
+    .await;
+    assert!(r2["result"]["structuredContent"]["blob"].is_null(), "{r2}");
     s.process.shutdown().await;
 }
 
