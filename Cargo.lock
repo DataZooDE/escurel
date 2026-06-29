@@ -2658,6 +2658,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "escurel-eval"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "duckdb",
+ "escurel-embed",
+ "escurel-index",
+ "escurel-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "escurel-explore-bff"
 version = "1.0.0"
 dependencies = [

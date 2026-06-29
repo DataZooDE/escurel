@@ -1,0 +1,43 @@
+[package]
+name = "escurel-eval"
+description = "Retrieval-quality + latency/QPS evaluation harness for Escurel: ingests a labeled IR dataset (BEIR format), runs search under each retrieval config, reports nDCG/recall/MRR/MAP + p50/p95/p99 + QPS."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = []
+# Real 768-d EmbeddingGemma vectors via candle (heavy compile + model download).
+# Off by default so `cargo test -p escurel-eval` (metric units + the HashEmbedder
+# smoke test) stays light and offline, like the rest of the workspace.
+candle = ["escurel-embed/candle"]
+# The candle cross-encoder reranker (`CrossEncoderReranker`) for the rerank configs.
+rerank = ["escurel-embed/rerank"]
+
+[[bin]]
+name = "escurel-eval"
+path = "src/main.rs"
+
+[dependencies]
+escurel-index = { path = "../escurel-index" }
+escurel-storage = { path = "../escurel-storage" }
+escurel-embed = { path = "../escurel-embed" }
+duckdb = { version = "1", default-features = false }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
