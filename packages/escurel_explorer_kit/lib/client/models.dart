@@ -416,6 +416,12 @@ class InstanceSummary {
   /// the page still parses. Treated as a deletion marker the explorer hides
   /// by default.
   bool get erased => isErasedFrontmatter(frontmatter);
+
+  /// Whether this instance is archived. Unlike [erased] (a permanent
+  /// tombstone), archiving is a recoverable "put away" state: herkules writes
+  /// `archived: true` in the instance frontmatter. The catalogue hides archived
+  /// rows per skill by default, with a toggle to reveal them.
+  bool get archived => isArchivedFrontmatter(frontmatter);
 }
 
 /// `true` when a page's frontmatter marks it as a tombstone. Shared by
@@ -424,6 +430,15 @@ class InstanceSummary {
 bool isErasedFrontmatter(Map<String, dynamic> frontmatter) {
   final status = (frontmatter['status'] as String?)?.trim().toLowerCase();
   return status == 'erased' || status == 'revoked';
+}
+
+/// `true` when a page's frontmatter marks it archived (`archived: true`).
+/// Tolerates the value arriving as a real bool (native/HTTP backend YAML→JSON)
+/// or the string `"true"`. One definition shared by every "hide archived" rule.
+bool isArchivedFrontmatter(Map<String, dynamic> frontmatter) {
+  final v = frontmatter['archived'];
+  if (v is bool) return v;
+  return v is String && v.trim().toLowerCase() == 'true';
 }
 
 // ── events / inbox (M7) ─────────────────────────────────────────

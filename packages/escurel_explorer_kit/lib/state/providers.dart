@@ -167,6 +167,18 @@ final instancesProvider = FutureProvider.family<List<InstanceSummary>, String>((
   return ref.watch(escurelClientProvider).listInstances(skillId);
 });
 
+/// Skill ids whose archived instances are currently revealed in the catalogue.
+/// Archived instances (`archived: true`) are hidden per skill by default; a
+/// skill present in this set shows its archived rows (muted).
+final showArchivedSkillsProvider = StateProvider<Set<String>>(
+  (ref) => const {},
+);
+
+/// Skill ids whose catalogue tile is collapsed (instance list hidden). Default
+/// empty = all expanded. Held here (not in transient ExpansionTile state) so a
+/// collapse survives the periodic auto-refresh that rebuilds the catalogue.
+final collapsedSkillsProvider = StateProvider<Set<String>>((ref) => const {});
+
 /// The expanded current page, or null if nothing focused. Time-travels
 /// with [asOfStringProvider]: a page born after the cut comes back with
 /// an empty `pageId`, which the reader renders as a "not yet" placeholder.
