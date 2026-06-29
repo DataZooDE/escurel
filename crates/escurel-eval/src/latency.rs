@@ -48,9 +48,30 @@ pub fn percentiles(samples: &mut [f64]) -> LatencyStats {
     }
 }
 
-/// Run each query once (sequentially), timing the `search` call. Returns the
-/// per-query ranked doc ids (deduped to doc granularity, for the metrics) and
-/// the latency distribution — computed in the same sweep.
+/// One query → its top-`k` doc ranking, replicating the server's native-lane
+/// path (`escurel-server`'s `tool_search`): fetch the (possibly wider) rerank
+/// candidate pool, apply the cross-encoder rerank stage, then truncate to `k`.
+///
+/// `Indexer::search` itself does NOT rerank — the rerank stage lives in the
+/// server dispatcher (`rerank_hits` after `search`), so the harness has to
+/// invoke it the same way or the rerank configs are a silent no-op. With rerank
+/// disabled, `rerank_candidate_pool(k) == k` and `rerank_hits` is a no-op, so
+/// this is exactly `search(q, k)`.
+pub async fn search_ranked(
+    indexer: &Indexer,
+    query: &str,
+    k: usize,
+) -> Result<Vec<escurel_index::SearchHit>, EvalError> {
+    let pool = indexer.rerank_candidate_pool(k);
+    let hits = indexer.search(query, pool, None, None, None, None).await?;
+    let mut hits = indexer.rerank_hits(query, hits).await?;
+    hits.truncate(k);
+    Ok(hits)
+}
+
+/// Run each query once (sequentially), timing the full retrieve + rerank call.
+/// Returns the per-query ranked doc ids (deduped to doc granularity, for the
+/// metrics) and the latency distribution — computed in the same sweep.
 pub async fn run_queries(
     indexer: &Indexer,
     queries: &[Query],
@@ -60,7 +81,7 @@ pub async fn run_queries(
     let mut samples = Vec::with_capacity(queries.len());
     for q in queries {
         let start = Instant::now();
-        let hits = indexer.search(&q.text, k, None, None, None, None).await?;
+        let hits = search_ranked(indexer, &q.text, k).await?;
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
         ranked_per_query.push(dedup_doc_ids(&hits));
     }
@@ -101,9 +122,7 @@ pub async fn measure_qps(
             while Instant::now() < deadline {
                 let idx = cursor.fetch_add(1, Ordering::Relaxed) % queries.len();
                 let start = Instant::now();
-                let r = indexer
-                    .search(&queries[idx].text, k, None, None, None, None)
-                    .await;
+                let r = search_ranked(&indexer, &queries[idx].text, k).await;
                 if r.is_ok() {
                     samples.push(start.elapsed().as_secs_f64() * 1000.0);
                     completed.fetch_add(1, Ordering::Relaxed);
