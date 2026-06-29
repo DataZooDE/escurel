@@ -808,14 +808,28 @@ class HttpEscurelClient implements EscurelClient {
 
   @override
   Future<VersionInfo> version() async {
-    final r = await _dio.get<Map<String, dynamic>>('/version');
-    final data = r.data ?? const {};
+    // `/version` is a substrate probe whose body varies by build: some return
+    // a rich JSON object (app/version/git_sha/capabilities), escurel-server
+    // returns a bare `text/plain` version string ("0.0.0-dev"). Fetch as plain
+    // text and parse defensively so a string body never throws a cast error.
+    final r = await _dio.get<String>(
+      '/version',
+      options: Options(responseType: ResponseType.plain),
+    );
+    final raw = (r.data ?? '').trim();
+    Map<String, dynamic> data = const {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) data = decoded;
+    } on FormatException {
+      // Not JSON — a bare version string; handled via `raw` below.
+    }
     final capStrings = (data['capabilities'] as List? ?? const [])
         .map((e) => e.toString())
         .toSet();
     return VersionInfo(
       app: (data['app'] as String?) ?? 'escurel-server',
-      version: (data['version'] as String?) ?? 'unknown',
+      version: (data['version'] as String?) ?? (raw.isEmpty ? 'unknown' : raw),
       gitSha: (data['git_sha'] as String?) ?? 'unknown',
       capabilities: _parseCapabilities(capStrings),
     );

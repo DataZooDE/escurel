@@ -37,6 +37,10 @@ class _MockMcpServer {
   final Map<String, FutureOr<Map<String, dynamic>?> Function()> routeHandlers =
       {};
 
+  /// Map of route path → plain-text body (text/plain). escurel's `/version`
+  /// answers with a bare version string, not JSON — this serves that shape.
+  final Map<String, String> rawRouteHandlers = {};
+
   /// Pre-built tool error to return on the next call (overrides handler).
   ({int code, String message})? nextError;
 
@@ -81,6 +85,14 @@ class _MockMcpServer {
           'id': body['id'],
           'result': result,
         });
+        return;
+      }
+      final raw = rawRouteHandlers[req.uri.path];
+      if (raw != null) {
+        req.response.statusCode = 200;
+        req.response.headers.contentType = ContentType.text;
+        req.response.write(raw);
+        await req.response.close();
         return;
       }
       final handler = routeHandlers[req.uri.path];
@@ -392,6 +404,18 @@ void main() {
           isNot(contains('unknownCapName')),
         );
       },
+    );
+
+    test('version tolerates a plain-text body (escurel returns a bare string)',
+        () async {
+      // escurel-server answers /version with `text/plain` "0.0.0-dev", not
+      // JSON. The client must not throw a cast error; it surfaces the string.
+      mock.rawRouteHandlers['/version'] = '0.0.0-dev';
+      final v = await client.version();
+      expect(v.version, '0.0.0-dev');
+      expect(v.app, 'escurel-server');
+      expect(v.capabilities, contains(BackendCapability.none));
+    },
     );
   });
 
