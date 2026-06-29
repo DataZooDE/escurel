@@ -46,95 +46,147 @@ class _SkillTile extends ConsumerWidget {
     final text = Theme.of(context).textTheme;
     final selectedId = ref.watch(currentPageIdProvider);
     final editable = ref.watch(skillEditableProvider)(skill.id);
+    // Collapsed-state lives in a provider (not transient ExpansionTile state)
+    // so it survives the periodic auto-refresh that rebuilds the catalogue.
+    final collapsed = ref.watch(collapsedSkillsProvider).contains(skill.id);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          initiallyExpanded: true,
-          tilePadding: const EdgeInsets.symmetric(horizontal: 8),
-          childrenPadding: const EdgeInsets.only(left: 12, right: 4, bottom: 4),
-          collapsedShape: const Border(),
-          shape: const Border(),
-          title: Row(
-            children: [
-              Expanded(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(4),
-                  // Focus the skill PAGE. `skill.id` is the bare id
-                  // (`team_doc`), not a page_id — set it directly and
-                  // `expand` finds nothing → empty page. `focusSkill`
-                  // resolves `[[id]]` → `markdown/skills/<id>.md` first
-                  // (same path the CRM skills-menu uses).
-                  onTap: () => focusSkill(ref, skill.id),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Row(
-                      children: [
-                        const KindChip(pageType: md.PageType.skill),
-                        const SizedBox(width: 8),
-                        Expanded(child: Text(skill.id, style: text.titleSmall)),
-                        if (skill.backendKind != 'markdown') ...[
-                          BackendBadge(
-                            skillId: skill.id,
-                            backendKind: skill.backendKind,
-                            writable: skill.capabilities.writable,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Header: the title focuses the skill PAGE; the chevron (its own
+          // button, so the tap target is unambiguous) collapses the tile.
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(4),
+                    // Focus the skill PAGE. `skill.id` is the bare id
+                    // (`team_doc`), not a page_id — set it directly and
+                    // `expand` finds nothing → empty page. `focusSkill`
+                    // resolves `[[id]]` → `markdown/skills/<id>.md` first
+                    // (same path the CRM skills-menu uses).
+                    onTap: () => focusSkill(ref, skill.id),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Row(
+                        children: [
+                          const KindChip(pageType: md.PageType.skill),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(skill.id, style: text.titleSmall),
                           ),
-                          const SizedBox(width: 4),
+                          if (skill.backendKind != 'markdown') ...[
+                            BackendBadge(
+                              skillId: skill.id,
+                              backendKind: skill.backendKind,
+                              writable: skill.capabilities.writable,
+                            ),
+                            const SizedBox(width: 4),
+                          ],
+                          if (skill.acl != null) _AclBadge(acl: skill.acl!),
                         ],
-                        if (skill.acl != null) _AclBadge(acl: skill.acl!),
-                      ],
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          children: [
-            instancesAsync.when(
-              loading: () => const Padding(
-                padding: EdgeInsets.symmetric(vertical: 4),
-                child: SizedBox(
-                  height: 12,
-                  width: 12,
-                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                _CollapseToggle(
+                  skillId: skill.id,
+                  collapsed: collapsed,
+                  onTap: () {
+                    final set = {...ref.read(collapsedSkillsProvider)};
+                    if (collapsed) {
+                      set.remove(skill.id);
+                    } else {
+                      set.add(skill.id);
+                    }
+                    ref.read(collapsedSkillsProvider.notifier).state = set;
+                  },
                 ),
-              ),
-              error: (e, _) => _ErrorBlock(message: '$e'),
-              data: (instances) => Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  for (final i in instances)
-                    _InstanceTile(
-                      instance: i,
-                      selected: i.id == selectedId,
-                      onTap: () =>
-                          ref.read(currentPageIdProvider.notifier).state = i.id,
-                    ),
-                  if (instances.isEmpty)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: 4,
-                        horizontal: 8,
+              ],
+            ),
+          ),
+          if (!collapsed)
+            Padding(
+              padding: const EdgeInsets.only(left: 12, right: 4, bottom: 4),
+              child: instancesAsync.when(
+                loading: () => const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 4),
+                  child: SizedBox(
+                    height: 12,
+                    width: 12,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
+                ),
+                error: (e, _) => _ErrorBlock(message: '$e'),
+                data: (instances) {
+                // Archived instances (`archived: true`) are hidden per skill by
+                // default; the per-skill toggle below reveals them (muted).
+                final showArchived = ref
+                    .watch(showArchivedSkillsProvider)
+                    .contains(skill.id);
+                final active = instances.where((i) => !i.archived).toList();
+                final archived = instances.where((i) => i.archived).toList();
+                final visible = [...active, if (showArchived) ...archived];
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (final i in visible)
+                      _InstanceTile(
+                        instance: i,
+                        selected: i.id == selectedId,
+                        archived: i.archived,
+                        onTap: () => ref
+                            .read(currentPageIdProvider.notifier)
+                            .state = i.id,
                       ),
-                      child: Text(
-                        'no instances yet',
-                        style: text.bodySmall?.copyWith(
-                          color: kOnSurfaceVariant,
+                    if (instances.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 4,
+                          horizontal: 8,
+                        ),
+                        child: Text(
+                          'no instances yet',
+                          style: text.bodySmall?.copyWith(
+                            color: kOnSurfaceVariant,
+                          ),
                         ),
                       ),
-                    ),
-                  if (editable)
-                    _CreateInstanceRow(
-                      skill: skill,
-                      onTap: () => _openCreate(context, ref, skill),
-                    ),
-                ],
+                    if (archived.isNotEmpty)
+                      _ShowArchivedToggle(
+                        skillId: skill.id,
+                        count: archived.length,
+                        value: showArchived,
+                        onChanged: (v) {
+                          final set = {
+                            ...ref.read(showArchivedSkillsProvider),
+                          };
+                          if (v) {
+                            set.add(skill.id);
+                          } else {
+                            set.remove(skill.id);
+                          }
+                          ref
+                                  .read(showArchivedSkillsProvider.notifier)
+                                  .state =
+                              set;
+                        },
+                      ),
+                    if (editable)
+                      _CreateInstanceRow(
+                        skill: skill,
+                        onTap: () => _openCreate(context, ref, skill),
+                      ),
+                  ],
+                );
+                },
               ),
             ),
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -300,26 +352,146 @@ class _InstanceTile extends StatelessWidget {
     required this.instance,
     required this.selected,
     required this.onTap,
+    this.archived = false,
   });
 
   final InstanceSummary instance;
   final bool selected;
+  final bool archived;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     final shortId = instanceShortLabel(instance.id);
-    return InkWell(
-      borderRadius: BorderRadius.circular(4),
+    return Semantics(
+      label: 'catalogue-instance:$shortId',
+      button: true,
+      selected: selected,
       onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: selected ? kSurfaceContainerHigh : Colors.transparent,
-          borderRadius: BorderRadius.circular(4),
+      excludeSemantics: true,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: selected ? kSurfaceContainerHigh : Colors.transparent,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  shortId,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: text.bodySmall?.copyWith(
+                    color: archived ? kOnSurfaceVariant : null,
+                    fontStyle: archived ? FontStyle.italic : null,
+                  ),
+                ),
+              ),
+              if (archived) ...[
+                const SizedBox(width: 6),
+                const Icon(
+                  Icons.inventory_2_outlined,
+                  size: 12,
+                  color: kOnSurfaceVariant,
+                ),
+              ],
+            ],
+          ),
         ),
-        child: Text(shortId, style: text.bodySmall),
+      ),
+    );
+  }
+}
+
+/// A per-skill "show archived" control at the foot of a skill's instance list
+/// in the catalogue. Defaults off; flipping it reveals the skill's archived
+/// instances (rendered muted/italic). Shown only when the skill has any.
+class _ShowArchivedToggle extends StatelessWidget {
+  const _ShowArchivedToggle({
+    required this.skillId,
+    required this.count,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String skillId;
+  final int count;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Semantics(
+      label: 'show-archived-toggle:$skillId',
+      toggled: value,
+      button: true,
+      onTap: () => onChanged(!value),
+      excludeSemantics: true,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: () => onChanged(!value),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Row(
+            children: [
+              Icon(
+                value ? Icons.visibility : Icons.visibility_off,
+                size: 13,
+                color: kOnSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                value ? '$count archiviert ausblenden' : '$count archiviert',
+                style: text.bodySmall?.copyWith(
+                  color: kOnSurfaceVariant,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The skill tile's expand/collapse control — a dedicated button so the tap
+/// target is unambiguous (the header itself focuses the skill page). State is
+/// driven by [collapsedSkillsProvider] so it persists across auto-refresh.
+class _CollapseToggle extends StatelessWidget {
+  const _CollapseToggle({
+    required this.skillId,
+    required this.collapsed,
+    required this.onTap,
+  });
+
+  final String skillId;
+  final bool collapsed;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'collapse-toggle:$skillId',
+      toggled: !collapsed,
+      button: true,
+      onTap: onTap,
+      excludeSemantics: true,
+      child: IconButton(
+        icon: Icon(collapsed ? Icons.expand_more : Icons.expand_less),
+        iconSize: 20,
+        color: kOnSurfaceVariant,
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+        tooltip: collapsed ? 'Ausklappen' : 'Einklappen',
+        onPressed: onTap,
       ),
     );
   }
