@@ -126,13 +126,16 @@ impl Indexer {
 
         // Positional ids keep the id-space unique and let us map the
         // reranker's output back to the exact source hit regardless of
-        // page_id/anchor collisions.
-        let candidates: Vec<Candidate> = hits
-            .iter()
+        // page_id/anchor collisions. The passage text is the full block body
+        // (bulk-fetched), so the cross-encoder scores the whole passage rather
+        // than the 200-char snippet lead.
+        let passages = self.rerank_passages(&hits).await?;
+        let candidates: Vec<Candidate> = passages
+            .into_iter()
             .enumerate()
-            .map(|(i, h)| Candidate {
+            .map(|(i, text)| Candidate {
                 id: i.to_string(),
-                text: rerank_passage(h),
+                text,
             })
             .collect();
 
@@ -163,11 +166,47 @@ impl Indexer {
         }
         Ok(out)
     }
-}
 
-/// The passage text a hit contributes to the cross-encoder. The block
-/// snippet (the lead of the block body) is what the first stage already
-/// hydrated; it bounds the per-pair token cost without a refetch.
-fn rerank_passage(h: &SearchHit) -> String {
-    h.snippet.clone()
+    /// The passage text each hit contributes to the cross-encoder: the full
+    /// block `body`, bulk-fetched in one query for the whole candidate set.
+    /// Falls back to the hydrated `snippet` for any hit with no resolvable
+    /// block (e.g. the `sql_view` lane, whose hits carry no block body).
+    ///
+    /// Scoring the full body — not the 200-char snippet lead — lets the
+    /// cross-encoder see the whole passage; the reranker's tokenizer truncates
+    /// to its own max length, so the per-pair cost stays bounded.
+    async fn rerank_passages(&self, hits: &[SearchHit]) -> Result<Vec<String>, IndexerError> {
+        use std::collections::HashMap;
+
+        // block_id is "<page_id>:<anchor>" for a block-grain hit.
+        let block_id = |h: &SearchHit| h.anchor.as_deref().map(|a| format!("{}:{}", h.page_id, a));
+        let block_ids: Vec<String> = hits.iter().filter_map(block_id).collect();
+
+        let mut body_by_block: HashMap<String, String> = HashMap::new();
+        if !block_ids.is_empty() {
+            let placeholders = std::iter::repeat_n("?", block_ids.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql =
+                format!("SELECT block_id, body FROM blocks WHERE block_id IN ({placeholders})");
+            let conn = self.conn.lock().await;
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(duckdb::params_from_iter(block_ids.iter()), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (bid, body) = row?;
+                body_by_block.insert(bid, body);
+            }
+        }
+
+        Ok(hits
+            .iter()
+            .map(|h| {
+                block_id(h)
+                    .and_then(|bid| body_by_block.get(&bid).cloned())
+                    .unwrap_or_else(|| h.snippet.clone())
+            })
+            .collect())
+    }
 }
