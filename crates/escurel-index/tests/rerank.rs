@@ -162,6 +162,56 @@ async fn rerank_reorders_hits_by_score_and_preserves_the_set() {
     assert!(reranked.windows(2).all(|w| w[0].score >= w[1].score));
 }
 
+// A note whose distinguishing token `zebracorn` sits AFTER the first ~200
+// chars, so it is absent from the hydrated 200-char snippet and present only in
+// the full block body. The lead matches "planning" so FTS retrieves it.
+const TAIL: (&str, &str) = (
+    "markdown/instances/note/tail.md",
+    "---\ntype: instance\nskill: note\nid: tail\n---\n# Tail\n\n\
+     Quarterly planning notes covering logistics, budgets, staffing, vendors, \
+     timelines, milestones, dependencies, risks, owners, reviewers, approvers, \
+     and stakeholders across every regional division and operating unit in the \
+     company. zebracorn appears only here, well past the snippet lead.\n",
+);
+
+#[tokio::test]
+async fn rerank_scores_full_body_not_just_the_snippet() {
+    // The reranker promotes whatever passage contains `zebracorn`. That token
+    // lives only in TAIL's body tail (beyond the 200-char snippet), so TAIL can
+    // be promoted ONLY if rerank feeds the cross-encoder the full body.
+    let h = harness_with(Some(Arc::new(KeywordReranker {
+        keyword: "zebracorn".to_owned(),
+    })));
+    seed(&h, &[SKILL_NOTE, ALPHA, BETA, GAMMA, TAIL]).await;
+
+    let hits = h
+        .indexer
+        .search("planning", 10, None, Some("note"), None, None)
+        .await
+        .unwrap();
+    assert!(
+        hits.iter().any(|x| x.page_id.ends_with("tail.md")),
+        "FTS must retrieve the tail note via its 'planning' lead",
+    );
+    // The snippet alone must NOT contain the tail token (guards the premise).
+    let tail_hit = hits
+        .iter()
+        .find(|x| x.page_id.ends_with("tail.md"))
+        .unwrap();
+    assert!(
+        !tail_hit.snippet.contains("zebracorn"),
+        "premise: the token must be outside the snippet; got {:?}",
+        tail_hit.snippet,
+    );
+
+    let reranked = h.indexer.rerank_hits("planning", hits).await.unwrap();
+    assert!(
+        reranked[0].page_id.ends_with("tail.md"),
+        "full-body rerank must promote the tail-token note; got {:?}",
+        reranked.iter().map(|h| &h.page_id).collect::<Vec<_>>(),
+    );
+}
+
 #[tokio::test]
 async fn rerank_disabled_by_default_is_identity() {
     let h = harness_with(None);
