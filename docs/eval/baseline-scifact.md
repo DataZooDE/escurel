@@ -69,9 +69,42 @@ pays off at corpus sizes where the full-dim HNSW scan dominates, not at 1k docs.
    smaller `rerank_candidates` (e.g. 20–50), and/or a lighter CE head.
 
 The harness did its job: it turned "the reranker is wired in" into a measured,
-falsifiable result — on this benchmark, the rerank stage as currently configured
-(snippet passages, CPU, 100 candidates) is a net negative, and the report points
-at the two concrete levers to change that.
+falsifiable result — on this benchmark, the rerank stage as **originally**
+configured (snippet passages) was a net negative, and the report pointed at the
+two concrete levers to change that.
+
+## Update — full-passage rerank (#236)
+
+Lever #1 ("feed the reranker the full body, not the snippet") landed in #236:
+`rerank_hits` now bulk-fetches `blocks.body` for the candidate set. Re-measured
+on a smaller, faster mini split (400 docs, the first 50 test queries, k=50,
+`rerank_candidates=50`, full passages — raw:
+[`remeasure-fullpassage-scifact-mini.json`](remeasure-fullpassage-scifact-mini.json)):
+
+| config | nDCG@10 | recall@10 | MRR | MAP | p50 ms |
+|---|---|---|---|---|---|
+| single_pass     | 0.9166 | 0.980 | 0.9018 | 0.8930 | 130 |
+| two_pass        | 0.9166 | 0.980 | 0.9018 | 0.8930 | 143 |
+| rerank          | **0.9345** | 0.956 | **0.9324** | **0.9299** | 63064 |
+| two_pass_rerank | 0.9345 | 0.956 | 0.9324 | 0.9299 | 63523 |
+
+**The regression flips to an improvement.** Within-run, rerank vs single_pass:
+
+| metric | snippet (1k run above) | full passage (#236) |
+|---|---|---|
+| ΔnDCG@10 | **−0.175** | **+0.018** |
+| ΔMRR | −0.19 | **+0.031** |
+
+(Absolute numbers differ from the 1k run — different corpus/queries/k — so the
+**within-run delta** is the signal; it went from clearly negative to positive.
+The cross-encoder now improves ranking, as expected.)
+
+**Latency got worse, not better** (~63 s/query, even with half the candidates):
+full passages are longer token sequences, so each `(query, passage)` pair costs
+more than a snippet pair. This sharpens lever #2 — rerank on CPU is impractical
+at any useful candidate count; it needs GPU and/or a small `rerank_candidates`
+and/or a lighter CE head. Quality is fixed; **latency is the remaining blocker**
+for default-on rerank.
 
 ## Caveats
 
