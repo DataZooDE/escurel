@@ -95,6 +95,18 @@ pub struct ConfigOverrides {
     /// `X-Escurel-Webhook-Signature: sha256=<hex>`. `None` (default)
     /// leaves the POST unsigned.
     pub webhook_secret: Option<String>,
+    /// JWT claim the verifier reads the subject's group memberships from
+    /// (production `ESCUREL_AUTH_GROUPS_CLAIM`; e.g. `triton_sender_groups`
+    /// in the Triton-fronted topology). `None` keeps the default (`roles`).
+    /// The TestIssuer's mint helpers are claim-aware: they emit the groups
+    /// under BOTH `roles` and this claim, so admin projection and existing
+    /// principals keep working when the knob is set.
+    pub groups_claim: Option<String>,
+    /// Additional trusted issuers beyond whatever [`crate::AuthMode`]
+    /// configures, each `(issuer_url, jwks_url)` — the deployed shape where
+    /// one Escurel also trusts Triton's (or another service's) signer.
+    /// Requires an auth mode with a verifier (not `Disabled`).
+    pub extra_issuers: Vec<(String, String)>,
 }
 
 impl std::fmt::Debug for ConfigOverrides {
@@ -241,14 +253,22 @@ impl EscurelProcess {
         //    + an RSA keypair and threads them into an
         //    `OidcVerifier`. External points the verifier at the
         //    caller's URLs. Disabled leaves `verifier = None`.
-        let (verifier, issuer) = match &opts.auth {
+        //    `overrides.groups_claim` + `overrides.extra_issuers` apply on
+        //    top of whatever the mode configures.
+        assert!(
+            !(matches!(opts.auth, AuthMode::Disabled)
+                && (overrides.groups_claim.is_some() || !overrides.extra_issuers.is_empty())),
+            "ConfigOverrides::groups_claim / extra_issuers require an auth mode with a verifier \
+             (AuthMode::Disabled installs none)"
+        );
+        let (cfg, issuer) = match &opts.auth {
             AuthMode::Disabled => (None, None),
             AuthMode::TestIssuer => {
-                let issuer = TestIssuer::start().await;
+                let issuer =
+                    TestIssuer::start_with_groups_claim(overrides.groups_claim.clone()).await;
                 let cfg = OidcConfig::new(issuer.issuer_url.clone(), TEST_AUDIENCE.to_owned())
                     .with_jwks_uri(issuer.jwks_url.clone());
-                let verifier = Arc::new(OidcVerifier::new(cfg));
-                (Some(verifier), Some(issuer))
+                (Some(cfg), Some(issuer))
             }
             AuthMode::External {
                 issuer_url,
@@ -256,8 +276,7 @@ impl EscurelProcess {
             } => {
                 let cfg = OidcConfig::new(issuer_url.clone(), TEST_AUDIENCE.to_owned())
                     .with_jwks_uri(jwks_url.clone());
-                let verifier = Arc::new(OidcVerifier::new(cfg));
-                (Some(verifier), None)
+                (Some(cfg), None)
             }
             AuthMode::ExternalMulti { issuers } => {
                 let (primary_iss, primary_jwks) = issuers
@@ -268,10 +287,18 @@ impl EscurelProcess {
                 for (iss, jwks) in &issuers[1..] {
                     cfg = cfg.with_additional_issuer(iss.clone(), Some(jwks.clone()));
                 }
-                let verifier = Arc::new(OidcVerifier::new(cfg));
-                (Some(verifier), None)
+                (Some(cfg), None)
             }
         };
+        let verifier = cfg.map(|mut cfg| {
+            if let Some(claim) = &overrides.groups_claim {
+                cfg = cfg.with_groups_claim(claim.clone());
+            }
+            for (iss, jwks) in &overrides.extra_issuers {
+                cfg = cfg.with_additional_issuer(iss.clone(), Some(jwks.clone()));
+            }
+            Arc::new(OidcVerifier::new(cfg))
+        });
 
         // 3. Boot the server. Bound port returned in `local_addr`
         //    *before* the join handle starts polling — so `spawn`
