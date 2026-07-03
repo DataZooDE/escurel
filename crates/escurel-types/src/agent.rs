@@ -43,6 +43,10 @@ pub struct SearchHit {
     pub slug: String,
     pub skill: String,
     pub page_type: String,
+    /// Block anchor of the hit. A page-grain hit (e.g. a `sql_view`
+    /// candidate) has none — the wire emits an explicit `null`, which
+    /// decodes to `""` here.
+    #[serde(deserialize_with = "null_as_default")]
     pub anchor: String,
     pub snippet: String,
     pub score: f64,

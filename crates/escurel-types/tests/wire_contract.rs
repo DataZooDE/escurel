@@ -313,6 +313,29 @@ fn missing_keys_default() {
     assert!(hit.frontmatter_excerpt.is_null());
 }
 
+#[test]
+fn search_hit_tolerates_null_anchor() {
+    // A `sql_view` candidate hit has no block anchor — the live gateway
+    // emits an explicit `"anchor": null` (page-grain hit). The typed
+    // client must decode it (`null_as_default`), not fail with
+    // "invalid type: null, expected a string" — otherwise every
+    // sql_view-bearing result set breaks the typed `search()`.
+    let wire = json!({
+        "page_id": "markdown/instances/customers/eu.md",
+        "slug": "eu",
+        "skill": "customers",
+        "page_type": "instance",
+        "anchor": null,
+        "snippet": "matched 2 rows",
+        "score": 0.5,
+        "similarity": 0.0,
+        "frontmatter_excerpt": { "backend_ref": { "kind": "sql_view" } }
+    });
+    let hit: SearchHit = serde_json::from_value(wire).expect("null anchor must decode");
+    assert_eq!(hit.anchor, "");
+    assert_eq!(hit.skill, "customers");
+}
+
 // ── 2. Serde round-trips per module ───────────────────────────────
 
 fn rt<T>(x: T)
