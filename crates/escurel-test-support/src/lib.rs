@@ -47,7 +47,7 @@ mod fixtures;
 mod mcp_client;
 mod process;
 
-pub use auth::{AuthMode, Role};
+pub use auth::{AuthMode, ExtraIssuer, Role};
 pub use fixtures::{FixtureBuilder, MarkdownBody, TenantFixture};
 pub use mcp_client::{McpError, McpTestClient};
 pub use process::{ConfigOverrides, EscurelProcess, Opts};

@@ -116,6 +116,14 @@ pub(crate) struct TestIssuer {
     pub(crate) keys: Keys,
     pub(crate) issuer_url: String,
     pub(crate) jwks_url: String,
+    /// When the gateway was configured with a custom
+    /// `ConfigOverrides::groups_claim`, the mint helpers emit the group
+    /// array under BOTH `roles` (so the `admin_role_claim` projection and
+    /// every existing caller keep working) and this claim (so the group
+    /// ACL keeps seeing the groups). Without this, setting the knob would
+    /// silently strip every TestIssuer principal of its groups — the
+    /// second-order trap the knob's tests pin.
+    pub(crate) groups_claim: Option<String>,
     /// Owned wiremock server. Kept alive so the JWKS endpoint stays
     /// reachable until the [`crate::EscurelProcess`] is dropped.
     pub(crate) _mock_server: MockServer,
@@ -123,6 +131,10 @@ pub(crate) struct TestIssuer {
 
 impl TestIssuer {
     pub(crate) async fn start() -> Self {
+        Self::start_with_groups_claim(None).await
+    }
+
+    pub(crate) async fn start_with_groups_claim(groups_claim: Option<String>) -> Self {
         let mock_server = MockServer::start().await;
         let keys = Keys::generate();
         mount_jwks(&mock_server, &keys).await;
@@ -132,6 +144,7 @@ impl TestIssuer {
             keys,
             issuer_url,
             jwks_url,
+            groups_claim,
             _mock_server: mock_server,
         }
     }
@@ -181,7 +194,7 @@ impl TestIssuer {
 
     fn sign_with_roles(&self, tenant: &str, subject: &str, roles: &[String]) -> String {
         let now = now_secs();
-        let claims = json!({
+        let mut claims = json!({
             "iss": self.issuer_url,
             "aud": TEST_AUDIENCE,
             "sub": subject,
@@ -190,9 +203,71 @@ impl TestIssuer {
             "iat": now,
             "exp": now + 600,
         });
+        // Claim-aware minting: mirror the group array under the configured
+        // groups claim (see the `groups_claim` field docs).
+        if let Some(claim) = &self.groups_claim
+            && claim != "roles"
+        {
+            claims[claim.as_str()] = json!(roles);
+        }
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(TEST_KID.to_owned());
         let key = EncodingKey::from_rsa_pem(&self.keys.private_pem).expect("rsa pem parses");
+        encode(&header, &claims, &key).expect("jwt sign")
+    }
+}
+
+/// A standalone in-process OIDC issuer for **multi-issuer** tests — the
+/// deployed shape where one Escurel trusts its primary issuer AND a second
+/// party's signer (Triton's forwarded bearers, Carl's dashboard tokens).
+/// Downstream tests wire it in via `ConfigOverrides::extra_issuers` and
+/// mint tokens with arbitrary audience arrays + a custom groups claim, all
+/// without importing `wiremock`/`jsonwebtoken` themselves (the dx.md
+/// "Auth in tests" promise).
+pub struct ExtraIssuer {
+    inner: TestIssuer,
+}
+
+impl ExtraIssuer {
+    pub async fn start() -> Self {
+        Self {
+            inner: TestIssuer::start().await,
+        }
+    }
+
+    /// The issuer URL (the token's `iss`).
+    pub fn issuer_url(&self) -> &str {
+        &self.inner.issuer_url
+    }
+
+    /// The JWKS URL serving this issuer's signing key.
+    pub fn jwks_url(&self) -> &str {
+        &self.inner.jwks_url
+    }
+
+    /// Sign a bearer with an **audience array** (the Triton-minted shape:
+    /// `aud: [agents, escurel]`) and the group list under `groups_claim`.
+    pub fn mint(
+        &self,
+        tenant: &str,
+        subject: &str,
+        audiences: &[&str],
+        groups_claim: &str,
+        groups: &[&str],
+    ) -> String {
+        let now = now_secs();
+        let claims = json!({
+            "iss": self.inner.issuer_url,
+            "aud": audiences,
+            "sub": subject,
+            "tenant": tenant,
+            groups_claim: groups,
+            "iat": now,
+            "exp": now + 600,
+        });
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(TEST_KID.to_owned());
+        let key = EncodingKey::from_rsa_pem(&self.inner.keys.private_pem).expect("rsa pem parses");
         encode(&header, &claims, &key).expect("jwt sign")
     }
 }
