@@ -87,12 +87,26 @@ where
     Box::new(SpanFieldLayer.and_then(fmt_layer))
 }
 
+/// The level filter [`init_telemetry`] installs: the `RUST_LOG` directives
+/// when set (and parseable), else `info`. Previously NO filter was
+/// installed — every process embedding the gateway (a demo, an
+/// application's test harness) was flooded with hyper/reqwest TRACE
+/// lines, and `RUST_LOG` was silently ignored.
+fn env_filter(rust_log: Option<&str>) -> tracing_subscriber::EnvFilter {
+    match rust_log {
+        Some(v) if !v.trim().is_empty() => tracing_subscriber::EnvFilter::try_new(v)
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        _ => tracing_subscriber::EnvFilter::new("info"),
+    }
+}
+
 /// Build the global subscriber and install it. Returns a guard that
 /// flushes the OTLP exporter (if any) on drop.
 ///
-/// This installs a **process-global** subscriber and may be called at
-/// most once per process. Tests that need the formatter in isolation
-/// use [`json_log_layer`] with `with_default` instead.
+/// The subscriber is filtered by [`env_filter`] (`RUST_LOG`, default
+/// `info`). This installs a **process-global** subscriber and may be
+/// called at most once per process. Tests that need the formatter in
+/// isolation use [`json_log_layer`] with `with_default` instead.
 pub fn init_telemetry(cfg: TelemetryConfig) -> Result<TelemetryGuard, Error> {
     let statics = StaticFields {
         app: cfg.app.clone(),
@@ -123,6 +137,7 @@ pub fn init_telemetry(cfg: TelemetryConfig) -> Result<TelemetryGuard, Error> {
     };
 
     let registry = tracing_subscriber::registry()
+        .with(env_filter(std::env::var("RUST_LOG").ok().as_deref()))
         .with(SpanFieldLayer)
         .with(otel_layer);
 
@@ -139,4 +154,26 @@ pub fn init_telemetry(cfg: TelemetryConfig) -> Result<TelemetryGuard, Error> {
     install.map_err(|e| Error::AlreadyInstalled(e.to_string()))?;
 
     Ok(TelemetryGuard { provider })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `EnvFilter`'s `Display` renders its directives — the stable way to
+    /// assert what a filter was built from.
+    #[test]
+    fn env_filter_defaults_to_info_and_honours_rust_log() {
+        assert_eq!(env_filter(None).to_string(), "info");
+        assert_eq!(env_filter(Some("")).to_string(), "info");
+        assert_eq!(env_filter(Some("  ")).to_string(), "info");
+        assert_eq!(env_filter(Some("debug")).to_string(), "debug");
+        assert_eq!(
+            env_filter(Some("info,hyper_util=warn")).to_string(),
+            "hyper_util=warn,info"
+        );
+        // Unparseable directives fall back to `info` rather than panicking
+        // at boot.
+        assert_eq!(env_filter(Some("not==valid==")).to_string(), "info");
+    }
 }
