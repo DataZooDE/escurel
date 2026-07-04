@@ -1,7 +1,7 @@
 ---
 name: escurel-platform
-version: 0.3.0
-description: Use when building an application that consumes the Escurel knowledge-base service as its data store — designing a tenant's skill/instance data model, calling the fourteen agent tools (search/resolve/expand/neighbours/list_skills/list_instances/run_stored_query/validate/open_session/apply_op/close_session/update_page/append_message/list_messages), or wiring escurel into an app backend and its integration tests. Covers the published surfaces (MCP-over-HTTP `/mcp`, the `escurel` CLI), the Rust `escurel-client` + `escurel-test-support` path, fixture seeding, auth/tenancy, per-chat-group conversation history (append_message/list_messages + admin DeleteChatHistory), external instance backends (read-only sql_view over an attached source; document/PDF/DOCX uploaded via /ingest), and the no-mock dev loop. Triggers on phrases like "use escurel from my app", "escurel MCP tool", "resolve a wikilink", "run_stored_query", "seed an escurel tenant", "escurel-client", "EscurelProcess test", "author a skill page", "escurel CLI", "FixtureBuilder", "chat history", "append_message", "list_messages", "delete chat history", "instance backend", "sql_view instance", "document backend", "ingest a PDF", "/ingest". DO NOT use for escurel-internal work (the indexer, LaneStore, the markdown parser, the dispatcher, the embedder) — that is a PR against the escurel repo itself, not consumer-facing.
+version: 0.4.0
+description: Use when building an application that consumes the Escurel knowledge-base service as its data store — designing a tenant's skill/instance data model, calling the agent tools (search/resolve/expand/neighbours/list_skills/list_instances/query_instance/validate/open_session/apply_op/close_session/update_page/append_message/list_messages, plus the event bus capture_event/assign_event/list_events/list_inbox), or wiring escurel into an app backend and its integration tests. Covers the published surfaces (MCP-over-HTTP `/mcp`, the `escurel` CLI), the Rust `escurel-client` + `escurel-test-support` path, fixture seeding, auth/tenancy, per-chat-group conversation history (append_message/list_messages + admin DeleteChatHistory), external instance backends (read-only sql_view over an attached source; document/PDF/DOCX uploaded via /ingest), and the no-mock dev loop. Triggers on phrases like "use escurel from my app", "escurel MCP tool", "resolve a wikilink", "query_instance", "query page", "capture_event", "event bus", "escurel webhook", "seed an escurel tenant", "escurel-client", "EscurelProcess test", "author a skill page", "escurel CLI", "FixtureBuilder", "chat history", "append_message", "list_messages", "delete chat history", "instance backend", "sql_view instance", "document backend", "ingest a PDF", "/ingest". DO NOT use for escurel-internal work (the indexer, LaneStore, the markdown parser, the dispatcher, the embedder) — that is a PR against the escurel repo itself, not consumer-facing.
 ---
 
 # escurel-platform — build apps that consume Escurel
@@ -74,7 +74,7 @@ it **navigates to** the canonical spec in `docs/` and the source in
 |---|---|
 | `references/00-what-is-escurel.md` | First contact. The skill/instance model, the published surfaces, where your app sits. |
 | `references/01-data-model.md` | Designing *your* tenant. Skills, instances, frontmatter, wikilinks, the kind/time/origin axes, the mandatory `escurel` meta-skill. |
-| `references/02-tool-surface.md` | The fourteen agent tools at a glance: inputs, outputs, read-vs-write-vs-chat, and the anti-patterns. |
+| `references/02-tool-surface.md` | The agent tools at a glance: reads, writes, chat, the EVENT BUS (capture/assign/list_events/list_inbox + the HMAC webhook), and the anti-patterns. |
 | `references/03-consume-over-http-mcp.md` | Consuming from any language over `POST /mcp` (JSON-RPC). Envelope, auth, per-tool shapes. |
 | `references/04-consume-via-cli.md` | Driving Escurel from a shell or non-Rust app with the `escurel` CLI. |
 | `references/05-consume-from-rust.md` | A Rust backend. `escurel-client`: `Client::connect`, the typed methods, request/response fields. |
@@ -91,7 +91,7 @@ it **navigates to** the canonical spec in `docs/` and the source in
   from your application binary. The leaf dependency is `escurel-client`
   (Rust) or the wire/CLI surface (anything else).
 - **No raw SQL.** You reach the relational/external store only through
-  `run_stored_query`, which dispatches to a `[[query::*]]` page authored
+  `query_instance`, which dispatches to a `[[query::*]]` page authored
   ahead of time. Author the query page first; never interpolate SQL.
 - **No side-dooring the indexer.** Seed only through the public
   `update_page` write path (or `FixtureBuilder`, which uses it). What you

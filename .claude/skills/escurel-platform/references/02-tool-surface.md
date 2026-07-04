@@ -1,4 +1,4 @@
-# 02 — The tool surface (fourteen agent tools)
+# 02 — The tool surface
 
 The contract every surface carries (HTTP/MCP, CLI, WebSocket).
 Canonical: `docs/contract/agent-interface.md` §The tool surface and
@@ -22,7 +22,8 @@ section below.
 | `neighbours` | `page_id`, `direction='in'\|'out'\|'both'`, `link_skill?` | list of `Edge {src_page, dst_page, link_skill, link_version?, dst_anchor?}` | typed link-graph traversal (backlinks + forward links) |
 | `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed}` | the Tier-1 catalogue |
 | `list_instances` | `skill`, `order_by_at='asc'\|'desc'?`, `limit?` | list of `{page_id, skill, frontmatter, at}` | enumerate instances of a skill (event-log scans, chain heads) |
-| `run_stored_query` | `query_id`, `params` (typed object) | `{rows, schema[], snapshot_version?}` | execute a `[[query::*]]` page with bound params (origin axis) |
+| `query_instance` | `ref` (a `query` page id), `params` (typed object) | `{rows, schema[], truncated}` | **the structured-data read**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side |
+| `run_stored_query` | `query_id`, `params` (typed object) | `{rows, schema[], snapshot_version?}` | legacy stored-query execution; new consumers use `query_instance` |
 
 Notes:
 - `search` granularity is `block` by default (pinpoints a block within a
@@ -32,9 +33,17 @@ Notes:
   is in the contract; the MCP/CLI surface today exposes `skill`,
   `order_by_at`, `limit` (richer filter clauses land per
   `protocol.md` §list_instances).
-- `run_stored_query` params are bound as **typed values** (prepared
-  statements), never string-interpolated. Missing required param →
-  `missing_required_param`; unknown param → `unknown_param`.
+- `query_instance` / `run_stored_query` params are bound as **typed
+  values** (prepared statements), never string-interpolated. Missing
+  required param → `missing_required_param`; unknown param →
+  `unknown_param`. A `query` page declares its params in frontmatter and
+  names its data source as `target: [[<sql_view skill>::<instance>]]` —
+  the caller never supplies SQL, and the server rejects params the page
+  didn't declare (bind the SAME param vector to every query when one
+  reply mixes several).
+- `query_instance` is how the DataZoo agents and Peacock read structured
+  data: query pages are **authored knowledge** (discoverable via
+  `search`), so adding a query is a page write, not a deploy.
 
 ## Write tools
 
@@ -51,6 +60,40 @@ Notes:
 `close_session`) is for co-editing with a user or another actor over
 `/ws`; most apps start with `update_page` and only reach for live mode
 when they need granular concurrent edits.
+
+## Event tools (the event bus)
+
+Escurel is also the platform's **event bus**: an event is captured into a
+tenant **inbox**, optionally fires the tenant's **HMAC webhook**
+(`webhook_url`/`webhook_secret` gateway config), and becomes part of an
+instance's **history** once assigned. Workers build chains on this
+(capture → webhook → process → assign → capture the next hop).
+
+| tool | inputs (key ones) | output | what for |
+|---|---|---|---|
+| `capture_event` | `source`, `mime`, `label_skill`, `title`, `body`, `instance_page_id?`, `event_id?`, `provenance?` | the stored `Event` (server mints `event_id`/`at` when empty) | ingest an event; fires the webhook |
+| `list_inbox` | `limit` | `{events[]}` | the tenant's UNPROCESSED events (a worker's poll fallback) |
+| `assign_event` | `event_id`, `instance_page_id` | ack | mark processed + attach to a page's history |
+| `list_events` | `instance_page_id`, `limit` | `{events[]}` | a page's PROCESSED history, **oldest first** — assigned events only (an unassigned inbox event is a pending work item, not history) |
+
+Notes:
+- **Capture + assign for timeline visibility.** Consumers that render an
+  instance's activity (e.g. Peacock's `timeline` view) see only assigned
+  events — a worker that wants its stamp visible must `capture_event`
+  AND `assign_event`.
+- `event_id` is idempotency: pass a stable id (e.g. the upstream message
+  id) so redelivery upserts instead of duplicating.
+- The webhook payload is HMAC-signed with the tenant's secret; receivers
+  verify before acting (see the follow-up-worker in the agent template
+  for the canonical consumer).
+
+## Admin materialisation (external backends)
+
+`create_sql_instance` (`{skill, id}`) materialises a managed view for a
+`sql_view`-backed skill — a **post-boot admin call**, not something
+`ESCUREL_SEED_DIR` does (seeding only writes markdown). Dev gateways
+(auth Disabled) accept it from the default client; production requires
+an admin principal. `attach_external` registers the underlying source.
 
 ## Chat tools (M-Chat, issue #63)
 
@@ -107,7 +150,7 @@ catalogue is the `[[error-catalogue]]` page in a tenant.
 - Don't `expand` every search hit — descriptions/snippets usually suffice.
 - Don't enumerate the whole catalogue for a narrow task — search-first
   reaches the right skill in ~2 calls.
-- Don't pass raw SQL to `run_stored_query` — author a `[[query::*]]` page
+- Don't pass raw SQL to `query_instance`/`run_stored_query` — author a `[[query::*]]` page
   first; the dispatcher refuses non-query-page SQL.
 - Don't trust a frontmatter `mentions:` string over a typed wikilink.
 
