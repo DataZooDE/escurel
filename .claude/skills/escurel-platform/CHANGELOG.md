@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.4.0 — query pages + the event bus
+
+- `query_instance` documented as THE structured-data read (an authored
+  `[[query::<id>]]` page: `{{target}}` allow-list substitution, `:param`
+  prepared-statement binding, per-caller ACL on the target, server row
+  cap). `run_stored_query` marked legacy.
+- New **Event tools** section in `02`: `capture_event` / `assign_event` /
+  `list_events` / `list_inbox`, the tenant HMAC webhook, the
+  capture+assign-for-timeline rule, and event-id idempotency.
+- `create_sql_instance` / `attach_external` documented as post-boot admin
+  materialisation (seeding never does it).
+
 ## 0.3.0 — External instance backends (SQL views + Document/RAG)
 
 - New **Backend axis** in the data model: a skill may declare
