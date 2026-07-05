@@ -35,6 +35,7 @@ pub mod config;
 mod config_probe;
 mod health;
 mod mcp;
+mod remote_backend;
 mod server;
 mod session;
 mod tenant_archive;
