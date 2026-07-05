@@ -71,6 +71,16 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the `external_endpoints` table (remote openapi/mcp backends)
+    /// exists. Idempotent (`CREATE TABLE IF NOT EXISTS`) and run on EVERY
+    /// connection like [`Migrator::ensure_external_credentials`]. A SEPARATE
+    /// canonical input (not derivable from `pages/`), so `rebuild` must NOT
+    /// drop it.
+    pub fn ensure_external_endpoints(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_10_EXTERNAL_ENDPOINTS)?;
+        Ok(())
+    }
+
     /// Ensure the `blocks.context` column (Contextual Retrieval, GH #216)
     /// exists. Idempotent (`ADD COLUMN IF NOT EXISTS`) and run on EVERY
     /// connection like [`Migrator::ensure_group_members`], so a tenant DB
@@ -115,6 +125,9 @@ impl Migrator {
         // via `ensure_external_credentials`, so a DB provisioned before this
         // table existed still gains it.
         conn.execute_batch(STAGE_8_EXTERNAL_CREDENTIALS)?;
+        // Remote-backend endpoint registry (openapi/mcp). Idempotent + also
+        // run on every reopen via `ensure_external_endpoints`.
+        conn.execute_batch(STAGE_10_EXTERNAL_ENDPOINTS)?;
         Ok(())
     }
 }
@@ -128,6 +141,7 @@ const STAGE_6_EVENTS: &str = include_str!("../sql/0004_events.sql");
 const STAGE_7_GROUP_MEMBERS: &str = include_str!("../sql/0005_group_members.sql");
 const STAGE_8_EXTERNAL_CREDENTIALS: &str = include_str!("../sql/0006_external_credentials.sql");
 const STAGE_9_BLOCK_CONTEXT: &str = include_str!("../sql/0007_block_context.sql");
+const STAGE_10_EXTERNAL_ENDPOINTS: &str = include_str!("../sql/0008_external_endpoints.sql");
 
 #[cfg(test)]
 mod tests {

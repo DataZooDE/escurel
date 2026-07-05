@@ -24,6 +24,7 @@ pub mod chat;
 pub mod citation;
 pub mod crdt_history;
 pub mod creds;
+pub mod endpoints;
 pub mod events;
 pub mod filter;
 pub mod groups;
