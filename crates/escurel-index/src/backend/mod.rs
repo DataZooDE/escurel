@@ -35,6 +35,7 @@
 mod binding;
 pub mod document;
 mod markdown;
+pub mod remote;
 mod sql_view;
 
 use std::collections::HashMap;
@@ -62,6 +63,7 @@ pub use document::{
     contextualized_chunks, heading_path_at, structural_context_prefix,
 };
 pub use markdown::MarkdownBackend;
+pub use remote::{RemoteError, fill_template, json_path_get, resolve_projection};
 pub use sql_view::{
     BindingStatus, MAX_PROJECTION_ROWS, Materialized, SqlViewBackend, SqlViewError,
 };
