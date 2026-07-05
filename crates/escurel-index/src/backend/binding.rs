@@ -26,9 +26,62 @@ pub struct BackendBinding {
     /// Present (and `kind == Document`) when the skill declares a
     /// `backend.accepts` document binding (REQ-DOC-01).
     pub document: Option<DocumentBinding>,
+    /// Present (and `kind ∈ {OpenApi, Mcp}`) when the skill declares a live
+    /// remote (proxy) backend — an `endpoint` + `read`/`write` op + `project`
+    /// map (REQ-REMOTE-01). `None` for a remote kind whose block is missing
+    /// required fields, so the create/validate path fails closed rather than
+    /// the read path panicking (mirrors `sql_view`).
+    pub remote: Option<RemoteBinding>,
     /// `sql_view` read cap: the maximum rows `expand` renders in the bounded
     /// projection (`backend.projection_limit`). `None` ⇒ the server default.
     pub projection_limit: Option<usize>,
+}
+
+/// Which remote-proxy protocol a `RemoteBinding` speaks. Mirrors the
+/// `BackendKind` remote arms, kept local so [`RemoteOp`] parsing is
+/// self-describing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteKind {
+    /// REST/HTTP endpoint described by an OpenAPI document.
+    OpenApi,
+    /// Upstream MCP server (escurel is the client).
+    Mcp,
+}
+
+/// A single remote operation — how a `read` or `write` reaches the upstream.
+/// The variant is selected by the binding's [`RemoteKind`]: `openapi` uses
+/// [`RemoteOp::Http`]; `mcp` uses [`RemoteOp::McpTool`] or
+/// [`RemoteOp::McpResource`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteOp {
+    /// OpenAPI/REST: an HTTP `method` + `path` template (the path MAY contain
+    /// `{placeholder}` segments filled from the overlay id / write payload).
+    Http { method: String, path: String },
+    /// MCP: call a tool by `name` (arguments are the write payload / id map).
+    McpTool { name: String },
+    /// MCP: read a resource by `uri` template.
+    McpResource { uri: String },
+}
+
+/// A live remote (proxy) backend's binding (REQ-REMOTE-01): the
+/// admin-registered `endpoint` name (the base URL + auth live server-side,
+/// never in markdown — the SSRF / secrets-in-markdown guard), the `read` op
+/// that fetches the projection, an optional `write` op for write-back, and a
+/// `project` map from response JSON (dotted `$.a.b` path or bare top-level
+/// key) to overlay frontmatter field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteBinding {
+    pub kind: RemoteKind,
+    /// Admin-registered endpoint name (`backend.endpoint`) — resolved to a
+    /// base URL + auth via the `external_endpoints` registry. NOT a raw URL.
+    pub endpoint: String,
+    /// How `expand` fetches the live projection.
+    pub read: RemoteOp,
+    /// How `write_instance` forwards a write upstream. `None` ⇒ read-only.
+    pub write: Option<RemoteOp>,
+    /// Response field → overlay frontmatter field. Value is a dotted JSON
+    /// path (`$.a.b`) or a bare top-level key.
+    pub project: BTreeMap<String, String>,
 }
 
 /// A `document` skill's intake config (REQ-DOC-01). `accepts` is the
@@ -146,13 +199,29 @@ impl BackendBinding {
                 kind: BackendKind::SqlView,
                 sql_view: parse_sql_view(block),
                 document: None,
+                remote: None,
                 projection_limit: read_usize("projection_limit"),
             },
             Some("document") => Self {
                 kind: BackendKind::Document,
                 sql_view: None,
                 document: Some(parse_document(block)),
+                remote: None,
                 projection_limit: None,
+            },
+            Some("openapi") => Self {
+                kind: BackendKind::OpenApi,
+                sql_view: None,
+                document: None,
+                remote: parse_remote(block, RemoteKind::OpenApi),
+                projection_limit: read_usize("projection_limit"),
+            },
+            Some("mcp") => Self {
+                kind: BackendKind::Mcp,
+                sql_view: None,
+                document: None,
+                remote: parse_remote(block, RemoteKind::Mcp),
+                projection_limit: read_usize("projection_limit"),
             },
             // Unknown kind: lenient on the read path (markdown); the
             // create/validate path is where a bad binding is rejected.
@@ -191,6 +260,74 @@ fn parse_document(block: &serde_json::Map<String, serde_json::Value>) -> Documen
             .get("lead_chunks")
             .and_then(serde_json::Value::as_u64)
             .map(|n| n as usize),
+    }
+}
+
+/// Parse the `endpoint` / `read` / `write` / `project` block of a live
+/// remote backend. Returns `None` (fail-closed at create) when `endpoint` is
+/// absent or the required `read` op cannot be parsed for the given kind.
+fn parse_remote(
+    block: &serde_json::Map<String, serde_json::Value>,
+    kind: RemoteKind,
+) -> Option<RemoteBinding> {
+    let endpoint = block
+        .get("endpoint")
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
+    let read = block
+        .get("read")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|op| parse_remote_op(op, kind, /* is_write */ false))?;
+    let write = block
+        .get("write")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|op| parse_remote_op(op, kind, /* is_write */ true));
+    let project = block
+        .get("project")
+        .and_then(serde_json::Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(RemoteBinding {
+        kind,
+        endpoint,
+        read,
+        write,
+        project,
+    })
+}
+
+/// Parse one `read:` / `write:` op object into a [`RemoteOp`] for `kind`.
+/// `openapi` needs a `path` (method defaults `GET` for read, `POST` for
+/// write); `mcp` needs a `tool` or `resource`.
+fn parse_remote_op(
+    op: &serde_json::Map<String, serde_json::Value>,
+    kind: RemoteKind,
+    is_write: bool,
+) -> Option<RemoteOp> {
+    let get_str = |k: &str| op.get(k).and_then(serde_json::Value::as_str);
+    match kind {
+        RemoteKind::OpenApi => {
+            let path = get_str("path")?.to_owned();
+            let method = get_str("method")
+                .map(str::to_ascii_uppercase)
+                .unwrap_or_else(|| if is_write { "POST".into() } else { "GET".into() });
+            Some(RemoteOp::Http { method, path })
+        }
+        RemoteKind::Mcp => {
+            if let Some(tool) = get_str("tool") {
+                Some(RemoteOp::McpTool {
+                    name: tool.to_owned(),
+                })
+            } else {
+                get_str("resource").map(|uri| RemoteOp::McpResource {
+                    uri: uri.to_owned(),
+                })
+            }
+        }
     }
 }
 
@@ -323,5 +460,99 @@ mod tests {
         let b = BackendBinding::parse(&fm);
         assert_eq!(b.kind, BackendKind::SqlView);
         assert!(b.sql_view.is_none());
+    }
+
+    #[test]
+    fn parse_openapi_binding_full_read_write_project() {
+        let fm = json!({
+            "backend": {
+                "kind": "openapi",
+                "endpoint": "crm_rest",
+                "read":  { "operationId": "getCustomer", "path": "/customers/{id}" },
+                "write": { "method": "patch", "path": "/customers/{id}" },
+                "project": { "display_name": "$.name", "tier": "$.account_tier" }
+            }
+        });
+        let b = BackendBinding::parse(&fm);
+        assert_eq!(b.kind, BackendKind::OpenApi);
+        let r = b.remote.expect("remote binding present");
+        assert_eq!(r.kind, RemoteKind::OpenApi);
+        assert_eq!(r.endpoint, "crm_rest");
+        // read defaults to GET
+        assert_eq!(
+            r.read,
+            RemoteOp::Http {
+                method: "GET".into(),
+                path: "/customers/{id}".into()
+            }
+        );
+        // write method is upper-cased
+        assert_eq!(
+            r.write,
+            Some(RemoteOp::Http {
+                method: "PATCH".into(),
+                path: "/customers/{id}".into()
+            })
+        );
+        assert_eq!(r.project.get("display_name").map(String::as_str), Some("$.name"));
+    }
+
+    #[test]
+    fn parse_mcp_binding_resource_read_only() {
+        let fm = json!({
+            "backend": {
+                "kind": "mcp",
+                "endpoint": "upstream_kb",
+                "read": { "resource": "kb://article/{id}" },
+                "project": { "title": "$.title" }
+            }
+        });
+        let b = BackendBinding::parse(&fm);
+        assert_eq!(b.kind, BackendKind::Mcp);
+        let r = b.remote.expect("remote binding present");
+        assert_eq!(r.kind, RemoteKind::Mcp);
+        assert_eq!(
+            r.read,
+            RemoteOp::McpResource {
+                uri: "kb://article/{id}".into()
+            }
+        );
+        assert!(r.write.is_none(), "no write op ⇒ read-only");
+    }
+
+    #[test]
+    fn parse_mcp_binding_tool_read_and_write() {
+        let fm = json!({
+            "backend": {
+                "kind": "mcp",
+                "endpoint": "upstream_kb",
+                "read":  { "tool": "getArticle" },
+                "write": { "tool": "putArticle" }
+            }
+        });
+        let r = BackendBinding::parse(&fm).remote.expect("remote binding");
+        assert_eq!(r.read, RemoteOp::McpTool { name: "getArticle".into() });
+        assert_eq!(r.write, Some(RemoteOp::McpTool { name: "putArticle".into() }));
+    }
+
+    #[test]
+    fn parse_remote_missing_endpoint_keeps_kind_but_no_binding() {
+        // kind present but endpoint absent → fail-closed at create, not here.
+        let fm = json!({ "backend": { "kind": "openapi", "read": { "path": "/x" } } });
+        let b = BackendBinding::parse(&fm);
+        assert_eq!(b.kind, BackendKind::OpenApi);
+        assert!(b.remote.is_none());
+    }
+
+    #[test]
+    fn remote_kinds_are_read_only_page_grain_no_search_lane() {
+        // The capability contract the wire surface reports for remote backends.
+        for kind in [BackendKind::OpenApi, BackendKind::Mcp] {
+            let c = super::super::Capabilities::for_kind(kind);
+            assert!(!c.writable, "remote overlay is not update_page-writable");
+            assert!(!c.supports_crdt, "remote body is not CRDT-co-authored");
+            assert_eq!(c.search, super::super::SearchMode::None);
+            assert!(kind.is_remote());
+        }
     }
 }
