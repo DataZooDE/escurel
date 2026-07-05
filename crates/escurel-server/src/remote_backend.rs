@@ -152,7 +152,8 @@ async fn exec(
         }
         (RemoteKind::Mcp, RemoteOp::McpTool { name }) => {
             let args = mcp_args(vars, payload);
-            let result = mcp_call(ep, "tools/call", json!({ "name": name, "arguments": args })).await?;
+            let result =
+                mcp_call(ep, "tools/call", json!({ "name": name, "arguments": args })).await?;
             Ok(extract_mcp_result("tools/call", result))
         }
         (RemoteKind::Mcp, RemoteOp::McpResource { uri }) => {
@@ -185,7 +186,10 @@ async fn http_call(
     if let Some(p) = payload {
         req = req.json(p);
     }
-    let resp = req.send().await.map_err(|e| format!("transport error: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("transport error: {e}"))?;
     let status = resp.status();
     let body: Value = resp.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
@@ -206,7 +210,10 @@ async fn mcp_call(ep: &EndpointRecord, method: &str, params: Value) -> Result<Va
             .json(&rpc),
         ep,
     );
-    let resp = req.send().await.map_err(|e| format!("transport error: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("transport error: {e}"))?;
     let status = resp.status();
     let body: Value = resp
         .json()
@@ -236,7 +243,8 @@ fn extract_mcp_result(method: &str, result: Value) -> Value {
     };
     if method == "resources/read" {
         if let Some(text) = first_text("contents") {
-            return serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({ "text": text }));
+            return serde_json::from_str::<Value>(&text)
+                .unwrap_or_else(|_| json!({ "text": text }));
         }
         return result;
     }
@@ -295,9 +303,18 @@ mod tests {
 
     #[test]
     fn join_url_normalises_slashes() {
-        assert_eq!(join_url("https://h/api", "/customers/1"), "https://h/api/customers/1");
-        assert_eq!(join_url("https://h/api/", "/customers/1"), "https://h/api/customers/1");
-        assert_eq!(join_url("https://h/api", "customers/1"), "https://h/api/customers/1");
+        assert_eq!(
+            join_url("https://h/api", "/customers/1"),
+            "https://h/api/customers/1"
+        );
+        assert_eq!(
+            join_url("https://h/api/", "/customers/1"),
+            "https://h/api/customers/1"
+        );
+        assert_eq!(
+            join_url("https://h/api", "customers/1"),
+            "https://h/api/customers/1"
+        );
     }
 
     #[test]
@@ -315,7 +332,10 @@ mod tests {
     #[test]
     fn extract_mcp_resource_reads_contents_text() {
         let r = json!({ "contents": [{ "uri": "kb://a", "text": "{\"title\":\"z\"}" }] });
-        assert_eq!(extract_mcp_result("resources/read", r), json!({ "title": "z" }));
+        assert_eq!(
+            extract_mcp_result("resources/read", r),
+            json!({ "title": "z" })
+        );
     }
 
     #[test]

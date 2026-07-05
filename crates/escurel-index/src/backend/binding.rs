@@ -314,7 +314,13 @@ fn parse_remote_op(
             let path = get_str("path")?.to_owned();
             let method = get_str("method")
                 .map(str::to_ascii_uppercase)
-                .unwrap_or_else(|| if is_write { "POST".into() } else { "GET".into() });
+                .unwrap_or_else(|| {
+                    if is_write {
+                        "POST".into()
+                    } else {
+                        "GET".into()
+                    }
+                });
             Some(RemoteOp::Http { method, path })
         }
         RemoteKind::Mcp => {
@@ -494,7 +500,10 @@ mod tests {
                 path: "/customers/{id}".into()
             })
         );
-        assert_eq!(r.project.get("display_name").map(String::as_str), Some("$.name"));
+        assert_eq!(
+            r.project.get("display_name").map(String::as_str),
+            Some("$.name")
+        );
     }
 
     #[test]
@@ -531,8 +540,18 @@ mod tests {
             }
         });
         let r = BackendBinding::parse(&fm).remote.expect("remote binding");
-        assert_eq!(r.read, RemoteOp::McpTool { name: "getArticle".into() });
-        assert_eq!(r.write, Some(RemoteOp::McpTool { name: "putArticle".into() }));
+        assert_eq!(
+            r.read,
+            RemoteOp::McpTool {
+                name: "getArticle".into()
+            }
+        );
+        assert_eq!(
+            r.write,
+            Some(RemoteOp::McpTool {
+                name: "putArticle".into()
+            })
+        );
     }
 
     #[test]

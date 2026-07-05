@@ -3086,7 +3086,10 @@ async fn tool_validate_endpoints(indexer: &Indexer) -> Result<Value, JsonRpcErro
             .map_err(|err| JsonRpcError::internal(format!("validate_endpoints: {err}")))?;
         let (status, detail) = match rec {
             Some(rec) => crate::remote_backend::probe(&rec).await,
-            None => ("unreachable".to_owned(), Some("endpoint vanished".to_owned())),
+            None => (
+                "unreachable".to_owned(),
+                Some("endpoint vanished".to_owned()),
+            ),
         };
         if status != "ok" {
             unreachable += 1;

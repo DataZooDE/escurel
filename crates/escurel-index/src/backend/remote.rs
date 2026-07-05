@@ -184,7 +184,10 @@ mod tests {
     #[test]
     fn fill_template_handles_no_placeholders_and_unbalanced() {
         assert_eq!(fill_template("/plain", &vars(&[])), "/plain");
-        assert_eq!(fill_template("/oops/{id", &vars(&[("id", "x")])), "/oops/{id");
+        assert_eq!(
+            fill_template("/oops/{id", &vars(&[("id", "x")])),
+            "/oops/{id"
+        );
     }
 
     #[test]

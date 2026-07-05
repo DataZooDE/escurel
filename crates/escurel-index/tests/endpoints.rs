@@ -80,7 +80,13 @@ async fn register_lookup_list_delete_roundtrip() {
     assert!(h.indexer.lookup_endpoint("nope").await.unwrap().is_none());
 
     h.indexer.delete_endpoint("crm_rest").await.unwrap();
-    assert!(h.indexer.lookup_endpoint("crm_rest").await.unwrap().is_none());
+    assert!(
+        h.indexer
+            .lookup_endpoint("crm_rest")
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(h.indexer.list_endpoints().await.unwrap().is_empty());
 }
 
@@ -91,7 +97,14 @@ async fn api_key_header_roundtrips() {
         header: "X-Acme-Key".to_owned(),
     };
     h.indexer
-        .register_endpoint("kb", "mcp", "https://kb.internal/mcp", &auth, Some(SECRET), None)
+        .register_endpoint(
+            "kb",
+            "mcp",
+            "https://kb.internal/mcp",
+            &auth,
+            Some(SECRET),
+            None,
+        )
         .await
         .unwrap();
     let rec = h.indexer.lookup_endpoint("kb").await.unwrap().unwrap();
@@ -102,14 +115,24 @@ async fn api_key_header_roundtrips() {
             header: "X-Acme-Key".to_owned()
         }
     );
-    assert_eq!(h.indexer.list_endpoints().await.unwrap()[0].auth_scheme, "api_key");
+    assert_eq!(
+        h.indexer.list_endpoints().await.unwrap()[0].auth_scheme,
+        "api_key"
+    );
 }
 
 #[tokio::test]
 async fn register_is_idempotent_upsert() {
     let h = fresh_harness();
     h.indexer
-        .register_endpoint("crm_rest", "openapi", "https://old", &EndpointAuth::None, None, None)
+        .register_endpoint(
+            "crm_rest",
+            "openapi",
+            "https://old",
+            &EndpointAuth::None,
+            None,
+            None,
+        )
         .await
         .unwrap();
     h.indexer
@@ -123,8 +146,16 @@ async fn register_is_idempotent_upsert() {
         )
         .await
         .unwrap();
-    let rec = h.indexer.lookup_endpoint("crm_rest").await.unwrap().unwrap();
-    assert_eq!(rec.base_url, "https://crm.internal/api", "second register overwrites");
+    let rec = h
+        .indexer
+        .lookup_endpoint("crm_rest")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rec.base_url, "https://crm.internal/api",
+        "second register overwrites"
+    );
     assert_eq!(rec.secret.as_deref(), Some(SECRET));
     assert_eq!(h.indexer.list_endpoints().await.unwrap().len(), 1);
 }
@@ -147,7 +178,10 @@ async fn endpoint_survives_rebuild() {
         .unwrap();
     h.indexer.rebuild().await.expect("rebuild");
     let rec = h.indexer.lookup_endpoint("crm_rest").await.unwrap();
-    assert_eq!(rec.expect("survives rebuild").secret.as_deref(), Some(SECRET));
+    assert_eq!(
+        rec.expect("survives rebuild").secret.as_deref(),
+        Some(SECRET)
+    );
 }
 
 #[tokio::test]
