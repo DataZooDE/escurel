@@ -275,8 +275,11 @@ CREATE TABLE blocks (
   page_id     VARCHAR NOT NULL,
   anchor      VARCHAR,
   ordinal     INT,
-  body        VARCHAR NOT NULL,           -- the block's markdown text
-  dense_vec   FLOAT[768],                 -- EmbeddingGemma default; vss HNSW-indexed
+  body        VARCHAR NOT NULL,           -- the block's markdown text, VERBATIM (display + provenance)
+  context     VARCHAR,                    -- structural situating prefix "[title › headings › p.N]" (GH #216);
+                                          -- concatenated with body only at embed/FTS/rerank time; NULL for
+                                          -- ordinary page blocks and contextualize=off
+  dense_vec   FLOAT[768],                 -- EmbeddingGemma default; vss HNSW-indexed; embeds context+"\n"+body
   -- denormalised for filtered retrieval (single-SQL push-down):
   skill       VARCHAR,
   page_type   VARCHAR,
@@ -291,7 +294,7 @@ INSTALL vss; LOAD vss;
 CREATE INDEX hnsw_blocks_vec ON blocks USING HNSW (dense_vec)
   WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);
 INSTALL fts; LOAD fts;
-PRAGMA create_fts_index('blocks', 'block_id', 'body',
+PRAGMA create_fts_index('blocks', 'block_id', 'body', 'context',
                         stemmer = 'porter', stopwords = 'english',
                         ignore = '\.|[^a-z]', lower = 1);
 

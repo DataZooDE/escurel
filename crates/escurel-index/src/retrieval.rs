@@ -168,9 +168,12 @@ impl Indexer {
     }
 
     /// The passage text each hit contributes to the cross-encoder: the full
-    /// block `body`, bulk-fetched in one query for the whole candidate set.
-    /// Falls back to the hydrated `snippet` for any hit with no resolvable
-    /// block (e.g. the `sql_view` lane, whose hits carry no block body).
+    /// CONTEXTUALISED block text (`context` + newline + `body`, matching the
+    /// representation the dense + FTS lanes indexed — GH #216; just `body`
+    /// when the block has no situating context), bulk-fetched in one query
+    /// for the whole candidate set. Falls back to the hydrated `snippet` for
+    /// any hit with no resolvable block (e.g. the `sql_view` lane, whose
+    /// hits carry no block body).
     ///
     /// Scoring the full body — not the 200-char snippet lead — lets the
     /// cross-encoder see the whole passage; the reranker's tokenizer truncates
@@ -187,8 +190,11 @@ impl Indexer {
             let placeholders = std::iter::repeat_n("?", block_ids.len())
                 .collect::<Vec<_>>()
                 .join(",");
-            let sql =
-                format!("SELECT block_id, body FROM blocks WHERE block_id IN ({placeholders})");
+            // concat_ws skips a NULL context, yielding the bare body.
+            let sql = format!(
+                "SELECT block_id, concat_ws(chr(10), context, body) \
+                 FROM blocks WHERE block_id IN ({placeholders})"
+            );
             let conn = self.conn.lock().await;
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(duckdb::params_from_iter(block_ids.iter()), |r| {

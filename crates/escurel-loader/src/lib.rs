@@ -152,6 +152,11 @@ impl LoaderBuilder {
         Migrator::up(&conn)?;
         Migrator::ensure_group_members(&conn)?;
         Migrator::ensure_external_credentials(&conn)?;
+        Migrator::ensure_block_context(&conn)?;
+        // Contextual Retrieval (GH #216): ensure `blocks.context` on EVERY
+        // boot (idempotent), so a tenant DB provisioned before the column
+        // existed gains it before `refresh_fts` indexes it.
+        Migrator::ensure_block_context(&conn)?;
         let indexer = Arc::new(Indexer::new(
             Arc::clone(&store),
             Arc::clone(&self.embedder),

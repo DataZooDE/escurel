@@ -68,6 +68,53 @@ pub struct Indexer {
     pub(crate) contextualize: crate::backend::ContextualizeMode,
 }
 
+/// One document chunk handed to the index write path (GH #216, Contextual
+/// Retrieval Variant A).
+///
+/// `body` is the VERBATIM chunk text — it is what `blocks.body` stores, what
+/// snippets are cut from and what `expand` displays, so provenance
+/// (byte-spans back into the source) survives. `context` is the optional
+/// structural situating prefix (`[<title> › <heading path> › p.<page>]`);
+/// it is stored separately in `blocks.context` and concatenated with the
+/// body only where retrieval looks: the dense embedding input
+/// ([`Self::embed_text`]), the BM25 FTS index (which indexes both columns)
+/// and the rerank passage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexChunk {
+    /// Structural situating prefix, `None` for an uncontextualised chunk.
+    pub context: Option<String>,
+    /// Verbatim chunk text (display + provenance).
+    pub body: String,
+}
+
+impl IndexChunk {
+    /// A chunk with no situating context (legacy representation).
+    pub fn plain(body: impl Into<String>) -> Self {
+        Self {
+            context: None,
+            body: body.into(),
+        }
+    }
+
+    /// A chunk with an optional situating context.
+    pub fn contextualized(context: Option<String>, body: impl Into<String>) -> Self {
+        Self {
+            context,
+            body: body.into(),
+        }
+    }
+
+    /// The text the dense embedder sees: `"<context>\n<body>"` when a
+    /// context is present, the bare body otherwise.
+    #[must_use]
+    pub fn embed_text(&self) -> std::borrow::Cow<'_, str> {
+        match &self.context {
+            Some(c) => std::borrow::Cow::Owned(format!("{c}\n{}", self.body)),
+            None => std::borrow::Cow::Borrowed(self.body.as_str()),
+        }
+    }
+}
+
 /// Per-page progress event emitted by
 /// [`Indexer::rebuild_with_progress`]. Borrowed so the callback
 /// can receive a `&str` without forcing an allocation per page;
@@ -514,14 +561,22 @@ impl Indexer {
         &self,
         page_id: &str,
         overlay_content: &str,
-        chunks: &[String],
+        chunks: &[IndexChunk],
     ) -> Result<(), IndexerError> {
         // Embed every chunk in one batch (off the connection mutex), then hand
         // the precomputed vectors to the write path. Splitting embed from write
         // lets the offline batch loader supply vectors from a separate (e.g.
         // Gemini Batch API) pass and lets a DuckDB→DuckDB transfer carry
         // vectors verbatim without ever re-embedding.
-        let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+        //
+        // The embedder sees the CONTEXTUALISED text (`context\n body`, GH
+        // #216) while `blocks.body` keeps the verbatim chunk.
+        let embed_texts: Vec<std::borrow::Cow<'_, str>> =
+            chunks.iter().map(IndexChunk::embed_text).collect();
+        let chunk_refs: Vec<&str> = embed_texts
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect();
         let embeddings = if chunk_refs.is_empty() {
             Vec::new()
         } else {
@@ -542,7 +597,7 @@ impl Indexer {
         &self,
         page_id: &str,
         overlay_content: &str,
-        chunks: &[String],
+        chunks: &[IndexChunk],
         vectors: &[Vec<f32>],
     ) -> Result<(), IndexerError> {
         if vectors.len() != chunks.len() {
@@ -609,9 +664,11 @@ impl Indexer {
              VALUES (?, ?, ?, 'instance', ?::JSON, ?, TRY_CAST(? AS TIMESTAMP), ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
             params![page_id, slug, skill, frontmatter_json, body_hash, at_ts, scenario],
         )?;
-        // Chunks become the page's blocks (one row per chunk).
+        // Chunks become the page's blocks (one row per chunk). `body` is the
+        // verbatim chunk text; `context` holds the structural situating
+        // prefix (GH #216) — concatenated only at embed/FTS/rerank time.
         tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
-        for (i, (text, emb)) in chunks.iter().zip(vectors.iter()).enumerate() {
+        for (i, (chunk, emb)) in chunks.iter().zip(vectors.iter()).enumerate() {
             let anchor = format!("chunk-{i}");
             let block_id = format!("{page_id}:{anchor}");
             let dense_vec_literal = format!(
@@ -620,13 +677,21 @@ impl Indexer {
             );
             let sql = format!(
                 "INSERT INTO blocks \
-                 (block_id, page_id, anchor, ordinal, body, dense_vec, skill, page_type, at_ts, scenario) \
-                 VALUES (?, ?, ?, ?, ?, {dense_vec_literal}, ?, 'instance', TRY_CAST(? AS TIMESTAMP), ?)",
+                 (block_id, page_id, anchor, ordinal, body, context, dense_vec, skill, page_type, at_ts, scenario) \
+                 VALUES (?, ?, ?, ?, ?, ?, {dense_vec_literal}, ?, 'instance', TRY_CAST(? AS TIMESTAMP), ?)",
             );
             tx.execute(
                 &sql,
                 params![
-                    block_id, page_id, anchor, i as i64, text, skill, at_ts, scenario
+                    block_id,
+                    page_id,
+                    anchor,
+                    i as i64,
+                    chunk.body,
+                    chunk.context,
+                    skill,
+                    at_ts,
+                    scenario
                 ],
             )?;
         }

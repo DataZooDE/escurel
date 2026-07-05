@@ -45,6 +45,7 @@ pub fn open_indexer(
     }
     Migrator::ensure_group_members(&conn)?;
     Migrator::ensure_external_credentials(&conn)?;
+    Migrator::ensure_block_context(&conn)?;
     Ok(Indexer::new(store, embedder, conn, TENANT)?)
 }
 
@@ -68,7 +69,12 @@ pub async fn ingest_corpus(
         for ((doc, body), vec) in batch.iter().zip(bodies.iter()).zip(vectors) {
             let overlay = overlay_markdown(skill, &doc.id, &doc.title);
             indexer
-                .write_document_blocks(&doc.id, &overlay, std::slice::from_ref(body), &[vec])
+                .write_document_blocks(
+                    &doc.id,
+                    &overlay,
+                    &[escurel_index::IndexChunk::plain(body.clone())],
+                    &[vec],
+                )
                 .await?;
         }
     }
