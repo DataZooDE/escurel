@@ -32,7 +32,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use escurel_storage::BlobId;
 
-use crate::{Indexer, IndexerError};
+use crate::{IndexChunk, Indexer, IndexerError};
 
 /// Extracted metadata about a document (a subset of kreuzberg's metadata).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -65,16 +65,19 @@ pub struct ExtractionResult {
 }
 
 /// Contextual-retrieval mode (GH #216, Variant A). When `Structural`, each
-/// chunk's stored text is prefixed with a small `[<title> › p.<page>]` header
-/// derived from the document title + the chunk's page, so the prefix feeds
-/// **both** retrieval lanes (FTS over `blocks.body` and the dense embedding,
-/// which is taken over the same text). `Off` is byte-for-byte the legacy
-/// behaviour. Variant B (LLM-generated context) is a deferred follow-up.
+/// chunk carries a small `[<title> › <heading path> › p.<page>]` situating
+/// context derived from the document title, the markdown heading hierarchy
+/// above the chunk and the chunk's page. The context is stored SEPARATELY
+/// (`blocks.context`) — `blocks.body` stays the verbatim chunk for display +
+/// provenance — and feeds retrieval only: the dense embedding input, the
+/// BM25 FTS index (which indexes both columns) and the rerank passage.
+/// `Off` is byte-for-byte the legacy behaviour. Variant B (LLM-generated
+/// context) is a deferred follow-up behind future config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ContextualizeMode {
-    /// No contextualisation; the chunk text is stored verbatim.
+    /// No contextualisation; no situating context is stored.
     Off,
-    /// Prefix each chunk with `[<title> › p.<page>]` (structural context).
+    /// Situate each chunk with `[<title> › <heading path> › p.<page>]`.
     #[default]
     Structural,
 }
@@ -91,30 +94,97 @@ impl ContextualizeMode {
     }
 }
 
-/// Build the structural-context prefix for one chunk, or `None` when there is
-/// nothing to prefix with (no title AND no page). Format:
-/// `[<title> › p.<page>]` — the ` › p.<page>` part is omitted when the chunk
-/// has no page; the title alone is used when there is a title but no page; a
-/// page alone (no title) yields `[p.<page>]`.
+/// Build the structural situating context for one chunk, or `None` when
+/// there is nothing to situate with (no title, no headings AND no page).
+/// Format: `[<title> › <heading> › … › p.<page>]` — segments joined by
+/// ` › ` (U+203A), each omitted when absent. A heading equal to the
+/// preceding segment (e.g. a `# <title>` H1 repeating the document title)
+/// is dropped rather than duplicated.
 #[must_use]
-pub fn structural_context_prefix(title: Option<&str>, page: Option<u32>) -> Option<String> {
-    let title = title.map(str::trim).filter(|t| !t.is_empty());
-    match (title, page) {
-        (Some(t), Some(p)) => Some(format!("[{t} \u{203a} p.{p}]")),
-        (Some(t), None) => Some(format!("[{t}]")),
-        (None, Some(p)) => Some(format!("[p.{p}]")),
-        (None, None) => None,
+pub fn structural_context_prefix(
+    title: Option<&str>,
+    headings: &[String],
+    page: Option<u32>,
+) -> Option<String> {
+    let mut segments: Vec<&str> = Vec::with_capacity(headings.len() + 2);
+    if let Some(t) = title.map(str::trim).filter(|t| !t.is_empty()) {
+        segments.push(t);
+    }
+    for h in headings {
+        let h = h.trim();
+        if h.is_empty() || segments.last().is_some_and(|s| s.eq_ignore_ascii_case(h)) {
+            continue;
+        }
+        segments.push(h);
+    }
+    let page_seg = page.map(|p| format!("p.{p}"));
+    let mut parts: Vec<&str> = segments;
+    if let Some(p) = page_seg.as_deref() {
+        parts.push(p);
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("[{}]", parts.join(" \u{203a} ")))
     }
 }
 
-/// Apply the structural prefix to a chunk body: `"<prefix>\n<text>"`, or the
-/// unchanged `text` when there is no prefix to apply.
+/// The markdown ATX heading path open at `byte_offset` into `content`: the
+/// innermost hierarchy of `#`…`######` headings on lines that END before the
+/// offset. A deeper-or-equal heading replaces the stack from its level down,
+/// mirroring how a document outline nests. Deterministic, no inference —
+/// documents without markdown headings simply yield an empty path.
 #[must_use]
-pub fn contextualize_chunk(title: Option<&str>, page: Option<u32>, text: &str) -> String {
-    match structural_context_prefix(title, page) {
-        Some(prefix) => format!("{prefix}\n{text}"),
-        None => text.to_owned(),
+pub fn heading_path_at(content: &str, byte_offset: usize) -> Vec<String> {
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut pos = 0usize;
+    for line in content.split_inclusive('\n') {
+        let line_start = pos;
+        pos += line.len();
+        if line_start >= byte_offset {
+            break;
+        }
+        let trimmed = line.trim_start();
+        let level = trimmed.bytes().take_while(|b| *b == b'#').count();
+        if level == 0 || level > 6 {
+            continue;
+        }
+        let Some(text) = trimmed[level..].strip_prefix([' ', '\t']) else {
+            continue; // `#hashtag`, not a heading
+        };
+        let text = text.trim().trim_end_matches('#').trim();
+        if text.is_empty() {
+            continue;
+        }
+        stack.retain(|(l, _)| *l < level);
+        stack.push((level, text.to_owned()));
     }
+    stack.into_iter().map(|(_, t)| t).collect()
+}
+
+/// Turn extracted [`Chunk`]s into the [`IndexChunk`]s the write path stores:
+/// the verbatim chunk text as `body`, plus (in `Structural` mode) the
+/// situating context built from the document `title`, the markdown heading
+/// path open at the chunk's `byte_start` into `content`, and the chunk's
+/// page. Shared by the live ingest worker and the rebuild path so both
+/// produce identical rows.
+#[must_use]
+pub fn contextualized_chunks(
+    mode: ContextualizeMode,
+    title: Option<&str>,
+    content: &str,
+    chunks: &[Chunk],
+) -> Vec<IndexChunk> {
+    chunks
+        .iter()
+        .map(|c| match mode {
+            ContextualizeMode::Off => IndexChunk::plain(c.text.clone()),
+            ContextualizeMode::Structural => IndexChunk::contextualized(
+                structural_context_prefix(title, &heading_path_at(content, c.byte_start), c.page),
+                c.text.clone(),
+            ),
+        })
+        .collect()
 }
 
 /// OCR policy for scanned/image PDFs (REQ-NF-05). `Off` ⇒ born-digital only
@@ -434,39 +504,35 @@ impl DocumentIngestWorker {
         // Extract + chunk OFF the write lock.
         match self.processor.process(&bytes, mime, cfg).await {
             Ok(result) => {
-                // Contextual Retrieval, Variant A: prefix each chunk's stored
-                // text with `[<title> › p.<page>]` so the prefix feeds both the
-                // FTS lane (over `blocks.body`) and the dense embedding (taken
-                // over the same text). `Off` keeps the verbatim chunk text.
-                let title = result.metadata.title.as_deref();
-                let chunk_texts: Vec<String> = match self.contextualize {
-                    ContextualizeMode::Off => {
-                        result.chunks.iter().map(|c| c.text.clone()).collect()
-                    }
-                    ContextualizeMode::Structural => result
-                        .chunks
-                        .iter()
-                        .map(|c| contextualize_chunk(title, c.page, &c.text))
-                        .collect(),
-                };
+                // Contextual Retrieval, Variant A (GH #216): situate each
+                // chunk with `[<title> › <heading path> › p.<page>]`. The
+                // context is stored beside the verbatim body and feeds only
+                // the retrieval representations (dense embedding, FTS,
+                // rerank) — display text and byte-span provenance stay clean.
+                let chunks = contextualized_chunks(
+                    self.contextualize,
+                    result.metadata.title.as_deref(),
+                    &result.content,
+                    &result.chunks,
+                );
                 let overlay = document_overlay(
                     skill,
                     instance_id,
                     blob_id,
-                    chunk_texts.len(),
+                    chunks.len(),
                     &self.processor.engine(),
                     "ok",
                     &result.metadata,
                     extra,
                 );
                 self.indexer
-                    .materialize_document(&page_id, &overlay, &chunk_texts)
+                    .materialize_document(&page_id, &overlay, &chunks)
                     .await?;
                 // Promote the inbox blob to the canonical area.
                 self.indexer.promote_blob(blob_id).await?;
                 Ok(IngestOutcome::Materialised {
                     page_id,
-                    chunk_count: chunk_texts.len(),
+                    chunk_count: chunks.len(),
                 })
             }
             Err(e) => {
@@ -549,22 +615,20 @@ pub(crate) async fn rebuild_documents(indexer: &Indexer) -> Result<(), IndexerEr
         };
         // Apply the same structural contextualisation as the live ingest path
         // (GH #216, Variant A) so a from-scratch rebuild reproduces identical
-        // stored chunk text. The title comes from the overlay's `# <title>`
-        // heading; a plain re-chunk has no per-chunk page, so the prefix is
-        // title-only here.
+        // stored rows — this is also the operator's cutover/re-embed path
+        // after flipping `ESCUREL_INGEST_CONTEXTUALIZE`. The title comes from
+        // the overlay's `# <title>` heading; heading paths come from the blob
+        // content; a plain re-chunk has no per-chunk page.
         let title = match indexer.contextualize {
             ContextualizeMode::Off => None,
             ContextualizeMode::Structural => overlay_heading_title(&overlay_md),
         };
-        let chunks: Vec<String> = raw_chunks
-            .into_iter()
-            .map(|c| match indexer.contextualize {
-                ContextualizeMode::Off => c.text,
-                ContextualizeMode::Structural => {
-                    contextualize_chunk(title.as_deref(), c.page, &c.text)
-                }
-            })
-            .collect();
+        let chunks = contextualized_chunks(
+            indexer.contextualize,
+            title.as_deref(),
+            content,
+            &raw_chunks,
+        );
         indexer
             .materialize_document(&ov.page_id, &overlay_md, &chunks)
             .await?;
@@ -852,7 +916,7 @@ mod tests {
     #[test]
     fn structural_prefix_title_and_page() {
         assert_eq!(
-            structural_context_prefix(Some("Q3 Report"), Some(4)).as_deref(),
+            structural_context_prefix(Some("Q3 Report"), &[], Some(4)).as_deref(),
             Some("[Q3 Report \u{203a} p.4]")
         );
     }
@@ -860,37 +924,103 @@ mod tests {
     #[test]
     fn structural_prefix_title_only() {
         assert_eq!(
-            structural_context_prefix(Some("Q3 Report"), None).as_deref(),
+            structural_context_prefix(Some("Q3 Report"), &[], None).as_deref(),
             Some("[Q3 Report]")
         );
         // An empty/blank title is treated as absent.
-        assert_eq!(structural_context_prefix(Some("  "), None), None);
+        assert_eq!(structural_context_prefix(Some("  "), &[], None), None);
     }
 
     #[test]
     fn structural_prefix_page_only() {
         assert_eq!(
-            structural_context_prefix(None, Some(9)).as_deref(),
+            structural_context_prefix(None, &[], Some(9)).as_deref(),
             Some("[p.9]")
         );
     }
 
     #[test]
-    fn structural_prefix_neither_is_none() {
-        assert_eq!(structural_context_prefix(None, None), None);
+    fn structural_prefix_nothing_is_none() {
+        assert_eq!(structural_context_prefix(None, &[], None), None);
     }
 
     #[test]
-    fn contextualize_chunk_prepends_prefix_then_newline() {
+    fn structural_prefix_full_heading_path() {
+        let headings = vec!["Finance".to_owned(), "Q3 Margins".to_owned()];
         assert_eq!(
-            contextualize_chunk(Some("Manual"), Some(2), "wind speed data"),
-            "[Manual \u{203a} p.2]\nwind speed data"
+            structural_context_prefix(Some("Annual Report"), &headings, Some(12)).as_deref(),
+            Some("[Annual Report \u{203a} Finance \u{203a} Q3 Margins \u{203a} p.12]")
         );
-        // No prefix → text unchanged (byte-for-byte legacy behaviour).
+        // Headings alone still situate an untitled document.
         assert_eq!(
-            contextualize_chunk(None, None, "wind speed data"),
-            "wind speed data"
+            structural_context_prefix(None, &headings, None).as_deref(),
+            Some("[Finance \u{203a} Q3 Margins]")
         );
+    }
+
+    #[test]
+    fn structural_prefix_dedupes_heading_equal_to_title() {
+        // A `# <title>` H1 repeating the document title is not duplicated.
+        let headings = vec!["Annual Report".to_owned(), "Finance".to_owned()];
+        assert_eq!(
+            structural_context_prefix(Some("Annual Report"), &headings, None).as_deref(),
+            Some("[Annual Report \u{203a} Finance]")
+        );
+    }
+
+    #[test]
+    fn heading_path_tracks_the_open_hierarchy() {
+        let md = "# Title\nintro\n## Alpha\nbody a\n### Deep\nbody d\n## Beta\nbody b\n";
+        let at = |needle: &str| md.find(needle).unwrap();
+        assert_eq!(heading_path_at(md, at("intro")), vec!["Title"]);
+        assert_eq!(heading_path_at(md, at("body a")), vec!["Title", "Alpha"]);
+        assert_eq!(
+            heading_path_at(md, at("body d")),
+            vec!["Title", "Alpha", "Deep"]
+        );
+        // `## Beta` pops both `Alpha` and `Deep`.
+        assert_eq!(heading_path_at(md, at("body b")), vec!["Title", "Beta"]);
+        // Offset 0: nothing is open yet.
+        assert!(heading_path_at(md, 0).is_empty());
+    }
+
+    #[test]
+    fn heading_path_ignores_non_headings() {
+        let md = "#hashtag not a heading\n####### seven hashes\nplain\ntext here\n";
+        assert!(heading_path_at(md, md.len()).is_empty());
+    }
+
+    #[test]
+    fn contextualized_chunks_builds_the_storage_split() {
+        let content = "## Ops\nthe body text\n";
+        let chunks = vec![Chunk {
+            ordinal: 0,
+            byte_start: content.find("the body").unwrap(),
+            byte_end: content.len(),
+            page: Some(2),
+            text: "the body text\n".to_owned(),
+        }];
+        let out = contextualized_chunks(
+            ContextualizeMode::Structural,
+            Some("Manual"),
+            content,
+            &chunks,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].context.as_deref(),
+            Some("[Manual \u{203a} Ops \u{203a} p.2]")
+        );
+        assert_eq!(out[0].body, "the body text\n", "body stays verbatim");
+        assert_eq!(
+            out[0].embed_text(),
+            "[Manual \u{203a} Ops \u{203a} p.2]\nthe body text\n",
+            "the embedder sees context + body"
+        );
+        // Off mode: no context, byte-for-byte legacy behaviour.
+        let off = contextualized_chunks(ContextualizeMode::Off, Some("Manual"), content, &chunks);
+        assert_eq!(off[0].context, None);
+        assert_eq!(off[0].embed_text(), "the body text\n");
     }
 
     #[test]

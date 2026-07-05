@@ -32,7 +32,7 @@ impl Migrator {
     /// artifact manifest and a DuckDB→DuckDB transfer refuses an artifact
     /// whose `SCHEMA_VERSION` differs from the live tenant's (the row shapes
     /// wouldn't line up).
-    pub const SCHEMA_VERSION: u32 = 5;
+    pub const SCHEMA_VERSION: u32 = 6;
 
     /// Load the per-connection extension/session state Escurel relies on:
     /// auto-install/-load, `INSTALL`+`LOAD` of `vss`+`fts`, and the
@@ -71,6 +71,17 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the `blocks.context` column (Contextual Retrieval, GH #216)
+    /// exists. Idempotent (`ADD COLUMN IF NOT EXISTS`) and run on EVERY
+    /// connection like [`Migrator::ensure_group_members`], so a tenant DB
+    /// provisioned before the column existed gains it on the next boot —
+    /// required before [`crate::Indexer::refresh_fts`] rebuilds the FTS
+    /// index over (`body`, `context`).
+    pub fn ensure_block_context(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_9_BLOCK_CONTEXT)?;
+        Ok(())
+    }
+
     /// Apply the v1 schema. Connection should be a fresh DuckDB.
     pub fn up(conn: &Connection) -> Result<(), MigrationError> {
         // The migration is split into staged batches because the
@@ -88,6 +99,9 @@ impl Migrator {
         // the core tables.
         conn.execute_batch(STAGE_1_AUTOLOAD)?;
         conn.execute_batch(STAGE_2_TABLES_AND_INDEXES)?;
+        // `blocks.context` (GH #216) must exist BEFORE stage 3 builds the
+        // FTS index over ('body', 'context').
+        conn.execute_batch(STAGE_9_BLOCK_CONTEXT)?;
         conn.execute_batch(STAGE_3_FTS)?;
         conn.execute_batch(STAGE_4_CHAT_MESSAGES)?;
         conn.execute_batch(STAGE_5_SCENARIOS)?;
@@ -113,6 +127,7 @@ const STAGE_5_SCENARIOS: &str = include_str!("../sql/0003_scenarios.sql");
 const STAGE_6_EVENTS: &str = include_str!("../sql/0004_events.sql");
 const STAGE_7_GROUP_MEMBERS: &str = include_str!("../sql/0005_group_members.sql");
 const STAGE_8_EXTERNAL_CREDENTIALS: &str = include_str!("../sql/0006_external_credentials.sql");
+const STAGE_9_BLOCK_CONTEXT: &str = include_str!("../sql/0007_block_context.sql");
 
 #[cfg(test)]
 mod tests {

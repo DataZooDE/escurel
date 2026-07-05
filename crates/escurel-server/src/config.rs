@@ -344,8 +344,9 @@ pub struct EscurelConfig {
     /// Document contextual-retrieval mode (GH #216, Variant A). Set from
     /// `ESCUREL_INGEST_CONTEXTUALIZE` (`off` | `structural`); default
     /// `structural`. Threaded into the per-tenant `Indexer` so both the live
-    /// ingest worker and the rebuild path prefix chunks with
-    /// `[<title> › p.<page>]`.
+    /// ingest worker and the rebuild path situate chunks with a
+    /// `[<title> › <heading path> › p.<page>]` context (stored beside the
+    /// verbatim body; feeds the dense/FTS/rerank representations only).
     pub ingest_contextualize: ContextualizeMode,
 }
 
@@ -832,6 +833,10 @@ impl EscurelConfig {
         // like group_members. A separate canonical input, never dropped by
         // rebuild.
         Migrator::ensure_external_credentials(&conn)?;
+        // Contextual Retrieval (GH #216): ensure `blocks.context` on EVERY
+        // boot (idempotent), so a tenant DB provisioned before the column
+        // existed gains it before `refresh_fts` indexes it.
+        Migrator::ensure_block_context(&conn)?;
 
         // The CRDT backend MUST share the SAME DuckDB instance as the indexer.
         // A second `Connection::open` on the same file is a separate database

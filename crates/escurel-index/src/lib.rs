@@ -48,8 +48,8 @@ pub use creds::{CredentialInfo, CredentialRecord};
 pub use events::{EVENTS_MAX_LIMIT, EventInfo, NewEvent};
 pub use groups::GroupMember;
 pub use indexer::{
-    AuditDrift, Indexer, IndexerError, RebuildProgress, derive_attach_alias, is_safe_attach_source,
-    is_valid_attach_alias,
+    AuditDrift, IndexChunk, Indexer, IndexerError, RebuildProgress, derive_attach_alias,
+    is_safe_attach_source, is_valid_attach_alias,
 };
 pub use meta_skill::{META_SKILL_ID, META_SKILL_MD, META_SKILL_PAGE_ID};
 pub use query::{

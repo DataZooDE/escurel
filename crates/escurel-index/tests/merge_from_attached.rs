@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::indexer::OnCollision;
-use escurel_index::{Indexer, Migrator};
+use escurel_index::{IndexChunk, Indexer, Migrator};
 use escurel_storage::{FsStore, LaneStore};
 use tempfile::TempDir;
 
@@ -53,7 +53,7 @@ async fn build_source(dir: &TempDir) -> std::path::PathBuf {
         idx.write_document_blocks(
             &page_id("doc-a"),
             &overlay("doc-a"),
-            &["alpha zebra".to_owned()],
+            &[IndexChunk::plain("alpha zebra")],
             &[vhead(0.11)],
         )
         .await
@@ -61,7 +61,7 @@ async fn build_source(dir: &TempDir) -> std::path::PathBuf {
         idx.write_document_blocks(
             &page_id("doc-b"),
             &overlay("doc-b"),
-            &["beta zebra".to_owned()],
+            &[IndexChunk::plain("beta zebra")],
             &[vhead(0.22)],
         )
         .await
@@ -97,7 +97,7 @@ async fn merge_skip_imports_new_pages_keeps_existing_and_copies_vectors_verbatim
         tgt.write_document_blocks(
             &page_id("doc-a"),
             &overlay("doc-a"),
-            &["alpha original".to_owned()],
+            &[IndexChunk::plain("alpha original")],
             &[vhead(0.99)],
         )
         .await
@@ -147,7 +147,7 @@ async fn merge_replace_overwrites_colliding_pages() {
         tgt.write_document_blocks(
             &page_id("doc-a"),
             &overlay("doc-a"),
-            &["alpha original".to_owned()],
+            &[IndexChunk::plain("alpha original")],
             &[vhead(0.99)],
         )
         .await
@@ -180,7 +180,7 @@ async fn merge_error_aborts_on_collision() {
     tgt.write_document_blocks(
         &page_id("doc-a"),
         &overlay("doc-a"),
-        &["x".to_owned()],
+        &[IndexChunk::plain("x")],
         &[vhead(0.99)],
     )
     .await

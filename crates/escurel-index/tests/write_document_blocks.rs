@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use escurel_embed::{Embedder, ZeroEmbedder};
-use escurel_index::{Indexer, Migrator};
+use escurel_index::{IndexChunk, Indexer, Migrator};
 use escurel_storage::{FsStore, LaneStore};
 use tempfile::TempDir;
 
@@ -47,7 +47,10 @@ async fn write_document_blocks_stores_given_vectors_verbatim() {
             .write_document_blocks(
                 PAGE_ID,
                 OVERLAY,
-                &["first chunk".to_owned(), "second chunk".to_owned()],
+                &[
+                    IndexChunk::plain("first chunk"),
+                    IndexChunk::plain("second chunk"),
+                ],
                 &vectors,
             )
             .await
@@ -95,7 +98,7 @@ async fn write_document_blocks_rejects_vector_count_mismatch() {
         .write_document_blocks(
             PAGE_ID,
             OVERLAY,
-            &["a".to_owned(), "b".to_owned()],
+            &[IndexChunk::plain("a"), IndexChunk::plain("b")],
             &[vec_with_head(0.1)],
         )
         .await

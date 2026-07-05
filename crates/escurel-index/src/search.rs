@@ -385,8 +385,11 @@ impl Indexer {
             "CREATE OR REPLACE TABLE german_stopwords(sw VARCHAR); \
              INSERT INTO german_stopwords VALUES {values};"
         ))?;
+        // `context` (the structural situating prefix, GH #216) is indexed
+        // alongside `body` so contextual BM25 sees it; `match_bm25` searches
+        // all indexed fields by default, so the query side is unchanged.
         conn.execute_batch(
-            "PRAGMA create_fts_index('blocks', 'block_id', 'body', \
+            "PRAGMA create_fts_index('blocks', 'block_id', 'body', 'context', \
              stemmer = 'german', stopwords = 'german_stopwords', \
              ignore = '(\\.|[^a-z0-9äöüß])+', lower = 1, overwrite = 1);",
         )?;
