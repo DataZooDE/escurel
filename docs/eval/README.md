@@ -99,4 +99,6 @@ the ADR-0001 0.95/0.90/0.60 figures — those are tied to escurel's own (not yet
 in-repo) 460-block corpus. When that corpus lands in this same BEIR format, it
 drops into the loader unchanged and the `--gate` thresholds become the ADR gate.
 
-See `baseline-scifact.md` for a committed run.
+See `baseline-scifact.md` for a committed run, and
+`rerank-latency-budget.md` for what the #215 rerank stage costs per query
+and how `rerank_candidates` bounds the worst case.
