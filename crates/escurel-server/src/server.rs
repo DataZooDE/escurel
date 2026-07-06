@@ -338,6 +338,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/version", get(version))
+        .route("/openapi.json", get(openapi_json))
         .route("/mcp", post(mcp))
         .route("/ingest", post(crate::mcp::ingest))
         .route("/ingest/upload", post(crate::mcp::ingest_upload))
@@ -497,6 +498,17 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn version(State(state): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, state.version.clone())
+}
+
+/// `GET /openapi.json` — the outbound half of the openapi/mcp story: publish
+/// escurel's own agent + admin tool surface as an OpenAPI 3.1 document (built
+/// from the same tool schemas `tools/list` serves), so non-MCP HTTP clients
+/// can discover it. Dependency-free and unauthenticated (schema only, no data).
+async fn openapi_json(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        axum::Json(crate::mcp::openapi_document(&state.version)),
+    )
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {

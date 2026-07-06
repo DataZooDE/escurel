@@ -191,6 +191,14 @@ In:
   [`protocol.md`](protocol.md#instance-backends)). Deferred to a future change
   request: row-grain SQL instances + write-back CRDT, multi-document instances,
   LLM-driven document processing, the LanceDB retrieval hatch
+- **Remote (proxy) instance backends** — `openapi` + `mcp`: an instance is a
+  live window onto a remote object, fetched **live on `expand`** (no DuckDB
+  copy) with optional **write-back** via `write_instance`. `openapi` proxies a
+  REST/OpenAPI endpoint; `mcp` proxies an upstream MCP server (escurel is the
+  client). Base URL + auth held in an admin `external_endpoints` registry
+  referenced by name (SSRF / secrets-in-markdown guard); remote data feeds no
+  search lane (`capabilities.search: "none"`). See
+  [`protocol.md`](protocol.md#remote-backends-openapi--mcp)
 
 Out (deferred):
 

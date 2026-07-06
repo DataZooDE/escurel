@@ -1188,6 +1188,34 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             tool_create_sql_instance(indexer, params.arguments).await
         }
+        // Remote-backend endpoint registry (admin-only). Base URL + auth live
+        // server-side in kb.duckdb; the secret is never echoed. This is the
+        // SSRF guard — a remote instance can only reach a registered endpoint.
+        "register_endpoint" => {
+            require_admin(role)?;
+            tool_register_endpoint(indexer, subject, params.arguments).await
+        }
+        "list_endpoints" => {
+            require_admin(role)?;
+            tool_list_endpoints(indexer).await
+        }
+        "delete_endpoint" => {
+            require_admin(role)?;
+            tool_delete_endpoint(indexer, params.arguments).await
+        }
+        "validate_endpoints" => {
+            require_admin(role)?;
+            tool_validate_endpoints(indexer).await
+        }
+        // Materialise a remote (openapi/mcp) overlay page from a skill that
+        // declares a remote backend. Admin-only, mirroring create_sql_instance.
+        "create_remote_instance" => {
+            require_admin(role)?;
+            tool_create_remote_instance(indexer, params.arguments).await
+        }
+        // Write-back to a remote instance's upstream. Agent tool, gated by the
+        // target instance's acl.update (may_write_instance, fail-closed).
+        "write_instance" => tool_write_instance(indexer, caller, params.arguments).await,
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
         ))),
@@ -1474,6 +1502,23 @@ async fn tool_expand(
                 }
                 page["chunks_total"] = json!(total);
                 page["chunks_truncated"] = json!(!a.full && total > lead_n);
+            }
+            // Remote (proxy) overlay: fetch the LIVE projection from the
+            // upstream openapi/mcp endpoint (nothing is materialised in
+            // DuckDB). A failure resolves to `{ issue }` — the overlay page is
+            // still returned, never a partial/fabricated body.
+            if e.frontmatter
+                .get("backend_ref")
+                .and_then(|b| b.get("kind"))
+                .and_then(Value::as_str)
+                .is_some_and(|k| k == "openapi" || k == "mcp")
+            {
+                page["backend_projection"] = crate::remote_backend::fetch_projection(
+                    indexer,
+                    &e.page.skill,
+                    e.page.slug.as_deref(),
+                )
+                .await;
             }
             Ok(page)
         }
@@ -2912,6 +2957,281 @@ async fn tool_create_sql_instance(
     Ok(json!({ "page_id": m.page_id, "view": m.view }))
 }
 
+// --- remote (openapi/mcp) backend tools ------------------------
+//
+// The endpoint registry (admin) holds each upstream's base URL + auth
+// server-side (the SSRF / secrets-in-markdown guard); a skill's
+// `backend.endpoint` references a row by name. `create_remote_instance`
+// materialises an overlay page + `backend_ref`; `write_instance` forwards a
+// write to the bound upstream, ACL-gated on the target.
+
+#[derive(Deserialize)]
+struct RegisterEndpointArgs {
+    name: String,
+    /// `openapi` | `mcp`.
+    kind: String,
+    base_url: String,
+    /// `none` (default) | `bearer` | `api_key`.
+    #[serde(default)]
+    auth: Option<String>,
+    /// Header name when `auth = api_key` (default `X-API-Key`).
+    #[serde(default)]
+    auth_header: Option<String>,
+    /// Bearer token / api-key material; stored server-side, never echoed.
+    #[serde(default)]
+    secret: Option<String>,
+}
+
+async fn tool_register_endpoint(
+    indexer: &Indexer,
+    created_by: &str,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: RegisterEndpointArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("register_endpoint: {e}")))?;
+    if a.name.is_empty() || a.base_url.is_empty() {
+        return Err(JsonRpcError::invalid_params(
+            "name and base_url are required".to_owned(),
+        ));
+    }
+    if a.kind != "openapi" && a.kind != "mcp" {
+        return Err(JsonRpcError::invalid_params(format!(
+            "kind must be openapi|mcp, got `{}`",
+            a.kind
+        )));
+    }
+    let auth = match a.auth.as_deref().unwrap_or("none") {
+        "none" => escurel_index::endpoints::EndpointAuth::None,
+        "bearer" => escurel_index::endpoints::EndpointAuth::Bearer,
+        "api_key" => escurel_index::endpoints::EndpointAuth::ApiKey {
+            header: a
+                .auth_header
+                .clone()
+                .unwrap_or_else(|| "X-API-Key".to_owned()),
+        },
+        other => {
+            return Err(JsonRpcError::invalid_params(format!(
+                "auth must be none|bearer|api_key, got `{other}`"
+            )));
+        }
+    };
+    let has_secret = a.secret.as_deref().is_some_and(|s| !s.is_empty());
+    if !matches!(auth, escurel_index::endpoints::EndpointAuth::None) && !has_secret {
+        return Err(JsonRpcError::invalid_params(
+            "secret is required for bearer/api_key auth".to_owned(),
+        ));
+    }
+    indexer
+        .register_endpoint(
+            &a.name,
+            &a.kind,
+            &a.base_url,
+            &auth,
+            a.secret.as_deref(),
+            Some(created_by),
+        )
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("register_endpoint: {e}")))?;
+    // Never echo the secret back.
+    Ok(json!({ "ok": true, "name": a.name }))
+}
+
+async fn tool_list_endpoints(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+    let eps = indexer
+        .list_endpoints()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_endpoints: {e}")))?;
+    // The secret is intentionally absent from this view (REQ-REMOTE-05).
+    let eps: Vec<Value> = eps
+        .into_iter()
+        .map(|e| {
+            json!({
+                "name": e.name,
+                "kind": e.kind,
+                "base_url": e.base_url,
+                "auth_scheme": e.auth_scheme,
+                "created_at": e.created_at,
+                "created_by": e.created_by,
+            })
+        })
+        .collect();
+    Ok(json!({ "endpoints": eps }))
+}
+
+async fn tool_delete_endpoint(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+    #[derive(Deserialize)]
+    struct A {
+        name: String,
+    }
+    let a: A = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("delete_endpoint: {e}")))?;
+    indexer
+        .delete_endpoint(&a.name)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("delete_endpoint: {e}")))?;
+    Ok(json!({ "ok": true }))
+}
+
+async fn tool_validate_endpoints(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+    let eps = indexer
+        .list_endpoints()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("validate_endpoints: {e}")))?;
+    let mut out = Vec::new();
+    let mut unreachable = 0usize;
+    for e in eps {
+        let rec = indexer
+            .lookup_endpoint(&e.name)
+            .await
+            .map_err(|err| JsonRpcError::internal(format!("validate_endpoints: {err}")))?;
+        let (status, detail) = match rec {
+            Some(rec) => crate::remote_backend::probe(&rec).await,
+            None => (
+                "unreachable".to_owned(),
+                Some("endpoint vanished".to_owned()),
+            ),
+        };
+        if status != "ok" {
+            unreachable += 1;
+        }
+        out.push(json!({
+            "name": e.name, "kind": e.kind, "status": status, "detail": detail,
+        }));
+    }
+    Ok(json!({ "ok": unreachable == 0, "unreachable": unreachable, "endpoints": out }))
+}
+
+#[derive(Deserialize)]
+struct CreateRemoteInstanceArgs {
+    skill: String,
+    id: String,
+    #[serde(default)]
+    overlay_body: Option<String>,
+}
+
+/// Admin: materialise a remote (openapi/mcp) overlay page from a skill that
+/// declares a remote backend. The binding comes from the skill's `backend:`
+/// block (not the caller), mirroring `create_sql_instance`, so this can only
+/// create instances of skills that already declare a remote backend whose
+/// endpoint is registered.
+async fn tool_create_remote_instance(
+    indexer: &Indexer,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: CreateRemoteInstanceArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("create_remote_instance: {e}")))?;
+    let binding = indexer
+        .skill_backend(&a.skill)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_remote_instance: {e}")))?;
+    if !binding.kind.is_remote() {
+        return Err(JsonRpcError::invalid_params(format!(
+            "skill `{}` does not declare a remote (openapi/mcp) backend",
+            a.skill
+        )));
+    }
+    let remote = binding.remote.ok_or_else(|| {
+        JsonRpcError::invalid_params(format!(
+            "skill `{}` has an incomplete remote backend binding (endpoint/read missing)",
+            a.skill
+        ))
+    })?;
+    let kind = binding.kind.as_str();
+    let endpoint = remote.endpoint.clone();
+    // Fail closed when the referenced endpoint is not registered.
+    if indexer
+        .lookup_endpoint(&endpoint)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_remote_instance: {e}")))?
+        .is_none()
+    {
+        return Err(JsonRpcError::invalid_params(format!(
+            "endpoint `{endpoint}` is not registered"
+        )));
+    }
+    let body = a.overlay_body.unwrap_or_else(|| format!("# {}\n", a.id));
+    let page_id = format!("markdown/instances/{}/{}.md", a.skill, a.id);
+    let content = format!(
+        "---\n\
+         type: instance\n\
+         skill: {skill}\n\
+         id: {id}\n\
+         backend_ref:\n\
+        \x20 kind: {kind}\n\
+        \x20 endpoint: {endpoint}\n\
+         ---\n\
+         {body}\n",
+        skill = a.skill,
+        id = a.id,
+    );
+    indexer
+        .update_page(&page_id, &content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_remote_instance: {e}")))?;
+    Ok(json!({ "page_id": page_id, "kind": kind, "endpoint": endpoint }))
+}
+
+#[derive(Deserialize)]
+struct WriteInstanceArgs {
+    /// The target instance id or its `[[skill::id]]` wikilink.
+    #[serde(rename = "ref")]
+    reference: String,
+    /// The write payload forwarded to the upstream `write` op.
+    #[serde(default)]
+    payload: Value,
+}
+
+/// Write-back to a remote instance's upstream (openapi/mcp). Gated by the
+/// target instance's `acl.update` (fail-closed; admin bypasses). A skill whose
+/// binding declares no `write` op is refused.
+async fn tool_write_instance(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: WriteInstanceArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("write_instance: {e}")))?;
+    let link = if a.reference.starts_with("[[") {
+        a.reference.clone()
+    } else {
+        format!("[[{}]]", a.reference)
+    };
+    let page = indexer
+        .resolve(&link, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))?
+        .page
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params(format!("no instance for ref `{}`", a.reference))
+        })?;
+    // Load the target's frontmatter (for the ACL decision) via expand.
+    let expanded = indexer
+        .expand(&page.page_id, None, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))?
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params(format!("no instance for ref `{}`", a.reference))
+        })?;
+    // Gate on acl.update of the target instance (fail-closed; admin bypasses).
+    let allowed = indexer
+        .may_write_instance(
+            &caller,
+            &page.skill,
+            Some(&expanded.frontmatter),
+            &expanded.frontmatter,
+        )
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("write_instance acl: {e}")))?;
+    if !allowed {
+        return Err(JsonRpcError::invalid_params(
+            "not authorised to write this instance".to_owned(),
+        ));
+    }
+    crate::remote_backend::write_instance(indexer, &page.skill, page.slug.as_deref(), &a.payload)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))
+}
+
 // --- admin tenant CRUD + long-ops (admin-role gated) -----------
 //
 // These port the gRPC `EscurelAdmin` business logic verbatim; only
@@ -3877,6 +4197,76 @@ fn tools_list_payload() -> Value {
                     }
                 }),
             ),
+            tool_entry(
+                "register_endpoint",
+                "Admin: register (or replace) a remote-backend endpoint an \
+                 openapi/mcp skill references via `backend.endpoint`. The base \
+                 URL + auth secret are stored server-side and NEVER in the \
+                 markdown corpus (SSRF / secrets-in-markdown guard).",
+                json!({
+                    "type": "object",
+                    "required": ["name", "kind", "base_url"],
+                    "properties": {
+                        "name": { "type": "string", "description": "The `endpoint` name skills reference." },
+                        "kind": { "type": "string", "enum": ["openapi", "mcp"] },
+                        "base_url": { "type": "string", "description": "REST base URL (openapi) or /mcp URL (mcp)." },
+                        "auth": { "type": "string", "enum": ["none", "bearer", "api_key"], "description": "Default none." },
+                        "auth_header": { "type": "string", "description": "Header name when auth=api_key (default X-API-Key)." },
+                        "secret": { "type": "string", "description": "Bearer/api-key material (server-side only)." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_endpoints",
+                "Admin: list registered remote-backend endpoints WITHOUT their \
+                 secrets (name, kind, base_url, auth scheme, audit).",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "delete_endpoint",
+                "Admin: remove a registered remote-backend endpoint by name. \
+                 No-op when absent.",
+                json!({
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": { "name": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "validate_endpoints",
+                "Admin: probe every registered remote-backend endpoint for \
+                 reachability; an unreachable endpoint's instances read closed.",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "create_remote_instance",
+                "Admin: materialise a remote (openapi/mcp) instance — the \
+                 binding comes from the skill's backend block (overlay page + \
+                 backend_ref; data is fetched live on expand).",
+                json!({
+                    "type": "object",
+                    "required": ["skill", "id"],
+                    "properties": {
+                        "skill": { "type": "string", "description": "A skill declaring backend.kind=openapi|mcp." },
+                        "id": { "type": "string", "description": "New instance id." },
+                        "overlay_body": { "type": "string", "description": "Optional overlay markdown body." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "write_instance",
+                "Write-back to a remote (openapi/mcp) instance's upstream. \
+                 Gated by the target instance's acl.update; a binding with no \
+                 write op is refused.",
+                json!({
+                    "type": "object",
+                    "required": ["ref"],
+                    "properties": {
+                        "ref": { "type": "string", "description": "Target instance id or [[skill::id]]." },
+                        "payload": { "type": "object", "description": "Fields forwarded to the upstream write op." }
+                    }
+                }),
+            ),
             // Admin tenant-lifecycle + operator tools. All require an
             // admin-role bearer (JSON-RPC -32001 otherwise) and a
             // `tenant_id` naming this single-tenant gateway's tenant
@@ -4002,6 +4392,91 @@ fn tool_entry(name: &str, description: &str, input_schema: Value) -> Value {
         "description": description,
         "inputSchema": input_schema,
     })
+}
+
+/// Build an OpenAPI 3.1 document describing escurel's tool surface — the
+/// outbound half of the openapi/mcp story. The real transport is JSON-RPC 2.0
+/// at `POST /mcp`, so the document has one path (`/mcp`) whose request body is
+/// the JSON-RPC envelope, plus every tool's input schema under
+/// `components.schemas.<tool>_input` and the tool-name enum. Generated from the
+/// same [`tools_list_payload`] the MCP `tools/list` handshake serves, so the
+/// two never drift.
+pub(crate) fn openapi_document(version: &str) -> Value {
+    let tools = tools_list_payload();
+    let tool_arr = tools
+        .get("tools")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut per_tool_schemas: Vec<(String, Value)> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for t in &tool_arr {
+        if let Some(name) = t.get("name").and_then(Value::as_str) {
+            names.push(name.to_owned());
+            if let Some(schema) = t.get("inputSchema") {
+                per_tool_schemas.push((format!("{name}_input"), schema.clone()));
+            }
+        }
+    }
+    let mut doc = json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "escurel agent surface",
+            "version": version,
+            "description": "escurel exposes its agent + admin tools as MCP over \
+                HTTP (JSON-RPC 2.0) at POST /mcp. This document describes that \
+                surface for non-MCP HTTP clients; each tool's input schema is \
+                under components.schemas.<tool>_input.",
+        },
+        "paths": {
+            "/mcp": {
+                "post": {
+                    "summary": "JSON-RPC 2.0 tools/call (or tools/list) envelope",
+                    "operationId": "mcp_call",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/JsonRpcRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": { "description": "JSON-RPC result or error object" }
+                    }
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "JsonRpcRequest": {
+                    "type": "object",
+                    "required": ["jsonrpc", "method"],
+                    "properties": {
+                        "jsonrpc": { "const": "2.0" },
+                        "id": {},
+                        "method": { "type": "string", "enum": ["tools/list", "tools/call"] },
+                        "params": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "enum": names },
+                                "arguments": { "type": "object" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    if let Some(schemas) = doc
+        .pointer_mut("/components/schemas")
+        .and_then(Value::as_object_mut)
+    {
+        for (k, v) in per_tool_schemas {
+            schemas.insert(k, v);
+        }
+    }
+    doc
 }
 
 // --- helpers ---------------------------------------------------

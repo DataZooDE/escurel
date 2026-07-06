@@ -833,6 +833,9 @@ impl EscurelConfig {
         // like group_members. A separate canonical input, never dropped by
         // rebuild.
         Migrator::ensure_external_credentials(&conn)?;
+        // Remote-backend endpoint registry (openapi/mcp): ensure on EVERY boot
+        // (idempotent), like the credential registry. Separate canonical input.
+        Migrator::ensure_external_endpoints(&conn)?;
         // Contextual Retrieval (GH #216): ensure `blocks.context` on EVERY
         // boot (idempotent), so a tenant DB provisioned before the column
         // existed gains it before `refresh_fts` indexes it.

@@ -45,6 +45,7 @@ pub fn open_indexer(
     }
     Migrator::ensure_group_members(&conn)?;
     Migrator::ensure_external_credentials(&conn)?;
+    Migrator::ensure_external_endpoints(&conn)?;
     Migrator::ensure_block_context(&conn)?;
     Ok(Indexer::new(store, embedder, conn, TENANT)?)
 }

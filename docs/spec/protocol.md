@@ -556,7 +556,7 @@ anchor between the gateway and the external runner.
 ## Instance backends
 
 By default an instance's data is native **markdown** (writable, block-grain,
-CRDT-backed). Two **external backends** let an instance's data live elsewhere
+CRDT-backed). **External backends** let an instance's data live elsewhere
 while every escurel invariant holds — single referent space, markdown-canonical,
 derivable index, fail-closed ACL, single-writer:
 
@@ -564,6 +564,10 @@ derivable index, fail-closed ACL, single-writer:
   (postgres / mysql / sqlite / erpl / json_dir / parquet_dir).
 - **`document`** — an uploaded file (PDF / DOCX / PPTX / XLSX, or text)
   extracted, chunked, and embedded into one page-with-blocks.
+- **`openapi`** / **`mcp`** — *live remote (proxy)* instances: the body/data is
+  fetched **live on `expand`** from a REST/OpenAPI endpoint (`openapi`) or an
+  upstream MCP server (`mcp`), with optional **write-back**. Nothing is
+  materialised in DuckDB. See [Remote backends](#remote-backends-openapi--mcp).
 
 The unifying idea: **every external instance keeps a markdown overlay page** —
 the page *is* the instance in the referent space (identity, links, ACL, history
@@ -575,15 +579,18 @@ add one. A skill selects its backend in frontmatter:
 
 ```yaml
 backend:
-  kind: sql_view            # markdown (default) | sql_view | document
+  kind: sql_view            # markdown (default) | sql_view | document | openapi | mcp
   # …kind-specific config (see below)…
 ```
 
 `list_skills` reports each skill's `backend.kind` + a `capabilities` object
-(`writable`, `granularity`, `search`, `supports_crdt`); `sql_view` and
-`document` are `writable: false`, so `update_page` / `apply_op` against them
-return `backend_read_only` (the overlay/source is not editable through the page
-API).
+(`writable`, `granularity`, `search`, `supports_crdt`); `sql_view`,
+`document`, `openapi`, and `mcp` are all `writable: false`, so `update_page` /
+`apply_op` against them return `backend_read_only` (the overlay/source is not
+editable through the page API — remote backends accept write-back only through
+the explicit `write_instance` tool). Remote backends additionally report
+`search: "none"` — their live data is never indexed, so it feeds no search
+lane (the overlay page itself is still indexed and searchable like any page).
 
 ### `sql_view`
 
@@ -669,6 +676,93 @@ Both return the pipeline outcome:
 where `status` ∈ `materialised` | `extraction_failed` | `no_handler`. On
 extraction failure the inbox blob is retained and the instance is marked
 `extraction_failed` (the upload is never lost).
+
+### Remote backends (`openapi` / `mcp`)
+
+Unlike `sql_view` / `document` (materialised, read-only), the two **remote
+(proxy)** backends keep **no local copy**: an instance is a live window onto a
+remote object. Its identity, links, ACL, and history are the ordinary overlay
+page, but its body/data is fetched **live on `expand`**, and — because these
+backends declare a `write` op — edits are forwarded **upstream** via the
+explicit `write_instance` tool (never `update_page`; the remote source is
+canonical). `openapi` proxies a REST/HTTP endpoint; `mcp` proxies an upstream
+MCP server (escurel is the MCP client, calling a tool or reading a resource).
+
+Four invariants that these backends deliberately revise vs. the materialised
+external backends, and how each is kept safe:
+
+1. **Read-only → write-back.** Remote instances are `writable: false` w.r.t.
+   `update_page`/CRDT (the overlay body is a live projection, not co-authored),
+   but accept write-back through `write_instance`, gated by the target
+   instance's `acl.update`. The remote op is value-bound (payload + id map),
+   never string-spliced.
+2. **No search lane.** Live data is never indexed → `capabilities.search:
+   "none"`. The overlay page's own metadata/body stays indexed and searchable.
+3. **SSRF / secrets-in-markdown.** A skill's `backend.endpoint` names an
+   **admin-registered endpoint** (base URL + auth held server-side in the
+   `external_endpoints` registry), never a raw URL — so tenant markdown can
+   never make the server fetch an arbitrary host, and no secret enters the
+   corpus.
+4. **Live-read failure.** A read that times out / errors returns the overlay
+   page + `backend_projection.issue` — never a partial or fabricated body (the
+   `binding_degraded` policy).
+
+Skill frontmatter declares the endpoint, the `read`/`write` ops, and a
+`project` map (response JSON `$.a.b` path or bare key → overlay field):
+
+```yaml
+# openapi — read + write
+backend:
+  kind: openapi
+  endpoint: crm_rest                 # admin-registered (URL + auth server-side)
+  read:  { operationId: getCustomer, path: /customers/{id} }   # method defaults GET
+  write:                             # omit ⇒ read-only
+    method: POST
+    path: /customers/{id}/orders/{order_id}   # {order_id} from the payload
+    body: { sku: "{sku}", qty: "{qty}", via: "escurel" }   # optional template
+  project: { display_name: $.name, tier: $.account_tier }
+```
+```yaml
+# mcp — read-only resource
+backend:
+  kind: mcp
+  endpoint: upstream_kb              # points at the upstream server's /mcp
+  read:  { resource: "kb://article/{id}" }   # or { tool: getArticle }
+  project: { title: $.title }
+```
+
+`{name}` placeholders in a `path` / `resource` / body template are filled from
+the overlay instance id (`{id}`) and, on a write, the payload's **scalar**
+fields — flattened to dotted keys, so `{order_id}` and `{customer.tier}` both
+resolve. A placeholder that cannot be resolved fails the call closed
+(`unfilled path/body placeholders`), never sending a literal `{x}`. For an
+OpenAPI write, an optional `body:` template reshapes the payload: an **exact**
+`"{name}"` leaf keeps its JSON type (a number stays a number, an object stays
+an object), while embedded `{name}` interpolates as a string; omit `body:` to
+send the payload verbatim. For an MCP write, the payload's fields are merged
+into the tool-call arguments. A read/write is also refused (fail-closed) when
+the skill's backend `kind` does not match the `kind` its `endpoint` was
+registered under. `expand` returns the overlay merged with the live projection
+under `backend_projection = { source, fields, issue? }`; `backend_ref` carries
+`{ kind, endpoint, read, write? }`.
+
+New MCP tools:
+
+- **`write_instance`** *(write)* — `{ ref, payload }` → forwards a write to the
+  target remote instance's upstream `write` op and returns the re-projected
+  instance. `ref` is the instance id or `[[skill::id]]`. Gated by the target's
+  `acl.update` (fail-closed; admin bypasses). A skill whose binding declares no
+  `write` op is refused (`backend_read_only`).
+- **`create_remote_instance`** *(admin)* — `{ skill, id, overlay_body? }`
+  materialises the overlay page + `backend_ref` for an `openapi`/`mcp` skill
+  (the binding comes from the skill's `backend:` block, never the caller — the
+  `create_sql_instance` pattern).
+
+New admin endpoint-registry tools (mirror `register_credential` &c.):
+`register_endpoint` `{ name, kind, base_url, auth, secret? }`,
+`list_endpoints` `{}` (names/URLs only, secret never echoed),
+`delete_endpoint` `{ name }`, `validate_endpoints` `{}` (probe each registered
+endpoint's reachability; unreachable ⇒ that skill's reads fail closed).
 
 ## Admin surface
 

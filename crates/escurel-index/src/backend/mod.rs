@@ -35,6 +35,7 @@
 mod binding;
 pub mod document;
 mod markdown;
+pub mod remote;
 mod sql_view;
 
 use std::collections::HashMap;
@@ -49,7 +50,10 @@ use crate::search::{Granularity, SearchHit};
 use crate::validate::Issue;
 use crate::{Indexer, IndexerError};
 
-pub use binding::{BackendBinding, DocumentBinding, SqlConnector, SqlViewBinding};
+pub use binding::{
+    BackendBinding, DocumentBinding, RemoteBinding, RemoteKind, RemoteOp, SqlConnector,
+    SqlViewBinding,
+};
 #[cfg(feature = "kreuzberg")]
 pub use document::KreuzbergExtractor;
 pub use document::{
@@ -59,6 +63,7 @@ pub use document::{
     contextualized_chunks, heading_path_at, structural_context_prefix,
 };
 pub use markdown::MarkdownBackend;
+pub use remote::{RemoteError, fill_template, json_path_get, resolve_projection};
 pub use sql_view::{
     BindingStatus, MAX_PROJECTION_ROWS, Materialized, SqlViewBackend, SqlViewError,
 };
@@ -80,6 +85,15 @@ pub enum BackendKind {
     SqlView,
     /// Ingested document → chunks (REQ-DOC-*).
     Document,
+    /// Live projection of a remote REST/HTTP endpoint described by an
+    /// OpenAPI document (REQ-REMOTE-*). The overlay page's body is fetched
+    /// **live on `expand`** (nothing materialised in DuckDB); write-back is
+    /// the explicit `write_instance` tool, not `update_page`.
+    OpenApi,
+    /// Live projection of an upstream MCP server — escurel is the MCP
+    /// *client*, calling a tool or reading a resource (REQ-REMOTE-*). Same
+    /// live-fetch / explicit-write model as [`BackendKind::OpenApi`].
+    Mcp,
 }
 
 impl BackendKind {
@@ -90,7 +104,18 @@ impl BackendKind {
             BackendKind::Markdown => "markdown",
             BackendKind::SqlView => "sql_view",
             BackendKind::Document => "document",
+            BackendKind::OpenApi => "openapi",
+            BackendKind::Mcp => "mcp",
         }
+    }
+
+    /// Whether this kind is a **live remote (proxy) backend** — its data is
+    /// fetched from an external service on every read (no DuckDB copy) and
+    /// its overlay body is not CRDT-co-authored. Both `openapi` and `mcp`
+    /// share the remote-execution seam (endpoint registry + `RemoteClient`).
+    #[must_use]
+    pub fn is_remote(self) -> bool {
+        matches!(self, BackendKind::OpenApi | BackendKind::Mcp)
     }
 }
 
@@ -104,6 +129,12 @@ pub enum SearchMode {
     /// Contributes hits late-materialised from a view's `search_text`
     /// columns at query time (SQL-view backend).
     LateMaterialized,
+    /// Contributes **no** dedicated search lane — the backend's remote data
+    /// is fetched live and never indexed, so it cannot feed FTS/vector
+    /// retrieval. The instance's markdown overlay page is still indexed and
+    /// searchable like any page; only the live remote body is not (remote
+    /// backends: `openapi` / `mcp`).
+    None,
 }
 
 impl SearchMode {
@@ -113,6 +144,7 @@ impl SearchMode {
         match self {
             SearchMode::Hybrid => "hybrid",
             SearchMode::LateMaterialized => "late_materialized",
+            SearchMode::None => "none",
         }
     }
 }
@@ -164,6 +196,17 @@ impl Capabilities {
                 granularity: Granularity::Block,
                 search: SearchMode::Hybrid,
                 supports_crdt: true,
+            },
+            // Remote (proxy) backends: the overlay body is a live remote
+            // projection (page-grain), not CRDT-co-authored and not indexed
+            // for search. `update_page` is rejected (`writable: false`);
+            // write-back to the remote is the explicit `write_instance` tool
+            // (see `RemoteBinding::write`).
+            BackendKind::OpenApi | BackendKind::Mcp => Self {
+                writable: false,
+                granularity: Granularity::Page,
+                search: SearchMode::None,
+                supports_crdt: false,
             },
         }
     }
@@ -432,6 +475,9 @@ impl Indexer {
         let kind = binding.kind.as_str();
         let how = match binding.kind {
             BackendKind::Document => "the ingest pipeline (deposit + /ingest)",
+            BackendKind::OpenApi | BackendKind::Mcp => {
+                "write-back via the write_instance tool (the remote source is canonical)"
+            }
             _ => "the materialise path",
         };
         Ok(Some(format!(

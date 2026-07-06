@@ -24,6 +24,7 @@ pub mod chat;
 pub mod citation;
 pub mod crdt_history;
 pub mod creds;
+pub mod endpoints;
 pub mod events;
 pub mod filter;
 pub mod groups;
@@ -39,8 +40,8 @@ pub mod validate;
 pub use acl::AclCaller;
 pub use backend::{
     BackendBinding, BackendCtx, BackendKind, BackendRegistry, BindingStatus, Capabilities,
-    InstanceBackend, MarkdownBackend, Materialized, SearchMode, SqlConnector, SqlViewBackend,
-    SqlViewBinding, SqlViewError,
+    InstanceBackend, MarkdownBackend, Materialized, RemoteBinding, RemoteKind, RemoteOp,
+    SearchMode, SqlConnector, SqlViewBackend, SqlViewBinding, SqlViewError,
 };
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
