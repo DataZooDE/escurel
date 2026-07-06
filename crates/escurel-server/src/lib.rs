@@ -29,7 +29,8 @@
 //!   request, the latency histogram is observed in the same
 //!   place, and `escurel_up` flips to `1` at `serve()` start.
 //!   The OTLP trace exporter is opt-in via
-//!   `ESCUREL_OTLP_ENDPOINT`; when unset traces are a no-op.
+//!   `ESCUREL_OBSERVABILITY_OTLP_ENDPOINT` (or the deprecated
+//!   `ESCUREL_OTLP_ENDPOINT`); when unset traces are a no-op.
 
 pub mod config;
 mod config_probe;

@@ -471,7 +471,12 @@ fn install_telemetry(config: &ServerConfig) -> Option<escurel_obs::TelemetryGuar
         app: "escurel".to_owned(),
         env,
         version: config.version.clone(),
-        otlp_endpoint: std::env::var("ESCUREL_OTLP_ENDPOINT").ok(),
+        // Convention name is `ESCUREL_OBSERVABILITY_OTLP_ENDPOINT` (env = TOML
+        // key path); the bare `ESCUREL_OTLP_ENDPOINT` is kept as a deprecated
+        // fallback so existing deployments don't break.
+        otlp_endpoint: std::env::var("ESCUREL_OBSERVABILITY_OTLP_ENDPOINT")
+            .or_else(|_| std::env::var("ESCUREL_OTLP_ENDPOINT"))
+            .ok(),
         json_logs: true,
     };
     init_telemetry(cfg).ok()

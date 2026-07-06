@@ -3365,9 +3365,26 @@ async fn tool_tenant_update(state: &AppState, args: Value) -> Result<Value, Json
     })
 }
 
+#[derive(Deserialize)]
+struct TenantDeleteArgs {
+    tenant_id: String,
+    /// Confirmation token — must equal `tenant_id` for the destructive delete
+    /// to proceed (protocol.md §Admin surface, platform.md §Tenant lifecycle).
+    #[serde(default)]
+    confirm: Option<String>,
+}
+
 async fn tool_tenant_delete(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
-    let a: TenantIdArgs = serde_json::from_value(args)
+    let a: TenantDeleteArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("tenant_delete: {e}")))?;
+    // Fail closed on the destructive wipe unless the caller echoes the tenant
+    // id back as `confirm` — guards against a fat-fingered tenant_id.
+    if a.confirm.as_deref() != Some(a.tenant_id.as_str()) {
+        return Err(JsonRpcError::invalid_params(format!(
+            "tenant_delete requires confirm = \"{}\" (the tenant id) to proceed",
+            a.tenant_id
+        )));
+    }
     let store = tenant_store(state)?.clone();
     let deleted = store.delete(&a.tenant_id).await.map_err(map_admin_err)?;
     to_value(TenantDeleteResponse { deleted })
@@ -3407,7 +3424,30 @@ async fn tool_tenant_export(state: &AppState, args: Value) -> Result<Value, Json
     .map_err(|e| JsonRpcError::internal(format!("tenant_export join error: {e}")))?
     .map_err(|e| JsonRpcError::internal(format!("tenant_export: {e}")))?;
     let len = bytes.len() as u64;
-    Ok(json!({ "tarball_b64": B64.encode(&bytes), "bytes": len }))
+    // The export-format version + a SHA-256 of the body so a consumer can
+    // verify the tarball before treating it as durable (protocol.md §backup).
+    let sha256 = sha256_hex(&bytes);
+    Ok(json!({
+        "format_version": TENANT_EXPORT_FORMAT_VERSION,
+        "tarball_b64": B64.encode(&bytes),
+        "bytes": len,
+        "sha256": sha256,
+    }))
+}
+
+/// The `tenant_export` tarball format version (bump on any layout change).
+const TENANT_EXPORT_FORMAT_VERSION: u32 = 1;
+
+/// Lowercase-hex SHA-256 of `bytes`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
 }
 
 #[derive(Deserialize)]
@@ -4311,11 +4351,18 @@ fn tools_list_payload() -> Value {
             ),
             tool_entry(
                 "tenant_delete",
-                "Admin: delete a tenant and its on-disk state.",
+                "Admin: delete a tenant and its on-disk state. Destructive — \
+                 requires `confirm` equal to the tenant id.",
                 json!({
                     "type": "object",
-                    "required": ["tenant_id"],
-                    "properties": { "tenant_id": { "type": "string" } }
+                    "required": ["tenant_id", "confirm"],
+                    "properties": {
+                        "tenant_id": { "type": "string" },
+                        "confirm": {
+                            "type": "string",
+                            "description": "Must equal tenant_id to proceed."
+                        }
+                    }
                 }),
             ),
             tool_entry(

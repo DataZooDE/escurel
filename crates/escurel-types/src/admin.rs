@@ -71,6 +71,9 @@ pub struct TenantUpdateResponse {
 #[serde(default)]
 pub struct TenantDeleteRequest {
     pub tenant_id: String,
+    /// Confirmation token — the server requires it to equal `tenant_id` before
+    /// performing the destructive delete. `None` ⇒ the server rejects the call.
+    pub confirm: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

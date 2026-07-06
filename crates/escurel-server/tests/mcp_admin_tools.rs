@@ -163,16 +163,45 @@ async fn tenant_crud_lifecycle_over_mcp() {
         "Globex Inc"
     );
 
-    // delete → returns true + the directory is gone.
+    // delete → returns true + the directory is gone (confirm echoes the id).
     let deleted = call(
         p,
         Role::Admin,
         "tenant_delete",
-        json!({ "tenant_id": "globex" }),
+        json!({ "tenant_id": "globex", "confirm": "globex" }),
     )
     .await;
     assert_eq!(deleted["result"]["structuredContent"]["deleted"], true);
     assert!(!dir.exists());
+
+    h.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn tenant_delete_requires_matching_confirm() {
+    let h = start().await;
+    let p = &h.process;
+    // Missing confirm → rejected, tenant untouched.
+    let no_confirm = call(
+        p,
+        Role::Admin,
+        "tenant_delete",
+        json!({ "tenant_id": "acme" }),
+    )
+    .await;
+    assert_eq!(
+        no_confirm["error"]["code"], -32602,
+        "missing confirm must be invalid_params: {no_confirm}"
+    );
+    // Wrong confirm → rejected.
+    let wrong = call(
+        p,
+        Role::Admin,
+        "tenant_delete",
+        json!({ "tenant_id": "acme", "confirm": "nope" }),
+    )
+    .await;
+    assert_eq!(wrong["error"]["code"], -32602, "wrong confirm: {wrong}");
 
     h.process.shutdown().await;
 }
@@ -219,7 +248,7 @@ async fn tenant_delete_missing_returns_false() {
         &h.process,
         Role::Admin,
         "tenant_delete",
-        json!({ "tenant_id": "ghost" }),
+        json!({ "tenant_id": "ghost", "confirm": "ghost" }),
     )
     .await;
     assert!(body.get("error").is_none(), "delete error: {body}");
@@ -400,7 +429,22 @@ async fn tenant_export_then_import_round_trips() {
             > 0
     );
     // It is valid base64.
-    assert!(B64.decode(tarball).is_ok(), "tarball_b64 must decode");
+    let raw = B64.decode(tarball).expect("tarball_b64 must decode");
+    // The export carries a format version + a SHA-256 of the body so a
+    // consumer can verify before treating it as durable (protocol.md §backup).
+    assert_eq!(
+        exported["result"]["structuredContent"]["format_version"], 1,
+        "export format_version: {exported}"
+    );
+    let sha = exported["result"]["structuredContent"]["sha256"]
+        .as_str()
+        .expect("sha256");
+    let want = {
+        use sha2::{Digest, Sha256};
+        let d = Sha256::digest(&raw);
+        d.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    assert_eq!(sha, want, "sha256 must hash the tarball body");
 
     // Wipe the on-disk markdown, then import the tarball back.
     std::fs::remove_dir_all(&md_dir).unwrap();

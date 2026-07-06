@@ -379,6 +379,21 @@ const ARTICLE_SKILL: &str = "---\n\
      ---\n\
      # article\n";
 
+/// A resource-URI read whose template carries a placeholder (`{section}`)
+/// that a read cannot resolve (reads have no payload, only `{id}`). Used to
+/// prove the resource path fails closed rather than sending a literal `{x}`.
+const ARTICLE_RES_SKILL: &str = "---\n\
+     type: skill\n\
+     id: article_res\n\
+     description: KB articles via an MCP resource URI.\n\
+     backend:\n\
+    \x20 kind: mcp\n\
+    \x20 endpoint: upstream_kb\n\
+    \x20 read: { resource: \"kb://{section}/{id}\" }\n\
+    \x20 project: { title: $.title }\n\
+     ---\n\
+     # article_res\n";
+
 /// id → article object; `putArticle` mutates it, `getArticle` reads it.
 type Kb = Arc<Mutex<std::collections::BTreeMap<String, Value>>>;
 
@@ -409,6 +424,12 @@ async fn mcp_rpc(State(kb): State<Kb>, Json(req): Json<Value>) -> Json<Value> {
                 }
             }
             json!({ "structuredContent": article.clone(), "content": [], "isError": false })
+        }
+        "resources/read" => {
+            // Any URI resolves to a canned article — so a read only degrades
+            // when escurel refuses to send an unresolved-placeholder URI.
+            let uri = params["uri"].as_str().unwrap_or_default();
+            json!({ "contents": [ { "uri": uri, "text": "{\"title\":\"Res Title\"}" } ] })
         }
         other => {
             return Json(json!({
@@ -517,6 +538,49 @@ async fn mcp_remote_backend_read_write_over_the_wire() {
         live_field(p, &page_id, "status").await,
         "published",
         "the refused write must never have reached the KB"
+    );
+
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_resource_read_fails_closed_on_unresolved_placeholder() {
+    let (base_url, _kb) = start_kb().await;
+    let (process, _dirs) = spawn_gateway("article_res", ARTICLE_RES_SKILL).await;
+    let p = &process;
+
+    let reg = call(
+        p,
+        Role::Admin,
+        "register_endpoint",
+        json!({ "name": "upstream_kb", "kind": "mcp", "base_url": base_url }),
+    )
+    .await;
+    assert!(reg.get("error").is_none(), "register error: {reg}");
+
+    let created = call(
+        p,
+        Role::Admin,
+        "create_remote_instance",
+        json!({ "skill": "article_res", "id": "welcome" }),
+    )
+    .await;
+    let page_id = created["result"]["structuredContent"]["page_id"]
+        .as_str()
+        .expect("page_id")
+        .to_owned();
+
+    // The resource URI `kb://{section}/{id}` has an unresolved `{section}`
+    // (a read has no payload). The read must fail closed to an issue — never
+    // send a literal `{section}` to the upstream (which would 200 a canned doc).
+    let body = call(p, Role::Admin, "expand", json!({ "page_id": page_id })).await;
+    let proj = &body["result"]["structuredContent"]["backend_projection"];
+    let issue = proj["issue"]
+        .as_str()
+        .unwrap_or_else(|| panic!("unresolved resource placeholder must degrade: {body}"));
+    assert!(
+        issue.contains("section"),
+        "the issue should name the unresolved placeholder: {issue}"
     );
 
     process.shutdown().await;
