@@ -28,7 +28,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
-use crate::health::{AlwaysReady, ReadinessProbe, ReadinessReport};
+use crate::health::{ReadinessProbe, ReadinessReport};
 use crate::mcp::mcp;
 use crate::session::{DEFAULT_IDLE_TTL, SessionManager};
 use crate::ws::ws_upgrade;
@@ -98,7 +98,7 @@ pub struct ServerConfig {
     /// Returned as the body of `GET /version`. Comes from `VERSION`
     /// env var in production; tests usually pass a literal.
     pub version: String,
-    /// Probe behind `/readyz`. Defaults to [`AlwaysReady`].
+    /// Probe behind `/readyz`. Defaults to [`crate::health::AlwaysReady`].
     pub readiness: Arc<dyn ReadinessProbe>,
     /// Per-tenant indexer. None disables the `/mcp` endpoint
     /// (useful for health-only deployments). `tools/call` returns
@@ -171,31 +171,6 @@ impl std::fmt::Debug for ServerConfig {
             .field("listen", &self.listen)
             .field("version", &self.version)
             .finish_non_exhaustive()
-    }
-}
-
-impl ServerConfig {
-    /// Minimal config for a local dev / test run: HTTP on a random
-    /// port, `version = "0.0.0-dev"`, `AlwaysReady`.
-    #[must_use]
-    pub fn test_defaults() -> Self {
-        Self {
-            write_acl: WriteAclMode::Off,
-            listen: "127.0.0.1:0".to_owned(),
-            version: "0.0.0-dev".to_owned(),
-            readiness: Arc::new(AlwaysReady),
-            indexer: None,
-            verifier: None,
-            quota: None,
-            tenant_store: None,
-            crdt_backend: None,
-            embedder_reload: None,
-            embedder_factory: None,
-            demo_dir: None,
-            webhook_url: None,
-            webhook_secret: None,
-            metrics_listen: Some("127.0.0.1:0".to_owned()),
-        }
     }
 }
 

@@ -520,19 +520,6 @@ impl Ledger {
         Ok(row)
     }
 
-    /// Count rows in a given status — used by the runner's `/debug/ledger`
-    /// surface and the no-mock integration test ("exactly one terminal run
-    /// row").
-    pub fn count_by_status(&self, tenant: &str, status: RunStatus) -> Result<u64, LedgerError> {
-        let conn = self.conn.lock().expect("run ledger mutex");
-        let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM runs WHERE tenant = ?1 AND status = ?2",
-            rusqlite::params![tenant, status.as_str()],
-            |r| r.get(0),
-        )?;
-        Ok(n as u64)
-    }
-
     /// Total run rows for a tenant (any status). Backs the integration
     /// test's "exactly one run row" assertion.
     pub fn count_runs(&self, tenant: &str) -> Result<u64, LedgerError> {
