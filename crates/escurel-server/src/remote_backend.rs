@@ -146,6 +146,19 @@ async fn exec(
     vars: &BTreeMap<String, String>,
     payload: Option<&Value>,
 ) -> Result<Value, String> {
+    // Fail closed on a protocol mismatch: the skill's backend kind must match
+    // the kind the endpoint was registered under. `create_remote_instance`
+    // only checks the endpoint *name* exists, so without this an `openapi`
+    // skill pointing at an endpoint registered as `mcp` (or vice-versa) would
+    // dispatch the wrong transport at a URL that speaks the other protocol.
+    if ep.kind != remote.kind.as_str() {
+        return Err(format!(
+            "endpoint `{}` is registered as `{}` but the skill's backend is `{}`",
+            ep.name,
+            ep.kind,
+            remote.kind.as_str()
+        ));
+    }
     match (remote.kind, op) {
         (RemoteKind::OpenApi, RemoteOp::Http { method, path }) => {
             http_call(ep, method, path, vars, payload).await

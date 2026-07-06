@@ -729,9 +729,15 @@ backend:
 ```
 
 `{id}` in a `path` / `resource` / `tool`-arg template is filled from the
-overlay id (and, for writes, the payload). `expand` returns the overlay merged
-with the live projection under `backend_projection = { source, fields,
-issue? }`; `backend_ref` carries `{ kind, endpoint, read, write? }`.
+overlay instance id. On a write, the payload's fields are merged into the
+**MCP tool-call arguments**; OpenAPI **path** templates currently bind only
+`{id}` (other `{placeholder}` segments are not yet filled from the payload and
+a read/write carrying them fails closed with an `unfilled path placeholders`
+issue). A read/write is also refused (fail-closed) when the skill's backend
+`kind` does not match the `kind` its `endpoint` was registered under. `expand`
+returns the overlay merged with the live projection under
+`backend_projection = { source, fields, issue? }`; `backend_ref` carries
+`{ kind, endpoint, read, write? }`.
 
 New MCP tools:
 

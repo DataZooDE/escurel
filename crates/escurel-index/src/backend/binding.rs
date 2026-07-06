@@ -48,14 +48,25 @@ pub enum RemoteKind {
     Mcp,
 }
 
+impl RemoteKind {
+    /// The registry `kind` string this maps to (`external_endpoints.kind`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenApi => "openapi",
+            Self::Mcp => "mcp",
+        }
+    }
+}
+
 /// A single remote operation — how a `read` or `write` reaches the upstream.
 /// The variant is selected by the binding's [`RemoteKind`]: `openapi` uses
 /// [`RemoteOp::Http`]; `mcp` uses [`RemoteOp::McpTool`] or
 /// [`RemoteOp::McpResource`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteOp {
-    /// OpenAPI/REST: an HTTP `method` + `path` template (the path MAY contain
-    /// `{placeholder}` segments filled from the overlay id / write payload).
+    /// OpenAPI/REST: an HTTP `method` + `path` template. The path MAY contain a
+    /// `{id}` segment, filled from the overlay instance id; other placeholders
+    /// are not yet bound (see `docs/spec/protocol.md` §"Remote backends").
     Http { method: String, path: String },
     /// MCP: call a tool by `name` (arguments are the write payload / id map).
     McpTool { name: String },

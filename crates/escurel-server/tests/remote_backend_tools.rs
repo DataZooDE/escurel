@@ -573,6 +573,54 @@ async fn openapi_unreachable_endpoint_degrades_read_and_probe() {
     process.shutdown().await;
 }
 
+/// An endpoint registered under a different `kind` than the skill's backend
+/// must fail the read closed — not silently dispatch the wrong transport.
+/// `create_remote_instance` only checks the endpoint *name* exists, so this
+/// guard is the last line of defence. Here an `openapi` skill points at an
+/// endpoint mis-registered as `mcp` (but backed by the real OpenAPI CRM):
+/// without the guard the HTTP read would just succeed; with it, it degrades.
+#[tokio::test]
+async fn remote_read_fails_closed_on_endpoint_protocol_mismatch() {
+    let (base_url, _crm) = start_crm().await;
+    let (process, _dirs) = spawn_gateway("customer", CUSTOMER_SKILL).await;
+    let p = &process;
+
+    // Same name the skill references, but the WRONG kind.
+    let reg = call(
+        p,
+        Role::Admin,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "mcp", "base_url": base_url }),
+    )
+    .await;
+    assert!(reg.get("error").is_none(), "register error: {reg}");
+
+    let created = call(
+        p,
+        Role::Admin,
+        "create_remote_instance",
+        json!({ "skill": "customer", "id": "acme" }),
+    )
+    .await;
+    assert!(created.get("error").is_none(), "create error: {created}");
+    let page_id = created["result"]["structuredContent"]["page_id"]
+        .as_str()
+        .expect("page_id")
+        .to_owned();
+
+    let body = call(p, Role::Admin, "expand", json!({ "page_id": page_id })).await;
+    let proj = &body["result"]["structuredContent"]["backend_projection"];
+    let issue = proj["issue"]
+        .as_str()
+        .unwrap_or_else(|| panic!("protocol mismatch must degrade to an issue: {body}"));
+    assert!(
+        issue.contains("openapi") && issue.contains("mcp"),
+        "the issue should name both the skill and endpoint kinds: {issue}"
+    );
+
+    process.shutdown().await;
+}
+
 // --- upstream bootstrap ------------------------------------------------
 
 /// Bind an ephemeral loopback port, serve `app`, and return `(base_url, task)`.
