@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use super::BackendKind;
 
 /// The parsed `backend:` block off a skill page's frontmatter.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct BackendBinding {
     pub kind: BackendKind,
     /// Present (and `kind == SqlView`) when the skill declares a
@@ -62,12 +62,19 @@ impl RemoteKind {
 /// The variant is selected by the binding's [`RemoteKind`]: `openapi` uses
 /// [`RemoteOp::Http`]; `mcp` uses [`RemoteOp::McpTool`] or
 /// [`RemoteOp::McpResource`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RemoteOp {
-    /// OpenAPI/REST: an HTTP `method` + `path` template. The path MAY contain a
-    /// `{id}` segment, filled from the overlay instance id; other placeholders
-    /// are not yet bound (see `docs/spec/protocol.md` §"Remote backends").
-    Http { method: String, path: String },
+    /// OpenAPI/REST: an HTTP `method` + `path` template + optional request
+    /// `body` template. `{name}` placeholders in the path (and in the body
+    /// template) are filled from the overlay instance id (`{id}`) and, on a
+    /// write, the payload's scalar fields (dotted, e.g. `{customer.tier}`).
+    /// When `body` is `None` the write payload is sent verbatim as the JSON
+    /// body (see `docs/spec/protocol.md` §"Remote backends").
+    Http {
+        method: String,
+        path: String,
+        body: Option<serde_json::Value>,
+    },
     /// MCP: call a tool by `name` (arguments are the write payload / id map).
     McpTool { name: String },
     /// MCP: read a resource by `uri` template.
@@ -80,7 +87,7 @@ pub enum RemoteOp {
 /// that fetches the projection, an optional `write` op for write-back, and a
 /// `project` map from response JSON (dotted `$.a.b` path or bare top-level
 /// key) to overlay frontmatter field.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RemoteBinding {
     pub kind: RemoteKind,
     /// Admin-registered endpoint name (`backend.endpoint`) — resolved to a
@@ -332,7 +339,10 @@ fn parse_remote_op(
                         "GET".into()
                     }
                 });
-            Some(RemoteOp::Http { method, path })
+            // Optional request-body template (writes). `None` ⇒ send the
+            // payload verbatim.
+            let body = op.get("body").cloned();
+            Some(RemoteOp::Http { method, path, body })
         }
         RemoteKind::Mcp => {
             if let Some(tool) = get_str("tool") {
@@ -500,7 +510,8 @@ mod tests {
             r.read,
             RemoteOp::Http {
                 method: "GET".into(),
-                path: "/customers/{id}".into()
+                path: "/customers/{id}".into(),
+                body: None,
             }
         );
         // write method is upper-cased
@@ -508,12 +519,39 @@ mod tests {
             r.write,
             Some(RemoteOp::Http {
                 method: "PATCH".into(),
-                path: "/customers/{id}".into()
+                path: "/customers/{id}".into(),
+                body: None,
             })
         );
         assert_eq!(
             r.project.get("display_name").map(String::as_str),
             Some("$.name")
+        );
+    }
+
+    #[test]
+    fn parse_openapi_write_carries_path_and_body_templates() {
+        let fm = json!({
+            "backend": {
+                "kind": "openapi",
+                "endpoint": "crm_rest",
+                "read":  { "path": "/customers/{id}" },
+                "write": {
+                    "method": "POST",
+                    "path": "/customers/{id}/orders/{order_id}",
+                    "body": { "sku": "{sku}", "qty": "{qty}", "via": "escurel" }
+                },
+                "project": { "id": "$.id" }
+            }
+        });
+        let r = BackendBinding::parse(&fm).remote.expect("remote binding");
+        assert_eq!(
+            r.write,
+            Some(RemoteOp::Http {
+                method: "POST".into(),
+                path: "/customers/{id}/orders/{order_id}".into(),
+                body: Some(json!({ "sku": "{sku}", "qty": "{qty}", "via": "escurel" })),
+            })
         );
     }
 

@@ -18,10 +18,11 @@
 //! (reqwest reads it by default), so calls traverse the same egress path as
 //! the rest of the gateway.
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
-use escurel_index::backend::remote::{fill_template, resolve_projection, unfilled_placeholders};
+use escurel_index::backend::remote::{
+    fill_template, render_body, resolve_projection, template_vars, unfilled_placeholders,
+};
 use escurel_index::endpoints::{EndpointAuth, EndpointRecord};
 use escurel_index::{Indexer, RemoteBinding, RemoteKind, RemoteOp};
 use serde_json::{Map, Value, json};
@@ -46,16 +47,6 @@ fn issue(msg: impl Into<String>) -> Value {
     json!({ "issue": msg.into() })
 }
 
-/// The template variables filled into a read/write op — the instance id
-/// (`{id}`), taken from the overlay page's slug.
-fn id_vars(page_slug: Option<&str>) -> BTreeMap<String, String> {
-    let mut m = BTreeMap::new();
-    if let Some(s) = page_slug {
-        m.insert("id".to_owned(), s.to_owned());
-    }
-    m
-}
-
 /// Live-read a remote instance and return its `backend_projection`
 /// (`{ source, fields }`). Any failure resolves to `{ issue }` — the overlay
 /// page (rendered by `expand`) is still returned; only the live projection is
@@ -77,8 +68,7 @@ pub(crate) async fn fetch_projection(
         Ok(None) => return issue(format!("endpoint `{}` is not registered", remote.endpoint)),
         Err(e) => return issue(format!("endpoint lookup failed: {e}")),
     };
-    let vars = id_vars(page_slug);
-    match exec(&ep, &remote, &remote.read, &vars, None).await {
+    match exec(&ep, &remote, &remote.read, page_slug, None).await {
         Ok(resp) => {
             let fields = resolve_projection(&resp, &remote.project);
             json!({ "source": ep.name, "fields": Value::Object(fields) })
@@ -112,8 +102,7 @@ pub(crate) async fn write_instance(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("endpoint `{}` is not registered", remote.endpoint))?;
-    let vars = id_vars(page_slug);
-    let resp = exec(&ep, &remote, &write, &vars, Some(payload)).await?;
+    let resp = exec(&ep, &remote, &write, page_slug, Some(payload)).await?;
     let fields = resolve_projection(&resp, &remote.project);
     Ok(json!({ "ok": true, "source": ep.name, "fields": Value::Object(fields) }))
 }
@@ -143,7 +132,7 @@ async fn exec(
     ep: &EndpointRecord,
     remote: &RemoteBinding,
     op: &RemoteOp,
-    vars: &BTreeMap<String, String>,
+    id: Option<&str>,
     payload: Option<&Value>,
 ) -> Result<Value, String> {
     // Fail closed on a protocol mismatch: the skill's backend kind must match
@@ -160,17 +149,17 @@ async fn exec(
         ));
     }
     match (remote.kind, op) {
-        (RemoteKind::OpenApi, RemoteOp::Http { method, path }) => {
-            http_call(ep, method, path, vars, payload).await
+        (RemoteKind::OpenApi, RemoteOp::Http { method, path, body }) => {
+            http_call(ep, method, path, body.as_ref(), id, payload).await
         }
         (RemoteKind::Mcp, RemoteOp::McpTool { name }) => {
-            let args = mcp_args(vars, payload);
+            let args = mcp_args(id, payload);
             let result =
                 mcp_call(ep, "tools/call", json!({ "name": name, "arguments": args })).await?;
             Ok(extract_mcp_result("tools/call", result))
         }
         (RemoteKind::Mcp, RemoteOp::McpResource { uri }) => {
-            let filled = fill_template(uri, vars);
+            let filled = fill_template(uri, &template_vars(id, payload));
             let result = mcp_call(ep, "resources/read", json!({ "uri": filled })).await?;
             Ok(extract_mcp_result("resources/read", result))
         }
@@ -178,16 +167,20 @@ async fn exec(
     }
 }
 
-/// Execute an OpenAPI/REST call: fill the path template, join to the base URL,
-/// apply auth, attach the JSON payload for writes, and parse the JSON body.
+/// Execute an OpenAPI/REST call: fill the `{name}` path placeholders (from the
+/// overlay id + payload scalars), join to the base URL, apply auth, attach the
+/// JSON body (a rendered `body:` template if declared, else the raw payload),
+/// and parse the JSON response. Under-specified path/body templates fail closed.
 async fn http_call(
     ep: &EndpointRecord,
     method: &str,
     path: &str,
-    vars: &BTreeMap<String, String>,
+    body_template: Option<&Value>,
+    id: Option<&str>,
     payload: Option<&Value>,
 ) -> Result<Value, String> {
-    let filled = fill_template(path, vars);
+    let vars = template_vars(id, payload);
+    let filled = fill_template(path, &vars);
     let missing = unfilled_placeholders(&filled);
     if !missing.is_empty() {
         return Err(format!("unfilled path placeholders: {missing:?}"));
@@ -196,7 +189,15 @@ async fn http_call(
     let http_method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| format!("invalid HTTP method `{method}`"))?;
     let mut req = apply_auth(client().request(http_method, url.as_str()), ep);
-    if let Some(p) = payload {
+    if let Some(tpl) = body_template {
+        // A declared body template reshapes the payload; unresolved
+        // placeholders fail the write closed rather than send a literal `{x}`.
+        let (rendered, missing) = render_body(tpl, id, payload.unwrap_or(&Value::Null));
+        if !missing.is_empty() {
+            return Err(format!("unfilled body placeholders: {missing:?}"));
+        }
+        req = req.json(&rendered);
+    } else if let Some(p) = payload {
         req = req.json(p);
     }
     let resp = req
@@ -270,12 +271,12 @@ fn extract_mcp_result(method: &str, result: Value) -> Value {
     result
 }
 
-/// Arguments for an MCP tool call: the id template vars merged with the write
-/// payload's object fields (payload wins on key collision).
-fn mcp_args(vars: &BTreeMap<String, String>, payload: Option<&Value>) -> Value {
+/// Arguments for an MCP tool call: the overlay id (`{id}`) merged with the
+/// write payload's object fields (payload wins on key collision).
+fn mcp_args(id: Option<&str>, payload: Option<&Value>) -> Value {
     let mut m = Map::new();
-    for (k, v) in vars {
-        m.insert(k.clone(), Value::String(v.clone()));
+    if let Some(id) = id {
+        m.insert("id".to_owned(), Value::String(id.to_owned()));
     }
     if let Some(Value::Object(p)) = payload {
         for (k, v) in p {
@@ -352,12 +353,10 @@ mod tests {
     }
 
     #[test]
-    fn mcp_args_merges_vars_and_payload() {
-        let vars: BTreeMap<String, String> =
-            [("id".to_owned(), "acme".to_owned())].into_iter().collect();
+    fn mcp_args_merges_id_and_payload() {
         let payload = json!({ "tier": "gold" });
         assert_eq!(
-            mcp_args(&vars, Some(&payload)),
+            mcp_args(Some("acme"), Some(&payload)),
             json!({ "id": "acme", "tier": "gold" })
         );
     }

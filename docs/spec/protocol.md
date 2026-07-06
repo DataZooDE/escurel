@@ -716,7 +716,10 @@ backend:
   kind: openapi
   endpoint: crm_rest                 # admin-registered (URL + auth server-side)
   read:  { operationId: getCustomer, path: /customers/{id} }   # method defaults GET
-  write: { method: PATCH, path: /customers/{id} }              # omit ⇒ read-only
+  write:                             # omit ⇒ read-only
+    method: POST
+    path: /customers/{id}/orders/{order_id}   # {order_id} from the payload
+    body: { sku: "{sku}", qty: "{qty}", via: "escurel" }   # optional template
   project: { display_name: $.name, tier: $.account_tier }
 ```
 ```yaml
@@ -728,15 +731,19 @@ backend:
   project: { title: $.title }
 ```
 
-`{id}` in a `path` / `resource` / `tool`-arg template is filled from the
-overlay instance id. On a write, the payload's fields are merged into the
-**MCP tool-call arguments**; OpenAPI **path** templates currently bind only
-`{id}` (other `{placeholder}` segments are not yet filled from the payload and
-a read/write carrying them fails closed with an `unfilled path placeholders`
-issue). A read/write is also refused (fail-closed) when the skill's backend
-`kind` does not match the `kind` its `endpoint` was registered under. `expand`
-returns the overlay merged with the live projection under
-`backend_projection = { source, fields, issue? }`; `backend_ref` carries
+`{name}` placeholders in a `path` / `resource` / body template are filled from
+the overlay instance id (`{id}`) and, on a write, the payload's **scalar**
+fields — flattened to dotted keys, so `{order_id}` and `{customer.tier}` both
+resolve. A placeholder that cannot be resolved fails the call closed
+(`unfilled path/body placeholders`), never sending a literal `{x}`. For an
+OpenAPI write, an optional `body:` template reshapes the payload: an **exact**
+`"{name}"` leaf keeps its JSON type (a number stays a number, an object stays
+an object), while embedded `{name}` interpolates as a string; omit `body:` to
+send the payload verbatim. For an MCP write, the payload's fields are merged
+into the tool-call arguments. A read/write is also refused (fail-closed) when
+the skill's backend `kind` does not match the `kind` its `endpoint` was
+registered under. `expand` returns the overlay merged with the live projection
+under `backend_projection = { source, fields, issue? }`; `backend_ref` carries
 `{ kind, endpoint, read, write? }`.
 
 New MCP tools:

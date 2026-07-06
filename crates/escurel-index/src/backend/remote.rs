@@ -108,6 +108,157 @@ pub fn fill_template(template: &str, vars: &BTreeMap<String, String>) -> String 
     out
 }
 
+/// Build the `{name}` template variables for a path / URI: the overlay instance
+/// id (`{id}`) plus every **scalar** leaf of the write `payload`, flattened to
+/// dotted keys (`{order_id}`, `{customer.tier}`). Reads pass `payload = None`,
+/// binding only `{id}`. The overlay id always wins over a payload field named
+/// `id` (it is the instance identity, not caller-supplied data).
+#[must_use]
+pub fn template_vars(id: Option<&str>, payload: Option<&Value>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some(p) = payload {
+        flatten_scalars(p, "", &mut out);
+    }
+    if let Some(id) = id {
+        out.insert("id".to_owned(), id.to_owned());
+    }
+    out
+}
+
+/// Flatten an object's scalar leaves into dotted keys, e.g.
+/// `{a:{b:1}, c:"x"}` → `{"a.b":"1", "c":"x"}`. Arrays and `null` are skipped
+/// (they cannot be substituted into a URL segment).
+fn flatten_scalars(v: &Value, prefix: &str, out: &mut BTreeMap<String, String>) {
+    match v {
+        Value::Object(m) => {
+            for (k, val) in m {
+                let key = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                flatten_scalars(val, &key, out);
+            }
+        }
+        _ if prefix.is_empty() => {}
+        Value::String(s) => {
+            out.insert(prefix.to_owned(), s.clone());
+        }
+        Value::Number(n) => {
+            out.insert(prefix.to_owned(), n.to_string());
+        }
+        Value::Bool(b) => {
+            out.insert(prefix.to_owned(), b.to_string());
+        }
+        Value::Null | Value::Array(_) => {}
+    }
+}
+
+/// Render a write `body:` template against the overlay id + write payload.
+///
+/// - An **exact** `"{name}"` string leaf is replaced by the resolved JSON value
+///   *type-preserving* (a number stays a number, an object stays an object).
+/// - Any other string is textually interpolated (`{name}` → the scalar value's
+///   string form); a placeholder resolving to a non-scalar is treated as
+///   unresolved.
+/// - Arrays / objects recurse; non-string scalars pass through unchanged.
+///
+/// Placeholders resolve against the overlay id (`{id}`) and the payload (dotted,
+/// e.g. `{customer.id}`). Returns the rendered body and the placeholders that
+/// could not be resolved (a non-empty list ⇒ the caller fails the write closed).
+#[must_use]
+pub fn render_body(template: &Value, id: Option<&str>, payload: &Value) -> (Value, Vec<String>) {
+    let mut missing = Vec::new();
+    let out = render_value(template, id, payload, &mut missing);
+    (out, missing)
+}
+
+fn render_value(t: &Value, id: Option<&str>, payload: &Value, missing: &mut Vec<String>) -> Value {
+    match t {
+        Value::String(s) => render_string_leaf(s, id, payload, missing),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|x| render_value(x, id, payload, missing))
+                .collect(),
+        ),
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, v)| (k.clone(), render_value(v, id, payload, missing)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn render_string_leaf(
+    s: &str,
+    id: Option<&str>,
+    payload: &Value,
+    missing: &mut Vec<String>,
+) -> Value {
+    // Exact `"{name}"` → the resolved value, keeping its JSON type.
+    if let Some(name) = exact_placeholder(s) {
+        return match resolve_typed(name, id, payload) {
+            Some(v) => v,
+            None => {
+                missing.push(name.to_owned());
+                Value::String(s.to_owned())
+            }
+        };
+    }
+    // Otherwise interpolate `{name}` occurrences as strings.
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let Some(rel) = rest[open..].find('}') else {
+            out.push_str(&rest[open..]);
+            return Value::String(out);
+        };
+        let close = open + rel;
+        let name = &rest[open + 1..close];
+        match resolve_typed(name, id, payload)
+            .as_ref()
+            .and_then(scalar_str)
+        {
+            Some(val) => out.push_str(&val),
+            None => {
+                missing.push(name.to_owned());
+                out.push_str(&rest[open..=close]);
+            }
+        }
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    Value::String(out)
+}
+
+/// `Some(name)` iff `s` is exactly `{name}` with no other braces.
+fn exact_placeholder(s: &str) -> Option<&str> {
+    s.strip_prefix('{')
+        .and_then(|r| r.strip_suffix('}'))
+        .filter(|name| !name.contains('{') && !name.contains('}'))
+}
+
+/// Resolve a placeholder to a JSON value: `{id}` from the overlay id, else a
+/// (dotted) lookup into the payload.
+fn resolve_typed(name: &str, id: Option<&str>, payload: &Value) -> Option<Value> {
+    if name == "id" {
+        return id.map(|s| Value::String(s.to_owned()));
+    }
+    json_path_get(payload, name).cloned()
+}
+
+/// A scalar rendered as its string form; non-scalars are not interpolatable.
+fn scalar_str(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 /// The `{name}` placeholders still present in a filled template — non-empty
 /// means the template was under-specified (a `BadBinding` at call time).
 #[must_use]
@@ -194,5 +345,80 @@ mod tests {
     fn unfilled_placeholders_empty_when_all_bound() {
         let filled = fill_template("/c/{id}", &vars(&[("id", "z")]));
         assert!(unfilled_placeholders(&filled).is_empty());
+    }
+
+    #[test]
+    fn template_vars_binds_id_and_flattened_payload_scalars() {
+        let payload = json!({
+            "order_id": "o-9",
+            "qty": 3,
+            "customer": { "tier": "gold" },
+            "tags": ["a", "b"],   // arrays skipped
+            "note": null           // null skipped
+        });
+        let v = template_vars(Some("acme"), Some(&payload));
+        assert_eq!(v.get("id").map(String::as_str), Some("acme"));
+        assert_eq!(v.get("order_id").map(String::as_str), Some("o-9"));
+        assert_eq!(v.get("qty").map(String::as_str), Some("3"));
+        assert_eq!(v.get("customer.tier").map(String::as_str), Some("gold"));
+        assert!(!v.contains_key("tags") && !v.contains_key("note"));
+
+        // A multi-placeholder path resolves from the merged map.
+        let filled = fill_template("/customers/{id}/orders/{order_id}", &v);
+        assert_eq!(filled, "/customers/acme/orders/o-9");
+        assert!(unfilled_placeholders(&filled).is_empty());
+    }
+
+    #[test]
+    fn template_vars_overlay_id_wins_over_payload_id() {
+        let payload = json!({ "id": "forged" });
+        let v = template_vars(Some("acme"), Some(&payload));
+        assert_eq!(v.get("id").map(String::as_str), Some("acme"));
+    }
+
+    #[test]
+    fn render_body_exact_placeholder_is_type_preserving() {
+        let template = json!({
+            "order_id": "{order_id}",
+            "qty": "{qty}",
+            "customer": "{customer}",
+            "label": "order {order_id} x{qty}",
+            "source": "escurel"
+        });
+        let payload = json!({
+            "order_id": "o-9",
+            "qty": 3,
+            "customer": { "tier": "gold" }
+        });
+        let (out, missing) = render_body(&template, Some("acme"), &payload);
+        assert!(missing.is_empty(), "unexpected missing: {missing:?}");
+        // exact "{qty}" keeps the number type; "{customer}" keeps the object.
+        assert_eq!(out["order_id"], json!("o-9"));
+        assert_eq!(out["qty"], json!(3));
+        assert_eq!(out["customer"], json!({ "tier": "gold" }));
+        // embedded placeholders interpolate as strings.
+        assert_eq!(out["label"], json!("order o-9 x3"));
+        assert_eq!(out["source"], json!("escurel"));
+    }
+
+    #[test]
+    fn render_body_reports_unresolved_placeholders() {
+        let template = json!({ "a": "{nope}", "b": "x-{alsonope}" });
+        let (out, missing) = render_body(&template, Some("acme"), &json!({}));
+        assert!(missing.contains(&"nope".to_owned()));
+        assert!(missing.contains(&"alsonope".to_owned()));
+        // unresolved placeholders are left literal (the caller fails closed).
+        assert_eq!(out["a"], json!("{nope}"));
+        assert_eq!(out["b"], json!("x-{alsonope}"));
+    }
+
+    #[test]
+    fn render_body_binds_id_and_dotted_payload() {
+        let template = json!({ "who": "{id}", "tier": "{customer.tier}" });
+        let payload = json!({ "customer": { "tier": "gold" } });
+        let (out, missing) = render_body(&template, Some("acme"), &payload);
+        assert!(missing.is_empty());
+        assert_eq!(out["who"], json!("acme"));
+        assert_eq!(out["tier"], json!("gold"));
     }
 }

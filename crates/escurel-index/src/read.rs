@@ -27,7 +27,7 @@ use crate::{Indexer, IndexerError};
 /// `docs/spec/protocol.md §list_skills`: true when `at` is in
 /// `required_frontmatter`. Agents use it to pick the
 /// event-log code path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SkillInfo {
     pub id: String,
     pub description: String,

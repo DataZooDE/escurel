@@ -148,6 +148,136 @@ async fn start_crm() -> (String, tokio::task::JoinHandle<()>) {
     (base, handle)
 }
 
+// --- openapi: multi-placeholder path + a request-body template ---------
+
+/// A write op whose path carries a payload-derived placeholder (`{order_id}`)
+/// and whose `body:` reshapes the payload: `{qty}` is an *exact* placeholder
+/// (kept as a number), `{sku}` interpolates, `via` is a constant. The read
+/// projects the stored order back out so the write is verified end-to-end.
+const ORDERS_SKILL: &str = "---\n\
+     type: skill\n\
+     id: order\n\
+     description: customer orders, proxied live.\n\
+     backend:\n\
+    \x20 kind: openapi\n\
+    \x20 endpoint: crm_orders\n\
+    \x20 read: { path: \"/customers/{id}\" }\n\
+    \x20 write:\n\
+    \x20   method: POST\n\
+    \x20   path: \"/customers/{id}/orders/{order_id}\"\n\
+    \x20   body: { sku: \"{sku}\", qty: \"{qty}\", via: \"escurel\" }\n\
+    \x20 project:\n\
+    \x20   sku: $.sku\n\
+    \x20   qty: $.qty\n\
+    \x20   latest_sku: $.latest_order.sku\n\
+    \x20   latest_qty: $.latest_order.qty\n\
+    \x20   latest_via: $.latest_order.via\n\
+     ---\n\
+     # order\n";
+
+async fn get_customer_orders(Path(id): Path<String>, State(db): State<Crm>) -> Json<Value> {
+    let row = db.lock().unwrap().get(&id).cloned().unwrap_or(Value::Null);
+    Json(row)
+}
+
+/// Store the received (already-rendered) order body under the customer and
+/// echo it back — real state the read can observe.
+async fn post_order(
+    Path((id, _order_id)): Path<(String, String)>,
+    State(db): State<Crm>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let mut guard = db.lock().unwrap();
+    let row = guard.entry(id).or_insert_with(|| json!({}));
+    if let Some(obj) = row.as_object_mut() {
+        obj.insert("latest_order".to_owned(), body.clone());
+    }
+    Json(body)
+}
+
+async fn start_orders_crm() -> (String, tokio::task::JoinHandle<()>) {
+    let db: Crm = Arc::new(Mutex::new(
+        [("acme".to_owned(), json!({ "name": "Acme Corp" }))]
+            .into_iter()
+            .collect(),
+    ));
+    let app = Router::new()
+        .route("/customers/{id}", get(get_customer_orders))
+        .route("/customers/{id}/orders/{order_id}", post(post_order))
+        .with_state(db);
+    serve(app).await
+}
+
+#[tokio::test]
+async fn openapi_write_fills_path_and_body_placeholders_from_payload() {
+    let (base_url, _crm) = start_orders_crm().await;
+    let (process, _dirs) = spawn_gateway("order", ORDERS_SKILL).await;
+    let p = &process;
+
+    let reg = call(
+        p,
+        Role::Admin,
+        "register_endpoint",
+        json!({ "name": "crm_orders", "kind": "openapi", "base_url": base_url }),
+    )
+    .await;
+    assert!(reg.get("error").is_none(), "register error: {reg}");
+
+    let created = call(
+        p,
+        Role::Admin,
+        "create_remote_instance",
+        json!({ "skill": "order", "id": "acme" }),
+    )
+    .await;
+    assert!(created.get("error").is_none(), "create error: {created}");
+    let page_id = created["result"]["structuredContent"]["page_id"]
+        .as_str()
+        .expect("page_id")
+        .to_owned();
+
+    // Write: {order_id} fills the path, {sku}/{qty} fill the body template.
+    let written = call(
+        p,
+        Role::Admin,
+        "write_instance",
+        json!({
+            "ref": "order::acme",
+            "payload": { "order_id": "o-1", "sku": "widget", "qty": 2 }
+        }),
+    )
+    .await;
+    assert!(written.get("error").is_none(), "write error: {written}");
+    let w = &written["result"]["structuredContent"];
+    assert_eq!(w["ok"], true, "write result: {written}");
+    // The write reached POST /customers/acme/orders/o-1 (path placeholder from
+    // the payload) and the body template rendered — sku a string, qty a number.
+    assert_eq!(w["fields"]["sku"], json!("widget"), "body sku: {written}");
+    assert_eq!(
+        w["fields"]["qty"],
+        json!(2),
+        "exact {{qty}} must stay a number, not \"2\": {written}"
+    );
+
+    // Read-after-write: the stored order (incl. the constant `via`) is what the
+    // template produced — proof the rendered body, not the raw payload, landed.
+    let body = call(p, Role::Admin, "expand", json!({ "page_id": page_id })).await;
+    let fields = &body["result"]["structuredContent"]["backend_projection"]["fields"];
+    assert_eq!(
+        fields["latest_sku"],
+        json!("widget"),
+        "read-after-write: {body}"
+    );
+    assert_eq!(fields["latest_qty"], json!(2), "qty stayed numeric: {body}");
+    assert_eq!(
+        fields["latest_via"],
+        json!("escurel"),
+        "the body template's constant must have landed: {body}"
+    );
+
+    process.shutdown().await;
+}
+
 #[tokio::test]
 async fn openapi_remote_backend_read_write_over_the_wire() {
     let (base_url, _crm) = start_crm().await;

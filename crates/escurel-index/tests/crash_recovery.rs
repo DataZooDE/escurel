@@ -182,7 +182,7 @@ fn table_counts(conn: &Connection) -> (i64, i64, i64, i64) {
 /// `docs/notes/discovered/2026-05-24-duckdb-second-connection-stale.md`.
 /// Comparing this struct before node loss and after rebuild proves the
 /// index was reproduced.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 struct ObservableState {
     skills: Vec<escurel_index::SkillInfo>,
     instances: Vec<escurel_index::InstanceInfo>,
