@@ -36,7 +36,7 @@ ${ESCUREL_DATA_DIR}/tenants/<tenant_id>/
 │           └── 2026-04-12-acme-qbr.md
 ├── escurel.duckdb             # single DuckDB file: pages, links, blocks
 │                              # (with vss + fts indexes), crdt_ops,
-│                              # crdt_snapshots, frontmatter_index,
+│                              # crdt_snapshots,
 │                              # external_credentials (sql_view secrets)
 ├── blobs/                     # document-backend canonical originals (sha256-keyed)
 │   ├── inbox/                 # deposited-but-not-yet-processed uploads
@@ -45,7 +45,7 @@ ${ESCUREL_DATA_DIR}/tenants/<tenant_id>/
 │   └── ducklake.config        # ATTACH parameters per attached catalog
 └── cache/
     ├── embeddings/            # warm cache for re-embed parallel
-    └── compacted/             # staging for `compact_db`
+    └── compacted/             # staging for `compact_lanes`
 ```
 
 This layout is *the export format*: `tenant_export` produces a
@@ -83,21 +83,28 @@ pub trait LaneStore: Send + Sync + 'static {
     /// Atomic write-then-publish. Returns the new content version.
     async fn write(&self, key: &Key, body: Bytes) -> Result<Version>;
 
-    /// Open a long-lived handle for streaming workloads.
-    /// For FS: returns a `tokio::fs::File`. For S3: returns a multipart
-    /// writer that flushes on drop.
-    async fn open_writer(&self, key: &Key) -> Result<Box<dyn AsyncWrite + Unpin + Send>>;
-
     /// Enumerate keys under a prefix. Used by audit + tenant_export.
     async fn list(&self, prefix: &Key) -> Result<Vec<Key>>;
 
-    /// Used by `compact_db` and tenant_delete.
+    /// Used by `compact_lanes` and tenant_delete.
     async fn delete(&self, key: &Key) -> Result<()>;
 
     /// Object-store URL form, suitable for handing to DuckDB
     /// (`httpfs`) without copying through this process.
-    fn url(&self, key: &Key) -> Url;
+    fn url(&self, key: &Key) -> Result<Url>;
+
+    // Content-addressed blobs for the Document/RAG backend ride on the
+    // primitives above (see §"Instance backends" below):
+    //   put_blob(tenant, body, max_bytes) -> BlobId, put_inbox_blob,
+    //   get_blob, get_inbox_blob, promote_inbox_blob, delete_blob,
+    //   list_blobs.
 }
+
+// **Not yet implemented.** A streaming `open_writer(key) ->
+// AsyncWrite` handle (a `tokio::fs::File` for FS, a drop-flushing
+// multipart writer for S3) is intentionally absent from the trait
+// until a caller actually needs it; today all writes go through the
+// buffered `write`.
 ```
 
 `Key` is a tenant-scoped relative path
@@ -222,9 +229,12 @@ Only `vw_`-prefixed managed views are ever projected, and source identifiers /
 opened with `allow_unsigned_extensions` **only** behind an admin opt-in.
 
 **`document`.** `LaneStore` gains a content-addressed area —
-`put_blob(bytes) -> BlobId(sha256)`, `put_inbox_blob`, `get_blob`,
-`promote_inbox_blob`, `list_blobs` (on the trait + `FsStore` + S3) — backing
-`blobs/` and `blobs/inbox/`. Ingestion is two-phase to keep the write lock
+`put_blob(tenant, body, max_bytes) -> BlobId(sha256)`, `put_inbox_blob`,
+`get_blob`, `get_inbox_blob`, `promote_inbox_blob`, `delete_blob`,
+`list_blobs` (default-impl'd on the trait over read/write/list, so `FsStore`
++ S3 get them for free) — backing `blobs/` and `blobs/inbox/`. `max_bytes`
+is the per-blob size quota (oversize bodies are rejected before any write);
+`delete_blob` is used by `rebuild` to reclaim orphan blobs. Ingestion is two-phase to keep the write lock
 short: the `DocumentIngestWorker` **extracts off the lock** (an `Extractor`:
 `PlainTextExtractor` for `text/*`; `KreuzbergExtractor` for PDF/DOCX/PPTX/XLSX,
 compiled in by default — see [platform.md](platform.md)), then **materialises
@@ -264,7 +274,10 @@ CREATE TABLE links (
   dst_anchor   VARCHAR,
   link_skill   VARCHAR NOT NULL,         -- the skill segment of the typed link
   link_version VARCHAR,                  -- the @version segment (NULL if unpinned)
-  PRIMARY KEY (src_page, src_anchor, dst_page, link_skill)
+  -- dst_anchor is NOT NULL DEFAULT '' in the live schema: DuckDB
+  -- primary keys forbid NULL columns, so "no anchor" is stored as ''
+  -- and readers project it back to NULL.
+  PRIMARY KEY (src_page, src_anchor, dst_page, dst_anchor, link_skill)
 );
 CREATE INDEX links_dst_skill ON links(dst_page, link_skill);   -- backlinks
 CREATE INDEX links_src_skill ON links(src_page, link_skill);   -- forward links
@@ -296,18 +309,12 @@ CREATE INDEX hnsw_blocks_vec ON blocks USING HNSW (dense_vec)
 INSTALL fts; LOAD fts;
 PRAGMA create_fts_index('blocks', 'block_id', 'body', 'context',
                         stemmer = 'porter', stopwords = 'english',
-                        ignore = '\.|[^a-z]', lower = 1);
-
--- Frontmatter index: flattened key/value for filtering.
-CREATE TABLE frontmatter_index (
-  page_id  VARCHAR NOT NULL,
-  key      VARCHAR NOT NULL,
-  value    JSON NOT NULL,                 -- typed value (string/number/bool/array)
-  value_ts TIMESTAMP,                     -- populated when the key looks like a date and value parses
-  PRIMARY KEY (page_id, key)
-);
-CREATE INDEX fm_key_value ON frontmatter_index(key, value_ts);
+                        ignore = '(\.|[^a-z])+', lower = 1);
 ```
+
+Beyond the tables above, later migrations add a few additive tables
+this section does not detail: `chat_messages`, `group_members`,
+`external_credentials`, and `external_endpoints`.
 
 The `at_ts` column on `pages` plus the `pages_skill_at`
 composite index is the event-log scan support:
@@ -324,10 +331,13 @@ whose skill is `meeting` and whose `at_ts` is at least 2026-04-01"
 expresses as one SQL with a `vss_search()` call against `dense_vec`
 joined with the relational predicates.
 
-The `frontmatter_index` table catches every other filterable
-frontmatter key (`status`, `tier`, `risk`, etc.) without
-requiring a schema migration when a new skill adds a new
-field.
+Every other filterable frontmatter key (`status`, `tier`, `risk`,
+etc.) is matched directly over the canonical `pages.frontmatter`
+JSON — `list_instances` filters with
+`json_extract_string(frontmatter, '$.<key>') = ?` rather than
+consulting a separate index. This needs no schema migration when a
+new skill adds a new field, at the cost of a scan over the
+`skill`-filtered `pages` rows rather than an index seek.
 
 ## CRDT persistence
 
@@ -497,7 +507,7 @@ derivative.
 
 DuckDB compaction is implicit (`CHECKPOINT` runs after the
 write transaction completes); file rewrites happen during the
-regular write path. A `compact_db` admin endpoint forces a
+regular write path. A `compact_lanes` admin endpoint forces a
 `CHECKPOINT` plus a `VACUUM` plus a `PRAGMA
 hnsw_compact_index` for any tenant whose store size grows
 above a configurable watermark. The `crdt_ops` table also

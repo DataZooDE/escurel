@@ -122,6 +122,15 @@ One Tokio runtime, one `Server` global, one `TenantManager`.
 
 ### Tenant manager
 
+> **Status: not yet implemented.** The design below (a `TenantManager`
+> holding an LRU of per-tenant `TenantHandle`s, each with its own
+> `DuckdbPool` and write `RwLock`) is the *target* shape. The current
+> binary wires a **single shared `Indexer`** into `AppState` and is
+> effectively single-tenant at the indexer layer — one DuckDB + write
+> lock is shared across tenants. Per-tenant routing is a pending
+> workstream (see [`../adr/0002-chat-message-surface.md` open
+> follow-ups](../adr/0002-chat-message-surface.md)).
+
 ```rust
 pub struct TenantManager {
     handles: DashMap<TenantId, Arc<TenantHandle>>,
@@ -245,8 +254,10 @@ Issues (validation warnings/errors) are recorded as span events,
 not as span errors — they're an expected output.
 
 OTLP/gRPC exporter to a configurable endpoint
-(`observability.otlp_endpoint`); falls back to a no-op if the
-endpoint is unset.
+(`observability.otlp_endpoint`, env
+`ESCUREL_OBSERVABILITY_OTLP_ENDPOINT`; bare `ESCUREL_OTLP_ENDPOINT`
+is a deprecated alias still honoured as a fallback); falls back to a
+no-op if the endpoint is unset.
 
 ### Metrics
 
@@ -317,23 +328,28 @@ it. Optional fields (result counts, sizes, etc.) may be added
 without contract impact; renaming or removing required fields
 is a breaking change.
 
-`log_format = "text"` switches to single-line human-readable
-output; useful for local development, not production.
+`log_format = "text"` would switch to single-line human-readable
+output; useful for local development, not production. **Not yet
+implemented** — `escurel-obs` always emits JSON regardless of the
+`log_format` setting.
 
 ### Health endpoints
 
 - `GET /healthz` — liveness; returns 200 if the runtime is up
 - `GET /readyz`  — readiness; 200 only when embedding is loaded
-  AND storage is reachable AND OTel exporter has connected (or
-  is configured no-op)
+  AND storage is reachable. (The readiness report checks the
+  embedder + the lane store; it does **not** gate on the OTel
+  exporter — an unreachable collector never holds back readiness.)
 - `GET /metrics` — Prometheus scrape
-- `health` MCP tool — richer JSON with version, embedding
-  status, tenant count, lane stats
+- `GET /version` — the running `escurel-server` crate semver (plain text)
+
+(There is no `health` MCP tool; the richer JSON summary is **not yet
+implemented** — liveness/version are the plain HTTP endpoints above.)
 
 The substrate (Kamal / kamal-proxy) wires `/readyz` as the
 deployment readiness probe; blue/green promotion respects it, so a
-green container receives traffic only after embedding is loaded,
-storage is reachable, and OTel has connected.
+green container receives traffic only after embedding is loaded and
+storage is reachable.
 
 ## Failure modes recap
 

@@ -14,16 +14,19 @@
 # build + a baked model, so it is intentionally not compiled in here.
 
 # ---- builder -------------------------------------------------------------
-# Pinned to the workspace toolchain (rust-toolchain.toml: 1.88.0). The
-# buildpack-deps base already ships g++/make, which libduckdb-sys (bundled
-# feature) needs to compile the DuckDB C++ amalgamation; reqwest uses rustls
-# (no OpenSSL), so no extra apt is required.
-FROM rust:1.88-bookworm AS builder
+# Pinned to the workspace toolchain (rust-toolchain.toml: 1.91.0).
+# libduckdb-sys downloads the precompiled libduckdb release instead of
+# compiling the bundled DuckDB C++ amalgamation from source (see
+# .cargo/config.toml: DUCKDB_DOWNLOAD_LIB=1), so no g++/make is needed
+# at build time; reqwest uses rustls (no OpenSSL), so no extra apt is
+# required. First clean build needs network to fetch libduckdb.
+FROM rust:1.91-bookworm AS builder
 WORKDIR /build
 COPY . .
-# Serialise codegen/link: the bundled-DuckDB static link is memory-hungry and
-# OOMs a default-parallelism release+LTO build on a 7 GB CI runner (the CI
-# workflow caps this the same way). Release profile already strips symbols.
+# Serialise codegen/link: linking the release binary against libduckdb is
+# memory-hungry and OOMs a default-parallelism release+LTO build on a 7 GB CI
+# runner (the CI workflow caps this the same way). Release profile already
+# strips symbols.
 ENV CARGO_BUILD_JOBS=1
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
@@ -32,8 +35,8 @@ RUN --mount=type=cache,target=/build/target \
 
 # ---- runtime -------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
-# libstdc++6: the bundled DuckDB C++ amalgamation links it dynamically and
-# debian-slim does not ship it by default. curl: HEALTHCHECK probe.
+# libstdc++6: the downloaded libduckdb links it dynamically and debian-slim
+# does not ship it by default. curl: HEALTHCHECK probe.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \
     && rm -rf /var/lib/apt/lists/*

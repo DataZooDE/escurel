@@ -24,15 +24,18 @@ spec into running code.
    cannot exercise the real component from a test, the test is not
    yet finished.
 
-   **CI policy.** GitHub Actions CI is **paused** (`workflow_dispatch`
-   only) during bootstrap. Local `cargo fmt --check`,
+   **CI policy.** GitHub Actions CI is **live** — re-enabled at
+   v1.0.0 (M6). `.github/workflows/ci.yml` runs the
+   `fmt + clippy + test + build` job on every `pull_request`, every
+   `push` to `main`, and every `v*` tag; that job is the merge gate.
+   The local four-command gate — `cargo fmt --check`,
    `cargo clippy --workspace --all-targets -- -D warnings`,
    `cargo test --workspace --all-targets`, and `cargo build
-   --workspace --release` must all pass before merge. The trade-off:
-   we skip the 20–30 min cold duckdb compile per PR in exchange for
-   trusting the local toolchain. Before declaring v1 stable, uncomment
-   the `pull_request` + `push` triggers in `.github/workflows/ci.yml`
-   so the safety net is back on for any post-v1 work.
+   --workspace --release` — is still expected to pass before you push
+   (it's the fast inner loop), but it is no longer the *only* safety
+   net: CI re-runs the same checks on the PR. The DuckDB compile is no
+   longer the tax it once was — libduckdb is downloaded precompiled
+   (see `.cargo/config.toml`), so CI is cheap enough to run per-PR.
 
 3. **12-factor.** Config via `ESCUREL_*` env vars (overriding TOML
    defaults); logs JSON to stdout; processes stateless except for
@@ -120,14 +123,15 @@ A PR cycle:
    file + test function.
 6. If the PR fixed a non-obvious problem, drop a note under
    `docs/notes/discovered/` in the same PR.
-7. Merge with `gh pr merge --squash --delete-branch`. (CI is
-   paused during bootstrap — see principle 2.)
+7. Merge with `gh pr merge --squash --delete-branch` once CI is
+   green (CI is live — see principle 2).
 
 ## Locked decisions (current bootstrap)
 
 - **PR workflow:** feature branch → GitHub PR against `main` →
-  local checks green → squash-merge. GitHub Actions CI is paused
-  during bootstrap (see principle 2).
+  local checks green → squash-merge. GitHub Actions CI is **live**
+  (re-enabled at v1.0.0) and re-runs `fmt + clippy + test + build`
+  on every PR/push as the merge gate (see principle 2).
 - **`Cargo.lock` is committed.** The workspace has native deps
   (libduckdb-sys); pinning is the standard recommendation for any
   workspace that produces binaries or links native libraries.

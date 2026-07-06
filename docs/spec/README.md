@@ -171,6 +171,13 @@ both about transport efficiency:
 
 ### Process model
 
+> **Status: not yet implemented.** The in-process multi-tenant model
+> below (a `TenantManager` with an LRU of per-tenant `TenantHandle`s,
+> each with its own DuckDB pool and write lock) is the *target*
+> shape. The current binary wires a **single shared `Indexer`** into
+> `AppState` and is effectively single-tenant at the indexer layer.
+> Per-tenant routing is a pending workstream.
+
 One OS process, one Tokio runtime, one global state struct
 (`Server`). Multi-tenancy is in-process: `TenantManager` keeps
 a bounded LRU of `TenantHandle`s (default 64), each holding
@@ -314,13 +321,22 @@ concurrent_sessions = 32
 [observability]
 otlp_endpoint = "http://otel-collector:4317"
 metrics_listen = "0.0.0.0:9090"   # /metrics for Prometheus
-log_format = "json"               # "json" or "text"
+log_format = "json"               # "json" or "text" — NOTE: "text" is
+                                  # not yet implemented; JSON is always emitted
 ```
 
 Environment variable overrides follow `ESCUREL_<UPPER_SNAKE>`
 derived from the TOML key path (e.g. `[server] data_dir` →
 `ESCUREL_SERVER_DATA_DIR`). The substrate Kamal deploy pins the
 sizing knobs explicitly so capacity planning is one place:
+
+> **Not yet implemented.** The sizing knobs below are **not parsed by
+> the current binary** (`crates/escurel-server/src/config.rs` does not
+> read them). They belong to the pending multi-tenant
+> `TenantManager` / per-tenant `DuckdbPool` model (see
+> [`platform.md § Concurrency`](platform.md#concurrency)); today's
+> binary shares one `Indexer`/DuckDB across tenants. Setting them has
+> no effect until that model lands.
 
 | env var | TOML | default | what it bounds |
 |---|---|---|---|

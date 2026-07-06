@@ -1,7 +1,7 @@
 # Protocol — MCP/HTTP, WebSocket
 
 HTTP is the sole transport surface. Both transports expose the same
-logical surface — the 12 agent tools and the admin endpoints. They
+logical surface — the agent tools and the admin endpoints. They
 differ only in framing and streaming model. The tool
 *semantics* are the contract in
 [`../contract/agent-interface.md`](../contract/agent-interface.md);
@@ -13,6 +13,15 @@ this doc specifies the *wire shapes*.
 |---|---|---|---|---|
 | MCP-over-HTTP | `/mcp` | JSON-RPC 2.0 framed as MCP method calls; one HTTP request per call; long-running calls block until done and return the final result | none (blocking) | agents, MCP clients, CLI/TUI, admin/operator tools |
 | WebSocket | `/ws` | Bidirectional. Used for live CRDT op streams, presence pings, and search-result streaming | full-duplex | live mode, web client |
+
+Alongside the two tool transports the server also mounts a set of
+plain HTTP endpoints (no JSON-RPC framing): `GET /openapi.json`
+(an OpenAPI 3.1 document generated from the same `tools/list`
+payload, for non-MCP HTTP clients), the liveness/readiness probes
+`GET /healthz` + `GET /readyz`, `GET /version`, `GET /metrics` (a
+Prometheus scrape, optionally on a dedicated listener), and the
+two document-ingest routes `POST /ingest` + `POST /ingest/upload`
+(see [Instance backends](#instance-backends)).
 
 Auth is the same on both (OIDC Bearer in `Authorization`
 header; see [`platform.md`](platform.md#auth)). Tenant resolution
@@ -51,7 +60,8 @@ These are referenced from every tool, expressed as JSON Schema.
   page_type: "skill" | "instance",
   anchor?: string,        // only for granularity=block
   snippet: string,
-  score:   number,        // RRF-fused
+  score:   number,        // RRF-fused (or rerank score when reranking is on)
+  similarity: number,     // raw vector cosine similarity of the hit
   frontmatter_excerpt: { [key: string]: any }   // includes description and at if present
 }
 ```
@@ -80,7 +90,7 @@ These are referenced from every tool, expressed as JSON Schema.
 }
 ```
 
-### `FilterClause` (used by `list_instances`)
+### `FilterClause` (used by `search`)
 
 ```ts
 type FilterValue =
@@ -105,29 +115,48 @@ return `Issue` rows rather than dispatching.
 
 ## Agent surface
 
-Twelve tools, grouped by axis. Inputs and outputs given as JSON
-Schema.
+The agent tools, grouped by axis. Inputs and outputs given as JSON
+Schema. (The full non-admin agent surface is ~22 tools — the read /
+write / event / session tools below plus `fetch_blob`, `query_instance`,
+`write_instance`, `list_snapshots`, `append_message`, `list_messages`;
+admin/operator tools are in [Admin surface](#admin-surface).)
 
 ### Read tools
+
+Several read tools share two optional overlay/time-travel params:
+
+- **`scenario`** *(string)* — a **what-if overlay**. Absent/null reads
+  the base corpus only; a named scenario reads `base ∪ overlay`, the
+  overlay winning per slug. Accepted by `expand`, `resolve`,
+  `neighbours`, `search`, and `list_instances`.
+- **`as_of`** *(RFC 3339 string)* — a time-travel cut; state/edges/
+  blocks born after it are excluded (see the M7 note under `expand`).
+  Accepted by `expand`, `neighbours`, `search`, and `list_instances`.
 
 #### `search`
 
 ```jsonc
 // request
 {
-  "q": "Acme renewal risk",
+  "q": "Acme renewal risk",          // single query; provide this OR `queries`
+  "queries": ["Acme renewal", "Acme churn risk"],  // optional; 2–8 phrasings
+                                     // fused (RRF) into one ranking
   "k": 10,
   "granularity": "block",            // "block" | "page", default "block"
   "page_type": "any",                // "skill" | "instance" | "any"
   "skill": "customer",               // optional filter; pushes link_skill predicate to DuckDB
-  "filter": { "at": { ">=": "2026-04-01" } }  // optional frontmatter filter
-                                              // (events use this to time-window)
+  "filter": { "at": { ">=": "2026-04-01" } },  // optional frontmatter filter (FilterClause)
+                                               // (events use this to time-window)
+  "page_id": null,                   // optional; restrict search to one page's blocks
+  "as_of": null,                     // optional RFC 3339 time-travel cut
+  "scenario": null                   // optional what-if overlay
 }
 // response
 { "hits": [Hit, ...], "granularity": "block" }
 ```
 
-`filter` is the same shape `list_instances` accepts. It is
+Provide exactly one of `q` / `queries` (at least one non-empty string).
+`filter` is the `FilterClause` shape. It is
 applied **after** vector + FTS retrieval as a metadata
 post-filter, so it doesn't degrade recall; only the response is
 narrowed. Useful for "find recent meetings about Acme":
@@ -138,13 +167,12 @@ narrowed. Useful for "find recent meetings about Acme":
 
 ```jsonc
 // request
-{ "wikilink": "[[customer::acme-corp]]" }
+{ "wikilink": "[[customer::acme-corp]]", "scenario": null }
 // response
 {
   "parsed": WikilinkParsed,
-  "page": PageRef,         // or null if not found
-  "exists": true,
-  "error": null            // or { code, message } if validation failed
+  "page": PageRef,         // or null if not found (or ACL-denied)
+  "exists": true
 }
 ```
 
@@ -155,7 +183,7 @@ Returns the parsed link plus the resolved page metadata.
 
 ```jsonc
 // request
-{ "page_id": "01HXMQ...", "anchor": null, "version": null, "as_of": null }
+{ "page_id": "01HXMQ...", "as_of": null, "scenario": null, "full": false }
 // response
 {
   "page": PageRef,
@@ -163,13 +191,23 @@ Returns the parsed link plus the resolved page metadata.
   "body":   "...markdown body...",
   "blocks": [ { "anchor": "blk-acme-signals", "content": "..." }, ... ],
   "wikilinks_out": [ WikilinkParsed, ... ],
-  "snapshot_version": "v14",       // populated only when version/as_of replayed a snapshot
   // external-backend instances only (see Instance backends):
   "backend_projection": null,      // sql_view: { view, rows, source, truncated, issue? }
   "chunks_total": null,            // document: total chunk count
   "chunks_truncated": false        // document: blocks are a bounded lead of chunks_total
 }
 ```
+
+`scenario` is the what-if overlay and `as_of` the time-travel cut
+(shared read-tool params, above). `full` *(bool, default false)*
+is a `document`-instance knob: when true `expand` returns **every**
+chunk block (the single-document detail / heatmap view) instead of
+the bounded lead — `chunks_truncated` is then always false.
+
+**Not yet implemented.** An earlier draft returned a
+`snapshot_version` field (the replayed CRDT snapshot marker); the
+current builder never emits it. Use `list_snapshots` to enumerate an
+instance's replayable `taken_at` points.
 
 **Historical state (M7).** `as_of = T` (RFC 3339) reconstructs the
 instance **as it was at T**: when the page has a CRDT snapshot taken
@@ -190,6 +228,29 @@ For events: `expand` returns the full body of an event instance
 including any narrative text and follow-up links. Anchor support
 is the same as any other instance.
 
+#### `fetch_blob`
+
+```jsonc
+// request
+{ "page_id": "01HXMQ..." }
+// response
+{
+  "blob": {                        // or null (see below)
+    "page_id":      "01HXMQ...",
+    "content_type": "application/pdf",   // sniffed (pdf / docx / pptx / xlsx / text)
+    "size":         104857,
+    "bytes_base64": "JVBERi0x..."        // the original retained file bytes
+  }
+}
+```
+
+Returns the **original retained file** behind a `document`-backed
+instance (the blob named by `backend_ref.blob_id`), base64-encoded with
+a sniffed content type, for a faithful client-side preview of the
+source document. `blob` is `null` for a non-document page, a missing
+page, or an instance the caller may not read (ACL-mirrored on `expand`;
+existence is not leaked). The transfer is capped at 25 MiB.
+
 #### `neighbours`
 
 ```jsonc
@@ -197,36 +258,34 @@ is the same as any other instance.
 {
   "page_id":  "01HXMQ...",
   "direction": "both",             // "in" | "out" | "both"
-  "link_skill": null,              // single skill filter
-  "link_skill_in": ["meeting", "email", "call"],   // optional multi-skill filter
-  "order_by": "at desc",           // optional; orders by resolved target's frontmatter field
-  "limit": 100
+  "link_skill": null,              // optional single skill filter
+  "as_of": null,                   // optional RFC 3339 time-travel cut
+  "scenario": null                 // optional what-if overlay
 }
 // response
 {
   "edges": [
     {
-      "src": PageRef,
-      "dst": PageRef,
+      "src_page": "01HX...",       // source page id
+      "dst_page": "01HY...",       // destination page id
       "link_skill": "meeting",
       "link_version": null,
-      "anchor": null,
-      "src_anchor": "blk-acme-signals",
-      "target_frontmatter_excerpt": { "at": "2026-04-12T10:00:00+02:00" }
+      "dst_anchor": null           // anchor on the destination, if the link targets one
     },
     ...
   ]
 }
 ```
 
-`link_skill_in` is the multi-skill array form used for event
-timelines (`neighbours(acme, link_skill_in=[meeting, email,
-call, incident])`). `order_by` is a `<field> <asc|desc>` string;
-the field must be a top-level frontmatter key of the *target*
-page. The dispatcher pushes it down to DuckDB as
-`ORDER BY json_extract_string(target_frontmatter, '$.at') DESC`
-(materialised into a typed column at index time for the common
-case of `at`).
+Edges whose other endpoint is an owner-private instance the caller
+cannot read are dropped (fail-closed ACL).
+
+**Not yet implemented.** The request keys `link_skill_in` (a
+multi-skill array) and `order_by` (a `<field> <asc|desc>` sort on the
+target's frontmatter), and the edge fields `anchor` /
+`src_anchor` / `target_frontmatter_excerpt`, are not accepted/emitted
+by the current dispatcher — a caller that sends the extra request keys
+has them silently ignored.
 
 #### `list_skills`
 
@@ -341,28 +400,30 @@ phase 2.)*
 // request
 {
   "skill_id": "meeting",
-  "filter": {
-    "at":   { ">=": "2026-04-01" },
-    "with": "[[customer::acme-corp]]"
-  },
-  "order_by": "at desc",            // optional
-  "limit":    50
+  "frontmatter_key":   "source",    // optional single-field equality filter…
+  "frontmatter_value": "gmail",     // …both must be present to apply
+  "order_by": "at desc",            // optional; "at asc" | "at desc" only
+  "limit":    50,
+  "as_of":    null,                 // optional RFC 3339 time-travel cut
+  "scenario": null                  // optional what-if overlay
 }
 // response
 {
   "instances": [
-    { "page_id": "01HX...", "slug": "2026-04-12-acme-qbr",
-      "frontmatter": { "at": "...", "with": "...", ... } },
+    { "page_id": "01HX...", "skill": "meeting",
+      "frontmatter": { "at": "...", "with": "...", ... },
+      "at": "2026-04-12T10:00:00+02:00" },   // the typed `at`, or null
     ...
   ],
-  "next_cursor": null               // present when truncated
+  "next_cursor": null               // reserved; always null today
 }
 ```
 
-This is the event-log primitive. The `filter` honours typed
-wikilink values (matches the string form OR a parsed link target);
-strings compared as strings; dates compared lexically (ISO 8601
-preserves ordering); arrays support `in`.
+This is the event-log primitive. Unlike `search`, `list_instances`
+does **not** accept the operator-wrapped `FilterClause` object — its
+only filter is the single `frontmatter_key` = `frontmatter_value`
+string-equality pair. `order_by` is restricted to `at asc` / `at desc`.
+Owner-private instances the caller cannot read are filtered out.
 
 #### `run_stored_query`
 
@@ -370,18 +431,19 @@ preserves ordering); arrays support `in`.
 // request
 {
   "query_id": "customer-churn-trend",
-  "params":   { "customer_id": "acme-corp", "from_date": "2026-01-01" },
-  "as_of_snapshot": null            // optional; pins to a specific DuckLake snapshot
+  "params":   { "customer_id": "acme-corp", "from_date": "2026-01-01" }
 }
 // response
 {
   "rows":   [ ... ],
-  "schema": [ { "name": "as_of", "type": "DATE" }, ... ],
-  "snapshot_version": "v27"
+  "schema": [ { "name": "as_of", "type": "DATE" }, ... ]
 }
 ```
 
-Unchanged from the agent-interface design. For event-volume
+**Not yet implemented.** The `as_of_snapshot` request key (pin to a
+DuckLake snapshot) and the `snapshot_version` response field are not
+accepted/emitted by the current handler — it reads `{query_id, params}`
+and returns `{rows, schema}`. For event-volume
 queries that exceed the markdown-friendly scale (~1 M),
 operators move the event records to an external DuckLake table
 and the agent reaches them through `run_stored_query` instead
@@ -450,23 +512,32 @@ caller gets an authorisation error. The result set is capped at
 // request
 { "content": "---\nskill: meeting\n...\n---\n# ...", "as_page_id": null }
 // response
-{ "issues": [Issue, ...] }
+{ "ok": true, "issues": [Issue, ...] }
 ```
+
+`ok` is `false` iff any `Issue` is error-severity (warnings do not fail
+a draft); the full `issues` list is always returned.
 
 #### `open_session` / `apply_op` / `close_session` (live CRDT)
 
 ```jsonc
 // open_session request:  { "page_id": "01HX..." }
 // open_session response: { "session": "sess_...", "head_version": "v42",
-//                          "content": "...", "ws_url": "wss://.../ws?session=sess_..." }
+//                          "ws_url": "/ws" }
 //
-// apply_op request:  { "session": "sess_...", "op": <Loro op blob> }
-// apply_op response: { "ok": true, "merged_version": "v43",
-//                      "content": "...", "conflicts": [], "issues": [] }
+// apply_op request:  { "session": "sess_...", "op": "<base64 Loro op bytes>" }
+// apply_op response: { "ok": true, "merged_version": "v43" }
 //
 // close_session request:  { "session": "sess_...", "commit": true }
 // close_session response: { "ok": true, "final_version": "v50", "issues": [] }
 ```
+
+`op` is base64-encoded Loro op bytes. `ws_url` is the relative `/ws`
+path (the gateway does not know its public origin, so it never emits a
+full `wss://` URL). **Not yet implemented:** `open_session` does not
+return the page `content`, and `apply_op` returns neither `content`,
+`conflicts`, nor `issues` — a client reads the merged document over the
+WS channel or via `expand`.
 
 The `ws_url` returned by `open_session` is the recommended
 channel for `apply_op` — the WS path delivers ops with lower
@@ -744,7 +815,10 @@ into the tool-call arguments. A read/write is also refused (fail-closed) when
 the skill's backend `kind` does not match the `kind` its `endpoint` was
 registered under. `expand` returns the overlay merged with the live projection
 under `backend_projection = { source, fields, issue? }`; `backend_ref` carries
-`{ kind, endpoint, read, write? }`.
+just `{ kind, endpoint }` — the `read`/`write` ops are re-derived from the
+skill's `backend:` block on each call, never persisted per-instance. In a
+`read:`/`write:` op only `path` + `method` (`operationId` is accepted but
+ignored) drive the OpenAPI call.
 
 New MCP tools:
 
@@ -770,35 +844,58 @@ The admin/operator capabilities are exposed as admin-role-gated MCP
 tools over `POST /mcp` — there is no separate admin service. Each
 requires the admin role on the OIDC token (configurable; see
 [`platform.md`](platform.md#auth)); a call from a token without the
-required role yields JSON-RPC error code `-32001`. Tenant resolution
-rules are *different* on admin tools — the tenant is named explicitly
-in each call rather than taken from the token's `tenant` claim
-(an admin operates across tenants).
+required role yields JSON-RPC error code `-32001`. This gate is at
+**dispatch**, not discovery: `tools/list` is *not* role-filtered — every
+admin tool is always listed, and a non-admin caller is refused only when
+it *calls* one (see [MCP-over-HTTP framing](#mcp-over-http-framing)).
+Tenant resolution rules are *different* on admin tools — the tenant is
+named explicitly (`tenant_id`) rather than taken from the token's claim
+— but because a gateway is single-tenant, a `tenant_id` that names a
+tenant other than the one this gateway serves is refused (`-32002`); an
+empty value means "this gateway's tenant".
 
 | tool | inputs | outputs | purpose |
 |---|---|---|---|
-| `tenant_create` | `{id, display_name, quotas?}` | `{ok, tenant: {...}}` | provision a new tenant |
-| `tenant_list` | `{}` | `{tenants: [{id, status, created_at, ...}]}` | enumerate tenants |
-| `tenant_get` | `{id}` | `{tenant: {id, status, quotas, ...}}` | fetch one |
-| `tenant_update` | `{id, quotas?, status?, embedding_provider?}` | `{ok, tenant}` | suspend, resume, change quotas |
-| `tenant_delete` | `{id, confirm: string}` | `{ok}` | hard-delete (15-location wipe) |
-| `tenant_export` | `{id}` | `{tarball_b64, bytes}` (tarball: markdown + lane snapshot + manifest, base64-encoded) | export (blocking) |
-| `tenant_import` | `{tenant_id, tarball_b64}` | `{bytes_imported}` | restore (blocking) |
-| `audit` | `{tenant, scope?}` | `{drift: {markdown_not_in_duckdb: [...], indexed_but_no_markdown: [...]}}` | drift detection (two-way diff) |
-| `rebuild` | `{tenant, scope?}` | `{done, total}` | recover from canonical markdown (blocking) |
-| `attach_external` | `{tenant, catalog_uri, name}` | `{ok}` | wire a DuckLake catalog into `external.ducklake` |
+| `tenant_create` | `{tenant_id, display_name?}` | `{spec: {tenant_id, display_name}}` | provision a new tenant (no `quotas` input) |
+| `tenant_list` | `{}` | `{tenants: [{tenant_id, display_name}]}` | enumerate tenants |
+| `tenant_get` | `{tenant_id}` | `{spec: {tenant_id, display_name}}` | fetch one |
+| `tenant_update` | `{tenant_id, display_name?}` | `{spec: {tenant_id, display_name}}` | rename a tenant (only `display_name` changes; `status`/`quotas`/`embedding_provider` **not yet implemented**) |
+| `tenant_delete` | `{tenant_id, confirm}` (`confirm` must equal `tenant_id`) | `{deleted}` | hard-delete a tenant + its on-disk state |
+| `tenant_export` | `{tenant_id}` | `{format_version, tarball_b64, bytes, sha256}` (tarball: canonical **markdown only**, gzip'd; `sha256` = hex of the tarball body) | export (blocking) |
+| `tenant_import` | `{tenant_id, tarball_b64}` | `{bytes_imported}` | restore markdown into an existing tenant (blocking) |
+| `admin_audit` | `{tenant_id}` | `{markdown_not_in_duckdb: [...], indexed_but_no_markdown: [...]}` | drift detection (two-way diff) |
+| `rebuild` | `{tenant_id}` | `{done, total, current_page}` | recover the index from canonical markdown (blocking) |
+| `attach_external` | `{tenant_id, source_url}` | `{source_id}` (derived catalog alias) | attach an external read-only DuckDB source |
 | `register_credential` | `{name, connector, secret}` | `{ok}` | register a named external-source credential (server-side; secret never echoed) — see [Instance backends](#instance-backends) |
 | `list_credentials` | `{}` | `{credentials: [{name, connector, created_at, created_by}]}` | enumerate registered credentials (names only) |
 | `delete_credential` | `{name}` | `{ok}` | remove a credential |
 | `create_sql_instance` | `{skill, id, overlay_body?}` | `{page_id, view}` | materialise a read-only `sql_view` instance from a `sql_view` skill |
 | `validate_bindings` | `{}` | `{bindings: [{page_id, view, status, detail?}]}` | re-probe every `sql_view`; `binding_degraded` ⇒ that view reads fail closed |
-| `embedding_reload` | `{tenant?}` | `{ok}` | retry model load after a degraded start |
-| `compact_lanes` | `{tenant}` | `{ops_compacted, bytes_reclaimed}` | force a DuckDB `CHECKPOINT` + `VACUUM` + `PRAGMA hnsw_compact_index` (blocking) |
-| `quota_get` | `{tenant}` | `{quotas: {...}, current_usage: {...}}` | inspect |
-| `delete_chat_history` | `{tenant_id, chat_group_id?, before_ts?, author?}` | `{deleted}` | destructive purge of the conversation log |
-| `health` | `{}` | `{ok, version, embedding_status, storage_backend, tenant_count, ...}` | liveness + summary |
+| `register_endpoint` / `list_endpoints` / `delete_endpoint` / `validate_endpoints` | see [Remote backends](#remote-backends-openapi--mcp) | — | remote-backend endpoint registry |
+| `create_remote_instance` | `{skill, id, overlay_body?}` | `{page_id, kind, endpoint}` | materialise an `openapi`/`mcp` overlay instance |
+| `run_stored_query` | `{query_id, params?}` | `{rows, schema}` | admin-gated stored SQL over the whole corpus (see [Read tools](#run_stored_query)) |
+| `admin_index_query` | `{table, limit?}` | `{rows, schema}` | read up to `limit` rows from an allow-listed index table (pages/blocks/links/crdt_ops/crdt_snapshots/chat_messages) |
+| `admin_list_lanes` | `{}` | `{lanes: [{name, backend, tenants_present}]}` | enumerate configured LaneStores |
+| `admin_lane_keys` | `{lane?, prefix?, limit?}` | `{keys: [{key, size_bytes}]}` | list lane keys under a prefix |
+| `admin_lane_blob` | `{lane?, key}` | `{bytes_base64, content_type}` | fetch one lane blob (≤ 1 MiB) |
+| `admin_webhook_deliveries` | `{limit?}` | `{configured, deliveries: [...]}` | recent outbound capture-webhook delivery outcomes |
+| `add_group_member` | `{group_id, subject}` | `{ok}` | add a principal to a custom RBAC group |
+| `remove_group_member` | `{group_id, subject}` | `{ok}` | remove a principal from a group |
+| `list_group_members` | `{group_id}` | `{members: [{group_id, subject, added_at, added_by}]}` | list a group's members (audit) |
+| `embedding_reload` | `{}` | `{model_revision}` | hot-reload the embedding model after a degraded start |
+| `compact_lanes` | `{tenant_id}` | `{ops_compacted, bytes_reclaimed}` | compact CRDT op lanes (`CHECKPOINT` + `VACUUM` + `PRAGMA hnsw_compact_index`, blocking) |
+| `admin_quota` | `{tenant_id}` | `{queries_remaining, writes_remaining, embeds_remaining, concurrent_sessions}` | inspect the per-tenant quota snapshot |
+| `admin_delete_chat_history` | `{chat_group_id?, before_ts?, author?}` | `{deleted}` | destructive purge of the conversation log |
 
-The `audit` and `rebuild` tools are the operational
+`write_instance` (`{ref, payload}` → the re-projected instance) is an
+**agent** tool, not admin-gated — it is authorised by the target
+instance's `acl.update`; see [Remote backends](#remote-backends-openapi--mcp).
+
+There is no `health` MCP tool. Liveness/version are the plain HTTP
+endpoints `GET /healthz` + `GET /readyz` + `GET /version` (see the
+[Transport summary](#transport-summary)).
+
+The `admin_audit` and `rebuild` tools are the operational
 recovery path. The cost is ~32 ms/page; a 1000-page tenant
 rebuilds in ~32 s.
 
@@ -829,13 +926,16 @@ Contract relied on by orchestrators:
 - **Read-snapshots**. Exports may include a small lag (one
   write transaction worst case) relative to the latest
   committed write.
-- **Deterministic tarball**. Per the
-  [`storage.md` per-tenant layout](storage.md#per-tenant-directory-layout)
-  minus `cache/` and `spool/`.
-- **Blocking result**. The call returns `{tarball_b64, bytes}` once
-  the whole export is assembled; the JSON result carries the
-  export-format version and a SHA-256 hash of the body bytes so
-  consumers verify before treating the tarball as durable.
+- **Deterministic tarball**. **Canonical markdown only** — the
+  gzip'd tar contains the tenant's `markdown/` tree and nothing else
+  (the derivable DuckDB index, `cache/`, and `spool/` are excluded;
+  `rebuild` reconstructs the index from this markdown). See
+  [`storage.md`](storage.md#per-tenant-directory-layout).
+- **Blocking result**. The call returns
+  `{format_version, tarball_b64, bytes, sha256}` once the whole export
+  is assembled: `format_version` is the export-format version (int) and
+  `sha256` is the hex digest of the tarball body, so consumers verify
+  before treating the tarball as durable.
 - **Failures**. Surface as a JSON-RPC `error` object with
   `retryable: bool`. Retryable errors invite the consumer to
   re-issue the call; non-retryable errors indicate corruption and
@@ -858,10 +958,12 @@ update_page      → method = "tools/call", name = "update_page"
 ```
 
 Tool discovery is the usual MCP `tools/list` response, declaring
-all 12 tools with their JSON Schema input definitions. Admin
-endpoints are surfaced as a second `tools/list` group only when
-the token carries the admin role; otherwise they are not even
-listed.
+every tool — agent **and** admin — with its JSON Schema input
+definition. `tools/list` is **not** role-gated: the admin tools are
+always listed, and the admin role is enforced only at `tools/call`
+dispatch (`-32001` for a non-admin caller). The same
+`tools/list` payload is also published as an OpenAPI 3.1 document at
+`GET /openapi.json` for non-MCP HTTP clients.
 
 Long-running tools (`rebuild`, `compact_lanes`, `tenant_export`,
 `tenant_import`) block until done and return their final result in
@@ -899,9 +1001,14 @@ in the schema, off behind a feature flag.
 
 ## Versioning
 
-The MCP `serverInfo.version` and the WebSocket protocol version
-(`escurel-ws/1`) both start at `1`. Breaking changes bump the version;
-the server can serve both versions for one major-version overlap.
+The MCP `initialize` handshake echoes the client's requested
+`protocolVersion` when present (default `2025-06-18`) and reports
+`serverInfo = { name: "escurel", version }`, where `version` is the
+`escurel-server` crate semver (`CARGO_PKG_VERSION`) — not a bare `1`.
+
+There is **no** separate WebSocket protocol-version string
+(`escurel-ws/1` is **not implemented** — the `/ws` upgrade performs no
+version negotiation).
 
 The MCP tool JSON Schemas are served via the `tools/list` handshake so
 client implementations can pin to a version.

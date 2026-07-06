@@ -86,13 +86,19 @@ pub enum AuthMode {
     Disabled,
 
     /// EscurelProcess stands up an in-process JWKS endpoint with
-    /// an ephemeral Ed25519 or RSA keypair. `mint_token(...)` signs
+    /// an ephemeral RSA-2048 keypair. `mint_token(...)` signs
     /// JWTs that the running server will accept.
     TestIssuer,
 
     /// Point at a real OIDC. Used when the application's tests want
     /// to exercise the production auth path end-to-end.
     External { issuer_url: String, jwks_url: String },
+
+    /// Point at two or more real issuers — the production substrate
+    /// shape where one Escurel trusts both triton (the forwarded
+    /// inbound bearer) and carl (the self-minted dashboard token).
+    /// The first pair is the primary issuer; the rest are additional.
+    ExternalMulti { issuers: Vec<(String, String)> },
 }
 ```
 
@@ -193,7 +199,7 @@ async fn dashboard_round_trips_through_triton() {
                 .done()),
         ..Default::default()
     }).await;
-    let token = escurel.mint_token("acme", Role::User);
+    let token = escurel.mint_token("acme", Role::Agent);
 
     // 2. app backend up, pointed at escurel.
     let backend = MyAppBackend::spawn(BackendOpts {
