@@ -182,6 +182,7 @@ async fn tenant_crud_lifecycle_round_trips() {
     let deleted = client
         .tenant_delete(TenantDeleteRequest {
             tenant_id: "globex".to_owned(),
+            confirm: Some("globex".to_owned()),
         })
         .await
         .unwrap();

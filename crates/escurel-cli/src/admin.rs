@@ -239,8 +239,13 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
             Ok(json!({ "tenant": tenant_json(r.spec) }))
         }
         TenantCmd::Delete { id } => {
+            // The operator naming the tenant on the command line is the
+            // confirmation the server's destructive-delete guard requires.
             let r = client
-                .tenant_delete(TenantDeleteRequest { tenant_id: id })
+                .tenant_delete(TenantDeleteRequest {
+                    confirm: Some(id.clone()),
+                    tenant_id: id,
+                })
                 .await?;
             Ok(json!({ "deleted": r.deleted }))
         }

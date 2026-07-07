@@ -131,7 +131,10 @@ impl AdminClient {
         req: TenantDeleteRequest,
     ) -> Result<TenantDeleteResponse, Error> {
         self.transport
-            .call_typed("tenant_delete", json!({ "tenant_id": req.tenant_id }))
+            .call_typed(
+                "tenant_delete",
+                json!({ "tenant_id": req.tenant_id, "confirm": req.confirm }),
+            )
             .await
     }
 

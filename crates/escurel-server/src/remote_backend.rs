@@ -160,6 +160,12 @@ async fn exec(
         }
         (RemoteKind::Mcp, RemoteOp::McpResource { uri }) => {
             let filled = fill_template(uri, &template_vars(id, payload));
+            // Fail closed, matching the openapi path/body: never send a literal
+            // `{placeholder}` upstream when a template var did not resolve.
+            let missing = unfilled_placeholders(&filled);
+            if !missing.is_empty() {
+                return Err(format!("unfilled resource placeholders: {missing:?}"));
+            }
             let result = mcp_call(ep, "resources/read", json!({ "uri": filled })).await?;
             Ok(extract_mcp_result("resources/read", result))
         }
