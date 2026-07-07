@@ -70,7 +70,10 @@ export ESCUREL_AUTH_OIDC_ISSUER=http://127.0.0.1:9000/
 export ESCUREL_AUTH_OIDC_AUDIENCE=escurel
 
 # No OTLP: leave ESCUREL_OBSERVABILITY_OTLP_ENDPOINT unset → tracing is
-# a no-op. Logs still go to stdout as JSON.
+# a no-op. (Bare ESCUREL_OTLP_ENDPOINT is a deprecated alias, still
+# honoured as a fallback.) Logs still go to stdout as JSON.
+# NOTE: ESCUREL_OBSERVABILITY_LOG_FORMAT is not yet implemented — JSON is
+# always emitted regardless of this value.
 export ESCUREL_OBSERVABILITY_LOG_FORMAT=json
 
 mkdir -p "$ESCUREL_SERVER_DATA_DIR"
@@ -142,8 +145,10 @@ ESCUREL_AUTH_ADMIN_ROLE_CLAIM=roles
 ESCUREL_AUTH_ADMIN_ROLE_VALUE=escurel:admin
 
 # OTLP to a co-located collector; Prometheus scrapes :9090/metrics.
+# (Bare ESCUREL_OTLP_ENDPOINT is a deprecated alias for the OTLP endpoint.)
 ESCUREL_OBSERVABILITY_OTLP_ENDPOINT=http://127.0.0.1:4317
 ESCUREL_OBSERVABILITY_METRICS_LISTEN=0.0.0.0:9090
+# ESCUREL_OBSERVABILITY_LOG_FORMAT is not yet implemented — JSON is always emitted.
 ESCUREL_OBSERVABILITY_LOG_FORMAT=json
 ```
 

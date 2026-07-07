@@ -58,6 +58,15 @@ are bumped in the same PR sequence (`docs/contract/agent-interface.md`
 gains an "Append / read-back" axis; the `escurel-platform` skill
 documents the consumer-side recipe).
 
+> **Update (2026-07-06):** gRPC / `escurel-proto` has since been
+> retired — escurel is HTTP-only (MCP-over-HTTP + WebSocket). The
+> "MCP + gRPC" and "gRPC only" transport wording above is historical:
+> the shipped surface is **MCP-only** — `append_message`,
+> `list_messages`, and the admin `admin_delete_chat_history` (there is
+> no `EscurelAdmin.DeleteChatHistory` gRPC RPC). The *decision* — a
+> first-class per-chat-group conversation surface with admin-only
+> erasure — is unchanged; only the transport is.
+
 ### Embedding policy
 
 Embedding is **opt-out per call** via `embed: bool` (default `true`).
