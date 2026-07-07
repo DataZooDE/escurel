@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::token_bucket::{QuotaExhausted, TokenBucket};
+use crate::token_bucket::TokenBucket;
 
 /// Per-tenant quota knobs. Defaults match
 /// `docs/spec/README.md §Configuration`.
@@ -231,18 +231,6 @@ impl QuotaError {
     pub fn retry_after_ms(&self) -> u64 {
         match self {
             Self::Exhausted { retry_after_ms, .. } => *retry_after_ms,
-        }
-    }
-}
-
-// Convenience: convert raw `QuotaExhausted` (per-bucket) into the
-// manager's `QuotaError` shape when callers reach through.
-impl QuotaError {
-    #[must_use]
-    pub fn from_bucket(dim: Dimension, raw: QuotaExhausted) -> Self {
-        Self::Exhausted {
-            dimension: dim,
-            retry_after_ms: raw.retry_after_ms,
         }
     }
 }

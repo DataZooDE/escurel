@@ -2550,7 +2550,6 @@ dependencies = [
 name = "escurel-auth"
 version = "1.0.0"
 dependencies = [
- "async-trait",
  "base64 0.22.1",
  "jsonwebtoken",
  "rand 0.8.6",
@@ -2575,11 +2574,9 @@ dependencies = [
  "escurel-quota",
  "escurel-test-support",
  "escurel-tui",
- "futures",
  "serde_json",
  "tempfile",
  "tokio",
- "tokio-stream",
 ]
 
 [[package]]
@@ -2663,7 +2660,6 @@ dependencies = [
 name = "escurel-eval"
 version = "1.0.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "clap",
  "duckdb",
@@ -2689,7 +2685,6 @@ dependencies = [
  "rand 0.8.6",
  "reqwest 0.12.28",
  "rsa",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -2741,7 +2736,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
  "walkdir",
 ]
 
@@ -2762,13 +2756,11 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prometheus",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
  "time",
  "tokio",
  "tracing",
- "tracing-core",
  "tracing-opentelemetry",
  "tracing-subscriber",
 ]
@@ -2796,7 +2788,6 @@ dependencies = [
  "escurel-types",
  "hmac 0.12.1",
  "reqwest 0.12.28",
- "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -2809,12 +2800,10 @@ dependencies = [
 name = "escurel-runner-core"
 version = "1.0.0"
 dependencies = [
- "anyhow",
  "escurel-client",
  "escurel-types",
  "rusqlite",
  "secrecy",
- "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -2835,7 +2824,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2917,12 +2905,10 @@ dependencies = [
  "escurel-quota",
  "escurel-server",
  "escurel-storage",
- "escurel-types",
  "jsonwebtoken",
  "rand 0.8.6",
  "reqwest 0.12.28",
  "rsa",
- "secrecy",
  "serde",
  "serde_json",
  "tempfile",
@@ -2940,7 +2926,6 @@ dependencies = [
  "escurel-client",
  "escurel-test-support",
  "ratatui",
- "serde_json",
  "tokio",
 ]
 

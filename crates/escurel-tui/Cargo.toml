@@ -18,7 +18,6 @@ ratatui = "0.29"
 # re-exported escurel-types).
 escurel-client = { path = "../escurel-client" }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "io-std"] }
-serde_json = { version = "1", features = ["preserve_order"] }
 
 [dev-dependencies]
 escurel-test-support = { path = "../escurel-test-support" }
