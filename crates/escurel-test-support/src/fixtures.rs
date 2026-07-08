@@ -54,6 +54,11 @@ pub(crate) struct FixtureEntry {
 #[derive(Debug, Default, Clone)]
 pub struct FixtureBuilder {
     pub(crate) entries: Vec<FixtureEntry>,
+    /// Every tenant a `.tenant(...)` scope was opened for, in order —
+    /// recorded even when the scope seeds no pages, so the harness can bind
+    /// its single-tenant indexer to the intended tenant (see
+    /// `EscurelProcess::spawn`).
+    pub(crate) declared_tenants: Vec<String>,
 }
 
 impl FixtureBuilder {
@@ -67,7 +72,8 @@ impl FixtureBuilder {
     /// carries the parent back via `.done()` so multi-tenant
     /// chains read top-down.
     #[must_use]
-    pub fn tenant(self, id: &str) -> TenantFixture {
+    pub fn tenant(mut self, id: &str) -> TenantFixture {
+        self.declared_tenants.push(id.to_owned());
         TenantFixture {
             parent: self,
             tenant_id: id.to_owned(),

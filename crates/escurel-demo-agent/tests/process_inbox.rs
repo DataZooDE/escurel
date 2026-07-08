@@ -13,9 +13,7 @@ use escurel_demo_agent::{McpClient, process_inbox_once};
 use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
 use serde_json::{Value, json};
 
-// Must match the tenant the test-support gateway's indexer serves ("acme");
-// the enforced tenant boundary rejects a token minted for any other tenant.
-const TENANT: &str = "acme";
+const TENANT: &str = "carl";
 const SPINE: &str = "markdown/instances/engagement__spine.md";
 
 async fn start() -> EscurelProcess {

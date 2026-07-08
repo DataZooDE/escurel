@@ -9,7 +9,7 @@ use escurel_server::WriteAclMode;
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
 use serde_json::{Value, json};
 
-const TENANT: &str = "acme"; // aligned to the served indexer; tenant boundary now enforced
+const TENANT: &str = "stuttgart-ai";
 const ALICE: &str = "whatsapp:111";
 const BOB: &str = "whatsapp:222";
 
