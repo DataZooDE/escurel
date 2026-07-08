@@ -207,6 +207,54 @@ async fn tenant_delete_requires_matching_confirm() {
 }
 
 #[tokio::test]
+async fn foreign_tenant_admin_forbidden_even_without_indexer() {
+    // The one-instance-one-tenant boundary must NOT hinge on an indexer being
+    // wired. A control-plane deployment (indexer disabled) with a tenant_store
+    // still serves exactly one tenant; a validly-signed *admin* token for a
+    // DIFFERENT tenant must be refused (403) at the auth gate, before it can
+    // reach the admin tenant-CRUD tools (which dispatch ahead of the indexer
+    // gate). Regression guard for the served-tenant-from-config hardening —
+    // previously the served tenant was read from the indexer, so `indexer=None`
+    // silently skipped the tenant check and a foreign admin token slipped
+    // through to tenant-CRUD.
+    let tenants_dir = TempDir::new().unwrap();
+    let tenant_store: Arc<dyn TenantStore> =
+        Arc::new(FsTenantStore::new(tenants_dir.path().to_path_buf()));
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        // No fixtures / no indexer → this instance still serves the harness
+        // default tenant ("acme"), derived from config rather than an indexer.
+        fixtures: None,
+        config_overrides: ConfigOverrides {
+            tenant_store: Some(tenant_store),
+            disable_indexer: true,
+            ..Default::default()
+        },
+    })
+    .await;
+
+    // "globex" is a tenant this instance does not serve.
+    let foreign = p.mint_token("globex", Role::Admin);
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {foreign}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "tenant_create",
+                        "arguments": { "tenant_id": "globex", "display_name": "X" } },
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(
+        resp.status(),
+        403,
+        "a foreign-tenant admin token must be forbidden even when no indexer is wired"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn tenant_create_rejects_invalid_id() {
     let h = start().await;
     let body = call(

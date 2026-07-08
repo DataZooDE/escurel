@@ -330,6 +330,7 @@ impl EscurelProcess {
             listen: "127.0.0.1:0".to_owned(),
             version,
             readiness,
+            served_tenant: Some(served_tenant.clone()),
             indexer: indexer.clone(),
             verifier,
             quota: overrides.quota.clone(),
@@ -679,11 +680,31 @@ fn build_indexer(
 }
 
 /// The one tenant the builder declares (via its `.tenant(...)` scopes, even
-/// when a scope seeds no pages), or `None` when it declares none or spans
-/// multiple — a single-indexer harness can only serve one, so those fall back
-/// to the `"acme"` default.
+/// when a scope seeds no pages), or `None` when it declares none (the caller
+/// then falls back to the `"acme"` default).
+///
+/// **Panics** when the builder declares more than one distinct tenant: a single
+/// instance enforces a hard one-instance-one-tenant boundary, so a multi-tenant
+/// fixture cannot be served faithfully — silently collapsing it to one tenant
+/// would make a `client_for(other)` mysteriously 403. Split such fixtures across
+/// separate `EscurelProcess` spawns (one per tenant) instead.
 fn sole_fixture_tenant(builder: &FixtureBuilder) -> Option<String> {
-    let mut tenants = builder.declared_tenants.iter().map(String::as_str);
-    let first = tenants.next()?;
-    tenants.all(|t| t == first).then(|| first.to_owned())
+    let mut distinct: Vec<&str> = builder
+        .declared_tenants
+        .iter()
+        .map(String::as_str)
+        .collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    match distinct.as_slice() {
+        [] => None,
+        [one] => Some((*one).to_owned()),
+        many => panic!(
+            "escurel-test-support: this harness serves exactly one tenant, but the \
+             FixtureBuilder declares {} distinct tenants ({many:?}). A single instance \
+             enforces a hard one-instance-one-tenant boundary — split the fixtures \
+             across separate EscurelProcess spawns (one per tenant).",
+            many.len()
+        ),
+    }
 }

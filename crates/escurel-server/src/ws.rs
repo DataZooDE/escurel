@@ -69,7 +69,7 @@ pub async fn ws_upgrade(
     // production deployments always wire both.
     let auth_ctx = match state.verifier.as_ref() {
         Some(verifier) => {
-            let served = state.indexer.as_ref().map(|i| i.tenant());
+            let served = state.served_tenant.as_deref();
             match enforce_auth(verifier, &headers, served).await {
                 Ok(ctx) => Some(ctx),
                 Err(resp) => return resp,

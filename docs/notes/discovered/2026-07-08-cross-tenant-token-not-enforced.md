@@ -24,9 +24,23 @@ gateway to "prove" per-tenant quota buckets.
 and the `ws.rs` copy for `/ws`) now takes the served tenant and rejects a
 mismatch with **403 Forbidden** (`forbidden_tenant`), for **every** role incl.
 admin (an operator uses a tenant-scoped token per instance). Skipped only when
-no `Indexer`/verifier is wired (health-only / dev on-host mode). This makes
-"one instance = one tenant" a real enforced boundary — the substrate for the
-pet-per-tenant deployment model (see `docs/spec/platform.md §Auth` step 4).
+no served tenant is configured (an unconfigured dev gateway, which also runs
+without a verifier). This makes "one instance = one tenant" a real enforced
+boundary — the substrate for the pet-per-tenant deployment model (see
+`docs/spec/platform.md §Auth` step 4).
+
+**Second pass — derive the served tenant from config, not the indexer.** The
+first cut read the served tenant from `indexer.tenant()`, so `served == None`
+whenever no indexer was wired. The admin tenant-CRUD tools
+(`tenant_create`/`delete`/`export`/`import`) dispatch *ahead* of the indexer
+gate off `tenant_store`, so a control-plane deployment with `verifier +
+tenant_store + no indexer` skipped the tenant check and a foreign admin token
+reached tenant-CRUD. Production always wires an indexer (`config.rs`), so this
+was defence-in-depth, not a live breach — but the boundary should not hinge on
+the indexer. `ServerConfig`/`AppState` now carry an explicit `served_tenant`
+sourced from `ESCUREL_TENANT` (`serve()` falls back to `indexer.tenant()` for a
+caller that only wires an indexer), and `enforce_auth` compares against that.
+Regression test: `mcp_admin_tools::foreign_tenant_admin_forbidden_even_without_indexer`.
 
 **Why not an in-process TenantManager.** Tenants are split graphs; escurel does
 not federate across them (the client stitches). With few large tenants + the

@@ -158,7 +158,7 @@ async fn mcp_inner(
     // Auth gate — only enforced when a verifier is configured.
     let auth_ctx = match state.verifier.as_ref() {
         Some(verifier) => {
-            let served = state.indexer.as_ref().map(|i| i.tenant());
+            let served = state.served_tenant.as_deref();
             match enforce_auth(verifier, &headers, served).await {
                 Ok(ctx) => Some(ctx),
                 Err(resp) => return resp,
@@ -350,7 +350,7 @@ async fn ingest_gate(
 ) -> Result<(std::sync::Arc<Indexer>, IngestCaller), axum::response::Response> {
     let auth_ctx = match state.verifier.as_ref() {
         Some(v) => {
-            let served = state.indexer.as_ref().map(|i| i.tenant());
+            let served = state.served_tenant.as_deref();
             match enforce_auth(v, headers, served).await {
                 Ok(c) => Some(c),
                 Err(resp) => return Err(resp),
@@ -798,7 +798,11 @@ async fn enforce_auth(
     // minted for a different tenant (same issuer/audience) must be refused —
     // never silently operate on the served tenant's corpus. Enforced for every
     // role, including admin (an operator uses a tenant-scoped token per
-    // instance). Skipped only when no indexer is wired (health-only mode).
+    // instance) and including the admin tenant-CRUD tools that dispatch ahead
+    // of the indexer gate — the served tenant comes from config, not the
+    // indexer, so it holds even for a control-plane deployment with no indexer.
+    // Skipped only when no served tenant is configured (an unconfigured dev
+    // gateway, which also runs without a verifier).
     if let Some(served) = served_tenant
         && ctx.tenant_id != served
     {

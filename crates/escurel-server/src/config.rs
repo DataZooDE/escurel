@@ -928,6 +928,9 @@ impl EscurelConfig {
             listen: self.listen_http.clone(),
             version: self.version.clone(),
             readiness,
+            // The hard tenant boundary is driven by the configured tenant,
+            // independent of the indexer, so it holds for every route.
+            served_tenant: Some(self.tenant.clone()),
             indexer: Some(indexer),
             verifier,
             quota,
