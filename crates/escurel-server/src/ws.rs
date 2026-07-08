@@ -48,7 +48,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use escurel_auth::{AuthContext, OidcVerifier};
 use escurel_crdt::Op;
 use escurel_quota::{Dimension, QuotaError, SessionGuard};
 use serde_json::{Value, json};
@@ -70,7 +69,7 @@ pub async fn ws_upgrade(
     let auth_ctx = match state.verifier.as_ref() {
         Some(verifier) => {
             let served = state.served_tenant.as_deref();
-            match enforce_auth(verifier, &headers, served).await {
+            match crate::auth_gate::enforce_auth(verifier, &headers, served).await {
                 Ok(ctx) => Some(ctx),
                 Err(resp) => return resp,
             }
@@ -97,64 +96,6 @@ pub async fn ws_upgrade(
         .unwrap_or_else(|| "default".to_owned());
 
     ws.on_upgrade(move |socket| handle_socket(socket, state, session_guard, tenant_id))
-}
-
-async fn enforce_auth(
-    verifier: &OidcVerifier,
-    headers: &HeaderMap,
-    served_tenant: Option<&str>,
-) -> Result<AuthContext, axum::response::Response> {
-    let Some(token) = bearer_token(headers) else {
-        return Err(auth_failure("missing Authorization: Bearer header"));
-    };
-    let ctx = verifier
-        .verify(&token)
-        .await
-        .map_err(|e| auth_failure(format!("token rejected: {e}")))?;
-    // Hard tenant boundary (mirrors the `/mcp` gate): one instance serves one
-    // tenant; a token for a different tenant is refused before the upgrade.
-    if let Some(served) = served_tenant
-        && ctx.tenant_id != served
-    {
-        return Err(forbidden_tenant(&ctx.tenant_id, served));
-    }
-    Ok(ctx)
-}
-
-/// `403` for a validly-signed token whose tenant claim is not this instance's.
-fn forbidden_tenant(token_tenant: &str, served: &str) -> axum::response::Response {
-    (
-        StatusCode::FORBIDDEN,
-        axum::Json(json!({
-            "error": "forbidden",
-            "message": format!(
-                "token tenant `{token_tenant}` is not served by this instance (serves `{served}`)"
-            ),
-        })),
-    )
-        .into_response()
-}
-
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
-    let raw = headers.get("authorization")?.to_str().ok()?;
-    if let Some(stripped) = raw.strip_prefix("Bearer ") {
-        return Some(stripped.trim().to_owned());
-    }
-    if let Some(stripped) = raw.strip_prefix("bearer ") {
-        return Some(stripped.trim().to_owned());
-    }
-    None
-}
-
-fn auth_failure(message: impl Into<String>) -> axum::response::Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        axum::Json(json!({
-            "error": "unauthorized",
-            "message": message.into(),
-        })),
-    )
-        .into_response()
 }
 
 fn session_cap_response() -> axum::response::Response {
