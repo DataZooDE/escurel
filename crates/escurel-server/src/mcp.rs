@@ -33,7 +33,7 @@ use axum::response::IntoResponse;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use escurel_admin::{TenantSpec as AdminTenantSpec, TenantStore, validate_tenant_id};
-use escurel_auth::{AuthContext, OidcVerifier, Role};
+use escurel_auth::Role;
 use escurel_crdt::{CrdtBackend, Op};
 use escurel_index::{
     AclCaller, AppendChatMessage, Capabilities, ChatMessage, Direction, EventInfo, Granularity,
@@ -159,7 +159,7 @@ async fn mcp_inner(
     let auth_ctx = match state.verifier.as_ref() {
         Some(verifier) => {
             let served = state.served_tenant.as_deref();
-            match enforce_auth(verifier, &headers, served).await {
+            match crate::auth_gate::enforce_auth(verifier, &headers, served).await {
                 Ok(ctx) => Some(ctx),
                 Err(resp) => return resp,
             }
@@ -351,7 +351,7 @@ async fn ingest_gate(
     let auth_ctx = match state.verifier.as_ref() {
         Some(v) => {
             let served = state.served_tenant.as_deref();
-            match enforce_auth(v, headers, served).await {
+            match crate::auth_gate::enforce_auth(v, headers, served).await {
                 Ok(c) => Some(c),
                 Err(resp) => return Err(resp),
             }
@@ -781,51 +781,6 @@ async fn run_document_ingest(
     }
 }
 
-async fn enforce_auth(
-    verifier: &OidcVerifier,
-    headers: &HeaderMap,
-    served_tenant: Option<&str>,
-) -> Result<AuthContext, axum::response::Response> {
-    let token = match bearer_token(headers) {
-        Some(t) => t,
-        None => return Err(auth_failure("missing Authorization: Bearer header")),
-    };
-    let ctx = verifier
-        .verify(&token)
-        .await
-        .map_err(|e| auth_failure(format!("token rejected: {e}")))?;
-    // Hard tenant boundary: one instance serves exactly one tenant. A token
-    // minted for a different tenant (same issuer/audience) must be refused —
-    // never silently operate on the served tenant's corpus. Enforced for every
-    // role, including admin (an operator uses a tenant-scoped token per
-    // instance) and including the admin tenant-CRUD tools that dispatch ahead
-    // of the indexer gate — the served tenant comes from config, not the
-    // indexer, so it holds even for a control-plane deployment with no indexer.
-    // Skipped only when no served tenant is configured (an unconfigured dev
-    // gateway, which also runs without a verifier).
-    if let Some(served) = served_tenant
-        && ctx.tenant_id != served
-    {
-        return Err(forbidden_tenant(&ctx.tenant_id, served));
-    }
-    Ok(ctx)
-}
-
-/// `403` for a validly-signed token whose tenant claim is not the one this
-/// instance serves. Distinct from `auth_failure` (`401`, a bad/absent token).
-fn forbidden_tenant(token_tenant: &str, served: &str) -> axum::response::Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(json!({
-            "error": "forbidden",
-            "message": format!(
-                "token tenant `{token_tenant}` is not served by this instance (serves `{served}`)"
-            ),
-        })),
-    )
-        .into_response()
-}
-
 /// Read `X-Request-Id` from `headers` if present and non-empty;
 /// otherwise mint a fresh ULID. Substrate audit collectors key
 /// off `request_id`, and tests pin a known value through the
@@ -852,29 +807,6 @@ fn tool_name_from(method: &str, params: &Value) -> Option<String> {
         .get("name")
         .and_then(Value::as_str)
         .map(str::to_owned)
-}
-
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
-    let raw = headers.get("authorization")?.to_str().ok()?;
-    let prefix = "Bearer ";
-    if let Some(stripped) = raw.strip_prefix(prefix) {
-        return Some(stripped.trim().to_owned());
-    }
-    if let Some(stripped) = raw.strip_prefix("bearer ") {
-        return Some(stripped.trim().to_owned());
-    }
-    None
-}
-
-fn auth_failure(message: impl Into<String>) -> axum::response::Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        Json(json!({
-            "error": "unauthorized",
-            "message": message.into(),
-        })),
-    )
-        .into_response()
 }
 
 fn quota_response(id: Value, err: &QuotaError) -> axum::response::Response {

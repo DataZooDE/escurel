@@ -32,6 +32,7 @@
 //!   `ESCUREL_OBSERVABILITY_OTLP_ENDPOINT` (or the deprecated
 //!   `ESCUREL_OTLP_ENDPOINT`); when unset traces are a no-op.
 
+mod auth_gate;
 pub mod config;
 mod config_probe;
 mod health;
