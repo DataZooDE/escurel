@@ -195,6 +195,23 @@ async fn invalid_token_rejects_upgrade() {
 }
 
 #[tokio::test]
+async fn foreign_tenant_rejects_upgrade() {
+    // The gateway serves "acme"; a valid token for a different tenant is
+    // forbidden (403) at the upgrade, before the live channel opens.
+    let p = start_authed(None).await;
+    let foreign = p.mint_token("globex", Role::Agent);
+    let result = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some(&foreign))).await;
+    let err = result.expect_err("foreign-tenant upgrade must fail");
+    match err {
+        tungstenite::Error::Http(resp) => {
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        }
+        other => panic!("expected HTTP 403 rejection, got {other:?}"),
+    }
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn session_hello_with_unknown_id_returns_unknown_session_error() {
     // M4.4 wires WS attach to an open `SessionManager` entry; a
     // `hello.session = <id>` for an id the registry doesn't know

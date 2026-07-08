@@ -24,7 +24,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// token/fixture tenant, so the authoritative `tenant_id` the gateway
 /// stamps into the webhook payload (`indexer.tenant()`) is always
 /// [`GATEWAY_TENANT`], not this value.
-const TENANT: &str = "carl";
+const TENANT: &str = "acme"; // aligned to the served indexer; tenant boundary now enforced
 
 /// The gateway's authoritative single-tenant identity (`indexer.tenant()`
 /// in the test-support harness). This is what rides in the webhook

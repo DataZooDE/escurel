@@ -157,10 +157,13 @@ async fn mcp_inner(
 
     // Auth gate — only enforced when a verifier is configured.
     let auth_ctx = match state.verifier.as_ref() {
-        Some(verifier) => match enforce_auth(verifier, &headers).await {
-            Ok(ctx) => Some(ctx),
-            Err(resp) => return resp,
-        },
+        Some(verifier) => {
+            let served = state.indexer.as_ref().map(|i| i.tenant());
+            match enforce_auth(verifier, &headers, served).await {
+                Ok(ctx) => Some(ctx),
+                Err(resp) => return resp,
+            }
+        }
         None => None,
     };
 
@@ -346,10 +349,13 @@ async fn ingest_gate(
     headers: &HeaderMap,
 ) -> Result<(std::sync::Arc<Indexer>, IngestCaller), axum::response::Response> {
     let auth_ctx = match state.verifier.as_ref() {
-        Some(v) => match enforce_auth(v, headers).await {
-            Ok(c) => Some(c),
-            Err(resp) => return Err(resp),
-        },
+        Some(v) => {
+            let served = state.indexer.as_ref().map(|i| i.tenant());
+            match enforce_auth(v, headers, served).await {
+                Ok(c) => Some(c),
+                Err(resp) => return Err(resp),
+            }
+        }
         None => None,
     };
     let subject = auth_ctx
@@ -778,15 +784,42 @@ async fn run_document_ingest(
 async fn enforce_auth(
     verifier: &OidcVerifier,
     headers: &HeaderMap,
+    served_tenant: Option<&str>,
 ) -> Result<AuthContext, axum::response::Response> {
     let token = match bearer_token(headers) {
         Some(t) => t,
         None => return Err(auth_failure("missing Authorization: Bearer header")),
     };
-    verifier
+    let ctx = verifier
         .verify(&token)
         .await
-        .map_err(|e| auth_failure(format!("token rejected: {e}")))
+        .map_err(|e| auth_failure(format!("token rejected: {e}")))?;
+    // Hard tenant boundary: one instance serves exactly one tenant. A token
+    // minted for a different tenant (same issuer/audience) must be refused —
+    // never silently operate on the served tenant's corpus. Enforced for every
+    // role, including admin (an operator uses a tenant-scoped token per
+    // instance). Skipped only when no indexer is wired (health-only mode).
+    if let Some(served) = served_tenant
+        && ctx.tenant_id != served
+    {
+        return Err(forbidden_tenant(&ctx.tenant_id, served));
+    }
+    Ok(ctx)
+}
+
+/// `403` for a validly-signed token whose tenant claim is not the one this
+/// instance serves. Distinct from `auth_failure` (`401`, a bad/absent token).
+fn forbidden_tenant(token_tenant: &str, served: &str) -> axum::response::Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "forbidden",
+            "message": format!(
+                "token tenant `{token_tenant}` is not served by this instance (serves `{served}`)"
+            ),
+        })),
+    )
+        .into_response()
 }
 
 /// Read `X-Request-Id` from `headers` if present and non-empty;

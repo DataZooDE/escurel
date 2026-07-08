@@ -35,9 +35,11 @@ On every request:
    transport's native error shape (HTTP 401, WS close code 4401).
 3. Resolve **tenant_id** = the value of the `tenant_claim` claim.
    Reject if absent.
-4. Look up the tenant in the tenant manager; reject with
-   `NOT_FOUND` if it does not exist (no auto-provision — see
-   below). Reject with `UNAVAILABLE` if `status != active`.
+4. Enforce the tenant boundary: **one instance serves exactly one
+   tenant** (`ESCUREL_TENANT`). If the token's `tenant_id` is not that
+   served tenant, reject with **403 Forbidden** — a valid token minted
+   for another tenant never operates on this instance's corpus.
+   (Multi-tenant deployments run one instance per tenant.)
 5. Resolve **role** = whether `admin_role_value` is in the
    `admin_role_claim` array. Admin endpoints require it; agent
    endpoints do not check it.
@@ -122,14 +124,19 @@ One Tokio runtime, one `Server` global, one `TenantManager`.
 
 ### Tenant manager
 
-> **Status: not yet implemented.** The design below (a `TenantManager`
-> holding an LRU of per-tenant `TenantHandle`s, each with its own
-> `DuckdbPool` and write `RwLock`) is the *target* shape. The current
-> binary wires a **single shared `Indexer`** into `AppState` and is
-> effectively single-tenant at the indexer layer — one DuckDB + write
-> lock is shared across tenants. Per-tenant routing is a pending
-> workstream (see [`../adr/0002-chat-message-surface.md` open
-> follow-ups](../adr/0002-chat-message-surface.md)).
+> **Status: not built — deliberately.** The current model is
+> **one instance per tenant** (a single `Indexer` in `AppState`, bound
+> to `ESCUREL_TENANT`; a token for any other tenant is rejected 403 —
+> see [Auth](#auth) step 4). Tenants are **split graphs**: escurel never
+> resolves references across them — any cross-tenant connection is the
+> client's job. So the in-process `TenantManager` below (an LRU of
+> per-tenant `TenantHandle`s, each with its own `DuckdbPool` + write
+> lock) is **not** on the roadmap; it would only earn its complexity for
+> *many mostly-idle* tenants sharing a *local* embedding model (evict
+> cold tenants to zero + share the model). With few large tenants and
+> the remote embedding API, pet-per-tenant is simpler and better
+> isolated. The design is kept here as the escape hatch if that calculus
+> changes.
 
 ```rust
 pub struct TenantManager {

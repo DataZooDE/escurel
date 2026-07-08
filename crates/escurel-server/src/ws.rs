@@ -68,10 +68,13 @@ pub async fn ws_upgrade(
     // Unconfigured (dev) gateways skip auth and quota entirely;
     // production deployments always wire both.
     let auth_ctx = match state.verifier.as_ref() {
-        Some(verifier) => match enforce_auth(verifier, &headers).await {
-            Ok(ctx) => Some(ctx),
-            Err(resp) => return resp,
-        },
+        Some(verifier) => {
+            let served = state.indexer.as_ref().map(|i| i.tenant());
+            match enforce_auth(verifier, &headers, served).await {
+                Ok(ctx) => Some(ctx),
+                Err(resp) => return resp,
+            }
+        }
         None => None,
     };
 
@@ -99,14 +102,37 @@ pub async fn ws_upgrade(
 async fn enforce_auth(
     verifier: &OidcVerifier,
     headers: &HeaderMap,
+    served_tenant: Option<&str>,
 ) -> Result<AuthContext, axum::response::Response> {
     let Some(token) = bearer_token(headers) else {
         return Err(auth_failure("missing Authorization: Bearer header"));
     };
-    verifier
+    let ctx = verifier
         .verify(&token)
         .await
-        .map_err(|e| auth_failure(format!("token rejected: {e}")))
+        .map_err(|e| auth_failure(format!("token rejected: {e}")))?;
+    // Hard tenant boundary (mirrors the `/mcp` gate): one instance serves one
+    // tenant; a token for a different tenant is refused before the upgrade.
+    if let Some(served) = served_tenant
+        && ctx.tenant_id != served
+    {
+        return Err(forbidden_tenant(&ctx.tenant_id, served));
+    }
+    Ok(ctx)
+}
+
+/// `403` for a validly-signed token whose tenant claim is not this instance's.
+fn forbidden_tenant(token_tenant: &str, served: &str) -> axum::response::Response {
+    (
+        StatusCode::FORBIDDEN,
+        axum::Json(json!({
+            "error": "forbidden",
+            "message": format!(
+                "token tenant `{token_tenant}` is not served by this instance (serves `{served}`)"
+            ),
+        })),
+    )
+        .into_response()
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {

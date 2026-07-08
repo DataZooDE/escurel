@@ -11,7 +11,7 @@ use escurel_client::{
 };
 use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
 
-const TENANT: &str = "carl";
+const TENANT: &str = "acme"; // aligned to the served indexer; tenant boundary now enforced
 const SPINE: &str = "markdown/instances/engagement__spine.md";
 
 async fn start() -> EscurelProcess {
