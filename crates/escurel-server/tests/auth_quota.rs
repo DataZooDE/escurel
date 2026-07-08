@@ -201,7 +201,11 @@ async fn tools_list_does_not_debit_quota() {
 }
 
 #[tokio::test]
-async fn tenants_have_independent_quota_state() {
+async fn foreign_tenant_rejected_and_served_tenant_quota_enforced() {
+    // One instance serves exactly one tenant (here "acme"). Quota is enforced
+    // for the served tenant, and a validly-signed token minted for a DIFFERENT
+    // tenant is rejected at the auth gate (403) before it can touch this
+    // instance's corpus — the hard tenant boundary for pet-per-tenant.
     let q = QuotaConfig {
         queries_per_minute: 1,
         writes_per_minute: 60,
@@ -211,9 +215,8 @@ async fn tenants_have_independent_quota_state() {
     };
     let p = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
 
+    // Served tenant: first query ok, second exhausts the (size-1) bucket.
     let t_acme = p.mint_token("acme", Role::Agent);
-    let t_globex = p.mint_token("globex", Role::Agent);
-
     assert_eq!(
         post_mcp(&p, Some(&t_acme), list_skills_call())
             .await
@@ -226,12 +229,15 @@ async fn tenants_have_independent_quota_state() {
             .status(),
         429
     );
-    // Globex's bucket is still fresh.
+
+    // Foreign tenant: forbidden, and it never reaches quota or data.
+    let t_globex = p.mint_token("globex", Role::Agent);
     assert_eq!(
         post_mcp(&p, Some(&t_globex), list_skills_call())
             .await
             .status(),
-        200
+        403,
+        "a token for a tenant this instance does not serve must be forbidden"
     );
 
     p.shutdown().await;

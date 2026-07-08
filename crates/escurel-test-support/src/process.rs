@@ -229,6 +229,20 @@ impl EscurelProcess {
         //    DuckDB file when we're building the default indexer.
         //    When the caller supplied their own indexer (or
         //    disabled it), the tempdirs are theirs to own.
+        // The single tenant this harness serves. The gateway enforces a hard
+        // tenant boundary (a token for any other tenant is rejected 403), so
+        // the served tenant, the seeded fixtures, and the minted tokens must
+        // all agree. Priority: a supplied custom indexer's own tenant, else the
+        // (single) tenant the fixtures declare, else the `"acme"` default.
+        let served_tenant: String = if let Some(custom) = &overrides.indexer {
+            custom.tenant().to_owned()
+        } else {
+            opts.fixtures
+                .as_ref()
+                .and_then(sole_fixture_tenant)
+                .unwrap_or_else(|| "acme".to_owned())
+        };
+
         let (store_dir, db_dir, indexer, default_lane_store) =
             if let Some(custom) = overrides.indexer.clone() {
                 (None, None, Some(custom), None)
@@ -237,7 +251,7 @@ impl EscurelProcess {
             } else {
                 let store_dir = TempDir::new().expect("tempdir for store");
                 let db_dir = TempDir::new().expect("tempdir for duckdb");
-                let (indexer, store) = build_indexer(&store_dir, &db_dir);
+                let (indexer, store) = build_indexer(&store_dir, &db_dir, &served_tenant);
                 // Match production: every served tenant ships the
                 // mandatory `escurel` meta-skill (locked decision 3).
                 // Done here rather than in the sync `build_indexer`
@@ -316,6 +330,7 @@ impl EscurelProcess {
             listen: "127.0.0.1:0".to_owned(),
             version,
             readiness,
+            served_tenant: Some(served_tenant.clone()),
             indexer: indexer.clone(),
             verifier,
             quota: overrides.quota.clone(),
@@ -343,7 +358,7 @@ impl EscurelProcess {
         // rather than re-connecting — the surface stays sync, matching
         // `docs/spec/dx.md` §"Test-process façade".
         let default_token = match &issuer {
-            Some(i) => i.mint("acme", Role::Agent),
+            Some(i) => i.mint(&served_tenant, Role::Agent),
             None => String::new(),
         };
         let default_client = Client::connect(&base_url, SecretString::from(default_token))
@@ -358,7 +373,7 @@ impl EscurelProcess {
             default_client,
             indexer,
             default_lane_store,
-            default_tenant: "acme".to_owned(),
+            default_tenant: served_tenant,
             _store_dir: store_dir,
             _db_dir: db_dir,
         };
@@ -519,13 +534,11 @@ impl EscurelProcess {
     /// what tests seed is what `update_page` would seed in
     /// production.
     ///
-    /// Today the underlying `Indexer` is single-tenant: it was
-    /// constructed at `spawn` time with the literal `"acme"`
-    /// tenant string baked in. Fixtures declared under a different
-    /// `tenant(...)` name still seed (the gateway routes them to
-    /// the same Indexer); when M3-grade per-tenant indexers
-    /// arrive, this method gains a per-tenant client without
-    /// changing the public surface.
+    /// The harness is single-tenant per spawn: the `Indexer` is bound to the
+    /// tenant the fixtures declare (via their `.tenant(...)` scope, or the
+    /// `"acme"` default), and that same tenant is what `default_tenant` /
+    /// `client()` mint for. A `FixtureBuilder` spanning multiple tenants is
+    /// unsupported here — only the sole/`"acme"` tenant is served.
     ///
     /// # Panics
     ///
@@ -646,20 +659,52 @@ impl Drop for EscurelProcess {
     }
 }
 
-fn build_indexer(store_dir: &TempDir, db_dir: &TempDir) -> (Arc<Indexer>, Arc<dyn LaneStore>) {
+fn build_indexer(
+    store_dir: &TempDir,
+    db_dir: &TempDir,
+    tenant: &str,
+) -> (Arc<Indexer>, Arc<dyn LaneStore>) {
     let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
     let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
     let conn =
         Connection::open(db_dir.path().join("escurel.duckdb")).expect("open per-spawn duckdb");
     Migrator::up(&conn).expect("duckdb migrations");
-    // The Indexer is single-tenant today; the support crate seeds
-    // every fixture under the default "acme" tenant on its disk
-    // layout, but the in-memory Indexer doesn't enforce the
-    // tenant string — the verified token threads that through at
-    // request time. Bind it to "acme" so the on-disk layout
-    // matches the tenant string the test mints tokens for.
+    // The harness is single-tenant per spawn: the Indexer, the seeded fixtures,
+    // and the minted tokens all share `tenant` (derived from the fixture's
+    // `.tenant(...)` scope, or the "acme" default). The gateway enforces this
+    // boundary, so the three must agree.
     let indexer = Arc::new(
-        Indexer::new(Arc::clone(&store), embedder, conn, "acme").expect("Indexer construction"),
+        Indexer::new(Arc::clone(&store), embedder, conn, tenant).expect("Indexer construction"),
     );
     (indexer, store)
+}
+
+/// The one tenant the builder declares (via its `.tenant(...)` scopes, even
+/// when a scope seeds no pages), or `None` when it declares none (the caller
+/// then falls back to the `"acme"` default).
+///
+/// **Panics** when the builder declares more than one distinct tenant: a single
+/// instance enforces a hard one-instance-one-tenant boundary, so a multi-tenant
+/// fixture cannot be served faithfully — silently collapsing it to one tenant
+/// would make a `client_for(other)` mysteriously 403. Split such fixtures across
+/// separate `EscurelProcess` spawns (one per tenant) instead.
+fn sole_fixture_tenant(builder: &FixtureBuilder) -> Option<String> {
+    let mut distinct: Vec<&str> = builder
+        .declared_tenants
+        .iter()
+        .map(String::as_str)
+        .collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    match distinct.as_slice() {
+        [] => None,
+        [one] => Some((*one).to_owned()),
+        many => panic!(
+            "escurel-test-support: this harness serves exactly one tenant, but the \
+             FixtureBuilder declares {} distinct tenants ({many:?}). A single instance \
+             enforces a hard one-instance-one-tenant boundary — split the fixtures \
+             across separate EscurelProcess spawns (one per tenant).",
+            many.len()
+        ),
+    }
 }

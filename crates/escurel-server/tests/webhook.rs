@@ -19,17 +19,12 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Tenant used for the auth token. NOTE: the test-support gateway's
-/// `Indexer` is single-tenant and hardwired to `"acme"` regardless of the
-/// token/fixture tenant, so the authoritative `tenant_id` the gateway
-/// stamps into the webhook payload (`indexer.tenant()`) is always
-/// [`GATEWAY_TENANT`], not this value.
+/// The single tenant this gateway serves. The gateway enforces the tenant
+/// boundary (token tenant == served tenant), and the harness binds its
+/// `Indexer` to the fixture's tenant, so the token tenant, the served tenant,
+/// and the authoritative `tenant_id` stamped into the webhook payload
+/// (`indexer.tenant()`) are all this value.
 const TENANT: &str = "carl";
-
-/// The gateway's authoritative single-tenant identity (`indexer.tenant()`
-/// in the test-support harness). This is what rides in the webhook
-/// payload's `tenant_id`.
-const GATEWAY_TENANT: &str = "acme";
 
 /// Compute the expected `sha256=<hex>` signature for `body` under `secret`,
 /// matching the gateway's `X-Escurel-Webhook-Signature` scheme.
@@ -118,7 +113,7 @@ async fn capture_event_delivers_outbound_webhook() {
     assert_eq!(body["status"].as_str(), Some("inbox"));
     // Even without a secret the payload always carries the authoritative
     // gateway tenant (`indexer.tenant()`).
-    assert_eq!(body["tenant_id"].as_str(), Some(GATEWAY_TENANT));
+    assert_eq!(body["tenant_id"].as_str(), Some(TENANT));
 
     p.shutdown().await;
 }
@@ -190,7 +185,7 @@ async fn capture_event_webhook_is_hmac_signed_and_carries_tenant_id() {
     let body: Value = serde_json::from_slice(&raw_body).expect("json body");
     assert_eq!(
         body["tenant_id"].as_str(),
-        Some(GATEWAY_TENANT),
+        Some(TENANT),
         "payload must carry the gateway's authoritative tenant_id"
     );
     assert_eq!(body["event_id"].as_str(), Some(event_id.as_str()));

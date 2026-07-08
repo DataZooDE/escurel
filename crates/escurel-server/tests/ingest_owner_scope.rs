@@ -143,6 +143,28 @@ async fn expand(p: &EscurelProcess, token: &str, page_id: &str) -> Value {
 }
 
 #[tokio::test]
+async fn foreign_tenant_ingest_is_forbidden() {
+    // `/ingest` writes into the served tenant's corpus — a token for a
+    // different tenant must be refused at the auth gate (403), before any blob
+    // is materialised. Mirrors the `/mcp` + `/ws` tenant boundary.
+    let s = setup().await;
+    // A valid token for a tenant this instance does not serve.
+    let foreign = s
+        .process
+        .mint_token_with_groups("other-tenant", "eve", &[], false);
+    let (status, _) = post_ingest(
+        &s.process,
+        &foreign,
+        "blob-does-not-matter",
+        "text/plain",
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "foreign-tenant ingest must be forbidden");
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
 async fn personal_upload_is_owner_private() {
     let s = setup().await;
     let alice = s

@@ -100,6 +100,15 @@ pub struct ServerConfig {
     pub version: String,
     /// Probe behind `/readyz`. Defaults to [`crate::health::AlwaysReady`].
     pub readiness: Arc<dyn ReadinessProbe>,
+    /// The single tenant this instance serves (`ESCUREL_TENANT`). The
+    /// auth gate refuses any validly-signed token whose `tenant` claim
+    /// differs — the hard one-instance-one-tenant boundary. Derived
+    /// from config (always present in production) so the boundary does
+    /// not depend on an indexer being wired; `None` only in an
+    /// unconfigured dev gateway, where the boundary is inert (it also
+    /// runs without a verifier). When both this and `indexer` are set
+    /// they name the same tenant.
+    pub served_tenant: Option<String>,
     /// Per-tenant indexer. None disables the `/mcp` endpoint
     /// (useful for health-only deployments). `tools/call` returns
     /// a JSON-RPC `method not found` when absent.
@@ -247,6 +256,11 @@ pub(crate) struct AppState {
     pub(crate) write_acl: WriteAclMode,
     pub(crate) version: String,
     pub(crate) readiness: Arc<dyn ReadinessProbe>,
+    /// The single tenant this instance serves. The auth gate compares
+    /// every verified token's `tenant` claim against it (403 on
+    /// mismatch). Sourced from config, not the indexer, so the boundary
+    /// holds even for control-plane deployments with no indexer wired.
+    pub(crate) served_tenant: Option<String>,
     pub(crate) indexer: Option<Arc<Indexer>>,
     pub(crate) verifier: Option<Arc<OidcVerifier>>,
     pub(crate) quota: Option<Arc<QuotaManager>>,
@@ -290,10 +304,19 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
     // scrape that races the first request still sees `escurel_up
     // 1` as soon as the route is wired.
     metrics_registry.set_up(true);
+    // The served tenant drives the hard tenant boundary. Prefer the
+    // explicit config value (always set in production); fall back to the
+    // indexer's tenant so a caller that only wires an indexer still gets
+    // the boundary. `None` only when neither is set (unconfigured dev).
+    let served_tenant = config
+        .served_tenant
+        .clone()
+        .or_else(|| config.indexer.as_ref().map(|i| i.tenant().to_owned()));
     let state = AppState {
         write_acl: config.write_acl,
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
+        served_tenant,
         indexer: config.indexer.clone(),
         verifier: config.verifier.clone(),
         quota: config.quota.clone(),
