@@ -36,11 +36,30 @@ runnable.
 
 ---
 
-## Three deploy targets
+## Deploy targets
 
-The M5 acceptance gate is the same binary running in three shapes,
-from a laptop up to the substrate. Each target lists the exact
-`ESCUREL_*` env set and the command.
+The same binary runs in several shapes, from a laptop up to the
+substrate. Each target lists the exact `ESCUREL_*` env set and the
+command.
+
+### Target 0 — Docker Compose (generic cloud VM / bare metal)
+
+The substrate-free container baseline: one `escurel-server` container +
+a named `/data` volume, driven entirely by `ESCUREL_*` env. Works on any
+Docker host — a cloud VM, bare metal, or a laptop — with no Kamal, no
+GCP, no Tailscale. See [`../../deploy/compose/`](../../deploy/compose/).
+
+```sh
+cd deploy/compose
+cp .env.example .env          # edit auth / embedding / ports
+docker compose up -d --build
+curl -fsS localhost:8080/healthz     # -> OK
+./smoke.sh                            # optional: build + up + restart, exit-code gated
+```
+
+One replica, STOP-FIRST (single-writer DuckDB — no scaling, no rolling
+restart). State is the `escurel-data` volume; back it up by snapshotting
+the volume or via the logical `tenant_export` admin tool.
 
 ### Target A — single binary on a laptop (FS backend, no OTLP)
 
@@ -243,7 +262,7 @@ specific bump, change that one crate in `Cargo.toml` and `cargo update -p
 | Placeholder | Who supplies it | Where |
 |---|---|---|
 | `<env>` / internal hostname (`dz-escurel.<env>.int`) | operator (substrate DNS) | `apps/registry.yml` exposure |
-| image tag (`ghcr.io/datazoode/escurel-server:<tag>`) | this repo's `publish-image.yml` build | `apps/registry.yml` / `deploy.yml` |
+| image tag (`ghcr.io/datazoode/escurel:<tag>`) | this repo's `publish-image.yml` build | `apps/registry.yml` / `deploy.yml` |
 | `ghcr-pull-token` | operator (Secret Manager) | substrate host pull auth |
 | `/data` Volume subdir on host-1 | operator (substrate PR) | `kamal/dz-escurel/deploy.yml` `volumes:` |
 | Gemini key / webhook secret / (optional) S3 keys | operator (Secret Manager) | `deploy.yml` `env.secret` |

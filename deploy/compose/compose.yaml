@@ -1,0 +1,51 @@
+# escurel — generic single-node deploy (cloud VM / bare metal / laptop).
+#
+# One container = one tenant. All state lives in the named `escurel-data`
+# volume mounted at /data (DuckDB derived index + the canonical markdown
+# LaneStore + blobs). This is the substrate-free baseline; see
+# ../../docs/deploy/README.md for the systemd and Kamal (substrate) targets.
+#
+#   cd deploy/compose
+#   cp .env.example .env      # then edit (auth, embedding, ports)
+#   docker compose up -d
+#   curl -fsS localhost:8080/healthz     # -> OK
+#
+# Single-writer DuckDB: run exactly ONE replica and do NOT roll restarts —
+# `docker compose up` recreate is stop-then-start, which is the correct
+# STOP-FIRST behaviour. There is no active-active / HA story (by design).
+
+services:
+  escurel:
+    # Build from the repo checkout — self-contained and air-gap friendly.
+    # To pull the prebuilt image instead, comment `build:` and uncomment
+    # `image:` (and pin a :<sha> tag for reproducibility).
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    # image: ghcr.io/datazoode/escurel:main
+    restart: unless-stopped
+    # Operator config. Optional: with no .env the container falls back to the
+    # image defaults (keyless-zero embedder, UNAUTHENTICATED dev mode) so
+    # `docker compose up` works for a quick trial — copy .env.example to .env
+    # for anything real.
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "${ESCUREL_HTTP_PORT:-8080}:8080"
+      - "${ESCUREL_METRICS_PORT:-9090}:9090"
+    volumes:
+      - escurel-data:/data
+    # Liveness is dependency-free (/healthz); readiness (/readyz) reflects the
+    # embedder + LaneStore. Compose only models liveness here.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+    # 12-factor graceful SIGTERM: release the DuckDB write lock + flush.
+    stop_grace_period: 30s
+
+volumes:
+  escurel-data:

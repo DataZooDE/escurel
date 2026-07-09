@@ -23,7 +23,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use escurel_server::EscurelConfig;
-use escurel_server::config::{EmbeddingProvider, StorageBackend};
+use escurel_server::config::{EmbeddingProvider, RebuildIndexOnBoot, StorageBackend};
 use tempfile::TempDir;
 
 /// Build an `EnvSource` closure from a map of overrides.
@@ -54,6 +54,32 @@ fn from_env_builds_fs_config_with_defaults() {
     assert_eq!(cfg.embedding_provider, EmbeddingProvider::Gemini);
     assert_eq!(cfg.embedding_dim, 768);
     assert!(cfg.auth.is_none());
+}
+
+#[test]
+fn from_env_parses_rebuild_index_on_boot() {
+    // Default → reuse an existing derived index.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[]))).unwrap();
+    assert_eq!(cfg.rebuild_index_on_boot, RebuildIndexOnBoot::IfMissing);
+
+    // `always` → drop + rebuild each boot (the container default).
+    let cfg = EscurelConfig::from_source(&source(env_map(&[(
+        "ESCUREL_REBUILD_INDEX_ON_BOOT",
+        "always",
+    )])))
+    .unwrap();
+    assert_eq!(cfg.rebuild_index_on_boot, RebuildIndexOnBoot::Always);
+
+    // An unknown value is a config error that names the var.
+    let err = EscurelConfig::from_source(&source(env_map(&[(
+        "ESCUREL_REBUILD_INDEX_ON_BOOT",
+        "sometimes",
+    )])))
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("ESCUREL_REBUILD_INDEX_ON_BOOT"),
+        "error should name the offending var: {err}"
+    );
 }
 
 #[test]
@@ -414,6 +440,131 @@ async fn fresh_duckdb_rebuilds_index_from_surviving_markdown() {
     );
 
     booted.handle.shutdown().await;
+}
+
+/// `ESCUREL_REBUILD_INDEX_ON_BOOT=always` must DROP an existing derived
+/// DuckDB and rebuild it from the canonical markdown LaneStore — the
+/// tested-in-Rust replacement for the old shell `rm *.duckdb` ENTRYPOINT
+/// hack (Docker's HNSW-persistence-segfault workaround). Proven by the file
+/// being recreated (new inode) while the markdown-backed skill still serves.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rebuild_index_on_boot_always_recreates_the_derived_duckdb() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let data_dir = TempDir::new().unwrap();
+    // Canonical markdown in the LaneStore lane, as a surviving volume holds it.
+    let md = data_dir
+        .path()
+        .join("tenants")
+        .join("default")
+        .join("markdown")
+        .join("skills");
+    std::fs::create_dir_all(&md).unwrap();
+    std::fs::write(
+        md.join("customer.md"),
+        "---\ntype: skill\nid: customer\ndescription: a buyer\n---\n# customer\n",
+    )
+    .unwrap();
+    let db_path = data_dir
+        .path()
+        .join("tenants")
+        .join("default")
+        .join("escurel.duckdb");
+
+    let base_env: &[(&str, &str)] = &[
+        ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
+    ];
+
+    // Boot #1 (default): fresh → rebuild-from-markdown, DuckDB created.
+    let booted = EscurelConfig::from_source(&source(env_map(base_env)))
+        .unwrap()
+        .build()
+        .await
+        .expect("boot 1");
+    booted.handle.shutdown().await;
+    let ino_before = std::fs::metadata(&db_path).unwrap().ino();
+
+    // Boot #2 with `always`: the derived DuckDB is dropped + rebuilt.
+    let mut always_env = base_env.to_vec();
+    always_env.push(("ESCUREL_REBUILD_INDEX_ON_BOOT", "always"));
+    let booted2 = EscurelConfig::from_source(&source(env_map(&always_env)))
+        .unwrap()
+        .build()
+        .await
+        .expect("boot 2");
+    let base2 = format!("http://{}", booted2.handle.local_addr);
+    let ino_after = std::fs::metadata(&db_path).unwrap().ino();
+    assert_ne!(
+        ino_before, ino_after,
+        "`always` must drop + recreate the derived DuckDB (new inode)"
+    );
+
+    // The rebuild restored the markdown-backed skill.
+    let body: serde_json::Value = reqwest::Client::new()
+        .post(format!("{base2}/mcp"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "list_skills", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let skills = body["result"]["structuredContent"]["skills"]
+        .as_array()
+        .expect("skills array");
+    assert!(
+        skills.iter().any(|s| s["id"] == "customer"),
+        "`always` rebuild must restore the skill from markdown; got: {body}"
+    );
+    booted2.handle.shutdown().await;
+}
+
+/// The default (`if-missing`) REUSES an existing derived DuckDB across a
+/// restart — no drop, no re-embed. Proven by a stable inode. Guards against
+/// the boot-drop becoming the accidental default.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rebuild_index_on_boot_default_reuses_the_derived_duckdb() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let data_dir = TempDir::new().unwrap();
+    let db_path = data_dir
+        .path()
+        .join("tenants")
+        .join("default")
+        .join("escurel.duckdb");
+    let base_env: &[(&str, &str)] = &[
+        ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
+    ];
+
+    let booted = EscurelConfig::from_source(&source(env_map(base_env)))
+        .unwrap()
+        .build()
+        .await
+        .expect("boot 1");
+    booted.handle.shutdown().await;
+    let ino_before = std::fs::metadata(&db_path).unwrap().ino();
+
+    // Boot #2 with no knob set → default `if-missing` → reuse.
+    let booted2 = EscurelConfig::from_source(&source(env_map(base_env)))
+        .unwrap()
+        .build()
+        .await
+        .expect("boot 2");
+    let ino_after = std::fs::metadata(&db_path).unwrap().ino();
+    booted2.handle.shutdown().await;
+    assert_eq!(
+        ino_before, ino_after,
+        "default (if-missing) must reuse the existing derived DuckDB"
+    );
 }
 
 // --- helpers ---------------------------------------------------
