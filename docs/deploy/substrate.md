@@ -45,7 +45,7 @@ the substrate's single-writer-stateful pattern
 
 | | |
 |---|---|
-| Image | `ghcr.io/datazoode/escurel-server`, built by **this repo's** [`Dockerfile`](../../Dockerfile) + [`.github/workflows/publish-image.yml`](../../.github/workflows/publish-image.yml) (an *external build* registry entry — Kamal pulls, doesn't build) |
+| Image | `ghcr.io/datazoode/escurel`, built by **this repo's** [`Dockerfile`](../../Dockerfile) + [`.github/workflows/publish-image.yml`](../../.github/workflows/publish-image.yml) (an *external build* registry entry — Kamal pulls, doesn't build) |
 | Deploy contract | `kamal/dz-escurel/deploy.yml` in the **substrate repo** (fork `substrate-platform/templates/kamal-deploy.yml`); `kamal deploy` runs on merge |
 | Registry row | `apps/registry.yml` in the substrate repo (fork `templates/registry-entry.yml`): `image`, `build: external`, `exposure`, `port: 8080`, `kamal`, `secrets` |
 | Health | `GET /healthz` (liveness, dependency-free), `GET /readyz` (readiness), `GET /version`, `GET /metrics` — the substrate health contract (`references/05`) |

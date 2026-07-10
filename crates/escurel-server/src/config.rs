@@ -32,6 +32,7 @@
 //! | `ESCUREL_WEBHOOK_SECRET` | — | shared secret; when set the webhook body is HMAC-SHA256-signed via `X-Escurel-Webhook-Signature: sha256=<hex>` |
 //! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
 //! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
+//! | `ESCUREL_REBUILD_INDEX_ON_BOOT` | `if-missing` | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent) or `always` (drop + rebuild from the markdown LaneStore each start; the container default — HNSW-persistence-reload workaround) |
 //! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs` or `s3` |
 //! | `ESCUREL_STORAGE_S3_BUCKET` | — | S3 bucket (backend=s3) |
 //! | `ESCUREL_STORAGE_S3_ENDPOINT` | — | S3 endpoint URL (backend=s3) |
@@ -86,6 +87,24 @@ const DEFAULT_DIM: usize = 768;
 pub enum StorageBackend {
     Fs,
     S3,
+}
+
+/// When to drop + rebuild the derived DuckDB index at boot
+/// (`ESCUREL_REBUILD_INDEX_ON_BOOT`).
+///
+/// The DuckDB file is a *derived* cache reconstructable from the canonical
+/// markdown LaneStore. `Always` drops it on every start so the process
+/// rebuilds a fresh index — the container default, because `vss`'s
+/// experimental HNSW persistence segfaults when a restarted process reloads
+/// the on-disk index (see the Dockerfile note). `IfMissing` (the binary
+/// default) keeps an existing index and only rebuilds when the file is
+/// absent (a fresh host / wiped volume) — fast restarts, no re-embed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebuildIndexOnBoot {
+    /// Drop the derived DuckDB at boot and rebuild from the LaneStore.
+    Always,
+    /// Keep an existing derived DuckDB; rebuild only when it is missing.
+    IfMissing,
 }
 
 /// Embedding provider selector.
@@ -181,6 +200,7 @@ struct TomlServer {
     tenant: Option<String>,
     version: Option<String>,
     env: Option<String>,
+    rebuild_index_on_boot: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -348,6 +368,10 @@ pub struct EscurelConfig {
     /// `[<title> › <heading path> › p.<page>]` context (stored beside the
     /// verbatim body; feeds the dense/FTS/rerank representations only).
     pub ingest_contextualize: ContextualizeMode,
+    /// Whether to drop + rebuild the derived DuckDB index at boot
+    /// (`ESCUREL_REBUILD_INDEX_ON_BOOT`; default `if-missing`). The container
+    /// image sets `always` to sidestep the HNSW-persistence-reload segfault.
+    pub rebuild_index_on_boot: RebuildIndexOnBoot,
 }
 
 /// Source of an environment lookup — abstracted so `from_env` is
@@ -464,6 +488,25 @@ impl EscurelConfig {
             None
         } else {
             Some(metrics_listen_raw)
+        };
+        // Derived-index boot policy. `if-missing` (default) reuses an existing
+        // DuckDB; `always` drops it and rebuilds from the LaneStore (the
+        // container default — HNSW-persistence-reload segfault workaround).
+        let rebuild_raw = pick(
+            "ESCUREL_REBUILD_INDEX_ON_BOOT",
+            toml_cfg.server.rebuild_index_on_boot,
+            "if-missing",
+        );
+        let rebuild_index_on_boot = match rebuild_raw.trim().to_ascii_lowercase().as_str() {
+            "always" => RebuildIndexOnBoot::Always,
+            "if-missing" | "if_missing" | "missing" => RebuildIndexOnBoot::IfMissing,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    var: "ESCUREL_REBUILD_INDEX_ON_BOOT",
+                    value: other.to_owned(),
+                    reason: "must be `always` or `if-missing`",
+                });
+            }
         };
         let listen_http = pick(
             "ESCUREL_SERVER_LISTEN_HTTP",
@@ -731,6 +774,7 @@ impl EscurelConfig {
             webhook_secret,
             metrics_listen,
             ingest_contextualize,
+            rebuild_index_on_boot,
         })
     }
 }
@@ -809,6 +853,25 @@ impl EscurelConfig {
             source,
         })?;
         let db_path = tenant_dir.join("escurel.duckdb");
+        // Derived-index boot policy. `Always` drops the DuckDB (a rebuildable
+        // cache) + its WAL so the fresh-boot path below reconstructs a clean
+        // index from the canonical markdown LaneStore — the container default,
+        // replacing the old shell `rm *.duckdb` ENTRYPOINT hack (vss's
+        // experimental HNSW persistence segfaults when a restart reloads the
+        // on-disk index). `IfMissing` (default) leaves an existing index in
+        // place for a fast, re-embed-free restart. The markdown corpus is never
+        // touched. NOTE: this drops derived state that is NOT restored by the
+        // rebuild (chat/CRDT, credential/endpoint registries); with `Always`
+        // those must live in the canonical LaneStore or be re-registered — the
+        // same trade-off the previous ENTRYPOINT hack carried.
+        if self.rebuild_index_on_boot == RebuildIndexOnBoot::Always && db_path.exists() {
+            std::fs::remove_file(&db_path).map_err(|source| ConfigError::DataDir {
+                path: db_path.display().to_string(),
+                source,
+            })?;
+            // Best-effort WAL removal — absent after a clean checkpoint.
+            let _ = std::fs::remove_file(tenant_dir.join("escurel.duckdb.wal"));
+        }
         let fresh = !db_path.exists();
         let conn = Connection::open(&db_path).map_err(|source| ConfigError::DuckdbOpen {
             path: db_path.display().to_string(),
