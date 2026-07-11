@@ -32,6 +32,21 @@ const SKILL_QUERY_BODY: &str = "---\n\
      ---\n\
      # query\n";
 
+// A dynamic-workflow plan skill: markdown-file-backed, but declares
+// `backend: { kind: workflow }` and carries a `phases:` orchestration block.
+// Inline-flow YAML avoids the indented-block whitespace pitfall of the shared
+// 5-space test-literal prefix. The `phases:` block is parsed by the
+// `escurel-runner-workflow` reducer (PR-2), not the index; PR-1 only needs the
+// kind to surface through `list_skills`.
+const SKILL_DEEP_RESEARCH_BODY: &str = "---\n\
+     type: skill\n\
+     id: deep-research\n\
+     description: Fan-out web search, adversarially verify, synthesize a report.\n\
+     backend: {kind: workflow}\n\
+     phases: [{id: scope, produces: research-angle, fan_out: 1}, {id: synthesize, produces: research-report, fan_out: 1}]\n\
+     ---\n\
+     # deep-research\n";
+
 const MEETING_OLD_BODY: &str = "---\n\
      type: instance\n\
      skill: meeting\n\
@@ -167,6 +182,38 @@ async fn list_skills_reports_markdown_backend_kind() {
         assert_eq!(caps["granularity"], "block");
         assert_eq!(caps["search"], "hybrid");
     }
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn list_skills_reports_workflow_backend_kind() {
+    // A `kind: workflow` plan skill surfaces through the real gateway with
+    // its distinct backend kind and markdown-like capabilities (it is edited
+    // to steer the workflow). This is the corpus foundation the reducer
+    // (PR-2+) reads its plan from.
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant("acme")
+                .skill("deep-research", SKILL_DEEP_RESEARCH_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let result = call_tool(&p, "list_skills", json!({})).await;
+    let skills = result["skills"].as_array().expect("skills array");
+    let wf = skills
+        .iter()
+        .find(|s| s["id"] == "deep-research")
+        .expect("deep-research workflow skill present");
+    assert_eq!(wf["backend"]["kind"], "workflow");
+    let caps = &wf["capabilities"];
+    assert_eq!(caps["writable"], true, "the plan page is edited to steer");
+    assert_eq!(caps["granularity"], "block");
+    assert_eq!(caps["search"], "hybrid");
+    assert_eq!(caps["supports_crdt"], true);
     p.shutdown().await;
 }
 

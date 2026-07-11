@@ -241,6 +241,16 @@ impl BackendBinding {
                 remote: parse_remote(block, RemoteKind::Mcp),
                 projection_limit: read_usize("projection_limit"),
             },
+            // A workflow plan skill is markdown-file-backed; the index only
+            // records the kind. The `phases:`/`verify:` orchestration spec is
+            // parsed by the `escurel-runner-workflow` reducer, not here.
+            Some("workflow") => Self {
+                kind: BackendKind::Workflow,
+                sql_view: None,
+                document: None,
+                remote: None,
+                projection_limit: None,
+            },
             // Unknown kind: lenient on the read path (markdown); the
             // create/validate path is where a bad binding is rejected.
             Some(_) => Self::default(),
@@ -428,6 +438,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_backend_binding_workflow_kind() {
+        // A `kind: workflow` skill is markdown-file-backed (its body is the
+        // per-phase instructions) but labelled `workflow` so the runner can
+        // recognise a plan skill. The `phases:`/`verify:` frontmatter is parsed
+        // by the `escurel-runner-workflow` crate, not here — the index only
+        // needs the kind.
+        let fm = json!({
+            "backend": { "kind": "workflow" },
+            "phases": [{ "id": "scope", "produces": "research-angle" }]
+        });
+        let b = BackendBinding::parse(&fm);
+        assert_eq!(b.kind, BackendKind::Workflow);
+        assert!(b.sql_view.is_none());
+        assert!(b.document.is_none());
+        assert!(b.remote.is_none());
+    }
+
+    #[test]
     fn parse_backend_binding_unknown_kind_falls_back_to_markdown() {
         assert_eq!(
             BackendBinding::parse(&json!({"backend": {"kind": "wormhole"}})),
@@ -610,6 +638,19 @@ mod tests {
         let b = BackendBinding::parse(&fm);
         assert_eq!(b.kind, BackendKind::OpenApi);
         assert!(b.remote.is_none());
+    }
+
+    #[test]
+    fn workflow_kind_is_markdown_like_writable_page() {
+        // The workflow plan page is a normal editable markdown page — you
+        // steer the workflow by editing it — so its capabilities mirror
+        // markdown: writable, block-grain, hybrid search, CRDT-co-authored.
+        let c = super::super::Capabilities::for_kind(BackendKind::Workflow);
+        let md = super::super::Capabilities::for_kind(BackendKind::Markdown);
+        assert_eq!(c, md);
+        assert!(c.writable, "the plan page is edited to steer the workflow");
+        assert_eq!(BackendKind::Workflow.as_str(), "workflow");
+        assert!(!BackendKind::Workflow.is_remote());
     }
 
     #[test]
