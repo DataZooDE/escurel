@@ -188,6 +188,22 @@ async fn resolve_emits_existing_page() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn page_snapshots_emits_snapshot_array() {
+    let h = start().await;
+    let page_id = acme_page_id(&h).await;
+    let out = run_args(&h, v(&["page", "snapshots", &page_id])).await;
+    let val = json(&out);
+    // A fixture-seeded instance has no CRDT session history yet, so the
+    // list is present and empty — the point is that the command is wired
+    // and returns the real (array) shape.
+    assert!(
+        val["snapshots"].is_array(),
+        "snapshots must be an array: {val}"
+    );
+    h.process.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn page_expand_emits_body_and_wikilinks() {
     let h = start().await;
     let page_id = acme_page_id(&h).await;

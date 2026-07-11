@@ -150,6 +150,28 @@ impl McpTransport {
         Ok(body)
     }
 
+    /// POST a JSON body to an endpoint relative to the base (e.g.
+    /// `/ingest/upload`) and decode the JSON response. Carries the
+    /// bearer if set. Used by the non-MCP HTTP surfaces the JSON-RPC
+    /// `call` path can't reach.
+    pub(crate) async fn post_json(&self, path: &str, body: Value) -> Result<Value, Error> {
+        let url = format!("{}{}", self.base, path);
+        let mut req = self.http.post(&url).json(&body);
+        if !self.bearer.is_empty() {
+            req = req.header("authorization", &self.bearer);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Http {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+        serde_json::from_str(&text).map_err(|e| Error::Decode(e.to_string()))
+    }
+
     /// Open the `/ws` live-session channel and drive it with `ops`.
     /// Sends a `hello` for the first op's session, forwards each op as
     /// `{type:"op", op:<base64>}`, and yields a [`LiveAck`] per

@@ -43,6 +43,7 @@
 //! ```
 
 mod auth;
+pub mod crdt_testkit;
 mod fixtures;
 mod mcp_client;
 mod process;

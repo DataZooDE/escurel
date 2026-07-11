@@ -23,6 +23,8 @@ base64 = "0.22"
 bytes = "1"
 duckdb = { version = "1", default-features = false }
 jsonwebtoken = "9"
+# Mint real Loro op blobs for consumer-side live-session (CRDT) tests.
+loro = "1.12"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rsa = { version = "0.9", features = ["pem"] }

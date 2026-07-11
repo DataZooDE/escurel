@@ -11,9 +11,12 @@
 //!   escurel instance list --skill customer
 //!   escurel page expand|validate|update <page_id>
 //!   escurel link neighbours <page_id>
+//!   escurel page blob|snapshots <page_id>
 //!   escurel event capture|inbox|list|assign
 //!   escurel query run <query_id> --params '{…}'
 //!   escurel chat append|list
+//!   escurel session open|apply|close
+//!   escurel ingest <file> --content-type <mime>
 //!   escurel admin <tenant|audit|quota|…>
 //! with two natural top-level verbs (`search`, `resolve`).
 //!
@@ -77,6 +80,11 @@ enum Command {
     /// Per-chat-group conversation log.
     #[command(subcommand)]
     Chat(agent::ChatCmd),
+    /// Live CRDT co-editing session (open / apply / close).
+    #[command(subcommand)]
+    Session(agent::SessionCmd),
+    /// Upload a document for ingestion into a `document`-backend skill.
+    Ingest(agent::IngestArgs),
     /// Operator surface (admin-role token required, except `health`).
     #[command(subcommand)]
     Admin(admin::AdminCmd),

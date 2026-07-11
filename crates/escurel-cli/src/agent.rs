@@ -67,6 +67,53 @@ pub enum PageCmd {
     Validate { page_id: String },
     /// Upsert a markdown page. Body is read from stdin.
     Update { page_id: String },
+    /// Fetch the original retained bytes of a document-backed instance
+    /// (base64 + content type) for a faithful preview.
+    Blob { page_id: String },
+    /// List the CRDT snapshot timestamps of a page — the discrete
+    /// state-over-time cuts `page expand --as-of` can replay.
+    Snapshots { page_id: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionCmd {
+    /// Open a live CRDT session on a page; returns a session id + the WS
+    /// upgrade URL.
+    Open { page_id: String },
+    /// Apply a base64-encoded Loro op blob to an open session. The op is
+    /// read from stdin unless `--op` is given.
+    Apply(SessionApplyArgs),
+    /// Close a session; snapshots the doc unless `--no-commit`.
+    Close {
+        session: String,
+        /// Discard the in-memory doc without persisting a snapshot.
+        #[arg(long)]
+        no_commit: bool,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct SessionApplyArgs {
+    pub session: String,
+    /// base64-encoded Loro op bytes. If absent, read from stdin.
+    #[arg(long)]
+    pub op: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct IngestArgs {
+    /// Path to the file to ingest; its bytes are uploaded verbatim.
+    pub file: std::path::PathBuf,
+    /// MIME type of the file, e.g. `text/plain` or `application/pdf`.
+    #[arg(long)]
+    pub content_type: String,
+    /// Optional display title for the resulting document instance.
+    #[arg(long)]
+    pub title: Option<String>,
+    /// Pin the handling `document`-backend skill. Omit to resolve it
+    /// from the MIME.
+    #[arg(long)]
+    pub skill: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -241,12 +288,16 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Page(PageCmd::Expand { page_id }) => expand(client, page_id).await,
         Command::Page(PageCmd::Validate { page_id }) => validate(client, page_id).await,
         Command::Page(PageCmd::Update { page_id }) => update_page(client, page_id).await,
+        Command::Page(PageCmd::Blob { page_id }) => fetch_blob(client, page_id).await,
+        Command::Page(PageCmd::Snapshots { page_id }) => list_snapshots(client, page_id).await,
         Command::Link(LinkCmd::Neighbours(a)) => neighbours(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Query(QueryCmd::Run(a)) => run_query(client, a).await,
         Command::Query(QueryCmd::Instance(a)) => query_instance(client, a).await,
         Command::Chat(ChatCmd::Append(a)) => chat_append(client, a).await,
         Command::Chat(ChatCmd::List(a)) => chat_list(client, a).await,
+        Command::Session(c) => session_cmd(client, c).await,
+        Command::Ingest(a) => ingest(client, a).await,
         // Admin / Ui are dispatched in main before reaching here.
         Command::Admin(_) => unreachable!("admin handled by admin::run"),
         Command::Ui => unreachable!("ui handled by escurel_tui::run"),
@@ -425,6 +476,47 @@ async fn update_page(client: &Client, page_id: String) -> Result<Value> {
         })).collect::<Vec<_>>(),
         "new_version": opt(&resp.new_version),
     }))
+}
+
+async fn fetch_blob(client: &Client, page_id: String) -> Result<Value> {
+    Ok(client
+        .call_raw("fetch_blob", json!({ "page_id": page_id }))
+        .await?)
+}
+
+async fn list_snapshots(client: &Client, page_id: String) -> Result<Value> {
+    Ok(client
+        .call_raw("list_snapshots", json!({ "page_id": page_id }))
+        .await?)
+}
+
+/// The three live-CRDT session tools are raw pass-throughs: the CLI
+/// carries the base64 op bytes verbatim, so it stays independent of the
+/// Loro wire format. A co-editing peer (browser, editor) is the real
+/// driver; the CLI is here for scripted open/apply/close.
+async fn session_cmd(client: &Client, cmd: SessionCmd) -> Result<Value> {
+    let (tool, args) = match cmd {
+        SessionCmd::Open { page_id } => ("open_session", json!({ "page_id": page_id })),
+        SessionCmd::Apply(a) => {
+            let op = match a.op {
+                Some(o) => o,
+                None => read_stdin("op blob")?,
+            };
+            ("apply_op", json!({ "session": a.session, "op": op.trim() }))
+        }
+        SessionCmd::Close { session, no_commit } => (
+            "close_session",
+            json!({ "session": session, "commit": !no_commit }),
+        ),
+    };
+    Ok(client.call_raw(tool, args).await?)
+}
+
+async fn ingest(client: &Client, a: IngestArgs) -> Result<Value> {
+    let bytes = std::fs::read(&a.file).with_context(|| format!("read {}", a.file.display()))?;
+    Ok(client
+        .ingest_upload(&a.content_type, &bytes, a.title, a.skill)
+        .await?)
 }
 
 async fn neighbours(client: &Client, a: NeighboursArgs) -> Result<Value> {
