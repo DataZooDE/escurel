@@ -425,4 +425,34 @@ impl Client {
     pub async fn call_raw(&self, tool: &str, arguments: Value) -> Result<Value, Error> {
         self.transport.call(tool, arguments).await
     }
+
+    /// Upload a document for ingestion via `POST /ingest/upload`: deposit
+    /// the inline bytes into the tenant inbox (content-addressed) and run
+    /// the same document-ingest path as the `/ingest` webhook. The MIME
+    /// `content_type` resolves the handling `document`-backend skill, or
+    /// pass `skill` to pin a specific one (e.g. a per-collection skill
+    /// when several accept the same MIME). Returns the raw ingest outcome
+    /// JSON (`status`, `page_id`, `chunk_count`, …).
+    ///
+    /// This is a plain HTTP endpoint, not an MCP tool — the SPA can't
+    /// deposit a content-addressed blob itself, so the same intake is
+    /// exposed here for the CLI and BFF.
+    pub async fn ingest_upload(
+        &self,
+        content_type: &str,
+        bytes: &[u8],
+        title: Option<String>,
+        skill: Option<String>,
+    ) -> Result<Value, Error> {
+        use base64::Engine as _;
+        let bytes_b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let mut body = json!({ "content_type": content_type, "bytes_b64": bytes_b64 });
+        if let Some(t) = title {
+            body["title"] = json!(t);
+        }
+        if let Some(s) = skill {
+            body["skill"] = json!(s);
+        }
+        self.transport.post_json("/ingest/upload", body).await
+    }
 }

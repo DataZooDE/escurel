@@ -32,7 +32,7 @@ an MCP client by hand), write a throwaway binary/test that calls
 ```sh
 export ESCUREL_SERVER=<printed base url>
 export ESCUREL_TOKEN=<printed token>
-escurel list-skills
+escurel skill list
 ```
 
 ### B. Point at a deployed instance (any language)
@@ -78,7 +78,7 @@ Quick liveness check while iterating: `curl -s localhost:8080/healthz`.
    `EscurelProcess` (`references/06`).
 3. Implement the minimum to pass (green); rerun `cargo test`.
 4. Poke ad-hoc with the CLI (`references/04`) when you want to *see* a
-   tenant's state: `escurel list-skills`, `escurel expand <id>`,
+   tenant's state: `escurel skill list`, `escurel page expand <id>`,
    `escurel search "…"`.
 5. Recovery when an index looks wrong: that's the operator-side `rebuild`
    tool (CLI-only ops surface), not an app concern — `references/10`.

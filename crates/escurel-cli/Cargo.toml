@@ -31,10 +31,14 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 
 [dev-dependencies]
 assert_cmd = "2"
+# Decode the base64 blob `page blob` returns, in the ingest e2e.
+base64 = "0.22"
 # Admin e2e spawns a gateway with a real TenantStore + quota wired.
 escurel-admin = { path = "../escurel-admin" }
 escurel-quota = { path = "../escurel-quota" }
 escurel-test-support = { path = "../escurel-test-support" }
+# The parity guard reads the live `tools/list` off the running gateway.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

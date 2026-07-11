@@ -67,11 +67,11 @@ for instances. The builder derives these for you.
    - Seeding failure (bad frontmatter, missing required key) **panics**
      `spawn` — the right behaviour for a fixture.
 
-2. **CLI `update-page` (any language / scripts).** Loop over your files:
+2. **CLI `page update` (any language / scripts).** Loop over your files:
 
    ```sh
-   for f in fixtures/skills/*.md;            do escurel update-page "markdown/skills/$(basename "$f")"            < "$f"; done
-   for f in fixtures/instances/customer/*.md; do escurel update-page "markdown/instances/customer/$(basename "$f")" < "$f"; done
+   for f in fixtures/skills/*.md;            do escurel page update "markdown/skills/$(basename "$f")"            < "$f"; done
+   for f in fixtures/instances/customer/*.md; do escurel page update "markdown/instances/customer/$(basename "$f")" < "$f"; done
    ```
 
 3. **`update_page` over the wire (any language).** POST the `update_page`
