@@ -94,6 +94,14 @@ pub enum BackendKind {
     /// *client*, calling a tool or reading a resource (REQ-REMOTE-*). Same
     /// live-fetch / explicit-write model as [`BackendKind::OpenApi`].
     Mcp,
+    /// A dynamic-workflow **plan** skill: a markdown-file-backed page whose
+    /// body is per-phase instructions and whose `phases:`/`verify:`
+    /// frontmatter is a deterministic orchestration spec read by the
+    /// `escurel-runner-workflow` reducer. Reads and writes behave exactly
+    /// like [`BackendKind::Markdown`] (you steer the workflow by editing the
+    /// plan page); the distinct kind only lets the runner recognise a plan
+    /// skill and `list_skills` report it.
+    Workflow,
 }
 
 impl BackendKind {
@@ -106,6 +114,7 @@ impl BackendKind {
             BackendKind::Document => "document",
             BackendKind::OpenApi => "openapi",
             BackendKind::Mcp => "mcp",
+            BackendKind::Workflow => "workflow",
         }
     }
 
@@ -207,6 +216,15 @@ impl Capabilities {
                 granularity: Granularity::Page,
                 search: SearchMode::None,
                 supports_crdt: false,
+            },
+            // A workflow plan page is a normal markdown page: it is edited to
+            // steer the workflow, co-authored via CRDT, and indexed for search
+            // like any skill page. Identical to markdown.
+            BackendKind::Workflow => Self {
+                writable: true,
+                granularity: Granularity::Block,
+                search: SearchMode::Hybrid,
+                supports_crdt: true,
             },
         }
     }
