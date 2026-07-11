@@ -70,8 +70,11 @@ pub fn step_instance_page_id(produces: &str, run_id: &str, phase: &str, slot: &s
 }
 
 /// The run instance's own id: the last path segment of the run page id,
-/// with any `.md` suffix and directory prefix stripped.
-fn run_slug(run_id: &str) -> &str {
+/// with any `.md` suffix and directory prefix stripped. Public so the
+/// runner's workflow driver can run-scope a `list_instances` result by the
+/// same page-id convention the pre-flagged instance ids use.
+#[must_use]
+pub fn run_slug(run_id: &str) -> &str {
     run_id
         .rsplit('/')
         .next()

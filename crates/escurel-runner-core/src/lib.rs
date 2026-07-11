@@ -23,6 +23,7 @@ mod quota;
 mod reconciler;
 mod recovery;
 mod trigger;
+mod workflow;
 
 pub use admit::{Admission, LoopLimits, admit};
 pub use cascade::{CascadeError, CascadeOutcome, emit_cascade};
@@ -40,3 +41,4 @@ pub use reconciler::{
 pub use recovery::{RecoveryReport, recover_pending};
 pub use secrecy::SecretString;
 pub use trigger::{Lineage, Trigger};
+pub use workflow::{WorkflowDriveError, WorkflowDriveOutcome, drive_workflow};

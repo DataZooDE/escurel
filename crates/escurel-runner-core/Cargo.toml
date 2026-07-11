@@ -11,6 +11,7 @@ homepage.workspace = true
 
 [dependencies]
 escurel-client = { path = "../escurel-client" }
+escurel-runner-workflow = { path = "../escurel-runner-workflow" }
 escurel-types = { path = "../escurel-types" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 secrecy = "0.10"
