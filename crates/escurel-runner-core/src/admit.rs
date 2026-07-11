@@ -117,6 +117,7 @@ mod tests {
                 instance_path,
                 trace_id: None,
             },
+            workflow: None,
         }
     }
 

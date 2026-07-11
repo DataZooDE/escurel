@@ -2829,6 +2829,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "escurel-runner-workflow"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "escurel-types",
+ "serde",
+ "serde_json",
+ "ulid",
+]
+
+[[package]]
 name = "escurel-server"
 version = "1.0.0"
 dependencies = [

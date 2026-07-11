@@ -624,6 +624,7 @@ async fn dlq_requeue(
                 label_skill: String::new(),
                 instance_page_id: None,
                 lineage: escurel_runner_core::Lineage::root(event_id.clone()),
+                workflow: None,
             };
             // The row is already pending; enqueue onto the queue and take a
             // quota slot so the dispatch loop runs it.

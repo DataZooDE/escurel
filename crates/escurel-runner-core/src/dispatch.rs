@@ -179,6 +179,7 @@ mod tests {
             label_skill: "note".to_owned(),
             instance_page_id: None,
             lineage: Lineage::root(event_id),
+            workflow: None,
         }
     }
 

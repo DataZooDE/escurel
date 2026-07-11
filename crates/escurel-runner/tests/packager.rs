@@ -123,6 +123,7 @@ async fn packages_skill_body_as_instructions_with_event_and_instance() {
         label_skill: SKILL.to_owned(),
         instance_page_id: Some(instance_page_id.clone()),
         lineage: Lineage::root(event_id.clone()),
+        workflow: None,
     };
 
     let ctx = package(&trigger, &client, &cfg)

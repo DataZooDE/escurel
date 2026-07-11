@@ -382,6 +382,7 @@ mod tests {
             label_skill: "note".into(),
             instance_page_id: None,
             lineage: crate::Lineage::root("EVT1"),
+            workflow: None,
         };
         let event = Event {
             event_id: "EVT1".into(),
@@ -414,6 +415,7 @@ mod tests {
             label_skill: "note".into(),
             instance_page_id: None,
             lineage: crate::Lineage::root("EVT1"),
+            workflow: None,
         };
         let input = build_input_for_new_instance(&trigger);
         assert!(input.contains("create a new"));

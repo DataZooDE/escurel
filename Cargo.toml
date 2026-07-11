@@ -20,6 +20,7 @@ members = [
     "crates/escurel-test-support",
     "crates/escurel-runner-core",
     "crates/escurel-runner-harness",
+    "crates/escurel-runner-workflow",
     "crates/escurel-runner",
     "crates/escurel-loader",
     "crates/escurel-eval",

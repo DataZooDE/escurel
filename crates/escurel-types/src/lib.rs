@@ -28,6 +28,7 @@ mod core;
 mod events;
 mod null;
 mod session;
+mod workflow;
 
 pub use admin::*;
 pub use agent::*;
@@ -35,3 +36,4 @@ pub use chat::*;
 pub use core::*;
 pub use events::*;
 pub use session::*;
+pub use workflow::*;
