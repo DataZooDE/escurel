@@ -76,6 +76,7 @@ pub async fn recover_pending(ledger: &Arc<Ledger>, client: &Client) -> RecoveryR
             label_skill: String::new(),
             instance_page_id: rec.instance_page_id.clone(),
             lineage: crate::Lineage::root(rec.event_id.clone()),
+            workflow: None,
         };
         match confirm_effect(client, &trigger).await {
             Ok(effect) => {

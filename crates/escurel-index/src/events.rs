@@ -65,6 +65,15 @@ impl Indexer {
     /// (`status = 'inbox'`). Returns the stored event with its resolved
     /// id + timestamp. A non-null `instance_page_id` is a *candidate*
     /// label only — the event stays in the inbox until `assign_event`.
+    ///
+    /// **Idempotent on `event_id`.** A caller-supplied `event_id` that
+    /// already exists is a no-op (`ON CONFLICT DO NOTHING`) — the existing
+    /// stored event is returned unchanged (first-writer-wins), never a
+    /// primary-key error. This is what lets the dynamic-workflows reducer
+    /// re-emit a content-addressed step id safely (`§3.6`): a re-run or two
+    /// racing `reduce` passes collapse to one stored event, and the ledger's
+    /// `(tenant, event_id)` unique index collapses the run. The common path
+    /// (no `event_id` supplied) mints a fresh ULID and never conflicts.
     pub async fn capture_event(&self, input: NewEvent) -> Result<EventInfo, IndexerError> {
         let event_id = input
             .event_id
@@ -76,12 +85,11 @@ impl Indexer {
         };
 
         let conn = self.conn.lock().await;
-        // `at` may be NULL; strftime(NULL) is NULL → Option<String>.
-        let stored_at: Option<String> = conn.query_row(
+        conn.execute(
             "INSERT INTO events \
              (event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance) \
              VALUES (?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ?::JSON) \
-             RETURNING strftime(at_ts, '%Y-%m-%dT%H:%M:%SZ')",
+             ON CONFLICT (event_id) DO NOTHING",
             params![
                 event_id,
                 input.at,
@@ -93,21 +101,19 @@ impl Indexer {
                 input.body,
                 provenance_json,
             ],
-            |row| row.get(0),
         )?;
 
-        Ok(EventInfo {
-            event_id,
-            at: stored_at,
-            source: input.source,
-            mime: input.mime,
-            label_skill: input.label_skill,
-            instance_page_id: input.instance_page_id,
-            status: "inbox".to_owned(),
-            title: input.title,
-            body: input.body,
-            provenance: input.provenance.unwrap_or(serde_json::Value::Null),
-        })
+        // Read the *stored* row back so a conflicting re-capture returns the
+        // authoritative first-writer event (not the discarded second input),
+        // and a fresh insert returns exactly what landed.
+        let row = conn
+            .query_row(
+                &format!("{SELECT_COLS} WHERE event_id = ?"),
+                params![event_id],
+                event_row_from_row,
+            )
+            .map_err(IndexerError::from)?;
+        event_from_row(row)
     }
 
     /// Unprocessed events (the inbox), newest first.

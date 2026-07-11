@@ -8,7 +8,7 @@
 //! module owns that type and the normalisation; the bounded dispatch
 //! queue (#148) and the loop-control gate (#150) consume it later.
 
-use escurel_types::Event;
+use escurel_types::{Event, WorkflowProvenance};
 
 /// Cascade lineage carried alongside a [`Trigger`].
 ///
@@ -89,6 +89,11 @@ pub struct Trigger {
     pub instance_page_id: Option<String>,
     /// Cascade lineage; root/depth-0 for a webhook-origin trigger.
     pub lineage: Lineage,
+    /// The `provenance.workflow` block when this event is a dynamic-workflow
+    /// step (`docs/contract/dynamic-workflows.md`). `None` for every
+    /// non-workflow trigger — the dispatch loop routes a `Some` to the
+    /// reducer where it otherwise calls `emit_cascade`.
+    pub workflow: Option<WorkflowProvenance>,
 }
 
 impl Trigger {
@@ -114,12 +119,14 @@ impl Trigger {
         };
         let lineage = lineage_from_provenance(&event.provenance, &event.event_id)
             .unwrap_or_else(|| Lineage::root(event.event_id.clone()));
+        let workflow = WorkflowProvenance::from_provenance(&event.provenance);
         Self {
             tenant: tenant.into(),
             event_id: event.event_id.clone(),
             label_skill: event.label_skill.clone(),
             instance_page_id,
             lineage,
+            workflow,
         }
     }
 }
@@ -220,6 +227,44 @@ mod tests {
         assert_eq!(trigger.lineage.root_event_id, "01ABCDEF");
         assert_eq!(trigger.lineage.depth, 0);
         assert_eq!(trigger.lineage.lineage_path, vec!["01ABCDEF".to_owned()]);
+    }
+
+    #[test]
+    fn workflow_step_event_reads_workflow_block_back() {
+        // A workflow step event carries `provenance.workflow` describing the
+        // step: its run, plan skill, phase, deterministic step id, and (for a
+        // barrier step) the barrier + the item it fans out over. The trigger
+        // exposes it so the dispatch loop can route to the reducer.
+        let mut event = sample_event();
+        event.event_id = "01HSTEPKEY".to_owned();
+        event.label_skill = "verify-vote".to_owned();
+        event.provenance = serde_json::json!({
+            "workflow": {
+                "run": "markdown/instances/workflow-run/r1.md",
+                "wf_skill": "deep-research",
+                "phase": "verify",
+                "step": "01HSTEPKEY",
+                "barrier": "verify",
+                "over": "[[claim::c12]]",
+            },
+            "runner": { "root_event_id": "ROOT0", "depth": 2, "lineage_path": ["ROOT0", "01HSTEPKEY"] },
+        });
+        let trigger = Trigger::from_event(&event, "acme");
+        let wf = trigger.workflow.expect("workflow block present");
+        assert_eq!(wf.run, "markdown/instances/workflow-run/r1.md");
+        assert_eq!(wf.wf_skill, "deep-research");
+        assert_eq!(wf.phase, "verify");
+        assert_eq!(wf.barrier, "verify");
+        assert_eq!(wf.over, "[[claim::c12]]");
+        // The runner lineage still parses alongside the workflow block.
+        assert_eq!(trigger.lineage.root_event_id, "ROOT0");
+        assert_eq!(trigger.lineage.depth, 2);
+    }
+
+    #[test]
+    fn non_workflow_event_has_no_workflow_block() {
+        let trigger = Trigger::from_event(&sample_event(), "acme");
+        assert_eq!(trigger.workflow, None);
     }
 
     #[test]

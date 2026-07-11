@@ -50,6 +50,53 @@ fn gmail_event() -> NewEvent {
 }
 
 #[tokio::test]
+async fn capture_with_explicit_event_id_is_idempotent() {
+    // The dynamic-workflows keystone (§3.6): a reducer that re-runs (or two
+    // reduce passes racing) emits the *same* content-addressed step id. So
+    // capturing twice with the same explicit `event_id` must be a no-op the
+    // second time — one inbox row, no primary-key error — which is what lets
+    // the ledger's `(tenant, event_id)` index collapse the duplicate run.
+    let h = fresh_harness();
+    let step = NewEvent {
+        event_id: Some("01HSTEPKEYDETERMINISTIC00".to_owned()),
+        source: "escurel-runner".to_owned(),
+        label_skill: "verify-vote".to_owned(),
+        instance_page_id: Some("markdown/instances/verify-vote/r1-verify-abc123.md".to_owned()),
+        title: "vote".to_owned(),
+        body: "first".to_owned(),
+        ..Default::default()
+    };
+
+    let first = h.indexer.capture_event(step.clone()).await.unwrap();
+    assert_eq!(first.event_id, "01HSTEPKEYDETERMINISTIC00");
+
+    // Re-emit the same step id (different body, as a re-run might) — must not
+    // error and must not add a second inbox row; first-writer-wins.
+    let second = NewEvent {
+        body: "second".to_owned(),
+        ..step
+    };
+    let again = h
+        .indexer
+        .capture_event(second)
+        .await
+        .expect("re-capturing the same event_id must not error");
+    assert_eq!(again.event_id, "01HSTEPKEYDETERMINISTIC00");
+    assert_eq!(
+        again.body, "first",
+        "first write wins; the second is a no-op"
+    );
+
+    let inbox = h.indexer.list_inbox(None).await.unwrap();
+    assert_eq!(
+        inbox.len(),
+        1,
+        "exactly one row for the deduplicated step id"
+    );
+    assert_eq!(inbox[0].body, "first");
+}
+
+#[tokio::test]
 async fn capture_lands_in_inbox_then_assign_moves_to_instance() {
     let h = fresh_harness();
 
