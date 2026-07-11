@@ -41,7 +41,8 @@ use escurel_runner_core::{
     Admission, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue, EnqueueOutcome,
     Governor, Ledger, LedgerDecision, LoopLimits, QuotaDecision, QuotaLimits, ReconcileError,
     RunFailure, RunStatus, RunnerConfig, TaskContext, Trigger, admit, classify_client_error,
-    confirm_effect, drive_workflow, emit_cascade, package, recover_pending, run_with_retry,
+    confirm_effect, drive_workflow, emit_cascade, package, recover_pending, recover_workflows,
+    run_with_retry,
 };
 use escurel_runner_core::{DeadLetterReason, RunId};
 use escurel_runner_harness::{AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, Harness};
@@ -165,6 +166,22 @@ async fn main() -> anyhow::Result<()> {
                         reset = report.reset,
                         "crash recovery: reconciled orphaned pending runs on startup"
                     );
+                }
+                // Workflow-aware recovery: re-invoke the reducer for every
+                // non-terminal workflow-run so a crash mid-barrier resumes from
+                // KB state (§3.6 keys keep re-emission idempotent).
+                match recover_workflows(&client, config.max_runs_per_root).await {
+                    Ok(resumed) if resumed > 0 => tracing::info!(
+                        target: "escurel_runner",
+                        resumed,
+                        "crash recovery: re-drove non-terminal workflow runs on startup"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(
+                        target: "escurel_runner",
+                        error = %e,
+                        "crash recovery: workflow re-drive failed (non-fatal)"
+                    ),
                 }
             }
             Err(e) => tracing::warn!(

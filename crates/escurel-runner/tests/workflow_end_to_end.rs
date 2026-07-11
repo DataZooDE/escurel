@@ -207,6 +207,96 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
 }
 
 #[tokio::test]
+async fn recovery_re_drives_a_non_terminal_run_to_completion() {
+    // Simulate a crash mid-run: the run board exists (carrying `wf_skill`) and
+    // scope has already produced its research-angle instance, but synthesize
+    // never fired. No invocation event is in the inbox. On startup the
+    // workflow-aware recovery pass must re-invoke the reducer, see scope
+    // complete, emit synthesize, and drive the run to a research-report —
+    // proving resume survives process death (§7).
+    let run_page = "markdown/instances/workflow-run/rec.md";
+    // The board records which plan it belongs to (recovery reads `wf_skill`).
+    let board_body = "---\ntype: instance\nskill: workflow-run\nid: rec\n\
+         wf_skill: deep-research\n---\n# run rec\n";
+    // Scope's produced instance, at its DETERMINISTIC pre-flagged page id.
+    let angle_page = escurel_runner_workflow::key::step_instance_page_id(
+        "research-angle",
+        run_page,
+        "scope",
+        "0",
+    );
+    let angle_id = angle_page
+        .strip_prefix("markdown/instances/research-angle/")
+        .unwrap()
+        .strip_suffix(".md")
+        .unwrap();
+    let angle_body =
+        format!("---\ntype: instance\nskill: research-angle\nid: {angle_id}\n---\n# angle\n");
+
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .instance("workflow-run", "rec", board_body)
+                .instance("research-angle", angle_id, angle_body.as_str())
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // Sanity: no research-report yet.
+    let before = call_mcp(
+        &gateway,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "research-report" }),
+    )
+    .await;
+    assert_eq!(before["instances"].as_array().map_or(0, Vec::len), 0);
+
+    // Start the runner fresh — recovery runs at startup.
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // Recovery emits synthesize → the report instance appears.
+    let report = await_instance(
+        &gateway,
+        "research-report",
+        "markdown/instances/research-report/rec-synthesize-",
+        45,
+    )
+    .await;
+    assert!(
+        report.ends_with(".md"),
+        "recovery completed the run: {report}"
+    );
+}
+
+#[tokio::test]
 async fn over_budget_plan_fails_fast_at_invocation_emitting_no_steps() {
     // A plan projecting 10 runs, invoked under a max_runs_per_root of 3: the
     // up-front budget gate (§7) must refuse to start it, so NO scope step ever
