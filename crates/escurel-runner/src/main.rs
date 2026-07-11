@@ -41,7 +41,7 @@ use escurel_runner_core::{
     Admission, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue, EnqueueOutcome,
     Governor, Ledger, LedgerDecision, LoopLimits, QuotaDecision, QuotaLimits, ReconcileError,
     RunFailure, RunStatus, RunnerConfig, TaskContext, Trigger, admit, classify_client_error,
-    confirm_effect, emit_cascade, package, recover_pending, run_with_retry,
+    confirm_effect, drive_workflow, emit_cascade, package, recover_pending, run_with_retry,
 };
 use escurel_runner_core::{DeadLetterReason, RunId};
 use escurel_runner_harness::{AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, Harness};
@@ -943,6 +943,30 @@ async fn dispatch_loop(
                     version = %effect.version,
                     "dispatch: run succeeded; recorded processed with produced instance + version"
                 );
+                // Dynamic workflows: a confirmed write whose trigger carries a
+                // `provenance.workflow` block drives the reducer instead of the
+                // cascade — the cascade is the width-≤1 special case, the
+                // reducer the general one. It emits the plan's next batch of
+                // step events (each a §3.6-idempotent, lineage-tagged
+                // `capture_event`), guarded by the same `admit` controls.
+                if trigger.workflow.is_some() {
+                    match drive_workflow(&client, &trigger, &run_id.0, effect).await {
+                        Ok(outcome) => tracing::info!(
+                            target: "escurel_runner",
+                            event_id = %trigger.event_id,
+                            run_id = %run_id,
+                            emitted = outcome.emitted.len(),
+                            "workflow: reducer emitted next-step events"
+                        ),
+                        Err(e) => tracing::warn!(
+                            target: "escurel_runner",
+                            event_id = %trigger.event_id,
+                            error = %e,
+                            "workflow: reducer pass failed (run already recorded processed)"
+                        ),
+                    }
+                    continue;
+                }
                 // The "change → event" bridge (#156): a CONFIRMED successful
                 // write may cascade a follow-on event describing the change.
                 // The cascade decides (cross-skill change only) and tags the

@@ -143,6 +143,23 @@ fn render_frontmatter(value: Option<&Value>) -> String {
     out
 }
 
+/// Derive minimal instance frontmatter from a
+/// `markdown/instances/<skill>/<id>.md` page id, so a missing target can be
+/// *created* rather than rejected. Returns `None` when the path is not an
+/// instance path (leaving the existing "no frontmatter → update_page
+/// rejects" behaviour for a genuinely malformed target).
+fn derive_instance_frontmatter(page_id: &str) -> Option<String> {
+    let rest = page_id.strip_prefix("markdown/instances/")?;
+    let (skill, file) = rest.split_once('/')?;
+    let id = file.strip_suffix(".md").unwrap_or(file);
+    if skill.is_empty() || id.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "---\ntype: instance\nskill: {skill}\nid: {id}\n---\n"
+    ))
+}
+
 /// Perform the deterministic fold; returns the structured outcome.
 fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     let mcp = Mcp::new(&task.mcp_endpoint, &task.token);
@@ -205,7 +222,17 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let frontmatter = render_frontmatter(expanded.get("frontmatter"));
+    // An existing instance's frontmatter is folded verbatim; a MISSING target
+    // (empty frontmatter) is *created* with minimal frontmatter derived from
+    // its `markdown/instances/<skill>/<id>.md` path. This lets the echo
+    // harness stand in for a phase that produces a fresh typed instance (a
+    // dynamic-workflow step), not only one that appends to an existing page.
+    let mut frontmatter = render_frontmatter(expanded.get("frontmatter"));
+    if frontmatter.is_empty() {
+        frontmatter = derive_instance_frontmatter(&instance_page_id).ok_or_else(|| {
+            format!("target {instance_page_id} is missing and is not an instance path")
+        })?;
+    }
 
     // 3. Append a short event note and write the full page back.
     let note = format!("\n- folded event `{event_id}`: {title}\n");
