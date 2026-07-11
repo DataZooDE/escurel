@@ -36,6 +36,19 @@ phases: [{id: scope, produces: research-angle, fan_out: 1}, {id: synthesize, pro
 ---\n\
 # deep-research\n\nFan out, then synthesize.\n";
 
+// A plan whose first phase alone projects 10 runs — used to prove the
+// up-front budget gate refuses to start it when max_runs_per_root is small.
+const BIG_WF_SKILL: &str = "over-budget";
+const BIG_WF_SKILL_BODY: &str = "---\n\
+type: skill\n\
+id: over-budget\n\
+description: A plan too large for a tiny budget.\n\
+backend: {kind: workflow}\n\
+run_skill: workflow-run\n\
+phases: [{id: scope, produces: research-angle, fan_out: 10}]\n\
+---\n\
+# over-budget\n\nToo big.\n";
+
 const ANGLE_SKILL_BODY: &str =
     "---\ntype: skill\nid: research-angle\n---\n# research-angle\n\nOne search angle.\n";
 const REPORT_SKILL_BODY: &str =
@@ -191,4 +204,81 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     )
     .await;
     assert!(report.ends_with(".md"), "report page id: {report}");
+}
+
+#[tokio::test]
+async fn over_budget_plan_fails_fast_at_invocation_emitting_no_steps() {
+    // A plan projecting 10 runs, invoked under a max_runs_per_root of 3: the
+    // up-front budget gate (§7) must refuse to start it, so NO scope step ever
+    // fires and no research-angle instance appears — the run never fans out.
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(BIG_WF_SKILL, BIG_WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let run_page = "markdown/instances/workflow-run/rb.md";
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": BIG_WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke over-budget",
+            "body": "too big",
+            "provenance": {
+                "workflow": { "run": run_page, "wf_skill": BIG_WF_SKILL, "phase": "invoke" }
+            }
+        }),
+    )
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        // Budget of 3 < the plan's projected 10 → fail fast.
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "3")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // Give the runner time to process the invocation and run the budget gate.
+    // The invocation's run-board instance may appear (it is the invocation's
+    // own confirmed write), but NO scope fan-out may follow.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let angles = call_mcp(
+        &gateway,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "research-angle" }),
+    )
+    .await;
+    let count = angles["instances"].as_array().map_or(0, Vec::len);
+    assert_eq!(
+        count, 0,
+        "over-budget plan must emit no scope steps; found {count} research-angle instances"
+    );
 }

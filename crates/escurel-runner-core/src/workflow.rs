@@ -27,7 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use escurel_client::Client;
 use escurel_runner_workflow::{
-    ProducedInstance, RunState, StepIntent, Vote, WorkflowSkill, key, reduce,
+    BudgetExceeded, ProducedInstance, RunState, StepIntent, Vote, WorkflowSkill, check_budget, key,
+    reduce,
 };
 use escurel_types::{CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest};
 use serde_json::json;
@@ -50,6 +51,8 @@ pub enum WorkflowDriveError {
     Read(escurel_client::Error),
     #[error("workflow: emitting a step event failed: {0}")]
     Capture(escurel_client::Error),
+    #[error(transparent)]
+    Budget(#[from] BudgetExceeded),
 }
 
 /// Skill page id for a plan skill id (`markdown/skills/<id>.md`).
@@ -85,6 +88,7 @@ pub async fn drive_workflow(
     trigger: &Trigger,
     parent_run_id: &str,
     effect: &ConfirmedEffect,
+    max_runs_per_root: u64,
 ) -> Result<WorkflowDriveOutcome, WorkflowDriveError> {
     let Some(wf) = &trigger.workflow else {
         return Ok(WorkflowDriveOutcome::default());
@@ -101,6 +105,12 @@ pub async fn drive_workflow(
     let Some(spec) = WorkflowSkill::parse(&expanded.frontmatter) else {
         return Ok(WorkflowDriveOutcome::default());
     };
+
+    // Reserve the plan's projected fan-out against the budget BEFORE emitting
+    // anything (`§7`). Checked every pass (the projection is constant), but it
+    // is the invocation pass — before any step exists — that fails fast, so an
+    // over-budget plan never starts and can never starve a barrier mid-flight.
+    check_budget(&spec, max_runs_per_root)?;
 
     // 2. Build the run state: each phase's produced instances, run-scoped by
     //    the deterministic pre-flagged page-id prefix (`§3.6`).
