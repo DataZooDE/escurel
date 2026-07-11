@@ -206,6 +206,116 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     assert!(report.ends_with(".md"), "report page id: {report}");
 }
 
+/// LIVE test: drive the workflow through a real **Gemini** harness (env-guarded
+/// on GEMINI_API_KEY, like the other `*_live` adapters). The `scripts/
+/// gemini-workflow-runner.py` runner speaks the ADK adapter contract; each
+/// phase's instance body is authored by Gemini over the real `/mcp` surface.
+/// Run with:  GEMINI_API_KEY=… cargo test -p escurel-runner --test
+/// workflow_end_to_end deep_research_runs_against_gemini -- --nocapture
+#[tokio::test]
+async fn deep_research_runs_against_gemini() {
+    if std::env::var("GEMINI_API_KEY").is_err() {
+        eprintln!("skipping: GEMINI_API_KEY not set");
+        return;
+    }
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scripts/gemini-workflow-runner.py"
+    );
+
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let run_page = "markdown/instances/workflow-run/gem.md";
+    let question = "Why is the sky blue during the day but red at sunset? \
+                    Give the physics (Rayleigh scattering) and the key factors.";
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke deep-research (gemini)",
+            "body": question,
+            "provenance": { "workflow": { "run": run_page, "wf_skill": WF_SKILL, "phase": "invoke" } }
+        }),
+    )
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "adk")
+        .env("ESCUREL_RUNNER_ADK_BIN", script)
+        .env("ESCUREL_RUNNER_ADK_MODEL", "gemini-2.5-flash")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "500ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "500ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // Real Gemini calls per phase → allow a generous deadline.
+    let angle = await_instance(
+        &gateway,
+        "research-angle",
+        "markdown/instances/research-angle/gem-scope-",
+        120,
+    )
+    .await;
+    let report = await_instance(
+        &gateway,
+        "research-report",
+        "markdown/instances/research-report/gem-synthesize-",
+        120,
+    )
+    .await;
+
+    // Show the REAL Gemini-authored bodies.
+    let show = |label: &str, page: &str| {
+        let g = &gateway;
+        let page = page.to_owned();
+        let label = label.to_owned();
+        async move {
+            let e = call_mcp(g, Role::Agent, "expand", json!({ "page_id": page })).await;
+            eprintln!(
+                "\n===== {label} ({page}) =====\n{}\n",
+                e["body"].as_str().unwrap_or("")
+            );
+        }
+    };
+    show("SCOPE → research-angle", &angle).await;
+    show("SYNTHESIZE → research-report", &report).await;
+
+    assert!(report.ends_with(".md"), "gemini produced a research-report");
+    gateway.shutdown().await;
+}
+
 #[tokio::test]
 async fn deep_research_corpus_loads_into_a_real_tenant() {
     // The flagship corpus (§8 step 11) seeds into a real gateway: the plan is
