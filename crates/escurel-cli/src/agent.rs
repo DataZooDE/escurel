@@ -300,6 +300,7 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Ingest(a) => ingest(client, a).await,
         // Admin / Ui are dispatched in main before reaching here.
         Command::Admin(_) => unreachable!("admin handled by admin::run"),
+        Command::Workflow(_) => unreachable!("workflow handled by workflow::run"),
         Command::Ui => unreachable!("ui handled by escurel_tui::run"),
     }
 }

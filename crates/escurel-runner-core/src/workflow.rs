@@ -158,6 +158,10 @@ pub async fn recover_workflows(
         let Some(wf_skill) = run.frontmatter.get("wf_skill").and_then(|v| v.as_str()) else {
             continue;
         };
+        // A stopped run (via `escurel workflow stop`) is left alone.
+        if run.frontmatter.get("status").and_then(|v| v.as_str()) == Some("stopped") {
+            continue;
+        }
         let wf = WorkflowProvenance {
             run: run.page_id.clone(),
             wf_skill: wf_skill.to_owned(),
