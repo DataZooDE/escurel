@@ -203,7 +203,7 @@ fn barrier_input(state: &RunState, width: u32) -> BarrierInput {
 fn plan_phase(spec: &WorkflowSkill, phase: &Phase, state: &RunState, run: &str) -> Vec<StepIntent> {
     match &phase.fan_out {
         FanOut::Fixed(n) => (0..*n)
-            .map(|i| intent(spec, phase, run, i.to_string(), None, None))
+            .map(|i| intent(spec, phase, run, i.to_string(), None, None, None))
             .collect(),
         FanOut::Over { over, width } => {
             let mut upstream: Vec<&str> = upstream_instances(over, state);
@@ -215,10 +215,13 @@ fn plan_phase(spec: &WorkflowSkill, phase: &Phase, state: &RunState, run: &str) 
                     let elem = element_slug(page_id);
                     let barrier = barrier.clone();
                     (0..*width).map(move |k| {
-                        let slot = if *width > 1 {
-                            format!("{elem}-v{k}")
+                        // A barrier phase (width > 1) pins the skeptic's slot
+                        // both in the deterministic `slot` and — for the
+                        // harness's benefit — in `vote_index`.
+                        let (slot, vote_index) = if *width > 1 {
+                            (format!("{elem}-v{k}"), Some(k))
                         } else {
-                            elem.clone()
+                            (elem.clone(), None)
                         };
                         intent(
                             spec,
@@ -227,6 +230,7 @@ fn plan_phase(spec: &WorkflowSkill, phase: &Phase, state: &RunState, run: &str) 
                             slot,
                             Some(page_id.to_owned()),
                             barrier.clone(),
+                            vote_index,
                         )
                     })
                 })
@@ -255,6 +259,7 @@ fn intent(
     slot: String,
     over: Option<String>,
     barrier: Option<String>,
+    vote_index: Option<u32>,
 ) -> StepIntent {
     StepIntent {
         run: run.to_owned(),
@@ -264,6 +269,7 @@ fn intent(
         slot,
         barrier,
         over,
+        vote_index,
     }
 }
 
@@ -557,6 +563,11 @@ mod tests {
                 .iter()
                 .all(|s| s.barrier.as_deref() == Some("verify"))
         );
+        // Each skeptic step pins a distinct vote slot (0,1,2) so the harness
+        // stamps distinct `vote_index`es and the barrier tallies three votes.
+        let mut slots: Vec<u32> = verify.iter().filter_map(|s| s.vote_index).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, vec![0, 1, 2], "distinct vote slots: {verify:?}");
 
         // Only 2 of 3 votes cast → barrier OPEN → synthesize must not fire.
         base.votes = vec![

@@ -12,6 +12,13 @@ context (the board + every prior phase's produced instances) over /mcp, asks
 Gemini to author the target instance's body, and writes it back with update_page
 + assign_event. No mocks — every escurel effect is a real /mcp call and every
 phase body is real Gemini output.
+
+Three phase shapes are handled:
+  - the `workflow-run` invocation records the question into the run board;
+  - a `verify-vote` (quorum-barrier) step casts ONE adversarial skeptic vote at
+    the slot the reducer pinned in `provenance.workflow.vote_index`, stamping
+    `{claim, vote_index, verdict}` so distinct skeptics tally as distinct votes;
+  - every other phase is a plain "author the produces: instance body" step.
 """
 import json
 import os
@@ -61,6 +68,30 @@ def run_slug(run_page):
     return seg[:-3] if seg.endswith(".md") else seg
 
 
+def element_slug(page_id):
+    """The barrier's claim key: the last path segment sans `.md` — mirrors
+    `reduce::element_slug`, so a vote's `claim` matches what the tally expects."""
+    return run_slug(page_id)
+
+
+def parse_verdict(text):
+    """Pull `verdict` + one-line `reason` out of a skeptic's reply. Defaults to
+    `unverified` (a non-refutation that still closes its barrier slot)."""
+    verdict, reason = "unverified", ""
+    for line in text.splitlines():
+        s = line.strip()
+        low = s.lower()
+        if low.startswith("verdict:"):
+            v = low.split(":", 1)[1].strip()
+            for word in ("refuted", "valid", "unverified"):
+                if word in v:
+                    verdict = word
+                    break
+        elif low.startswith("reason:"):
+            reason = s.split(":", 1)[1].strip()
+    return verdict, (reason or text.strip().replace("\n", " ")[:200])
+
+
 def done(summary, produced, calls):
     print(json.dumps({
         "ok": True, "status": "ok", "summary": summary,
@@ -108,6 +139,43 @@ def main():
         mcp(endpoint, bearer, "assign_event",
             {"event_id": event_id, "instance_page_id": page}); calls += 1
         return done(f"recorded question into board {page}", page, calls)
+
+    # Verify (barrier) phase: one skeptic vote per step. The reducer pins this
+    # skeptic's slot in provenance.workflow.vote_index and the claims instance
+    # in `over`; we stamp a `verify-vote` whose (claim, vote_index) is the
+    # barrier's tally key, with a Gemini-authored verdict.
+    if skill == "verify-vote":
+        over = wf.get("over", "")
+        claim = element_slug(over) if over else inst_id
+        vote_index = wf.get("vote_index")
+        if vote_index is None:
+            raise RuntimeError("verify-vote step missing provenance.vote_index")
+        claims_body = ""
+        if over:
+            try:
+                ex = mcp(endpoint, bearer, "expand", {"page_id": over}); calls += 1
+                claims_body = ex.get("body") or ""
+            except Exception:
+                pass
+        prompt = (
+            f"You are SKEPTIC #{vote_index}, an adversarial fact-checker. Your job "
+            f"is to REFUTE the claims below if they are wrong, overstated, or "
+            f"unsupported. Be rigorous.\n\nCLAIMS UNDER REVIEW:\n{claims_body}\n\n"
+            f"Phase instructions:\n{task['instructions']}\n\n"
+            f"Reply in EXACTLY this format (two lines):\n"
+            f"VERDICT: <valid|refuted|unverified>\nREASON: <one line>"
+        )
+        verdict, reason = parse_verdict(gemini(key, model, prompt))
+        content = (
+            f"---\ntype: instance\nskill: verify-vote\nid: {inst_id}\n"
+            f"claim: {claim}\nvote_index: {vote_index}\nverdict: {verdict}\n"
+            f"workflow_run: {run}\n---\n"
+            f"# verify-vote {vote_index} on {claim}\n\n**{verdict}** — {reason}\n"
+        )
+        mcp(endpoint, bearer, "update_page", {"page_id": page, "content": content}); calls += 1
+        mcp(endpoint, bearer, "assign_event",
+            {"event_id": event_id, "instance_page_id": page}); calls += 1
+        return done(f"skeptic #{vote_index} voted {verdict} on {claim}", page, calls)
 
     # Gather run context: the board + every prior phase's produced instances.
     context = []

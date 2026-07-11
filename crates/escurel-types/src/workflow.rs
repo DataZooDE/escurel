@@ -37,6 +37,14 @@ pub struct WorkflowProvenance {
     /// source page id). Empty for a width-1 phase.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub over: String,
+    /// The vote slot `0..votes_per_claim` a barrier (verify) step occupies —
+    /// the index a `verify-vote` harness must stamp into its instance so that
+    /// distinct skeptics tally as distinct votes (`§3.5`). Without it a harness
+    /// cannot recover its slot from the content-addressed step id, and every
+    /// skeptic would collide on the same `vote_index`, wedging the barrier at
+    /// one vote. `None` for any non-barrier step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vote_index: Option<u32>,
 }
 
 impl WorkflowProvenance {
@@ -66,6 +74,7 @@ mod tests {
             step: "01HSTEPKEY".to_owned(),
             barrier: "verify".to_owned(),
             over: "[[claim::c12]]".to_owned(),
+            vote_index: Some(2),
         };
         let provenance = json!({ "workflow": wf });
         assert_eq!(
@@ -97,6 +106,28 @@ mod tests {
         let v = serde_json::to_value(&wf).unwrap();
         assert!(v.get("barrier").is_none(), "empty barrier is skipped");
         assert!(v.get("over").is_none(), "empty over is skipped");
+        assert!(v.get("vote_index").is_none(), "None vote_index is skipped");
+        assert_eq!(
+            WorkflowProvenance::from_provenance(&json!({ "workflow": v })),
+            Some(wf)
+        );
+    }
+
+    #[test]
+    fn barrier_step_carries_its_vote_index() {
+        // A verify (barrier) step's provenance pins the skeptic's slot so the
+        // harness stamps a distinct `vote_index` per vote.
+        let wf = WorkflowProvenance {
+            run: "r1".to_owned(),
+            wf_skill: "deep-research".to_owned(),
+            phase: "verify".to_owned(),
+            step: "01HVOTE".to_owned(),
+            barrier: "verify".to_owned(),
+            over: "markdown/instances/claims/r1-extract-abc.md".to_owned(),
+            vote_index: Some(1),
+        };
+        let v = serde_json::to_value(&wf).unwrap();
+        assert_eq!(v.get("vote_index").and_then(|x| x.as_u64()), Some(1));
         assert_eq!(
             WorkflowProvenance::from_provenance(&json!({ "workflow": v })),
             Some(wf)
