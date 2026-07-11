@@ -100,7 +100,7 @@ let hits = escurel.mcp_client().search(SearchRequest { q: "acme".into(), ..Defau
    prints `base_url()`/`mcp_url()` + a minted token, and stays up
    until killed; your test harness shells out to it. Or point at a shared
    dev/`nonprod` instance.
-2. Seed via the public write path: loop `escurel update-page <path> < body`
+2. Seed via the public write path: loop `escurel page update <path> < body`
    (`references/04`), or POST `update_page` over `/mcp` (`references/03`).
 3. Drive your app and assert the round-trip — same shape as above, just
    in your language's test runner.

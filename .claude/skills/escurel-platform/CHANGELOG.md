@@ -4,6 +4,21 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.4.1 — CLI docs realigned to the noun-grouped command surface
+
+- `references/04` rewritten: the CLI is grouped gh/aws-style (`escurel
+  skill list`, `escurel page expand`, `escurel query run`, …), not the old
+  flat `escurel list-skills` style. Added the four commands that had no
+  docs — `page blob` (`fetch_blob`), `page snapshots` (`list_snapshots`),
+  `session open|apply|close`, and `ingest` (POST `/ingest/upload`) — plus a
+  CLI→tool map, the `--format` flag, stdin-body list, and the create-ACL
+  gotcha on `ingest --skill`.
+- Noted the **parity guard** (`crates/escurel-cli/tests/cli_parity.rs`):
+  every agent-role tool must have a CLI command, so the map can't drift;
+  the admin/ops provisioning MCP-twins are deliberately CLI-less.
+- Fixed the same stale flat-command style in `references/06`, `07`, `09`.
+- `SKILL.md` tool enumeration gains `fetch_blob` + `list_snapshots`.
+
 ## 0.4.0 — query pages + the event bus
 
 - `query_instance` documented as THE structured-data read (an authored
