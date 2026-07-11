@@ -474,14 +474,16 @@ mod tests {
         let stage_a = reduce(&spec, &after_seed);
         assert_eq!(stage_a.len(), 2, "one stageA step per item");
         assert!(stage_a.iter().all(|s| s.phase == "stageA"));
-        // Identify which stageA step is for item0 vs item1 by its `over`.
+        // Identify item0's stageA step by its `over`; item1's stays in flight.
+        assert!(
+            stage_a
+                .iter()
+                .any(|s| s.over.as_deref() == Some(item1.as_str())),
+            "item1 has a stageA step too"
+        );
         let a_for_item0 = stage_a
             .iter()
             .find(|s| s.over.as_deref() == Some(item0.as_str()))
-            .unwrap();
-        let a_for_item1 = stage_a
-            .iter()
-            .find(|s| s.over.as_deref() == Some(item1.as_str()))
             .unwrap();
         let result0 = a_for_item0.instance_page_id();
 
