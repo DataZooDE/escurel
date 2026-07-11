@@ -26,8 +26,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use escurel_client::Client;
-use escurel_runner_workflow::{ProducedInstance, RunState, StepIntent, WorkflowSkill, key, reduce};
-use escurel_types::{CaptureEventRequest, ExpandRequest, ListInstancesRequest};
+use escurel_runner_workflow::{
+    ProducedInstance, RunState, StepIntent, Vote, WorkflowSkill, key, reduce,
+};
+use escurel_types::{CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest};
 use serde_json::json;
 
 use crate::reconciler::ConfirmedEffect;
@@ -53,6 +55,25 @@ pub enum WorkflowDriveError {
 /// Skill page id for a plan skill id (`markdown/skills/<id>.md`).
 fn skill_page_id(skill: &str) -> String {
     format!("markdown/skills/{skill}.md")
+}
+
+/// Project a `verify-vote` instance's frontmatter into a barrier [`Vote`].
+/// Returns `None` when the required fields are absent (a malformed vote is
+/// ignored rather than skewing the tally).
+fn vote_from_instance(inst: &InstanceInfo) -> Option<Vote> {
+    let fm = &inst.frontmatter;
+    let claim = fm.get("claim")?.as_str()?.to_owned();
+    let vote_index = u32::try_from(fm.get("vote_index")?.as_u64()?).ok()?;
+    let verdict = fm
+        .get("verdict")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unverified")
+        .to_owned();
+    Some(Vote {
+        claim,
+        vote_index,
+        verdict,
+    })
 }
 
 /// Run one reducer pass for the workflow the confirmed `trigger` belongs to,
@@ -86,6 +107,7 @@ pub async fn drive_workflow(
     let run_slug = key::run_slug(&wf.run);
     let produces_skills: BTreeSet<&str> = spec.phases.iter().map(|p| p.produces.as_str()).collect();
     let mut produced: BTreeMap<String, Vec<ProducedInstance>> = BTreeMap::new();
+    let mut votes: Vec<Vote> = Vec::new();
     for skill in produces_skills {
         let resp = client
             .list_instances(ListInstancesRequest {
@@ -95,19 +117,34 @@ pub async fn drive_workflow(
             .await
             .map_err(WorkflowDriveError::Read)?;
         let prefix = format!("markdown/instances/{skill}/{run_slug}-");
-        let insts = resp
+        let run_scoped: Vec<InstanceInfo> = resp
             .instances
             .into_iter()
             .filter(|i| i.page_id.starts_with(&prefix))
-            .map(|i| ProducedInstance { page_id: i.page_id })
             .collect();
-        produced.insert(skill.to_owned(), insts);
+        // A barrier phase's `verify-vote` instances also feed the tally: parse
+        // their `claim`/`vote_index`/`verdict` frontmatter into votes.
+        if skill == "verify-vote" {
+            votes.extend(run_scoped.iter().filter_map(vote_from_instance));
+        }
+        produced.insert(
+            skill.to_owned(),
+            run_scoped
+                .into_iter()
+                .map(|i| ProducedInstance { page_id: i.page_id })
+                .collect(),
+        );
     }
     let state = RunState {
         run: wf.run.clone(),
         wf_skill: wf.wf_skill.clone(),
         produced,
         emitted: BTreeSet::new(),
+        votes,
+        // The ledger read of the barrier's terminal (dead-lettered) vote steps
+        // is layered on when the verify phase runs against a real harness; the
+        // happy path (every vote cast) closes on the vote instances alone.
+        deadlettered: BTreeMap::new(),
     };
 
     // 3. Plan the next batch (pure, deterministic).

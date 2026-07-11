@@ -28,6 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::barrier::{self, BarrierInput, Vote};
 use crate::spec::{FanOut, Phase, WorkflowSkill};
 use crate::step::StepIntent;
 
@@ -64,6 +65,14 @@ pub struct RunState {
     /// Step ids already emitted for this run (any status), so a re-run of
     /// `reduce` does not re-return a step whose instance has not landed yet.
     pub emitted: BTreeSet<String>,
+    /// The run's `verify-vote` instances (for barrier phases), projected by
+    /// the caller from `list_instances(verify-vote, {run})`. Empty for a run
+    /// with no barrier phase.
+    pub votes: Vec<Vote>,
+    /// Per-claim count of the barrier's terminal (dead-lettered) vote steps,
+    /// read from the ledger — a dead-letter writes no instance but still
+    /// closes its slot (`§3.5`).
+    pub deadlettered: BTreeMap<String, u32>,
 }
 
 impl RunState {
@@ -80,40 +89,112 @@ impl RunState {
 
 /// Decide the next batch of steps to emit — or empty when the run is done.
 ///
-/// Walks the phases in order and returns the first incomplete phase's
-/// not-yet-emitted steps. A phase is **complete** when every step it plans
-/// has its pre-flagged instance present; a phase with steps emitted but not
-/// yet produced is *in flight* and yields an empty batch (the reducer waits
-/// rather than re-emitting or advancing). When every phase is complete the
-/// run is done and the batch is empty.
+/// Two phase shapes drive the control flow:
+///
+/// - An **`over` phase pipelines** per-item over its upstream: `plan_phase`
+///   enumerates a step only for each upstream instance that already exists,
+///   so item A's next stage fires as soon as A is produced, without waiting
+///   for its siblings (deep-research's `pipeline()`). Reduce emits every such
+///   ready step across *all* pipeline phases in one pass.
+/// - A **`Fixed` phase is a barrier point**: it may start only once every
+///   earlier phase is complete. This is what makes `synthesize` (Fixed) wait
+///   for the whole `verify` barrier to close, while a leading `scope` (Fixed,
+///   no predecessors) runs immediately.
+///
+/// Re-emission is idempotent (`§3.6`), so a step already emitted (present in
+/// `state.emitted`) is filtered out — an in-flight phase yields nothing new.
+/// When every phase is complete the batch is empty and the run is done.
 #[must_use]
 pub fn reduce(spec: &WorkflowSkill, state: &RunState) -> Vec<StepIntent> {
-    for phase in &spec.phases {
+    let mut batch = Vec::new();
+    for (k, phase) in spec.phases.iter().enumerate() {
+        // A Fixed barrier point waits for every earlier phase to complete.
+        if matches!(phase.fan_out, FanOut::Fixed(_))
+            && !spec.phases[..k]
+                .iter()
+                .all(|p| phase_complete(spec, p, state))
+        {
+            continue;
+        }
+        if phase_complete(spec, phase, state) {
+            continue;
+        }
         let expected = plan_phase(spec, phase, state, &state.run);
-        if expected.is_empty() {
-            // Nothing to plan yet (an `over` phase whose upstream has not
-            // produced anything): this phase cannot advance, so the run
-            // waits here rather than skipping ahead.
-            if phase_has_upstream_pending(spec, phase, state) {
-                return Vec::new();
-            }
-            continue;
-        }
-        let produced = state.produced_page_ids(&phase.produces);
-        let complete = expected
-            .iter()
-            .all(|intent| produced.contains(intent.instance_page_id().as_str()));
-        if complete {
-            continue;
-        }
-        // Incomplete: emit the steps not already emitted. May be empty when
-        // every step is in flight (emitted, awaiting its instance).
-        return expected
-            .into_iter()
-            .filter(|intent| !state.emitted.contains(&intent.event_id()))
-            .collect();
+        batch.extend(
+            expected
+                .into_iter()
+                .filter(|intent| !state.emitted.contains(&intent.event_id())),
+        );
     }
-    Vec::new()
+    batch
+}
+
+/// Whether a phase has finished all the work it will ever do.
+///
+/// - `Fixed(n)`: all `n` pre-flagged instances are present.
+/// - `Over` width 1 (pipeline stage): its upstream is complete *and* every
+///   upstream item has produced this phase's instance.
+/// - `Over` width > 1 (quorum barrier): its upstream is complete *and* the
+///   barrier tally (`§3.5`) has closed every upstream item's claim.
+fn phase_complete(spec: &WorkflowSkill, phase: &Phase, state: &RunState) -> bool {
+    match &phase.fan_out {
+        FanOut::Fixed(_) => {
+            let expected = plan_phase(spec, phase, state, &state.run);
+            let produced = state.produced_page_ids(&phase.produces);
+            expected
+                .iter()
+                .all(|i| produced.contains(i.instance_page_id().as_str()))
+        }
+        FanOut::Over { over, width } => {
+            if !upstream_complete(spec, over, state) {
+                return false;
+            }
+            let upstream = upstream_instances(over, state);
+            if *width > 1 {
+                // Barrier: every upstream item's claim must have closed.
+                let outcomes = barrier::tally_barrier(&barrier_input(state, *width));
+                let closed: BTreeSet<&str> = outcomes
+                    .iter()
+                    .filter(|o| o.closed)
+                    .map(|o| o.claim.as_str())
+                    .collect();
+                upstream
+                    .iter()
+                    .all(|page_id| closed.contains(element_slug(page_id).as_str()))
+            } else {
+                // Pipeline stage: every upstream item has its produced instance.
+                let expected = plan_phase(spec, phase, state, &state.run);
+                let produced = state.produced_page_ids(&phase.produces);
+                expected
+                    .iter()
+                    .all(|i| produced.contains(i.instance_page_id().as_str()))
+            }
+        }
+    }
+}
+
+/// Whether the phase that produces `over` (this phase's upstream) is itself
+/// complete. When no phase in the plan produces `over`, there is nothing to
+/// wait for (the upstream is externally supplied) → treated as complete.
+fn upstream_complete(spec: &WorkflowSkill, over: &str, state: &RunState) -> bool {
+    let producers: Vec<&Phase> = spec.phases.iter().filter(|p| p.produces == over).collect();
+    if producers.is_empty() {
+        return true;
+    }
+    producers.iter().all(|p| phase_complete(spec, p, state))
+}
+
+/// Build the barrier tally input from the run's vote data + the plan's verify
+/// policy (the barrier width is `votes_per_claim`).
+fn barrier_input(state: &RunState, width: u32) -> BarrierInput {
+    BarrierInput {
+        votes: state.votes.clone(),
+        deadlettered: state.deadlettered.clone(),
+        votes_per_claim: width,
+        // The reducer only needs closure here; refutations_required drives
+        // `survivors`, which the caller computes separately when synthesizing.
+        refutations_required: u32::MAX,
+    }
 }
 
 /// The full set of steps a phase plans, given the run's current state. Pure:
@@ -164,22 +245,6 @@ fn upstream_instances<'a>(over: &str, state: &'a RunState) -> Vec<&'a str> {
         .flatten()
         .map(|i| i.page_id.as_str())
         .collect()
-}
-
-/// True when `phase` fans out over an upstream skill that has not produced
-/// anything yet AND that upstream phase is itself not yet complete — i.e.
-/// the run must wait here. A `Fixed` phase never has upstream-pending.
-fn phase_has_upstream_pending(spec: &WorkflowSkill, phase: &Phase, state: &RunState) -> bool {
-    let FanOut::Over { over, .. } = &phase.fan_out else {
-        return false;
-    };
-    if !upstream_instances(over, state).is_empty() {
-        return false; // upstream produced something → plan_phase is non-empty
-    }
-    // Upstream empty: wait only if some earlier phase is the producer of
-    // `over` (i.e. it is expected to fill in). If nothing in the plan
-    // produces `over`, there is genuinely nothing to wait for.
-    spec.phases.iter().any(|p| &p.produces == over)
 }
 
 /// Build one [`StepIntent`] for `phase` at `slot` within `run`.
@@ -251,6 +316,7 @@ mod tests {
             wf_skill: "deep-research".to_owned(),
             produced: map,
             emitted: emitted.iter().map(|s| (*s).to_owned()).collect(),
+            ..Default::default()
         }
     }
 
@@ -374,6 +440,152 @@ mod tests {
         let batch = reduce(&spec, &state_with(&[], &[]));
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0].phase, "scope");
+    }
+
+    // A three-stage pipeline: seed produces 2 items, stageA processes each
+    // item → a result, stageB processes each result → a final. `over` phases
+    // pipeline, so a fast item can reach stageB while a slow one is still in
+    // stageA.
+    fn pipeline_spec() -> WorkflowSkill {
+        WorkflowSkill::parse(&json!({
+            "id": "pipe",
+            "phases": [
+                { "id": "seed", "produces": "item", "fan_out": 2 },
+                { "id": "stageA", "produces": "result", "fan_out": { "over": "item" } },
+                { "id": "stageB", "produces": "final", "fan_out": { "over": "result" } }
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn pipeline_advances_items_independently_slow_does_not_block_fast() {
+        let spec = pipeline_spec();
+        // seed emits two item steps.
+        let seed = reduce(&spec, &state_with(&[], &[]));
+        assert_eq!(seed.len(), 2);
+        let (item0, item1) = (seed[0].instance_page_id(), seed[1].instance_page_id());
+
+        // Both items produced → stageA emits a step per item.
+        let after_seed = state_with(
+            &[("item", &[&item0, &item1])],
+            &[&seed[0].event_id(), &seed[1].event_id()],
+        );
+        let stage_a = reduce(&spec, &after_seed);
+        assert_eq!(stage_a.len(), 2, "one stageA step per item");
+        assert!(stage_a.iter().all(|s| s.phase == "stageA"));
+        // Identify which stageA step is for item0 vs item1 by its `over`.
+        let a_for_item0 = stage_a
+            .iter()
+            .find(|s| s.over.as_deref() == Some(item0.as_str()))
+            .unwrap();
+        let a_for_item1 = stage_a
+            .iter()
+            .find(|s| s.over.as_deref() == Some(item1.as_str()))
+            .unwrap();
+        let result0 = a_for_item0.instance_page_id();
+
+        // The FAST item (0) finished stageA (result0 exists); the SLOW item
+        // (1) is still in stageA (no result). Reduce must, in one pass, both
+        // advance result0 to stageB AND keep item1's stageA step alive —
+        // neither blocks the other.
+        let mixed = state_with(
+            &[("item", &[&item0, &item1]), ("result", &[&result0])],
+            &[
+                &seed[0].event_id(),
+                &seed[1].event_id(),
+                &a_for_item0.event_id(), // item0's stageA already emitted
+            ],
+        );
+        let batch = reduce(&spec, &mixed);
+        let phases: BTreeSet<&str> = batch.iter().map(|s| s.phase.as_str()).collect();
+        assert!(
+            phases.contains("stageB"),
+            "the fast item advanced to stageB: {batch:?}"
+        );
+        assert!(
+            batch
+                .iter()
+                .any(|s| s.phase == "stageA" && s.over.as_deref() == Some(item1.as_str())),
+            "the slow item's stageA step is still emitted (not blocked): {batch:?}"
+        );
+        // stageB only fired for the produced result, not the missing one.
+        assert_eq!(
+            batch.iter().filter(|s| s.phase == "stageB").count(),
+            1,
+            "stageB fans out only over produced results"
+        );
+        // Sanity: only item1's stageA step is pending (item0's was emitted).
+        assert_eq!(
+            batch.iter().filter(|s| s.phase == "stageA").count(),
+            1,
+            "item0's stageA step is already emitted, only item1 remains"
+        );
+    }
+
+    fn barrier_spec() -> WorkflowSkill {
+        WorkflowSkill::parse(&json!({
+            "id": "verify-plan",
+            "phases": [
+                { "id": "extract", "produces": "claims", "fan_out": 1 },
+                { "id": "verify", "produces": "verify-vote",
+                  "fan_out": { "over": "claims", "width": "verify.votes_per_claim" } },
+                { "id": "synthesize", "produces": "report", "fan_out": 1 }
+            ],
+            "verify": { "votes_per_claim": 3, "refutations_required": 2 }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn synthesize_waits_for_the_verify_barrier_to_close() {
+        let spec = barrier_spec();
+        let extract = reduce(&spec, &state_with(&[], &[])).remove(0);
+        let claims_page = extract.instance_page_id();
+        let claim_key = element_slug(&claims_page);
+
+        // Extract produced its claims instance → verify opens a width-3
+        // barrier over that claims item (3 vote steps).
+        let mut base = state_with(&[("claims", &[&claims_page])], &[&extract.event_id()]);
+        let verify = reduce(&spec, &base);
+        assert_eq!(verify.len(), 3, "3 vote steps for the one claim");
+        assert!(verify.iter().all(|s| s.phase == "verify"));
+        assert!(
+            verify
+                .iter()
+                .all(|s| s.barrier.as_deref() == Some("verify"))
+        );
+
+        // Only 2 of 3 votes cast → barrier OPEN → synthesize must not fire.
+        base.votes = vec![
+            Vote {
+                claim: claim_key.clone(),
+                vote_index: 0,
+                verdict: "valid".into(),
+            },
+            Vote {
+                claim: claim_key.clone(),
+                vote_index: 1,
+                verdict: "valid".into(),
+            },
+        ];
+        let batch = reduce(&spec, &base);
+        assert!(
+            !batch.iter().any(|s| s.phase == "synthesize"),
+            "synthesize is gated on the open barrier: {batch:?}"
+        );
+
+        // The 3rd vote closes the barrier → synthesize (Fixed) now fires.
+        base.votes.push(Vote {
+            claim: claim_key,
+            vote_index: 2,
+            verdict: "valid".into(),
+        });
+        let batch = reduce(&spec, &base);
+        assert!(
+            batch.iter().any(|s| s.phase == "synthesize"),
+            "closed barrier releases synthesize: {batch:?}"
+        );
     }
 
     #[test]
