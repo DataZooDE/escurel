@@ -50,6 +50,31 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "assign_event",
 ];
 
+/// The narrowed tool surface for a **workflow step** agent (`§7`, injection
+/// containment). A step agent's job is to write its phase's `produces:`
+/// instance and nothing else, so it gets the read surface + `validate` +
+/// `update_page` + `append_message`, but is **denied `capture_event` and
+/// `assign_event`** — the event surface. The runner (not the agent) owns
+/// every decision to emit or assign an event, so a step reading an untrusted
+/// fetched page cannot capture an event to steer the run's phase sequence.
+/// (The reducer is instance-driven and ignores agent-captured events anyway;
+/// this is defence in depth.)
+pub const WORKFLOW_STEP_TOOLS: &[&str] = &[
+    "list_skills",
+    "list_instances",
+    "resolve",
+    "expand",
+    "neighbours",
+    "search",
+    "run_stored_query",
+    "list_events",
+    "list_inbox",
+    "list_messages",
+    "validate",
+    "update_page",
+    "append_message",
+];
+
 /// How many of an instance's recent events to fold into the input. The
 /// agent gets enough history to act without drowning in it; the instance
 /// page itself is the authoritative current state.
@@ -270,11 +295,19 @@ pub async fn package(
 
     let instructions = build_instructions(trigger, &skill.body, trigger_event.as_ref());
 
+    // A workflow-step agent gets the narrowed surface (no event tools); every
+    // other agent gets the full surface.
+    let tools = if trigger.workflow.is_some() {
+        WORKFLOW_STEP_TOOLS
+    } else {
+        ALLOWED_TOOLS
+    };
+
     Ok(TaskContext {
         instructions,
         input,
         mcp_endpoint: mcp_endpoint(&cfg.gateway_url),
-        allowed_tools: ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
+        allowed_tools: tools.iter().map(|s| s.to_string()).collect(),
         token,
     })
 }
@@ -372,6 +405,35 @@ mod tests {
         for t in ["update_page", "assign_event", "validate", "capture_event"] {
             assert!(ALLOWED_TOOLS.contains(&t), "missing {t}");
         }
+    }
+
+    #[test]
+    fn workflow_step_tools_deny_the_event_surface_but_keep_writes() {
+        // Injection containment (§7): a workflow-step agent may write its
+        // produces instance (update_page/validate) and read, but is denied the
+        // event tools so it cannot steer the run's phase sequence.
+        for denied in ["capture_event", "assign_event"] {
+            assert!(
+                !WORKFLOW_STEP_TOOLS.contains(&denied),
+                "{denied} must be denied to a workflow step"
+            );
+        }
+        for kept in [
+            "update_page",
+            "validate",
+            "list_instances",
+            "expand",
+            "search",
+        ] {
+            assert!(WORKFLOW_STEP_TOOLS.contains(&kept), "{kept} must remain");
+        }
+        // It is exactly the full surface minus the two event tools.
+        let expected: Vec<&&str> = ALLOWED_TOOLS
+            .iter()
+            .filter(|t| **t != "capture_event" && **t != "assign_event")
+            .collect();
+        let actual: Vec<&&str> = WORKFLOW_STEP_TOOLS.iter().collect();
+        assert_eq!(actual, expected);
     }
 
     #[test]
