@@ -24,11 +24,13 @@
 //!   close semantics (the `list_instances` ∪ ledger-terminal tally) land
 //!   with PR-5.
 
+pub mod barrier;
 pub mod key;
 pub mod reduce;
 pub mod spec;
 pub mod step;
 
+pub use barrier::{BarrierInput, ClaimOutcome, Vote, barrier_closed, survivors, tally_barrier};
 pub use reduce::{ProducedInstance, RunState, reduce};
 pub use spec::{DEFAULT_RUN_SKILL, FanOut, Phase, VerifyPolicy, WorkflowSkill};
 pub use step::StepIntent;
