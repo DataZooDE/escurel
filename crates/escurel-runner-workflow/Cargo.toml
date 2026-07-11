@@ -14,6 +14,7 @@ escurel-types = { path = "../escurel-types" }
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+thiserror = "2"
 ulid = "1"
 
 [lints]

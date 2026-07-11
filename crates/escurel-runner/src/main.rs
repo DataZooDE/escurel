@@ -950,7 +950,15 @@ async fn dispatch_loop(
                 // step events (each a §3.6-idempotent, lineage-tagged
                 // `capture_event`), guarded by the same `admit` controls.
                 if trigger.workflow.is_some() {
-                    match drive_workflow(&client, &trigger, &run_id.0, effect).await {
+                    match drive_workflow(
+                        &client,
+                        &trigger,
+                        &run_id.0,
+                        effect,
+                        config.max_runs_per_root,
+                    )
+                    .await
+                    {
                         Ok(outcome) => tracing::info!(
                             target: "escurel_runner",
                             event_id = %trigger.event_id,
