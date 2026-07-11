@@ -14,16 +14,21 @@
 //! `escurel-types` (and, from PR-3, `escurel-client`) — never on
 //! `escurel-server`/`escurel-index`.
 //!
-//! ## PR-2 scope (this commit)
+//! ## Scope so far
 //!
-//! The step vocabulary + the `§3.6` keystone: [`spec`] (parse the plan),
-//! [`step`] ([`StepIntent`] + its deterministic event/instance ids), and
-//! [`key`] (content-addressed [`key::step_key`]). The `reduce` planner and
-//! the barrier tally land in later PRs.
+//! - PR-2: the step vocabulary + the `§3.6` keystone — [`spec`] (parse the
+//!   plan), [`step`] ([`StepIntent`] + its deterministic event/instance
+//!   ids), and [`key`] (content-addressed [`key::step_key`]).
+//! - PR-3: the pure [`reduce`] planner over a [`RunState`] — linear phase
+//!   sequencing + basic `fan_out: { over }` enumeration. The quorum barrier
+//!   close semantics (the `list_instances` ∪ ledger-terminal tally) land
+//!   with PR-5.
 
 pub mod key;
+pub mod reduce;
 pub mod spec;
 pub mod step;
 
+pub use reduce::{ProducedInstance, RunState, reduce};
 pub use spec::{DEFAULT_RUN_SKILL, FanOut, Phase, VerifyPolicy, WorkflowSkill};
 pub use step::StepIntent;
