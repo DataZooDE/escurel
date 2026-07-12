@@ -234,6 +234,110 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     assert!(report.ends_with(".md"), "report page id: {report}");
 }
 
+#[tokio::test]
+async fn verify_barrier_runs_to_completion_via_echo() {
+    // The width-3 adversarial **verify barrier**, driven DETERMINISTICALLY by
+    // the echo harness — the headless companion to
+    // `verify_barrier_runs_against_gemini`. The barrier tally counts
+    // `COUNT(DISTINCT vote_index)` per claim, so the harness that produces a
+    // `verify-vote` MUST stamp `claim` + `vote_index` into its frontmatter
+    // (`§3.5`, and the `vote_index` doc-contract on `WorkflowProvenance`).
+    // The echo harness recovers both from the step's `provenance.workflow`
+    // (`over` → claim, `vote_index` → slot). Without that, all three votes
+    // collapse to one slot and the barrier wedges open forever — this test is
+    // the regression guard for that.
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(VERIFY_WF_SKILL, VERIFY_WF_BODY)
+                .skill("claims", CLAIMS_SKILL_BODY)
+                .skill("verify-vote", VERIFY_VOTE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let run_page = "markdown/instances/workflow-run/echobar.md";
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": VERIFY_WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke claim-check (echo)",
+            "body": "Extract claims, verify them, synthesize.",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": VERIFY_WF_SKILL, "phase": "invoke" } }
+        }),
+    )
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The barrier fans out three skeptic votes at distinct slots…
+    let votes = await_instances(
+        &gateway,
+        "verify-vote",
+        "markdown/instances/verify-vote/echobar-verify-",
+        3,
+        45,
+    )
+    .await;
+    let mut indices = Vec::new();
+    for page in &votes {
+        let e = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": page })).await;
+        indices.push(
+            e["frontmatter"]["vote_index"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("echo vote {page} missing vote_index: {e}")),
+        );
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    assert_eq!(
+        indices.len(),
+        3,
+        "three DISTINCT vote_index slots: {indices:?}"
+    );
+
+    // …and only once the barrier CLOSES does synthesize fire. The report
+    // proves the echo-authored votes tallied to quorum.
+    let report = await_instance(
+        &gateway,
+        "research-report",
+        "markdown/instances/research-report/echobar-synthesize-",
+        45,
+    )
+    .await;
+    assert!(report.ends_with(".md"), "report page id: {report}");
+}
+
 /// LIVE test: drive the workflow through a real **Gemini** harness (env-guarded
 /// on GEMINI_API_KEY, like the other `*_live` adapters). The `scripts/
 /// gemini-workflow-runner.py` runner speaks the ADK adapter contract; each
