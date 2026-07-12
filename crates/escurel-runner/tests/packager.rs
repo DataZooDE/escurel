@@ -25,6 +25,7 @@
 use escurel_client::{Client, SecretString};
 use escurel_runner_core::{Lineage, RunnerConfig, Trigger, package};
 use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
+use escurel_types::WorkflowProvenance;
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
@@ -191,4 +192,77 @@ async fn packages_skill_body_as_instructions_with_event_and_instance() {
         resolved.exists,
         "packaged token must be a usable agent token"
     );
+}
+
+#[tokio::test]
+async fn workflow_step_trigger_is_packaged_without_the_event_surface() {
+    // Injection containment (§7): a workflow-step trigger (its `provenance`
+    // carries a workflow block) is packaged with the narrowed tool surface —
+    // it may write its produces instance but is denied `capture_event` /
+    // `assign_event`, so an agent reading untrusted fetched content cannot
+    // emit an event to steer the run. A non-workflow trigger keeps the full
+    // surface (asserted by the sibling test above).
+    let instance_id = "acme-corp";
+    let instance_page_id = format!("markdown/instances/{SKILL}/{instance_id}.md");
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(SKILL, SKILL_BODY)
+                .instance(
+                    SKILL,
+                    instance_id,
+                    "---\ntype: instance\nskill: customer\nid: acme-corp\n---\n# Acme\n",
+                )
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let client = Client::connect(gateway.base_url(), SecretString::from(token.clone()))
+        .await
+        .expect("connect client");
+    let cfg = RunnerConfig::from_env_with(|key| match key {
+        "ESCUREL_RUNNER_GATEWAY_URL" => Some(gateway.base_url().to_owned()),
+        "ESCUREL_RUNNER_TENANT" => Some(TENANT.to_owned()),
+        "ESCUREL_RUNNER_TOKEN" => Some(token.clone()),
+        _ => None,
+    })
+    .expect("config");
+
+    let trigger = Trigger {
+        tenant: TENANT.to_owned(),
+        event_id: "STEP-EVT".to_owned(),
+        label_skill: SKILL.to_owned(),
+        instance_page_id: Some(instance_page_id),
+        lineage: Lineage::root("STEP-EVT"),
+        workflow: Some(WorkflowProvenance {
+            run: "markdown/instances/workflow-run/r1.md".to_owned(),
+            wf_skill: "deep-research".to_owned(),
+            phase: "extract".to_owned(),
+            step: "STEP-EVT".to_owned(),
+            ..Default::default()
+        }),
+    };
+
+    let ctx = package(&trigger, &client, &cfg)
+        .await
+        .expect("package the workflow-step trigger");
+
+    assert!(
+        ctx.allowed_tools.iter().any(|t| t == "update_page"),
+        "a step may still write its produces instance: {:?}",
+        ctx.allowed_tools
+    );
+    for denied in ["capture_event", "assign_event"] {
+        assert!(
+            !ctx.allowed_tools.iter().any(|t| t == denied),
+            "a workflow step must be denied {denied}: {:?}",
+            ctx.allowed_tools
+        );
+    }
+    gateway.shutdown().await;
 }
