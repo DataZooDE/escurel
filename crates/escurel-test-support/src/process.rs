@@ -59,6 +59,8 @@ pub struct ConfigOverrides {
     /// session tools (`open_session`/`apply_op`/`close_session`)
     /// and the WS attach paths.
     pub crdt_backend: Option<Arc<dyn CrdtBackend>>,
+    /// #246: enable the opt-in `page-edited` event on out-of-band writes.
+    pub emit_edit_events: bool,
     /// Replace the auto-built default indexer with a test-owned
     /// `Arc<Indexer>`. When `Some`, the support crate does *not*
     /// allocate its own tempdirs for the markdown lane / DuckDB
@@ -336,6 +338,7 @@ impl EscurelProcess {
             quota: overrides.quota.clone(),
             // #247: tests start un-suspended; a test flips it via tenant_update.
             tenant_suspended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            emit_edit_events: overrides.emit_edit_events,
             tenant_store: overrides.tenant_store.clone(),
             crdt_backend: overrides.crdt_backend.clone(),
             embedder_reload: overrides.embedder_reload.clone(),

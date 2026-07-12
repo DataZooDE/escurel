@@ -126,6 +126,9 @@ pub struct ServerConfig {
     /// tenant spec at boot; `tenant_update` flips it live. Defaults to a
     /// fresh `false` so unconfigured/dev deployments are never suspended.
     pub tenant_suspended: Arc<std::sync::atomic::AtomicBool>,
+    /// #246: emit a `page-edited` event on an out-of-band `update_page`. Off by
+    /// default (`ESCUREL_EMIT_EDIT_EVENTS`).
+    pub emit_edit_events: bool,
     /// Backing store for the admin tenant-CRUD RPCs. `None`
     /// means every tenant CRUD RPC returns
     /// `Status::failed_precondition` — useful for health-only
@@ -274,6 +277,11 @@ pub(crate) struct AppState {
     /// tenant rejects non-admin tool calls at the dispatch gate. Shared
     /// `Arc` so a `tenant_update` handler can flip it live.
     pub(crate) tenant_suspended: Arc<std::sync::atomic::AtomicBool>,
+    /// #246: when true, an out-of-band `update_page` (no runner provenance)
+    /// emits a `page-edited` event so the reactive loop re-verifies the touched
+    /// page eagerly. Off by default; the gateway stays automation-free unless a
+    /// deployment opts in via `ESCUREL_EMIT_EDIT_EVENTS`.
+    pub(crate) emit_edit_events: bool,
     pub(crate) crdt_backend: Option<Arc<dyn CrdtBackend>>,
     /// Live embedder seam swapped by `embedding_reload`. `None`
     /// when no reloadable embedder is wired.
@@ -330,6 +338,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         verifier: config.verifier.clone(),
         quota: config.quota.clone(),
         tenant_suspended: Arc::clone(&config.tenant_suspended),
+        emit_edit_events: config.emit_edit_events,
         tenant_store: config.tenant_store.clone(),
         crdt_backend: config.crdt_backend.clone(),
         embedder_reload: config.embedder_reload.clone(),

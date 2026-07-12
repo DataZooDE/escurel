@@ -1063,6 +1063,10 @@ impl EscurelConfig {
             embedder_reload: Some(Arc::clone(&embedder)),
             embedder_factory: Some(embed_cfg.embedder_factory()),
             tenant_suspended,
+            // #246 eager per-edit improvement: opt-in via env, off by default.
+            emit_edit_events: std::env::var("ESCUREL_EMIT_EDIT_EVENTS")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             demo_dir: self.demo_dir.clone(),
             webhook_url: self.webhook_url.clone(),
             webhook_secret: self.webhook_secret.clone(),

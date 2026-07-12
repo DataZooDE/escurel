@@ -497,6 +497,7 @@ fn roundtrip_admin() {
     rt(TenantSpec {
         tenant_id: "t".into(),
         display_name: "T".into(),
+        ..Default::default()
     });
     rt(TenantCreateResponse {
         spec: Some(TenantSpec::default()),

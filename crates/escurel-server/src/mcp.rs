@@ -34,7 +34,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use escurel_admin::{TenantSpec as AdminTenantSpec, TenantStore, validate_tenant_id};
 use escurel_auth::Role;
-use escurel_crdt::{CrdtBackend, Op};
+use escurel_crdt::{
+    CrdtBackend, Op, Snapshot, Version, hydrate_content, snapshot_bytes_from_markdown,
+};
 use escurel_index::{
     AclCaller, AppendChatMessage, Capabilities, ChatMessage, Direction, EventInfo, Granularity,
     Indexer, IndexerError, Issue, ListChatMessages, NewEvent, OrderDir, Severity, Visibility,
@@ -1095,7 +1097,7 @@ async fn dispatch_tools_call(
         "list_skills" => tool_list_skills(indexer).await,
         "list_instances" => tool_list_instances(indexer, caller, params.arguments).await,
         "resolve" => tool_resolve(indexer, caller, params.arguments).await,
-        "expand" => tool_expand(indexer, caller, params.arguments).await,
+        "expand" => tool_expand(state, indexer, caller, params.arguments).await,
         "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,
         "neighbours" => tool_neighbours(indexer, caller, params.arguments).await,
         "search" => tool_search(indexer, caller, params.arguments).await,
@@ -1113,7 +1115,9 @@ async fn dispatch_tools_call(
         // (issue #205).
         "query_instance" => tool_query_instance(indexer, caller, params.arguments).await,
         "validate" => tool_validate(indexer, params.arguments).await,
-        "update_page" => tool_update_page(indexer, caller, state.write_acl, params.arguments).await,
+        "update_page" => {
+            tool_update_page(state, indexer, caller, state.write_acl, params.arguments).await
+        }
         "append_message" => {
             tool_append_message(indexer, caller, state.write_acl, params.arguments).await
         }
@@ -1428,6 +1432,7 @@ struct ExpandArgs {
 }
 
 async fn tool_expand(
+    state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
     args: Value,
@@ -1453,6 +1458,7 @@ async fn tool_expand(
     match out {
         None => Ok(json!({ "page": Value::Null })),
         Some(e) => {
+            let e_page_id = e.page.page_id.clone();
             let mut page = json!({
                 "page": {
                     "page_id": e.page.page_id,
@@ -1471,6 +1477,14 @@ async fn tool_expand(
                     "version": w.version, "alias": w.alias,
                 })).collect::<Vec<_>>(),
             });
+            // #246: surface the page's current monotonic version so a client
+            // can pass it back as `base_version` on the next `update_page`
+            // (the read→edit→write optimistic-concurrency cycle).
+            if let Some(backend) = state.crdt_backend.as_ref() {
+                let hlc =
+                    u64::try_from(backend.max_hlc(&e_page_id).await.unwrap_or(0)).unwrap_or(0);
+                page["version"] = json!(Version::from_op_count(hlc).as_str());
+            }
             // SQL-view overlay: render a BOUNDED projection beneath the overlay
             // body (REQ-SQL-06), and expose projected source columns under a
             // namespaced `source` object so overlay↔source drift is visible
@@ -2144,9 +2158,20 @@ fn issue_to_json(issue: &Issue) -> Value {
 struct UpdatePageArgs {
     page_id: String,
     content: String,
+    /// Optimistic-concurrency guard (#246): the version the client last read.
+    /// When the head has advanced past it, the write conflicts.
+    #[serde(default)]
+    base_version: Option<String>,
+    /// Optional provenance passthrough (#246): a runner-orchestrated write
+    /// carries its `provenance.workflow`/`runner` block. Its presence suppresses
+    /// the opt-in `page-edited` event (the cascade already handles those writes),
+    /// so only genuine out-of-band edits trigger the eager improvement pass.
+    #[serde(default)]
+    provenance: Option<Value>,
 }
 
 async fn tool_update_page(
+    state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
     write_acl: crate::server::WriteAclMode,
@@ -2208,16 +2233,67 @@ async fn tool_update_page(
         }
     }
 
+    // #246 optimistic concurrency + monotonic versions. The page version is
+    // `v<max_hlc>` from the CRDT backend (shared with the apply_op session
+    // space). When a client sends a stale `base_version`, the head has advanced
+    // → conflict, with `head_content` for the client to re-draft. Enforced only
+    // when a CRDT backend is wired; otherwise behaviour is unchanged.
+    let head_hlc = match state.crdt_backend.as_ref() {
+        Some(b) => u64::try_from(b.max_hlc(&a.page_id).await.unwrap_or(0)).unwrap_or(0),
+        None => 0,
+    };
+    if let (Some(backend), Some(base)) = (state.crdt_backend.as_ref(), a.base_version.as_deref()) {
+        let head = Version::from_op_count(head_hlc);
+        if base != head.as_str() {
+            let head_content = hydrate_content(backend, &a.page_id).await.ok().flatten();
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "conflict",
+                    "location": "base_version",
+                    "message": format!(
+                        "base_version {base} is stale; head is {}", head.as_str()
+                    ),
+                }],
+                "head_content": head_content,
+            }));
+        }
+    }
+
     match indexer.update_page(&a.page_id, &a.content).await {
-        // The trait doesn't yet surface non-fatal validation issues
-        // (M4); return the protocol `{ok, issues}` shape with an empty
-        // list and a stub `new_version` until monotonic CRDT versions
-        // land.
-        Ok(()) => Ok(json!({
-            "ok": true,
-            "issues": [],
-            "new_version": "v1",
-        })),
+        Ok(()) => {
+            // Advance the monotonic version: snapshot the new whole-page content
+            // at the next hlc so `max_hlc` (and any later `base_version` read)
+            // reflects this write. The apply_op session path reads the same
+            // space, so co-authoring and whole-page writes share versions.
+            let new_version = if let Some(backend) = state.crdt_backend.as_ref() {
+                let next = head_hlc + 1;
+                let bytes = snapshot_bytes_from_markdown(&a.content)
+                    .map_err(|e| JsonRpcError::internal(format!("update_page crdt: {e}")))?;
+                let _ = backend
+                    .snapshot(&a.page_id, next as i64, &Snapshot::new(bytes))
+                    .await;
+                Version::from_op_count(next).as_str().to_owned()
+            } else {
+                "v1".to_owned()
+            };
+
+            // #246 eager per-edit improvement: an OUT-OF-BAND edit (no runner
+            // provenance) optionally emits a `page-edited` inbox event so the
+            // reactive loop re-lints/re-verifies the touched page. Runner-
+            // orchestrated writes carry provenance → suppressed (the cascade
+            // already handles them), so there is no loop storm.
+            maybe_emit_page_edited(
+                state.emit_edit_events,
+                indexer,
+                &a.page_id,
+                a.provenance.as_ref(),
+            )
+            .await;
+
+            Ok(json!({ "ok": true, "issues": [], "new_version": new_version }))
+        }
         // The protected meta-skill rejects the write as an
         // error-severity issue rather than an opaque server error.
         Err(IndexerError::MetaSkillProtected { reason }) => Ok(json!({
@@ -2230,6 +2306,41 @@ async fn tool_update_page(
             }],
         })),
         Err(e) => Err(JsonRpcError::internal(format!("update_page: {e}"))),
+    }
+}
+
+/// #246 eager per-edit improvement. When `ESCUREL_EMIT_EDIT_EVENTS` is enabled
+/// and the write carries NO runner/workflow provenance (a genuine out-of-band
+/// edit), capture a `page-edited` inbox event for the touched page so the
+/// runner re-lints/re-verifies it. A provenance-carrying (runner-orchestrated)
+/// write is suppressed — the cascade already handles it — so the improvement
+/// loop's own writes can't storm. Best-effort: a failure is logged, not fatal.
+async fn maybe_emit_page_edited(
+    enabled: bool,
+    indexer: &Indexer,
+    page_id: &str,
+    provenance: Option<&Value>,
+) {
+    let runner_write =
+        provenance.is_some_and(|p| p.get("workflow").is_some() || p.get("runner").is_some());
+    if !enabled || runner_write {
+        return;
+    }
+    if let Err(e) = indexer
+        .capture_event(escurel_index::events::NewEvent {
+            event_id: None,
+            at: None,
+            source: "page-edited".to_owned(),
+            mime: "text/plain".to_owned(),
+            label_skill: "page-edited".to_owned(),
+            instance_page_id: Some(page_id.to_owned()),
+            title: format!("edited {page_id}"),
+            body: format!("Page {page_id} was edited out of band; re-verify."),
+            provenance: Some(json!({ "edit": { "page": page_id } })),
+        })
+        .await
+    {
+        tracing::warn!(page_id, error = %e, "page-edited event capture failed");
     }
 }
 
@@ -3929,13 +4040,18 @@ fn tools_list_payload() -> Value {
             ),
             tool_entry(
                 "update_page",
-                "Upsert a markdown page (whole-body write).",
+                "Upsert a markdown page (whole-body write). Optional \
+                 `base_version` (from a prior read's `version`) enables \
+                 optimistic concurrency: a stale write returns \
+                 `{ok:false, issues:[{code:conflict}], head_content}`.",
                 json!({
                     "type": "object",
                     "required": ["page_id", "content"],
                     "properties": {
                         "page_id": { "type": "string" },
-                        "content": { "type": "string" }
+                        "content": { "type": "string" },
+                        "base_version": { "type": "string" },
+                        "provenance": { "type": "object" }
                     }
                 }),
             ),
