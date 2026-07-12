@@ -1083,3 +1083,141 @@ async fn lint_tick_schedules_a_scan_without_manual_invocation() {
         "the scheduled scan flagged the orphan: {issues:?}"
     );
 }
+
+// --- G3: freshness + curated index -----------------------------------------
+
+/// Spawn the real runner (echo harness) against `gateway` and return its guard.
+fn spawn_echo_runner(gateway: &EscurelProcess, ledger_dir: &std::path::Path) -> ChildGuard {
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let listen = format!("127.0.0.1:{}", free_port());
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    ChildGuard(cmd.spawn().expect("spawn escurel-runner"))
+}
+
+async fn invoke_curate(gateway: &EscurelProcess, run_page: &str) {
+    call_mcp(
+        gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "curate",
+            "instance_page_id": run_page,
+            "title": "invoke curate",
+            "body": "Regenerate the index.",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": "curate", "phase": "invoke" } }
+        }),
+    )
+    .await;
+}
+
+/// The DoD test for compile-first-wiki **G3**: `curate` regenerates a
+/// by-category `index` instance (the map of the territory), and it stays
+/// **derivable** — re-running over the same corpus reproduces the same body.
+/// No mocks: real gateway + DuckDB + echo harness.
+#[tokio::test]
+async fn curate_generates_a_derivable_by_category_index() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::curation_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.skill("entity", ENTITY_SKILL_BODY)
+                .instance("entity", "acme", ENTITY_ACME)
+                .instance("entity", "globex", ENTITY_GLOBEX)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+
+    // First curation.
+    invoke_curate(&gateway, "markdown/instances/workflow-run/cur1.md").await;
+    let idx1 = await_instance(&gateway, "index", "markdown/instances/index/cur1-", 45).await;
+    let expanded1 = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": idx1 })).await;
+    let body1 = expanded1["body"].as_str().unwrap_or_default().to_owned();
+
+    // The map lists the entity category and both instances, with a generated_at
+    // freshness stamp.
+    assert!(body1.contains("## entity"), "index groups by category: {body1}");
+    assert!(body1.contains("[[entity::acme]]"), "lists acme: {body1}");
+    assert!(body1.contains("[[entity::globex]]"), "lists globex: {body1}");
+    assert!(
+        expanded1["frontmatter"]["generated_at"].as_str().is_some(),
+        "index carries a generated_at stamp"
+    );
+
+    // Derivable: a second curation over the same corpus reproduces the same
+    // body (a pure function of pages/ + events).
+    invoke_curate(&gateway, "markdown/instances/workflow-run/cur2.md").await;
+    let idx2 = await_instance(&gateway, "index", "markdown/instances/index/cur2-", 45).await;
+    let expanded2 = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": idx2 })).await;
+    let body2 = expanded2["body"].as_str().unwrap_or_default().to_owned();
+    assert_eq!(body1, body2, "the index is derivable — same corpus, same map");
+}
+
+/// **G3 freshness**: a distilled page gains a `last_verified` stamp so lint's
+/// staleness check has something to read.
+#[tokio::test]
+async fn distill_stamps_last_verified_on_the_woven_page() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::distill_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let target = "markdown/instances/entity/acme.md";
+    let run_page = "markdown/instances/workflow-run/f1.md";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.skill("entity", ENTITY_SKILL_BODY)
+                .instance("entity", "acme", ENTITY_ACME)
+                .instance(
+                    "distill-claim",
+                    "f1-c-acme",
+                    format!("---\ntype: instance\nskill: distill-claim\nid: f1-c-acme\ntarget_page: {target}\naction: update\n---\n# claim\n\nAcme fact.\n"),
+                )
+                .instance("workflow-run", "f1", "---\ntype: instance\nskill: workflow-run\nid: f1\nwf_skill: distill\n---\n# run\n")
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual", "mime": "text/plain", "label_skill": "distill",
+            "instance_page_id": run_page, "title": "distill", "body": "go",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": "distill", "phase": "invoke" } }
+        }),
+    )
+    .await;
+
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+
+    let lv = await_frontmatter_key(&gateway, target, "last_verified", 45).await;
+    assert!(!lv.is_empty(), "woven page gained a last_verified freshness stamp");
+}

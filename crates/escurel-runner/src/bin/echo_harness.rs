@@ -262,6 +262,21 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
             .to_owned();
         return lint_scan(&mcp, &event_id, &instance_page_id, &run, tool_calls);
     }
+    // The `curate` workflow's curate step regenerates the by-category index
+    // (compile-first-wiki G3) — a pure function of the corpus.
+    if wf_skill == "curate" && instance_page_id.starts_with("markdown/instances/index/") {
+        let run = workflow
+            .and_then(|w| w.get("run"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let at = event
+            .get("at")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map_or_else(now_rfc3339, str::to_owned);
+        return curate_index(&mcp, &event_id, &instance_page_id, &run, &at, tool_calls);
+    }
 
     // 2. Read the instance's current state so we append rather than clobber.
     //    `expand` splits the page into a `frontmatter` object + a `body`;
@@ -287,6 +302,16 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     }
     if is_workflow_step {
         frontmatter = stamp_frontmatter(&frontmatter, "source_event", &event_id);
+        // Freshness (compile-first-wiki G3): stamp when this fact was last
+        // (re-)verified. Reducer-emitted step events carry no `at`, so fall back
+        // to now (RFC 3339, so lint's lexical staleness compare works). Lint's
+        // `stale` check reads this field.
+        let verified_at = event
+            .get("at")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map_or_else(now_rfc3339, str::to_owned);
+        frontmatter = stamp_frontmatter(&frontmatter, "last_verified", &verified_at);
     }
 
     // 3. Append a short event note and write the full page back.
@@ -320,6 +345,12 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         tool_calls,
         produced_instance: Some(instance_page_id),
     })
+}
+
+/// The current time as an RFC 3339 string (UTC, second precision) — the
+/// freshness/generation stamp when the event carries no timestamp of its own.
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// The `run_slug`: the last path segment of a page id, sans `.md`.
@@ -517,6 +548,99 @@ fn lint_scan(
         summary: format!("lint scan recorded {} issue(s)", findings.len()),
         tool_calls,
         produced_instance: Some(summary_page.to_owned()),
+    })
+}
+
+/// Regenerate the curated by-category **index** (compile-first-wiki G3). Reads
+/// every content skill and its instances and writes a single `index` instance
+/// grouping the corpus by category. Deterministic: sorted skills and instances
+/// ⇒ the same corpus yields byte-identical output (derivable).
+fn curate_index(
+    mcp: &Mcp,
+    event_id: &str,
+    index_page: &str,
+    run: &str,
+    at: &str,
+    mut tool_calls: u32,
+) -> Result<HarnessOutcome, String> {
+    const DENY: &[&str] = &[
+        "index",
+        "issue",
+        "workflow-run",
+        "curate",
+        "lint",
+        "distill",
+        "distill-claim",
+        "weave",
+        "distill-report",
+        "escurel",
+    ];
+    let listed = mcp.call("list_skills", json!({}))?;
+    tool_calls += 1;
+    let mut skills: Vec<(String, String)> = listed
+        .get("skills")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| {
+                    let id = s.get("id").and_then(Value::as_str)?;
+                    if DENY.contains(&id) {
+                        return None;
+                    }
+                    let desc = s
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    Some((id.to_owned(), desc.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    skills.sort();
+
+    let mut body = String::from("# Knowledge Base Index\n\nA map of the territory by category.\n");
+    for (skill, desc) in &skills {
+        let listed = mcp.call("list_instances", json!({ "skill_id": skill }))?;
+        tool_calls += 1;
+        let mut ids: Vec<String> = listed
+            .get("instances")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|i| i.get("page_id").and_then(Value::as_str))
+                    .map(|p| run_slug(p).to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        if desc.is_empty() {
+            body.push_str(&format!("\n## {skill}\n"));
+        } else {
+            body.push_str(&format!("\n## {skill} — {desc}\n"));
+        }
+        for id in &ids {
+            body.push_str(&format!("- [[{skill}::{id}]]\n"));
+        }
+    }
+
+    let index_id = run_slug(index_page);
+    let content = format!(
+        "---\ntype: instance\nskill: index\nid: {index_id}\ngenerated_at: {at}\nsource_run: {run}\n---\n{body}"
+    );
+    mcp.call("update_page", json!({ "page_id": index_page, "content": content }))?;
+    tool_calls += 1;
+    mcp.call(
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": index_page }),
+    )?;
+    tool_calls += 1;
+
+    Ok(HarnessOutcome {
+        ok: true,
+        status: HarnessStatus::Ok,
+        summary: format!("curated index over {} categories", skills.len()),
+        tool_calls,
+        produced_instance: Some(index_page.to_owned()),
     })
 }
 

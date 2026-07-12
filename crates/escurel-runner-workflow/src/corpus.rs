@@ -301,6 +301,50 @@ pub fn lint_corpus() -> Vec<(String, &'static str)> {
     ]
 }
 
+// --- G3: the `curate` corpus (a map of the territory) ----------------------
+//
+// `curate` regenerates a single `index` instance — a by-category map of the
+// corpus with one-line summaries, the "map of the territory" a bare
+// `list_skills` cannot be (compile-first-wiki G3). It is generated then
+// agent-curated, and stays fully derivable: re-running `curate` reproduces it
+// from `pages/` + events.
+
+/// The curated corpus index — a by-category map of the knowledge base.
+pub const INDEX: &str = "---\n\
+type: skill\n\
+id: index\n\
+description: A curated, by-category map of the knowledge base — the map of the territory.\n\
+optional_frontmatter: [generated_at, workflow_run]\n\
+---\n\
+# index\n";
+
+/// The `curate` workflow plan (`kind: workflow`).
+pub const CURATE_PLAN: &str = "---\n\
+type: skill\n\
+id: curate\n\
+description: Regenerate the curated by-category index of the knowledge base. Generated then agent-curated; stays derivable.\n\
+backend: {kind: workflow}\n\
+harness: claude\n\
+run_skill: workflow-run\n\
+phases: [{id: curate, produces: index, fan_out: 1}]\n\
+---\n\
+# curate\n\n\
+## curate\n\
+Read `list_skills` and each skill's instances; write a single `index` instance\n\
+grouping the corpus by category (skill), with a one-line summary per entry and\n\
+a wikilink to each page. Keep it derivable — it must be reproducible from the\n\
+corpus alone.\n";
+
+/// The `(page_id, markdown)` pairs that make up the `curate` corpus. Opt-in.
+#[must_use]
+pub fn curation_corpus() -> Vec<(String, &'static str)> {
+    vec![
+        ("markdown/skills/curate.md".to_owned(), CURATE_PLAN),
+        ("markdown/skills/index.md".to_owned(), INDEX),
+        ("markdown/skills/workflow-run.md".to_owned(), WORKFLOW_RUN),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +362,18 @@ mod tests {
             "markdown/skills/research-report.md",
             "markdown/skills/workflow-run.md",
             "markdown/instances/query/verify-tally.md",
+        ] {
+            assert!(ids.iter().any(|id| id == expected), "missing {expected}");
+        }
+    }
+
+    #[test]
+    fn curation_corpus_ships_the_plan_and_index_skill() {
+        let ids: Vec<String> = curation_corpus().into_iter().map(|(p, _)| p).collect();
+        for expected in [
+            "markdown/skills/curate.md",
+            "markdown/skills/index.md",
+            "markdown/skills/workflow-run.md",
         ] {
             assert!(ids.iter().any(|id| id == expected), "missing {expected}");
         }
