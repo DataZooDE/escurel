@@ -233,6 +233,13 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_POLL_INTERVAL` (default
     /// [`DEFAULT_POLL_INTERVAL`]).
     pub poll_interval: Duration,
+    /// How often the runner synthesizes a `lint` invocation (compile-first-wiki
+    /// G2): each tick it `capture_event`s a `label_skill: lint` event with a
+    /// deterministic per-window id, so the reactive loop drives the scheduled
+    /// semantic-health pass. `None` ⇒ disabled (the default) — a markdown-only
+    /// tenant never lints and behaves exactly as before.
+    /// Source: `ESCUREL_RUNNER_LINT_INTERVAL` (default: unset/disabled).
+    pub lint_interval: Option<Duration>,
     /// Filesystem path of the runner-local durable run ledger (its own
     /// SQLite file — the idempotency authority that survives a restart).
     /// Source: `ESCUREL_RUNNER_LEDGER_PATH` (default
@@ -347,6 +354,15 @@ impl RunnerConfig {
             _ => DEFAULT_POLL_INTERVAL,
         };
 
+        // Opt-in lint schedule: unset ⇒ disabled. Reuses the poll-interval
+        // duration grammar/error (both are "how often to tick").
+        let lint_interval = match lookup("ESCUREL_RUNNER_LINT_INTERVAL") {
+            Some(raw) if !raw.is_empty() => Some(
+                parse_duration(&raw).ok_or(ConfigError::InvalidPollInterval { value: raw })?,
+            ),
+            _ => None,
+        };
+
         let ledger_path = lookup("ESCUREL_RUNNER_LEDGER_PATH")
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_LEDGER_PATH.to_owned());
@@ -433,6 +449,7 @@ impl RunnerConfig {
             queue_cap,
             seen_cap,
             poll_interval,
+            lint_interval,
             ledger_path,
             harness,
             claude_bin,
@@ -751,6 +768,19 @@ mod tests {
         assert_eq!(cfg.queue_cap, 8);
         assert_eq!(cfg.seen_cap, 16);
         assert_eq!(cfg.poll_interval, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn lint_interval_is_disabled_by_default_and_parses_when_set() {
+        // Default: unset ⇒ disabled ⇒ markdown-only tenants never lint.
+        let off = RunnerConfig::from_env_with(|_| None).expect("defaults");
+        assert_eq!(off.lint_interval, None);
+        // Set ⇒ parsed with the same duration grammar as the poller.
+        let on = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_LINT_INTERVAL").then(|| "1h".to_owned())
+        })
+        .expect("lint interval must parse");
+        assert_eq!(on.lint_interval, Some(Duration::from_secs(3600)));
     }
 
     #[test]

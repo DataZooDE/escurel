@@ -239,10 +239,29 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     // `writes: existing` weave, the reducer's completion signal (a durable page
     // already exists, so the reducer detects the weave landed by this stamp).
     // A real agent stamps the same field; the echo does it deterministically.
-    let is_workflow_step = event
-        .get("provenance")
-        .and_then(|p| p.get("workflow"))
-        .is_some_and(|w| w.is_object());
+    let workflow = event.get("provenance").and_then(|p| p.get("workflow"));
+    let is_workflow_step = workflow.is_some_and(|w| w.is_object());
+
+    // The `lint` workflow's scan step (compile-first-wiki G2): perform a real,
+    // deterministic structural health pass over the pages named by the run
+    // board and record each finding as an `issue` — reading the scanned pages
+    // only, never rewriting them. A semantic LLM harness would additionally
+    // find nuanced contradictions; the echo does the structural tier.
+    let wf_skill = workflow
+        .and_then(|w| w.get("wf_skill"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // Route only the lint *scan step* (which targets an `issue` page) here; the
+    // lint *invocation* (which targets the run board) folds normally so the
+    // reducer then emits the scan step.
+    if wf_skill == "lint" && instance_page_id.starts_with("markdown/instances/issue/") {
+        let run = workflow
+            .and_then(|w| w.get("run"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        return lint_scan(&mcp, &event_id, &instance_page_id, &run, tool_calls);
+    }
 
     // 2. Read the instance's current state so we append rather than clobber.
     //    `expand` splits the page into a `frontmatter` object + a `body`;
@@ -300,6 +319,204 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         ),
         tool_calls,
         produced_instance: Some(instance_page_id),
+    })
+}
+
+/// The `run_slug`: the last path segment of a page id, sans `.md`.
+fn run_slug(page_id: &str) -> &str {
+    page_id
+        .rsplit('/')
+        .next()
+        .unwrap_or(page_id)
+        .strip_suffix(".md")
+        .unwrap_or(page_id)
+}
+
+/// Read `scan_skills` off the run board frontmatter — a YAML list (JSON array)
+/// or a comma-separated string.
+fn scan_skills(fm: &Value) -> Vec<String> {
+    match fm.get("scan_skills") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        Some(Value::String(s)) => s.split(',').map(|p| p.trim().to_owned()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Build one `issue` instance's markdown.
+fn issue_md(kind: &str, severity: &str, subject: &str, message: &str, run: &str, id: &str) -> String {
+    format!(
+        "---\ntype: instance\nskill: issue\nid: {id}\nkind: {kind}\nseverity: {severity}\n\
+         subject_page: {subject}\nmessage: {message}\nsource_run: {run}\n---\n# {kind} issue\n\n{message}\n"
+    )
+}
+
+/// The deterministic **structural** lint scan (compile-first-wiki G2). Reads the
+/// pages named by the run board's `scan_skills`, flags `orphan` / `stale` /
+/// `contradiction`, and writes one `issue` per finding. The scanned pages are
+/// only *read* — lint proposes, it never rewrites.
+fn lint_scan(
+    mcp: &Mcp,
+    event_id: &str,
+    summary_page: &str,
+    run: &str,
+    mut tool_calls: u32,
+) -> Result<HarnessOutcome, String> {
+    let board = mcp.call("expand", json!({ "page_id": run }))?;
+    tool_calls += 1;
+    let fm = board.get("frontmatter").cloned().unwrap_or(Value::Null);
+    let mut skills = scan_skills(&fm);
+    // Fallback (tick-driven runs whose board carries no scan config): scan every
+    // content skill, minus the system/workflow skills that would only produce
+    // noise.
+    if skills.is_empty() {
+        let listed = mcp.call("list_skills", json!({}))?;
+        tool_calls += 1;
+        const DENY: &[&str] = &[
+            "issue",
+            "workflow-run",
+            "lint",
+            "distill",
+            "distill-claim",
+            "weave",
+            "distill-report",
+            "deep-research",
+            "escurel",
+        ];
+        skills = listed
+            .get("skills")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.get("id").and_then(Value::as_str))
+                    .filter(|id| !DENY.contains(id))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    let stale_before = fm
+        .get("stale_before")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let slug = run_slug(run);
+
+    // (kind, subject_page, message) findings, plus fact rows for contradiction.
+    let mut findings: Vec<(String, String, String)> = Vec::new();
+    // fact_key -> list of (page_id, value)
+    let mut facts: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+
+    for skill in &skills {
+        let listed = mcp.call("list_instances", json!({ "skill_id": skill }))?;
+        tool_calls += 1;
+        let instances = listed
+            .get("instances")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for inst in &instances {
+            let Some(page_id) = inst.get("page_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let ifm = inst.get("frontmatter").cloned().unwrap_or(Value::Null);
+
+            // orphan: no inbound links.
+            let nbrs = mcp.call("neighbours", json!({ "page_id": page_id, "direction": "in" }))?;
+            tool_calls += 1;
+            let inbound = nbrs
+                .get("edges")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            if inbound == 0 {
+                findings.push((
+                    "orphan".to_owned(),
+                    page_id.to_owned(),
+                    format!("{page_id} has no inbound links — it is unreachable by navigation"),
+                ));
+            }
+
+            // stale: last_verified older than the review cutoff (RFC 3339
+            // sorts lexically = chronologically).
+            if let Some(lv) = ifm.get("last_verified").and_then(Value::as_str)
+                && !stale_before.is_empty()
+                && lv < stale_before.as_str()
+            {
+                findings.push((
+                    "stale".to_owned(),
+                    page_id.to_owned(),
+                    format!("last_verified {lv} predates the review cutoff {stale_before}"),
+                ));
+            }
+
+            // contradiction inputs: a (fact_key, fact_value) pair.
+            if let (Some(k), Some(v)) = (
+                ifm.get("fact_key").and_then(Value::as_str),
+                ifm.get("fact_value").and_then(Value::as_str),
+            ) {
+                facts
+                    .entry(k.to_owned())
+                    .or_default()
+                    .push((page_id.to_owned(), v.to_owned()));
+            }
+        }
+    }
+
+    // contradiction: a fact_key asserted with two different values.
+    for (key, rows) in &facts {
+        let distinct: std::collections::BTreeSet<&str> =
+            rows.iter().map(|(_, v)| v.as_str()).collect();
+        if distinct.len() > 1 {
+            for (page_id, value) in rows {
+                findings.push((
+                    "contradiction".to_owned(),
+                    page_id.to_owned(),
+                    format!("fact `{key}` = `{value}` conflicts with another page's value"),
+                ));
+            }
+        }
+    }
+
+    // Write one issue instance per finding (create-only; never touches the
+    // scanned pages).
+    for (i, (kind, subject, message)) in findings.iter().enumerate() {
+        let id = format!("{slug}-{kind}-{i}");
+        let page_id = format!("markdown/instances/issue/{id}.md");
+        let severity = if kind == "contradiction" { "error" } else { "warning" };
+        let content = issue_md(kind, severity, subject, message, run, &id);
+        mcp.call("update_page", json!({ "page_id": page_id, "content": content }))?;
+        tool_calls += 1;
+    }
+
+    // Write the pre-flagged summary issue so the scan phase completes, and
+    // assign the triggering event to it.
+    let summary_id = run_slug(summary_page);
+    let summary = issue_md(
+        "lint_summary",
+        "info",
+        run,
+        &format!("lint scan recorded {} issue(s)", findings.len()),
+        run,
+        summary_id,
+    );
+    mcp.call("update_page", json!({ "page_id": summary_page, "content": summary }))?;
+    tool_calls += 1;
+    mcp.call(
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": summary_page }),
+    )?;
+    tool_calls += 1;
+
+    Ok(HarnessOutcome {
+        ok: true,
+        status: HarnessStatus::Ok,
+        summary: format!("lint scan recorded {} issue(s)", findings.len()),
+        tool_calls,
+        produced_instance: Some(summary_page.to_owned()),
     })
 }
 

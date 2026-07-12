@@ -46,7 +46,7 @@ use escurel_runner_core::{
 };
 use escurel_runner_core::{DeadLetterReason, RunId};
 use escurel_runner_harness::{AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, Harness};
-use escurel_types::{Event, ListInboxRequest};
+use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use tokio::sync::Notify;
@@ -254,6 +254,31 @@ async fn main() -> anyhow::Result<()> {
                 "inbox poller disabled: set ESCUREL_RUNNER_TENANT + ESCUREL_RUNNER_TOKEN to enable"
             );
         }
+    }
+
+    // The lint tick (compile-first-wiki G2): opt-in scheduled semantic-health
+    // pass. Every `lint_interval` the runner synthesizes a `lint` invocation
+    // with a deterministic per-window id so the reactive loop drives it exactly
+    // once per window. Disabled unless ESCUREL_RUNNER_LINT_INTERVAL is set.
+    match (
+        config.lint_interval,
+        config.tenant.clone(),
+        config.token.clone(),
+    ) {
+        (Some(interval), Some(tenant), Some(token)) => {
+            tokio::spawn(lint_tick_loop(
+                config.gateway_url.clone(),
+                tenant,
+                token,
+                interval,
+                Arc::clone(&draining),
+            ));
+        }
+        (Some(_), _, _) => tracing::warn!(
+            target: "escurel_runner",
+            "lint tick disabled: ESCUREL_RUNNER_LINT_INTERVAL set but tenant/token missing"
+        ),
+        _ => {}
     }
 
     let version = config.version.clone();
@@ -1310,6 +1335,69 @@ async fn poll_loop(
                 error = %e,
                 "inbox poll failed; will retry next tick"
             ),
+        }
+    }
+}
+
+/// The deterministic per-window lint invocation id: same `(tenant, window)`
+/// ⇒ same id, so a mid-window restart or overlapping tick collapses via
+/// `capture_event`'s `ON CONFLICT DO NOTHING` — at most one lint run per
+/// window. `window = floor(epoch_secs / interval_secs)`.
+fn lint_window_id(tenant: &str, window: u64) -> String {
+    format!("lint-{tenant}-{window}")
+}
+
+/// The lint tick (compile-first-wiki G2). Every `interval` it synthesizes a
+/// `lint` workflow invocation — a `capture_event` the runner sends to the
+/// gateway, which re-enters the runner's own dispatch via the inbox/webhook.
+/// The gateway stays automation-free: the *runner* owns the decision to act.
+/// Best-effort and non-panicking, like the poller.
+async fn lint_tick_loop(
+    gateway_url: String,
+    tenant: String,
+    token: String,
+    interval: std::time::Duration,
+    draining: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let client = match Client::connect(&gateway_url, SecretString::from(token)).await {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::error!(target: "escurel_runner", error = %e, "lint tick could not build a gateway client; disabled");
+            return;
+        }
+    };
+    let secs = interval.as_secs().max(1);
+    tracing::info!(target: "escurel_runner", tenant = %tenant, interval_ms = interval.as_millis() as u64, "lint tick started");
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        if draining.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        // Wall-clock window (stable across restarts — the tick is I/O, not the
+        // reducer, so reading the clock here is fine).
+        let window = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() / secs)
+            .unwrap_or(0);
+        let event_id = lint_window_id(&tenant, window);
+        let run_page = format!("markdown/instances/workflow-run/lint-{window}.md");
+        let req = CaptureEventRequest {
+            event_id: event_id.clone(),
+            source: "runner-lint-tick".to_owned(),
+            mime: "text/plain".to_owned(),
+            label_skill: "lint".to_owned(),
+            instance_page_id: run_page.clone(),
+            title: "scheduled lint".to_owned(),
+            body: "Scheduled semantic-health pass.".to_owned(),
+            provenance: serde_json::json!({
+                "workflow": { "run": run_page, "wf_skill": "lint", "phase": "invoke" }
+            }),
+            ..Default::default()
+        };
+        match client.capture_event(req).await {
+            Ok(_) => tracing::info!(target: "escurel_runner", window, event_id = %event_id, "lint tick: invocation captured"),
+            Err(e) => tracing::warn!(target: "escurel_runner", error = %e, "lint tick: capture_event failed; will retry next tick"),
         }
     }
 }

@@ -889,3 +889,197 @@ async fn distill_weaves_one_source_into_two_existing_pages() {
     .await;
     assert!(report.ends_with(".md"), "distill-report written: {report}");
 }
+
+// --- G2: semantic lint (typed issues; proposes, never rewrites) -------------
+
+/// Poll `list_instances(issue)` until an issue of `kind` appears; returns the
+/// full issues array once the scan has recorded that kind (or panics).
+async fn await_issues(p: &EscurelProcess, kind: &str, secs: u64) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let r = call_mcp(p, Role::Agent, "list_instances", json!({ "skill_id": "issue" })).await;
+        let issues = r["instances"].as_array().cloned().unwrap_or_default();
+        let has_kind = issues.iter().any(|i| {
+            i["frontmatter"]["kind"].as_str() == Some(kind)
+        });
+        if has_kind {
+            return issues;
+        }
+        if Instant::now() >= deadline {
+            panic!("no issue of kind {kind} within {secs}s; issues so far: {issues:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// The DoD test for compile-first-wiki **G2**: a `lint` run flags a seeded
+/// orphan, stale page, and contradiction as typed `issue` instances — and
+/// **never rewrites** the scanned pages. No mocks: real gateway + DuckDB +
+/// echo harness doing real structural detection over `/mcp`.
+#[tokio::test]
+async fn lint_flags_orphan_stale_contradiction_without_rewriting() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::lint_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let orphan_page = "markdown/instances/entity/orphan.md";
+    let run_page = "markdown/instances/workflow-run/lint1.md";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.skill("entity", ENTITY_SKILL_BODY)
+                .skill("note", "---\ntype: skill\nid: note\n---\n# note\n")
+                // orphan: nothing links to it.
+                .instance("entity", "orphan", "---\ntype: instance\nskill: entity\nid: orphan\n---\n# Orphan\n\nUnreferenced.\n")
+                // stale: old last_verified, but linked (so it is stale, not orphan).
+                .instance("entity", "stale", "---\ntype: instance\nskill: entity\nid: stale\nlast_verified: 2020-01-01T00:00:00Z\n---\n# Stale\n\nOld.\n")
+                // contradiction: same fact_key, different fact_value; both linked.
+                .instance("entity", "c1", "---\ntype: instance\nskill: entity\nid: c1\nfact_key: capital\nfact_value: Berlin\n---\n# C1\n")
+                .instance("entity", "c2", "---\ntype: instance\nskill: entity\nid: c2\nfact_key: capital\nfact_value: Munich\n---\n# C2\n")
+                // linked control: has an inbound link, fresh, consistent → no issue.
+                .instance("entity", "linked", "---\ntype: instance\nskill: entity\nid: linked\n---\n# Linked\n")
+                // The linker gives stale/c1/c2/linked an inbound edge (its own
+                // skill `note` is not scanned).
+                .instance("note", "links", "---\ntype: instance\nskill: note\nid: links\n---\n# links\n\nSee [[entity::stale]], [[entity::c1]], [[entity::c2]], [[entity::linked]].\n")
+                // Run board carries the scan scope + staleness cutoff.
+                .instance("workflow-run", "lint1", "---\ntype: instance\nskill: workflow-run\nid: lint1\nwf_skill: lint\nscan_skills: entity\nstale_before: 2025-01-01T00:00:00Z\n---\n# lint run\n")
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "lint",
+            "instance_page_id": run_page,
+            "title": "invoke lint",
+            "body": "Scan for health problems.",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": "lint", "phase": "invoke" } }
+        }),
+    )
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The scan records issues; wait for the summary (written last) to be sure
+    // detection has completed, then inspect the full set.
+    await_issues(&gateway, "lint_summary", 45).await;
+    let issues = call_mcp(
+        &gateway,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "issue" }),
+    )
+    .await;
+    let issues = issues["instances"].as_array().cloned().unwrap_or_default();
+    let of_kind = |kind: &str| -> Vec<String> {
+        issues
+            .iter()
+            .filter(|i| i["frontmatter"]["kind"].as_str() == Some(kind))
+            .filter_map(|i| i["frontmatter"]["subject_page"].as_str().map(str::to_owned))
+            .collect()
+    };
+
+    assert_eq!(of_kind("orphan"), vec![orphan_page.to_owned()], "exactly the orphan is flagged");
+    assert_eq!(of_kind("stale"), vec!["markdown/instances/entity/stale.md".to_owned()], "the stale page is flagged");
+    let mut contradictions = of_kind("contradiction");
+    contradictions.sort();
+    assert_eq!(
+        contradictions,
+        vec![
+            "markdown/instances/entity/c1.md".to_owned(),
+            "markdown/instances/entity/c2.md".to_owned()
+        ],
+        "both sides of the contradiction are flagged"
+    );
+
+    // Lint NEVER rewrites: the scanned pages are byte-for-byte untouched — no
+    // source_event stamp, original body intact.
+    let orphan = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": orphan_page })).await;
+    assert!(
+        orphan["frontmatter"].get("source_event").is_none(),
+        "lint must not stamp/modify a scanned page: {orphan}"
+    );
+    assert_eq!(
+        orphan["body"].as_str().unwrap_or_default().trim(),
+        "# Orphan\n\nUnreferenced.".trim(),
+        "the orphan page body is unchanged by lint"
+    );
+}
+
+/// The lint **schedule** end to end: with `ESCUREL_RUNNER_LINT_INTERVAL` set,
+/// the runner itself synthesizes a `lint` invocation each window; the reactive
+/// loop drives it (scan config auto-discovered via `list_skills`) and an orphan
+/// issue materializes — no manual invocation, gateway still automation-free.
+#[tokio::test]
+async fn lint_tick_schedules_a_scan_without_manual_invocation() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::lint_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.skill("entity", ENTITY_SKILL_BODY)
+                .instance("entity", "lonely", "---\ntype: instance\nskill: entity\nid: lonely\n---\n# Lonely\n\nNo inbound links.\n")
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms")
+        // The schedule under test.
+        .env("ESCUREL_RUNNER_LINT_INTERVAL", "1s");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // No manual capture_event — the tick alone must drive a scan that flags the
+    // unreferenced entity page.
+    let issues = await_issues(&gateway, "orphan", 45).await;
+    assert!(
+        issues.iter().any(|i| i["frontmatter"]["subject_page"].as_str()
+            == Some("markdown/instances/entity/lonely.md")),
+        "the scheduled scan flagged the orphan: {issues:?}"
+    );
+}

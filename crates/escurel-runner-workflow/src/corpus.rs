@@ -245,6 +245,62 @@ pub fn distill_corpus() -> Vec<(String, &'static str)> {
     ]
 }
 
+// --- G2: the `lint` corpus (semantic health) ------------------------------
+//
+// `lint` is a scheduled whole-corpus health pass that flags structural and
+// semantic problems as typed `issue` instances — it *proposes*, it never
+// rewrites the corpus (compile-first-wiki G2). A `scan` step reads the pages
+// named by the run board's `scan_skills` and records an `issue` per finding:
+// `orphan` (no inbound links, via `neighbours`), `stale` (`last_verified`
+// older than the board's `stale_before`, G3), and `contradiction` (two pages
+// asserting different values for the same `fact_key`). The scan runs on the
+// agent-safe read surface and writes only `issue` instances.
+
+/// The persisted typed Issue — the stored companion to the ephemeral
+/// `validate` issue. An ordinary instance, so it is derivable, ACL'd, and
+/// queryable via `list_instances(issue, {frontmatter_key: kind})`.
+pub const ISSUE: &str = "---\n\
+type: skill\n\
+id: issue\n\
+description: A recorded semantic-health finding — a contradiction, stale claim, orphan page, or missing cross-reference. Lint proposes; a human or write-privileged agent disposes.\n\
+required_frontmatter: [kind, severity, subject_page, message]\n\
+optional_frontmatter: [suggestion, detected_at, source_run, status]\n\
+---\n\
+# issue\n";
+
+/// The `lint` workflow plan (`kind: workflow`). A single `scan` pass over the
+/// board's `scan_skills` produces `issue` instances.
+pub const LINT_PLAN: &str = "---\n\
+type: skill\n\
+id: lint\n\
+description: Scheduled whole-corpus health pass — flag contradictions, stale claims, orphans, and missing cross-references as issues. Proposes, never rewrites.\n\
+backend: {kind: workflow}\n\
+harness: claude\n\
+run_skill: workflow-run\n\
+phases: [{id: scan, produces: issue, fan_out: 1}]\n\
+---\n\
+# lint\n\n\
+Survey the knowledge base for health problems and record each as an `issue`.\n\
+Change nothing else — you propose, a reviewer disposes.\n\n\
+## scan\n\
+For each page under review: flag an `orphan` when nothing links to it\n\
+(`neighbours` inbound is empty); a `stale` issue when its `last_verified` is\n\
+older than the review threshold; a `missing_xref` when it names an entity that\n\
+exists as a page but is not linked (suggest the wikilink); and a\n\
+`contradiction` when two pages assert different values for the same fact. Set\n\
+`kind`, `severity`, `subject_page`, and `message` on each `issue`; suggest a\n\
+fix in `suggestion`. Do not edit the pages under review.\n";
+
+/// The `(page_id, markdown)` pairs that make up the `lint` corpus. Opt-in.
+#[must_use]
+pub fn lint_corpus() -> Vec<(String, &'static str)> {
+    vec![
+        ("markdown/skills/lint.md".to_owned(), LINT_PLAN),
+        ("markdown/skills/issue.md".to_owned(), ISSUE),
+        ("markdown/skills/workflow-run.md".to_owned(), WORKFLOW_RUN),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +321,19 @@ mod tests {
         ] {
             assert!(ids.iter().any(|id| id == expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn lint_corpus_ships_the_plan_and_issue_skill() {
+        let ids: Vec<String> = lint_corpus().into_iter().map(|(p, _)| p).collect();
+        for expected in [
+            "markdown/skills/lint.md",
+            "markdown/skills/issue.md",
+            "markdown/skills/workflow-run.md",
+        ] {
+            assert!(ids.iter().any(|id| id == expected), "missing {expected}");
+        }
+        assert!(ISSUE.contains("required_frontmatter: [kind, severity, subject_page, message]"));
     }
 
     #[test]
