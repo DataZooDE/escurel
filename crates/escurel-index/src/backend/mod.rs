@@ -33,6 +33,8 @@
 //!   dispatcher lands with the second searchable backend (PR-2d).
 
 mod binding;
+#[cfg(feature = "contextualize-llm")]
+pub mod contextualize_llm;
 pub mod document;
 mod markdown;
 pub mod remote;

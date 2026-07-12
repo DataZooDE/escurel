@@ -745,6 +745,23 @@ async fn run_document_ingest(
         std::sync::Arc::new(DeterministicProcessor::new(extractor)),
     )
     .with_contextualize(indexer.contextualize_mode());
+    // Variant B (#216): attach the LLM contextualizer when built with the
+    // `contextualize-llm` feature, the mode is `llm`, and an endpoint is set.
+    // Otherwise `Llm` mode degrades to structural in the pure ingest path.
+    #[cfg(feature = "contextualize-llm")]
+    let worker = {
+        let endpoint = std::env::var("ESCUREL_CONTEXTUALIZE_LLM_ENDPOINT").unwrap_or_default();
+        let key = std::env::var("ESCUREL_CONTEXTUALIZE_LLM_API_KEY").unwrap_or_default();
+        if indexer.contextualize_mode() == escurel_index::backend::document::ContextualizeMode::Llm
+            && !endpoint.is_empty()
+        {
+            worker.with_llm_contextualizer(std::sync::Arc::new(
+                escurel_index::backend::contextualize_llm::LlmContextualizer::new(endpoint, key),
+            ))
+        } else {
+            worker
+        }
+    };
 
     // Stamp the uploader as the instance owner so owner-scoped document skills
     // work: a personal skill (`read: [owner]`) stays visible only to its

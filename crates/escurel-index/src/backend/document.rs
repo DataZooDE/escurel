@@ -71,8 +71,9 @@ pub struct ExtractionResult {
 /// (`blocks.context`) — `blocks.body` stays the verbatim chunk for display +
 /// provenance — and feeds retrieval only: the dense embedding input, the
 /// BM25 FTS index (which indexes both columns) and the rerank passage.
-/// `Off` is byte-for-byte the legacy behaviour. Variant B (LLM-generated
-/// context) is a deferred follow-up behind future config.
+/// `Off` is byte-for-byte the legacy behaviour. `Llm` (Variant B, #216) has an
+/// LLM write the situating context — behind the `contextualize-llm` feature and
+/// off by default; see [`ContextualizeMode::Llm`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ContextualizeMode {
     /// No contextualisation; no situating context is stored.
@@ -80,15 +81,22 @@ pub enum ContextualizeMode {
     /// Situate each chunk with `[<title> › <heading path> › p.<page>]`.
     #[default]
     Structural,
+    /// Variant B (#216): an LLM writes a one-sentence situating context per
+    /// chunk. This is a **network path**, so it is off by default (behind the
+    /// `contextualize-llm` feature) and applied only by the async ingest layer;
+    /// the pure, air-gap-safe path here degrades `Llm` to `Structural` so
+    /// rebuilds and LLM-less builds stay deterministic.
+    Llm,
 }
 
 impl ContextualizeMode {
-    /// Parse the `ESCUREL_INGEST_CONTEXTUALIZE` value (`off` | `structural`);
-    /// unknown / empty → the default ([`ContextualizeMode::Structural`]).
+    /// Parse the `ESCUREL_INGEST_CONTEXTUALIZE` value (`off` | `structural` |
+    /// `llm`); unknown / empty → the default ([`ContextualizeMode::Structural`]).
     #[must_use]
     pub fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "off" => Self::Off,
+            "llm" => Self::Llm,
             _ => Self::Structural,
         }
     }
@@ -179,7 +187,10 @@ pub fn contextualized_chunks(
         .iter()
         .map(|c| match mode {
             ContextualizeMode::Off => IndexChunk::plain(c.text.clone()),
-            ContextualizeMode::Structural => IndexChunk::contextualized(
+            // `Llm` degrades to structural in the pure path (#216): the LLM
+            // prefix, when available, is applied by the async ingest layer;
+            // rebuild and air-gap builds stay deterministic.
+            ContextualizeMode::Structural | ContextualizeMode::Llm => IndexChunk::contextualized(
                 structural_context_prefix(title, &heading_path_at(content, c.byte_start), c.page),
                 c.text.clone(),
             ),
@@ -466,6 +477,12 @@ pub struct DocumentIngestWorker {
     indexer: Arc<Indexer>,
     processor: Arc<dyn DocumentProcessor>,
     contextualize: ContextualizeMode,
+    /// Variant B (#216): the LLM situating-context generator. `Some` only when
+    /// the `contextualize-llm` feature is built and the operator configured an
+    /// endpoint; then `Llm` mode uses it (falling back to structural per chunk
+    /// on error).
+    #[cfg(feature = "contextualize-llm")]
+    llm_ctx: Option<Arc<super::contextualize_llm::LlmContextualizer>>,
 }
 
 impl DocumentIngestWorker {
@@ -477,6 +494,8 @@ impl DocumentIngestWorker {
             indexer,
             processor,
             contextualize: ContextualizeMode::default(),
+            #[cfg(feature = "contextualize-llm")]
+            llm_ctx: None,
         }
     }
 
@@ -486,6 +505,46 @@ impl DocumentIngestWorker {
     pub fn with_contextualize(mut self, mode: ContextualizeMode) -> Self {
         self.contextualize = mode;
         self
+    }
+
+    /// Attach the Variant B LLM contextualizer (#216, builder style). Only
+    /// available under the `contextualize-llm` feature.
+    #[cfg(feature = "contextualize-llm")]
+    #[must_use]
+    pub fn with_llm_contextualizer(
+        mut self,
+        ctx: Arc<super::contextualize_llm::LlmContextualizer>,
+    ) -> Self {
+        self.llm_ctx = Some(ctx);
+        self
+    }
+
+    /// Build the storage chunks for this worker's contextualize mode. The
+    /// default (and any non-`Llm` mode) is the pure, deterministic path; under
+    /// the `contextualize-llm` feature, `Llm` mode asks the LLM for a per-chunk
+    /// situating context and falls back to the structural prefix on error.
+    async fn build_chunks(
+        &self,
+        title: Option<&str>,
+        content: &str,
+        chunks: &[Chunk],
+    ) -> Vec<IndexChunk> {
+        #[cfg(feature = "contextualize-llm")]
+        if self.contextualize == ContextualizeMode::Llm
+            && let Some(ctx) = &self.llm_ctx
+        {
+            let mut out = Vec::with_capacity(chunks.len());
+            for c in chunks {
+                let headings = heading_path_at(content, c.byte_start);
+                let prefix = ctx
+                    .context_prefix(title, &headings, c.page, &c.text)
+                    .await
+                    .or_else(|| structural_context_prefix(title, &headings, c.page));
+                out.push(IndexChunk::contextualized(prefix, c.text.clone()));
+            }
+            return out;
+        }
+        contextualized_chunks(self.contextualize, title, content, chunks)
     }
 
     /// Ingest the inbox blob `blob_id` as instance `skill::instance_id`.
@@ -509,12 +568,13 @@ impl DocumentIngestWorker {
                 // context is stored beside the verbatim body and feeds only
                 // the retrieval representations (dense embedding, FTS,
                 // rerank) — display text and byte-span provenance stay clean.
-                let chunks = contextualized_chunks(
-                    self.contextualize,
-                    result.metadata.title.as_deref(),
-                    &result.content,
-                    &result.chunks,
-                );
+                let chunks = self
+                    .build_chunks(
+                        result.metadata.title.as_deref(),
+                        &result.content,
+                        &result.chunks,
+                    )
+                    .await;
                 let overlay = document_overlay(
                     skill,
                     instance_id,
@@ -621,7 +681,11 @@ pub(crate) async fn rebuild_documents(indexer: &Indexer) -> Result<(), IndexerEr
         // content; a plain re-chunk has no per-chunk page.
         let title = match indexer.contextualize {
             ContextualizeMode::Off => None,
-            ContextualizeMode::Structural => overlay_heading_title(&overlay_md),
+            // `Llm` re-materialises with the structural prefix in the pure
+            // rebuild path (#216); a from-scratch rebuild is deterministic.
+            ContextualizeMode::Structural | ContextualizeMode::Llm => {
+                overlay_heading_title(&overlay_md)
+            }
         };
         let chunks = contextualized_chunks(
             indexer.contextualize,
@@ -988,6 +1052,32 @@ mod tests {
     fn heading_path_ignores_non_headings() {
         let md = "#hashtag not a heading\n####### seven hashes\nplain\ntext here\n";
         assert!(heading_path_at(md, md.len()).is_empty());
+    }
+
+    #[test]
+    fn llm_mode_parses_and_degrades_to_structural_in_the_pure_path() {
+        // #216 Variant B: `llm` parses to its own mode, but the pure/air-gap
+        // path (no `contextualize-llm` feature, or no configured endpoint)
+        // produces the SAME rows as `Structural` — deterministic and offline.
+        assert_eq!(ContextualizeMode::parse("llm"), ContextualizeMode::Llm);
+        let content = "# Manual\n## Setup\nInstall the widget.\n";
+        let start = content.find("Install").unwrap();
+        let chunks = vec![Chunk {
+            ordinal: 0,
+            byte_start: start,
+            byte_end: start + "Install the widget.".len(),
+            page: Some(3),
+            text: "Install the widget.".to_owned(),
+        }];
+        let via_llm =
+            contextualized_chunks(ContextualizeMode::Llm, Some("Manual"), content, &chunks);
+        let via_structural = contextualized_chunks(
+            ContextualizeMode::Structural,
+            Some("Manual"),
+            content,
+            &chunks,
+        );
+        assert_eq!(via_llm, via_structural);
     }
 
     #[test]

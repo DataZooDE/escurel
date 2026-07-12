@@ -22,8 +22,14 @@ kreuzberg = ["dep:kreuzberg", "dep:html-to-markdown-rs"]
 # escurel-storage `s3` MinIO test) so a default `cargo test` on a Docker-less
 # box doesn't fail. Run with `--features live-postgres`.
 live-postgres = []
+# Variant B of Contextual Retrieval (#216): an LLM writes a one-sentence
+# situating context per chunk at ingest. OFF by default — it is a NETWORK path
+# (pulls reqwest), at odds with the deterministic/air-gap default; the default
+# build stays offline and `Llm` mode degrades to `Structural`.
+contextualize-llm = ["dep:reqwest"]
 
 [dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
 # DuckDB via the downloaded precompiled libduckdb release (NOT the
 # bundled C++ compile). The `DUCKDB_DOWNLOAD_LIB=1` env in
 # `.cargo/config.toml` makes libduckdb-sys fetch the matching DuckDB
