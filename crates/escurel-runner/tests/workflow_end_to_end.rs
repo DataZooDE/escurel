@@ -207,6 +207,59 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
 }
 
 #[tokio::test]
+async fn deep_research_corpus_loads_into_a_real_tenant() {
+    // The flagship corpus (§8 step 11) seeds into a real gateway: the plan is
+    // a `kind: workflow` skill, its five typed produced skills + the run board
+    // are present, and the verify-tally inspection query is queryable.
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::deep_research_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(tf.done()),
+        ..Default::default()
+    })
+    .await;
+
+    let skills = call_mcp(&gateway, Role::Agent, "list_skills", json!({})).await;
+    let arr = skills["skills"].as_array().expect("skills array");
+    let by_id = |id: &str| arr.iter().find(|s| s["id"] == id).cloned();
+
+    let plan = by_id("deep-research").expect("deep-research plan present");
+    assert_eq!(plan["backend"]["kind"], "workflow");
+    for typed in [
+        "research-angle",
+        "source",
+        "claims",
+        "verify-vote",
+        "research-report",
+        "workflow-run",
+    ] {
+        assert!(by_id(typed).is_some(), "typed skill {typed} present");
+    }
+
+    // The verify-tally inspection query is a `query` instance.
+    let queries = call_mcp(
+        &gateway,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "query" }),
+    )
+    .await;
+    assert!(
+        queries["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["frontmatter"]["id"] == "verify-tally"),
+        "verify-tally query shipped: {queries}"
+    );
+
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn recovery_re_drives_a_non_terminal_run_to_completion() {
     // Simulate a crash mid-run: the run board exists (carrying `wf_skill`) and
     // scope has already produced its research-angle instance, but synthesize
