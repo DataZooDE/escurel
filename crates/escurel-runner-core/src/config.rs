@@ -777,10 +777,10 @@ mod tests {
         assert_eq!(off.lint_interval, None);
         // Set ⇒ parsed with the same duration grammar as the poller.
         let on = RunnerConfig::from_env_with(|key| {
-            (key == "ESCUREL_RUNNER_LINT_INTERVAL").then(|| "1h".to_owned())
+            (key == "ESCUREL_RUNNER_LINT_INTERVAL").then(|| "30m".to_owned())
         })
         .expect("lint interval must parse");
-        assert_eq!(on.lint_interval, Some(Duration::from_secs(3600)));
+        assert_eq!(on.lint_interval, Some(Duration::from_secs(1800)));
     }
 
     #[test]
