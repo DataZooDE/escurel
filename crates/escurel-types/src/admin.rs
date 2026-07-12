@@ -8,12 +8,62 @@ use serde::{Deserialize, Serialize};
 
 // ── tenants ───────────────────────────────────────────────────────
 
-/// Proto `TenantSpec`: `tenant_id`, `display_name`.
+/// Lifecycle status of a tenant (#247). `Suspended` tenants reject
+/// non-admin tool calls at the gateway; admin tools stay allowed so an
+/// operator can `resume`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TenantStatus {
+    #[default]
+    Active,
+    Suspended,
+}
+
+/// Per-tenant quota overrides (#247). Each `Some` field overrides the
+/// gateway default; `None` inherits it. Mirrors `escurel_quota::QuotaConfig`
+/// without depending on that crate from the wire types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct QuotaOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queries_per_minute: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub writes_per_minute: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embeds_per_minute: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrent_sessions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_blob_bytes: Option<u64>,
+}
+
+/// Per-tenant embedding provider (#247). Overrides the gateway-global
+/// embedder for this tenant. Changing it moves the vector space, so a
+/// `rebuild` (re-embed) is required — `tenant_update` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct EmbeddingSpec {
+    /// `zero` | `gemini` | `embeddinggemma`.
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim: Option<usize>,
+}
+
+/// Proto `TenantSpec`: identity + lifecycle/quota/embedding (#247).
+/// `status`/`quotas`/`embedding_provider` are `#[serde(default)]` so a
+/// `tenant.json` written before #247 upgrades cleanly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TenantSpec {
     pub tenant_id: String,
     pub display_name: String,
+    pub status: TenantStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quotas: Option<QuotaOverride>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_provider: Option<EmbeddingSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -65,6 +115,10 @@ pub struct TenantUpdateRequest {
 pub struct TenantUpdateResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spec: Option<TenantSpec>,
+    /// True when the update changed `embedding_provider`, so the vector
+    /// space moved and the operator must `admin rebuild` to re-embed (#247).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rebuild_required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

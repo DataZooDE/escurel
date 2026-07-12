@@ -859,7 +859,7 @@ empty value means "this gateway's tenant".
 | `tenant_create` | `{tenant_id, display_name?}` | `{spec: {tenant_id, display_name}}` | provision a new tenant (no `quotas` input) |
 | `tenant_list` | `{}` | `{tenants: [{tenant_id, display_name}]}` | enumerate tenants |
 | `tenant_get` | `{tenant_id}` | `{spec: {tenant_id, display_name}}` | fetch one |
-| `tenant_update` | `{tenant_id, display_name?}` | `{spec: {tenant_id, display_name}}` | rename a tenant (only `display_name` changes; `status`/`quotas`/`embedding_provider` **not yet implemented**) |
+| `tenant_update` | `{tenant_id, display_name?, status?, quotas?, embedding_provider?}` | `{spec, rebuild_required}` | **partial** update: rename, suspend/resume (`status: active\|suspended` — a suspended tenant rejects non-admin calls), per-tenant `quotas`, and `embedding_provider` (`zero\|gemini\|embeddinggemma`; changing it moves the vector space → `rebuild_required: true`, run `rebuild`). Live suspend/quota apply to the served tenant; embedding takes effect on next boot/rebuild (#247) |
 | `tenant_delete` | `{tenant_id, confirm}` (`confirm` must equal `tenant_id`) | `{deleted}` | hard-delete a tenant + its on-disk state |
 | `tenant_export` | `{tenant_id}` | `{format_version, tarball_b64, bytes, sha256}` (tarball: canonical **markdown only**, gzip'd; `sha256` = hex of the tarball body) | export (blocking) |
 | `tenant_import` | `{tenant_id, tarball_b64}` | `{bytes_imported}` | restore markdown into an existing tenant (blocking) |

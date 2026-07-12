@@ -117,12 +117,21 @@ impl AdminClient {
         req: TenantUpdateRequest,
     ) -> Result<TenantUpdateResponse, Error> {
         let spec = req.spec.unwrap_or_default();
-        self.transport
-            .call_typed(
-                "tenant_update",
-                json!({ "tenant_id": spec.tenant_id, "display_name": spec.display_name }),
-            )
-            .await
+        // Carry the #247 fields. `display_name`/`status` are always sent
+        // (get-modify-put); `quotas`/`embedding_provider` only when set, so a
+        // rename can't null them. The server read-merges on field presence.
+        let mut args = json!({
+            "tenant_id": spec.tenant_id,
+            "display_name": spec.display_name,
+            "status": spec.status,
+        });
+        if let Some(q) = spec.quotas {
+            args["quotas"] = serde_json::to_value(q).unwrap_or_default();
+        }
+        if let Some(ep) = spec.embedding_provider {
+            args["embedding_provider"] = serde_json::to_value(ep).unwrap_or_default();
+        }
+        self.transport.call_typed("tenant_update", args).await
     }
 
     /// Delete a tenant and its on-disk state.

@@ -197,6 +197,26 @@ async fn mcp_inner(
     // tools are allowed (the local demo runs without a token).
     let role = auth_ctx.as_ref().map(|c| c.role);
 
+    // #247 suspend gate: a suspended tenant rejects non-admin callers so an
+    // operator can still `resume` with an admin token. Only bites when a
+    // verifier is wired (a concrete non-admin role); dev/on-host mode
+    // (`role: None` ⇒ treated as admin elsewhere) is unaffected.
+    if state
+        .tenant_suspended
+        .load(std::sync::atomic::Ordering::Relaxed)
+        && matches!(role, Some(Role::Agent))
+    {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "error": {
+                "code": -32003,
+                "message": format!("tenant `{tenant_id}` is suspended"),
+            }
+        });
+        return (StatusCode::FORBIDDEN, Json(body)).into_response();
+    }
+
     // Auth-derived audit fields for the `tool.completed` record.
     // `subject` is the token `sub` claim; `anonymous` in
     // unauthenticated dev mode.
@@ -3258,8 +3278,28 @@ fn map_admin_err(e: escurel_admin::AdminError) -> JsonRpcError {
 struct TenantSpecArgs {
     #[serde(default)]
     tenant_id: String,
+    /// Optional so `tenant_update` is a **partial** update (#247): a field
+    /// omitted from the request keeps its current value.
     #[serde(default)]
-    display_name: String,
+    display_name: Option<String>,
+    #[serde(default)]
+    status: Option<escurel_types::TenantStatus>,
+    #[serde(default)]
+    quotas: Option<escurel_types::QuotaOverride>,
+    #[serde(default)]
+    embedding_provider: Option<escurel_types::EmbeddingSpec>,
+}
+
+/// Convert the persisted admin spec into the wire spec. The lifecycle/quota/
+/// embedding sub-types are shared from `escurel-types`, so this is a plain move.
+fn admin_to_wire(s: AdminTenantSpec) -> TypesTenantSpec {
+    TypesTenantSpec {
+        tenant_id: s.tenant_id,
+        display_name: s.display_name,
+        status: s.status,
+        quotas: s.quotas,
+        embedding_provider: s.embedding_provider,
+    }
 }
 
 #[derive(Deserialize)]
@@ -3274,14 +3314,14 @@ async fn tool_tenant_create(state: &AppState, args: Value) -> Result<Value, Json
     let store = tenant_store(state)?.clone();
     let spec = AdminTenantSpec {
         tenant_id: a.tenant_id,
-        display_name: a.display_name,
+        display_name: a.display_name.unwrap_or_default(),
+        status: a.status.unwrap_or_default(),
+        quotas: a.quotas,
+        embedding_provider: a.embedding_provider,
     };
     store.create(&spec).await.map_err(map_admin_err)?;
     to_value(TenantCreateResponse {
-        spec: Some(TypesTenantSpec {
-            tenant_id: spec.tenant_id,
-            display_name: spec.display_name,
-        }),
+        spec: Some(admin_to_wire(spec)),
     })
 }
 
@@ -3289,13 +3329,7 @@ async fn tool_tenant_list(state: &AppState) -> Result<Value, JsonRpcError> {
     let store = tenant_store(state)?.clone();
     let specs = store.list().await.map_err(map_admin_err)?;
     to_value(TenantListResponse {
-        tenants: specs
-            .into_iter()
-            .map(|s| TypesTenantSpec {
-                tenant_id: s.tenant_id,
-                display_name: s.display_name,
-            })
-            .collect(),
+        tenants: specs.into_iter().map(admin_to_wire).collect(),
     })
 }
 
@@ -3309,10 +3343,7 @@ async fn tool_tenant_get(state: &AppState, args: Value) -> Result<Value, JsonRpc
             a.tenant_id
         ))),
         Some(spec) => to_value(TenantGetResponse {
-            spec: Some(TypesTenantSpec {
-                tenant_id: spec.tenant_id,
-                display_name: spec.display_name,
-            }),
+            spec: Some(admin_to_wire(spec)),
         }),
     }
 }
@@ -3321,16 +3352,52 @@ async fn tool_tenant_update(state: &AppState, args: Value) -> Result<Value, Json
     let a: TenantSpecArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("tenant_update: {e}")))?;
     let store = tenant_store(state)?.clone();
-    let spec = AdminTenantSpec {
-        tenant_id: a.tenant_id,
-        display_name: a.display_name,
+    // Partial update (#247): read the current spec, overlay the provided
+    // fields, write it back.
+    let mut spec = match store.get(&a.tenant_id).await.map_err(map_admin_err)? {
+        Some(s) => s,
+        None => {
+            return Err(JsonRpcError::invalid_params(format!(
+                "tenant `{}` not found",
+                a.tenant_id
+            )));
+        }
     };
+    if let Some(dn) = a.display_name {
+        spec.display_name = dn;
+    }
+    if let Some(st) = a.status {
+        spec.status = st;
+    }
+    if let Some(q) = a.quotas {
+        spec.quotas = Some(q);
+    }
+    let embedding_changed =
+        a.embedding_provider.is_some() && a.embedding_provider != spec.embedding_provider;
+    if let Some(ep) = a.embedding_provider {
+        spec.embedding_provider = Some(ep);
+    }
     store.update(&spec).await.map_err(map_admin_err)?;
+
+    // Live side effects apply only to the SERVED tenant (single-tenant-per-
+    // process); other tenants pick the new spec up at their next boot. The
+    // embedding provider moves the vector space, so it only takes effect on
+    // the next boot/rebuild — hence `rebuild_required`, not a live swap.
+    if state.served_tenant.as_deref() == Some(spec.tenant_id.as_str()) {
+        state.tenant_suspended.store(
+            matches!(spec.status, escurel_types::TenantStatus::Suspended),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if let (Some(q), Some(over)) = (state.quota.as_ref(), spec.quotas) {
+            q.set_for_tenant(
+                &spec.tenant_id,
+                crate::config::apply_quota_override(escurel_quota::QuotaConfig::defaults(), over),
+            );
+        }
+    }
     to_value(TenantUpdateResponse {
-        spec: Some(TypesTenantSpec {
-            tenant_id: spec.tenant_id,
-            display_name: spec.display_name,
-        }),
+        spec: Some(admin_to_wire(spec)),
+        rebuild_required: embedding_changed,
     })
 }
 
@@ -4308,13 +4375,36 @@ fn tools_list_payload() -> Value {
             ),
             tool_entry(
                 "tenant_update",
-                "Admin: update a tenant's spec (e.g. display name).",
+                "Admin: partial-update a tenant's spec — display_name, status \
+                 (active|suspended), quotas, embedding_provider. Changing \
+                 embedding_provider requires a rebuild (`rebuild_required` in the \
+                 response).",
                 json!({
                     "type": "object",
                     "required": ["tenant_id"],
                     "properties": {
                         "tenant_id": { "type": "string" },
-                        "display_name": { "type": "string" }
+                        "display_name": { "type": "string" },
+                        "status": { "type": "string", "enum": ["active", "suspended"] },
+                        "quotas": {
+                            "type": "object",
+                            "properties": {
+                                "queries_per_minute": { "type": "integer" },
+                                "writes_per_minute": { "type": "integer" },
+                                "embeds_per_minute": { "type": "integer" },
+                                "concurrent_sessions": { "type": "integer" },
+                                "max_blob_bytes": { "type": "integer" }
+                            }
+                        },
+                        "embedding_provider": {
+                            "type": "object",
+                            "required": ["provider"],
+                            "properties": {
+                                "provider": { "type": "string", "enum": ["zero", "gemini", "embeddinggemma"] },
+                                "model": { "type": "string" },
+                                "dim": { "type": "integer" }
+                            }
+                        }
                     }
                 }),
             ),

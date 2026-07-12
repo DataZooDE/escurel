@@ -13,6 +13,7 @@ homepage.workspace = true
 async-trait = "0.1"
 duckdb = { version = "1", default-features = false }
 escurel-index = { path = "../escurel-index" }
+escurel-types = { path = "../escurel-types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

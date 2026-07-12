@@ -2539,6 +2539,7 @@ dependencies = [
  "async-trait",
  "duckdb",
  "escurel-index",
+ "escurel-types",
  "serde",
  "serde_json",
  "tempfile",

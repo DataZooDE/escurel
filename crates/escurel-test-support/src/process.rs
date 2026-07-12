@@ -334,6 +334,8 @@ impl EscurelProcess {
             indexer: indexer.clone(),
             verifier,
             quota: overrides.quota.clone(),
+            // #247: tests start un-suspended; a test flips it via tenant_update.
+            tenant_suspended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tenant_store: overrides.tenant_store.clone(),
             crdt_backend: overrides.crdt_backend.clone(),
             embedder_reload: overrides.embedder_reload.clone(),

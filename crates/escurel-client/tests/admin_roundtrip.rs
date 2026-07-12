@@ -119,6 +119,7 @@ fn spec(id: &str, name: &str) -> TenantSpec {
     TenantSpec {
         tenant_id: id.to_owned(),
         display_name: name.to_owned(),
+        ..Default::default()
     }
 }
 

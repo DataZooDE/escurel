@@ -122,6 +122,10 @@ pub struct ServerConfig {
     /// dispatch. Required `verifier` to be set too (the tenant
     /// id comes from the verified token).
     pub quota: Option<Arc<QuotaManager>>,
+    /// Cached suspend flag for the served tenant (#247). Loaded from the
+    /// tenant spec at boot; `tenant_update` flips it live. Defaults to a
+    /// fresh `false` so unconfigured/dev deployments are never suspended.
+    pub tenant_suspended: Arc<std::sync::atomic::AtomicBool>,
     /// Backing store for the admin tenant-CRUD RPCs. `None`
     /// means every tenant CRUD RPC returns
     /// `Status::failed_precondition` — useful for health-only
@@ -265,6 +269,11 @@ pub(crate) struct AppState {
     pub(crate) verifier: Option<Arc<OidcVerifier>>,
     pub(crate) quota: Option<Arc<QuotaManager>>,
     pub(crate) tenant_store: Option<Arc<dyn TenantStore>>,
+    /// Cached suspend flag for the served tenant (#247). Loaded from the
+    /// tenant spec at boot and refreshed by `tenant_update`; a suspended
+    /// tenant rejects non-admin tool calls at the dispatch gate. Shared
+    /// `Arc` so a `tenant_update` handler can flip it live.
+    pub(crate) tenant_suspended: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) crdt_backend: Option<Arc<dyn CrdtBackend>>,
     /// Live embedder seam swapped by `embedding_reload`. `None`
     /// when no reloadable embedder is wired.
@@ -320,6 +329,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         indexer: config.indexer.clone(),
         verifier: config.verifier.clone(),
         quota: config.quota.clone(),
+        tenant_suspended: Arc::clone(&config.tenant_suspended),
         tenant_store: config.tenant_store.clone(),
         crdt_backend: config.crdt_backend.clone(),
         embedder_reload: config.embedder_reload.clone(),

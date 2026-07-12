@@ -78,8 +78,16 @@ pub enum TenantCmd {
     Update {
         #[arg(long)]
         id: String,
+        /// New display name (optional — partial update, #247).
         #[arg(long)]
-        name: String,
+        name: Option<String>,
+        /// Lifecycle status: `active` | `suspended` (#247).
+        #[arg(long)]
+        status: Option<String>,
+        /// Embedding provider override: `zero` | `gemini` | `embeddinggemma`
+        /// (#247). Changing it requires a `rebuild` to re-embed.
+        #[arg(long)]
+        embedding_provider: Option<String>,
     },
     Delete {
         #[arg(long)]
@@ -117,7 +125,13 @@ pub struct DeleteChatArgs {
 
 fn tenant_json(s: Option<TenantSpec>) -> Value {
     match s {
-        Some(s) => json!({ "tenant_id": s.tenant_id, "display_name": opt(&s.display_name) }),
+        Some(s) => json!({
+            "tenant_id": s.tenant_id,
+            "display_name": opt(&s.display_name),
+            "status": s.status,
+            "quotas": s.quotas,
+            "embedding_provider": s.embedding_provider,
+        }),
         None => Value::Null,
     }
 }
@@ -207,6 +221,7 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
                     spec: Some(TenantSpec {
                         tenant_id: id,
                         display_name: name,
+                        ..Default::default()
                     }),
                 })
                 .await?;
@@ -227,16 +242,45 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
                 .await?;
             Ok(json!({ "tenant": tenant_json(r.spec) }))
         }
-        TenantCmd::Update { id, name } => {
-            let r = client
-                .tenant_update(TenantUpdateRequest {
-                    spec: Some(TenantSpec {
-                        tenant_id: id,
-                        display_name: name,
-                    }),
+        TenantCmd::Update {
+            id,
+            name,
+            status,
+            embedding_provider,
+        } => {
+            // Get-modify-put (#247): fetch the current spec, apply only the
+            // provided flags, write it back — so a partial update never
+            // clobbers unspecified fields.
+            let current = client
+                .tenant_get(TenantGetRequest {
+                    tenant_id: id.clone(),
                 })
+                .await?
+                .spec
+                .unwrap_or_else(|| TenantSpec {
+                    tenant_id: id.clone(),
+                    ..Default::default()
+                });
+            let mut spec = current;
+            if let Some(n) = name {
+                spec.display_name = n;
+            }
+            if let Some(s) = status {
+                spec.status = match s.as_str() {
+                    "suspended" => escurel_client::TenantStatus::Suspended,
+                    _ => escurel_client::TenantStatus::Active,
+                };
+            }
+            if let Some(p) = embedding_provider {
+                spec.embedding_provider = Some(escurel_client::EmbeddingSpec {
+                    provider: p,
+                    ..Default::default()
+                });
+            }
+            let r = client
+                .tenant_update(TenantUpdateRequest { spec: Some(spec) })
                 .await?;
-            Ok(json!({ "tenant": tenant_json(r.spec) }))
+            Ok(json!({ "tenant": tenant_json(r.spec), "rebuild_required": r.rebuild_required }))
         }
         TenantCmd::Delete { id } => {
             // The operator naming the tenant on the command line is the
