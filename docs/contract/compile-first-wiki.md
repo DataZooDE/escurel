@@ -282,14 +282,33 @@ gate (real `EscurelProcess` + real DuckDB + real `/mcp` + `escurel-echo-harness`
    stable (one run/window); interval disabled emits nothing.
 6. **G3 freshness + curation** — freshness stamping + `curation_corpus()` +
    `index`. *Test:* stale-threshold flagging; index regenerates + stays derivable.
-7. **G4a eval workflow + emit path** — `eval_corpus()` + the feature-gated
-   `eval-result` writer. *Test:* a wrong answer yields a failing `eval-result`.
-8. **G4b improve workflow** — `improve` over the shared durable-target
-   extension. *Test:* a failing `eval-result` → the implicated doc/skill is
-   edited → re-eval passes (or `eval_regression` when it can't).
+7. **G4 eval loop** — `eval_corpus()` (`eval` = score → apply). *Test:* eval
+   improves a failing doc/skill and re-eval passes; a broken fix raises an
+   `eval_regression` issue.
 
 Throughout: existing tests stay green; a markdown-only tenant (no corpus/eval
 seeded) is untouched.
+
+## 8a. As-built notes (where the implementation refined the concept)
+
+- **`eval` and `improve` are one workflow, not two.** The reducer scopes an
+  `over` phase to its run's own instances (the `<run_slug>-` page-id prefix), so
+  a separate `improve` run cannot fan out over an `eval` run's `eval-result`s.
+  The shipped `eval` plan therefore runs `score` → `apply` (the durable-target
+  weave) in a single run. The reverify + `eval_regression` guard is a re-run of
+  `eval`: a task that still fails on an already-improved page (one carrying
+  `source_event`) raises the issue.
+- **The driver loads externally-supplied `over` skills.** `build_run_state` now
+  loads run-scoped instances of every skill a phase *reads* (`over`), not only
+  those it *produces*, so a leading `over` phase over an external input set (e.g.
+  `eval`'s `eval-task`s) sees a populated upstream instead of vacuously
+  completing. Deep-research is unaffected (its `over` skills are all produced
+  upstream).
+- **Structural lint / eval, semantic tier deferred.** The shipped
+  echo-harness detectors are deterministic and structural (orphan/stale/
+  contradiction-by-fact-key; eval-by-expected-substring), which keeps them
+  air-gappable and CI-testable. A semantic LLM harness is the richer tier for
+  nuanced contradictions and open-ended tasks — same corpus, same events.
 
 ## 9. Open questions (non-blocking)
 
