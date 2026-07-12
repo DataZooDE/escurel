@@ -202,10 +202,21 @@ async fn build_run_state(
     spec: &WorkflowSkill,
 ) -> Result<RunState, WorkflowDriveError> {
     let run_slug = key::run_slug(&wf.run);
-    let produces_skills: BTreeSet<&str> = spec.phases.iter().map(|p| p.produces.as_str()).collect();
+    // Load the run-scoped instances of every skill the plan reads: those a
+    // phase `produces`, plus any `over` skill that is externally supplied (fanned
+    // over but produced by no phase — e.g. `eval`'s `eval-task` set). Without the
+    // latter a leading `over` phase would see an empty upstream and vacuously
+    // "complete".
+    let mut load_skills: BTreeSet<&str> =
+        spec.phases.iter().map(|p| p.produces.as_str()).collect();
+    for phase in &spec.phases {
+        if let FanOut::Over { over, .. } = &phase.fan_out {
+            load_skills.insert(over.as_str());
+        }
+    }
     let mut produced: BTreeMap<String, Vec<ProducedInstance>> = BTreeMap::new();
     let mut votes: Vec<Vote> = Vec::new();
-    for skill in produces_skills {
+    for skill in load_skills {
         let resp = client
             .list_instances(ListInstancesRequest {
                 skill: skill.to_owned(),

@@ -277,6 +277,21 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
             .map_or_else(now_rfc3339, str::to_owned);
         return curate_index(&mcp, &event_id, &instance_page_id, &run, &at, tool_calls);
     }
+    // The `eval` workflow (compile-first-wiki G4): the `score` step (targets an
+    // eval-result) checks one task; the `apply` step (a durable-target weave,
+    // targets the implicated page/skill) merges the fix.
+    if wf_skill == "eval" && instance_page_id.starts_with("markdown/instances/eval-result/") {
+        let task_page = workflow
+            .and_then(|w| w.get("over"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        return eval_score(&mcp, &event_id, &instance_page_id, &task_page, tool_calls);
+    }
+    if wf_skill == "eval" && !instance_page_id.contains("/workflow-run/") {
+        let at = now_rfc3339();
+        return improve_apply(&mcp, &event_id, &instance_page_id, &at, tool_calls);
+    }
 
     // 2. Read the instance's current state so we append rather than clobber.
     //    `expand` splits the page into a `frontmatter` object + a `body`;
@@ -641,6 +656,156 @@ fn curate_index(
         summary: format!("curated index over {} categories", skills.len()),
         tool_calls,
         produced_instance: Some(index_page.to_owned()),
+    })
+}
+
+/// The `eval` score step (compile-first-wiki G4): check whether the task's
+/// implicated page contains the expected content, and record an `eval-result`.
+/// A failure names `target_page` + `fix` so `improve` can act.
+fn eval_score(
+    mcp: &Mcp,
+    event_id: &str,
+    result_page: &str,
+    task_page: &str,
+    mut tool_calls: u32,
+) -> Result<HarnessOutcome, String> {
+    let task = mcp.call("expand", json!({ "page_id": task_page }))?;
+    tool_calls += 1;
+    let tfm = task.get("frontmatter").cloned().unwrap_or(Value::Null);
+    let implicated = tfm
+        .get("implicated_page")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let expect = tfm
+        .get("expect")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let fix = tfm
+        .get("fix")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let task_id = run_slug(task_page).to_owned();
+
+    // Answer the task from the KB: does the implicated page contain the
+    // expected content?
+    let page = mcp.call("expand", json!({ "page_id": implicated }))?;
+    tool_calls += 1;
+    let body = page.get("body").and_then(Value::as_str).unwrap_or_default();
+    let passed = body.contains(&expect);
+
+    // Regression guard (bounded loop): a task that fails on a page that was
+    // ALREADY improved (carries `source_event`) means the fix did not hold —
+    // raise an `eval_regression` issue for human review rather than looping.
+    let already_improved = page
+        .get("frontmatter")
+        .and_then(|f| f.get("source_event"))
+        .is_some();
+    if !passed && already_improved {
+        let issue_id = format!("{task_id}-eval-regression");
+        let issue_page = format!("markdown/instances/issue/{issue_id}.md");
+        let content = issue_md(
+            "eval_regression",
+            "error",
+            &implicated,
+            &format!("task `{task_id}` still fails after an improvement to {implicated}"),
+            "eval",
+            &issue_id,
+        );
+        mcp.call("update_page", json!({ "page_id": issue_page, "content": content }))?;
+        tool_calls += 1;
+    }
+
+    let result_id = run_slug(result_page);
+    let content = if passed {
+        format!(
+            "---\ntype: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: pass\n---\n# eval-result\n\nPASS: {implicated} answers the task.\n"
+        )
+    } else {
+        format!(
+            "---\ntype: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: fail\n\
+             target_page: {implicated}\nfix: {fix}\n---\n# eval-result\n\nFAIL: {implicated} is missing the expected content.\n"
+        )
+    };
+    mcp.call("update_page", json!({ "page_id": result_page, "content": content }))?;
+    tool_calls += 1;
+    mcp.call(
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": result_page }),
+    )?;
+    tool_calls += 1;
+
+    Ok(HarnessOutcome {
+        ok: true,
+        status: HarnessStatus::Ok,
+        summary: format!("eval {}: {}", task_id, if passed { "pass" } else { "fail" }),
+        tool_calls,
+        produced_instance: Some(result_page.to_owned()),
+    })
+}
+
+/// The `improve` apply step (compile-first-wiki G4): weave the fix from the
+/// failing eval-result into the implicated durable page (a document *or a
+/// skill*), stamping freshness. Reuses the G1 durable-target path — the event
+/// is pre-flagged onto `target_page`, so reconciliation confirms on it.
+fn improve_apply(
+    mcp: &Mcp,
+    event_id: &str,
+    target_page: &str,
+    at: &str,
+    mut tool_calls: u32,
+) -> Result<HarnessOutcome, String> {
+    // Find the failing eval-result for this target and its fix.
+    let listed = mcp.call("list_instances", json!({ "skill_id": "eval-result" }))?;
+    tool_calls += 1;
+    let fix = listed
+        .get("instances")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|r| {
+            r["frontmatter"]["verdict"].as_str() == Some("fail")
+                && r["frontmatter"]["target_page"].as_str() == Some(target_page)
+        })
+        .and_then(|r| r["frontmatter"]["fix"].as_str())
+        .unwrap_or_default()
+        .to_owned();
+
+    let expanded = mcp.call("expand", json!({ "page_id": target_page }))?;
+    tool_calls += 1;
+    let current_body = expanded
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // Reconstruct the target's frontmatter (it already exists) so update_page
+    // gets the full markdown; stamp provenance + freshness onto it.
+    let mut frontmatter = render_frontmatter(expanded.get("frontmatter"));
+    frontmatter = stamp_frontmatter(&frontmatter, "source_event", event_id);
+    frontmatter = stamp_frontmatter(&frontmatter, "last_verified", at);
+
+    let note = if fix.is_empty() {
+        format!("\n- improved via {event_id}\n")
+    } else {
+        format!("\n{fix}\n")
+    };
+    let new_body = format!("{}{}", current_body.trim_end_matches('\n'), note);
+    let content = format!("{frontmatter}{new_body}");
+    mcp.call("update_page", json!({ "page_id": target_page, "content": content }))?;
+    tool_calls += 1;
+    mcp.call(
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": target_page }),
+    )?;
+    tool_calls += 1;
+
+    Ok(HarnessOutcome {
+        ok: true,
+        status: HarnessStatus::Ok,
+        summary: format!("improved {target_page}"),
+        tool_calls,
+        produced_instance: Some(target_page.to_owned()),
     })
 }
 

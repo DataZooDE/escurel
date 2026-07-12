@@ -1221,3 +1221,130 @@ async fn distill_stamps_last_verified_on_the_woven_page() {
     let lv = await_frontmatter_key(&gateway, target, "last_verified", 45).await;
     assert!(!lv.is_empty(), "woven page gained a last_verified freshness stamp");
 }
+
+// --- G4: eval-driven improvement (improve documents AND skills) -------------
+
+/// Invoke the `eval` workflow for `run_page` (scores tasks, then weaves fixes).
+async fn invoke_eval(gateway: &EscurelProcess, run_page: &str) {
+    call_mcp(
+        gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual", "mime": "text/plain", "label_skill": "eval",
+            "instance_page_id": run_page, "title": "invoke eval", "body": "Score and improve.",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": "eval", "phase": "invoke" } }
+        }),
+    )
+    .await;
+}
+
+/// Fetch the eval-result verdict for `task_id`, or None.
+async fn eval_verdict(gateway: &EscurelProcess, task_id: &str) -> Option<String> {
+    let r = call_mcp(gateway, Role::Agent, "list_instances", json!({ "skill_id": "eval-result" })).await;
+    r["instances"].as_array()?.iter().find_map(|i| {
+        (i["frontmatter"]["task"].as_str() == Some(task_id))
+            .then(|| i["frontmatter"]["verdict"].as_str().map(str::to_owned))
+            .flatten()
+    })
+}
+
+/// The DoD test for compile-first-wiki **G4**: an `eval` run detects a failing
+/// task, weaves the fix into the implicated **skill** (improving the connective
+/// tissue, not just an instance), and a re-run confirms the task now passes.
+/// No mocks: real gateway + DuckDB + echo harness doing real structural
+/// scoring + the G1 durable-target weave.
+#[tokio::test]
+async fn eval_improves_a_failing_skill_then_reverify_passes() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::eval_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let faq_skill = "markdown/skills/faq.md";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            // The skill under evaluation — initially missing the expected fact.
+            tf.page("skills/faq.md", "---\ntype: skill\nid: faq\ndescription: FAQ\n---\n# FAQ\n\nEscurel is a knowledge base.\n")
+                // Run-scoped tasks: ev1 drives the improvement, ev2 re-verifies.
+                .instance("eval-task", "ev1-air", format!("---\ntype: instance\nskill: eval-task\nid: ev1-air\nimplicated_page: {faq_skill}\nexpect: air-gappable\nfix: Escurel is fully air-gappable.\n---\n# task\n"))
+                .instance("eval-task", "ev2-air", format!("---\ntype: instance\nskill: eval-task\nid: ev2-air\nimplicated_page: {faq_skill}\nexpect: air-gappable\nfix: Escurel is fully air-gappable.\n---\n# task\n"))
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+
+    // Run 1: score (fail) → apply weaves the fix into the FAQ skill.
+    invoke_eval(&gateway, "markdown/instances/workflow-run/ev1.md").await;
+    // The skill gains the expected content + a source_event (proof it was
+    // edited — a skill, the connective tissue, not just a data instance).
+    let src = await_frontmatter_key(&gateway, faq_skill, "source_event", 45).await;
+    assert!(!src.is_empty(), "the skill was improved (source_event stamped)");
+    let faq = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": faq_skill })).await;
+    assert!(
+        faq["body"].as_str().unwrap_or_default().contains("air-gappable"),
+        "the fix was woven into the skill: {}", faq["body"]
+    );
+    // The skill identity survived the edit (still a skill named faq).
+    assert_eq!(faq["frontmatter"]["id"].as_str(), Some("faq"));
+
+    // Run 2: re-verify — the task now PASSES (the improvement held), and no
+    // eval_regression issue is raised.
+    invoke_eval(&gateway, "markdown/instances/workflow-run/ev2.md").await;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        if eval_verdict(&gateway, "ev2-air").await == Some("pass".to_owned()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "re-eval never passed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let issues = call_mcp(&gateway, Role::Agent, "list_instances", json!({ "skill_id": "issue" })).await;
+    let regressions = issues["instances"].as_array().map_or(0, |a| {
+        a.iter().filter(|i| i["frontmatter"]["kind"].as_str() == Some("eval_regression")).count()
+    });
+    assert_eq!(regressions, 0, "a held improvement raises no eval_regression");
+}
+
+/// **G4 bounded loop**: when the fix does NOT resolve the task, a re-eval on the
+/// already-improved page raises an `eval_regression` issue for human review
+/// rather than looping forever.
+#[tokio::test]
+async fn eval_regression_is_flagged_when_a_fix_does_not_hold() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::eval_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let doc = "markdown/skills/faq.md";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.page("skills/faq.md", "---\ntype: skill\nid: faq\ndescription: FAQ\n---\n# FAQ\n\nEscurel is a KB.\n")
+                // A BROKEN fix: the woven text does not contain the expected string.
+                .instance("eval-task", "rg1-x", format!("---\ntype: instance\nskill: eval-task\nid: rg1-x\nimplicated_page: {doc}\nexpect: air-gappable\nfix: This note does not answer it.\n---\n# task\n"))
+                .instance("eval-task", "rg2-x", format!("---\ntype: instance\nskill: eval-task\nid: rg2-x\nimplicated_page: {doc}\nexpect: air-gappable\nfix: This note does not answer it.\n---\n# task\n"))
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+
+    // Run 1: fail → apply weaves the (broken) fix, stamping source_event.
+    invoke_eval(&gateway, "markdown/instances/workflow-run/rg1.md").await;
+    await_frontmatter_key(&gateway, doc, "source_event", 45).await;
+
+    // Run 2: the task still fails on an already-improved page → eval_regression.
+    invoke_eval(&gateway, "markdown/instances/workflow-run/rg2.md").await;
+    let issues = await_issues(&gateway, "eval_regression", 45).await;
+    assert!(
+        issues.iter().any(|i| i["frontmatter"]["subject_page"].as_str() == Some(doc)),
+        "an unresolved fix raises an eval_regression for the page: {issues:?}"
+    );
+}

@@ -345,6 +345,88 @@ pub fn curation_corpus() -> Vec<(String, &'static str)> {
     ]
 }
 
+// --- G4: eval-driven improvement (the reinforcement half) ------------------
+//
+// `eval` scores how well the KB answers a set of tasks and records each
+// failure as an `eval-result` naming the implicated page (a document *or a
+// skill*). `improve` reads the failing results and weaves the fix into that
+// durable page — reusing the G1 `writes: existing` extension, so it can refine
+// skills, the connective tissue — then a re-run of `eval` confirms. Optional:
+// distillation runs source-driven without any of this (compile-first-wiki G4).
+
+/// One evaluation task: a question the KB should answer, the page that should
+/// answer it, the substring that proves it does, and the fix if it doesn't.
+pub const EVAL_TASK: &str = "---\n\
+type: skill\n\
+id: eval-task\n\
+description: A task the knowledge base should satisfy — its implicated page, the expected content, and the fix.\n\
+required_frontmatter: [implicated_page, expect]\n\
+optional_frontmatter: [fix, question, workflow_run]\n\
+---\n\
+# eval-task\n";
+
+/// One scored evaluation outcome — a failure names the page to improve.
+pub const EVAL_RESULT: &str = "---\n\
+type: skill\n\
+id: eval-result\n\
+description: A scored evaluation outcome — verdict pass/fail, and for a failure the implicated target_page and the fix to weave in.\n\
+required_frontmatter: [task, verdict]\n\
+optional_frontmatter: [target_page, fix, tier, score, workflow_run]\n\
+---\n\
+# eval-result\n";
+
+/// The weave instruction skill for `eval`'s apply phase (the `writes: existing`
+/// phase routes here; the instance it writes is the durable target page/skill).
+pub const IMPROVEMENT: &str = "---\n\
+type: skill\n\
+id: improvement\n\
+description: Merge an eval fix into the implicated document or skill, citing the eval-result and stamping freshness.\n\
+optional_frontmatter: [source_event, last_verified, workflow_run]\n\
+---\n\
+# improvement\n";
+
+/// The `eval` workflow plan (`kind: workflow`): score each task, then in the
+/// same run weave the fix for each failure into the implicated page (or skill)
+/// — the eval-driven improvement loop. `score` and `apply` share one run so the
+/// durable-target `apply` can fan out over `score`'s run-scoped eval-results
+/// (cross-run data flow is out of scope for the run-prefix-scoped reducer).
+pub const EVAL_PLAN: &str = "---\n\
+type: skill\n\
+id: eval\n\
+description: Score how well the knowledge base answers a task set and, in the same run, weave the fix for each failure into the implicated document or skill. Re-run to confirm.\n\
+backend: {kind: workflow}\n\
+harness: claude\n\
+run_skill: workflow-run\n\
+phases: [\
+{id: score, produces: eval-result, fan_out: {over: eval-task}}, \
+{id: apply, produces: improvement, fan_out: {over: eval-result}, writes: existing, target_field: target_page, dedup_by: target_page}]\n\
+---\n\
+# eval\n\n\
+## score\n\
+For the task `{{eval-task}}`: answer it from the KB and check the implicated\n\
+page for the expected content. Write an `eval-result` with `verdict: pass` or\n\
+`verdict: fail`; on failure set `target_page` and `fix`. A task that fails again\n\
+*after* a prior improvement raises an `eval_regression` issue for review —\n\
+bounded, never an unbounded self-edit loop.\n\n\
+## apply\n\
+Merge the `fix` from the failing eval-result into `{{target_page}}` (a document\n\
+or a skill — validate first; the meta-skill is off-limits) and stamp\n\
+`source_event`/`last_verified`. Re-run `eval` to confirm the fix held.\n";
+
+/// The `(page_id, markdown)` pairs for the `eval` corpus. Opt-in; reuses the
+/// `issue` skill (for `eval_regression`).
+#[must_use]
+pub fn eval_corpus() -> Vec<(String, &'static str)> {
+    vec![
+        ("markdown/skills/eval.md".to_owned(), EVAL_PLAN),
+        ("markdown/skills/eval-task.md".to_owned(), EVAL_TASK),
+        ("markdown/skills/eval-result.md".to_owned(), EVAL_RESULT),
+        ("markdown/skills/improvement.md".to_owned(), IMPROVEMENT),
+        ("markdown/skills/issue.md".to_owned(), ISSUE),
+        ("markdown/skills/workflow-run.md".to_owned(), WORKFLOW_RUN),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +447,22 @@ mod tests {
         ] {
             assert!(ids.iter().any(|id| id == expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn eval_corpus_ships_the_plans_and_typed_skills() {
+        let ids: Vec<String> = eval_corpus().into_iter().map(|(p, _)| p).collect();
+        for expected in [
+            "markdown/skills/eval.md",
+            "markdown/skills/eval-task.md",
+            "markdown/skills/eval-result.md",
+            "markdown/skills/issue.md",
+        ] {
+            assert!(ids.iter().any(|id| id == expected), "missing {expected}");
+        }
+        // The apply phase is a durable-target phase (can weave into a skill).
+        assert!(EVAL_PLAN.contains("writes: existing"));
+        assert!(EVAL_PLAN.contains("target_field: target_page"));
     }
 
     #[test]
