@@ -59,23 +59,45 @@ pub async fn ingest_corpus(
     embedder: Arc<dyn Embedder>,
     corpus: &[crate::dataset::CorpusDoc],
     skill: &str,
+    contextualize: escurel_index::backend::document::ContextualizeMode,
 ) -> Result<IngestStats, EvalError> {
+    use escurel_index::backend::document::{ContextualizeMode, structural_context_prefix};
+
     let indexer = open_indexer(db_path, store_dir, Arc::clone(&embedder), true)?;
 
     for batch in corpus.chunks(EMBED_BATCH) {
         let bodies: Vec<String> = batch.iter().map(crate::dataset::CorpusDoc::body).collect();
-        let refs: Vec<&str> = bodies.iter().map(String::as_str).collect();
+        // #216 measurability: embed the contextualized text (title-prefixed)
+        // vs the plain body, so a run can measure the retrieval delta. A BEIR
+        // doc is one whole "chunk" (no headings/pages), so the structural
+        // context is `[<title>]`.
+        let embed_inputs: Vec<String> = match contextualize {
+            ContextualizeMode::Off => bodies.clone(),
+            _ => batch
+                .iter()
+                .zip(bodies.iter())
+                .map(
+                    |(doc, body)| match structural_context_prefix(Some(&doc.title), &[], None) {
+                        Some(ctx) => format!("{ctx}\n{body}"),
+                        None => body.clone(),
+                    },
+                )
+                .collect(),
+        };
+        let refs: Vec<&str> = embed_inputs.iter().map(String::as_str).collect();
         let vectors = embedder.embed(&refs).await?;
 
         for ((doc, body), vec) in batch.iter().zip(bodies.iter()).zip(vectors) {
             let overlay = overlay_markdown(skill, &doc.id, &doc.title);
+            let chunk = match contextualize {
+                ContextualizeMode::Off => escurel_index::IndexChunk::plain(body.clone()),
+                _ => escurel_index::IndexChunk::contextualized(
+                    structural_context_prefix(Some(&doc.title), &[], None),
+                    body.clone(),
+                ),
+            };
             indexer
-                .write_document_blocks(
-                    &doc.id,
-                    &overlay,
-                    &[escurel_index::IndexChunk::plain(body.clone())],
-                    &[vec],
-                )
+                .write_document_blocks(&doc.id, &overlay, &[chunk], &[vec])
                 .await?;
         }
     }

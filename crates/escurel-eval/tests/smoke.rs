@@ -47,6 +47,34 @@ impl Reranker for ReverseReranker {
     }
 }
 
+/// #216 measurability: the harness can ingest with `contextualize=structural`
+/// (title-prefixed embed input) and produce a comparable report — proving the
+/// off-vs-on delta is measurable (real numbers need the candle embedder on
+/// hardware; here the plumbing runs on the offline HashEmbedder).
+#[tokio::test]
+async fn contextualized_ingest_produces_a_report() {
+    let dataset = Dataset::load(&fixture_dir()).expect("load fixture");
+    let tmp = TempDir::new().unwrap();
+    let embedder: Arc<dyn Embedder> = Arc::new(HashEmbedder::default());
+    let report = run_matrix(
+        &dataset,
+        &tmp.path().join("ctx.duckdb"),
+        &tmp.path().join("store"),
+        Arc::clone(&embedder),
+        None,
+        &[RunConfig::SinglePass],
+        "doc",
+        10,
+        None,
+        false,
+        escurel_index::backend::document::ContextualizeMode::Structural,
+    )
+    .await
+    .expect("contextualized run matrix");
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.corpus_docs, dataset.corpus.len());
+}
+
 #[tokio::test]
 async fn end_to_end_over_tiny_fixture() {
     let dataset = Dataset::load(&fixture_dir()).expect("load fixture");
@@ -81,6 +109,7 @@ async fn end_to_end_over_tiny_fixture() {
             duration: Duration::from_millis(80),
         }),
         false,
+        escurel_index::backend::document::ContextualizeMode::Off,
     )
     .await
     .expect("run matrix");

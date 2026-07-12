@@ -74,6 +74,10 @@ struct Cli {
     /// Reopen a previously built index instead of re-embedding.
     #[arg(long, default_value_t = false)]
     skip_ingest: bool,
+    /// Contextual Retrieval mode at ingest (#216): `off` | `structural`.
+    /// Run once with each and compare reports to measure the delta.
+    #[arg(long, default_value = "off")]
+    contextualize: String,
     /// Output format.
     #[arg(long, default_value = "table")]
     format: Format,
@@ -149,6 +153,7 @@ async fn run(cli: Cli) -> Result<(), EvalError> {
         cli.k,
         qps,
         cli.skip_ingest,
+        escurel_index::backend::document::ContextualizeMode::parse(&cli.contextualize),
     )
     .await?;
 

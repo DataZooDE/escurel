@@ -60,6 +60,7 @@ pub async fn run_matrix(
     k: usize,
     qps: Option<QpsParams>,
     skip_ingest: bool,
+    contextualize: escurel_index::backend::document::ContextualizeMode,
 ) -> Result<EvalReport, EvalError> {
     if !skip_ingest {
         ingest::ingest_corpus(
@@ -68,6 +69,7 @@ pub async fn run_matrix(
             Arc::clone(&embedder),
             &dataset.corpus,
             skill,
+            contextualize,
         )
         .await?;
     }
