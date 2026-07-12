@@ -289,8 +289,13 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         return eval_score(&mcp, &event_id, &instance_page_id, &task_page, tool_calls);
     }
     if wf_skill == "eval" && !instance_page_id.contains("/workflow-run/") {
+        let run = workflow
+            .and_then(|w| w.get("run"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         let at = now_rfc3339();
-        return improve_apply(&mcp, &event_id, &instance_page_id, &at, tool_calls);
+        return improve_apply(&mcp, &event_id, &instance_page_id, &run, &at, tool_calls);
     }
 
     // 2. Read the instance's current state so we append rather than clobber.
@@ -754,10 +759,14 @@ fn improve_apply(
     mcp: &Mcp,
     event_id: &str,
     target_page: &str,
+    run: &str,
     at: &str,
     mut tool_calls: u32,
 ) -> Result<HarnessOutcome, String> {
-    // Find the failing eval-result for this target and its fix.
+    // Find THIS run's failing eval-result for this target and its fix. Results
+    // accumulate across runs, so scope to the current run (run-scoped page-id
+    // prefix) — never apply a stale fix from an earlier run.
+    let run_prefix = format!("markdown/instances/eval-result/{}-", run_slug(run));
     let listed = mcp.call("list_instances", json!({ "skill_id": "eval-result" }))?;
     tool_calls += 1;
     let fix = listed
@@ -766,7 +775,8 @@ fn improve_apply(
         .into_iter()
         .flatten()
         .find(|r| {
-            r["frontmatter"]["verdict"].as_str() == Some("fail")
+            r["page_id"].as_str().is_some_and(|p| p.starts_with(&run_prefix))
+                && r["frontmatter"]["verdict"].as_str() == Some("fail")
                 && r["frontmatter"]["target_page"].as_str() == Some(target_page)
         })
         .and_then(|r| r["frontmatter"]["fix"].as_str())

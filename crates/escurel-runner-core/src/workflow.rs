@@ -202,13 +202,16 @@ async fn build_run_state(
     spec: &WorkflowSkill,
 ) -> Result<RunState, WorkflowDriveError> {
     let run_slug = key::run_slug(&wf.run);
-    // Load the run-scoped instances of every skill the plan reads: those a
-    // phase `produces`, plus any `over` skill that is externally supplied (fanned
-    // over but produced by no phase — e.g. `eval`'s `eval-task` set). Without the
-    // latter a leading `over` phase would see an empty upstream and vacuously
-    // "complete".
-    let mut load_skills: BTreeSet<&str> =
+    // Load the instances of every skill the plan reads. A skill a phase
+    // `produces` is **run-scoped** — filtered to this run by the deterministic
+    // `<run_slug>-` pre-flagged page-id prefix. A skill that is only fanned
+    // `over` (produced by no phase — e.g. `eval`'s `eval-task` benchmark set) is
+    // **externally supplied** and shared across runs, so it is loaded whole
+    // (no prefix filter); without this a leading `over` phase over a persistent
+    // input set would see an empty upstream and vacuously "complete".
+    let produces_skills: BTreeSet<&str> =
         spec.phases.iter().map(|p| p.produces.as_str()).collect();
+    let mut load_skills: BTreeSet<&str> = produces_skills.clone();
     for phase in &spec.phases {
         if let FanOut::Over { over, .. } = &phase.fan_out {
             load_skills.insert(over.as_str());
@@ -225,17 +228,18 @@ async fn build_run_state(
             .await
             .map_err(WorkflowDriveError::Read)?;
         let prefix = format!("markdown/instances/{skill}/{run_slug}-");
-        let run_scoped: Vec<InstanceInfo> = resp
+        let external = !produces_skills.contains(skill);
+        let scoped: Vec<InstanceInfo> = resp
             .instances
             .into_iter()
-            .filter(|i| i.page_id.starts_with(&prefix))
+            .filter(|i| external || i.page_id.starts_with(&prefix))
             .collect();
         if skill == "verify-vote" {
-            votes.extend(run_scoped.iter().filter_map(vote_from_instance));
+            votes.extend(scoped.iter().filter_map(vote_from_instance));
         }
         produced.insert(
             skill.to_owned(),
-            run_scoped
+            scoped
                 .into_iter()
                 .map(|i| ProducedInstance {
                     page_id: i.page_id,

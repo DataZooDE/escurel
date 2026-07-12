@@ -1239,13 +1239,15 @@ async fn invoke_eval(gateway: &EscurelProcess, run_page: &str) {
     .await;
 }
 
-/// Fetch the eval-result verdict for `task_id`, or None.
-async fn eval_verdict(gateway: &EscurelProcess, task_id: &str) -> Option<String> {
+/// Whether an eval-result for `task_id` with `verdict` exists (results
+/// accumulate across runs, so we check for existence, not "the first").
+async fn eval_result_exists(gateway: &EscurelProcess, task_id: &str, verdict: &str) -> bool {
     let r = call_mcp(gateway, Role::Agent, "list_instances", json!({ "skill_id": "eval-result" })).await;
-    r["instances"].as_array()?.iter().find_map(|i| {
-        (i["frontmatter"]["task"].as_str() == Some(task_id))
-            .then(|| i["frontmatter"]["verdict"].as_str().map(str::to_owned))
-            .flatten()
+    r["instances"].as_array().is_some_and(|a| {
+        a.iter().any(|i| {
+            i["frontmatter"]["task"].as_str() == Some(task_id)
+                && i["frontmatter"]["verdict"].as_str() == Some(verdict)
+        })
     })
 }
 
@@ -1266,9 +1268,9 @@ async fn eval_improves_a_failing_skill_then_reverify_passes() {
         fixtures: Some(
             // The skill under evaluation — initially missing the expected fact.
             tf.page("skills/faq.md", "---\ntype: skill\nid: faq\ndescription: FAQ\n---\n# FAQ\n\nEscurel is a knowledge base.\n")
-                // Run-scoped tasks: ev1 drives the improvement, ev2 re-verifies.
-                .instance("eval-task", "ev1-air", format!("---\ntype: instance\nskill: eval-task\nid: ev1-air\nimplicated_page: {faq_skill}\nexpect: air-gappable\nfix: Escurel is fully air-gappable.\n---\n# task\n"))
-                .instance("eval-task", "ev2-air", format!("---\ntype: instance\nskill: eval-task\nid: ev2-air\nimplicated_page: {faq_skill}\nexpect: air-gappable\nfix: Escurel is fully air-gappable.\n---\n# task\n"))
+                // A persistent benchmark task (not run-scoped) — every eval run
+                // scores it; the fix is applied once, then re-scoring passes.
+                .instance("eval-task", "air", format!("---\ntype: instance\nskill: eval-task\nid: air\nimplicated_page: {faq_skill}\nexpect: air-gappable\nfix: Escurel is fully air-gappable.\n---\n# task\n"))
                 .done(),
         ),
         ..Default::default()
@@ -1297,7 +1299,7 @@ async fn eval_improves_a_failing_skill_then_reverify_passes() {
     invoke_eval(&gateway, "markdown/instances/workflow-run/ev2.md").await;
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
-        if eval_verdict(&gateway, "ev2-air").await == Some("pass".to_owned()) {
+        if eval_result_exists(&gateway, "air", "pass").await {
             break;
         }
         assert!(Instant::now() < deadline, "re-eval never passed");
@@ -1325,8 +1327,7 @@ async fn eval_regression_is_flagged_when_a_fix_does_not_hold() {
         fixtures: Some(
             tf.page("skills/faq.md", "---\ntype: skill\nid: faq\ndescription: FAQ\n---\n# FAQ\n\nEscurel is a KB.\n")
                 // A BROKEN fix: the woven text does not contain the expected string.
-                .instance("eval-task", "rg1-x", format!("---\ntype: instance\nskill: eval-task\nid: rg1-x\nimplicated_page: {doc}\nexpect: air-gappable\nfix: This note does not answer it.\n---\n# task\n"))
-                .instance("eval-task", "rg2-x", format!("---\ntype: instance\nskill: eval-task\nid: rg2-x\nimplicated_page: {doc}\nexpect: air-gappable\nfix: This note does not answer it.\n---\n# task\n"))
+                .instance("eval-task", "x", format!("---\ntype: instance\nskill: eval-task\nid: x\nimplicated_page: {doc}\nexpect: air-gappable\nfix: This note does not answer it.\n---\n# task\n"))
                 .done(),
         ),
         ..Default::default()
