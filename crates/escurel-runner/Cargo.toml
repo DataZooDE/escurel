@@ -34,6 +34,7 @@ tracing = "0.1"
 ulid = "1"
 
 [dev-dependencies]
+escurel-runner-workflow = { path = "../escurel-runner-workflow" }
 escurel-test-support = { path = "../escurel-test-support" }
 hmac = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }

@@ -2786,6 +2786,7 @@ dependencies = [
  "escurel-obs",
  "escurel-runner-core",
  "escurel-runner-harness",
+ "escurel-runner-workflow",
  "escurel-test-support",
  "escurel-types",
  "hmac 0.12.1",

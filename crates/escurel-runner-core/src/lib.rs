@@ -41,4 +41,4 @@ pub use reconciler::{
 pub use recovery::{RecoveryReport, recover_pending};
 pub use secrecy::SecretString;
 pub use trigger::{Lineage, Trigger};
-pub use workflow::{WorkflowDriveError, WorkflowDriveOutcome, drive_workflow};
+pub use workflow::{WorkflowDriveError, WorkflowDriveOutcome, drive_workflow, recover_workflows};

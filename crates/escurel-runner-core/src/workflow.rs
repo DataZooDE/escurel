@@ -30,7 +30,9 @@ use escurel_runner_workflow::{
     BudgetExceeded, ProducedInstance, RunState, StepIntent, Vote, WorkflowSkill, check_budget, key,
     reduce,
 };
-use escurel_types::{CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest};
+use escurel_types::{
+    CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest, WorkflowProvenance,
+};
 use serde_json::json;
 
 use crate::reconciler::ConfirmedEffect;
@@ -112,8 +114,89 @@ pub async fn drive_workflow(
     // over-budget plan never starts and can never starve a barrier mid-flight.
     check_budget(&spec, max_runs_per_root)?;
 
-    // 2. Build the run state: each phase's produced instances, run-scoped by
-    //    the deterministic pre-flagged page-id prefix (`§3.6`).
+    // 2. Build the run state, 3. plan the next batch, 4. emit — each step's
+    //    provenance carries the runner lineage extended from this trigger.
+    let state = build_run_state(client, wf, &spec).await?;
+    let intents = reduce(&spec, &state);
+    let emitted = emit_intents(client, &intents, |intent| {
+        build_step_provenance(trigger, parent_run_id, effect, intent)
+    })
+    .await?;
+    Ok(WorkflowDriveOutcome { emitted })
+}
+
+/// The workflow-run instance skill — its instances are the run boards the
+/// recovery pass enumerates.
+const RUN_SKILL: &str = "workflow-run";
+
+/// Workflow-aware crash recovery (`§7`). `recover_pending` reconciles
+/// individual pending ledger rows but never re-invokes the reducer, so a
+/// crash after emitting 2 of 3 barrier children would wedge the barrier. This
+/// pass enumerates every `workflow-run` instance and re-drives its reducer:
+/// §3.6 keys make re-emitting a missing step idempotent (the landed ones
+/// collapse), so a non-terminal run continues from exactly where it stopped,
+/// and a complete run emits nothing. Because the state lives in the tenant KB,
+/// resume survives process death.
+///
+/// Returns the number of runs that still had steps to emit (0 ⇒ everything
+/// was already complete). A run whose board frontmatter lacks `wf_skill` is
+/// skipped (nothing ties it to a plan).
+pub async fn recover_workflows(
+    client: &Client,
+    max_runs_per_root: u64,
+) -> Result<usize, WorkflowDriveError> {
+    let runs = client
+        .list_instances(ListInstancesRequest {
+            skill: RUN_SKILL.to_owned(),
+            ..Default::default()
+        })
+        .await
+        .map_err(WorkflowDriveError::Read)?;
+
+    let mut resumed = 0;
+    for run in runs.instances {
+        let Some(wf_skill) = run.frontmatter.get("wf_skill").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let wf = WorkflowProvenance {
+            run: run.page_id.clone(),
+            wf_skill: wf_skill.to_owned(),
+            phase: "recover".to_owned(),
+            ..Default::default()
+        };
+        let expanded = client
+            .expand(ExpandRequest {
+                page_id: skill_page_id(&wf.wf_skill),
+                ..Default::default()
+            })
+            .await
+            .map_err(WorkflowDriveError::Read)?;
+        let Some(spec) = WorkflowSkill::parse(&expanded.frontmatter) else {
+            continue;
+        };
+        check_budget(&spec, max_runs_per_root)?;
+        let state = build_run_state(client, &wf, &spec).await?;
+        let intents = reduce(&spec, &state);
+        if intents.is_empty() {
+            continue; // run already complete
+        }
+        // Recovery has no parent trigger; each re-emitted step is its own
+        // root at depth 0 (a fresh lineage), which `admit` treats like any
+        // webhook-origin event. §3.6 keys keep the re-emit idempotent.
+        emit_intents(client, &intents, |intent| root_provenance(&wf, intent)).await?;
+        resumed += 1;
+    }
+    Ok(resumed)
+}
+
+/// Build a [`RunState`] for `wf` by reading each phase's produced instances
+/// (run-scoped by the deterministic pre-flagged page-id prefix, `§3.6`) and
+/// projecting any `verify-vote` frontmatter into barrier votes.
+async fn build_run_state(
+    client: &Client,
+    wf: &WorkflowProvenance,
+    spec: &WorkflowSkill,
+) -> Result<RunState, WorkflowDriveError> {
     let run_slug = key::run_slug(&wf.run);
     let produces_skills: BTreeSet<&str> = spec.phases.iter().map(|p| p.produces.as_str()).collect();
     let mut produced: BTreeMap<String, Vec<ProducedInstance>> = BTreeMap::new();
@@ -132,8 +215,6 @@ pub async fn drive_workflow(
             .into_iter()
             .filter(|i| i.page_id.starts_with(&prefix))
             .collect();
-        // A barrier phase's `verify-vote` instances also feed the tally: parse
-        // their `claim`/`vote_index`/`verdict` frontmatter into votes.
         if skill == "verify-vote" {
             votes.extend(run_scoped.iter().filter_map(vote_from_instance));
         }
@@ -145,7 +226,7 @@ pub async fn drive_workflow(
                 .collect(),
         );
     }
-    let state = RunState {
+    Ok(RunState {
         run: wf.run.clone(),
         wf_skill: wf.wf_skill.clone(),
         produced,
@@ -155,16 +236,20 @@ pub async fn drive_workflow(
         // is layered on when the verify phase runs against a real harness; the
         // happy path (every vote cast) closes on the vote instances alone.
         deadlettered: BTreeMap::new(),
-    };
+    })
+}
 
-    // 3. Plan the next batch (pure, deterministic).
-    let intents = reduce(&spec, &state);
-
-    // 4. Emit each step as an idempotent, lineage-tagged event.
+/// Emit each intent as an idempotent, lineage-tagged step event. `provenance`
+/// builds the `provenance` object for each step (a driver hop extends the
+/// trigger's lineage; recovery mints a fresh root).
+async fn emit_intents(
+    client: &Client,
+    intents: &[StepIntent],
+    provenance: impl Fn(&StepIntent) -> serde_json::Value,
+) -> Result<Vec<String>, WorkflowDriveError> {
     let mut emitted = Vec::with_capacity(intents.len());
     for intent in intents {
         let event_id = intent.event_id();
-        let provenance = build_step_provenance(trigger, parent_run_id, effect, &intent);
         client
             .capture_event(CaptureEventRequest {
                 event_id: event_id.clone(),
@@ -177,14 +262,30 @@ pub async fn drive_workflow(
                     "Workflow {} run {} phase {} slot {}.",
                     intent.wf_skill, intent.run, intent.phase, intent.slot
                 ),
-                provenance,
+                provenance: provenance(intent),
                 ..Default::default()
             })
             .await
             .map_err(WorkflowDriveError::Capture)?;
         emitted.push(event_id);
     }
-    Ok(WorkflowDriveOutcome { emitted })
+    Ok(emitted)
+}
+
+/// A fresh root `provenance` for a recovery-emitted step: its own event id is
+/// the root at depth 0, with the `workflow` block carrying the step identity.
+fn root_provenance(wf: &WorkflowProvenance, intent: &StepIntent) -> serde_json::Value {
+    let event_id = intent.event_id();
+    json!({
+        "runner": {
+            "root_event_id": event_id,
+            "depth": 0,
+            "lineage_path": [event_id],
+            "instance_path": [],
+            "cause": format!("workflow-recover:{}", wf.wf_skill),
+        },
+        "workflow": intent.provenance(),
+    })
 }
 
 /// Build the emitted step's `provenance` — the `runner` lineage (so `admit`'s
