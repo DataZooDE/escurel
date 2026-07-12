@@ -723,18 +723,34 @@ mod tests {
         state.produced.insert(
             "weave-plan".to_owned(),
             vec![
-                plan_row("markdown/instances/weave-plan/r1-match-a.md", "markdown/instances/entity/acme.md"),
-                plan_row("markdown/instances/weave-plan/r1-match-b.md", "markdown/instances/entity/globex.md"),
+                plan_row(
+                    "markdown/instances/weave-plan/r1-match-a.md",
+                    "markdown/instances/entity/acme.md",
+                ),
+                plan_row(
+                    "markdown/instances/weave-plan/r1-match-b.md",
+                    "markdown/instances/entity/globex.md",
+                ),
             ],
         );
         // match is Fixed(2); mark it complete so weave can plan.
         state.produced.get_mut("weave-plan").unwrap().extend([
-            plan_row(&m[0].instance_page_id(), "markdown/instances/entity/acme.md"),
-            plan_row(&m[1].instance_page_id(), "markdown/instances/entity/globex.md"),
+            plan_row(
+                &m[0].instance_page_id(),
+                "markdown/instances/entity/acme.md",
+            ),
+            plan_row(
+                &m[1].instance_page_id(),
+                "markdown/instances/entity/globex.md",
+            ),
         ]);
         let batch = reduce(&spec, &state);
         let weaves: Vec<&StepIntent> = batch.iter().filter(|s| s.phase == "weave").collect();
-        assert_eq!(weaves.len(), 2, "one weave step per distinct target: {batch:?}");
+        assert_eq!(
+            weaves.len(),
+            2,
+            "one weave step per distinct target: {batch:?}"
+        );
         assert!(weaves.iter().all(|s| s.target_page.is_some()));
         // Each weave pre-flags the durable page, not a run-scoped instance.
         let ipids: Vec<String> = weaves.iter().map(|s| s.instance_page_id()).collect();
@@ -750,8 +766,14 @@ mod tests {
         state.produced.insert(
             "weave-plan".to_owned(),
             vec![
-                plan_row("markdown/instances/weave-plan/r1-match-0.md", "markdown/instances/entity/acme.md"),
-                plan_row("markdown/instances/weave-plan/r1-match-1.md", "markdown/instances/entity/acme.md"),
+                plan_row(
+                    "markdown/instances/weave-plan/r1-match-0.md",
+                    "markdown/instances/entity/acme.md",
+                ),
+                plan_row(
+                    "markdown/instances/weave-plan/r1-match-1.md",
+                    "markdown/instances/entity/acme.md",
+                ),
             ],
         );
         // Fixed(2) match complete (its two pre-flagged instances present).
@@ -759,8 +781,14 @@ mod tests {
         state.emitted.insert(m[0].event_id());
         state.emitted.insert(m[1].event_id());
         state.produced.get_mut("weave-plan").unwrap().extend([
-            plan_row(&m[0].instance_page_id(), "markdown/instances/entity/acme.md"),
-            plan_row(&m[1].instance_page_id(), "markdown/instances/entity/acme.md"),
+            plan_row(
+                &m[0].instance_page_id(),
+                "markdown/instances/entity/acme.md",
+            ),
+            plan_row(
+                &m[1].instance_page_id(),
+                "markdown/instances/entity/acme.md",
+            ),
         ]);
         let weaves: Vec<StepIntent> = reduce(&spec, &state)
             .into_iter()
@@ -782,8 +810,14 @@ mod tests {
         base.produced.insert(
             "weave-plan".to_owned(),
             vec![
-                plan_row(&m[0].instance_page_id(), "markdown/instances/entity/acme.md"),
-                plan_row(&m[1].instance_page_id(), "markdown/instances/entity/globex.md"),
+                plan_row(
+                    &m[0].instance_page_id(),
+                    "markdown/instances/entity/acme.md",
+                ),
+                plan_row(
+                    &m[1].instance_page_id(),
+                    "markdown/instances/entity/globex.md",
+                ),
             ],
         );
         // Weave steps emitted; only the FIRST target woven (source_event set).
@@ -825,7 +859,11 @@ mod tests {
         let batch = reduce(&spec, &state_with(&[], &[]));
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0].target_page, None);
-        assert!(batch[0].instance_page_id().starts_with("markdown/instances/research-angle/"));
+        assert!(
+            batch[0]
+                .instance_page_id()
+                .starts_with("markdown/instances/research-angle/")
+        );
     }
 
     #[test]

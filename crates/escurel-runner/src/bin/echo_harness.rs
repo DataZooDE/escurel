@@ -478,7 +478,14 @@ fn scan_skills(fm: &Value) -> Vec<String> {
 }
 
 /// Build one `issue` instance's markdown.
-fn issue_md(kind: &str, severity: &str, subject: &str, message: &str, run: &str, id: &str) -> String {
+fn issue_md(
+    kind: &str,
+    severity: &str,
+    subject: &str,
+    message: &str,
+    run: &str,
+    id: &str,
+) -> String {
     format!(
         "---\ntype: instance\nskill: issue\nid: {id}\nkind: {kind}\nseverity: {severity}\n\
          subject_page: {subject}\nmessage: {message}\nsource_run: {run}\n---\n# {kind} issue\n\n{message}\n"
@@ -557,7 +564,10 @@ fn lint_scan(
             let ifm = inst.get("frontmatter").cloned().unwrap_or(Value::Null);
 
             // orphan: no inbound links.
-            let nbrs = mcp.call("neighbours", json!({ "page_id": page_id, "direction": "in" }))?;
+            let nbrs = mcp.call(
+                "neighbours",
+                json!({ "page_id": page_id, "direction": "in" }),
+            )?;
             tool_calls += 1;
             let inbound = nbrs
                 .get("edges")
@@ -617,9 +627,16 @@ fn lint_scan(
     for (i, (kind, subject, message)) in findings.iter().enumerate() {
         let id = format!("{slug}-{kind}-{i}");
         let page_id = format!("markdown/instances/issue/{id}.md");
-        let severity = if kind == "contradiction" { "error" } else { "warning" };
+        let severity = if kind == "contradiction" {
+            "error"
+        } else {
+            "warning"
+        };
         let content = issue_md(kind, severity, subject, message, run, &id);
-        mcp.call("update_page", json!({ "page_id": page_id, "content": content }))?;
+        mcp.call(
+            "update_page",
+            json!({ "page_id": page_id, "content": content }),
+        )?;
         tool_calls += 1;
     }
 
@@ -634,7 +651,10 @@ fn lint_scan(
         run,
         summary_id,
     );
-    mcp.call("update_page", json!({ "page_id": summary_page, "content": summary }))?;
+    mcp.call(
+        "update_page",
+        json!({ "page_id": summary_page, "content": summary }),
+    )?;
     tool_calls += 1;
     mcp.call(
         "assign_event",
@@ -727,7 +747,10 @@ fn curate_index(
     let content = format!(
         "---\ntype: instance\nskill: index\nid: {index_id}\ngenerated_at: {at}\nsource_run: {run}\n---\n{body}"
     );
-    mcp.call("update_page", json!({ "page_id": index_page, "content": content }))?;
+    mcp.call(
+        "update_page",
+        json!({ "page_id": index_page, "content": content }),
+    )?;
     tool_calls += 1;
     mcp.call(
         "assign_event",
@@ -799,7 +822,10 @@ fn eval_score(
             "eval",
             &issue_id,
         );
-        mcp.call("update_page", json!({ "page_id": issue_page, "content": content }))?;
+        mcp.call(
+            "update_page",
+            json!({ "page_id": issue_page, "content": content }),
+        )?;
         tool_calls += 1;
     }
 
@@ -814,7 +840,10 @@ fn eval_score(
              target_page: {implicated}\nfix: {fix}\n---\n# eval-result\n\nFAIL: {implicated} is missing the expected content.\n"
         )
     };
-    mcp.call("update_page", json!({ "page_id": result_page, "content": content }))?;
+    mcp.call(
+        "update_page",
+        json!({ "page_id": result_page, "content": content }),
+    )?;
     tool_calls += 1;
     mcp.call(
         "assign_event",
@@ -855,7 +884,9 @@ fn improve_apply(
         .into_iter()
         .flatten()
         .find(|r| {
-            r["page_id"].as_str().is_some_and(|p| p.starts_with(&run_prefix))
+            r["page_id"]
+                .as_str()
+                .is_some_and(|p| p.starts_with(&run_prefix))
                 && r["frontmatter"]["verdict"].as_str() == Some("fail")
                 && r["frontmatter"]["target_page"].as_str() == Some(target_page)
         })
@@ -882,7 +913,10 @@ fn improve_apply(
     };
     let new_body = format!("{}{}", current_body.trim_end_matches('\n'), note);
     let content = format!("{frontmatter}{new_body}");
-    mcp.call("update_page", json!({ "page_id": target_page, "content": content }))?;
+    mcp.call(
+        "update_page",
+        json!({ "page_id": target_page, "content": content }),
+    )?;
     tool_calls += 1;
     mcp.call(
         "assign_event",

@@ -1396,8 +1396,12 @@ async fn lint_tick_loop(
             ..Default::default()
         };
         match client.capture_event(req).await {
-            Ok(_) => tracing::info!(target: "escurel_runner", window, event_id = %event_id, "lint tick: invocation captured"),
-            Err(e) => tracing::warn!(target: "escurel_runner", error = %e, "lint tick: capture_event failed; will retry next tick"),
+            Ok(_) => {
+                tracing::info!(target: "escurel_runner", window, event_id = %event_id, "lint tick: invocation captured")
+            }
+            Err(e) => {
+                tracing::warn!(target: "escurel_runner", error = %e, "lint tick: capture_event failed; will retry next tick")
+            }
         }
     }
 }

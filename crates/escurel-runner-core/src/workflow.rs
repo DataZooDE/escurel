@@ -209,8 +209,7 @@ async fn build_run_state(
     // **externally supplied** and shared across runs, so it is loaded whole
     // (no prefix filter); without this a leading `over` phase over a persistent
     // input set would see an empty upstream and vacuously "complete".
-    let produces_skills: BTreeSet<&str> =
-        spec.phases.iter().map(|p| p.produces.as_str()).collect();
+    let produces_skills: BTreeSet<&str> = spec.phases.iter().map(|p| p.produces.as_str()).collect();
     let mut load_skills: BTreeSet<&str> = produces_skills.clone();
     for phase in &spec.phases {
         if let FanOut::Over { over, .. } = &phase.fan_out {

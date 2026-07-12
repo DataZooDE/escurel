@@ -357,9 +357,9 @@ impl RunnerConfig {
         // Opt-in lint schedule: unset ⇒ disabled. Reuses the poll-interval
         // duration grammar/error (both are "how often to tick").
         let lint_interval = match lookup("ESCUREL_RUNNER_LINT_INTERVAL") {
-            Some(raw) if !raw.is_empty() => Some(
-                parse_duration(&raw).ok_or(ConfigError::InvalidPollInterval { value: raw })?,
-            ),
+            Some(raw) if !raw.is_empty() => {
+                Some(parse_duration(&raw).ok_or(ConfigError::InvalidPollInterval { value: raw })?)
+            }
             _ => None,
         };
 

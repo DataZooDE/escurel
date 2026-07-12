@@ -232,10 +232,7 @@ optional_frontmatter: [source, woven_pages, workflow_run]\n\
 pub fn distill_corpus() -> Vec<(String, &'static str)> {
     vec![
         ("markdown/skills/distill.md".to_owned(), DISTILL_PLAN),
-        (
-            "markdown/skills/distill-claim.md".to_owned(),
-            DISTILL_CLAIM,
-        ),
+        ("markdown/skills/distill-claim.md".to_owned(), DISTILL_CLAIM),
         ("markdown/skills/weave.md".to_owned(), WEAVE),
         (
             "markdown/skills/distill-report.md".to_owned(),

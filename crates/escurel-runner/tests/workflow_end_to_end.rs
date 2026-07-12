@@ -847,8 +847,7 @@ async fn over_budget_plan_fails_fast_at_invocation_emitting_no_steps() {
 
 const ENTITY_SKILL_BODY: &str =
     "---\ntype: skill\nid: entity\n---\n# entity\n\nA durable entity/concept page.\n";
-const ENTITY_ACME: &str =
-    "---\ntype: instance\nskill: entity\nid: acme\n---\n# Acme Corp\n\nBaseline facts about Acme.\n";
+const ENTITY_ACME: &str = "---\ntype: instance\nskill: entity\nid: acme\n---\n# Acme Corp\n\nBaseline facts about Acme.\n";
 const ENTITY_GLOBEX: &str = "---\ntype: instance\nskill: entity\nid: globex\n---\n# Globex\n\nBaseline facts about Globex.\n";
 
 /// Poll `expand(page_id)` until its frontmatter carries `key`, returning the
@@ -980,8 +979,14 @@ async fn distill_weaves_one_source_into_two_existing_pages() {
     )
     .await;
     let acme_body = acme["body"].as_str().unwrap_or_default();
-    assert!(acme_body.contains("Baseline facts about Acme"), "baseline survived: {acme_body}");
-    assert!(acme_body.contains("folded event"), "weave note present: {acme_body}");
+    assert!(
+        acme_body.contains("Baseline facts about Acme"),
+        "baseline survived: {acme_body}"
+    );
+    assert!(
+        acme_body.contains("folded event"),
+        "weave note present: {acme_body}"
+    );
 
     // The integrate barrier fired only after both targets were woven.
     let report = await_instance(
@@ -1001,11 +1006,17 @@ async fn distill_weaves_one_source_into_two_existing_pages() {
 async fn await_issues(p: &EscurelProcess, kind: &str, secs: u64) -> Vec<Value> {
     let deadline = Instant::now() + Duration::from_secs(secs);
     loop {
-        let r = call_mcp(p, Role::Agent, "list_instances", json!({ "skill_id": "issue" })).await;
+        let r = call_mcp(
+            p,
+            Role::Agent,
+            "list_instances",
+            json!({ "skill_id": "issue" }),
+        )
+        .await;
         let issues = r["instances"].as_array().cloned().unwrap_or_default();
-        let has_kind = issues.iter().any(|i| {
-            i["frontmatter"]["kind"].as_str() == Some(kind)
-        });
+        let has_kind = issues
+            .iter()
+            .any(|i| i["frontmatter"]["kind"].as_str() == Some(kind));
         if has_kind {
             return issues;
         }
@@ -1108,8 +1119,16 @@ async fn lint_flags_orphan_stale_contradiction_without_rewriting() {
             .collect()
     };
 
-    assert_eq!(of_kind("orphan"), vec![orphan_page.to_owned()], "exactly the orphan is flagged");
-    assert_eq!(of_kind("stale"), vec!["markdown/instances/entity/stale.md".to_owned()], "the stale page is flagged");
+    assert_eq!(
+        of_kind("orphan"),
+        vec![orphan_page.to_owned()],
+        "exactly the orphan is flagged"
+    );
+    assert_eq!(
+        of_kind("stale"),
+        vec!["markdown/instances/entity/stale.md".to_owned()],
+        "the stale page is flagged"
+    );
     let mut contradictions = of_kind("contradiction");
     contradictions.sort();
     assert_eq!(
@@ -1123,7 +1142,13 @@ async fn lint_flags_orphan_stale_contradiction_without_rewriting() {
 
     // Lint NEVER rewrites: the scanned pages are byte-for-byte untouched — no
     // source_event stamp, original body intact.
-    let orphan = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": orphan_page })).await;
+    let orphan = call_mcp(
+        &gateway,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": orphan_page }),
+    )
+    .await;
     assert!(
         orphan["frontmatter"].get("source_event").is_none(),
         "lint must not stamp/modify a scanned page: {orphan}"
@@ -1182,8 +1207,10 @@ async fn lint_tick_schedules_a_scan_without_manual_invocation() {
     // unreferenced entity page.
     let issues = await_issues(&gateway, "orphan", 45).await;
     assert!(
-        issues.iter().any(|i| i["frontmatter"]["subject_page"].as_str()
-            == Some("markdown/instances/entity/lonely.md")),
+        issues
+            .iter()
+            .any(|i| i["frontmatter"]["subject_page"].as_str()
+                == Some("markdown/instances/entity/lonely.md")),
         "the scheduled scan flagged the orphan: {issues:?}"
     );
 }
@@ -1263,9 +1290,15 @@ async fn curate_generates_a_derivable_by_category_index() {
 
     // The map lists the entity category and both instances, with a generated_at
     // freshness stamp.
-    assert!(body1.contains("## entity"), "index groups by category: {body1}");
+    assert!(
+        body1.contains("## entity"),
+        "index groups by category: {body1}"
+    );
     assert!(body1.contains("[[entity::acme]]"), "lists acme: {body1}");
-    assert!(body1.contains("[[entity::globex]]"), "lists globex: {body1}");
+    assert!(
+        body1.contains("[[entity::globex]]"),
+        "lists globex: {body1}"
+    );
     assert!(
         expanded1["frontmatter"]["generated_at"].as_str().is_some(),
         "index carries a generated_at stamp"
@@ -1277,7 +1310,10 @@ async fn curate_generates_a_derivable_by_category_index() {
     let idx2 = await_instance(&gateway, "index", "markdown/instances/index/cur2-", 45).await;
     let expanded2 = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": idx2 })).await;
     let body2 = expanded2["body"].as_str().unwrap_or_default().to_owned();
-    assert_eq!(body1, body2, "the index is derivable — same corpus, same map");
+    assert_eq!(
+        body1, body2,
+        "the index is derivable — same corpus, same map"
+    );
 }
 
 /// **G3 freshness**: a distilled page gains a `last_verified` stamp so lint's
@@ -1323,7 +1359,10 @@ async fn distill_stamps_last_verified_on_the_woven_page() {
     let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
 
     let lv = await_frontmatter_key(&gateway, target, "last_verified", 45).await;
-    assert!(!lv.is_empty(), "woven page gained a last_verified freshness stamp");
+    assert!(
+        !lv.is_empty(),
+        "woven page gained a last_verified freshness stamp"
+    );
 }
 
 // --- G4: eval-driven improvement (improve documents AND skills) -------------
@@ -1346,7 +1385,13 @@ async fn invoke_eval(gateway: &EscurelProcess, run_page: &str) {
 /// Whether an eval-result for `task_id` with `verdict` exists (results
 /// accumulate across runs, so we check for existence, not "the first").
 async fn eval_result_exists(gateway: &EscurelProcess, task_id: &str, verdict: &str) -> bool {
-    let r = call_mcp(gateway, Role::Agent, "list_instances", json!({ "skill_id": "eval-result" })).await;
+    let r = call_mcp(
+        gateway,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "eval-result" }),
+    )
+    .await;
     r["instances"].as_array().is_some_and(|a| {
         a.iter().any(|i| {
             i["frontmatter"]["task"].as_str() == Some(task_id)
@@ -1389,11 +1434,24 @@ async fn eval_improves_a_failing_skill_then_reverify_passes() {
     // The skill gains the expected content + a source_event (proof it was
     // edited — a skill, the connective tissue, not just a data instance).
     let src = await_frontmatter_key(&gateway, faq_skill, "source_event", 45).await;
-    assert!(!src.is_empty(), "the skill was improved (source_event stamped)");
-    let faq = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": faq_skill })).await;
     assert!(
-        faq["body"].as_str().unwrap_or_default().contains("air-gappable"),
-        "the fix was woven into the skill: {}", faq["body"]
+        !src.is_empty(),
+        "the skill was improved (source_event stamped)"
+    );
+    let faq = call_mcp(
+        &gateway,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": faq_skill }),
+    )
+    .await;
+    assert!(
+        faq["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("air-gappable"),
+        "the fix was woven into the skill: {}",
+        faq["body"]
     );
     // The skill identity survived the edit (still a skill named faq).
     assert_eq!(faq["frontmatter"]["id"].as_str(), Some("faq"));
@@ -1409,11 +1467,22 @@ async fn eval_improves_a_failing_skill_then_reverify_passes() {
         assert!(Instant::now() < deadline, "re-eval never passed");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let issues = call_mcp(&gateway, Role::Agent, "list_instances", json!({ "skill_id": "issue" })).await;
+    let issues = call_mcp(
+        &gateway,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "issue" }),
+    )
+    .await;
     let regressions = issues["instances"].as_array().map_or(0, |a| {
-        a.iter().filter(|i| i["frontmatter"]["kind"].as_str() == Some("eval_regression")).count()
+        a.iter()
+            .filter(|i| i["frontmatter"]["kind"].as_str() == Some("eval_regression"))
+            .count()
     });
-    assert_eq!(regressions, 0, "a held improvement raises no eval_regression");
+    assert_eq!(
+        regressions, 0,
+        "a held improvement raises no eval_regression"
+    );
 }
 
 /// **G4 bounded loop**: when the fix does NOT resolve the task, a re-eval on the
@@ -1449,7 +1518,9 @@ async fn eval_regression_is_flagged_when_a_fix_does_not_hold() {
     invoke_eval(&gateway, "markdown/instances/workflow-run/rg2.md").await;
     let issues = await_issues(&gateway, "eval_regression", 45).await;
     assert!(
-        issues.iter().any(|i| i["frontmatter"]["subject_page"].as_str() == Some(doc)),
+        issues
+            .iter()
+            .any(|i| i["frontmatter"]["subject_page"].as_str() == Some(doc)),
         "an unresolved fix raises an eval_regression for the page: {issues:?}"
     );
 }
