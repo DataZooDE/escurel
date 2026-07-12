@@ -143,6 +143,29 @@ fn render_frontmatter(value: Option<&Value>) -> String {
     out
 }
 
+/// Upsert a scalar `key: value` into a rendered frontmatter block
+/// (`---\n…\n---\n`). Replaces the line if the key is already present,
+/// otherwise inserts it just before the closing `---`. A block with no
+/// closing fence (or an empty string) is returned unchanged — the caller only
+/// stamps blocks it just rendered, which always have the fence.
+fn stamp_frontmatter(frontmatter: &str, key: &str, value: &str) -> String {
+    let line = format!("{key}: {value}");
+    let mut lines: Vec<String> = frontmatter.lines().map(str::to_owned).collect();
+    if let Some(existing) = lines
+        .iter_mut()
+        .find(|l| l.trim_start().starts_with(&format!("{key}:")))
+    {
+        *existing = line;
+        return format!("{}\n", lines.join("\n"));
+    }
+    // Insert before the closing fence (the last `---`).
+    if let Some(close) = lines.iter().rposition(|l| l.trim_end() == "---") {
+        lines.insert(close, line);
+        return format!("{}\n", lines.join("\n"));
+    }
+    frontmatter.to_owned()
+}
+
 /// Derive minimal instance frontmatter from a
 /// `markdown/instances/<skill>/<id>.md` page id, so a missing target can be
 /// *created* rather than rejected. Returns `None` when the path is not an
@@ -210,6 +233,16 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    // A workflow step carries a `provenance.workflow` block. For those, the
+    // harness stamps `source_event: <event_id>` on the instance it writes — the
+    // freshness/provenance field (compile-first-wiki G3) and, for a durable
+    // `writes: existing` weave, the reducer's completion signal (a durable page
+    // already exists, so the reducer detects the weave landed by this stamp).
+    // A real agent stamps the same field; the echo does it deterministically.
+    let is_workflow_step = event
+        .get("provenance")
+        .and_then(|p| p.get("workflow"))
+        .is_some_and(|w| w.is_object());
 
     // 2. Read the instance's current state so we append rather than clobber.
     //    `expand` splits the page into a `frontmatter` object + a `body`;
@@ -232,6 +265,9 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         frontmatter = derive_instance_frontmatter(&instance_page_id).ok_or_else(|| {
             format!("target {instance_page_id} is missing and is not an instance path")
         })?;
+    }
+    if is_workflow_step {
+        frontmatter = stamp_frontmatter(&frontmatter, "source_event", &event_id);
     }
 
     // 3. Append a short event note and write the full page back.
@@ -265,4 +301,28 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         tool_calls,
         produced_instance: Some(instance_page_id),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stamp_frontmatter;
+
+    #[test]
+    fn stamp_inserts_a_new_key_before_the_closing_fence() {
+        let fm = "---\ntype: instance\nskill: entity\nid: acme\n---\n";
+        let out = stamp_frontmatter(fm, "source_event", "EV1");
+        assert!(out.contains("source_event: EV1\n"));
+        assert!(out.contains("skill: entity\n"));
+        // Still a well-formed block: last line before body is the closing ---.
+        assert!(out.trim_end().ends_with("---"));
+    }
+
+    #[test]
+    fn stamp_replaces_an_existing_key() {
+        let fm = "---\ntype: instance\nsource_event: OLD\nid: acme\n---\n";
+        let out = stamp_frontmatter(fm, "source_event", "NEW");
+        assert!(out.contains("source_event: NEW\n"));
+        assert!(!out.contains("OLD"));
+        assert_eq!(out.matches("source_event:").count(), 1, "no duplicate key");
+    }
 }

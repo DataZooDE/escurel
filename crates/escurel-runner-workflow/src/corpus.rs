@@ -155,9 +155,100 @@ pub fn deep_research_corpus() -> Vec<(String, &'static str)> {
     ]
 }
 
+// --- G1: the `distill` corpus (integrative distillation) -------------------
+//
+// A `distill` run weaves one source's claims into the *existing* entity/concept
+// pages they touch (compile-first-wiki G1). `extract` reads the source and
+// writes `distill-claim`s, each tagged with the durable `target_page` it
+// belongs to; `weave` is a `writes: existing` phase that fans out over the
+// distinct target pages and merges the claim into each (stamping
+// `source_event`); `integrate` records what was woven. One run therefore
+// touches many existing pages — the width>1 generalization of `emit_cascade`.
+
+/// The `distill` workflow plan (`kind: workflow`).
+pub const DISTILL_PLAN: &str = "---\n\
+type: skill\n\
+id: distill\n\
+description: Weave a new source's claims into the existing entity/concept pages they touch. Invoke on an ingested source.\n\
+backend: {kind: workflow}\n\
+harness: claude\n\
+run_skill: workflow-run\n\
+phases: [\
+{id: extract, produces: distill-claim, fan_out: 1}, \
+{id: weave, produces: weave, fan_out: {over: distill-claim}, writes: existing, target_field: target_page, dedup_by: target_page}, \
+{id: integrate, produces: distill-report, fan_out: 1}]\n\
+---\n\
+# distill\n\n\
+Fold a source into the knowledge base by weaving each of its claims into the\n\
+existing page it belongs to — breadth, not just a new append.\n\n\
+## extract\n\
+Read the source and write one `distill-claim` instance per atomic claim. For\n\
+each claim, resolve which existing entity/concept page it belongs to (use\n\
+`search`/`resolve`) and set `target_page` to that page id; set `action` to\n\
+`update` (or `create` when no page exists yet). Keep the claim text and a\n\
+short supporting quote.\n\n\
+## weave\n\
+Merge the claim(s) for `{{target_page}}` into that page: `expand` it, add or\n\
+correct the fact in place (never clobber unrelated content), cite the source,\n\
+and stamp `source_event` + `last_verified`. Write the page back with\n\
+`update_page`.\n\n\
+## integrate\n\
+Write a `distill-report` naming the source and the pages woven — the run's\n\
+audit trail.\n";
+
+/// One atomic claim extracted from the source, tagged with its durable target.
+pub const DISTILL_CLAIM: &str = "---\n\
+type: skill\n\
+id: distill-claim\n\
+description: One atomic claim from a source, tagged with the existing page it should be woven into.\n\
+required_frontmatter: [target_page]\n\
+optional_frontmatter: [claim, quote, action, workflow_run]\n\
+---\n\
+# distill-claim\n";
+
+/// The weave instruction skill — the `writes: existing` phase routes here; the
+/// instance it writes is the durable target page, not a `weave` instance.
+pub const WEAVE: &str = "---\n\
+type: skill\n\
+id: weave\n\
+description: Merge a source claim into an existing entity/concept page, citing the source and stamping source_event.\n\
+optional_frontmatter: [source_event, last_verified, workflow_run]\n\
+---\n\
+# weave\n";
+
+/// The distill run's audit summary (integrate phase).
+pub const DISTILL_REPORT: &str = "---\n\
+type: skill\n\
+id: distill-report\n\
+description: Summary of a distill run — which existing pages were woven, and from what source.\n\
+optional_frontmatter: [source, woven_pages, workflow_run]\n\
+---\n\
+# distill-report\n";
+
+/// The `(page_id, markdown)` pairs that make up the `distill` corpus. Opt-in:
+/// a tenant seeds these to enable integrative distillation; a markdown-only
+/// tenant that never seeds them is unaffected.
+#[must_use]
+pub fn distill_corpus() -> Vec<(String, &'static str)> {
+    vec![
+        ("markdown/skills/distill.md".to_owned(), DISTILL_PLAN),
+        (
+            "markdown/skills/distill-claim.md".to_owned(),
+            DISTILL_CLAIM,
+        ),
+        ("markdown/skills/weave.md".to_owned(), WEAVE),
+        (
+            "markdown/skills/distill-report.md".to_owned(),
+            DISTILL_REPORT,
+        ),
+        ("markdown/skills/workflow-run.md".to_owned(), WORKFLOW_RUN),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::{WorkflowSkill, WriteMode};
 
     #[test]
     fn corpus_ships_the_plan_typed_skills_and_the_tally() {
@@ -174,5 +265,51 @@ mod tests {
         ] {
             assert!(ids.iter().any(|id| id == expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn distill_corpus_ships_its_skills() {
+        let ids: Vec<String> = distill_corpus().into_iter().map(|(p, _)| p).collect();
+        for expected in [
+            "markdown/skills/distill.md",
+            "markdown/skills/distill-claim.md",
+            "markdown/skills/weave.md",
+            "markdown/skills/distill-report.md",
+            "markdown/skills/workflow-run.md",
+        ] {
+            assert!(ids.iter().any(|id| id == expected), "missing {expected}");
+        }
+    }
+
+    #[test]
+    fn distill_plan_declares_a_durable_weave_phase() {
+        // The plan const must declare the `writes: existing` durable-target
+        // weave over `target_page`. (The full YAML→parse path is exercised by
+        // the reducer spec tests and the real-gateway E2E; the reducer crate
+        // has no YAML dependency, so we assert the authored contract here.)
+        assert!(DISTILL_PLAN.contains("id: distill"));
+        assert!(DISTILL_PLAN.contains("backend: {kind: workflow}"));
+        assert!(
+            DISTILL_PLAN.contains("writes: existing")
+                && DISTILL_PLAN.contains("target_field: target_page"),
+            "weave must be a durable-target phase"
+        );
+        // Equivalent parsed shape (proves parse accepts this phase form).
+        let fm = serde_json::json!({
+            "id": "distill",
+            "phases": [
+                { "id": "weave", "produces": "weave",
+                  "fan_out": { "over": "distill-claim" },
+                  "writes": "existing", "target_field": "target_page",
+                  "dedup_by": "target_page" }
+            ]
+        });
+        let spec = WorkflowSkill::parse(&fm).unwrap();
+        assert_eq!(
+            spec.phases[0].writes,
+            WriteMode::Existing {
+                target_field: "target_page".to_owned()
+            }
+        );
     }
 }

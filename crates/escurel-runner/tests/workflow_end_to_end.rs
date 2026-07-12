@@ -738,3 +738,154 @@ async fn over_budget_plan_fails_fast_at_invocation_emitting_no_steps() {
         "over-budget plan must emit no scope steps; found {count} research-angle instances"
     );
 }
+
+// --- G1: integrative distillation (durable-target weave) -------------------
+
+const ENTITY_SKILL_BODY: &str =
+    "---\ntype: skill\nid: entity\n---\n# entity\n\nA durable entity/concept page.\n";
+const ENTITY_ACME: &str =
+    "---\ntype: instance\nskill: entity\nid: acme\n---\n# Acme Corp\n\nBaseline facts about Acme.\n";
+const ENTITY_GLOBEX: &str = "---\ntype: instance\nskill: entity\nid: globex\n---\n# Globex\n\nBaseline facts about Globex.\n";
+
+/// Poll `expand(page_id)` until its frontmatter carries `key`, returning the
+/// value — or panic at the deadline.
+async fn await_frontmatter_key(p: &EscurelProcess, page_id: &str, key: &str, secs: u64) -> String {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let r = call_mcp(p, Role::Agent, "expand", json!({ "page_id": page_id })).await;
+        if let Some(v) = r["frontmatter"].get(key).and_then(Value::as_str) {
+            return v.to_owned();
+        }
+        if Instant::now() >= deadline {
+            panic!("{page_id} never gained frontmatter key {key} within {secs}s (got {r})");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// The DoD test for compile-first-wiki **G1**: a single `distill` invocation
+/// weaves into **≥2 existing entity pages** via the `writes: existing`
+/// durable-target reducer branch — no mocks, real gateway + real echo harness.
+///
+/// Seeds two durable `entity` pages and two run-scoped `distill-claim`s (the
+/// semantic `extract` output an LLM would write, each tagged with its
+/// `target_page`), then invokes `distill`. The reducer's weave phase fans out
+/// over the two distinct targets; each echo step folds the claim into the
+/// durable page and stamps `source_event` (the completion signal); once both
+/// are woven the `integrate` barrier writes the `distill-report`.
+#[tokio::test]
+async fn distill_weaves_one_source_into_two_existing_pages() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::distill_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let acme_page = "markdown/instances/entity/acme.md";
+    let globex_page = "markdown/instances/entity/globex.md";
+    let run_page = "markdown/instances/workflow-run/d1.md";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.skill("entity", ENTITY_SKILL_BODY)
+                .instance("entity", "acme", ENTITY_ACME)
+                .instance("entity", "globex", ENTITY_GLOBEX)
+                // Two run-scoped claims (extract's output), each tagged with the
+                // durable page it belongs to. `d1-` prefixes them into run `d1`.
+                .instance(
+                    "distill-claim",
+                    "d1-c-acme",
+                    format!(
+                        "---\ntype: instance\nskill: distill-claim\nid: d1-c-acme\n\
+                         target_page: {acme_page}\naction: update\nworkflow_run: {run_page}\n\
+                         ---\n# claim\n\nAcme shipped a new product line in 2026.\n"
+                    ),
+                )
+                .instance(
+                    "distill-claim",
+                    "d1-c-globex",
+                    format!(
+                        "---\ntype: instance\nskill: distill-claim\nid: d1-c-globex\n\
+                         target_page: {globex_page}\naction: update\nworkflow_run: {run_page}\n\
+                         ---\n# claim\n\nGlobex opened a Berlin office in 2026.\n"
+                    ),
+                )
+                .instance(
+                    "workflow-run",
+                    "d1",
+                    "---\ntype: instance\nskill: workflow-run\nid: d1\nwf_skill: distill\n---\n# run d1\n",
+                )
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // Invoke distill: label the plan, pre-flag the run board, carry the
+    // workflow provenance so the dispatch loop routes to the reducer.
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "distill",
+            "instance_page_id": run_page,
+            "title": "distill a source",
+            "body": "Integrate the source's claims.",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": "distill", "phase": "invoke" } }
+        }),
+    )
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // Both durable pages must gain a `source_event` stamp — proof the weave
+    // touched each existing page (the width>1 breadth G1 exists for).
+    let acme_src = await_frontmatter_key(&gateway, acme_page, "source_event", 45).await;
+    let globex_src = await_frontmatter_key(&gateway, globex_page, "source_event", 45).await;
+    assert_ne!(
+        acme_src, globex_src,
+        "each page carries its own weave step's event id"
+    );
+
+    // The baseline content survives (weave appends, never clobbers) and the
+    // woven note is present.
+    let acme = call_mcp(
+        &gateway,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": acme_page }),
+    )
+    .await;
+    let acme_body = acme["body"].as_str().unwrap_or_default();
+    assert!(acme_body.contains("Baseline facts about Acme"), "baseline survived: {acme_body}");
+    assert!(acme_body.contains("folded event"), "weave note present: {acme_body}");
+
+    // The integrate barrier fired only after both targets were woven.
+    let report = await_instance(
+        &gateway,
+        "distill-report",
+        "markdown/instances/distill-report/d1-integrate-",
+        45,
+    )
+    .await;
+    assert!(report.ends_with(".md"), "distill-report written: {report}");
+}
