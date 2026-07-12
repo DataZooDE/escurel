@@ -44,6 +44,12 @@ pub struct StepIntent {
     /// but the harness cannot recover it from the hashed step id, so it must
     /// travel in the provenance.
     pub vote_index: Option<u32>,
+    /// The durable existing page this step writes, for a
+    /// [`crate::WriteMode::Existing`] phase (`None` for a normal run-scoped
+    /// phase). When set, [`StepIntent::instance_page_id`] returns it verbatim
+    /// so the event is pre-flagged onto — and reconciliation confirms on — the
+    /// durable target rather than a fresh run-scoped instance.
+    pub target_page: Option<String>,
 }
 
 impl StepIntent {
@@ -56,11 +62,17 @@ impl StepIntent {
         key::step_event_id(&self.run, &self.phase, &self.slot)
     }
 
-    /// The deterministic pre-flagged instance page id this step writes
-    /// (`§3.6` point 2) — a re-driven step overwrites rather than forks.
+    /// The instance page id this step writes. For a
+    /// [`crate::WriteMode::Existing`] phase it is the durable `target_page`
+    /// verbatim (the event is pre-flagged onto the existing page); otherwise
+    /// it is the deterministic run-scoped pre-flag (`§3.6` point 2) — a
+    /// re-driven step overwrites rather than forks either way.
     #[must_use]
     pub fn instance_page_id(&self) -> String {
-        key::step_instance_page_id(&self.produces, &self.run, &self.phase, &self.slot)
+        match &self.target_page {
+            Some(page) => page.clone(),
+            None => key::step_instance_page_id(&self.produces, &self.run, &self.phase, &self.slot),
+        }
     }
 
     /// The `provenance.workflow` block to stamp on this step's event. Its
@@ -94,6 +106,7 @@ mod tests {
             barrier: Some("verify".to_owned()),
             over: Some("[[claim::c12]]".to_owned()),
             vote_index: Some(0),
+            target_page: None,
         }
     }
 
@@ -125,6 +138,31 @@ mod tests {
             WorkflowProvenance::from_provenance(&event_provenance),
             Some(p)
         );
+    }
+
+    #[test]
+    fn durable_target_step_pre_flags_the_existing_page() {
+        let i = StepIntent {
+            phase: "weave".to_owned(),
+            produces: "weave".to_owned(),
+            slot: "markdown/instances/entity/acme.md".to_owned(),
+            barrier: None,
+            over: Some("markdown/instances/entity/acme.md".to_owned()),
+            vote_index: None,
+            target_page: Some("markdown/instances/entity/acme.md".to_owned()),
+            ..intent()
+        };
+        // The event is pre-flagged onto the durable page, not a run-scoped id.
+        assert_eq!(i.instance_page_id(), "markdown/instances/entity/acme.md");
+        // Two weaves of the same target share an id (idempotent overwrite);
+        // distinct targets get distinct ids (content-addressed on the slot).
+        assert_eq!(i.event_id(), i.event_id());
+        let other = StepIntent {
+            slot: "markdown/instances/entity/globex.md".to_owned(),
+            target_page: Some("markdown/instances/entity/globex.md".to_owned()),
+            ..i.clone()
+        };
+        assert_ne!(i.event_id(), other.event_id());
     }
 
     #[test]

@@ -27,8 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use escurel_client::Client;
 use escurel_runner_workflow::{
-    BudgetExceeded, ProducedInstance, RunState, StepIntent, Vote, WorkflowSkill, check_budget, key,
-    reduce,
+    BudgetExceeded, FanOut, ProducedInstance, RunState, StepIntent, Vote, WorkflowSkill, WriteMode,
+    check_budget, key, reduce,
 };
 use escurel_types::{
     CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest, WorkflowProvenance,
@@ -226,10 +226,51 @@ async fn build_run_state(
             skill.to_owned(),
             run_scoped
                 .into_iter()
-                .map(|i| ProducedInstance { page_id: i.page_id })
+                .map(|i| ProducedInstance {
+                    page_id: i.page_id,
+                    frontmatter: i.frontmatter,
+                })
                 .collect(),
         );
     }
+
+    // Durable-target weave (compile-first-wiki G1): for each `writes: existing`
+    // phase, resolve its distinct target pages from the upstream elements'
+    // `target_field` and `expand` each so the reducer can read the
+    // `source_event` completion stamp. A target that does not exist yet (an
+    // `action: create` weave not landed) simply stays absent → not-yet-woven.
+    let mut targets: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    for phase in &spec.phases {
+        let (FanOut::Over { over, .. }, WriteMode::Existing { target_field }) =
+            (&phase.fan_out, &phase.writes)
+        else {
+            continue;
+        };
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for inst in produced.get(over).into_iter().flatten() {
+            let Some(tp) = inst
+                .frontmatter
+                .get(target_field)
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if !seen.insert(tp.clone()) {
+                continue;
+            }
+            if let Ok(expanded) = client
+                .expand(ExpandRequest {
+                    page_id: tp.clone(),
+                    ..Default::default()
+                })
+                .await
+            {
+                targets.insert(tp, expanded.frontmatter);
+            }
+        }
+    }
+
     Ok(RunState {
         run: wf.run.clone(),
         wf_skill: wf.wf_skill.clone(),
@@ -240,6 +281,7 @@ async fn build_run_state(
         // is layered on when the verify phase runs against a real harness; the
         // happy path (every vote cast) closes on the vote instances alone.
         deadlettered: BTreeMap::new(),
+        targets,
     })
 }
 

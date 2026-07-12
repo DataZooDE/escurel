@@ -40,10 +40,18 @@ pub struct WorkflowSkill {
 pub struct Phase {
     /// Phase id (e.g. `scope`, `search`, `verify`).
     pub id: String,
-    /// The skill id this phase's runs write instances of.
+    /// The skill id this phase's runs write instances of. For a
+    /// [`WriteMode::Existing`] phase this names the *instruction* skill the
+    /// step agent is routed to (how to weave); the instance actually written
+    /// is the durable target page.
     pub produces: String,
     /// How this phase fans out.
     pub fan_out: FanOut,
+    /// Where this phase writes: a fresh run-scoped instance
+    /// ([`WriteMode::New`], the default) or a durable *existing* page named by
+    /// a fan-out element's frontmatter field ([`WriteMode::Existing`], the
+    /// integrative-distillation weave).
+    pub writes: WriteMode,
     /// Optional per-item dedup key (a frontmatter field on the produced
     /// instances, e.g. `norm_url`) applied before the next phase fans out.
     pub dedup_by: Option<String>,
@@ -54,6 +62,28 @@ pub struct Phase {
     pub max_targets: Option<usize>,
     /// Optional per-phase harness override (`harness:` on the phase).
     pub harness: Option<String>,
+}
+
+/// Where a phase's steps write their output (`§3.4`, the compile-first-wiki
+/// extension — see `docs/contract/compile-first-wiki.md` G1).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum WriteMode {
+    /// A fresh run-scoped instance at the deterministic pre-flagged page id
+    /// (`markdown/instances/<produces>/<run_slug>-<phase>-<hash>.md`). Every
+    /// pre-existing workflow (deep-research) is `New`.
+    #[default]
+    New,
+    /// A durable, already-existing page. The step's target page id is read
+    /// from `target_field` on each fan-out element's frontmatter (e.g. a
+    /// `weave` record's `target_page`), so one distill run can weave a fact
+    /// into many existing entity/concept pages. Completion is detected by the
+    /// harness stamping `source_event` on the target (not by a new instance
+    /// landing, since a durable page already exists).
+    Existing {
+        /// The fan-out element's frontmatter field naming the durable target
+        /// page id (e.g. `target_page`, `target_skill`).
+        target_field: String,
+    },
 }
 
 /// How a phase fans out into steps.
@@ -129,10 +159,12 @@ fn parse_phase(p: &Value, verify: &VerifyPolicy) -> Option<Phase> {
     let id = obj.get("id")?.as_str()?.to_owned();
     let produces = obj.get("produces")?.as_str()?.to_owned();
     let fan_out = parse_fan_out(obj.get("fan_out"), verify);
+    let writes = parse_write_mode(obj.get("writes"), obj.get("target_field"));
     Some(Phase {
         id,
         produces,
         fan_out,
+        writes,
         dedup_by: obj
             .get("dedup_by")
             .and_then(Value::as_str)
@@ -169,6 +201,23 @@ fn parse_fan_out(v: Option<&Value>, verify: &VerifyPolicy) -> FanOut {
             }
         }
         Some(_) => FanOut::Fixed(1),
+    }
+}
+
+/// Parse `writes:`. Absent or anything but the string `existing` ⇒
+/// [`WriteMode::New`] (the default — every pre-existing workflow). `writes:
+/// existing` ⇒ [`WriteMode::Existing`] reading the target page id from
+/// `target_field` (defaulting to `target_page` when the key is omitted, so a
+/// bare `writes: existing` is still usable).
+fn parse_write_mode(writes: Option<&Value>, target_field: Option<&Value>) -> WriteMode {
+    match writes.and_then(Value::as_str) {
+        Some("existing") => WriteMode::Existing {
+            target_field: target_field
+                .and_then(Value::as_str)
+                .unwrap_or("target_page")
+                .to_owned(),
+        },
+        _ => WriteMode::New,
     }
 }
 
@@ -246,6 +295,51 @@ mod tests {
             "width: verify.votes_per_claim resolves to 3"
         );
         assert_eq!(verify.max_targets, Some(25));
+    }
+
+    #[test]
+    fn writes_defaults_to_new_and_is_backward_compatible() {
+        // deep-research declares no `writes:` — every phase must be New.
+        let spec = WorkflowSkill::parse(&deep_research_fm()).unwrap();
+        assert!(spec.phases.iter().all(|p| p.writes == WriteMode::New));
+    }
+
+    #[test]
+    fn writes_existing_parses_with_target_field() {
+        let fm = json!({
+            "id": "distill",
+            "phases": [
+                { "id": "weave", "produces": "weave",
+                  "fan_out": { "over": "weave-plan" },
+                  "writes": "existing", "target_field": "target_page" }
+            ]
+        });
+        let spec = WorkflowSkill::parse(&fm).unwrap();
+        assert_eq!(
+            spec.phases[0].writes,
+            WriteMode::Existing {
+                target_field: "target_page".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn writes_existing_defaults_target_field_when_omitted() {
+        let fm = json!({
+            "id": "distill",
+            "phases": [
+                { "id": "weave", "produces": "weave",
+                  "fan_out": { "over": "weave-plan" }, "writes": "existing" }
+            ]
+        });
+        let spec = WorkflowSkill::parse(&fm).unwrap();
+        assert_eq!(
+            spec.phases[0].writes,
+            WriteMode::Existing {
+                target_field: "target_page".to_owned()
+            },
+            "a bare `writes: existing` defaults target_field to target_page"
+        );
     }
 
     #[test]
