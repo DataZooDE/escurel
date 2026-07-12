@@ -143,21 +143,96 @@ fn render_frontmatter(value: Option<&Value>) -> String {
     out
 }
 
+/// The coordinates a barrier (`verify`) step must stamp into the
+/// `verify-vote` instance it produces, recovered from the step event's
+/// `provenance.workflow` (`§3.5`). The barrier tally counts `COUNT(DISTINCT
+/// vote_index)` grouped by `claim`, so a harness that omits these collapses
+/// every skeptic onto one slot and wedges the barrier open forever.
+struct VoteStamp {
+    /// The element the vote is about — `provenance.workflow.over`, the
+    /// upstream instance page id this skeptic reviews. The barrier groups on
+    /// its [`element_slug`], not the raw page id (see `derive_instance_frontmatter`).
+    over: String,
+    /// The distinct skeptic slot — `provenance.workflow.vote_index`.
+    vote_index: u64,
+    /// The run board this vote belongs to — `provenance.workflow.run` (scopes
+    /// the operator verify-tally inspection query).
+    run: String,
+}
+
+/// Read a [`VoteStamp`] out of an inbox event's `provenance.workflow`, but
+/// only for a **barrier** step — one carrying a `vote_index`. A non-barrier
+/// step (no `vote_index`) yields `None`, leaving its produced instance's
+/// minimal frontmatter untouched.
+fn vote_stamp(event: &Value) -> Option<VoteStamp> {
+    let wf = event.get("provenance")?.get("workflow")?;
+    let vote_index = wf.get("vote_index")?.as_u64()?;
+    Some(VoteStamp {
+        over: wf
+            .get("over")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        vote_index,
+        run: wf
+            .get("run")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    })
+}
+
+/// The barrier's `claim` grouping key for an upstream page id — its last path
+/// segment sans `.md`. Mirrors `escurel_runner_workflow::reduce::element_slug`
+/// (and the Gemini runner's `element_slug`), so an echo-authored vote's
+/// `claim` matches exactly what the reducer's tally compares against.
+fn element_slug(page_id: &str) -> String {
+    let seg = page_id.rsplit('/').next().unwrap_or(page_id);
+    seg.strip_suffix(".md").unwrap_or(seg).to_owned()
+}
+
+/// Emit a YAML value double-quoted (escaping `"` and `\`), so a page-id ref
+/// carrying no YAML-special quoting still round-trips as a plain scalar.
+fn yaml_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// Derive minimal instance frontmatter from a
 /// `markdown/instances/<skill>/<id>.md` page id, so a missing target can be
 /// *created* rather than rejected. Returns `None` when the path is not an
 /// instance path (leaving the existing "no frontmatter → update_page
 /// rejects" behaviour for a genuinely malformed target).
-fn derive_instance_frontmatter(page_id: &str) -> Option<String> {
+///
+/// When `vote` is set (a barrier `verify` step), the vote coordinates the
+/// tally reads are stamped alongside the type fields — `claim`, `vote_index`,
+/// a non-refuting `verdict: valid` (the echo harness is a deterministic
+/// stand-in, never a real skeptic), and the `workflow_run` scope.
+fn derive_instance_frontmatter(page_id: &str, vote: Option<&VoteStamp>) -> Option<String> {
     let rest = page_id.strip_prefix("markdown/instances/")?;
     let (skill, file) = rest.split_once('/')?;
     let id = file.strip_suffix(".md").unwrap_or(file);
     if skill.is_empty() || id.is_empty() {
         return None;
     }
-    Some(format!(
-        "---\ntype: instance\nskill: {skill}\nid: {id}\n---\n"
-    ))
+    let mut fm = format!("---\ntype: instance\nskill: {skill}\nid: {id}\n");
+    if let Some(v) = vote {
+        // `claim` is the upstream item's slug (the tally's grouping key), or
+        // the vote's own id when no `over` was routed — mirrors the Gemini
+        // runner's `claim = element_slug(over) if over else inst_id`.
+        let claim = if v.over.is_empty() {
+            id.to_owned()
+        } else {
+            element_slug(&v.over)
+        };
+        fm.push_str(&format!("claim: {}\n", yaml_quote(&claim)));
+        fm.push_str(&format!("vote_index: {}\n", v.vote_index));
+        fm.push_str("verdict: valid\n");
+        if !v.run.is_empty() {
+            fm.push_str(&format!("workflow_run: {}\n", yaml_quote(&v.run)));
+        }
+    }
+    fm.push_str("---\n");
+    Some(fm)
 }
 
 /// Perform the deterministic fold; returns the structured outcome.
@@ -229,9 +304,14 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     // dynamic-workflow step), not only one that appends to an existing page.
     let mut frontmatter = render_frontmatter(expanded.get("frontmatter"));
     if frontmatter.is_empty() {
-        frontmatter = derive_instance_frontmatter(&instance_page_id).ok_or_else(|| {
-            format!("target {instance_page_id} is missing and is not an instance path")
-        })?;
+        // A missing target is *created*. If the driving step is a barrier
+        // vote, stamp the tally's coordinates (`§3.5`) so distinct skeptics
+        // count as distinct votes rather than collapsing onto one slot.
+        let stamp = vote_stamp(event);
+        frontmatter =
+            derive_instance_frontmatter(&instance_page_id, stamp.as_ref()).ok_or_else(|| {
+                format!("target {instance_page_id} is missing and is not an instance path")
+            })?;
     }
 
     // 3. Append a short event note and write the full page back.
@@ -265,4 +345,81 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         tool_calls,
         produced_instance: Some(instance_page_id),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn element_slug_is_the_basename_sans_md() {
+        // Must mirror reduce::element_slug exactly — the barrier's grouping key.
+        assert_eq!(
+            element_slug("markdown/instances/claims/r1-extract-abc123.md"),
+            "r1-extract-abc123"
+        );
+        assert_eq!(element_slug("bare-slug"), "bare-slug");
+        assert_eq!(element_slug("no/dir/x.md"), "x");
+    }
+
+    #[test]
+    fn non_barrier_step_stamps_only_type_fields() {
+        // No vote_index in provenance ⇒ no VoteStamp ⇒ minimal frontmatter,
+        // unchanged from the pre-barrier behaviour.
+        let event = json!({ "provenance": { "workflow": { "over": "x", "run": "r" } } });
+        assert!(vote_stamp(&event).is_none());
+        let fm =
+            derive_instance_frontmatter("markdown/instances/risk-signal/r1-signals-9.md", None)
+                .expect("instance path");
+        assert_eq!(
+            fm,
+            "---\ntype: instance\nskill: risk-signal\nid: r1-signals-9\n---\n"
+        );
+    }
+
+    #[test]
+    fn barrier_step_stamps_claim_as_upstream_slug_plus_slot() {
+        // A verify (barrier) step: claim = element_slug(over), the distinct
+        // vote_index slot, a non-refuting verdict, and the run scope — exactly
+        // the fields `vote_from_instance` + the tally read.
+        let event = json!({ "provenance": { "workflow": {
+            "over": "markdown/instances/claims/r1-extract-abc.md",
+            "vote_index": 2,
+            "run": "markdown/instances/workflow-run/r1.md",
+        }}});
+        let stamp = vote_stamp(&event).expect("barrier step yields a stamp");
+        let fm = derive_instance_frontmatter(
+            "markdown/instances/verify-vote/r1-verify-ff.md",
+            Some(&stamp),
+        )
+        .expect("instance path");
+        assert!(
+            fm.contains("claim: \"r1-extract-abc\"\n"),
+            "claim is the upstream slug: {fm}"
+        );
+        assert!(fm.contains("vote_index: 2\n"), "distinct slot: {fm}");
+        assert!(
+            fm.contains("verdict: valid\n"),
+            "non-refuting stand-in: {fm}"
+        );
+        assert!(
+            fm.contains("workflow_run: \"markdown/instances/workflow-run/r1.md\"\n"),
+            "run scope: {fm}"
+        );
+    }
+
+    #[test]
+    fn barrier_step_without_over_falls_back_to_instance_id() {
+        let event = json!({ "provenance": { "workflow": { "vote_index": 0 } } });
+        let stamp = vote_stamp(&event).expect("vote_index present");
+        let fm = derive_instance_frontmatter(
+            "markdown/instances/verify-vote/r1-verify-01.md",
+            Some(&stamp),
+        )
+        .expect("instance path");
+        assert!(
+            fm.contains("claim: \"r1-verify-01\"\n"),
+            "fallback to id: {fm}"
+        );
+    }
 }
