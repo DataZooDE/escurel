@@ -35,5 +35,5 @@ pub mod step;
 pub use barrier::{BarrierInput, ClaimOutcome, Vote, barrier_closed, survivors, tally_barrier};
 pub use budget::{BudgetExceeded, DEFAULT_PHASE_FANOUT_CAP, check_budget, projected_fan_out};
 pub use reduce::{ProducedInstance, RunState, reduce};
-pub use spec::{DEFAULT_RUN_SKILL, FanOut, Phase, VerifyPolicy, WorkflowSkill};
+pub use spec::{DEFAULT_RUN_SKILL, FanOut, Phase, VerifyPolicy, WorkflowSkill, WriteMode};
 pub use step::StepIntent;

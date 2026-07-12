@@ -28,13 +28,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde_json::Value;
+
 use crate::barrier::{self, BarrierInput, Vote};
-use crate::spec::{FanOut, Phase, WorkflowSkill};
+use crate::key;
+use crate::spec::{FanOut, Phase, WorkflowSkill, WriteMode};
 use crate::step::StepIntent;
 
 /// One produced instance as the reducer observes it — the projection of a
 /// `list_instances(<produces>, {workflow_run: run})` row the caller fetched.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProducedInstance {
     /// The instance's page id. A step pre-flags its target
     /// (`§3.6`), so a produced page id equals the emitting step's
@@ -43,6 +46,11 @@ pub struct ProducedInstance {
     /// share a `produces` skill, e.g. `search` and `fetch` both writing
     /// `source`).
     pub page_id: String,
+    /// The instance's frontmatter, as `list_instances` returns it. Read by a
+    /// downstream [`WriteMode::Existing`] phase to resolve each element's
+    /// durable `target_field` (e.g. a `weave` record's `target_page`); `Null`
+    /// for callers/tests that don't need it.
+    pub frontmatter: Value,
 }
 
 /// The observable state of a run the pure reducer plans over.
@@ -73,6 +81,13 @@ pub struct RunState {
     /// read from the ledger — a dead-letter writes no instance but still
     /// closes its slot (`§3.5`).
     pub deadlettered: BTreeMap<String, u32>,
+    /// Frontmatter of the durable target pages a [`WriteMode::Existing`] phase
+    /// weaves into, keyed by target page id. The caller resolves the target
+    /// set from the upstream elements and `expand`s each page's frontmatter
+    /// (compile-first-wiki G1). A weave completes when its target carries
+    /// `source_event == <that step's event id>`; empty for a run with no
+    /// `Existing` phase.
+    pub targets: BTreeMap<String, Value>,
 }
 
 impl RunState {
@@ -149,6 +164,15 @@ fn phase_complete(spec: &WorkflowSkill, phase: &Phase, state: &RunState) -> bool
             if !upstream_complete(spec, over, state) {
                 return false;
             }
+            // Durable-target weave (compile-first-wiki G1): a weave completes
+            // when each distinct target page carries this step's `source_event`
+            // stamp — a durable page already exists, so "instance present"
+            // cannot signal completion.
+            if let WriteMode::Existing { target_field } = &phase.writes {
+                return distinct_targets(over, state, target_field)
+                    .iter()
+                    .all(|tp| target_woven(state, &phase.id, tp));
+            }
             let upstream = upstream_instances(over, state);
             if *width > 1 {
                 // Barrier: every upstream item's claim must have closed.
@@ -203,9 +227,31 @@ fn barrier_input(state: &RunState, width: u32) -> BarrierInput {
 fn plan_phase(spec: &WorkflowSkill, phase: &Phase, state: &RunState, run: &str) -> Vec<StepIntent> {
     match &phase.fan_out {
         FanOut::Fixed(n) => (0..*n)
-            .map(|i| intent(spec, phase, run, i.to_string(), None, None, None))
+            .map(|i| intent(spec, phase, run, i.to_string(), None, None, None, None))
             .collect(),
         FanOut::Over { over, width } => {
+            // Durable-target weave: one step per distinct target page (deduped),
+            // pre-flagged onto the existing page rather than a run-scoped id.
+            if let WriteMode::Existing { target_field } = &phase.writes {
+                return distinct_targets(over, state, target_field)
+                    .into_iter()
+                    .map(|tp| {
+                        // `slot` is the full target page id so the event id is
+                        // content-addressed per target (idempotent re-weave);
+                        // `over` carries it for the harness/provenance.
+                        intent(
+                            spec,
+                            phase,
+                            run,
+                            tp.clone(),
+                            Some(tp.clone()),
+                            None,
+                            None,
+                            Some(tp),
+                        )
+                    })
+                    .collect();
+            }
             let mut upstream: Vec<&str> = upstream_instances(over, state);
             upstream.sort_unstable(); // deterministic order
             let barrier = (*width > 1).then(|| phase.id.clone());
@@ -231,6 +277,7 @@ fn plan_phase(spec: &WorkflowSkill, phase: &Phase, state: &RunState, run: &str) 
                             Some(page_id.to_owned()),
                             barrier.clone(),
                             vote_index,
+                            None,
                         )
                     })
                 })
@@ -252,6 +299,7 @@ fn upstream_instances<'a>(over: &str, state: &'a RunState) -> Vec<&'a str> {
 }
 
 /// Build one [`StepIntent`] for `phase` at `slot` within `run`.
+#[allow(clippy::too_many_arguments)]
 fn intent(
     spec: &WorkflowSkill,
     phase: &Phase,
@@ -260,6 +308,7 @@ fn intent(
     over: Option<String>,
     barrier: Option<String>,
     vote_index: Option<u32>,
+    target_page: Option<String>,
 ) -> StepIntent {
     StepIntent {
         run: run.to_owned(),
@@ -270,7 +319,43 @@ fn intent(
         barrier,
         over,
         vote_index,
+        target_page,
     }
+}
+
+/// The distinct durable target page ids a [`WriteMode::Existing`] phase weaves
+/// into: the `target_field` frontmatter value of each upstream `over` element,
+/// deduped and sorted (deterministic). Multiple claims routed to one page
+/// collapse to a single weave step.
+fn distinct_targets(over: &str, state: &RunState, target_field: &str) -> Vec<String> {
+    let mut targets: Vec<String> = state
+        .produced
+        .get(over)
+        .into_iter()
+        .flatten()
+        .filter_map(|inst| {
+            inst.frontmatter
+                .get(target_field)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    targets
+}
+
+/// Whether the durable `target_page` has been woven by this phase: its
+/// frontmatter carries `source_event == <this step's deterministic event id>`,
+/// the stamp the weave harness writes. Pure — reads only [`RunState::targets`].
+fn target_woven(state: &RunState, phase_id: &str, target_page: &str) -> bool {
+    let expected = key::step_event_id(&state.run, phase_id, target_page);
+    state
+        .targets
+        .get(target_page)
+        .and_then(|fm| fm.get("source_event"))
+        .and_then(Value::as_str)
+        == Some(expected.as_str())
 }
 
 /// A short, filename-safe element token for a fan-out slot: the last path
@@ -313,6 +398,7 @@ mod tests {
                     .iter()
                     .map(|p| ProducedInstance {
                         page_id: (*p).to_owned(),
+                        ..Default::default()
                     })
                     .collect(),
             );
@@ -598,6 +684,185 @@ mod tests {
         assert!(
             batch.iter().any(|s| s.phase == "synthesize"),
             "closed barrier releases synthesize: {batch:?}"
+        );
+    }
+
+    // A distill-shaped plan: match produces run-scoped `weave-plan` records
+    // (each naming a durable `target_page`); weave is a `writes: existing`
+    // phase that fans out over the distinct target pages; integrate is a Fixed
+    // barrier gated on every weave landing.
+    fn distill_spec() -> WorkflowSkill {
+        WorkflowSkill::parse(&json!({
+            "id": "distill",
+            "phases": [
+                { "id": "match", "produces": "weave-plan", "fan_out": 2 },
+                { "id": "weave", "produces": "weave",
+                  "fan_out": { "over": "weave-plan" },
+                  "writes": "existing", "target_field": "target_page" },
+                { "id": "integrate", "produces": "distill-report", "fan_out": 1 }
+            ]
+        }))
+        .unwrap()
+    }
+
+    /// Build a `weave-plan` `ProducedInstance` carrying a `target_page`.
+    fn plan_row(page_id: &str, target: &str) -> ProducedInstance {
+        ProducedInstance {
+            page_id: page_id.to_owned(),
+            frontmatter: json!({ "target_page": target }),
+        }
+    }
+
+    #[test]
+    fn existing_phase_fans_out_one_step_per_distinct_target() {
+        let spec = distill_spec();
+        // Two match rows completed, pointing at two distinct durable pages.
+        let m = reduce(&spec, &state_with(&[], &[]));
+        let (m0, m1) = (m[0].event_id(), m[1].event_id());
+        let mut state = state_with(&[], &[&m0, &m1]);
+        state.produced.insert(
+            "weave-plan".to_owned(),
+            vec![
+                plan_row(
+                    "markdown/instances/weave-plan/r1-match-a.md",
+                    "markdown/instances/entity/acme.md",
+                ),
+                plan_row(
+                    "markdown/instances/weave-plan/r1-match-b.md",
+                    "markdown/instances/entity/globex.md",
+                ),
+            ],
+        );
+        // match is Fixed(2); mark it complete so weave can plan.
+        state.produced.get_mut("weave-plan").unwrap().extend([
+            plan_row(
+                &m[0].instance_page_id(),
+                "markdown/instances/entity/acme.md",
+            ),
+            plan_row(
+                &m[1].instance_page_id(),
+                "markdown/instances/entity/globex.md",
+            ),
+        ]);
+        let batch = reduce(&spec, &state);
+        let weaves: Vec<&StepIntent> = batch.iter().filter(|s| s.phase == "weave").collect();
+        assert_eq!(
+            weaves.len(),
+            2,
+            "one weave step per distinct target: {batch:?}"
+        );
+        assert!(weaves.iter().all(|s| s.target_page.is_some()));
+        // Each weave pre-flags the durable page, not a run-scoped instance.
+        let ipids: Vec<String> = weaves.iter().map(|s| s.instance_page_id()).collect();
+        assert!(ipids.contains(&"markdown/instances/entity/acme.md".to_owned()));
+        assert!(ipids.contains(&"markdown/instances/entity/globex.md".to_owned()));
+    }
+
+    #[test]
+    fn duplicate_targets_collapse_to_one_weave_step() {
+        let spec = distill_spec();
+        let mut state = state_with(&[], &[]);
+        // Two match rows pointing at the SAME durable page ⇒ one weave step.
+        state.produced.insert(
+            "weave-plan".to_owned(),
+            vec![
+                plan_row(
+                    "markdown/instances/weave-plan/r1-match-0.md",
+                    "markdown/instances/entity/acme.md",
+                ),
+                plan_row(
+                    "markdown/instances/weave-plan/r1-match-1.md",
+                    "markdown/instances/entity/acme.md",
+                ),
+            ],
+        );
+        // Fixed(2) match complete (its two pre-flagged instances present).
+        let m = reduce(&spec, &state_with(&[], &[]));
+        state.emitted.insert(m[0].event_id());
+        state.emitted.insert(m[1].event_id());
+        state.produced.get_mut("weave-plan").unwrap().extend([
+            plan_row(
+                &m[0].instance_page_id(),
+                "markdown/instances/entity/acme.md",
+            ),
+            plan_row(
+                &m[1].instance_page_id(),
+                "markdown/instances/entity/acme.md",
+            ),
+        ]);
+        let weaves: Vec<StepIntent> = reduce(&spec, &state)
+            .into_iter()
+            .filter(|s| s.phase == "weave")
+            .collect();
+        assert_eq!(weaves.len(), 1, "same target ⇒ single weave step");
+        assert_eq!(
+            weaves[0].instance_page_id(),
+            "markdown/instances/entity/acme.md"
+        );
+    }
+
+    #[test]
+    fn integrate_waits_until_every_target_is_source_event_stamped() {
+        let spec = distill_spec();
+        // match complete, two distinct targets.
+        let m = reduce(&spec, &state_with(&[], &[]));
+        let mut base = state_with(&[], &[&m[0].event_id(), &m[1].event_id()]);
+        base.produced.insert(
+            "weave-plan".to_owned(),
+            vec![
+                plan_row(
+                    &m[0].instance_page_id(),
+                    "markdown/instances/entity/acme.md",
+                ),
+                plan_row(
+                    &m[1].instance_page_id(),
+                    "markdown/instances/entity/globex.md",
+                ),
+            ],
+        );
+        // Weave steps emitted; only the FIRST target woven (source_event set).
+        let weaves: Vec<StepIntent> = plan_phase(&spec, &spec.phases[1], &base, &base.run);
+        for w in &weaves {
+            base.emitted.insert(w.event_id());
+        }
+        let acme_ev = key::step_event_id(&base.run, "weave", "markdown/instances/entity/acme.md");
+        base.targets.insert(
+            "markdown/instances/entity/acme.md".to_owned(),
+            json!({ "source_event": acme_ev }),
+        );
+        // globex not yet stamped ⇒ integrate (Fixed) must not fire.
+        let batch = reduce(&spec, &base);
+        assert!(
+            !batch.iter().any(|s| s.phase == "integrate"),
+            "integrate gated on the open weave barrier: {batch:?}"
+        );
+
+        // Stamp the second target ⇒ weave complete ⇒ integrate releases.
+        let globex_ev =
+            key::step_event_id(&base.run, "weave", "markdown/instances/entity/globex.md");
+        base.targets.insert(
+            "markdown/instances/entity/globex.md".to_owned(),
+            json!({ "source_event": globex_ev }),
+        );
+        let batch = reduce(&spec, &base);
+        assert!(
+            batch.iter().any(|s| s.phase == "integrate"),
+            "all targets woven ⇒ integrate fires: {batch:?}"
+        );
+    }
+
+    #[test]
+    fn new_phase_is_unchanged_by_the_extension() {
+        // A plan with no `writes:` must behave exactly as before (regression
+        // guard for deep-research): first phase emits, no target_page set.
+        let spec = linear_spec();
+        let batch = reduce(&spec, &state_with(&[], &[]));
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].target_page, None);
+        assert!(
+            batch[0]
+                .instance_page_id()
+                .starts_with("markdown/instances/research-angle/")
         );
     }
 

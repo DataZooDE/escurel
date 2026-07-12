@@ -27,8 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use escurel_client::Client;
 use escurel_runner_workflow::{
-    BudgetExceeded, ProducedInstance, RunState, StepIntent, Vote, WorkflowSkill, check_budget, key,
-    reduce,
+    BudgetExceeded, FanOut, ProducedInstance, RunState, StepIntent, Vote, WorkflowSkill, WriteMode,
+    check_budget, key, reduce,
 };
 use escurel_types::{
     CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest, WorkflowProvenance,
@@ -202,10 +202,23 @@ async fn build_run_state(
     spec: &WorkflowSkill,
 ) -> Result<RunState, WorkflowDriveError> {
     let run_slug = key::run_slug(&wf.run);
+    // Load the instances of every skill the plan reads. A skill a phase
+    // `produces` is **run-scoped** — filtered to this run by the deterministic
+    // `<run_slug>-` pre-flagged page-id prefix. A skill that is only fanned
+    // `over` (produced by no phase — e.g. `eval`'s `eval-task` benchmark set) is
+    // **externally supplied** and shared across runs, so it is loaded whole
+    // (no prefix filter); without this a leading `over` phase over a persistent
+    // input set would see an empty upstream and vacuously "complete".
     let produces_skills: BTreeSet<&str> = spec.phases.iter().map(|p| p.produces.as_str()).collect();
+    let mut load_skills: BTreeSet<&str> = produces_skills.clone();
+    for phase in &spec.phases {
+        if let FanOut::Over { over, .. } = &phase.fan_out {
+            load_skills.insert(over.as_str());
+        }
+    }
     let mut produced: BTreeMap<String, Vec<ProducedInstance>> = BTreeMap::new();
     let mut votes: Vec<Vote> = Vec::new();
-    for skill in produces_skills {
+    for skill in load_skills {
         let resp = client
             .list_instances(ListInstancesRequest {
                 skill: skill.to_owned(),
@@ -214,22 +227,64 @@ async fn build_run_state(
             .await
             .map_err(WorkflowDriveError::Read)?;
         let prefix = format!("markdown/instances/{skill}/{run_slug}-");
-        let run_scoped: Vec<InstanceInfo> = resp
+        let external = !produces_skills.contains(skill);
+        let scoped: Vec<InstanceInfo> = resp
             .instances
             .into_iter()
-            .filter(|i| i.page_id.starts_with(&prefix))
+            .filter(|i| external || i.page_id.starts_with(&prefix))
             .collect();
         if skill == "verify-vote" {
-            votes.extend(run_scoped.iter().filter_map(vote_from_instance));
+            votes.extend(scoped.iter().filter_map(vote_from_instance));
         }
         produced.insert(
             skill.to_owned(),
-            run_scoped
+            scoped
                 .into_iter()
-                .map(|i| ProducedInstance { page_id: i.page_id })
+                .map(|i| ProducedInstance {
+                    page_id: i.page_id,
+                    frontmatter: i.frontmatter,
+                })
                 .collect(),
         );
     }
+
+    // Durable-target weave (compile-first-wiki G1): for each `writes: existing`
+    // phase, resolve its distinct target pages from the upstream elements'
+    // `target_field` and `expand` each so the reducer can read the
+    // `source_event` completion stamp. A target that does not exist yet (an
+    // `action: create` weave not landed) simply stays absent → not-yet-woven.
+    let mut targets: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    for phase in &spec.phases {
+        let (FanOut::Over { over, .. }, WriteMode::Existing { target_field }) =
+            (&phase.fan_out, &phase.writes)
+        else {
+            continue;
+        };
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for inst in produced.get(over).into_iter().flatten() {
+            let Some(tp) = inst
+                .frontmatter
+                .get(target_field)
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if !seen.insert(tp.clone()) {
+                continue;
+            }
+            if let Ok(expanded) = client
+                .expand(ExpandRequest {
+                    page_id: tp.clone(),
+                    ..Default::default()
+                })
+                .await
+            {
+                targets.insert(tp, expanded.frontmatter);
+            }
+        }
+    }
+
     Ok(RunState {
         run: wf.run.clone(),
         wf_skill: wf.wf_skill.clone(),
@@ -240,6 +295,7 @@ async fn build_run_state(
         // is layered on when the verify phase runs against a real harness; the
         // happy path (every vote cast) closes on the vote instances alone.
         deadlettered: BTreeMap::new(),
+        targets,
     })
 }
 

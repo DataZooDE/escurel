@@ -143,6 +143,29 @@ fn render_frontmatter(value: Option<&Value>) -> String {
     out
 }
 
+/// Upsert a scalar `key: value` into a rendered frontmatter block
+/// (`---\n…\n---\n`). Replaces the line if the key is already present,
+/// otherwise inserts it just before the closing `---`. A block with no
+/// closing fence (or an empty string) is returned unchanged — the caller only
+/// stamps blocks it just rendered, which always have the fence.
+fn stamp_frontmatter(frontmatter: &str, key: &str, value: &str) -> String {
+    let line = format!("{key}: {value}");
+    let mut lines: Vec<String> = frontmatter.lines().map(str::to_owned).collect();
+    if let Some(existing) = lines
+        .iter_mut()
+        .find(|l| l.trim_start().starts_with(&format!("{key}:")))
+    {
+        *existing = line;
+        return format!("{}\n", lines.join("\n"));
+    }
+    // Insert before the closing fence (the last `---`).
+    if let Some(close) = lines.iter().rposition(|l| l.trim_end() == "---") {
+        lines.insert(close, line);
+        return format!("{}\n", lines.join("\n"));
+    }
+    frontmatter.to_owned()
+}
+
 /// The coordinates a barrier (`verify`) step must stamp into the
 /// `verify-vote` instance it produces, recovered from the step event's
 /// `provenance.workflow` (`§3.5`). The barrier tally counts `COUNT(DISTINCT
@@ -285,6 +308,70 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    // A workflow step carries a `provenance.workflow` block. For those, the
+    // harness stamps `source_event: <event_id>` on the instance it writes — the
+    // freshness/provenance field (compile-first-wiki G3) and, for a durable
+    // `writes: existing` weave, the reducer's completion signal (a durable page
+    // already exists, so the reducer detects the weave landed by this stamp).
+    // A real agent stamps the same field; the echo does it deterministically.
+    let workflow = event.get("provenance").and_then(|p| p.get("workflow"));
+    let is_workflow_step = workflow.is_some_and(|w| w.is_object());
+
+    // The `lint` workflow's scan step (compile-first-wiki G2): perform a real,
+    // deterministic structural health pass over the pages named by the run
+    // board and record each finding as an `issue` — reading the scanned pages
+    // only, never rewriting them. A semantic LLM harness would additionally
+    // find nuanced contradictions; the echo does the structural tier.
+    let wf_skill = workflow
+        .and_then(|w| w.get("wf_skill"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // Route only the lint *scan step* (which targets an `issue` page) here; the
+    // lint *invocation* (which targets the run board) folds normally so the
+    // reducer then emits the scan step.
+    if wf_skill == "lint" && instance_page_id.starts_with("markdown/instances/issue/") {
+        let run = workflow
+            .and_then(|w| w.get("run"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        return lint_scan(&mcp, &event_id, &instance_page_id, &run, tool_calls);
+    }
+    // The `curate` workflow's curate step regenerates the by-category index
+    // (compile-first-wiki G3) — a pure function of the corpus.
+    if wf_skill == "curate" && instance_page_id.starts_with("markdown/instances/index/") {
+        let run = workflow
+            .and_then(|w| w.get("run"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let at = event
+            .get("at")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map_or_else(now_rfc3339, str::to_owned);
+        return curate_index(&mcp, &event_id, &instance_page_id, &run, &at, tool_calls);
+    }
+    // The `eval` workflow (compile-first-wiki G4): the `score` step (targets an
+    // eval-result) checks one task; the `apply` step (a durable-target weave,
+    // targets the implicated page/skill) merges the fix.
+    if wf_skill == "eval" && instance_page_id.starts_with("markdown/instances/eval-result/") {
+        let task_page = workflow
+            .and_then(|w| w.get("over"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        return eval_score(&mcp, &event_id, &instance_page_id, &task_page, tool_calls);
+    }
+    if wf_skill == "eval" && !instance_page_id.contains("/workflow-run/") {
+        let run = workflow
+            .and_then(|w| w.get("run"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let at = now_rfc3339();
+        return improve_apply(&mcp, &event_id, &instance_page_id, &run, &at, tool_calls);
+    }
 
     // 2. Read the instance's current state so we append rather than clobber.
     //    `expand` splits the page into a `frontmatter` object + a `body`;
@@ -312,6 +399,19 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
             derive_instance_frontmatter(&instance_page_id, stamp.as_ref()).ok_or_else(|| {
                 format!("target {instance_page_id} is missing and is not an instance path")
             })?;
+    }
+    if is_workflow_step {
+        frontmatter = stamp_frontmatter(&frontmatter, "source_event", &event_id);
+        // Freshness (compile-first-wiki G3): stamp when this fact was last
+        // (re-)verified. Reducer-emitted step events carry no `at`, so fall back
+        // to now (RFC 3339, so lint's lexical staleness compare works). Lint's
+        // `stale` check reads this field.
+        let verified_at = event
+            .get("at")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map_or_else(now_rfc3339, str::to_owned);
+        frontmatter = stamp_frontmatter(&frontmatter, "last_verified", &verified_at);
     }
 
     // 3. Append a short event note and write the full page back.
@@ -347,9 +447,514 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     })
 }
 
+/// The current time as an RFC 3339 string (UTC, second precision) — the
+/// freshness/generation stamp when the event carries no timestamp of its own.
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// The `run_slug`: the last path segment of a page id, sans `.md`.
+fn run_slug(page_id: &str) -> &str {
+    page_id
+        .rsplit('/')
+        .next()
+        .unwrap_or(page_id)
+        .strip_suffix(".md")
+        .unwrap_or(page_id)
+}
+
+/// Read `scan_skills` off the run board frontmatter — a YAML list (JSON array)
+/// or a comma-separated string.
+fn scan_skills(fm: &Value) -> Vec<String> {
+    match fm.get("scan_skills") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        Some(Value::String(s)) => s.split(',').map(|p| p.trim().to_owned()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Build one `issue` instance's markdown.
+fn issue_md(
+    kind: &str,
+    severity: &str,
+    subject: &str,
+    message: &str,
+    run: &str,
+    id: &str,
+) -> String {
+    format!(
+        "---\ntype: instance\nskill: issue\nid: {id}\nkind: {kind}\nseverity: {severity}\n\
+         subject_page: {subject}\nmessage: {message}\nsource_run: {run}\n---\n# {kind} issue\n\n{message}\n"
+    )
+}
+
+/// The deterministic **structural** lint scan (compile-first-wiki G2). Reads the
+/// pages named by the run board's `scan_skills`, flags `orphan` / `stale` /
+/// `contradiction`, and writes one `issue` per finding. The scanned pages are
+/// only *read* — lint proposes, it never rewrites.
+fn lint_scan(
+    mcp: &Mcp,
+    event_id: &str,
+    summary_page: &str,
+    run: &str,
+    mut tool_calls: u32,
+) -> Result<HarnessOutcome, String> {
+    let board = mcp.call("expand", json!({ "page_id": run }))?;
+    tool_calls += 1;
+    let fm = board.get("frontmatter").cloned().unwrap_or(Value::Null);
+    let mut skills = scan_skills(&fm);
+    // Fallback (tick-driven runs whose board carries no scan config): scan every
+    // content skill, minus the system/workflow skills that would only produce
+    // noise.
+    if skills.is_empty() {
+        let listed = mcp.call("list_skills", json!({}))?;
+        tool_calls += 1;
+        const DENY: &[&str] = &[
+            "issue",
+            "workflow-run",
+            "lint",
+            "distill",
+            "distill-claim",
+            "weave",
+            "distill-report",
+            "deep-research",
+            "escurel",
+        ];
+        skills = listed
+            .get("skills")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.get("id").and_then(Value::as_str))
+                    .filter(|id| !DENY.contains(id))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    let stale_before = fm
+        .get("stale_before")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let slug = run_slug(run);
+
+    // (kind, subject_page, message) findings, plus fact rows for contradiction.
+    let mut findings: Vec<(String, String, String)> = Vec::new();
+    // fact_key -> list of (page_id, value)
+    let mut facts: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+
+    for skill in &skills {
+        let listed = mcp.call("list_instances", json!({ "skill_id": skill }))?;
+        tool_calls += 1;
+        let instances = listed
+            .get("instances")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for inst in &instances {
+            let Some(page_id) = inst.get("page_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let ifm = inst.get("frontmatter").cloned().unwrap_or(Value::Null);
+
+            // orphan: no inbound links.
+            let nbrs = mcp.call(
+                "neighbours",
+                json!({ "page_id": page_id, "direction": "in" }),
+            )?;
+            tool_calls += 1;
+            let inbound = nbrs
+                .get("edges")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            if inbound == 0 {
+                findings.push((
+                    "orphan".to_owned(),
+                    page_id.to_owned(),
+                    format!("{page_id} has no inbound links — it is unreachable by navigation"),
+                ));
+            }
+
+            // stale: last_verified older than the review cutoff (RFC 3339
+            // sorts lexically = chronologically).
+            if let Some(lv) = ifm.get("last_verified").and_then(Value::as_str)
+                && !stale_before.is_empty()
+                && lv < stale_before.as_str()
+            {
+                findings.push((
+                    "stale".to_owned(),
+                    page_id.to_owned(),
+                    format!("last_verified {lv} predates the review cutoff {stale_before}"),
+                ));
+            }
+
+            // contradiction inputs: a (fact_key, fact_value) pair.
+            if let (Some(k), Some(v)) = (
+                ifm.get("fact_key").and_then(Value::as_str),
+                ifm.get("fact_value").and_then(Value::as_str),
+            ) {
+                facts
+                    .entry(k.to_owned())
+                    .or_default()
+                    .push((page_id.to_owned(), v.to_owned()));
+            }
+        }
+    }
+
+    // contradiction: a fact_key asserted with two different values.
+    for (key, rows) in &facts {
+        let distinct: std::collections::BTreeSet<&str> =
+            rows.iter().map(|(_, v)| v.as_str()).collect();
+        if distinct.len() > 1 {
+            for (page_id, value) in rows {
+                findings.push((
+                    "contradiction".to_owned(),
+                    page_id.to_owned(),
+                    format!("fact `{key}` = `{value}` conflicts with another page's value"),
+                ));
+            }
+        }
+    }
+
+    // Write one issue instance per finding (create-only; never touches the
+    // scanned pages).
+    for (i, (kind, subject, message)) in findings.iter().enumerate() {
+        let id = format!("{slug}-{kind}-{i}");
+        let page_id = format!("markdown/instances/issue/{id}.md");
+        let severity = if kind == "contradiction" {
+            "error"
+        } else {
+            "warning"
+        };
+        let content = issue_md(kind, severity, subject, message, run, &id);
+        mcp.call(
+            "update_page",
+            json!({ "page_id": page_id, "content": content }),
+        )?;
+        tool_calls += 1;
+    }
+
+    // Write the pre-flagged summary issue so the scan phase completes, and
+    // assign the triggering event to it.
+    let summary_id = run_slug(summary_page);
+    let summary = issue_md(
+        "lint_summary",
+        "info",
+        run,
+        &format!("lint scan recorded {} issue(s)", findings.len()),
+        run,
+        summary_id,
+    );
+    mcp.call(
+        "update_page",
+        json!({ "page_id": summary_page, "content": summary }),
+    )?;
+    tool_calls += 1;
+    mcp.call(
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": summary_page }),
+    )?;
+    tool_calls += 1;
+
+    Ok(HarnessOutcome {
+        ok: true,
+        status: HarnessStatus::Ok,
+        summary: format!("lint scan recorded {} issue(s)", findings.len()),
+        tool_calls,
+        produced_instance: Some(summary_page.to_owned()),
+    })
+}
+
+/// Regenerate the curated by-category **index** (compile-first-wiki G3). Reads
+/// every content skill and its instances and writes a single `index` instance
+/// grouping the corpus by category. Deterministic: sorted skills and instances
+/// ⇒ the same corpus yields byte-identical output (derivable).
+fn curate_index(
+    mcp: &Mcp,
+    event_id: &str,
+    index_page: &str,
+    run: &str,
+    at: &str,
+    mut tool_calls: u32,
+) -> Result<HarnessOutcome, String> {
+    const DENY: &[&str] = &[
+        "index",
+        "issue",
+        "workflow-run",
+        "curate",
+        "lint",
+        "distill",
+        "distill-claim",
+        "weave",
+        "distill-report",
+        "escurel",
+    ];
+    let listed = mcp.call("list_skills", json!({}))?;
+    tool_calls += 1;
+    let mut skills: Vec<(String, String)> = listed
+        .get("skills")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| {
+                    let id = s.get("id").and_then(Value::as_str)?;
+                    if DENY.contains(&id) {
+                        return None;
+                    }
+                    let desc = s
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    Some((id.to_owned(), desc.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    skills.sort();
+
+    let mut body = String::from("# Knowledge Base Index\n\nA map of the territory by category.\n");
+    for (skill, desc) in &skills {
+        let listed = mcp.call("list_instances", json!({ "skill_id": skill }))?;
+        tool_calls += 1;
+        let mut ids: Vec<String> = listed
+            .get("instances")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|i| i.get("page_id").and_then(Value::as_str))
+                    .map(|p| run_slug(p).to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        if desc.is_empty() {
+            body.push_str(&format!("\n## {skill}\n"));
+        } else {
+            body.push_str(&format!("\n## {skill} — {desc}\n"));
+        }
+        for id in &ids {
+            body.push_str(&format!("- [[{skill}::{id}]]\n"));
+        }
+    }
+
+    let index_id = run_slug(index_page);
+    let content = format!(
+        "---\ntype: instance\nskill: index\nid: {index_id}\ngenerated_at: {at}\nsource_run: {run}\n---\n{body}"
+    );
+    mcp.call(
+        "update_page",
+        json!({ "page_id": index_page, "content": content }),
+    )?;
+    tool_calls += 1;
+    mcp.call(
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": index_page }),
+    )?;
+    tool_calls += 1;
+
+    Ok(HarnessOutcome {
+        ok: true,
+        status: HarnessStatus::Ok,
+        summary: format!("curated index over {} categories", skills.len()),
+        tool_calls,
+        produced_instance: Some(index_page.to_owned()),
+    })
+}
+
+/// The `eval` score step (compile-first-wiki G4): check whether the task's
+/// implicated page contains the expected content, and record an `eval-result`.
+/// A failure names `target_page` + `fix` so `improve` can act.
+fn eval_score(
+    mcp: &Mcp,
+    event_id: &str,
+    result_page: &str,
+    task_page: &str,
+    mut tool_calls: u32,
+) -> Result<HarnessOutcome, String> {
+    let task = mcp.call("expand", json!({ "page_id": task_page }))?;
+    tool_calls += 1;
+    let tfm = task.get("frontmatter").cloned().unwrap_or(Value::Null);
+    let implicated = tfm
+        .get("implicated_page")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let expect = tfm
+        .get("expect")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let fix = tfm
+        .get("fix")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let task_id = run_slug(task_page).to_owned();
+
+    // Answer the task from the KB: does the implicated page contain the
+    // expected content?
+    let page = mcp.call("expand", json!({ "page_id": implicated }))?;
+    tool_calls += 1;
+    let body = page.get("body").and_then(Value::as_str).unwrap_or_default();
+    let passed = body.contains(&expect);
+
+    // Regression guard (bounded loop): a task that fails on a page that was
+    // ALREADY improved (carries `source_event`) means the fix did not hold —
+    // raise an `eval_regression` issue for human review rather than looping.
+    let already_improved = page
+        .get("frontmatter")
+        .and_then(|f| f.get("source_event"))
+        .is_some();
+    if !passed && already_improved {
+        let issue_id = format!("{task_id}-eval-regression");
+        let issue_page = format!("markdown/instances/issue/{issue_id}.md");
+        let content = issue_md(
+            "eval_regression",
+            "error",
+            &implicated,
+            &format!("task `{task_id}` still fails after an improvement to {implicated}"),
+            "eval",
+            &issue_id,
+        );
+        mcp.call(
+            "update_page",
+            json!({ "page_id": issue_page, "content": content }),
+        )?;
+        tool_calls += 1;
+    }
+
+    let result_id = run_slug(result_page);
+    let content = if passed {
+        format!(
+            "---\ntype: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: pass\n---\n# eval-result\n\nPASS: {implicated} answers the task.\n"
+        )
+    } else {
+        format!(
+            "---\ntype: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: fail\n\
+             target_page: {implicated}\nfix: {fix}\n---\n# eval-result\n\nFAIL: {implicated} is missing the expected content.\n"
+        )
+    };
+    mcp.call(
+        "update_page",
+        json!({ "page_id": result_page, "content": content }),
+    )?;
+    tool_calls += 1;
+    mcp.call(
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": result_page }),
+    )?;
+    tool_calls += 1;
+
+    Ok(HarnessOutcome {
+        ok: true,
+        status: HarnessStatus::Ok,
+        summary: format!("eval {}: {}", task_id, if passed { "pass" } else { "fail" }),
+        tool_calls,
+        produced_instance: Some(result_page.to_owned()),
+    })
+}
+
+/// The `improve` apply step (compile-first-wiki G4): weave the fix from the
+/// failing eval-result into the implicated durable page (a document *or a
+/// skill*), stamping freshness. Reuses the G1 durable-target path — the event
+/// is pre-flagged onto `target_page`, so reconciliation confirms on it.
+fn improve_apply(
+    mcp: &Mcp,
+    event_id: &str,
+    target_page: &str,
+    run: &str,
+    at: &str,
+    mut tool_calls: u32,
+) -> Result<HarnessOutcome, String> {
+    // Find THIS run's failing eval-result for this target and its fix. Results
+    // accumulate across runs, so scope to the current run (run-scoped page-id
+    // prefix) — never apply a stale fix from an earlier run.
+    let run_prefix = format!("markdown/instances/eval-result/{}-", run_slug(run));
+    let listed = mcp.call("list_instances", json!({ "skill_id": "eval-result" }))?;
+    tool_calls += 1;
+    let fix = listed
+        .get("instances")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|r| {
+            r["page_id"]
+                .as_str()
+                .is_some_and(|p| p.starts_with(&run_prefix))
+                && r["frontmatter"]["verdict"].as_str() == Some("fail")
+                && r["frontmatter"]["target_page"].as_str() == Some(target_page)
+        })
+        .and_then(|r| r["frontmatter"]["fix"].as_str())
+        .unwrap_or_default()
+        .to_owned();
+
+    let expanded = mcp.call("expand", json!({ "page_id": target_page }))?;
+    tool_calls += 1;
+    let current_body = expanded
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // Reconstruct the target's frontmatter (it already exists) so update_page
+    // gets the full markdown; stamp provenance + freshness onto it.
+    let mut frontmatter = render_frontmatter(expanded.get("frontmatter"));
+    frontmatter = stamp_frontmatter(&frontmatter, "source_event", event_id);
+    frontmatter = stamp_frontmatter(&frontmatter, "last_verified", at);
+
+    let note = if fix.is_empty() {
+        format!("\n- improved via {event_id}\n")
+    } else {
+        format!("\n{fix}\n")
+    };
+    let new_body = format!("{}{}", current_body.trim_end_matches('\n'), note);
+    let content = format!("{frontmatter}{new_body}");
+    mcp.call(
+        "update_page",
+        json!({ "page_id": target_page, "content": content }),
+    )?;
+    tool_calls += 1;
+    mcp.call(
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": target_page }),
+    )?;
+    tool_calls += 1;
+
+    Ok(HarnessOutcome {
+        ok: true,
+        status: HarnessStatus::Ok,
+        summary: format!("improved {target_page}"),
+        tool_calls,
+        produced_instance: Some(target_page.to_owned()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stamp_inserts_a_new_key_before_the_closing_fence() {
+        let fm = "---\ntype: instance\nskill: entity\nid: acme\n---\n";
+        let out = stamp_frontmatter(fm, "source_event", "EV1");
+        assert!(out.contains("source_event: EV1\n"));
+        assert!(out.contains("skill: entity\n"));
+        // Still a well-formed block: last line before body is the closing ---.
+        assert!(out.trim_end().ends_with("---"));
+    }
+
+    #[test]
+    fn stamp_replaces_an_existing_key() {
+        let fm = "---\ntype: instance\nsource_event: OLD\nid: acme\n---\n";
+        let out = stamp_frontmatter(fm, "source_event", "NEW");
+        assert!(out.contains("source_event: NEW\n"));
+        assert!(!out.contains("OLD"));
+        assert_eq!(out.matches("source_event:").count(), 1, "no duplicate key");
+    }
 
     #[test]
     fn element_slug_is_the_basename_sans_md() {

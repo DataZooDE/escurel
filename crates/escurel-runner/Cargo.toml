@@ -20,6 +20,7 @@ path = "src/bin/echo_harness.rs"
 [dependencies]
 anyhow = "1"
 axum = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 escurel-client = { path = "../escurel-client" }
 escurel-obs = { path = "../escurel-obs" }
 escurel-runner-core = { path = "../escurel-runner-core" }

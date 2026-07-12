@@ -842,3 +842,685 @@ async fn over_budget_plan_fails_fast_at_invocation_emitting_no_steps() {
         "over-budget plan must emit no scope steps; found {count} research-angle instances"
     );
 }
+
+// --- G1: integrative distillation (durable-target weave) -------------------
+
+const ENTITY_SKILL_BODY: &str =
+    "---\ntype: skill\nid: entity\n---\n# entity\n\nA durable entity/concept page.\n";
+const ENTITY_ACME: &str = "---\ntype: instance\nskill: entity\nid: acme\n---\n# Acme Corp\n\nBaseline facts about Acme.\n";
+const ENTITY_GLOBEX: &str = "---\ntype: instance\nskill: entity\nid: globex\n---\n# Globex\n\nBaseline facts about Globex.\n";
+
+/// Poll `expand(page_id)` until its frontmatter carries `key`, returning the
+/// value — or panic at the deadline.
+async fn await_frontmatter_key(p: &EscurelProcess, page_id: &str, key: &str, secs: u64) -> String {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let r = call_mcp(p, Role::Agent, "expand", json!({ "page_id": page_id })).await;
+        if let Some(v) = r["frontmatter"].get(key).and_then(Value::as_str) {
+            return v.to_owned();
+        }
+        if Instant::now() >= deadline {
+            panic!("{page_id} never gained frontmatter key {key} within {secs}s (got {r})");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// The DoD test for compile-first-wiki **G1**: a single `distill` invocation
+/// weaves into **≥2 existing entity pages** via the `writes: existing`
+/// durable-target reducer branch — no mocks, real gateway + real echo harness.
+///
+/// Seeds two durable `entity` pages and two run-scoped `distill-claim`s (the
+/// semantic `extract` output an LLM would write, each tagged with its
+/// `target_page`), then invokes `distill`. The reducer's weave phase fans out
+/// over the two distinct targets; each echo step folds the claim into the
+/// durable page and stamps `source_event` (the completion signal); once both
+/// are woven the `integrate` barrier writes the `distill-report`.
+#[tokio::test]
+async fn distill_weaves_one_source_into_two_existing_pages() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::distill_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let acme_page = "markdown/instances/entity/acme.md";
+    let globex_page = "markdown/instances/entity/globex.md";
+    let run_page = "markdown/instances/workflow-run/d1.md";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.skill("entity", ENTITY_SKILL_BODY)
+                .instance("entity", "acme", ENTITY_ACME)
+                .instance("entity", "globex", ENTITY_GLOBEX)
+                // Two run-scoped claims (extract's output), each tagged with the
+                // durable page it belongs to. `d1-` prefixes them into run `d1`.
+                .instance(
+                    "distill-claim",
+                    "d1-c-acme",
+                    format!(
+                        "---\ntype: instance\nskill: distill-claim\nid: d1-c-acme\n\
+                         target_page: {acme_page}\naction: update\nworkflow_run: {run_page}\n\
+                         ---\n# claim\n\nAcme shipped a new product line in 2026.\n"
+                    ),
+                )
+                .instance(
+                    "distill-claim",
+                    "d1-c-globex",
+                    format!(
+                        "---\ntype: instance\nskill: distill-claim\nid: d1-c-globex\n\
+                         target_page: {globex_page}\naction: update\nworkflow_run: {run_page}\n\
+                         ---\n# claim\n\nGlobex opened a Berlin office in 2026.\n"
+                    ),
+                )
+                .instance(
+                    "workflow-run",
+                    "d1",
+                    "---\ntype: instance\nskill: workflow-run\nid: d1\nwf_skill: distill\n---\n# run d1\n",
+                )
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // Invoke distill: label the plan, pre-flag the run board, carry the
+    // workflow provenance so the dispatch loop routes to the reducer.
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "distill",
+            "instance_page_id": run_page,
+            "title": "distill a source",
+            "body": "Integrate the source's claims.",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": "distill", "phase": "invoke" } }
+        }),
+    )
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // Both durable pages must gain a `source_event` stamp — proof the weave
+    // touched each existing page (the width>1 breadth G1 exists for).
+    let acme_src = await_frontmatter_key(&gateway, acme_page, "source_event", 45).await;
+    let globex_src = await_frontmatter_key(&gateway, globex_page, "source_event", 45).await;
+    assert_ne!(
+        acme_src, globex_src,
+        "each page carries its own weave step's event id"
+    );
+
+    // The baseline content survives (weave appends, never clobbers) and the
+    // woven note is present.
+    let acme = call_mcp(
+        &gateway,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": acme_page }),
+    )
+    .await;
+    let acme_body = acme["body"].as_str().unwrap_or_default();
+    assert!(
+        acme_body.contains("Baseline facts about Acme"),
+        "baseline survived: {acme_body}"
+    );
+    assert!(
+        acme_body.contains("folded event"),
+        "weave note present: {acme_body}"
+    );
+
+    // The integrate barrier fired only after both targets were woven.
+    let report = await_instance(
+        &gateway,
+        "distill-report",
+        "markdown/instances/distill-report/d1-integrate-",
+        45,
+    )
+    .await;
+    assert!(report.ends_with(".md"), "distill-report written: {report}");
+}
+
+// --- G2: semantic lint (typed issues; proposes, never rewrites) -------------
+
+/// Poll `list_instances(issue)` until an issue of `kind` appears; returns the
+/// full issues array once the scan has recorded that kind (or panics).
+async fn await_issues(p: &EscurelProcess, kind: &str, secs: u64) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let r = call_mcp(
+            p,
+            Role::Agent,
+            "list_instances",
+            json!({ "skill_id": "issue" }),
+        )
+        .await;
+        let issues = r["instances"].as_array().cloned().unwrap_or_default();
+        let has_kind = issues
+            .iter()
+            .any(|i| i["frontmatter"]["kind"].as_str() == Some(kind));
+        if has_kind {
+            return issues;
+        }
+        if Instant::now() >= deadline {
+            panic!("no issue of kind {kind} within {secs}s; issues so far: {issues:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// The DoD test for compile-first-wiki **G2**: a `lint` run flags a seeded
+/// orphan, stale page, and contradiction as typed `issue` instances — and
+/// **never rewrites** the scanned pages. No mocks: real gateway + DuckDB +
+/// echo harness doing real structural detection over `/mcp`.
+#[tokio::test]
+async fn lint_flags_orphan_stale_contradiction_without_rewriting() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::lint_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let orphan_page = "markdown/instances/entity/orphan.md";
+    let run_page = "markdown/instances/workflow-run/lint1.md";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.skill("entity", ENTITY_SKILL_BODY)
+                .skill("note", "---\ntype: skill\nid: note\n---\n# note\n")
+                // orphan: nothing links to it.
+                .instance("entity", "orphan", "---\ntype: instance\nskill: entity\nid: orphan\n---\n# Orphan\n\nUnreferenced.\n")
+                // stale: old last_verified, but linked (so it is stale, not orphan).
+                .instance("entity", "stale", "---\ntype: instance\nskill: entity\nid: stale\nlast_verified: 2020-01-01T00:00:00Z\n---\n# Stale\n\nOld.\n")
+                // contradiction: same fact_key, different fact_value; both linked.
+                .instance("entity", "c1", "---\ntype: instance\nskill: entity\nid: c1\nfact_key: capital\nfact_value: Berlin\n---\n# C1\n")
+                .instance("entity", "c2", "---\ntype: instance\nskill: entity\nid: c2\nfact_key: capital\nfact_value: Munich\n---\n# C2\n")
+                // linked control: has an inbound link, fresh, consistent → no issue.
+                .instance("entity", "linked", "---\ntype: instance\nskill: entity\nid: linked\n---\n# Linked\n")
+                // The linker gives stale/c1/c2/linked an inbound edge (its own
+                // skill `note` is not scanned).
+                .instance("note", "links", "---\ntype: instance\nskill: note\nid: links\n---\n# links\n\nSee [[entity::stale]], [[entity::c1]], [[entity::c2]], [[entity::linked]].\n")
+                // Run board carries the scan scope + staleness cutoff.
+                .instance("workflow-run", "lint1", "---\ntype: instance\nskill: workflow-run\nid: lint1\nwf_skill: lint\nscan_skills: entity\nstale_before: 2025-01-01T00:00:00Z\n---\n# lint run\n")
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "lint",
+            "instance_page_id": run_page,
+            "title": "invoke lint",
+            "body": "Scan for health problems.",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": "lint", "phase": "invoke" } }
+        }),
+    )
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The scan records issues; wait for the summary (written last) to be sure
+    // detection has completed, then inspect the full set.
+    await_issues(&gateway, "lint_summary", 45).await;
+    let issues = call_mcp(
+        &gateway,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "issue" }),
+    )
+    .await;
+    let issues = issues["instances"].as_array().cloned().unwrap_or_default();
+    let of_kind = |kind: &str| -> Vec<String> {
+        issues
+            .iter()
+            .filter(|i| i["frontmatter"]["kind"].as_str() == Some(kind))
+            .filter_map(|i| i["frontmatter"]["subject_page"].as_str().map(str::to_owned))
+            .collect()
+    };
+
+    assert_eq!(
+        of_kind("orphan"),
+        vec![orphan_page.to_owned()],
+        "exactly the orphan is flagged"
+    );
+    assert_eq!(
+        of_kind("stale"),
+        vec!["markdown/instances/entity/stale.md".to_owned()],
+        "the stale page is flagged"
+    );
+    let mut contradictions = of_kind("contradiction");
+    contradictions.sort();
+    assert_eq!(
+        contradictions,
+        vec![
+            "markdown/instances/entity/c1.md".to_owned(),
+            "markdown/instances/entity/c2.md".to_owned()
+        ],
+        "both sides of the contradiction are flagged"
+    );
+
+    // Lint NEVER rewrites: the scanned pages are byte-for-byte untouched — no
+    // source_event stamp, original body intact.
+    let orphan = call_mcp(
+        &gateway,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": orphan_page }),
+    )
+    .await;
+    assert!(
+        orphan["frontmatter"].get("source_event").is_none(),
+        "lint must not stamp/modify a scanned page: {orphan}"
+    );
+    assert_eq!(
+        orphan["body"].as_str().unwrap_or_default().trim(),
+        "# Orphan\n\nUnreferenced.".trim(),
+        "the orphan page body is unchanged by lint"
+    );
+}
+
+/// The lint **schedule** end to end: with `ESCUREL_RUNNER_LINT_INTERVAL` set,
+/// the runner itself synthesizes a `lint` invocation each window; the reactive
+/// loop drives it (scan config auto-discovered via `list_skills`) and an orphan
+/// issue materializes — no manual invocation, gateway still automation-free.
+#[tokio::test]
+async fn lint_tick_schedules_a_scan_without_manual_invocation() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::lint_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.skill("entity", ENTITY_SKILL_BODY)
+                .instance("entity", "lonely", "---\ntype: instance\nskill: entity\nid: lonely\n---\n# Lonely\n\nNo inbound links.\n")
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms")
+        // The schedule under test.
+        .env("ESCUREL_RUNNER_LINT_INTERVAL", "1s");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // No manual capture_event — the tick alone must drive a scan that flags the
+    // unreferenced entity page.
+    let issues = await_issues(&gateway, "orphan", 45).await;
+    assert!(
+        issues
+            .iter()
+            .any(|i| i["frontmatter"]["subject_page"].as_str()
+                == Some("markdown/instances/entity/lonely.md")),
+        "the scheduled scan flagged the orphan: {issues:?}"
+    );
+}
+
+// --- G3: freshness + curated index -----------------------------------------
+
+/// Spawn the real runner (echo harness) against `gateway` and return its guard.
+fn spawn_echo_runner(gateway: &EscurelProcess, ledger_dir: &std::path::Path) -> ChildGuard {
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let listen = format!("127.0.0.1:{}", free_port());
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    ChildGuard(cmd.spawn().expect("spawn escurel-runner"))
+}
+
+async fn invoke_curate(gateway: &EscurelProcess, run_page: &str) {
+    call_mcp(
+        gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "curate",
+            "instance_page_id": run_page,
+            "title": "invoke curate",
+            "body": "Regenerate the index.",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": "curate", "phase": "invoke" } }
+        }),
+    )
+    .await;
+}
+
+/// The DoD test for compile-first-wiki **G3**: `curate` regenerates a
+/// by-category `index` instance (the map of the territory), and it stays
+/// **derivable** — re-running over the same corpus reproduces the same body.
+/// No mocks: real gateway + DuckDB + echo harness.
+#[tokio::test]
+async fn curate_generates_a_derivable_by_category_index() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::curation_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.skill("entity", ENTITY_SKILL_BODY)
+                .instance("entity", "acme", ENTITY_ACME)
+                .instance("entity", "globex", ENTITY_GLOBEX)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+
+    // First curation.
+    invoke_curate(&gateway, "markdown/instances/workflow-run/cur1.md").await;
+    let idx1 = await_instance(&gateway, "index", "markdown/instances/index/cur1-", 45).await;
+    let expanded1 = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": idx1 })).await;
+    let body1 = expanded1["body"].as_str().unwrap_or_default().to_owned();
+
+    // The map lists the entity category and both instances, with a generated_at
+    // freshness stamp.
+    assert!(
+        body1.contains("## entity"),
+        "index groups by category: {body1}"
+    );
+    assert!(body1.contains("[[entity::acme]]"), "lists acme: {body1}");
+    assert!(
+        body1.contains("[[entity::globex]]"),
+        "lists globex: {body1}"
+    );
+    assert!(
+        expanded1["frontmatter"]["generated_at"].as_str().is_some(),
+        "index carries a generated_at stamp"
+    );
+
+    // Derivable: a second curation over the same corpus reproduces the same
+    // body (a pure function of pages/ + events).
+    invoke_curate(&gateway, "markdown/instances/workflow-run/cur2.md").await;
+    let idx2 = await_instance(&gateway, "index", "markdown/instances/index/cur2-", 45).await;
+    let expanded2 = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": idx2 })).await;
+    let body2 = expanded2["body"].as_str().unwrap_or_default().to_owned();
+    assert_eq!(
+        body1, body2,
+        "the index is derivable — same corpus, same map"
+    );
+}
+
+/// **G3 freshness**: a distilled page gains a `last_verified` stamp so lint's
+/// staleness check has something to read.
+#[tokio::test]
+async fn distill_stamps_last_verified_on_the_woven_page() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::distill_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let target = "markdown/instances/entity/acme.md";
+    let run_page = "markdown/instances/workflow-run/f1.md";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.skill("entity", ENTITY_SKILL_BODY)
+                .instance("entity", "acme", ENTITY_ACME)
+                .instance(
+                    "distill-claim",
+                    "f1-c-acme",
+                    format!("---\ntype: instance\nskill: distill-claim\nid: f1-c-acme\ntarget_page: {target}\naction: update\n---\n# claim\n\nAcme fact.\n"),
+                )
+                .instance("workflow-run", "f1", "---\ntype: instance\nskill: workflow-run\nid: f1\nwf_skill: distill\n---\n# run\n")
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual", "mime": "text/plain", "label_skill": "distill",
+            "instance_page_id": run_page, "title": "distill", "body": "go",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": "distill", "phase": "invoke" } }
+        }),
+    )
+    .await;
+
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+
+    let lv = await_frontmatter_key(&gateway, target, "last_verified", 45).await;
+    assert!(
+        !lv.is_empty(),
+        "woven page gained a last_verified freshness stamp"
+    );
+}
+
+// --- G4: eval-driven improvement (improve documents AND skills) -------------
+
+/// Invoke the `eval` workflow for `run_page` (scores tasks, then weaves fixes).
+async fn invoke_eval(gateway: &EscurelProcess, run_page: &str) {
+    call_mcp(
+        gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual", "mime": "text/plain", "label_skill": "eval",
+            "instance_page_id": run_page, "title": "invoke eval", "body": "Score and improve.",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": "eval", "phase": "invoke" } }
+        }),
+    )
+    .await;
+}
+
+/// Whether an eval-result for `task_id` with `verdict` exists (results
+/// accumulate across runs, so we check for existence, not "the first").
+async fn eval_result_exists(gateway: &EscurelProcess, task_id: &str, verdict: &str) -> bool {
+    let r = call_mcp(
+        gateway,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "eval-result" }),
+    )
+    .await;
+    r["instances"].as_array().is_some_and(|a| {
+        a.iter().any(|i| {
+            i["frontmatter"]["task"].as_str() == Some(task_id)
+                && i["frontmatter"]["verdict"].as_str() == Some(verdict)
+        })
+    })
+}
+
+/// The DoD test for compile-first-wiki **G4**: an `eval` run detects a failing
+/// task, weaves the fix into the implicated **skill** (improving the connective
+/// tissue, not just an instance), and a re-run confirms the task now passes.
+/// No mocks: real gateway + DuckDB + echo harness doing real structural
+/// scoring + the G1 durable-target weave.
+#[tokio::test]
+async fn eval_improves_a_failing_skill_then_reverify_passes() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::eval_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let faq_skill = "markdown/skills/faq.md";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            // The skill under evaluation — initially missing the expected fact.
+            tf.page("skills/faq.md", "---\ntype: skill\nid: faq\ndescription: FAQ\n---\n# FAQ\n\nEscurel is a knowledge base.\n")
+                // A persistent benchmark task (not run-scoped) — every eval run
+                // scores it; the fix is applied once, then re-scoring passes.
+                .instance("eval-task", "air", format!("---\ntype: instance\nskill: eval-task\nid: air\nimplicated_page: {faq_skill}\nexpect: air-gappable\nfix: Escurel is fully air-gappable.\n---\n# task\n"))
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+
+    // Run 1: score (fail) → apply weaves the fix into the FAQ skill.
+    invoke_eval(&gateway, "markdown/instances/workflow-run/ev1.md").await;
+    // The skill gains the expected content + a source_event (proof it was
+    // edited — a skill, the connective tissue, not just a data instance).
+    let src = await_frontmatter_key(&gateway, faq_skill, "source_event", 45).await;
+    assert!(
+        !src.is_empty(),
+        "the skill was improved (source_event stamped)"
+    );
+    let faq = call_mcp(
+        &gateway,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": faq_skill }),
+    )
+    .await;
+    assert!(
+        faq["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("air-gappable"),
+        "the fix was woven into the skill: {}",
+        faq["body"]
+    );
+    // The skill identity survived the edit (still a skill named faq).
+    assert_eq!(faq["frontmatter"]["id"].as_str(), Some("faq"));
+
+    // Run 2: re-verify — the task now PASSES (the improvement held), and no
+    // eval_regression issue is raised.
+    invoke_eval(&gateway, "markdown/instances/workflow-run/ev2.md").await;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        if eval_result_exists(&gateway, "air", "pass").await {
+            break;
+        }
+        assert!(Instant::now() < deadline, "re-eval never passed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let issues = call_mcp(
+        &gateway,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "issue" }),
+    )
+    .await;
+    let regressions = issues["instances"].as_array().map_or(0, |a| {
+        a.iter()
+            .filter(|i| i["frontmatter"]["kind"].as_str() == Some("eval_regression"))
+            .count()
+    });
+    assert_eq!(
+        regressions, 0,
+        "a held improvement raises no eval_regression"
+    );
+}
+
+/// **G4 bounded loop**: when the fix does NOT resolve the task, a re-eval on the
+/// already-improved page raises an `eval_regression` issue for human review
+/// rather than looping forever.
+#[tokio::test]
+async fn eval_regression_is_flagged_when_a_fix_does_not_hold() {
+    let mut tf = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::eval_corpus() {
+        tf = tf.page(&page_id, body);
+    }
+    let doc = "markdown/skills/faq.md";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            tf.page("skills/faq.md", "---\ntype: skill\nid: faq\ndescription: FAQ\n---\n# FAQ\n\nEscurel is a KB.\n")
+                // A BROKEN fix: the woven text does not contain the expected string.
+                .instance("eval-task", "x", format!("---\ntype: instance\nskill: eval-task\nid: x\nimplicated_page: {doc}\nexpect: air-gappable\nfix: This note does not answer it.\n---\n# task\n"))
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+
+    // Run 1: fail → apply weaves the (broken) fix, stamping source_event.
+    invoke_eval(&gateway, "markdown/instances/workflow-run/rg1.md").await;
+    await_frontmatter_key(&gateway, doc, "source_event", 45).await;
+
+    // Run 2: the task still fails on an already-improved page → eval_regression.
+    invoke_eval(&gateway, "markdown/instances/workflow-run/rg2.md").await;
+    let issues = await_issues(&gateway, "eval_regression", 45).await;
+    assert!(
+        issues
+            .iter()
+            .any(|i| i["frontmatter"]["subject_page"].as_str() == Some(doc)),
+        "an unresolved fix raises an eval_regression for the page: {issues:?}"
+    );
+}
