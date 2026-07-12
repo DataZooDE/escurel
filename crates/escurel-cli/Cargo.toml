@@ -26,6 +26,9 @@ escurel-tui = { path = "../escurel-tui" }
 # command authored them, not alphabetised.
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+# Fresh run ids for `workflow run` (the invocation is a side-effecting CLI
+# call, so a random id is fine here — determinism lives in the reducer).
+ulid = "1"
 # Draining server-streams (rebuild / compact / export) + building the
 # import input stream for the admin streaming commands.
 

@@ -29,6 +29,7 @@ mod admin;
 mod agent;
 mod convert;
 mod output;
+mod workflow;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -88,6 +89,9 @@ enum Command {
     /// Operator surface (admin-role token required, except `health`).
     #[command(subcommand)]
     Admin(admin::AdminCmd),
+    /// Dynamic workflows: invoke, inspect, and stop plan runs.
+    #[command(subcommand)]
+    Workflow(workflow::WorkflowCmd),
     /// Launch the interactive k9s-style terminal browser.
     Ui,
 }
@@ -122,6 +126,10 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Admin(cmd) => {
             let client = AdminClient::connect(&cli.server, token).await?;
             admin::run(&client, cmd).await?
+        }
+        Command::Workflow(cmd) => {
+            let client = Client::connect(&cli.server, token).await?;
+            workflow::run(&client, cmd).await?
         }
         other => {
             let client = Client::connect(&cli.server, token).await?;
