@@ -37,6 +37,13 @@ pub struct StepIntent {
     /// The per-item routing target this step fans out over (empty for a
     /// width-1 phase).
     pub over: Option<String>,
+    /// The vote slot this step occupies within its barrier (`Some(k)` for a
+    /// width-`k` verify barrier, `None` otherwise). Carried into the
+    /// `provenance.workflow.vote_index` so the harness stamps the matching
+    /// `verify-vote` — the reducer already encodes it into `slot` (`elem-vN`),
+    /// but the harness cannot recover it from the hashed step id, so it must
+    /// travel in the provenance.
+    pub vote_index: Option<u32>,
 }
 
 impl StepIntent {
@@ -68,6 +75,7 @@ impl StepIntent {
             step: self.event_id(),
             barrier: self.barrier.clone().unwrap_or_default(),
             over: self.over.clone().unwrap_or_default(),
+            vote_index: self.vote_index,
         }
     }
 }
@@ -85,6 +93,7 @@ mod tests {
             slot: "c12-v0".to_owned(),
             barrier: Some("verify".to_owned()),
             over: Some("[[claim::c12]]".to_owned()),
+            vote_index: Some(0),
         }
     }
 
@@ -105,6 +114,7 @@ mod tests {
         assert_eq!(p.phase, "verify");
         assert_eq!(p.barrier, "verify");
         assert_eq!(p.over, "[[claim::c12]]");
+        assert_eq!(p.vote_index, Some(0));
     }
 
     #[test]
@@ -122,10 +132,12 @@ mod tests {
         let i = StepIntent {
             barrier: None,
             over: None,
+            vote_index: None,
             ..intent()
         };
         let p = i.provenance();
         assert_eq!(p.barrier, "");
         assert_eq!(p.over, "");
+        assert_eq!(p.vote_index, None);
     }
 }

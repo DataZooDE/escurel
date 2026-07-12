@@ -49,6 +49,34 @@ phases: [{id: scope, produces: research-angle, fan_out: 10}]\n\
 ---\n\
 # over-budget\n\nToo big.\n";
 
+// A three-phase BARRIER plan: extract one `claims` set, fan a width-3
+// adversarial `verify` barrier over it (three skeptics), then `synthesize` a
+// report once the barrier closes. This is the shape the linear scope→synthesize
+// plan cannot exercise — it forces the reducer's quorum tally and the harness's
+// per-skeptic `vote_index` stamping.
+const VERIFY_WF_SKILL: &str = "claim-check";
+const VERIFY_WF_BODY: &str = "---\n\
+type: skill\n\
+id: claim-check\n\
+description: Barrier workflow test plan — extract, adversarially verify, synthesize.\n\
+backend: {kind: workflow}\n\
+run_skill: workflow-run\n\
+phases: [{id: extract, produces: claims, fan_out: 1}, {id: verify, produces: verify-vote, fan_out: {over: claims, width: verify.votes_per_claim}, max_targets: 1}, {id: synthesize, produces: research-report, fan_out: 1}]\n\
+verify: {votes_per_claim: 3, refutations_required: 2}\n\
+---\n\
+# claim-check\n\nExtract claims, verify them adversarially, synthesize.\n";
+
+// Per-phase framing rides the `produces:` skill body (the packager's
+// `instructions`), not the plan's sections.
+const CLAIMS_SKILL_BODY: &str = "---\ntype: skill\nid: claims\n---\n# claims\n\n\
+Read the question on the run board and extract 2-4 concise, checkable factual \
+claims that answer it. Write them as a short numbered list.\n";
+const VERIFY_VOTE_SKILL_BODY: &str = "---\ntype: skill\nid: verify-vote\n\
+required_frontmatter: [claim, vote_index, verdict]\n\
+optional_frontmatter: [reason, workflow_run]\n---\n# verify-vote\n\n\
+You are an adversarial skeptic. Try to refute the claims under review; if they \
+hold up, vote valid. Be rigorous and cite your reasoning in one line.\n";
+
 const ANGLE_SKILL_BODY: &str =
     "---\ntype: skill\nid: research-angle\n---\n# research-angle\n\nOne search angle.\n";
 const REPORT_SKILL_BODY: &str =
@@ -312,6 +340,181 @@ async fn deep_research_runs_against_gemini() {
     show("SCOPE → research-angle", &angle).await;
     show("SYNTHESIZE → research-report", &report).await;
 
+    assert!(report.ends_with(".md"), "gemini produced a research-report");
+    gateway.shutdown().await;
+}
+
+/// Poll `list_instances(skill)` until at least `n` instances whose page ids
+/// start with `prefix` exist, or the deadline passes (returns their page ids).
+async fn await_instances(
+    p: &EscurelProcess,
+    skill: &str,
+    prefix: &str,
+    n: usize,
+    secs: u64,
+) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let r = call_mcp(
+            p,
+            Role::Agent,
+            "list_instances",
+            json!({ "skill_id": skill }),
+        )
+        .await;
+        let pages: Vec<String> = r["instances"]
+            .as_array()
+            .map(|is| {
+                is.iter()
+                    .filter_map(|i| i["page_id"].as_str())
+                    .filter(|pid| pid.starts_with(prefix))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if pages.len() >= n {
+            return pages;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "only {} of {n} {skill} instances (prefix {prefix}) within {secs}s",
+                pages.len()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// LIVE barrier test: drive the width-3 adversarial **verify barrier** through
+/// real **Gemini** (env-guarded on GEMINI_API_KEY). This is the follow-up to
+/// `deep_research_runs_against_gemini`: where that run was linear
+/// (scope → synthesize), this one forces the quorum barrier — three skeptics
+/// each author a real `verify-vote` at a distinct `vote_index` (carried in
+/// `provenance.workflow.vote_index`), the reducer tallies `COUNT(DISTINCT
+/// vote_index)`, and only when the barrier closes does `synthesize` fire.
+/// Run with:  GEMINI_API_KEY=… cargo test -p escurel-runner --test
+/// workflow_end_to_end verify_barrier_runs_against_gemini -- --nocapture
+#[tokio::test]
+async fn verify_barrier_runs_against_gemini() {
+    if std::env::var("GEMINI_API_KEY").is_err() {
+        eprintln!("skipping: GEMINI_API_KEY not set");
+        return;
+    }
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scripts/gemini-workflow-runner.py"
+    );
+
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(VERIFY_WF_SKILL, VERIFY_WF_BODY)
+                .skill("claims", CLAIMS_SKILL_BODY)
+                .skill("verify-vote", VERIFY_VOTE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let run_page = "markdown/instances/workflow-run/vfy.md";
+    let question = "Is the Great Wall of China visible to the naked eye from the Moon? \
+                    State the factual claims and the physics of human visual acuity.";
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": VERIFY_WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke claim-check (gemini)",
+            "body": question,
+            "provenance": { "workflow": { "run": run_page, "wf_skill": VERIFY_WF_SKILL, "phase": "invoke" } }
+        }),
+    )
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "adk")
+        .env("ESCUREL_RUNNER_ADK_BIN", script)
+        .env("ESCUREL_RUNNER_ADK_MODEL", "gemini-2.5-flash")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "500ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "500ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The barrier: three skeptic verify-vote instances, each at its own slot.
+    let votes = await_instances(
+        &gateway,
+        "verify-vote",
+        "markdown/instances/verify-vote/vfy-verify-",
+        3,
+        180,
+    )
+    .await;
+    // Only synthesize once the barrier CLOSES — the report proves the tally
+    // released the Fixed synthesize phase.
+    let report = await_instance(
+        &gateway,
+        "research-report",
+        "markdown/instances/research-report/vfy-synthesize-",
+        180,
+    )
+    .await;
+
+    // The three votes must carry three DISTINCT vote_index values — the whole
+    // point of threading the slot through provenance. Read them back and check.
+    let mut indices = Vec::new();
+    for page in &votes {
+        let e = call_mcp(&gateway, Role::Agent, "expand", json!({ "page_id": page })).await;
+        let fm = &e["frontmatter"];
+        let vi = fm["vote_index"].as_u64().expect("vote has a vote_index");
+        let verdict = fm["verdict"].as_str().unwrap_or("").to_owned();
+        indices.push(vi);
+        eprintln!(
+            "\n===== VERIFY-VOTE #{vi} ({page}) verdict={verdict} =====\n{}\n",
+            e["body"].as_str().unwrap_or("")
+        );
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    assert_eq!(
+        indices.len(),
+        3,
+        "three distinct vote_index slots: {indices:?}"
+    );
+
+    let e = call_mcp(
+        &gateway,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": report }),
+    )
+    .await;
+    eprintln!(
+        "\n===== SYNTHESIZE → research-report ({report}) =====\n{}\n",
+        e["body"].as_str().unwrap_or("")
+    );
     assert!(report.ends_with(".md"), "gemini produced a research-report");
     gateway.shutdown().await;
 }
