@@ -509,17 +509,22 @@ impl Indexer {
     /// The stored page's `layer` frontmatter, or `None` when the page does
     /// not exist or declares no layer (⇒ `overlay`, the default — every
     /// pre-layer page).
+    ///
+    /// Only the explicit no-row case maps to `None`; any other lookup
+    /// failure propagates so the layer guard **fails closed** (codex
+    /// review: `.ok()` here would let a DB error unlock base pages).
     pub async fn page_layer(&self, page_id: &str) -> Result<Option<String>, IndexerError> {
         let conn = self.conn.lock().await;
-        let layer: Option<String> = conn
-            .query_row(
-                "SELECT json_extract_string(frontmatter, '$.layer') \
-                 FROM pages WHERE page_id = ?",
-                duckdb::params![page_id],
-                |r| r.get(0),
-            )
-            .ok()
-            .flatten();
+        let layer: Option<String> = match conn.query_row(
+            "SELECT json_extract_string(frontmatter, '$.layer') \
+             FROM pages WHERE page_id = ?",
+            duckdb::params![page_id],
+            |r| r.get(0),
+        ) {
+            Ok(v) => v,
+            Err(duckdb::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
         Ok(layer)
     }
 

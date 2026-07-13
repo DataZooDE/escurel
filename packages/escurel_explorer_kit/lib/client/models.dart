@@ -405,10 +405,12 @@ class SkillSummary {
   /// i.e. some non-`owner` principal (admin / a custom group) may update
   /// it, which the operator dashboard can. When the skill declares no
   /// explicit `update` policy, fall back to the legacy ownerless check.
-  /// A base-layer skill is never editable, whatever its ACL says — the
-  /// server rejects the write with `layer_read_only` (REQ-LAYER-02).
+  ///
+  /// Deliberately layer-blind: this getter governs a skill's INSTANCES,
+  /// and a tenant specialises a base skill precisely by authoring overlay
+  /// instances. Only the base PAGE itself is read-only — that is gated
+  /// per-page in `currentPageEditableProvider` (agy review MUST-FIX 2).
   bool get operatorEditable {
-    if (isBaseLayer) return false;
     final update = acl?.update;
     if (update == null) return ownerField == null;
     return !update.contains('owner');

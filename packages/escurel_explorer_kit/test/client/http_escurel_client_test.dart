@@ -331,9 +331,6 @@ void main() {
               'id': 'pallet-consolidation',
               'description': 'firm-authored, from the logistics pack',
               'layer': 'base@logistics-midmarket@v7',
-              // Even a permissive ACL must not make a base skill
-              // editable — the layer wins (server rejects the write
-              // with layer_read_only anyway; this is the UX mirror).
               'acl': {
                 'read': ['public'],
                 'update': ['admin'],
@@ -350,7 +347,11 @@ void main() {
         final base = r.firstWhere((s) => s.id == 'pallet-consolidation');
         expect(base.layer, 'base@logistics-midmarket@v7');
         expect(base.isBaseLayer, isTrue);
-        expect(base.operatorEditable, isFalse);
+        // operatorEditable stays layer-blind: it governs the skill's
+        // INSTANCES, and overlay instances of a base skill are exactly
+        // how a tenant specialises it. Only the base PAGE is read-only
+        // (gated per-page; see state/layer_read_only_test.dart).
+        expect(base.operatorEditable, isTrue);
 
         final plain = r.firstWhere((s) => s.id == 'local-notes');
         expect(plain.layer, 'overlay'); // absent ⇒ the overlay default

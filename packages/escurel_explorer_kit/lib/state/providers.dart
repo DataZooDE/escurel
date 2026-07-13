@@ -295,6 +295,14 @@ final currentPageEditableProvider = Provider<bool>((ref) {
   final page = ref.watch(currentPageProvider).asData?.value;
   final skill = page?.skill;
   if (page == null || skill == null || skill.isEmpty) return false;
+  // A base-layer PAGE (`layer: base@<pack>@<version>`, imported from a
+  // subscribed pack) is read-only wherever it appears — skill page or
+  // imported base instance; the server rejects the write with
+  // `layer_read_only` (REQ-LAYER-02). Gates the page, never the whole
+  // skill: the tenant's own overlay instances of a base skill stay
+  // authorable (that is the specialisation story).
+  final layer = page.frontmatter['layer'];
+  if (layer is String && layer.startsWith('base@')) return false;
   if (page.pageType == PageType.skill) {
     if (!ref.watch(writeEnabledProvider)) return false;
     final pages = ref.watch(editableSkillPagesProvider);
