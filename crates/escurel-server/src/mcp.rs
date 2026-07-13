@@ -3831,15 +3831,15 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
                 a.manifest.id, a.manifest.version, existing.content_hash, a.manifest.content_hash
             )));
         }
-    } else if let Some(other) = subs.iter().find(|s| s.vertical != a.manifest.vertical) {
-        if !a.allow_vertical_mismatch {
-            return Err(JsonRpcError::internal(format!(
-                "vertical_mismatch: this node is subscribed to vertical `{}` (pack `{}`) \
-                 but `{}` declares vertical `{}`; cross-vertical mixing resets the \
-                 convergence ramp — pass allow_vertical_mismatch=true to override",
-                other.vertical, other.pack_id, a.manifest.id, a.manifest.vertical
-            )));
-        }
+    } else if let Some(other) = subs.iter().find(|s| s.vertical != a.manifest.vertical)
+        && !a.allow_vertical_mismatch
+    {
+        return Err(JsonRpcError::internal(format!(
+            "vertical_mismatch: this node is subscribed to vertical `{}` (pack `{}`) \
+             but `{}` declares vertical `{}`; cross-vertical mixing resets the \
+             convergence ramp — pass allow_vertical_mismatch=true to override",
+            other.vertical, other.pack_id, a.manifest.id, a.manifest.vertical
+        )));
     }
 
     // 3. Unpack, then validate + stamp EVERY entry before the first
