@@ -41,6 +41,10 @@ embeddinggemma = ["escurel-embed/candle"]
 #     (issue #215). Opt-in build (heavy candle compile + ~GB model at boot);
 #     when built, the runtime default is rerank=bge ("default-on where built").
 rerank = ["escurel-embed/rerank"]
+#   --features contextualize-llm → Variant B of Contextual Retrieval (#216):
+#     an LLM situates each chunk at ingest. OFF by default (a network path);
+#     needs ESCUREL_INGEST_CONTEXTUALIZE=llm + ESCUREL_CONTEXTUALIZE_LLM_ENDPOINT.
+contextualize-llm = ["escurel-index/contextualize-llm"]
 
 [dependencies]
 async-trait = "0.1"

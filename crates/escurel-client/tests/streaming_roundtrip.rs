@@ -121,6 +121,7 @@ async fn tenant_export_then_import_round_trips() {
             spec: Some(TenantSpec {
                 tenant_id: "globex".to_owned(),
                 display_name: "Globex".to_owned(),
+                ..Default::default()
             }),
         })
         .await

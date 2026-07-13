@@ -34,7 +34,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use escurel_admin::{TenantSpec as AdminTenantSpec, TenantStore, validate_tenant_id};
 use escurel_auth::Role;
-use escurel_crdt::{CrdtBackend, Op};
+use escurel_crdt::{
+    CrdtBackend, Op, Snapshot, Version, hydrate_content, snapshot_bytes_from_markdown,
+};
 use escurel_index::{
     AclCaller, AppendChatMessage, Capabilities, ChatMessage, Direction, EventInfo, Granularity,
     Indexer, IndexerError, Issue, ListChatMessages, NewEvent, OrderDir, Severity, Visibility,
@@ -196,6 +198,26 @@ async fn mcp_inner(
     // is wired (dev / on-host mode) — the gateway is open, so admin
     // tools are allowed (the local demo runs without a token).
     let role = auth_ctx.as_ref().map(|c| c.role);
+
+    // #247 suspend gate: a suspended tenant rejects non-admin callers so an
+    // operator can still `resume` with an admin token. Only bites when a
+    // verifier is wired (a concrete non-admin role); dev/on-host mode
+    // (`role: None` ⇒ treated as admin elsewhere) is unaffected.
+    if state
+        .tenant_suspended
+        .load(std::sync::atomic::Ordering::Relaxed)
+        && matches!(role, Some(Role::Agent))
+    {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "error": {
+                "code": -32003,
+                "message": format!("tenant `{tenant_id}` is suspended"),
+            }
+        });
+        return (StatusCode::FORBIDDEN, Json(body)).into_response();
+    }
 
     // Auth-derived audit fields for the `tool.completed` record.
     // `subject` is the token `sub` claim; `anonymous` in
@@ -725,6 +747,23 @@ async fn run_document_ingest(
         std::sync::Arc::new(DeterministicProcessor::new(extractor)),
     )
     .with_contextualize(indexer.contextualize_mode());
+    // Variant B (#216): attach the LLM contextualizer when built with the
+    // `contextualize-llm` feature, the mode is `llm`, and an endpoint is set.
+    // Otherwise `Llm` mode degrades to structural in the pure ingest path.
+    #[cfg(feature = "contextualize-llm")]
+    let worker = {
+        let endpoint = std::env::var("ESCUREL_CONTEXTUALIZE_LLM_ENDPOINT").unwrap_or_default();
+        let key = std::env::var("ESCUREL_CONTEXTUALIZE_LLM_API_KEY").unwrap_or_default();
+        if indexer.contextualize_mode() == escurel_index::backend::document::ContextualizeMode::Llm
+            && !endpoint.is_empty()
+        {
+            worker.with_llm_contextualizer(std::sync::Arc::new(
+                escurel_index::backend::contextualize_llm::LlmContextualizer::new(endpoint, key),
+            ))
+        } else {
+            worker
+        }
+    };
 
     // Stamp the uploader as the instance owner so owner-scoped document skills
     // work: a personal skill (`read: [owner]`) stays visible only to its
@@ -1058,7 +1097,7 @@ async fn dispatch_tools_call(
         "list_skills" => tool_list_skills(indexer).await,
         "list_instances" => tool_list_instances(indexer, caller, params.arguments).await,
         "resolve" => tool_resolve(indexer, caller, params.arguments).await,
-        "expand" => tool_expand(indexer, caller, params.arguments).await,
+        "expand" => tool_expand(state, indexer, caller, params.arguments).await,
         "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,
         "neighbours" => tool_neighbours(indexer, caller, params.arguments).await,
         "search" => tool_search(indexer, caller, params.arguments).await,
@@ -1076,7 +1115,9 @@ async fn dispatch_tools_call(
         // (issue #205).
         "query_instance" => tool_query_instance(indexer, caller, params.arguments).await,
         "validate" => tool_validate(indexer, params.arguments).await,
-        "update_page" => tool_update_page(indexer, caller, state.write_acl, params.arguments).await,
+        "update_page" => {
+            tool_update_page(state, indexer, caller, state.write_acl, params.arguments).await
+        }
         "append_message" => {
             tool_append_message(indexer, caller, state.write_acl, params.arguments).await
         }
@@ -1391,6 +1432,7 @@ struct ExpandArgs {
 }
 
 async fn tool_expand(
+    state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
     args: Value,
@@ -1416,6 +1458,7 @@ async fn tool_expand(
     match out {
         None => Ok(json!({ "page": Value::Null })),
         Some(e) => {
+            let e_page_id = e.page.page_id.clone();
             let mut page = json!({
                 "page": {
                     "page_id": e.page.page_id,
@@ -1434,6 +1477,14 @@ async fn tool_expand(
                     "version": w.version, "alias": w.alias,
                 })).collect::<Vec<_>>(),
             });
+            // #246: surface the page's current monotonic version so a client
+            // can pass it back as `base_version` on the next `update_page`
+            // (the read→edit→write optimistic-concurrency cycle).
+            if let Some(backend) = state.crdt_backend.as_ref() {
+                let hlc =
+                    u64::try_from(backend.max_hlc(&e_page_id).await.unwrap_or(0)).unwrap_or(0);
+                page["version"] = json!(Version::from_op_count(hlc).as_str());
+            }
             // SQL-view overlay: render a BOUNDED projection beneath the overlay
             // body (REQ-SQL-06), and expose projected source columns under a
             // namespaced `source` object so overlay↔source drift is visible
@@ -2107,9 +2158,20 @@ fn issue_to_json(issue: &Issue) -> Value {
 struct UpdatePageArgs {
     page_id: String,
     content: String,
+    /// Optimistic-concurrency guard (#246): the version the client last read.
+    /// When the head has advanced past it, the write conflicts.
+    #[serde(default)]
+    base_version: Option<String>,
+    /// Optional provenance passthrough (#246): a runner-orchestrated write
+    /// carries its `provenance.workflow`/`runner` block. Its presence suppresses
+    /// the opt-in `page-edited` event (the cascade already handles those writes),
+    /// so only genuine out-of-band edits trigger the eager improvement pass.
+    #[serde(default)]
+    provenance: Option<Value>,
 }
 
 async fn tool_update_page(
+    state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
     write_acl: crate::server::WriteAclMode,
@@ -2171,16 +2233,67 @@ async fn tool_update_page(
         }
     }
 
+    // #246 optimistic concurrency + monotonic versions. The page version is
+    // `v<max_hlc>` from the CRDT backend (shared with the apply_op session
+    // space). When a client sends a stale `base_version`, the head has advanced
+    // → conflict, with `head_content` for the client to re-draft. Enforced only
+    // when a CRDT backend is wired; otherwise behaviour is unchanged.
+    let head_hlc = match state.crdt_backend.as_ref() {
+        Some(b) => u64::try_from(b.max_hlc(&a.page_id).await.unwrap_or(0)).unwrap_or(0),
+        None => 0,
+    };
+    if let (Some(backend), Some(base)) = (state.crdt_backend.as_ref(), a.base_version.as_deref()) {
+        let head = Version::from_op_count(head_hlc);
+        if base != head.as_str() {
+            let head_content = hydrate_content(backend, &a.page_id).await.ok().flatten();
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "conflict",
+                    "location": "base_version",
+                    "message": format!(
+                        "base_version {base} is stale; head is {}", head.as_str()
+                    ),
+                }],
+                "head_content": head_content,
+            }));
+        }
+    }
+
     match indexer.update_page(&a.page_id, &a.content).await {
-        // The trait doesn't yet surface non-fatal validation issues
-        // (M4); return the protocol `{ok, issues}` shape with an empty
-        // list and a stub `new_version` until monotonic CRDT versions
-        // land.
-        Ok(()) => Ok(json!({
-            "ok": true,
-            "issues": [],
-            "new_version": "v1",
-        })),
+        Ok(()) => {
+            // Advance the monotonic version: snapshot the new whole-page content
+            // at the next hlc so `max_hlc` (and any later `base_version` read)
+            // reflects this write. The apply_op session path reads the same
+            // space, so co-authoring and whole-page writes share versions.
+            let new_version = if let Some(backend) = state.crdt_backend.as_ref() {
+                let next = head_hlc + 1;
+                let bytes = snapshot_bytes_from_markdown(&a.content)
+                    .map_err(|e| JsonRpcError::internal(format!("update_page crdt: {e}")))?;
+                let _ = backend
+                    .snapshot(&a.page_id, next as i64, &Snapshot::new(bytes))
+                    .await;
+                Version::from_op_count(next).as_str().to_owned()
+            } else {
+                "v1".to_owned()
+            };
+
+            // #246 eager per-edit improvement: an OUT-OF-BAND edit (no runner
+            // provenance) optionally emits a `page-edited` inbox event so the
+            // reactive loop re-lints/re-verifies the touched page. Runner-
+            // orchestrated writes carry provenance → suppressed (the cascade
+            // already handles them), so there is no loop storm.
+            maybe_emit_page_edited(
+                state.emit_edit_events,
+                indexer,
+                &a.page_id,
+                a.provenance.as_ref(),
+            )
+            .await;
+
+            Ok(json!({ "ok": true, "issues": [], "new_version": new_version }))
+        }
         // The protected meta-skill rejects the write as an
         // error-severity issue rather than an opaque server error.
         Err(IndexerError::MetaSkillProtected { reason }) => Ok(json!({
@@ -2193,6 +2306,41 @@ async fn tool_update_page(
             }],
         })),
         Err(e) => Err(JsonRpcError::internal(format!("update_page: {e}"))),
+    }
+}
+
+/// #246 eager per-edit improvement. When `ESCUREL_EMIT_EDIT_EVENTS` is enabled
+/// and the write carries NO runner/workflow provenance (a genuine out-of-band
+/// edit), capture a `page-edited` inbox event for the touched page so the
+/// runner re-lints/re-verifies it. A provenance-carrying (runner-orchestrated)
+/// write is suppressed — the cascade already handles it — so the improvement
+/// loop's own writes can't storm. Best-effort: a failure is logged, not fatal.
+async fn maybe_emit_page_edited(
+    enabled: bool,
+    indexer: &Indexer,
+    page_id: &str,
+    provenance: Option<&Value>,
+) {
+    let runner_write =
+        provenance.is_some_and(|p| p.get("workflow").is_some() || p.get("runner").is_some());
+    if !enabled || runner_write {
+        return;
+    }
+    if let Err(e) = indexer
+        .capture_event(escurel_index::events::NewEvent {
+            event_id: None,
+            at: None,
+            source: "page-edited".to_owned(),
+            mime: "text/plain".to_owned(),
+            label_skill: "page-edited".to_owned(),
+            instance_page_id: Some(page_id.to_owned()),
+            title: format!("edited {page_id}"),
+            body: format!("Page {page_id} was edited out of band; re-verify."),
+            provenance: Some(json!({ "edit": { "page": page_id } })),
+        })
+        .await
+    {
+        tracing::warn!(page_id, error = %e, "page-edited event capture failed");
     }
 }
 
@@ -3258,8 +3406,28 @@ fn map_admin_err(e: escurel_admin::AdminError) -> JsonRpcError {
 struct TenantSpecArgs {
     #[serde(default)]
     tenant_id: String,
+    /// Optional so `tenant_update` is a **partial** update (#247): a field
+    /// omitted from the request keeps its current value.
     #[serde(default)]
-    display_name: String,
+    display_name: Option<String>,
+    #[serde(default)]
+    status: Option<escurel_types::TenantStatus>,
+    #[serde(default)]
+    quotas: Option<escurel_types::QuotaOverride>,
+    #[serde(default)]
+    embedding_provider: Option<escurel_types::EmbeddingSpec>,
+}
+
+/// Convert the persisted admin spec into the wire spec. The lifecycle/quota/
+/// embedding sub-types are shared from `escurel-types`, so this is a plain move.
+fn admin_to_wire(s: AdminTenantSpec) -> TypesTenantSpec {
+    TypesTenantSpec {
+        tenant_id: s.tenant_id,
+        display_name: s.display_name,
+        status: s.status,
+        quotas: s.quotas,
+        embedding_provider: s.embedding_provider,
+    }
 }
 
 #[derive(Deserialize)]
@@ -3274,14 +3442,14 @@ async fn tool_tenant_create(state: &AppState, args: Value) -> Result<Value, Json
     let store = tenant_store(state)?.clone();
     let spec = AdminTenantSpec {
         tenant_id: a.tenant_id,
-        display_name: a.display_name,
+        display_name: a.display_name.unwrap_or_default(),
+        status: a.status.unwrap_or_default(),
+        quotas: a.quotas,
+        embedding_provider: a.embedding_provider,
     };
     store.create(&spec).await.map_err(map_admin_err)?;
     to_value(TenantCreateResponse {
-        spec: Some(TypesTenantSpec {
-            tenant_id: spec.tenant_id,
-            display_name: spec.display_name,
-        }),
+        spec: Some(admin_to_wire(spec)),
     })
 }
 
@@ -3289,13 +3457,7 @@ async fn tool_tenant_list(state: &AppState) -> Result<Value, JsonRpcError> {
     let store = tenant_store(state)?.clone();
     let specs = store.list().await.map_err(map_admin_err)?;
     to_value(TenantListResponse {
-        tenants: specs
-            .into_iter()
-            .map(|s| TypesTenantSpec {
-                tenant_id: s.tenant_id,
-                display_name: s.display_name,
-            })
-            .collect(),
+        tenants: specs.into_iter().map(admin_to_wire).collect(),
     })
 }
 
@@ -3309,10 +3471,7 @@ async fn tool_tenant_get(state: &AppState, args: Value) -> Result<Value, JsonRpc
             a.tenant_id
         ))),
         Some(spec) => to_value(TenantGetResponse {
-            spec: Some(TypesTenantSpec {
-                tenant_id: spec.tenant_id,
-                display_name: spec.display_name,
-            }),
+            spec: Some(admin_to_wire(spec)),
         }),
     }
 }
@@ -3321,16 +3480,52 @@ async fn tool_tenant_update(state: &AppState, args: Value) -> Result<Value, Json
     let a: TenantSpecArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("tenant_update: {e}")))?;
     let store = tenant_store(state)?.clone();
-    let spec = AdminTenantSpec {
-        tenant_id: a.tenant_id,
-        display_name: a.display_name,
+    // Partial update (#247): read the current spec, overlay the provided
+    // fields, write it back.
+    let mut spec = match store.get(&a.tenant_id).await.map_err(map_admin_err)? {
+        Some(s) => s,
+        None => {
+            return Err(JsonRpcError::invalid_params(format!(
+                "tenant `{}` not found",
+                a.tenant_id
+            )));
+        }
     };
+    if let Some(dn) = a.display_name {
+        spec.display_name = dn;
+    }
+    if let Some(st) = a.status {
+        spec.status = st;
+    }
+    if let Some(q) = a.quotas {
+        spec.quotas = Some(q);
+    }
+    let embedding_changed =
+        a.embedding_provider.is_some() && a.embedding_provider != spec.embedding_provider;
+    if let Some(ep) = a.embedding_provider {
+        spec.embedding_provider = Some(ep);
+    }
     store.update(&spec).await.map_err(map_admin_err)?;
+
+    // Live side effects apply only to the SERVED tenant (single-tenant-per-
+    // process); other tenants pick the new spec up at their next boot. The
+    // embedding provider moves the vector space, so it only takes effect on
+    // the next boot/rebuild — hence `rebuild_required`, not a live swap.
+    if state.served_tenant.as_deref() == Some(spec.tenant_id.as_str()) {
+        state.tenant_suspended.store(
+            matches!(spec.status, escurel_types::TenantStatus::Suspended),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if let (Some(q), Some(over)) = (state.quota.as_ref(), spec.quotas) {
+            q.set_for_tenant(
+                &spec.tenant_id,
+                crate::config::apply_quota_override(escurel_quota::QuotaConfig::defaults(), over),
+            );
+        }
+    }
     to_value(TenantUpdateResponse {
-        spec: Some(TypesTenantSpec {
-            tenant_id: spec.tenant_id,
-            display_name: spec.display_name,
-        }),
+        spec: Some(admin_to_wire(spec)),
+        rebuild_required: embedding_changed,
     })
 }
 
@@ -3845,13 +4040,18 @@ fn tools_list_payload() -> Value {
             ),
             tool_entry(
                 "update_page",
-                "Upsert a markdown page (whole-body write).",
+                "Upsert a markdown page (whole-body write). Optional \
+                 `base_version` (from a prior read's `version`) enables \
+                 optimistic concurrency: a stale write returns \
+                 `{ok:false, issues:[{code:conflict}], head_content}`.",
                 json!({
                     "type": "object",
                     "required": ["page_id", "content"],
                     "properties": {
                         "page_id": { "type": "string" },
-                        "content": { "type": "string" }
+                        "content": { "type": "string" },
+                        "base_version": { "type": "string" },
+                        "provenance": { "type": "object" }
                     }
                 }),
             ),
@@ -4308,13 +4508,36 @@ fn tools_list_payload() -> Value {
             ),
             tool_entry(
                 "tenant_update",
-                "Admin: update a tenant's spec (e.g. display name).",
+                "Admin: partial-update a tenant's spec — display_name, status \
+                 (active|suspended), quotas, embedding_provider. Changing \
+                 embedding_provider requires a rebuild (`rebuild_required` in the \
+                 response).",
                 json!({
                     "type": "object",
                     "required": ["tenant_id"],
                     "properties": {
                         "tenant_id": { "type": "string" },
-                        "display_name": { "type": "string" }
+                        "display_name": { "type": "string" },
+                        "status": { "type": "string", "enum": ["active", "suspended"] },
+                        "quotas": {
+                            "type": "object",
+                            "properties": {
+                                "queries_per_minute": { "type": "integer" },
+                                "writes_per_minute": { "type": "integer" },
+                                "embeds_per_minute": { "type": "integer" },
+                                "concurrent_sessions": { "type": "integer" },
+                                "max_blob_bytes": { "type": "integer" }
+                            }
+                        },
+                        "embedding_provider": {
+                            "type": "object",
+                            "required": ["provider"],
+                            "properties": {
+                                "provider": { "type": "string", "enum": ["zero", "gemini", "embeddinggemma"] },
+                                "model": { "type": "string" },
+                                "dim": { "type": "integer" }
+                            }
+                        }
                     }
                 }),
             ),

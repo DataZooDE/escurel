@@ -118,6 +118,41 @@ pub enum EmbeddingProvider {
     EmbeddingGemma,
 }
 
+/// Parse an `embedding_provider` string (#247 tenant spec / env) into the
+/// selector. `None` for an unknown value (caller keeps the current provider).
+pub(crate) fn parse_embedding_provider(s: &str) -> Option<EmbeddingProvider> {
+    match s {
+        "zero" => Some(EmbeddingProvider::Zero),
+        "gemini" => Some(EmbeddingProvider::Gemini),
+        "embeddinggemma" => Some(EmbeddingProvider::EmbeddingGemma),
+        _ => None,
+    }
+}
+
+/// Fold a per-tenant [`QuotaOverride`](escurel_types::QuotaOverride) onto a
+/// base [`QuotaConfig`] — each `Some` field wins, `None` inherits (#247).
+pub(crate) fn apply_quota_override(
+    mut base: QuotaConfig,
+    over: escurel_types::QuotaOverride,
+) -> QuotaConfig {
+    if let Some(v) = over.queries_per_minute {
+        base.queries_per_minute = v;
+    }
+    if let Some(v) = over.writes_per_minute {
+        base.writes_per_minute = v;
+    }
+    if let Some(v) = over.embeds_per_minute {
+        base.embeds_per_minute = v;
+    }
+    if let Some(v) = over.concurrent_sessions {
+        base.concurrent_sessions = v;
+    }
+    if let Some(v) = over.max_blob_bytes {
+        base.max_blob_bytes = v;
+    }
+    base
+}
+
 /// Errors raised while loading config or building backends.
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -823,9 +858,17 @@ impl EscurelConfig {
         // 2. LaneStore.
         let store = self.build_lane_store().await?;
 
+        // #247: the served tenant's spec is the source of truth for its
+        // embedding provider, quota override, and lifecycle status. Load it
+        // (if any) so the embedder honours the tenant's declared provider —
+        // not just the gateway env default — and quotas/status take effect.
+        let tenant_spec = self.load_served_tenant_spec().await;
+
         // 3. Embedder behind the reloadable seam. Load failure is
-        //    degraded-start, not fatal.
-        let embedder = Arc::new(self.build_embedder().await);
+        //    degraded-start, not fatal. The effective config folds in the
+        //    tenant's `embedding_provider` when it declares one.
+        let embed_cfg = self.with_tenant_embedding(tenant_spec.as_ref());
+        let embedder = Arc::new(embed_cfg.build_embedder().await);
 
         // 4. Per-tenant DuckDB: open/create, migrate if fresh, build
         //    the indexer. A second connection on the same file backs
@@ -972,9 +1015,22 @@ impl EscurelConfig {
         // 5. OIDC verifier (only when an issuer is configured).
         let verifier = self.build_verifier();
 
-        // 6. Quota + tenant store.
-        let quota = Some(Arc::new(QuotaManager::new(QuotaConfig::defaults())));
+        // 6. Quota + tenant store. Per-tenant overrides (#247) come from the
+        //    served tenant's spec; absent → gateway defaults.
+        let quota_mgr = QuotaManager::new(QuotaConfig::defaults());
+        if let Some(over) = tenant_spec.as_ref().and_then(|s| s.quotas) {
+            quota_mgr.set_for_tenant(
+                &self.tenant,
+                apply_quota_override(QuotaConfig::defaults(), over),
+            );
+        }
+        let quota = Some(Arc::new(quota_mgr));
         let tenant_store = Arc::new(FsTenantStore::new(self.data_dir.join("tenants")));
+        // #247: cache the served tenant's suspend flag for the dispatch gate.
+        let tenant_suspended = Arc::new(std::sync::atomic::AtomicBool::new(matches!(
+            tenant_spec.as_ref().map(|s| s.status),
+            Some(escurel_admin::TenantStatus::Suspended)
+        )));
 
         // 7. Readiness probe over the live dependencies.
         let readiness = Arc::new(DependencyProbe::new(
@@ -1005,7 +1061,12 @@ impl EscurelConfig {
             // model load by calling the factory and swapping the
             // result into `embedder`.
             embedder_reload: Some(Arc::clone(&embedder)),
-            embedder_factory: Some(self.embedder_factory()),
+            embedder_factory: Some(embed_cfg.embedder_factory()),
+            tenant_suspended,
+            // #246 eager per-edit improvement: opt-in via env, off by default.
+            emit_edit_events: std::env::var("ESCUREL_EMIT_EDIT_EVENTS")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             demo_dir: self.demo_dir.clone(),
             webhook_url: self.webhook_url.clone(),
             webhook_secret: self.webhook_secret.clone(),
@@ -1094,6 +1155,39 @@ impl EscurelConfig {
                 Ok((embedder, cfg.embedder_revision()))
             })
         })
+    }
+
+    /// Load the served tenant's spec from
+    /// `<data_dir>/tenants/<tenant>/tenant.json` (#247). `None` when the tenant
+    /// isn't provisioned or the file is absent/malformed — the gateway then
+    /// runs on env defaults, exactly as before this field existed.
+    async fn load_served_tenant_spec(&self) -> Option<escurel_admin::TenantSpec> {
+        let path = self
+            .data_dir
+            .join("tenants")
+            .join(&self.tenant)
+            .join("tenant.json");
+        let bytes = tokio::fs::read(&path).await.ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// A config clone whose embedding provider/model/dim are overridden by the
+    /// tenant's declared `embedding_provider` (#247). No override → a plain
+    /// clone (env defaults win).
+    fn with_tenant_embedding(&self, spec: Option<&escurel_admin::TenantSpec>) -> Self {
+        let mut cfg = self.clone();
+        if let Some(ep) = spec.and_then(|s| s.embedding_provider.as_ref()) {
+            if let Some(p) = parse_embedding_provider(&ep.provider) {
+                cfg.embedding_provider = p;
+            }
+            if let Some(m) = ep.model.clone() {
+                cfg.embedding_model = Some(m);
+            }
+            if let Some(d) = ep.dim {
+                cfg.embedding_dim = d;
+            }
+        }
+        cfg
     }
 
     /// A short label naming the model that would load — the model

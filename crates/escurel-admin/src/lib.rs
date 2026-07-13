@@ -33,13 +33,23 @@ use escurel_index::Migrator;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Persistent identity for a tenant.
+pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
+
+/// Persistent identity + lifecycle/quota/embedding for a tenant (#247).
 ///
-/// Stored on disk as `<root>/<tenant_id>/tenant.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Stored on disk as `<root>/<tenant_id>/tenant.json`. The `status`/`quotas`/
+/// `embedding_provider` fields are `#[serde(default)]` so a `tenant.json`
+/// written before #247 (identity only) deserialises with sane defaults.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TenantSpec {
     pub tenant_id: String,
     pub display_name: String,
+    #[serde(default)]
+    pub status: TenantStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quotas: Option<QuotaOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_provider: Option<EmbeddingSpec>,
 }
 
 /// Why a [`TenantStore`] call failed.
@@ -325,6 +335,9 @@ async fn read_spec_or_default(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TenantSpec {
             tenant_id: tenant_id.to_owned(),
             display_name: tenant_id.to_owned(),
+            status: TenantStatus::default(),
+            quotas: None,
+            embedding_provider: None,
         }),
         Err(source) => Err(AdminError::Io {
             path: path.to_path_buf(),
@@ -376,6 +389,7 @@ mod tests {
         let spec = TenantSpec {
             tenant_id: "acme".to_owned(),
             display_name: "Acme Corp".to_owned(),
+            ..Default::default()
         };
         store.create(&spec).await.unwrap();
         let got = store.get("acme").await.unwrap().unwrap();

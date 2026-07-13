@@ -288,12 +288,33 @@ exists as a page but is not linked (suggest the wikilink); and a\n\
 `kind`, `severity`, `subject_page`, and `message` on each `issue`; suggest a\n\
 fix in `suggestion`. Do not edit the pages under review.\n";
 
+/// The eager per-edit maintenance handler (#246). An out-of-band `update_page`
+/// (with `ESCUREL_EMIT_EDIT_EVENTS` on) captures a `page-edited` event labelled
+/// to this skill; the runner reacts by re-verifying just the touched page —
+/// turning the periodic lint tick's catch into an eager per-edit catch. Steps
+/// run on the narrowed `WORKFLOW_STEP_TOOLS` surface (read + update_page; the
+/// event surface is denied), so a maintenance write can't itself steer the run.
+pub const PAGE_EDITED: &str = "---\n\
+type: skill\n\
+id: page-edited\n\
+description: React to an out-of-band page edit — re-verify the touched page and flag any orphan / stale / contradiction it introduced as issues.\n\
+optional_frontmatter: [edit]\n\
+---\n\
+# page-edited\n\n\
+A page was edited outside the runner. Re-read it (`expand`), check it against \
+the corpus (`search`/`neighbours`), and if the edit introduced an orphan, a \
+stale claim, or a contradiction, record an `issue`. Refresh the page's \
+`last_verified` if it still holds. Propose; do not silently rewrite other pages.\n";
+
 /// The `(page_id, markdown)` pairs that make up the `lint` corpus. Opt-in.
+/// Includes the `page-edited` maintenance handler (#246) so an eager per-edit
+/// event has a valid skill to route to.
 #[must_use]
 pub fn lint_corpus() -> Vec<(String, &'static str)> {
     vec![
         ("markdown/skills/lint.md".to_owned(), LINT_PLAN),
         ("markdown/skills/issue.md".to_owned(), ISSUE),
+        ("markdown/skills/page-edited.md".to_owned(), PAGE_EDITED),
         ("markdown/skills/workflow-run.md".to_owned(), WORKFLOW_RUN),
     ]
 }

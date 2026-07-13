@@ -72,6 +72,8 @@ pub use escurel_types::{
     StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest,
     ValidateResponse, ValidationIssue, WikilinkParsed,
 };
+// #247 tenant lifecycle/quota/embedding sub-types.
+pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
 // Re-exported so callers don't need to depend on `secrecy` directly
 // just to spell out a token. Keeping the version in sync with this
 // crate's `Cargo.toml` is part of the semver contract.

@@ -673,3 +673,123 @@ async fn serde_migration_keeps_quota_and_lane_blob_wire_keys() {
 
     h.process.shutdown().await;
 }
+
+// --- #247: status (suspend/resume) + quotas + embedding_provider ---------
+
+/// Extract the `structuredContent` payload from a tools/call envelope.
+fn structured(env: &Value) -> Value {
+    env["result"]["structuredContent"].clone()
+}
+
+#[tokio::test]
+async fn tenant_update_suspend_rejects_then_resume_allows() {
+    let h = start().await;
+    // Provision the served tenant in the store so tenant_update can read-merge.
+    call(
+        &h.process,
+        Role::Admin,
+        "tenant_create",
+        json!({ "tenant_id": TENANT, "display_name": "Acme" }),
+    )
+    .await;
+
+    // A non-admin call works while active.
+    let ok = call(&h.process, Role::Agent, "list_skills", json!({})).await;
+    assert!(
+        ok.get("error").is_none(),
+        "active tenant serves agents: {ok}"
+    );
+
+    // Suspend (admin).
+    let susp = call(
+        &h.process,
+        Role::Admin,
+        "tenant_update",
+        json!({ "tenant_id": TENANT, "status": "suspended" }),
+    )
+    .await;
+    assert_eq!(structured(&susp)["spec"]["status"], "suspended");
+
+    // Now a non-admin call is rejected with the suspend error code.
+    let blocked = call(&h.process, Role::Agent, "list_skills", json!({})).await;
+    assert_eq!(
+        blocked["error"]["code"], -32003,
+        "suspended tenant rejects agents: {blocked}"
+    );
+
+    // Admin can still act (to resume) — the gate never blocks admin.
+    let resumed = call(
+        &h.process,
+        Role::Admin,
+        "tenant_update",
+        json!({ "tenant_id": TENANT, "status": "active" }),
+    )
+    .await;
+    assert_eq!(structured(&resumed)["spec"]["status"], "active");
+
+    // Agents are served again.
+    let ok2 = call(&h.process, Role::Agent, "list_skills", json!({})).await;
+    assert!(
+        ok2.get("error").is_none(),
+        "resumed tenant serves agents: {ok2}"
+    );
+
+    h.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn tenant_update_quotas_persist_and_embedding_change_requires_rebuild() {
+    let h = start().await;
+    call(
+        &h.process,
+        Role::Admin,
+        "tenant_create",
+        json!({ "tenant_id": TENANT, "display_name": "Acme" }),
+    )
+    .await;
+
+    // A partial update that sets quotas persists them (visible via tenant_get)
+    // and does NOT require a rebuild.
+    let upd = call(
+        &h.process,
+        Role::Admin,
+        "tenant_update",
+        json!({ "tenant_id": TENANT, "quotas": { "writes_per_minute": 5 } }),
+    )
+    .await;
+    assert_eq!(
+        structured(&upd)["rebuild_required"],
+        Value::Null,
+        "quota change needs no rebuild: {upd}"
+    );
+    let got = call(
+        &h.process,
+        Role::Admin,
+        "tenant_get",
+        json!({ "tenant_id": TENANT }),
+    )
+    .await;
+    assert_eq!(structured(&got)["spec"]["quotas"]["writes_per_minute"], 5);
+    // Partial update preserved the display name (get-modify-put on the server).
+    assert_eq!(structured(&got)["spec"]["display_name"], "Acme");
+
+    // Changing embedding_provider requires a rebuild (vector space moves).
+    let emb = call(
+        &h.process,
+        Role::Admin,
+        "tenant_update",
+        json!({ "tenant_id": TENANT, "embedding_provider": { "provider": "zero" } }),
+    )
+    .await;
+    assert_eq!(
+        structured(&emb)["rebuild_required"],
+        true,
+        "embedding change requires rebuild: {emb}"
+    );
+    assert_eq!(
+        structured(&emb)["spec"]["embedding_provider"]["provider"],
+        "zero"
+    );
+
+    h.process.shutdown().await;
+}

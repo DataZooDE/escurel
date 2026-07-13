@@ -25,6 +25,28 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{CrdtBackend, Error, Op, Snapshot, Version};
 
+/// One-shot read of a page's current CRDT content (#246): hydrate a `LoroDoc`
+/// from the backend's latest snapshot + post-snapshot ops and return its `body`
+/// text (the whole-page markdown). `None` when the page has no CRDT state yet.
+/// Lighter than [`LiveDoc::open`] — no actor task; use it for a read-only peek
+/// (e.g. `update_page`'s conflict `head_content`).
+pub async fn hydrate_content(
+    backend: &Arc<dyn CrdtBackend>,
+    page_id: &str,
+) -> Result<Option<String>, Error> {
+    let Some((snap, ops)) = backend.load(page_id).await? else {
+        return Ok(None);
+    };
+    let doc = LoroDoc::new();
+    if !snap.as_bytes().is_empty() {
+        doc.import(snap.as_bytes())?;
+    }
+    for op in ops {
+        doc.import(op.as_bytes())?;
+    }
+    Ok(Some(doc.get_text("body").to_string()))
+}
+
 /// A single live CRDT session attached to one page.
 ///
 /// Cheap to clone via the underlying mpsc sender; clone if you

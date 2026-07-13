@@ -38,6 +38,7 @@ async fn start() -> Harness {
         .create(&TenantSpec {
             tenant_id: TENANT.to_owned(),
             display_name: "Acme".to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();

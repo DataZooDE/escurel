@@ -34,7 +34,7 @@ pub mod reconciler;
 pub use backend::{CrdtBackend, DuckdbCrdtBackend};
 pub use codec::{body_from_snapshot, snapshot_bytes_from_markdown};
 pub use error::Error;
-pub use livedoc::LiveDoc;
+pub use livedoc::{LiveDoc, hydrate_content};
 pub use reconciler::{CitationLookup, Decision, ExternalEditReconciler};
 
 /// Raw Loro op bytes — the wire payload that
