@@ -330,6 +330,15 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<List<PackSubscriptionInfo>> listPacks() async {
+    final result = await _call('list_packs', const {});
+    return (result['packs'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(PackSubscriptionInfo.fromJson)
+        .toList();
+  }
+
+  @override
   Future<List<BindingStatus>> validateBindings() async {
     final result = await _call('validate_bindings', const {});
     return (result['bindings'] as List? ?? const [])

@@ -278,6 +278,29 @@ async fn admin_pack_export_writes_tarball_and_manifest() {
             .starts_with("sha256="),
         "{manifest}"
     );
+
+    // Offline-tarball import (the air-gapped transport): the two files
+    // written above are all a spoke needs. The manifest path defaults
+    // to `<in>.manifest.json`, so only `--in` is passed.
+    let imp = admin(
+        &h,
+        v(&[
+            "admin", "pack", "import", "--tenant", TENANT, "--in", &out_str,
+        ]),
+    )
+    .await;
+    let r = json(&imp);
+    assert_eq!(r["pack"], "crm-core");
+    assert_eq!(r["pages_imported"], 1);
+    assert_eq!(r["layer"], "base@crm-core@v1");
+
+    // And the pin is visible.
+    let listed = admin(&h, v(&["admin", "pack", "list", "--tenant", TENANT])).await;
+    let packs = json(&listed)["packs"].as_array().unwrap().clone();
+    assert_eq!(packs.len(), 1, "{listed:?}");
+    assert_eq!(packs[0]["pack_id"], "crm-core");
+    assert_eq!(packs[0]["version"], 1);
+
     h.process.shutdown().await;
 }
 

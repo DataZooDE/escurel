@@ -177,6 +177,34 @@ class BackendProjection {
   }
 }
 
+/// One subscribed skill pack and its pinned version (`list_packs`,
+/// REQ-SUB-01): the provenance record behind the tenant's read-only
+/// `base@<pack>@<version>` layer.
+class PackSubscriptionInfo {
+  const PackSubscriptionInfo({
+    required this.packId,
+    required this.version,
+    required this.vertical,
+    required this.publisher,
+    this.contentHash,
+  });
+
+  final String packId;
+  final int version;
+  final String vertical;
+  final String publisher;
+  final String? contentHash;
+
+  factory PackSubscriptionInfo.fromJson(Map<String, dynamic> j) =>
+      PackSubscriptionInfo(
+        packId: (j['pack_id'] as String?) ?? '',
+        version: (j['version'] as num?)?.toInt() ?? 0,
+        vertical: (j['vertical'] as String?) ?? '',
+        publisher: (j['publisher'] as String?) ?? '',
+        contentHash: j['content_hash'] as String?,
+      );
+}
+
 /// A registered external-source credential — name/connector only, never the
 /// secret (`list_credentials`).
 class CredentialInfo {

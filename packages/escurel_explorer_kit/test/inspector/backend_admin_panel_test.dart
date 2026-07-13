@@ -38,13 +38,28 @@ Future<void> _pump(WidgetTester tester, EscurelClient client) async {
 }
 
 void main() {
-  testWidgets('renders the four trigger cards', (tester) async {
+  testWidgets('renders the five trigger cards', (tester) async {
     await _pump(tester, _client());
     expect(find.bySemanticsLabel('backend-admin-panel'), findsOneWidget);
     expect(find.bySemanticsLabel('cred-register-button'), findsOneWidget);
     expect(find.bySemanticsLabel('validate-bindings-button'), findsOneWidget);
     expect(find.bySemanticsLabel('create-sql-submit'), findsOneWidget);
     expect(find.bySemanticsLabel('ingest-submit'), findsOneWidget);
+    expect(find.bySemanticsLabel('list-packs-button'), findsOneWidget);
+  });
+
+  testWidgets('listing packs shows the empty-state for an overlay-only node', (
+    tester,
+  ) async {
+    // The fixture client subscribes to nothing — the honest default:
+    // an isolated spoke that runs on its own overlay.
+    await _pump(tester, _client());
+    await tester.tap(find.bySemanticsLabel('list-packs-button'));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('no packs subscribed'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('registering a credential surfaces it in the list', (
