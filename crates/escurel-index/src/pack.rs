@@ -182,57 +182,33 @@ impl Indexer {
         &self,
         skills: &[String],
     ) -> Result<Vec<(String, String)>, IndexerError> {
+        // Resolve ids → page ids via the index (lookup only). Every
+        // eligibility decision below is made on the CANONICAL LANE
+        // CONTENT that gets packed — never on the index row — so there
+        // is no gap between what was checked and what leaves the node
+        // (agy review: a write between an index check and the lane read
+        // could swap eligible content for confidential content).
         let mut page_ids: Vec<String> = Vec::new();
         {
             let conn = self.conn.lock().await;
             for skill in skills {
-                let row: Option<(String, String)> = match conn.query_row(
-                    "SELECT page_id, frontmatter::VARCHAR FROM pages \
+                let page_id: Option<String> = match conn.query_row(
+                    "SELECT page_id FROM pages \
                      WHERE (slug = ? OR page_id = ?) \
                      ORDER BY CASE WHEN page_type = 'skill' THEN 0 ELSE 1 END \
                      LIMIT 1",
                     duckdb::params![skill, skill],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| r.get(0),
                 ) {
                     Ok(v) => Some(v),
                     Err(duckdb::Error::QueryReturnedNoRows) => None,
                     Err(e) => return Err(e.into()),
                 };
-                let Some((page_id, fm_json)) = row else {
+                let Some(page_id) = page_id else {
                     return Err(IndexerError::PromotionNotEligible {
                         reason: format!("`{skill}` names no indexed page"),
                     });
                 };
-                let fm: serde_json::Value = serde_json::from_str(&fm_json)?;
-                if fm.get("type").and_then(serde_json::Value::as_str) != Some("skill") {
-                    return Err(IndexerError::PromotionNotEligible {
-                        reason: format!(
-                            "`{skill}` is not a skill page — raw instance data never \
-                             promotes (default policy); only firm-curated skills and \
-                             structural patterns leave the node"
-                        ),
-                    });
-                }
-                if fm.get("promotable") != Some(&serde_json::Value::Bool(true)) {
-                    return Err(IndexerError::PromotionNotEligible {
-                        reason: format!(
-                            "skill `{skill}` does not carry `promotable: true`; the \
-                             marker is set by a curator, never by default"
-                        ),
-                    });
-                }
-                if fm
-                    .get("layer")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|l| l.starts_with("base@"))
-                {
-                    return Err(IndexerError::PromotionNotEligible {
-                        reason: format!(
-                            "skill `{skill}` is base-layer pack content — it is the \
-                             hub's, not this node's to promote"
-                        ),
-                    });
-                }
                 page_ids.push(page_id);
             }
         }
@@ -249,6 +225,49 @@ impl Indexer {
                     page_id: page_id.clone(),
                 })?
                 .to_owned();
+            // Verify WHAT YOU PACK: parse the exact bytes that will be
+            // bundled and gate on their frontmatter.
+            let parsed =
+                escurel_md::parse(&content).map_err(|_| IndexerError::PromotionNotEligible {
+                    reason: format!("`{page_id}` does not parse as escurel markdown"),
+                })?;
+            if parsed.frontmatter.page_type != escurel_md::PageType::Skill {
+                return Err(IndexerError::PromotionNotEligible {
+                    reason: format!(
+                        "`{page_id}` is not a skill page — raw instance data never \
+                         promotes (default policy); only firm-curated skills and \
+                         structural patterns leave the node"
+                    ),
+                });
+            }
+            if parsed
+                .frontmatter
+                .fields
+                .get("promotable")
+                .and_then(escurel_md::YamlValue::as_bool)
+                != Some(true)
+            {
+                return Err(IndexerError::PromotionNotEligible {
+                    reason: format!(
+                        "skill `{page_id}` does not carry `promotable: true`; the \
+                         marker is set by a curator, never by default"
+                    ),
+                });
+            }
+            if parsed
+                .frontmatter
+                .fields
+                .get("layer")
+                .and_then(escurel_md::YamlValue::as_str)
+                .is_some_and(|l| l.starts_with("base@"))
+            {
+                return Err(IndexerError::PromotionNotEligible {
+                    reason: format!(
+                        "skill `{page_id}` is base-layer pack content — it is the \
+                         hub's, not this node's to promote"
+                    ),
+                });
+            }
             let rel = page_id
                 .strip_prefix("markdown/")
                 .unwrap_or(page_id.as_str())

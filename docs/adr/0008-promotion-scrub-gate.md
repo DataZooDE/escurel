@@ -53,6 +53,25 @@ audited**, and a zero-leakage regression test ships with it, not after.
    `escurel admin pack submit-promotion` (writes candidate tarball +
    manifest for carry to the hub — air-gap-compatible like import).
 
+### Review hardening (codex + antigravity, pre-merge)
+
+- **Candidates are not importable**: `import_pack` refuses
+  `version: 0` (`pack_candidate_not_importable`) — a candidate shares
+  the signing secret, so without this a spoke could pin
+  `base@<candidate>@v0` and bypass the hub gate entirely.
+- **The write guards re-run on the auto-merged artifact**: a stale
+  `base_version` merge can carry `promotable: true` (or a laundered
+  `layer: base@…`) from the head into the persisted output even when
+  the caller's draft was clean; whatever produced the final content,
+  what persists passes the same gates.
+- **Verify-what-you-pack**: promotion eligibility is decided on the
+  canonical lane bytes that get bundled — never on the index row — so
+  no write between an index check and the lane read can swap eligible
+  content for confidential content.
+- Documented follow-up (not built): audit events for *blocked*
+  promotion attempts, so curators see exfiltration attempts, not only
+  successes.
+
 ## Consequences
 
 - The paper's L2→L3→L2 sub-loop is now mechanically closable:

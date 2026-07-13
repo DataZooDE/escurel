@@ -364,6 +364,110 @@ async fn every_submission_emits_an_immutable_audit_event() {
 }
 
 #[tokio::test]
+async fn the_auto_merge_path_cannot_launder_the_promotable_marker() {
+    // agy MUST-FIX: the curator guard checks the DRAFT; a stale
+    // base_version triggers a CRDT auto-merge whose OUTPUT can carry
+    // `promotable: true` reconstructed from the head even when the
+    // agent's draft never contained it. The guard must re-run on the
+    // merged content — an agent write may never persist the marker.
+    use duckdb::Connection;
+    use escurel_crdt::{CrdtBackend, DuckdbCrdtBackend};
+    use escurel_embed::{Embedder, ZeroEmbedder};
+    use escurel_index::{Indexer, Migrator};
+    use escurel_storage::{FsStore, LaneStore};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::sync::Mutex;
+
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    Migrator::up(&conn).unwrap();
+    let crdt_conn = conn.try_clone().unwrap();
+    let indexer = Arc::new(Indexer::new(store, embedder, conn, TENANT).unwrap());
+    let crdt_backend: Arc<dyn CrdtBackend> =
+        Arc::new(DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn))));
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: None,
+        config_overrides: ConfigOverrides {
+            indexer: Some(indexer),
+            crdt_backend: Some(crdt_backend),
+            pack_secret: Some(PACK_SECRET.to_owned()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    let page_id = "markdown/skills/curated.md";
+    // v1: an UNMARKED page — this is the base the agent will branch from.
+    let unmarked = "---\ntype: skill\nid: curated\ndescription: curated.\n---\n# curated\n\nbody\n";
+    let w = call(
+        &p,
+        Role::Admin,
+        "update_page",
+        json!({ "page_id": page_id, "content": unmarked }),
+    )
+    .await;
+    assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+    let v1 = w["result"]["structuredContent"]["new_version"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // v2: the head GAINS the marker (stands in for the CRDT-injection
+    // shape — however the marker got into the head, the merged output
+    // of an agent write will carry it).
+    let marked = "---\ntype: skill\nid: curated\ndescription: curated.\npromotable: true\n---\n# curated\n\nbody\n";
+    let w = call(
+        &p,
+        Role::Admin,
+        "update_page",
+        json!({ "page_id": page_id, "content": marked }),
+    )
+    .await;
+    assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+
+    // The AGENT submits a clean draft (no marker anywhere) against the
+    // stale v1 base. The plain draft-guard passes; the auto-merge
+    // reconstructs (base → head) ∪ (base → draft) — and the head's side
+    // carries `promotable: true` into the merged output. That output
+    // must never persist from an agent call.
+    let clean_draft =
+        "---\ntype: skill\nid: curated\ndescription: curated.\n---\n# curated\n\nbody agent-edit\n";
+    let w = call(
+        &p,
+        Role::Agent,
+        "update_page",
+        json!({ "page_id": page_id, "content": clean_draft, "base_version": v1 }),
+    )
+    .await;
+    let r = &w["result"]["structuredContent"];
+    if r["ok"] == true {
+        // Merge went through: the persisted page must not carry the
+        // marker (i.e. the guard stripped/refused the laundered copy).
+        let ex = call(&p, Role::Agent, "expand", json!({ "page_id": page_id })).await;
+        let fm = &ex["result"]["structuredContent"]["frontmatter"];
+        assert!(
+            fm.get("promotable").is_none() || fm["promotable"] != true,
+            "an agent write may never persist the curator marker: {ex}"
+        );
+    } else {
+        // Or the write refused outright — fail-closed is acceptable;
+        // it must be the typed curator (or conflict) rejection, not a
+        // silent server error.
+        let code = r["issues"][0]["code"].as_str().unwrap_or_default();
+        assert!(
+            code == "promotable_requires_curator" || code == "conflict",
+            "unexpected rejection: {w}"
+        );
+    }
+
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn submit_promotion_requires_admin_role() {
     let p = start().await;
     let body = call(

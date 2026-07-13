@@ -596,6 +596,85 @@ async fn a_manifest_id_with_unsafe_characters_is_refused() {
 }
 
 #[tokio::test]
+async fn a_version_zero_candidate_is_not_importable() {
+    // codex/agy review: a promotion CANDIDATE (version 0, signed with
+    // the same shared secret) must not be importable as a base pack —
+    // that would bypass the hub curator's maker/checker gate and squat
+    // the pack id against the later approved v1.
+    let spoke = start_spoke().await;
+    let pages = vec![(
+        "skills/x.md".to_owned(),
+        "---\ntype: skill\nid: x\ndescription: ok\n---\n# x\n".to_owned(),
+    )];
+    let tarball = escurel_server::pack::build_tarball(&pages).unwrap();
+    let mut manifest = escurel_types::PackManifest {
+        format_version: escurel_server::pack::PACK_FORMAT_VERSION,
+        id: "candidate-pack".into(),
+        version: 0,
+        vertical: "logistics-midmarket".into(),
+        publisher: "spoke.other".into(),
+        page_count: 1,
+        content_hash: escurel_server::pack::content_hash(&tarball),
+        signature: String::new(),
+    };
+    manifest.signature = escurel_server::pack::sign_manifest(&manifest, PACK_SECRET);
+    let body = import(
+        &spoke,
+        &serde_json::to_value(&manifest).unwrap(),
+        &B64.encode(&tarball),
+    )
+    .await;
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("pack_candidate_not_importable"),
+        "version-0 candidates must be refused: {body}"
+    );
+    spoke.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_pack_shipping_the_same_skill_id_twice_is_refused() {
+    // codex review: the collision check must also see DUPLICATES inside
+    // the incoming pack itself — the DB knows nothing about pages that
+    // haven't landed yet.
+    let spoke = start_spoke().await;
+    let pages = vec![
+        (
+            "skills/a.md".to_owned(),
+            "---\ntype: skill\nid: twin\ndescription: first\n---\n# a\n".to_owned(),
+        ),
+        (
+            "skills/b.md".to_owned(),
+            "---\ntype: skill\nid: twin\ndescription: second\n---\n# b\n".to_owned(),
+        ),
+    ];
+    let tarball = escurel_server::pack::build_tarball(&pages).unwrap();
+    let mut manifest = escurel_types::PackManifest {
+        format_version: escurel_server::pack::PACK_FORMAT_VERSION,
+        id: "twin-pack".into(),
+        version: 1,
+        vertical: "logistics-midmarket".into(),
+        publisher: "hub.test".into(),
+        page_count: 2,
+        content_hash: escurel_server::pack::content_hash(&tarball),
+        signature: String::new(),
+    };
+    manifest.signature = escurel_server::pack::sign_manifest(&manifest, PACK_SECRET);
+    let body = import(
+        &spoke,
+        &serde_json::to_value(&manifest).unwrap(),
+        &B64.encode(&tarball),
+    )
+    .await;
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("pack_skill_collision"),
+        "intra-pack duplicate skill ids must refuse: {body}"
+    );
+    spoke.shutdown().await;
+}
+
+#[tokio::test]
 async fn import_pack_requires_admin_role() {
     let hub = start_hub().await;
     let spoke = start_spoke().await;

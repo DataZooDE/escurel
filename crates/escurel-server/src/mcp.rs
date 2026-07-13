@@ -2346,6 +2346,51 @@ async fn tool_update_page(
         }
     }
 
+    // Re-run the write guards on the MERGED artifact (agy review): the
+    // draft-side checks above saw `a.content`, but a clean auto-merge
+    // persists `content_to_write`, whose frontmatter can carry keys the
+    // head gained since the caller's base — including a laundered
+    // `layer: base@…` or `promotable: true`. Whatever produced the
+    // final content, what persists must pass the same gates.
+    if auto_merged {
+        if let Some(reason) = indexer
+            .layer_read_only_rejection(&a.page_id, &content_to_write)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("update_page merged layer guard: {e}")))?
+        {
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "layer_read_only",
+                    "location": "frontmatter.layer",
+                    "message": reason,
+                }],
+            }));
+        }
+        if !caller.is_admin
+            && escurel_md::parse(&content_to_write).is_ok_and(|p| {
+                p.frontmatter
+                    .fields
+                    .get("promotable")
+                    .and_then(escurel_md::YamlValue::as_bool)
+                    == Some(true)
+            })
+        {
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "promotable_requires_curator",
+                    "location": "frontmatter.promotable",
+                    "message": "the auto-merged result would persist `promotable: true`; \
+                                only a curator (admin role) may write the marker — \
+                                re-draft against the current head",
+                }],
+            }));
+        }
+    }
+
     match indexer.update_page(&a.page_id, &content_to_write).await {
         Ok(()) => {
             // Advance the monotonic version: snapshot the new whole-page content
@@ -3827,6 +3872,18 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
             a.manifest.vertical.escape_default()
         )));
     }
+    // Version 0 is the promotion-candidate sentinel (signed with the
+    // same shared secret): importing one would bypass the hub curator's
+    // maker/checker gate and squat the pack id against the approved v1
+    // (codex/agy review). Published packs start at v1.
+    if a.manifest.version == 0 {
+        return Err(JsonRpcError::internal(format!(
+            "pack_candidate_not_importable: `{}` is a promotion candidate \
+             (version 0), not a published pack; a hub curator reviews and \
+             publishes it under a real version first",
+            a.manifest.id
+        )));
+    }
     let indexer = admin_indexer(state)?.clone();
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
 
@@ -3891,10 +3948,13 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
         stamped_pages.push((format!("{prefix}{rel}"), stamped));
     }
 
-    // A skill page whose id another indexed skill page already declares
-    // would make slug resolution non-deterministic (silent shadowing —
-    // agy review). Checked BEFORE the first write; re-imports of the
-    // same pack land on the same page ids and pass.
+    // A skill page whose id another skill page already declares — an
+    // indexed one OR another entry of this same pack (codex review: the
+    // DB knows nothing about pages that haven't landed) — would make
+    // slug resolution non-deterministic (silent shadowing). Checked
+    // BEFORE the first write; re-imports of the same pack land on the
+    // same page ids and pass.
+    let mut skill_ids_in_pack: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (page_id, stamped) in &stamped_pages {
         let Ok(parsed) = escurel_md::parse(stamped) else {
             continue; // stamp_layer already parsed; defensive only
@@ -3911,6 +3971,13 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
             .to_owned();
         if skill_id.is_empty() {
             continue;
+        }
+        if !skill_ids_in_pack.insert(skill_id.clone()) {
+            return Err(JsonRpcError::internal(format!(
+                "pack_skill_collision: pack `{}` ships skill `{skill_id}` more than \
+                 once; two pages declaring one skill id resolve non-deterministically",
+                a.manifest.id
+            )));
         }
         if let Some(existing) = indexer
             .skill_page_conflict(&skill_id, page_id)
