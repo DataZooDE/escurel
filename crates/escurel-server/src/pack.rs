@@ -162,29 +162,54 @@ fn is_safe_entry_path(path: &str) -> bool {
 }
 
 /// Stamp `layer: <layer>` into a page's frontmatter for landing as a
-/// base page. Fail-closed: the content must open with a `---`
-/// frontmatter fence and must not already declare a `layer:` key (pack
-/// pages are layer-free — layer is a property of where a page sits,
-/// and a pack that ships one is malformed).
+/// base page. Fail-closed (agy review hardened this):
+/// * a UTF-8 BOM is stripped; CRLF content is refused with an
+///   actionable message (the canonical corpus is LF — the exporter
+///   never emits CRLF, so this only fires on hand-built packs);
+/// * the page must PARSE as escurel markdown (`escurel_md::parse`) —
+///   so "frontmatter present" is decided by the real parser, not by
+///   scanning for `\n---` (which a multi-line string value could
+///   spoof), and a pre-declared `layer` key is found wherever YAML
+///   puts it (quoted, indented, …), not by a `starts_with` scan;
+/// * pack pages must be layer-free — layer is a property of where a
+///   page sits, and the importer stamps it.
 pub fn stamp_layer(content: &str, layer: &str) -> Result<String, String> {
-    let Some(rest) = content.strip_prefix("---\n") else {
-        return Err("pack_malformed: page has no frontmatter fence".to_owned());
-    };
-    let Some(fence_end) = rest.find("\n---") else {
-        return Err("pack_malformed: page frontmatter is unterminated".to_owned());
-    };
-    let frontmatter = &rest[..fence_end];
-    if frontmatter
-        .lines()
-        .any(|l| l.starts_with("layer:") || l.starts_with("layer :"))
-    {
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    if content.contains('\r') {
+        return Err(
+            "pack_malformed: page uses CRLF line endings; the canonical corpus is \
+             LF — normalise the pack contents"
+                .to_owned(),
+        );
+    }
+    let parsed = escurel_md::parse(content)
+        .map_err(|e| format!("pack_malformed: page does not parse as escurel markdown: {e}"))?;
+    if parsed.frontmatter.fields.get("layer").is_some() {
         return Err(
             "pack_malformed: page already declares a `layer:` key — pack pages are \
              layer-free (the importer stamps the layer)"
                 .to_owned(),
         );
     }
+    let Some(rest) = content.strip_prefix("---\n") else {
+        return Err("pack_malformed: page has no frontmatter fence".to_owned());
+    };
     Ok(format!("---\nlayer: {layer}\n{rest}"))
+}
+
+/// Whether `s` is a safe pack identity token (`id` / `vertical`):
+/// lowercase alphanumerics plus `.`/`_`/`-`, non-empty, ≤ 64 chars,
+/// starting alphanumeric. Load-bearing (agy review): the manifest id is
+/// interpolated into the stamped `layer:` frontmatter line and into the
+/// landing page-id prefix, so whitespace/newlines/slashes would smuggle
+/// YAML keys or path segments.
+#[must_use]
+pub fn is_safe_pack_token(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
 }
 
 /// Lowercase/uppercase-hex decode without a new dependency.
@@ -295,13 +320,62 @@ mod tests {
 
     #[test]
     fn stamp_layer_inserts_once_and_refuses_predeclared() {
-        let stamped = stamp_layer("---\nid: a\n---\nbody\n", "base@p@v1").unwrap();
+        let page = "---\ntype: skill\nid: a\n---\nbody\n";
+        let stamped = stamp_layer(page, "base@p@v1").unwrap();
         assert!(
-            stamped.starts_with("---\nlayer: base@p@v1\nid: a\n---"),
+            stamped.starts_with("---\nlayer: base@p@v1\ntype: skill\nid: a\n---"),
             "{stamped}"
         );
         assert!(stamp_layer("no fence", "base@p@v1").is_err());
-        assert!(stamp_layer("---\nlayer: overlay\nid: a\n---\n", "base@p@v1").is_err());
+        assert!(
+            stamp_layer(
+                "---\ntype: skill\nlayer: overlay\nid: a\n---\n",
+                "base@p@v1"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn stamp_layer_is_robust_to_the_review_shapes() {
+        // agy MUST-FIX 1/2/4: BOM stripped; CRLF refused with a clear
+        // message; a `layer` key found by the PARSER (indented / quoted
+        // variants a `starts_with` scan missed); a `\n---` inside a
+        // multi-line frontmatter string does NOT truncate the check.
+        let bom = "\u{feff}---\ntype: skill\nid: a\n---\nbody\n";
+        assert!(stamp_layer(bom, "base@p@v1").is_ok(), "BOM is stripped");
+
+        let crlf = "---\r\ntype: skill\r\nid: a\r\n---\r\nbody\r\n";
+        let err = stamp_layer(crlf, "base@p@v1").unwrap_err();
+        assert!(err.contains("CRLF"), "{err}");
+
+        let quoted_layer = "---\ntype: skill\nid: a\n\"layer\": overlay\n---\n";
+        assert!(
+            stamp_layer(quoted_layer, "base@p@v1").is_err(),
+            "a quoted layer key is still a layer key"
+        );
+
+        let embedded_fence =
+            "---\ntype: skill\nid: a\ndescription: |\n  looks like\n  ---\n  a fence\n---\nbody\n";
+        let stamped = stamp_layer(embedded_fence, "base@p@v1").unwrap();
+        assert!(stamped.contains("looks like"), "{stamped}");
+    }
+
+    #[test]
+    fn pack_tokens_reject_injection_shapes() {
+        for evil in [
+            "evil\ninjected: true",
+            "up/../and-out",
+            "has space",
+            "Uppercase",
+            "",
+            "-leading-dash",
+        ] {
+            assert!(!is_safe_pack_token(evil), "must reject: {evil:?}");
+        }
+        for fine in ["logistics-midmarket", "crm-core", "dental.v2", "a"] {
+            assert!(is_safe_pack_token(fine), "must allow: {fine}");
+        }
     }
 
     #[test]

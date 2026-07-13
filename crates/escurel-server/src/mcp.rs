@@ -3692,6 +3692,14 @@ async fn tool_export_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
             "export_pack: id, vertical, publisher and at least one skill are required",
         ));
     }
+    // Same token rules the importer enforces (defence in depth): the id
+    // becomes the spoke's landing prefix + layer stamp.
+    if !crate::pack::is_safe_pack_token(&a.id) || !crate::pack::is_safe_pack_token(&a.vertical) {
+        return Err(JsonRpcError::invalid_params(
+            "export_pack: id and vertical must be lowercase alphanumerics plus . _ - \
+             (max 64 chars)",
+        ));
+    }
     let indexer = admin_indexer(state)?.clone();
     // A wrong `tenant_id` must not silently export this gateway's
     // (only) tenant (mirrors `rebuild`).
@@ -3771,6 +3779,22 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
              ESCUREL_PACK_SECRET",
         ));
     };
+    // Identity tokens are interpolated into the landing page-id prefix
+    // and the stamped `layer:` line — unsafe characters would smuggle
+    // path segments or YAML keys, signed or not (agy review).
+    if !crate::pack::is_safe_pack_token(&a.manifest.id) {
+        return Err(JsonRpcError::internal(format!(
+            "pack_id_invalid: `{}` is not a safe pack id (lowercase alphanumerics \
+             plus . _ -, max 64 chars)",
+            a.manifest.id.escape_default()
+        )));
+    }
+    if !crate::pack::is_safe_pack_token(&a.manifest.vertical) {
+        return Err(JsonRpcError::internal(format!(
+            "pack_id_invalid: vertical `{}` is not a safe token",
+            a.manifest.vertical.escape_default()
+        )));
+    }
     let indexer = admin_indexer(state)?.clone();
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
 
@@ -3796,6 +3820,17 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
                 a.manifest.id, existing.version, a.manifest.version
             )));
         }
+        // Same version, different bytes: a re-published v{N} would let a
+        // hub mutate a pinned base without the version moving (codex
+        // review). Idempotent re-import means the SAME content.
+        if existing.content_hash != a.manifest.content_hash {
+            return Err(JsonRpcError::internal(format!(
+                "pack_content_mismatch: pack `{}`@v{} is pinned at {} but this bundle \
+                 hashes to {}; same-version re-publishes are refused — bump the pack \
+                 version instead",
+                a.manifest.id, a.manifest.version, existing.content_hash, a.manifest.content_hash
+            )));
+        }
     } else if let Some(other) = subs.iter().find(|s| s.vertical != a.manifest.vertical) {
         if !a.allow_vertical_mismatch {
             return Err(JsonRpcError::internal(format!(
@@ -3807,9 +3842,10 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
         }
     }
 
-    // 3. Unpack + validate every entry path fail-closed (zip-slip), then
-    //    stamp the layer pin and land each page through the indexer
-    //    (lane store + index in one step; upsert ⇒ idempotent).
+    // 3. Unpack, then validate + stamp EVERY entry before the first
+    //    write (codex review / agy MUST-FIX 5): a malformed page means
+    //    zero landed pages, never a half-imported base layer. Path
+    //    safety (zip-slip) is enforced inside `unpack_entries`.
     let entries = crate::pack::unpack_entries(&tarball).map_err(JsonRpcError::internal)?;
     let layer = format!("base@{}@v{}", a.manifest.id, a.manifest.version);
     let prefix = format!(
@@ -3817,12 +3853,56 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
         escurel_index::pack::RESERVED_BASE_PREFIX,
         a.manifest.id
     );
-    let mut pages_imported = 0u32;
+    let mut stamped_pages: Vec<(String, String)> = Vec::with_capacity(entries.len());
     for (rel, content) in &entries {
         let stamped = crate::pack::stamp_layer(content, &layer).map_err(JsonRpcError::internal)?;
-        let page_id = format!("{prefix}{rel}");
+        stamped_pages.push((format!("{prefix}{rel}"), stamped));
+    }
+
+    // A skill page whose id another indexed skill page already declares
+    // would make slug resolution non-deterministic (silent shadowing —
+    // agy review). Checked BEFORE the first write; re-imports of the
+    // same pack land on the same page ids and pass.
+    for (page_id, stamped) in &stamped_pages {
+        let Ok(parsed) = escurel_md::parse(stamped) else {
+            continue; // stamp_layer already parsed; defensive only
+        };
+        if parsed.frontmatter.page_type != PageType::Skill {
+            continue;
+        }
+        let skill_id = parsed
+            .frontmatter
+            .fields
+            .get("id")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if skill_id.is_empty() {
+            continue;
+        }
+        if let Some(existing) = indexer
+            .skill_page_conflict(&skill_id, page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("import_pack conflict check: {e}")))?
+        {
+            return Err(JsonRpcError::internal(format!(
+                "pack_skill_collision: pack `{}` ships skill `{skill_id}` but this \
+                 node already indexes it at `{existing}`; two pages declaring one \
+                 skill id resolve non-deterministically — unsubscribe the other \
+                 source first (explicit shadowing is a future feature)",
+                a.manifest.id
+            )));
+        }
+    }
+
+    // All validation done — land the pages (lane store + index in one
+    // step; upsert ⇒ idempotent). A mid-loop failure here is an I/O
+    // catastrophe (disk full), not a content problem; the pin below is
+    // still only written after every page landed.
+    let mut pages_imported = 0u32;
+    for (page_id, stamped) in &stamped_pages {
         indexer
-            .update_page(&page_id, &stamped)
+            .update_page(page_id, stamped)
             .await
             .map_err(|e| JsonRpcError::internal(format!("import_pack `{page_id}`: {e}")))?;
         pages_imported += 1;

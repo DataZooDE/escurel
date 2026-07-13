@@ -145,6 +145,31 @@ impl Indexer {
         Ok(out)
     }
 
+    /// The page id of an EXISTING skill page declaring `skill_id` under a
+    /// different page id than `landing_page_id`, or `None`. Import uses
+    /// this to refuse a pack whose skill would silently shadow (or be
+    /// shadowed by) an already-indexed skill — slug resolution between
+    /// two same-id skill pages is otherwise non-deterministic (agy
+    /// review). The explicit shadow-merge feature will relax this.
+    pub async fn skill_page_conflict(
+        &self,
+        skill_id: &str,
+        landing_page_id: &str,
+    ) -> Result<Option<String>, IndexerError> {
+        let conn = self.conn.lock().await;
+        match conn.query_row(
+            "SELECT page_id FROM pages \
+             WHERE page_type = 'skill' AND slug = ? AND page_id != ? \
+             LIMIT 1",
+            duckdb::params![skill_id, landing_page_id],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(existing) => Ok(Some(existing)),
+            Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Collect the pages of a pack subtree, deterministically ordered by
     /// path: for each skill id in `skills`, its skill page plus — when
     /// `include_instances` — every instance page of that skill. Paths
