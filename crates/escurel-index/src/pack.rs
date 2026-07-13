@@ -77,48 +77,6 @@ pub fn pack_scrub_rejection(path: &str, content: &str) -> Option<String> {
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::pack_scrub_rejection;
-
-    /// The bypass shapes the PR-2 agy review found — pinned so the deny
-    /// set can only grow.
-    #[test]
-    fn scrub_rejects_credential_shapes() {
-        for leaky in [
-            "postgres://svc:hunter2@db.internal/prod",   // classic DSN
-            "postgres://svc:@db.internal/prod",          // empty password
-            "-----BEGIN PRIVATE KEY-----",               // PEM
-            "-----BEGIN RSA PRIVATE KEY-----",           // PEM, keyed
-            "-----BEGIN PGP PRIVATE KEY BLOCK-----",     // PGP suffix
-            "-----begin openssh private key-----",       // lowercase
-            "Server=db;Password=hunter2;Database=prod;", // key-value
-            "pwd = hunter2",                             // spaced key-value
-        ] {
-            assert!(
-                pack_scrub_rejection("skills/x.md", leaky).is_some(),
-                "must reject: {leaky}"
-            );
-        }
-    }
-
-    #[test]
-    fn scrub_allows_ordinary_documentation() {
-        for fine in [
-            "Register the source via register_credential and reference it by name.",
-            "See https://db.internal/prod for the dashboard.",
-            "The `token:` frontmatter key names the owning principal.",
-            "password rotation happens quarterly", // prose, no assignment
-            "user@example.com sent the report",    // plain email
-        ] {
-            assert!(
-                pack_scrub_rejection("skills/x.md", fine).is_none(),
-                "must allow: {fine}"
-            );
-        }
-    }
-}
-
 impl Indexer {
     /// Collect the pages of a pack subtree, deterministically ordered by
     /// path: for each skill id in `skills`, its skill page plus — when
@@ -190,5 +148,47 @@ impl Indexer {
             out.push((rel, content));
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pack_scrub_rejection;
+
+    /// The bypass shapes the PR-2 agy review found — pinned so the deny
+    /// set can only grow.
+    #[test]
+    fn scrub_rejects_credential_shapes() {
+        for leaky in [
+            "postgres://svc:hunter2@db.internal/prod",   // classic DSN
+            "postgres://svc:@db.internal/prod",          // empty password
+            "-----BEGIN PRIVATE KEY-----",               // PEM
+            "-----BEGIN RSA PRIVATE KEY-----",           // PEM, keyed
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----",     // PGP suffix
+            "-----begin openssh private key-----",       // lowercase
+            "Server=db;Password=hunter2;Database=prod;", // key-value
+            "pwd = hunter2",                             // spaced key-value
+        ] {
+            assert!(
+                pack_scrub_rejection("skills/x.md", leaky).is_some(),
+                "must reject: {leaky}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrub_allows_ordinary_documentation() {
+        for fine in [
+            "Register the source via register_credential and reference it by name.",
+            "See https://db.internal/prod for the dashboard.",
+            "The `token:` frontmatter key names the owning principal.",
+            "password rotation happens quarterly", // prose, no assignment
+            "user@example.com sent the report",    // plain email
+        ] {
+            assert!(
+                pack_scrub_rejection("skills/x.md", fine).is_none(),
+                "must allow: {fine}"
+            );
+        }
     }
 }
