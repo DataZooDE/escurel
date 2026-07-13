@@ -323,6 +323,43 @@ void main() {
     );
 
     test(
+      'list_skills parses the layer pin; base layer gates operator editing',
+      () async {
+        mock.toolHandlers['list_skills'] = (_) => {
+          'skills': [
+            {
+              'id': 'pallet-consolidation',
+              'description': 'firm-authored, from the logistics pack',
+              'layer': 'base@logistics-midmarket@v7',
+              // Even a permissive ACL must not make a base skill
+              // editable — the layer wins (server rejects the write
+              // with layer_read_only anyway; this is the UX mirror).
+              'acl': {
+                'read': ['public'],
+                'update': ['admin'],
+              },
+            },
+            {
+              'id': 'local-notes',
+              'description': 'tenant-authored',
+              // no `layer` key — older servers / plain pages.
+            },
+          ],
+        };
+        final r = await client.listSkills();
+        final base = r.firstWhere((s) => s.id == 'pallet-consolidation');
+        expect(base.layer, 'base@logistics-midmarket@v7');
+        expect(base.isBaseLayer, isTrue);
+        expect(base.operatorEditable, isFalse);
+
+        final plain = r.firstWhere((s) => s.id == 'local-notes');
+        expect(plain.layer, 'overlay'); // absent ⇒ the overlay default
+        expect(plain.isBaseLayer, isFalse);
+        expect(plain.operatorEditable, isTrue);
+      },
+    );
+
+    test(
       'list_instances maps filter to frontmatter_key/value + order_by + limit',
       () async {
         Map<String, dynamic>? receivedArgs;

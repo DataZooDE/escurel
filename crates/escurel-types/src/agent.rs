@@ -238,6 +238,18 @@ pub struct Skill {
     pub backend: SkillBackend,
     /// The backend's capability descriptor.
     pub capabilities: SkillCapabilities,
+    /// The skill page's stability layer (REQ-LAYER-04): `"overlay"` for a
+    /// tenant-authored (editable) skill — the default — or
+    /// `"base@<pack>@<version>"` for a skill imported from a subscribed
+    /// pack, read-only at this node. Additive: absent on an old server ⇒
+    /// `"overlay"`.
+    #[serde(default = "default_layer")]
+    pub layer: String,
+}
+
+/// The default page layer: tenant-authored, editable.
+fn default_layer() -> String {
+    "overlay".to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

@@ -505,4 +505,75 @@ impl Indexer {
              {how}, not update_page (the binding is server-managed and immutable)"
         )))
     }
+
+    /// The stored page's `layer` frontmatter, or `None` when the page does
+    /// not exist or declares no layer (⇒ `overlay`, the default — every
+    /// pre-layer page).
+    pub async fn page_layer(&self, page_id: &str) -> Result<Option<String>, IndexerError> {
+        let conn = self.conn.lock().await;
+        let layer: Option<String> = conn
+            .query_row(
+                "SELECT json_extract_string(frontmatter, '$.layer') \
+                 FROM pages WHERE page_id = ?",
+                duckdb::params![page_id],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        Ok(layer)
+    }
+
+    /// Base-layer write guard (REQ-LAYER-02). Returns `Some(reason)` when an
+    /// `update_page` of `content` at `page_id` must be rejected with a
+    /// `layer_read_only` `Issue`; `None` when the write is allowed.
+    ///
+    /// Rejected, fail-closed:
+    /// * the STORED page carries `layer: base@…` — it was imported from a
+    ///   subscribed pack and is read-only at this node. Keying off the
+    ///   stored layer (not the draft's) means stripping the `layer:` field
+    ///   from the draft is not an unlock.
+    /// * the DRAFT declares `layer: base@…` — base pages are stamped by
+    ///   the pack-import path only; letting `update_page` fabricate one
+    ///   would allow squatting a page id a future import lands on, or
+    ///   laundering agent-authored content as pack-authored.
+    ///
+    /// The seam mirrors [`Self::backend_read_only_rejection`] (the check is
+    /// lifted from per-backend-kind to per-page-layer); internal writers —
+    /// `seed_from_dir`, the pack import, the ingest/materialise pipelines —
+    /// call `Indexer::update_page` directly and are unaffected.
+    pub async fn layer_read_only_rejection(
+        &self,
+        page_id: &str,
+        content: &str,
+    ) -> Result<Option<String>, IndexerError> {
+        if let Some(layer) = self
+            .page_layer(page_id)
+            .await?
+            .filter(|l| l.starts_with("base@"))
+        {
+            return Ok(Some(format!(
+                "page `{page_id}` is layer `{layer}` — imported from a subscribed \
+                 pack and read-only at this node; author an overlay page to \
+                 specialise it"
+            )));
+        }
+        // A malformed draft falls through to the normal validate path.
+        let Ok(parsed) = parse(content) else {
+            return Ok(None);
+        };
+        let draft_layer = parsed
+            .frontmatter
+            .fields
+            .get("layer")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default();
+        if draft_layer.starts_with("base@") {
+            return Ok(Some(format!(
+                "draft declares `layer: {draft_layer}` but base-layer pages are \
+                 created by pack import only; drop the `layer` field (overlay is \
+                 the default)"
+            )));
+        }
+        Ok(None)
+    }
 }

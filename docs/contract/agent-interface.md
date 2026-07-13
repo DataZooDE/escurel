@@ -293,6 +293,17 @@ the instance is still a page in the referent space — you `resolve` / `expand`
 
 Full wire detail in [`../spec/protocol.md`](../spec/protocol.md#instance-backends).
 
+Orthogonally to its backend, every page carries a stability **layer**
+(REQ-LAYER-01): `overlay` — tenant-authored, editable, the default for
+every page with no `layer:` frontmatter — or `base@<pack>@<version>` —
+imported from a subscribed skill pack, **read-only at this node**.
+Writing a base-layer page (`update_page`, `open_session`/`apply_op`)
+returns `layer_read_only`; so does a draft that *declares* `layer:
+base@…` (base pages are created by pack import only). `list_skills`
+reports each skill's `layer` so an agent can tell the stable,
+firm-authored substrate from the tenant's own editable pages. To
+specialise a base skill, author an overlay page — never edit the base.
+
 ## Writing
 
 Two modes, both backed by the same CRDT layer (Loro) under

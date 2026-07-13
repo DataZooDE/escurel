@@ -53,6 +53,11 @@ pub struct SkillInfo {
     /// parsed from the skill page's `backend:` block. Absent block ⇒
     /// [`BackendKind::Markdown`](crate::BackendKind) (every skill today).
     pub backend: crate::backend::BackendBinding,
+    /// The page's `layer:` frontmatter (REQ-LAYER-01/04):
+    /// `base@<pack>@<version>` for a skill imported from a subscribed pack
+    /// (read-only at this node), `None` for a tenant-authored skill (the
+    /// `overlay` default — every pre-layer page).
+    pub layer: Option<String>,
 }
 
 /// A skill's per-CRUD group grants. Each verb is a list of group names
@@ -221,6 +226,10 @@ impl Indexer {
                     .map(str::to_owned),
                 acl: parse_skill_acl(&fm),
                 backend: crate::backend::BackendBinding::parse(&fm),
+                layer: fm
+                    .get("layer")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
             });
         }
         Ok(out)
