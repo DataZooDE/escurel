@@ -32,7 +32,7 @@ pub mod livedoc;
 pub mod reconciler;
 
 pub use backend::{CrdtBackend, DuckdbCrdtBackend};
-pub use codec::{body_from_snapshot, snapshot_bytes_from_markdown};
+pub use codec::{body_from_snapshot, snapshot_bytes_from_markdown, three_way_merge};
 pub use error::Error;
 pub use livedoc::{LiveDoc, hydrate_content};
 pub use reconciler::{CitationLookup, Decision, ExternalEditReconciler};
@@ -117,6 +117,16 @@ impl Version {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Parse the numeric op-count back out of a `"v<n>"` string — the
+    /// inverse of [`Version::from_op_count`]. Returns `None` for anything
+    /// that isn't `v` followed by a non-negative integer. The
+    /// `update_page` auto-merge (#246) uses this to map a client's
+    /// `base_version` back to the hlc whose snapshot it branched from.
+    #[must_use]
+    pub fn parse_op_count(s: &str) -> Option<u64> {
+        s.strip_prefix('v').and_then(|n| n.parse::<u64>().ok())
     }
 }
 
