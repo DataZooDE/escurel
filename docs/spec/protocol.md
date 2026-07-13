@@ -582,6 +582,21 @@ bare session op-count with no snapshot, always conflicts.)
 source/blob is canonical and is never written back through the page API.
 See [Instance backends](#instance-backends).
 
+`update_page` against a **base-layer page** — one whose stored
+frontmatter carries `layer: base@<pack>@<version>`, i.e. it was imported
+from a subscribed skill pack — is rejected with `{ok: false, issues:
+[{code: "layer_read_only", location: "frontmatter.layer", ...}]}`
+(REQ-LAYER-02). The guard keys off the *stored* page's layer, so
+stripping the `layer:` field from the draft is not an unlock; a draft
+*declaring* `layer: base@…` is rejected the same way (base pages are
+created by pack import only, never by `update_page`). `open_session` on
+a base-layer page fails with a JSON-RPC `-32000` error whose message
+starts `layer_read_only:` — live CRDT co-authoring must not bypass the
+guard. Pages without a `layer:` field (every pre-layer page) and pages
+declaring `layer: overlay` are unaffected. `list_skills` reports each
+skill's `layer` (`"overlay"` default, or the `base@<pack>@<version>`
+pin) so agents and operators can tell stable from editable.
+
 ### Events / inbox (M7 — Event-sourcing surface)
 
 Events are the dynamic input of the memory triad (Events · Skills ·

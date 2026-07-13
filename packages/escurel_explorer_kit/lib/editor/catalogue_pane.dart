@@ -7,6 +7,7 @@ import '../state/providers.dart';
 import '../theme/app_theme.dart';
 import '../widgets/backend_badge.dart';
 import '../widgets/kind_chip.dart';
+import '../widgets/layer_badge.dart';
 import 'page_form.dart';
 
 /// Left pane — skills catalogue with their instances expandable
@@ -85,6 +86,10 @@ class _SkillTile extends ConsumerWidget {
                               backendKind: skill.backendKind,
                               writable: skill.capabilities.writable,
                             ),
+                            const SizedBox(width: 4),
+                          ],
+                          if (skill.isBaseLayer) ...[
+                            LayerBadge(skillId: skill.id, layer: skill.layer),
                             const SizedBox(width: 4),
                           ],
                           if (skill.acl != null) _AclBadge(acl: skill.acl!),

@@ -292,6 +292,9 @@ class HttpEscurelClient implements EscurelClient {
                     s['capabilities'] as Map<String, dynamic>,
                   )
                 : const SkillCapabilities(),
+            // Stability layer (REQ-LAYER-04); absent on older servers ⇒
+            // overlay (tenant-authored, editable).
+            layer: (s['layer'] as String?) ?? 'overlay',
           ),
         )
         .toList();

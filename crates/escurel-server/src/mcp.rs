@@ -998,6 +998,7 @@ async fn dispatch_tools_call(
         "open_session" => {
             return tool_open_session(
                 state.crdt_backend.as_ref(),
+                state.indexer.as_deref(),
                 Arc::clone(&state.sessions),
                 state.quota.as_ref(),
                 tenant_id,
@@ -1272,6 +1273,7 @@ async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpcError> {
                         supports_crdt: c.supports_crdt,
                     }
                 },
+                layer: s.layer.unwrap_or_else(|| "overlay".to_owned()),
             })
             .collect(),
     };
@@ -2196,6 +2198,26 @@ async fn tool_update_page(
                 "severity": "error",
                 "code": "backend_read_only",
                 "location": "frontmatter.backend_ref",
+                "message": reason,
+            }],
+        }));
+    }
+
+    // Base-layer guard (REQ-LAYER-02): a page imported from a subscribed
+    // pack (`layer: base@<pack>@<version>`) is read-only at this node, and
+    // `update_page` may not fabricate one. Same dispatch seam as the
+    // backend guard above, lifted from per-backend-kind to per-page-layer.
+    if let Some(reason) = indexer
+        .layer_read_only_rejection(&a.page_id, &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page layer guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "layer_read_only",
+                "location": "frontmatter.layer",
                 "message": reason,
             }],
         }));
@@ -3849,6 +3871,7 @@ struct OpenSessionArgs {
 
 async fn tool_open_session(
     backend: Option<&Arc<dyn CrdtBackend>>,
+    indexer: Option<&Indexer>,
     sessions: Arc<SessionManager>,
     quota: Option<&Arc<QuotaManager>>,
     tenant_id: &str,
@@ -3858,6 +3881,28 @@ async fn tool_open_session(
         .map_err(|e| JsonRpcError::invalid_params(format!("open_session: {e}")))?;
     let backend = backend
         .ok_or_else(|| JsonRpcError::internal("live CRDT mode not enabled on this server"))?;
+
+    // Base-layer guard (REQ-LAYER-02): live co-authoring must not bypass
+    // the `update_page` read-only guard — an open session's `apply_op`
+    // stream would edit a base page byte by byte. Session-only servers
+    // (`indexer = None`) have no page corpus, so no base pages to guard.
+    if let Some(ix) = indexer {
+        let layer = ix
+            .page_layer(&a.page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("open_session layer guard: {e}")))?;
+        if let Some(layer) = layer.filter(|l| l.starts_with("base@")) {
+            return Err(JsonRpcError {
+                code: -32000,
+                message: format!(
+                    "layer_read_only: page `{}` is layer `{layer}` — imported from a \
+                     subscribed pack and read-only at this node; author an overlay \
+                     page to specialise it",
+                    a.page_id
+                ),
+            });
+        }
+    }
 
     // Acquire a session-cap permit if quota is configured.
     // Failure → JSON-RPC `-32000` quota error (mirrors the

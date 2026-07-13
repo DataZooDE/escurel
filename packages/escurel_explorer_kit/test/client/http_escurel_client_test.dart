@@ -323,6 +323,44 @@ void main() {
     );
 
     test(
+      'list_skills parses the layer pin; base layer gates operator editing',
+      () async {
+        mock.toolHandlers['list_skills'] = (_) => {
+          'skills': [
+            {
+              'id': 'pallet-consolidation',
+              'description': 'firm-authored, from the logistics pack',
+              'layer': 'base@logistics-midmarket@v7',
+              'acl': {
+                'read': ['public'],
+                'update': ['admin'],
+              },
+            },
+            {
+              'id': 'local-notes',
+              'description': 'tenant-authored',
+              // no `layer` key — older servers / plain pages.
+            },
+          ],
+        };
+        final r = await client.listSkills();
+        final base = r.firstWhere((s) => s.id == 'pallet-consolidation');
+        expect(base.layer, 'base@logistics-midmarket@v7');
+        expect(base.isBaseLayer, isTrue);
+        // operatorEditable stays layer-blind: it governs the skill's
+        // INSTANCES, and overlay instances of a base skill are exactly
+        // how a tenant specialises it. Only the base PAGE is read-only
+        // (gated per-page; see state/layer_read_only_test.dart).
+        expect(base.operatorEditable, isTrue);
+
+        final plain = r.firstWhere((s) => s.id == 'local-notes');
+        expect(plain.layer, 'overlay'); // absent ⇒ the overlay default
+        expect(plain.isBaseLayer, isFalse);
+        expect(plain.operatorEditable, isTrue);
+      },
+    );
+
+    test(
       'list_instances maps filter to frontmatter_key/value + order_by + limit',
       () async {
         Map<String, dynamic>? receivedArgs;

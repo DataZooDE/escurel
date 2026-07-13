@@ -347,6 +347,7 @@ class SkillSummary {
     this.acl,
     this.backendKind = 'markdown',
     this.capabilities = const SkillCapabilities(),
+    this.layer = 'overlay',
   });
 
   /// The backend a skill's instances live in (`markdown` | `sql_view` |
@@ -384,6 +385,18 @@ class SkillSummary {
   /// field.
   final SkillAcl? acl;
 
+  /// The skill page's stability layer (REQ-LAYER-04): `'overlay'` for a
+  /// tenant-authored (editable) skill — the default, and what older
+  /// servers that don't emit the field map to — or
+  /// `'base@<pack>@<version>'` for a skill imported from a subscribed
+  /// pack, read-only at this node.
+  final String layer;
+
+  /// Whether this skill was imported from a subscribed pack (its layer
+  /// is a `base@<pack>@<version>` pin). Base skills are read-only: the
+  /// server rejects writes with `layer_read_only`.
+  bool get isBaseLayer => layer.startsWith('base@');
+
   /// Whether this skill is offered as operator-editable in the explorer.
   ///
   /// This is a UX guardrail (the backend still enforces auth), generalised
@@ -392,6 +405,11 @@ class SkillSummary {
   /// i.e. some non-`owner` principal (admin / a custom group) may update
   /// it, which the operator dashboard can. When the skill declares no
   /// explicit `update` policy, fall back to the legacy ownerless check.
+  ///
+  /// Deliberately layer-blind: this getter governs a skill's INSTANCES,
+  /// and a tenant specialises a base skill precisely by authoring overlay
+  /// instances. Only the base PAGE itself is read-only — that is gated
+  /// per-page in `currentPageEditableProvider` (agy review MUST-FIX 2).
   bool get operatorEditable {
     final update = acl?.update;
     if (update == null) return ownerField == null;

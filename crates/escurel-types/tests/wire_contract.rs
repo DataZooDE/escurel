@@ -162,6 +162,9 @@ fn skill_wire_shape() {
     // Mirrors tool_list_skills + decode_list_skills. `backend` +
     // `capabilities` are additive (REQ-BK-02): markdown-backed skills carry
     // `{"kind":"markdown"}` and the markdown capability descriptor.
+    // `layer` is additive too (REQ-LAYER-04): `"overlay"` for a
+    // tenant-authored skill, `"base@<pack>@<version>"` for one imported
+    // from a subscribed pack.
     let wire = json!({
         "id": "customer",
         "description": "A customer record",
@@ -176,7 +179,8 @@ fn skill_wire_shape() {
             "granularity": "block",
             "search": "hybrid",
             "supports_crdt": true
-        }
+        },
+        "layer": "overlay"
     });
     let skill: Skill = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(skill.id, "customer");
@@ -185,7 +189,20 @@ fn skill_wire_shape() {
     assert_eq!(skill.owner_field, None);
     assert_eq!(skill.backend.kind, "markdown");
     assert!(skill.capabilities.writable);
+    assert_eq!(skill.layer, "overlay");
     assert_eq!(serde_json::to_value(&skill).unwrap(), wire);
+}
+
+#[test]
+fn skill_layer_defaults_to_overlay_on_old_servers() {
+    // An old server that doesn't emit `layer` must parse to the overlay
+    // default — pre-layer skills are tenant-authored and editable.
+    let wire = json!({
+        "id": "customer",
+        "description": "A customer record",
+    });
+    let skill: Skill = serde_json::from_value(wire).unwrap();
+    assert_eq!(skill.layer, "overlay");
 }
 
 #[test]
