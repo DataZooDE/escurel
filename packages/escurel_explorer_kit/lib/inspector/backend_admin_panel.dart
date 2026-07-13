@@ -45,6 +45,8 @@ class BackendAdminPanel extends ConsumerWidget {
           _Card(title: 'Create SQL-view instance', child: _CreateSqlInstance()),
           SizedBox(height: 16),
           _Card(title: 'Document ingestion', child: _DocumentIngest()),
+          SizedBox(height: 16),
+          _Card(title: 'Subscribed packs', child: _SubscribedPacks()),
         ],
       ),
     );
@@ -705,4 +707,88 @@ class _Spinner extends StatelessWidget {
       child: CircularProgressIndicator(strokeWidth: 1.5),
     ),
   );
+}
+
+/// Card 5 — the subscribed skill packs and their pinned versions
+/// (`list_packs`, REQ-SUB-01): the provenance behind every read-only
+/// `base@<pack>@<version>` page. Refresh-on-demand like the binding
+/// health card; carries stable `packs-list` / `pack-item:<id>`
+/// semantics labels (the rodney selector contract).
+class _SubscribedPacks extends ConsumerStatefulWidget {
+  const _SubscribedPacks();
+
+  @override
+  ConsumerState<_SubscribedPacks> createState() => _SubscribedPacksState();
+}
+
+class _SubscribedPacksState extends ConsumerState<_SubscribedPacks> {
+  List<PackSubscriptionInfo>? _result;
+  String? _error;
+  bool _busy = false;
+
+  Future<void> _refresh() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final r = await ref.read(escurelClientProvider).listPacks();
+      setState(() => _result = r);
+    } on EscurelClientException catch (e) {
+      setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final result = _result;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _ActionButton(
+          label: 'list-packs-button',
+          text: _busy ? 'Loading…' : 'List packs',
+          onPressed: _busy ? null : _refresh,
+        ),
+        if (_error != null) _ErrorText(_error!),
+        if (result != null) ...[
+          const SizedBox(height: 10),
+          result.isEmpty
+              ? Text(
+                  'no packs subscribed — this node runs on its own overlay only',
+                  style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+                )
+              : Semantics(
+                  label: 'packs-list',
+                  identifier: 'packs-list',
+                  explicitChildNodes: true,
+                  container: true,
+                  child: Column(
+                    children: [
+                      for (final p in result)
+                        Semantics(
+                          label: 'pack-item:${p.packId}',
+                          identifier: 'pack-item:${p.packId}',
+                          container: true,
+                          explicitChildNodes: true,
+                          child: ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.inventory_2_outlined, size: 18),
+                            title: Text('${p.packId}@v${p.version}'),
+                            subtitle: Text(
+                              'vertical ${p.vertical} · ${p.publisher}',
+                              style: text.bodySmall,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+        ],
+      ],
+    );
+  }
 }

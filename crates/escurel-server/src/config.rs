@@ -953,6 +953,9 @@ impl EscurelConfig {
         // Remote-backend endpoint registry (openapi/mcp): ensure on EVERY boot
         // (idempotent), like the credential registry. Separate canonical input.
         Migrator::ensure_external_endpoints(&conn)?;
+        // Skill-pack subscription pins: ensure on EVERY boot (idempotent),
+        // like the credential registry. Separate canonical input.
+        Migrator::ensure_pack_subscriptions(&conn)?;
         // Contextual Retrieval (GH #216): ensure `blocks.context` on EVERY
         // boot (idempotent), so a tenant DB provisioned before the column
         // existed gains it before `refresh_fts` indexes it.

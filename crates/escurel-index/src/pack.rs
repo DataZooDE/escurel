@@ -24,6 +24,26 @@ use regex::Regex;
 
 use crate::indexer::{Indexer, IndexerError};
 
+/// The reserved page-id prefix pack import lands pages under. The agent
+/// write surface (`update_page`, `open_session`) refuses this prefix
+/// **statically** — even for page ids no import has created yet — so a
+/// racing import can neither be squatted nor bypassed (the TOCTOU
+/// finding from the layer-model review). Only the import path writes
+/// here.
+pub const RESERVED_BASE_PREFIX: &str = "markdown/base/";
+
+/// One subscribed pack: the pin recorded in the `pack_subscriptions`
+/// canonical table (REQ-SUB-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackSubscription {
+    pub pack_id: String,
+    pub version: u32,
+    pub vertical: String,
+    pub publisher: String,
+    pub content_hash: String,
+    pub signature: String,
+}
+
 /// A DSN carrying inline credentials (`scheme://user:pass@host/…`,
 /// including the empty-password `user:@host` shape — agy review). The
 /// one shape REQ-SQL-05 already banned from markdown; packs ban it
@@ -78,6 +98,53 @@ pub fn pack_scrub_rejection(path: &str, content: &str) -> Option<String> {
 }
 
 impl Indexer {
+    /// Record (or refresh) a pack subscription pin. `REPLACE` semantics:
+    /// re-importing the same pack upserts its row (idempotent import).
+    pub async fn record_pack_subscription(
+        &self,
+        sub: &PackSubscription,
+    ) -> Result<(), IndexerError> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT OR REPLACE INTO pack_subscriptions \
+             (pack_id, version, vertical, publisher, content_hash, signature) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+            duckdb::params![
+                sub.pack_id,
+                sub.version,
+                sub.vertical,
+                sub.publisher,
+                sub.content_hash,
+                sub.signature,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every subscribed pack, ordered by pack id.
+    pub async fn list_pack_subscriptions(&self) -> Result<Vec<PackSubscription>, IndexerError> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT pack_id, version, vertical, publisher, content_hash, signature \
+             FROM pack_subscriptions ORDER BY pack_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(PackSubscription {
+                pack_id: r.get(0)?,
+                version: u32::try_from(r.get::<_, i64>(1)?).unwrap_or(0),
+                vertical: r.get(2)?,
+                publisher: r.get(3)?,
+                content_hash: r.get(4)?,
+                signature: r.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Collect the pages of a pack subtree, deterministically ordered by
     /// path: for each skill id in `skills`, its skill page plus — when
     /// `include_instances` — every instance page of that skill. Paths

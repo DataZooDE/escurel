@@ -360,6 +360,26 @@ void main() {
       },
     );
 
+    test('list_packs parses the subscription pins', () async {
+      mock.toolHandlers['list_packs'] = (_) => {
+        'packs': [
+          {
+            'pack_id': 'logistics-midmarket',
+            'version': 7,
+            'vertical': 'logistics-midmarket',
+            'publisher': 'hub.stuttgart-ai',
+            'content_hash': 'sha256:abc',
+          },
+        ],
+      };
+      final r = await client.listPacks();
+      expect(r, hasLength(1));
+      expect(r.single.packId, 'logistics-midmarket');
+      expect(r.single.version, 7);
+      expect(r.single.vertical, 'logistics-midmarket');
+      expect(r.single.publisher, 'hub.stuttgart-ai');
+    });
+
     test(
       'list_instances maps filter to frontmatter_key/value + order_by + limit',
       () async {

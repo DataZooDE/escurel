@@ -284,6 +284,34 @@ impl AdminClient {
         Ok((manifest, bytes))
     }
 
+    /// Import a signed skill pack as this tenant's pinned, read-only
+    /// base layer (REQ-SUB-01/02). Returns the server's import summary
+    /// (`{pack, version, vertical, pages_imported, layer}`).
+    pub async fn import_pack(
+        &self,
+        tenant_id: &str,
+        manifest: &escurel_types::PackManifest,
+        tarball: Vec<u8>,
+        allow_vertical_mismatch: bool,
+    ) -> Result<Value, Error> {
+        self.transport
+            .call(
+                "import_pack",
+                json!({
+                    "tenant_id": tenant_id,
+                    "manifest": manifest,
+                    "tarball_b64": B64.encode(&tarball),
+                    "allow_vertical_mismatch": allow_vertical_mismatch,
+                }),
+            )
+            .await
+    }
+
+    /// The subscribed skill packs and their pinned versions.
+    pub async fn list_packs(&self) -> Result<Value, Error> {
+        self.transport.call("list_packs", json!({})).await
+    }
+
     /// Import a tenant from tar+gz `bytes`. The bytes are base64-encoded
     /// for the MCP wire; returns the number of bytes imported.
     pub async fn tenant_import(&self, tenant_id: &str, bytes: Vec<u8>) -> Result<u64, Error> {

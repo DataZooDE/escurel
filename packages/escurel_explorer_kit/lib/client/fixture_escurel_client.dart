@@ -823,6 +823,9 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<List<PackSubscriptionInfo>> listPacks() async => const [];
+
+  @override
   Future<List<BindingStatus>> validateBindings() async {
     // Report every sql_view instance as healthy in the fixture.
     return _pages.values

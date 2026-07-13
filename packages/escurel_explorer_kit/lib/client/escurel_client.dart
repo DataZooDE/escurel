@@ -242,6 +242,10 @@ abstract class EscurelClient {
   /// Remove a registered credential by name (`delete_credential`, admin).
   Future<void> deleteCredential(String name);
 
+  /// The subscribed skill packs and their pinned versions
+  /// (`list_packs`, admin; REQ-SUB-01).
+  Future<List<PackSubscriptionInfo>> listPacks();
+
   /// Re-probe every SQL-view binding; report drift / unreachable sources
   /// (`validate_bindings`, admin).
   Future<List<BindingStatus>> validateBindings();
