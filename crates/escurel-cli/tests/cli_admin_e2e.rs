@@ -64,6 +64,9 @@ async fn start() -> Harness {
             gateway_version: Some("1.0.0-test".to_owned()),
             tenant_store: Some(tenant_store),
             quota: Some(quota),
+            // Enables the pack surface (`admin pack export`); harmless
+            // for every other test in this file.
+            pack_secret: Some("cli-pack-secret".to_owned()),
             ..Default::default()
         },
     })
@@ -222,6 +225,46 @@ async fn admin_tenant_export_then_import() {
     )
     .await;
     assert!(json(&imp)["bytes_imported"].as_u64().unwrap() > 0);
+    h.process.shutdown().await;
+}
+
+/// Build a signed skill pack through the CLI: the tarball and its
+/// `pack.manifest.json` land on disk, and the manifest carries the
+/// pinned identity + content hash.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admin_pack_export_writes_tarball_and_manifest() {
+    let h = start().await;
+    let out = h.tenants_root.join("crm-core.pack.tgz");
+    let out_str = out.to_str().unwrap().to_owned();
+
+    let exp = admin(
+        &h,
+        v(&[
+            "admin", "pack", "export", "--tenant", TENANT, "--id", "crm-core", "--version", "1",
+            "--vertical", "crm", "--publisher", "hub.test", "--skill", "customer", "--out",
+            &out_str,
+        ]),
+    )
+    .await;
+    let r = json(&exp);
+    assert_eq!(r["pack"], "crm-core@v1");
+    assert!(r["bytes_exported"].as_u64().unwrap() > 0);
+    assert!(out.is_file(), "pack tarball written");
+
+    let manifest_path = h.tenants_root.join("crm-core.pack.tgz.manifest.json");
+    assert!(manifest_path.is_file(), "manifest written next to the pack");
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["id"], "crm-core");
+    assert_eq!(manifest["version"], 1);
+    assert_eq!(manifest["vertical"], "crm");
+    assert!(
+        manifest["signature"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256="),
+        "{manifest}"
+    );
     h.process.shutdown().await;
 }
 

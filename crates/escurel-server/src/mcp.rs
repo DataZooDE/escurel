@@ -1050,6 +1050,10 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             return tool_tenant_export(state, params.arguments).await;
         }
+        "export_pack" => {
+            require_admin(role)?;
+            return tool_export_pack(state, params.arguments).await;
+        }
         "tenant_import" => {
             require_admin(role)?;
             return tool_tenant_import(state, params.arguments).await;
@@ -3649,6 +3653,80 @@ async fn tool_tenant_delete(state: &AppState, args: Value) -> Result<Value, Json
     to_value(TenantDeleteResponse { deleted })
 }
 
+#[derive(Deserialize)]
+struct ExportPackArgs {
+    tenant_id: String,
+    id: String,
+    version: u32,
+    vertical: String,
+    publisher: String,
+    skills: Vec<String>,
+    #[serde(default)]
+    include_instances: bool,
+}
+
+/// Admin: build a versioned, HMAC-signed skill pack (REQ-PACK-01/02/04)
+/// from this tenant's corpus — the L3→L2 unit of distribution. Fails
+/// closed when no `ESCUREL_PACK_SECRET` is configured (packs are
+/// signed, always) and when any selected page trips the deterministic
+/// secret scrub (INV-SECRETFREE).
+async fn tool_export_pack(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: ExportPackArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("export_pack: {e}")))?;
+    let Some(secret) = state.pack_secret.clone() else {
+        return Err(JsonRpcError::internal(
+            "pack_secret_not_configured: export_pack refuses to build an unsigned \
+             pack; set ESCUREL_PACK_SECRET",
+        ));
+    };
+    if a.id.is_empty() || a.vertical.is_empty() || a.publisher.is_empty() || a.skills.is_empty() {
+        return Err(JsonRpcError::invalid_params(
+            "export_pack: id, vertical, publisher and at least one skill are required",
+        ));
+    }
+    let indexer = admin_indexer(state)?.clone();
+    // A wrong `tenant_id` must not silently export this gateway's
+    // (only) tenant (mirrors `rebuild`).
+    ensure_tenant_matches(&indexer, &a.tenant_id)?;
+
+    let pages = indexer
+        .collect_pack_pages(&a.skills, a.include_instances)
+        .await
+        .map_err(|e| match e {
+            IndexerError::PackSkillMissing { .. } => JsonRpcError::invalid_params(e.to_string()),
+            other => JsonRpcError::internal(format!("export_pack: {other}")),
+        })?;
+
+    // Fail-closed content hygiene BEFORE anything is bundled: one
+    // credential-shaped page aborts the whole export.
+    for (path, content) in &pages {
+        if let Some(reason) = escurel_index::pack::pack_scrub_rejection(path, content) {
+            return Err(JsonRpcError::internal(reason));
+        }
+    }
+
+    let tarball = crate::pack::build_tarball(&pages)
+        .map_err(|e| JsonRpcError::internal(format!("export_pack tar: {e}")))?;
+    let mut manifest = escurel_types::PackManifest {
+        format_version: crate::pack::PACK_FORMAT_VERSION,
+        id: a.id,
+        version: a.version,
+        vertical: a.vertical,
+        publisher: a.publisher,
+        page_count: pages.len() as u32,
+        content_hash: crate::pack::content_hash(&tarball),
+        signature: String::new(),
+    };
+    manifest.signature = crate::pack::sign_manifest(&manifest, &secret);
+
+    let bytes = tarball.len() as u64;
+    Ok(json!({
+        "manifest": manifest,
+        "tarball_b64": B64.encode(&tarball),
+        "bytes": bytes,
+    }))
+}
+
 async fn tool_tenant_export(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
     let a: TenantIdArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("tenant_export: {e}")))?;
@@ -4685,6 +4763,33 @@ fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["tenant_id"],
                     "properties": { "tenant_id": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "export_pack",
+                "Admin: build a versioned, HMAC-signed skill pack (a \
+                 deterministic tar+gz of the named skills' pages + a signed \
+                 manifest) — the unit of distribution between escurel nodes. \
+                 Requires ESCUREL_PACK_SECRET; fails closed on \
+                 credential-shaped content.",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id", "id", "version", "vertical", "publisher", "skills"],
+                    "properties": {
+                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                        "id": { "type": "string", "description": "Pack identity, e.g. logistics-midmarket." },
+                        "version": { "type": "integer", "description": "Monotonic pack version." },
+                        "vertical": { "type": "string", "description": "The vertical this pack belongs to." },
+                        "publisher": { "type": "string", "description": "Publisher identity, e.g. hub.stuttgart-ai." },
+                        "skills": {
+                            "type": "array", "items": { "type": "string" },
+                            "description": "Skill ids whose pages form the pack subtree."
+                        },
+                        "include_instances": {
+                            "type": "boolean",
+                            "description": "Also bundle each skill's instance pages (edge-case libraries). Default false."
+                        }
+                    }
                 }),
             ),
             tool_entry(

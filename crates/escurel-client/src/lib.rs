@@ -46,11 +46,12 @@ pub use admin::AdminClient;
 pub use admin::{
     AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
     CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
-    EmbeddingReloadRequest, EmbeddingReloadResponse, HealthRequest, HealthResponse,
-    QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest,
-    TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse, TenantExportRequest,
-    TenantGetRequest, TenantGetResponse, TenantImportResponse, TenantListRequest,
-    TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
+    EmbeddingReloadRequest, EmbeddingReloadResponse, ExportPackRequest, HealthRequest,
+    HealthResponse, PackManifest, QuotaGetRequest, QuotaGetResponse, RebuildProgress,
+    RebuildRequest, TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest,
+    TenantDeleteResponse, TenantExportRequest, TenantGetRequest, TenantGetResponse,
+    TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
+    TenantUpdateResponse,
 };
 pub use error::{Error, JSONRPC_ADMIN_REQUIRED};
 

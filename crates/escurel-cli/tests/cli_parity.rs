@@ -80,6 +80,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("tenant_delete", Admin(&["tenant", "delete"])),
     ("tenant_export", Admin(&["tenant", "export"])),
     ("tenant_import", Admin(&["tenant", "import"])),
+    ("export_pack", Admin(&["pack", "export"])),
     // --- admin/ops MCP-twins deliberately kept off the CLI --------------
     // These mirror the EscurelAdmin gRPC / MCP provisioning surface and
     // are driven from the substrate/BFF, not the operator CLI. If one ever

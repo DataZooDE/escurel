@@ -35,11 +35,12 @@ use crate::transport::McpTransport;
 pub use escurel_types::{
     AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
     CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
-    EmbeddingReloadRequest, EmbeddingReloadResponse, HealthRequest, HealthResponse,
-    QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest,
-    TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse, TenantExportRequest,
-    TenantGetRequest, TenantGetResponse, TenantImportResponse, TenantListRequest,
-    TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
+    EmbeddingReloadRequest, EmbeddingReloadResponse, ExportPackRequest, HealthRequest,
+    HealthResponse, PackManifest, QuotaGetRequest, QuotaGetResponse, RebuildProgress,
+    RebuildRequest, TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest,
+    TenantDeleteResponse, TenantExportRequest, TenantGetRequest, TenantGetResponse,
+    TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
+    TenantUpdateResponse,
 };
 
 /// Typed MCP-over-HTTP client for the Escurel v1 **admin** surface.
@@ -245,6 +246,42 @@ impl AdminClient {
             .ok_or_else(|| Error::Decode("tenant_export: missing `tarball_b64`".to_owned()))?;
         B64.decode(b64.as_bytes())
             .map_err(|e| Error::Decode(format!("tenant_export: tarball_b64 not base64: {e}")))
+    }
+
+    /// Build a versioned, HMAC-signed skill pack from the tenant's
+    /// corpus (REQ-PACK-01/02). Returns the decoded tarball bytes plus
+    /// the signed manifest. Fails when the server has no pack secret
+    /// configured or a selected page trips the secret scrub.
+    pub async fn export_pack(
+        &self,
+        req: ExportPackRequest,
+    ) -> Result<(escurel_types::PackManifest, Vec<u8>), Error> {
+        let result = self
+            .transport
+            .call(
+                "export_pack",
+                json!({
+                    "tenant_id": req.tenant_id,
+                    "id": req.id,
+                    "version": req.version,
+                    "vertical": req.vertical,
+                    "publisher": req.publisher,
+                    "skills": req.skills,
+                    "include_instances": req.include_instances,
+                }),
+            )
+            .await?;
+        let manifest: escurel_types::PackManifest =
+            serde_json::from_value(result.get("manifest").cloned().unwrap_or_default())
+                .map_err(|e| Error::Decode(format!("export_pack: manifest: {e}")))?;
+        let b64 = result
+            .get("tarball_b64")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Decode("export_pack: missing `tarball_b64`".to_owned()))?;
+        let bytes = B64
+            .decode(b64.as_bytes())
+            .map_err(|e| Error::Decode(format!("export_pack: tarball_b64 not base64: {e}")))?;
+        Ok((manifest, bytes))
     }
 
     /// Import a tenant from tar+gz `bytes`. The bytes are base64-encoded

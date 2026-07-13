@@ -30,6 +30,7 @@ pub mod filter;
 pub mod groups;
 pub mod indexer;
 pub mod meta_skill;
+pub mod pack;
 pub mod query;
 pub mod read;
 pub mod retrieval;

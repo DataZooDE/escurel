@@ -391,6 +391,11 @@ pub struct EscurelConfig {
     /// it against the same secret. `None` (default) leaves the POST
     /// unsigned.
     pub webhook_secret: Option<String>,
+    /// Optional shared secret signing/verifying skill packs
+    /// (`ESCUREL_PACK_SECRET`, REQ-PACK-02). `None` (default) disables
+    /// the pack surface fail-closed: `export_pack` refuses rather than
+    /// emit an unverifiable bundle.
+    pub pack_secret: Option<String>,
     /// Dedicated Prometheus `/metrics` listener
     /// (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default
     /// `0.0.0.0:9090`). `None` when explicitly emptied — disables
@@ -511,6 +516,11 @@ impl EscurelConfig {
         // as unset — an unsigned webhook.
         let webhook_secret = env
             .get("ESCUREL_WEBHOOK_SECRET")
+            .filter(|s| !s.trim().is_empty());
+        // Optional shared secret signing/verifying skill packs. An
+        // empty value is treated as unset — the pack surface stays off.
+        let pack_secret = env
+            .get("ESCUREL_PACK_SECRET")
             .filter(|s| !s.trim().is_empty());
         // Dedicated Prometheus `/metrics` listener. Default
         // `0.0.0.0:9090`; an explicitly-empty value disables scraping.
@@ -807,6 +817,7 @@ impl EscurelConfig {
             seed_dir,
             webhook_url,
             webhook_secret,
+            pack_secret,
             metrics_listen,
             ingest_contextualize,
             rebuild_index_on_boot,
@@ -1070,6 +1081,7 @@ impl EscurelConfig {
             demo_dir: self.demo_dir.clone(),
             webhook_url: self.webhook_url.clone(),
             webhook_secret: self.webhook_secret.clone(),
+            pack_secret: self.pack_secret.clone(),
             metrics_listen: self.metrics_listen.clone(),
         };
 
