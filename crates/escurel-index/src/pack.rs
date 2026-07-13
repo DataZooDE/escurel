@@ -170,6 +170,94 @@ impl Indexer {
         }
     }
 
+    /// Collect the pages of a promotion candidate (REQ-PROMO-01/02),
+    /// **default-deny**: every requested id must resolve to a SKILL page
+    /// (raw instance data never promotes), carry the curator-set
+    /// `promotable: true` marker, and be tenant-authored (`overlay` —
+    /// a base-layer page is the hub's, not the spoke's to promote).
+    /// One ineligible id refuses the whole request — no silent partial
+    /// harvest. Content-hygiene scrubbing happens at the caller (the
+    /// same [`pack_scrub_rejection`] the export path runs).
+    pub async fn collect_promotion_pages(
+        &self,
+        skills: &[String],
+    ) -> Result<Vec<(String, String)>, IndexerError> {
+        let mut page_ids: Vec<String> = Vec::new();
+        {
+            let conn = self.conn.lock().await;
+            for skill in skills {
+                let row: Option<(String, String)> = match conn.query_row(
+                    "SELECT page_id, frontmatter::VARCHAR FROM pages \
+                     WHERE (slug = ? OR page_id = ?) \
+                     ORDER BY CASE WHEN page_type = 'skill' THEN 0 ELSE 1 END \
+                     LIMIT 1",
+                    duckdb::params![skill, skill],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                ) {
+                    Ok(v) => Some(v),
+                    Err(duckdb::Error::QueryReturnedNoRows) => None,
+                    Err(e) => return Err(e.into()),
+                };
+                let Some((page_id, fm_json)) = row else {
+                    return Err(IndexerError::PromotionNotEligible {
+                        reason: format!("`{skill}` names no indexed page"),
+                    });
+                };
+                let fm: serde_json::Value = serde_json::from_str(&fm_json)?;
+                if fm.get("type").and_then(serde_json::Value::as_str) != Some("skill") {
+                    return Err(IndexerError::PromotionNotEligible {
+                        reason: format!(
+                            "`{skill}` is not a skill page — raw instance data never \
+                             promotes (default policy); only firm-curated skills and \
+                             structural patterns leave the node"
+                        ),
+                    });
+                }
+                if fm.get("promotable") != Some(&serde_json::Value::Bool(true)) {
+                    return Err(IndexerError::PromotionNotEligible {
+                        reason: format!(
+                            "skill `{skill}` does not carry `promotable: true`; the \
+                             marker is set by a curator, never by default"
+                        ),
+                    });
+                }
+                if fm
+                    .get("layer")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|l| l.starts_with("base@"))
+                {
+                    return Err(IndexerError::PromotionNotEligible {
+                        reason: format!(
+                            "skill `{skill}` is base-layer pack content — it is the \
+                             hub's, not this node's to promote"
+                        ),
+                    });
+                }
+                page_ids.push(page_id);
+            }
+        }
+        page_ids.sort();
+        page_ids.dedup();
+
+        let store = self.lane_store();
+        let mut out = Vec::with_capacity(page_ids.len());
+        for page_id in page_ids {
+            let key = Key::new(self.tenant(), page_id.clone())?;
+            let body = store.read(&key).await?;
+            let content = std::str::from_utf8(&body)
+                .map_err(|_| IndexerError::NotUtf8 {
+                    page_id: page_id.clone(),
+                })?
+                .to_owned();
+            let rel = page_id
+                .strip_prefix("markdown/")
+                .unwrap_or(page_id.as_str())
+                .to_owned();
+            out.push((rel, content));
+        }
+        Ok(out)
+    }
+
     /// Collect the pages of a pack subtree, deterministically ordered by
     /// path: for each skill id in `skills`, its skill page plus — when
     /// `include_instances` — every instance page of that skill. Paths

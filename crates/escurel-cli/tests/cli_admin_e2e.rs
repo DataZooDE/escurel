@@ -16,7 +16,10 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 const TENANT: &str = "acme";
-const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
+// `promotable: true` lets the same fixture drive the pack-export AND
+// the promotion-harvest e2e (a curator-marked, firm-authored skill).
+const CUSTOMER_SKILL: &str =
+    "---\ntype: skill\nid: customer\ndescription: x\npromotable: true\n---\n# customer\n";
 
 struct Harness {
     process: EscurelProcess,
@@ -332,6 +335,50 @@ async fn admin_pack_export_writes_tarball_and_manifest() {
     assert_eq!(packs[0]["version"], 1);
 
     spoke.shutdown().await;
+    h.process.shutdown().await;
+}
+
+/// Harvest a promotion candidate through the CLI: the curator-marked
+/// skill leaves as a signed candidate bundle + manifest, and the
+/// server's audit event id comes back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admin_pack_submit_promotion_writes_candidate_files() {
+    let h = start().await;
+    let out = h.tenants_root.join("crm-harvest.pack.tgz");
+    let out_str = out.to_str().unwrap().to_owned();
+
+    let sub = admin(
+        &h,
+        v(&[
+            "admin",
+            "pack",
+            "submit-promotion",
+            "--tenant",
+            TENANT,
+            "--candidate-id",
+            "crm-harvest",
+            "--vertical",
+            "crm",
+            "--skill",
+            "customer",
+            "--out",
+            &out_str,
+        ]),
+    )
+    .await;
+    let r = json(&sub);
+    assert_eq!(r["candidate"], "crm-harvest");
+    assert!(r["bytes_exported"].as_u64().unwrap() > 0);
+    assert!(
+        r["event_id"].as_str().is_some_and(|s| !s.is_empty()),
+        "audit event id returned: {r}"
+    );
+    assert!(out.is_file());
+    assert!(
+        h.tenants_root
+            .join("crm-harvest.pack.tgz.manifest.json")
+            .is_file()
+    );
     h.process.shutdown().await;
 }
 

@@ -1062,6 +1062,10 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             return tool_list_packs(state).await;
         }
+        "submit_promotion" => {
+            require_admin(role)?;
+            return tool_submit_promotion(state, subject, params.arguments).await;
+        }
         "tenant_import" => {
             require_admin(role)?;
             return tool_tenant_import(state, params.arguments).await;
@@ -2231,6 +2235,34 @@ async fn tool_update_page(
                 "code": "layer_read_only",
                 "location": "frontmatter.layer",
                 "message": reason,
+            }],
+        }));
+    }
+
+    // Curator marker guard (REQ-PROMO-01 / AT-PROMO-2): `promotable:
+    // true` gates what may leave this node through the promotion
+    // harvest, so only a curator (admin in the v1 two-role model) may
+    // write it. Fail-closed: any non-admin draft carrying a truthy
+    // `promotable` refuses — an agent can neither self-promote a page
+    // nor keep the marker alive by re-writing a curated page.
+    if !caller.is_admin
+        && escurel_md::parse(&a.content).is_ok_and(|p| {
+            p.frontmatter
+                .fields
+                .get("promotable")
+                .and_then(escurel_md::YamlValue::as_bool)
+                == Some(true)
+        })
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "promotable_requires_curator",
+                "location": "frontmatter.promotable",
+                "message": "`promotable: true` marks content eligible to leave this \
+                            node through the promotion harvest; only a curator \
+                            (admin role) may set or keep it",
             }],
         }));
     }
@@ -3938,6 +3970,133 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
     }))
 }
 
+#[derive(Deserialize)]
+struct SubmitPromotionArgs {
+    tenant_id: String,
+    /// The candidate pack identity the hub curator will review under.
+    candidate_id: String,
+    vertical: String,
+    skills: Vec<String>,
+}
+
+/// Admin ("curator" in the v1 two-role model): propose a scrubbed pack
+/// candidate from this node's own curated skills — the L2→L3 harvest
+/// coupler and THE security-critical federation seam (REQ-PROMO-01..04).
+/// Fail-closed, default-deny: only tenant-authored SKILL pages carrying
+/// the curator-set `promotable: true` marker are eligible (raw instance
+/// data never promotes; base-layer pages are the hub's, not ours); one
+/// ineligible id or one credential-shaped page refuses the WHOLE
+/// submission. Maker/checker: this tool *proposes* — a human curator at
+/// the hub reviews the candidate and publishes it deliberately
+/// (`export_pack` on the hub side); nothing auto-publishes. Every
+/// submission emits an immutable audit event recording what left, when,
+/// submitted by whom.
+async fn tool_submit_promotion(
+    state: &AppState,
+    subject: &str,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: SubmitPromotionArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("submit_promotion: {e}")))?;
+    let Some(secret) = state.pack_secret.clone() else {
+        return Err(JsonRpcError::internal(
+            "pack_secret_not_configured: submit_promotion signs its candidate; set \
+             ESCUREL_PACK_SECRET",
+        ));
+    };
+    if a.skills.is_empty() {
+        return Err(JsonRpcError::invalid_params(
+            "submit_promotion: at least one skill is required",
+        ));
+    }
+    if !crate::pack::is_safe_pack_token(&a.candidate_id)
+        || !crate::pack::is_safe_pack_token(&a.vertical)
+    {
+        return Err(JsonRpcError::internal(
+            "pack_id_invalid: candidate_id and vertical must be lowercase \
+             alphanumerics plus . _ - (max 64 chars)",
+        ));
+    }
+    let indexer = admin_indexer(state)?.clone();
+    ensure_tenant_matches(&indexer, &a.tenant_id)?;
+
+    // Default-deny eligibility (skills-only, promotable, overlay).
+    let pages = indexer
+        .collect_promotion_pages(&a.skills)
+        .await
+        .map_err(|e| match e {
+            IndexerError::PromotionNotEligible { .. } => JsonRpcError::internal(e.to_string()),
+            other => JsonRpcError::internal(format!("submit_promotion: {other}")),
+        })?;
+
+    // The deterministic scrubber — the same deny set the export path
+    // runs (INV-SECRETFREE); one hit aborts the whole submission.
+    for (path, content) in &pages {
+        if let Some(reason) = escurel_index::pack::pack_scrub_rejection(path, content) {
+            return Err(JsonRpcError::internal(reason));
+        }
+    }
+
+    let page_paths: Vec<&str> = pages.iter().map(|(p, _)| p.as_str()).collect();
+    let body_summary = serde_json::to_string(&json!({
+        "candidate": a.candidate_id,
+        "vertical": a.vertical,
+        "pages": page_paths,
+    }))
+    .unwrap_or_default();
+
+    let page_count = pages.len() as u32;
+    let tarball = tokio::task::spawn_blocking(move || crate::pack::build_tarball(&pages))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("submit_promotion join error: {e}")))?
+        .map_err(|e| JsonRpcError::internal(format!("submit_promotion tar: {e}")))?;
+    let mut manifest = escurel_types::PackManifest {
+        format_version: crate::pack::PACK_FORMAT_VERSION,
+        id: a.candidate_id.clone(),
+        // A candidate is not a published version; the hub assigns the
+        // real version when a curator approves and publishes.
+        version: 0,
+        vertical: a.vertical.clone(),
+        publisher: format!("spoke.{}", indexer.tenant()),
+        page_count,
+        content_hash: crate::pack::content_hash(&tarball),
+        signature: String::new(),
+    };
+    manifest.signature = crate::pack::sign_manifest(&manifest, &secret);
+
+    // The immutable audit record (REQ-PROMO-04): what left this node,
+    // when, submitted by whom — replayable, contract-grade.
+    let event = indexer
+        .capture_event(escurel_index::NewEvent {
+            event_id: None,
+            at: None,
+            source: "promotion".to_owned(),
+            mime: "application/json".to_owned(),
+            label_skill: String::new(),
+            instance_page_id: None,
+            title: format!(
+                "promotion.submitted: {} ({} page(s))",
+                a.candidate_id, page_count
+            ),
+            body: body_summary,
+            provenance: Some(json!({
+                "submitted_by": subject,
+                "content_hash": manifest.content_hash,
+                "vertical": a.vertical,
+            })),
+        })
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("submit_promotion audit event: {e}")))?;
+
+    let bytes = tarball.len() as u64;
+    Ok(json!({
+        "manifest": manifest,
+        "tarball_b64": B64.encode(&tarball),
+        "bytes": bytes,
+        "event_id": event.event_id,
+    }))
+}
+
 /// Admin: the subscribed packs and their pins (REQ-SUB-01).
 async fn tool_list_packs(state: &AppState) -> Result<Value, JsonRpcError> {
     let indexer = admin_indexer(state)?.clone();
@@ -5064,6 +5223,27 @@ fn tools_list_payload() -> Value {
                 "list_packs",
                 "Admin: the subscribed skill packs and their pinned versions.",
                 json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "submit_promotion",
+                "Admin/curator: propose a scrubbed pack candidate from this \
+                 node's own promotable skills (the L2→L3 harvest). Default-deny: \
+                 skills-only, curator-marked `promotable: true`, tenant-authored; \
+                 fail-closed on credential-shaped content; emits an immutable \
+                 audit event. A hub curator reviews + publishes deliberately.",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id", "candidate_id", "vertical", "skills"],
+                    "properties": {
+                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                        "candidate_id": { "type": "string", "description": "Candidate pack identity for hub review." },
+                        "vertical": { "type": "string", "description": "The vertical the candidate belongs to." },
+                        "skills": {
+                            "type": "array", "items": { "type": "string" },
+                            "description": "Promotable skill ids to harvest."
+                        }
+                    }
+                }),
             ),
             tool_entry(
                 "tenant_import",
