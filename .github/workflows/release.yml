@@ -84,6 +84,14 @@ jobs:
       # reports the release (flapi's version-override, but uncommitted). Only
       # the first top-level `version = "..."` line is touched. python3 ships on
       # all three runner images, sidestepping GNU/BSD `sed -i` differences.
+      #
+      # NOTE: our date scheme is `vYYYY.MM.DD` (cf. erpl), which zero-pads the
+      # month/day — but Cargo's version field is strict SemVer and REJECTS
+      # leading zeros ("invalid leading zero in minor version number"). So we
+      # SemVer-normalize the numeric core here — strip leading zeros per
+      # component (2026.07.13 -> 2026.7.13) — before writing Cargo.toml. The
+      # tag, GitHub Release, and archive names keep the zero-padded date; only
+      # the compiled crate version is normalized.
       - name: Inject version (tag builds only)
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -93,6 +101,12 @@ jobs:
           python3 - "$VERSION" <<'PY'
           import re, sys
           v = sys.argv[1]
+          # Split the numeric dotted core from any pre-release/build suffix
+          # (-rc.1, +meta), strip leading zeros per core component, reassemble.
+          m = re.match(r"^([0-9]+(?:\.[0-9]+)*)(.*)$", v)
+          if m:
+              core = ".".join(str(int(p)) for p in m.group(1).split("."))
+              v = core + m.group(2)
           s = open("Cargo.toml", encoding="utf-8").read()
           s, n = re.subn(r'(?m)^version = "[^"]*"', f'version = "{v}"', s, count=1)
           assert n == 1, "no top-level version line found in Cargo.toml"
