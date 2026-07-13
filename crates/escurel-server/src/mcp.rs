@@ -3705,7 +3705,13 @@ async fn tool_export_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
         }
     }
 
-    let tarball = crate::pack::build_tarball(&pages)
+    // Tar + gzip on a blocking thread — the same discipline as
+    // `tenant_export` (codex review: a large pack would otherwise tie
+    // up a Tokio worker).
+    let page_count = pages.len() as u32;
+    let tarball = tokio::task::spawn_blocking(move || crate::pack::build_tarball(&pages))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("export_pack join error: {e}")))?
         .map_err(|e| JsonRpcError::internal(format!("export_pack tar: {e}")))?;
     let mut manifest = escurel_types::PackManifest {
         format_version: crate::pack::PACK_FORMAT_VERSION,
@@ -3713,7 +3719,7 @@ async fn tool_export_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
         version: a.version,
         vertical: a.vertical,
         publisher: a.publisher,
-        page_count: pages.len() as u32,
+        page_count,
         content_hash: crate::pack::content_hash(&tarball),
         signature: String::new(),
     };

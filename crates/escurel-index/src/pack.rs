@@ -24,16 +24,28 @@ use regex::Regex;
 
 use crate::indexer::{Indexer, IndexerError};
 
-/// A DSN carrying inline credentials (`scheme://user:pass@host/…`).
-/// The one shape REQ-SQL-05 already banned from markdown; packs ban it
+/// A DSN carrying inline credentials (`scheme://user:pass@host/…`,
+/// including the empty-password `user:@host` shape — agy review). The
+/// one shape REQ-SQL-05 already banned from markdown; packs ban it
 /// again at the boundary, fail-closed.
 static DSN_WITH_CREDENTIALS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@").expect("static regex compiles")
+    Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]*@").expect("static regex compiles")
 });
 
-/// A PEM private-key block.
+/// A PEM/PGP private-key block header, case-insensitive, with or
+/// without the PGP `… BLOCK` suffix (agy review: the strict
+/// `KEY-----` anchor missed `-----BEGIN PGP PRIVATE KEY BLOCK-----`).
 static PRIVATE_KEY_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----").expect("static regex compiles")
+    Regex::new(r"(?i)-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----")
+        .expect("static regex compiles")
+});
+
+/// A key-value connection-string credential (`Password=hunter2;`,
+/// `pwd=…`). Restricted to `=`-style assignments so ordinary prose and
+/// YAML documentation (`token: set this via the registry`) doesn't
+/// false-positive; the promotion gate extends the deny set further.
+static KV_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\b(password|passwd|pwd)\s*=\s*[^\s;"']+"#).expect("static regex compiles")
 });
 
 /// Fail-closed content-hygiene check for anything leaving the node in a
@@ -52,11 +64,59 @@ pub fn pack_scrub_rejection(path: &str, content: &str) -> Option<String> {
     }
     if PRIVATE_KEY_BLOCK.is_match(content) {
         return Some(format!(
-            "pack_secret_detected: page `{path}` contains a PEM private-key \
+            "pack_secret_detected: page `{path}` contains a PEM/PGP private-key \
              block; packs are secret-free (INV-SECRETFREE)"
         ));
     }
+    if KV_PASSWORD.is_match(content) {
+        return Some(format!(
+            "pack_secret_detected: page `{path}` contains a `password=`-style \
+             connection-string credential; packs are secret-free (INV-SECRETFREE)"
+        ));
+    }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pack_scrub_rejection;
+
+    /// The bypass shapes the PR-2 agy review found — pinned so the deny
+    /// set can only grow.
+    #[test]
+    fn scrub_rejects_credential_shapes() {
+        for leaky in [
+            "postgres://svc:hunter2@db.internal/prod",   // classic DSN
+            "postgres://svc:@db.internal/prod",          // empty password
+            "-----BEGIN PRIVATE KEY-----",               // PEM
+            "-----BEGIN RSA PRIVATE KEY-----",           // PEM, keyed
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----",     // PGP suffix
+            "-----begin openssh private key-----",       // lowercase
+            "Server=db;Password=hunter2;Database=prod;", // key-value
+            "pwd = hunter2",                             // spaced key-value
+        ] {
+            assert!(
+                pack_scrub_rejection("skills/x.md", leaky).is_some(),
+                "must reject: {leaky}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrub_allows_ordinary_documentation() {
+        for fine in [
+            "Register the source via register_credential and reference it by name.",
+            "See https://db.internal/prod for the dashboard.",
+            "The `token:` frontmatter key names the owning principal.",
+            "password rotation happens quarterly", // prose, no assignment
+            "user@example.com sent the report",    // plain email
+        ] {
+            assert!(
+                pack_scrub_rejection("skills/x.md", fine).is_none(),
+                "must allow: {fine}"
+            );
+        }
+    }
 }
 
 impl Indexer {

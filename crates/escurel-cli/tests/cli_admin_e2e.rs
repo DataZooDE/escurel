@@ -240,8 +240,22 @@ async fn admin_pack_export_writes_tarball_and_manifest() {
     let exp = admin(
         &h,
         v(&[
-            "admin", "pack", "export", "--tenant", TENANT, "--id", "crm-core", "--version", "1",
-            "--vertical", "crm", "--publisher", "hub.test", "--skill", "customer", "--out",
+            "admin",
+            "pack",
+            "export",
+            "--tenant",
+            TENANT,
+            "--id",
+            "crm-core",
+            "--version",
+            "1",
+            "--vertical",
+            "crm",
+            "--publisher",
+            "hub.test",
+            "--skill",
+            "customer",
+            "--out",
             &out_str,
         ]),
     )
@@ -253,8 +267,7 @@ async fn admin_pack_export_writes_tarball_and_manifest() {
 
     let manifest_path = h.tenants_root.join("crm-core.pack.tgz.manifest.json");
     assert!(manifest_path.is_file(), "manifest written next to the pack");
-    let manifest: Value =
-        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
     assert_eq!(manifest["id"], "crm-core");
     assert_eq!(manifest["version"], 1);
     assert_eq!(manifest["vertical"], "crm");

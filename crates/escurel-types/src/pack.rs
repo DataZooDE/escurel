@@ -35,8 +35,14 @@ pub struct ExportPackRequest {
 /// the empty string** (field order is fixed by the struct, so the
 /// payload is deterministic). `content_hash` is `sha256:<hex>` over the
 /// tarball bytes, binding manifest to bundle.
+/// `deny_unknown_fields` is load-bearing (agy review): the signature is
+/// computed over the re-serialised struct, so silently *dropping*
+/// unknown wire fields would let an attacker append arbitrary JSON to a
+/// signed manifest without invalidating it. A manifest from a newer
+/// format rejects on an old node instead — fail-closed, versioned via
+/// `format_version`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PackManifest {
     /// Manifest/tarball layout version. Bump on any layout change
     /// (mirrors `tenant_export`'s format version discipline).
