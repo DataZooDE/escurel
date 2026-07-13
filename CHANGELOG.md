@@ -1,10 +1,12 @@
 # Changelog
 
 All notable changes to escurel are recorded here. The format is
-loosely [Keep a Changelog](https://keepachangelog.com/); escurel
-follows SemVer from v1.0.0 onward.
+loosely [Keep a Changelog](https://keepachangelog.com/). Through the
+`v1.0.x` line escurel used SemVer; from `v2026.07.13` onward versions
+follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
+re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
-## Unreleased
+## v2026.07.13
 
 ### Changed
 
