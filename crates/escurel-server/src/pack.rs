@@ -109,7 +109,7 @@ pub fn verify_pack(manifest: &PackManifest, tarball: &[u8], secret: &str) -> Res
 
 /// Lowercase/uppercase-hex decode without a new dependency.
 fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(());
     }
     (0..s.len())
