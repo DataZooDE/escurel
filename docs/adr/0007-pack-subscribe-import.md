@@ -39,13 +39,24 @@ model ("the next engagement starts at `base@vN`, not empty").
 5. **The pinned version never moves silently** (the paper's
    unattended-loop accountability rail at the federation edge):
    re-importing the pinned version is idempotent (page upsert +
-   `REPLACE` pin); any other version refuses `pack_version_pinned` —
-   upgrades are a future explicit, reviewed `rebase`.
-6. **Vertical guard (REQ-SUB-03).** Convergence holds only within a
+   `REPLACE` pin) **only for identical bytes** — a same-version
+   re-publish with a different `content_hash` refuses
+   (`pack_content_mismatch`, codex review); any other version refuses
+   `pack_version_pinned`. Upgrades are a future explicit, reviewed
+   `rebase`.
+6. **The whole pack validates before the first page lands** (review
+   hardening): every entry is parsed (`escurel_md::parse`) and
+   layer-stamped up front; pack identity tokens are validated against
+   a safe alphabet (`pack_id_invalid` — they are interpolated into
+   page ids and frontmatter); a skill id already declared by another
+   indexed skill page refuses (`pack_skill_collision`) so slug
+   resolution never becomes non-deterministic. A malformed page means
+   zero landed pages, never a half-imported base layer.
+7. **Vertical guard (REQ-SUB-03).** Convergence holds only within a
    vertical, so subscribing across verticals refuses
    (`vertical_mismatch`) unless the operator passes the loud
    `allow_vertical_mismatch` escape hatch.
-7. **Surface:** admin MCP tools `import_pack` + `list_packs`; CLI
+8. **Surface:** admin MCP tools `import_pack` + `list_packs`; CLI
    `escurel admin pack import` (manifest defaults to
    `<in>.manifest.json`) and `escurel admin pack list`.
 

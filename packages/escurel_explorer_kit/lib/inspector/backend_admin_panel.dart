@@ -731,11 +731,14 @@ class _SubscribedPacksState extends ConsumerState<_SubscribedPacks> {
       _busy = true;
       _error = null;
     });
+    // Every setState after the await checks `mounted` — the user can
+    // navigate away mid-request (agy review; the older cards predate
+    // this discipline).
     try {
       final r = await ref.read(escurelClientProvider).listPacks();
-      setState(() => _result = r);
+      if (mounted) setState(() => _result = r);
     } on EscurelClientException catch (e) {
-      setState(() => _error = e.message);
+      if (mounted) setState(() => _error = e.message);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
