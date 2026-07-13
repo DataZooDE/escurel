@@ -36,6 +36,7 @@ use escurel_admin::{TenantSpec as AdminTenantSpec, TenantStore, validate_tenant_
 use escurel_auth::Role;
 use escurel_crdt::{
     CrdtBackend, Op, Snapshot, Version, hydrate_content, snapshot_bytes_from_markdown,
+    three_way_merge,
 };
 use escurel_index::{
     AclCaller, AppendChatMessage, Capabilities, ChatMessage, Direction, EventInfo, Granularity,
@@ -2233,35 +2234,53 @@ async fn tool_update_page(
         }
     }
 
-    // #246 optimistic concurrency + monotonic versions. The page version is
-    // `v<max_hlc>` from the CRDT backend (shared with the apply_op session
-    // space). When a client sends a stale `base_version`, the head has advanced
-    // → conflict, with `head_content` for the client to re-draft. Enforced only
-    // when a CRDT backend is wired; otherwise behaviour is unchanged.
+    // #246 optimistic concurrency + monotonic versions + CRDT auto-merge. The
+    // page version is `v<max_hlc>` from the CRDT backend (shared with the
+    // apply_op session space). When a client sends a stale `base_version` the
+    // head has advanced concurrently; rather than clobber or immediately
+    // reject, attempt a Loro three-way auto-merge of (base → head) and
+    // (base → incoming). A clean merge is persisted (`auto_merged: true`); an
+    // unmergeable one falls back to `{ok:false, code:conflict, head_content}`
+    // for the client to re-draft. Enforced only when a CRDT backend is wired;
+    // otherwise behaviour is unchanged.
     let head_hlc = match state.crdt_backend.as_ref() {
         Some(b) => u64::try_from(b.max_hlc(&a.page_id).await.unwrap_or(0)).unwrap_or(0),
         None => 0,
     };
+    // The content we ultimately persist — an auto-merge may replace the raw
+    // incoming draft with the merged result.
+    let mut content_to_write = a.content.clone();
+    let mut auto_merged = false;
     if let (Some(backend), Some(base)) = (state.crdt_backend.as_ref(), a.base_version.as_deref()) {
         let head = Version::from_op_count(head_hlc);
         if base != head.as_str() {
-            let head_content = hydrate_content(backend, &a.page_id).await.ok().flatten();
-            return Ok(json!({
-                "ok": false,
-                "issues": [{
-                    "severity": "error",
-                    "code": "conflict",
-                    "location": "base_version",
-                    "message": format!(
-                        "base_version {base} is stale; head is {}", head.as_str()
-                    ),
-                }],
-                "head_content": head_content,
-            }));
+            match try_auto_merge(backend, &a.page_id, base, &a.content).await {
+                Some(merged) => {
+                    content_to_write = merged;
+                    auto_merged = true;
+                }
+                None => {
+                    let head_content = hydrate_content(backend, &a.page_id).await.ok().flatten();
+                    return Ok(json!({
+                        "ok": false,
+                        "issues": [{
+                            "severity": "error",
+                            "code": "conflict",
+                            "location": "base_version",
+                            "message": format!(
+                                "base_version {base} is stale (head is {}) and the edits could \
+                                 not be auto-merged; re-draft against head_content",
+                                head.as_str()
+                            ),
+                        }],
+                        "head_content": head_content,
+                    }));
+                }
+            }
         }
     }
 
-    match indexer.update_page(&a.page_id, &a.content).await {
+    match indexer.update_page(&a.page_id, &content_to_write).await {
         Ok(()) => {
             // Advance the monotonic version: snapshot the new whole-page content
             // at the next hlc so `max_hlc` (and any later `base_version` read)
@@ -2269,7 +2288,7 @@ async fn tool_update_page(
             // space, so co-authoring and whole-page writes share versions.
             let new_version = if let Some(backend) = state.crdt_backend.as_ref() {
                 let next = head_hlc + 1;
-                let bytes = snapshot_bytes_from_markdown(&a.content)
+                let bytes = snapshot_bytes_from_markdown(&content_to_write)
                     .map_err(|e| JsonRpcError::internal(format!("update_page crdt: {e}")))?;
                 let _ = backend
                     .snapshot(&a.page_id, next as i64, &Snapshot::new(bytes))
@@ -2292,7 +2311,12 @@ async fn tool_update_page(
             )
             .await;
 
-            Ok(json!({ "ok": true, "issues": [], "new_version": new_version }))
+            Ok(json!({
+                "ok": true,
+                "issues": [],
+                "new_version": new_version,
+                "auto_merged": auto_merged,
+            }))
         }
         // The protected meta-skill rejects the write as an
         // error-severity issue rather than an opaque server error.
@@ -2306,6 +2330,55 @@ async fn tool_update_page(
             }],
         })),
         Err(e) => Err(JsonRpcError::internal(format!("update_page: {e}"))),
+    }
+}
+
+/// #246 CRDT three-way auto-merge for a stale `base_version`. Returns the
+/// validated merged markdown to persist, or `None` when the write should fall
+/// back to a plain conflict.
+///
+/// `None` (→ conflict) is returned when:
+/// * `base_version` isn't a `"v<n>"` we can locate, or
+/// * no snapshot was stored at that hlc (the base history is gone — e.g. it was
+///   a bare session op-count, not an `update_page` snapshot), or
+/// * the current head content can't be hydrated, or
+/// * the Loro merge itself errors, or
+/// * the merged page no longer parses, or its frontmatter matches *neither*
+///   side (an interleaved / corrupted frontmatter — never persisted).
+///
+/// Body interleaving from overlapping same-region edits is *accepted* — that is
+/// the CRDT merge semantics; the frontmatter guard only protects page identity.
+async fn try_auto_merge(
+    backend: &std::sync::Arc<dyn CrdtBackend>,
+    page_id: &str,
+    base_version: &str,
+    incoming: &str,
+) -> Option<String> {
+    // Map base_version "vN" -> the snapshot at hlc N that the client branched
+    // from. Every update_page write snapshots at its version's hlc, so this
+    // reconstructs the exact base for the three-way merge.
+    let base_hlc = i64::try_from(Version::parse_op_count(base_version)?).ok()?;
+    let base_snapshot = backend
+        .snapshot_at(page_id, base_hlc)
+        .await
+        .ok()
+        .flatten()?;
+    let head_content = hydrate_content(backend, page_id).await.ok().flatten()?;
+
+    let merged = three_way_merge(&base_snapshot, &head_content, incoming).ok()?;
+
+    // Safety net: the merged page must still parse AND keep one side's
+    // frontmatter intact. A body-only merge (the common case) leaves the
+    // frontmatter equal to both sides; a one-sided frontmatter change survives
+    // via the CRDT; only a genuine both-sides frontmatter divergence (or a
+    // corrupt interleave) fails both equalities → conflict.
+    let merged_fm = escurel_md::parse(&merged).ok()?.frontmatter.fields;
+    let incoming_fm = escurel_md::parse(incoming).ok()?.frontmatter.fields;
+    let head_fm = escurel_md::parse(&head_content).ok()?.frontmatter.fields;
+    if merged_fm == incoming_fm || merged_fm == head_fm {
+        Some(merged)
+    } else {
+        None
     }
 }
 
@@ -4042,7 +4115,9 @@ fn tools_list_payload() -> Value {
                 "update_page",
                 "Upsert a markdown page (whole-body write). Optional \
                  `base_version` (from a prior read's `version`) enables \
-                 optimistic concurrency: a stale write returns \
+                 optimistic concurrency with CRDT auto-merge: a stale write is \
+                 three-way-merged against concurrent head edits (`ok:true, \
+                 auto_merged:true`); an unmergeable one returns \
                  `{ok:false, issues:[{code:conflict}], head_content}`.",
                 json!({
                     "type": "object",

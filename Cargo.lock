@@ -2619,6 +2619,7 @@ dependencies = [
  "bytes",
  "duckdb",
  "escurel-index",
+ "escurel-md",
  "escurel-storage",
  "loro",
  "tempfile",

@@ -50,6 +50,16 @@ pub trait CrdtBackend: Send + Sync + 'static {
     /// `Ok(None)` for pages with no CRDT state.
     async fn load(&self, page_id: &str) -> Result<Option<LoadedState>, Error>;
 
+    /// The exact snapshot blob stored at `(page_id, snapshot_hlc = hlc)`,
+    /// or `None` if no snapshot was taken at that hlc. Used by the
+    /// `update_page` three-way auto-merge (#246) to reconstruct the
+    /// *base* a stale `base_version` branched from — every `update_page`
+    /// write snapshots the whole page at its version's hlc, so a
+    /// `base_version = "v<N>"` maps to the snapshot at `hlc = N`. A version
+    /// with no snapshot row (e.g. a bare op-count from the session path)
+    /// returns `None`, and the caller falls back to a plain conflict.
+    async fn snapshot_at(&self, page_id: &str, hlc: i64) -> Result<Option<Vec<u8>>, Error>;
+
     /// Highest `hlc` already stored across `crdt_ops` and
     /// `crdt_snapshots` for `page_id`. Returns `0` for never-seen
     /// pages. The `LiveDoc` actor uses this to seed its monotonic
@@ -171,6 +181,19 @@ impl CrdtBackend for DuckdbCrdtBackend {
             ops.push(row?);
         }
         Ok(Some((snapshot, ops)))
+    }
+
+    async fn snapshot_at(&self, page_id: &str, hlc: i64) -> Result<Option<Vec<u8>>, Error> {
+        let guard = self.conn.lock().await;
+        let bytes: Option<Vec<u8>> = guard
+            .query_row(
+                "SELECT snapshot_bytes FROM crdt_snapshots \
+                 WHERE page_id = ? AND snapshot_hlc = ?",
+                params![page_id, hlc],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .ok();
+        Ok(bytes)
     }
 
     async fn max_hlc(&self, page_id: &str) -> Result<i64, Error> {

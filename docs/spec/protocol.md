@@ -557,15 +557,24 @@ continue calling `apply_op` over HTTP.
 {
   "ok":          true,
   "new_version": "v43",
+  "auto_merged": true,             // true iff a stale base_version was three-way-merged
   "issues":      [Issue, ...]
 }
 ```
 
 If `base_version` is supplied and the head has advanced, the
-server attempts a CRDT-aware three-way merge (Loro). On
-unresolvable conflict, the response is `{ok: false,
-issues: [{code: "conflict", ...}], head_content: "..."}` —
-the client re-drafts against `head_content`.
+server attempts a CRDT-aware three-way merge (Loro): it
+reconstructs the base snapshot the client branched from, forks
+it into the head and incoming edits as concurrent Loro branches,
+and unions them. A clean merge is persisted and the response
+carries `auto_merged: true`. The server refuses to persist a
+merge that no longer parses or whose frontmatter matches neither
+side (both sides changed the same key) — that is an unresolvable
+conflict: `{ok: false, issues: [{code: "conflict", ...}],
+head_content: "..."}`, and the client re-drafts against
+`head_content`. (Auto-merge needs the base snapshot; a
+`base_version` older than the first `update_page` snapshot, or a
+bare session op-count with no snapshot, always conflicts.)
 
 `update_page` (and `apply_op`) against an instance whose skill is a
 **non-writable backend** (`sql_view`, `document`) is rejected with
