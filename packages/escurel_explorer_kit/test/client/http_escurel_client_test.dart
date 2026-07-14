@@ -360,6 +360,66 @@ void main() {
       },
     );
 
+    test(
+      'expand surfaces the shadow object on a shadowing overlay skill page',
+      () async {
+        // REQ-LAYER-03: expanding a tenant overlay skill that shadows a
+        // pack-imported base skill carries an additive `shadow` object —
+        // the shadowed base's page id, pack pin, and frontmatter — so
+        // drift stays visible, never silently masked.
+        mock.toolHandlers['expand'] = (_) => {
+          'page': {
+            'page_id': 'markdown/skills/pallet-consolidation.md',
+            'skill': 'pallet-consolidation',
+            'page_type': 'skill',
+          },
+          'frontmatter': {
+            'id': 'pallet-consolidation',
+            'description': 'Acme-specialised procedure.',
+          },
+          'body': '# pallet-consolidation',
+          'blocks': <Map<String, dynamic>>[],
+          'wikilinks_out': <String>[],
+          'shadow': {
+            'base_page_id':
+                'markdown/base/logistics-midmarket/skills/pallet-consolidation.md',
+            'pack': 'base@logistics-midmarket@v7',
+            'base': {
+              'id': 'pallet-consolidation',
+              'description': 'Firm-authored canonical procedure (v1).',
+              'severity_threshold': 10,
+            },
+          },
+        };
+        final page = await client.expand(
+          'markdown/skills/pallet-consolidation.md',
+        );
+        expect(page.shadow, isNotNull);
+        expect(
+          page.shadow!.basePageId,
+          'markdown/base/logistics-midmarket/skills/pallet-consolidation.md',
+        );
+        expect(page.shadow!.pack, 'base@logistics-midmarket@v7');
+        expect(page.shadow!.base['severity_threshold'], 10);
+
+        // A page with no `shadow` in the reply parses to null (older
+        // servers / non-shadowing pages).
+        mock.toolHandlers['expand'] = (_) => {
+          'page': {
+            'page_id': 'markdown/skills/local-notes.md',
+            'skill': 'local-notes',
+            'page_type': 'skill',
+          },
+          'frontmatter': {'id': 'local-notes'},
+          'body': '',
+          'blocks': <Map<String, dynamic>>[],
+          'wikilinks_out': <String>[],
+        };
+        final plain = await client.expand('markdown/skills/local-notes.md');
+        expect(plain.shadow, isNull);
+      },
+    );
+
     test('list_packs parses the subscription pins', () async {
       mock.toolHandlers['list_packs'] = (_) => {
         'packs': [
@@ -378,6 +438,111 @@ void main() {
       expect(r.single.version, 7);
       expect(r.single.vertical, 'logistics-midmarket');
       expect(r.single.publisher, 'hub.stuttgart-ai');
+    });
+
+    test(
+      'import_pack sends the decoded manifest + tarball + mismatch flag',
+      () async {
+        Map<String, dynamic>? sent;
+        mock.toolHandlers['import_pack'] = (args) {
+          sent = args;
+          return {
+            'pack': 'logistics-midmarket',
+            'version': 7,
+            'vertical': 'logistics-midmarket',
+            'pages_imported': 3,
+            'layer': 'base@logistics-midmarket@v7',
+          };
+        };
+        final r = await client.importPack(
+          '{"id":"logistics-midmarket","version":7}',
+          'dGFyYmFsbA==',
+          allowVerticalMismatch: true,
+        );
+        // The manifest travels as a JSON OBJECT (the server deserializes
+        // a PackManifest), not as the raw pasted string.
+        expect(sent!['manifest'], {'id': 'logistics-midmarket', 'version': 7});
+        expect(sent!['tarball_b64'], 'dGFyYmFsbA==');
+        expect(sent!['allow_vertical_mismatch'], isTrue);
+        expect(sent!['tenant_id'], '');
+        expect(r.ok, isTrue);
+        expect(r.pack, 'logistics-midmarket');
+        expect(r.version, 7);
+        expect(r.pagesImported, 3);
+      },
+    );
+
+    test('importPack refuses a non-JSON manifest client-side', () async {
+      await expectLater(
+        client.importPack('not json', 'AAAA'),
+        throwsA(
+          isA<EscurelToolException>().having(
+            (e) => e.code,
+            'code',
+            'manifest_invalid_json',
+          ),
+        ),
+      );
+    });
+
+    test(
+      'rebase_pack passes acknowledge_conflicts + the additive dry_run flag',
+      () async {
+        Map<String, dynamic>? sent;
+        mock.toolHandlers['rebase_pack'] = (args) {
+          sent = args;
+          return {
+            'ok': false,
+            'issues': [
+              {
+                'severity': 'error',
+                'code': 'rebase_conflict',
+                'message': 'severity_threshold changed upstream',
+              },
+            ],
+          };
+        };
+        final r = await client.rebasePack(
+          '{"id":"logistics-midmarket","version":8}',
+          'dGFyYmFsbA==',
+          dryRun: true,
+        );
+        expect(sent!['acknowledge_conflicts'], isFalse);
+        // dry_run is sent additively — the backend may not know the flag
+        // yet, but an unknown field must not be silently dropped here.
+        expect(sent!['dry_run'], isTrue);
+        expect(r.ok, isFalse);
+        expect(r.issues.single.code, 'rebase_conflict');
+      },
+    );
+
+    test('unsubscribe_pack sends the pack id and parses the result', () async {
+      Map<String, dynamic>? sent;
+      mock.toolHandlers['unsubscribe_pack'] = (args) {
+        sent = args;
+        return {'pack': 'logistics-midmarket', 'pages_removed': 4};
+      };
+      final r = await client.unsubscribePack('logistics-midmarket');
+      expect(sent!['pack_id'], 'logistics-midmarket');
+      expect(r.pack, 'logistics-midmarket');
+      expect(r.pagesRemoved, 4);
+    });
+
+    test('a pack tool error surfaces the server code verbatim', () async {
+      mock.nextError = (
+        code: -32000,
+        message: 'pack_signature_invalid: manifest signature does not verify',
+      );
+      await expectLater(
+        client.importPack('{"id":"p","version":1}', 'AAAA'),
+        throwsA(
+          isA<EscurelToolException>().having(
+            (e) => e.message,
+            'message',
+            contains('pack_signature_invalid'),
+          ),
+        ),
+      );
     });
 
     test(
@@ -464,16 +629,17 @@ void main() {
       },
     );
 
-    test('version tolerates a plain-text body (escurel returns a bare string)',
-        () async {
-      // escurel-server answers /version with `text/plain` "0.0.0-dev", not
-      // JSON. The client must not throw a cast error; it surfaces the string.
-      mock.rawRouteHandlers['/version'] = '0.0.0-dev';
-      final v = await client.version();
-      expect(v.version, '0.0.0-dev');
-      expect(v.app, 'escurel-server');
-      expect(v.capabilities, contains(BackendCapability.none));
-    },
+    test(
+      'version tolerates a plain-text body (escurel returns a bare string)',
+      () async {
+        // escurel-server answers /version with `text/plain` "0.0.0-dev", not
+        // JSON. The client must not throw a cast error; it surfaces the string.
+        mock.rawRouteHandlers['/version'] = '0.0.0-dev';
+        final v = await client.version();
+        expect(v.version, '0.0.0-dev');
+        expect(v.app, 'escurel-server');
+        expect(v.capabilities, contains(BackendCapability.none));
+      },
     );
   });
 

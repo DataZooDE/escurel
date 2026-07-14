@@ -109,6 +109,7 @@ class ExpandResult {
     this.backendProjection,
     this.chunksTotal,
     this.chunksTruncated = false,
+    this.shadow,
   });
 
   final String pageId;
@@ -131,6 +132,13 @@ class ExpandResult {
   /// Whether the returned `blocks` are a truncated lead of `chunksTotal`.
   final bool chunksTruncated;
 
+  /// When this page is a tenant OVERLAY skill that shadows a pack-imported
+  /// base skill of the same id (REQ-LAYER-03): the shadowed base's page id,
+  /// pack pin, and frontmatter — so overlay↔base drift stays visible,
+  /// never silently masked. `null` for non-shadowing pages and older
+  /// servers that don't emit `shadow`.
+  final ShadowInfo? shadow;
+
   /// The `backend_ref` block off the frontmatter, or `null` for native
   /// markdown instances. Tells the UI which backend rendered this instance.
   Map<String, dynamic>? get backendRef =>
@@ -138,6 +146,33 @@ class ExpandResult {
 
   /// The backend kind (`sql_view` | `document`), or `null` for markdown.
   String? get backendKind => backendRef?['kind'] as String?;
+}
+
+/// The shadowed base behind a shadowing overlay skill page (`expand`'s
+/// additive `shadow` object, REQ-LAYER-03): the base page's id, the
+/// `base@<pack>@<version>` pin it was imported under, and its frontmatter.
+/// The overlay wins for display; the base values stay visible so drift is
+/// never silently masked.
+class ShadowInfo {
+  const ShadowInfo({
+    required this.basePageId,
+    required this.pack,
+    required this.base,
+  });
+
+  final String basePageId;
+
+  /// The shadowed base's pin, e.g. `base@logistics-midmarket@v7`.
+  final String pack;
+
+  /// The shadowed base page's frontmatter.
+  final Map<String, dynamic> base;
+
+  factory ShadowInfo.fromJson(Map<String, dynamic> j) => ShadowInfo(
+    basePageId: (j['base_page_id'] as String?) ?? '',
+    pack: (j['pack'] as String?) ?? '',
+    base: Map<String, dynamic>.from(j['base'] as Map? ?? const {}),
+  );
 }
 
 /// The bounded projection of a `sql_view` instance's view (`expand`'s
@@ -203,6 +238,52 @@ class PackSubscriptionInfo {
         publisher: (j['publisher'] as String?) ?? '',
         contentHash: j['content_hash'] as String?,
       );
+}
+
+/// Result of a pack lifecycle operation (`import_pack` / `rebase_pack` /
+/// `unsubscribe_pack`). Field names mirror the server payloads; absent
+/// fields stay null (each tool reports a different subset). A blocked
+/// rebase reports `ok: false` plus typed `rebase_conflict` [issues].
+class PackOpResult {
+  const PackOpResult({
+    this.ok = true,
+    this.pack = '',
+    this.version,
+    this.pagesImported,
+    this.pagesRemoved,
+    this.issues = const [],
+  });
+
+  final bool ok;
+  final String pack;
+  final int? version;
+  final int? pagesImported;
+  final int? pagesRemoved;
+
+  /// Typed conflicts from a blocked rebase (`rebase_conflict`).
+  final List<Issue> issues;
+
+  factory PackOpResult.fromJson(Map<String, dynamic> j) => PackOpResult(
+    ok: (j['ok'] as bool?) ?? true,
+    pack: (j['pack'] as String?) ?? '',
+    version: ((j['version'] ?? j['to_version']) as num?)?.toInt(),
+    pagesImported: (j['pages_imported'] as num?)?.toInt(),
+    pagesRemoved: (j['pages_removed'] as num?)?.toInt(),
+    issues: (j['issues'] as List? ?? const [])
+        .whereType<Map>()
+        .map(
+          (i) => Issue(
+            severity: switch (i['severity'] as String?) {
+              'warning' => IssueSeverity.warning,
+              'info' => IssueSeverity.info,
+              _ => IssueSeverity.error,
+            },
+            code: (i['code'] as String?) ?? '',
+            message: (i['message'] as String?) ?? '',
+          ),
+        )
+        .toList(),
+  );
 }
 
 /// A registered external-source credential — name/connector only, never the

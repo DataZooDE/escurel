@@ -217,6 +217,11 @@ class HttpEscurelClient implements EscurelClient {
       // document: the returned blocks are a bounded chunk lead (REQ-DOC-05).
       chunksTotal: (result['chunks_total'] as num?)?.toInt(),
       chunksTruncated: (result['chunks_truncated'] as bool?) ?? false,
+      // overlay-shadows-base: the shadowed base page behind a shadowing
+      // overlay skill (REQ-LAYER-03) — absent on non-shadowing pages.
+      shadow: result['shadow'] is Map<String, dynamic>
+          ? ShadowInfo.fromJson(result['shadow'] as Map<String, dynamic>)
+          : null,
     );
   }
 
@@ -337,6 +342,68 @@ class HttpEscurelClient implements EscurelClient {
         .cast<Map<String, dynamic>>()
         .map(PackSubscriptionInfo.fromJson)
         .toList();
+  }
+
+  /// Decode a pasted manifest into the JSON OBJECT the server expects
+  /// (`PackManifest`), refusing malformed input client-side so the paste
+  /// error is caught before a wire round-trip.
+  static Map<String, dynamic> _decodeManifest(String manifestJson) {
+    try {
+      final decoded = jsonDecode(manifestJson);
+      if (decoded is Map<String, dynamic>) return decoded;
+      throw const FormatException('manifest must be a JSON object');
+    } on FormatException catch (e) {
+      throw EscurelToolException(
+        'manifest is not valid JSON: ${e.message}',
+        code: 'manifest_invalid_json',
+      );
+    }
+  }
+
+  @override
+  Future<PackOpResult> importPack(
+    String manifestJson,
+    String tarballBase64, {
+    bool allowVerticalMismatch = false,
+  }) async {
+    final r = await _call('import_pack', {
+      // `tenant_id` is a required field server-side; the empty string
+      // means "this gateway's own tenant" (the one-instance-one-tenant
+      // boundary rejects anything else anyway).
+      'tenant_id': '',
+      'manifest': _decodeManifest(manifestJson),
+      'tarball_b64': tarballBase64,
+      'allow_vertical_mismatch': allowVerticalMismatch,
+    });
+    return PackOpResult.fromJson(r);
+  }
+
+  @override
+  Future<PackOpResult> rebasePack(
+    String manifestJson,
+    String tarballBase64, {
+    bool acknowledgeConflicts = false,
+    bool dryRun = false,
+  }) async {
+    final r = await _call('rebase_pack', {
+      'tenant_id': '',
+      'manifest': _decodeManifest(manifestJson),
+      'tarball_b64': tarballBase64,
+      'acknowledge_conflicts': acknowledgeConflicts,
+      // Additive: current servers ignore unknown flags; a future
+      // preview-only rebase honours it.
+      'dry_run': dryRun,
+    });
+    return PackOpResult.fromJson(r);
+  }
+
+  @override
+  Future<PackOpResult> unsubscribePack(String packId) async {
+    final r = await _call('unsubscribe_pack', {
+      'tenant_id': '',
+      'pack_id': packId,
+    });
+    return PackOpResult.fromJson(r);
   }
 
   @override

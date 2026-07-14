@@ -8,6 +8,45 @@ import '../client/models.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
 
+/// The most pasted tarball base64 the import card accepts (~5 MB of
+/// text). Larger packs go through the escurel CLI, not a browser paste.
+const int packImportMaxTarballChars = 5 * 1024 * 1024;
+
+/// Client-side pre-flight for the paste-based import card: cap the
+/// pasted tarball size and require the manifest keys the server needs
+/// (`id`, `version`, `content_hash`, `signature`) BEFORE a wire
+/// round-trip. Returns a precise error string, or null when sendable.
+/// Server-side verification (signature, hash, vertical) still runs —
+/// this only turns paste mistakes into instant, named errors.
+@visibleForTesting
+String? validatePackImportInput(String manifestJson, String tarballB64) {
+  if (tarballB64.length > packImportMaxTarballChars) {
+    return 'tarball_too_large: pasted base64 is ${tarballB64.length} chars '
+        '(max $packImportMaxTarballChars) — use the escurel CLI for large '
+        'packs';
+  }
+  Object? decoded;
+  try {
+    decoded = jsonDecode(manifestJson);
+  } on FormatException catch (e) {
+    return 'manifest_invalid_json: ${e.message}';
+  }
+  if (decoded is! Map<String, dynamic>) {
+    return 'manifest_invalid_json: the manifest must be a JSON object';
+  }
+  final manifest = decoded;
+  final missing = [
+    'id',
+    'version',
+    'content_hash',
+    'signature',
+  ].where((k) => !manifest.containsKey(k)).toList();
+  if (missing.isNotEmpty) {
+    return 'manifest_missing_keys: ${missing.join(', ')}';
+  }
+  return null;
+}
+
 /// The Backends panel of the Dev Inspector — the operator's trigger surface
 /// for the external-instance backends. Four cards, each driving one
 /// admin-gated action against the real client:
@@ -47,6 +86,8 @@ class BackendAdminPanel extends ConsumerWidget {
           _Card(title: 'Document ingestion', child: _DocumentIngest()),
           SizedBox(height: 16),
           _Card(title: 'Subscribed packs', child: _SubscribedPacks()),
+          SizedBox(height: 16),
+          _Card(title: 'Import pack', child: _ImportPack()),
         ],
       ),
     );
@@ -726,6 +767,11 @@ class _SubscribedPacksState extends ConsumerState<_SubscribedPacks> {
   String? _error;
   bool _busy = false;
 
+  /// Pack id armed for unsubscribe — the confirm step. Tapping the
+  /// unsubscribe icon only arms; the destructive call fires on the
+  /// explicit confirm tap.
+  String? _armedUnsubscribe;
+
   Future<void> _refresh() async {
     setState(() {
       _busy = true;
@@ -742,6 +788,80 @@ class _SubscribedPacksState extends ConsumerState<_SubscribedPacks> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _unsubscribe(String packId) async {
+    // The armed state is deliberately KEPT while the call is in flight —
+    // clearing it up front flips the row back to the unarmed icon
+    // mid-request (review finding). The confirm button disables via
+    // `_busy` instead; the armed state clears on completion.
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await ref.read(escurelClientProvider).unsubscribePack(packId);
+      if (!mounted) return;
+      // Re-read the pack list so the row disappears from the source of
+      // truth, not from local bookkeeping.
+      final r = await ref.read(escurelClientProvider).listPacks();
+      if (mounted) setState(() => _result = r);
+    } on EscurelClientException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _armedUnsubscribe = null;
+        });
+      }
+    }
+  }
+
+  Widget _trailingFor(PackSubscriptionInfo p) {
+    if (_armedUnsubscribe == p.packId) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Semantics(
+            label: 'pack-unsubscribe-confirm:${p.packId}',
+            identifier: 'pack-unsubscribe-confirm:${p.packId}',
+            button: true,
+            onTap: _busy ? null : () => _unsubscribe(p.packId),
+            excludeSemantics: true,
+            child: FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: kError,
+                visualDensity: VisualDensity.compact,
+              ),
+              onPressed: _busy ? null : () => _unsubscribe(p.packId),
+              child: Text(_busy ? 'Removing…' : 'Confirm'),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16),
+            tooltip: 'cancel',
+            onPressed: _busy
+                ? null
+                : () => setState(() => _armedUnsubscribe = null),
+          ),
+        ],
+      );
+    }
+    return Semantics(
+      label: 'pack-unsubscribe:${p.packId}',
+      identifier: 'pack-unsubscribe:${p.packId}',
+      button: true,
+      onTap: _busy ? null : () => setState(() => _armedUnsubscribe = p.packId),
+      excludeSemantics: true,
+      child: IconButton(
+        icon: const Icon(Icons.link_off, size: 18),
+        tooltip: 'unsubscribe',
+        onPressed: _busy
+            ? null
+            : () => setState(() => _armedUnsubscribe = p.packId),
+      ),
+    );
   }
 
   @override
@@ -779,18 +899,157 @@ class _SubscribedPacksState extends ConsumerState<_SubscribedPacks> {
                           explicitChildNodes: true,
                           child: ListTile(
                             dense: true,
-                            leading: const Icon(Icons.inventory_2_outlined, size: 18),
+                            leading: const Icon(
+                              Icons.inventory_2_outlined,
+                              size: 18,
+                            ),
                             title: Text('${p.packId}@v${p.version}'),
                             subtitle: Text(
                               'vertical ${p.vertical} · ${p.publisher}',
                               style: text.bodySmall,
                             ),
+                            trailing: _trailingFor(p),
                           ),
                         ),
                     ],
                   ),
                 ),
         ],
+      ],
+    );
+  }
+}
+
+/// Card 7 — import a signed skill pack as this node's read-only base
+/// layer (`import_pack`, REQ-SUB-01..03). Paste-based on purpose: the
+/// web-lite explorer takes the manifest JSON + tarball base64 as text
+/// (file pickers are out of scope). Server refusal codes
+/// (`pack_signature_invalid`, `vertical_mismatch`, …) surface verbatim.
+/// Stable labels: `pack-import-manifest-field`, `pack-import-tarball-field`,
+/// `pack-import-allow-mismatch`, `pack-import-submit`, `pack-import-result`.
+class _ImportPack extends ConsumerStatefulWidget {
+  const _ImportPack();
+
+  @override
+  ConsumerState<_ImportPack> createState() => _ImportPackState();
+}
+
+class _ImportPackState extends ConsumerState<_ImportPack> {
+  final _manifest = TextEditingController();
+  final _tarball = TextEditingController();
+  bool _allowVerticalMismatch = false;
+  PackOpResult? _outcome;
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _manifest.dispose();
+    _tarball.dispose();
+    super.dispose();
+  }
+
+  Future<void> _import() async {
+    // Pre-flight the paste before any wire round-trip: size cap +
+    // required manifest keys, with a precise named error.
+    final preflight = validatePackImportInput(
+      _manifest.text.trim(),
+      _tarball.text.trim(),
+    );
+    if (preflight != null) {
+      setState(() {
+        _error = preflight;
+        _outcome = null;
+      });
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+      _outcome = null;
+    });
+    try {
+      final r = await ref
+          .read(escurelClientProvider)
+          .importPack(
+            _manifest.text.trim(),
+            _tarball.text.trim(),
+            allowVerticalMismatch: _allowVerticalMismatch,
+          );
+      if (mounted) setState(() => _outcome = r);
+    } on EscurelClientException catch (e) {
+      // The server's refusal codes are the operator's diagnosis —
+      // show the message verbatim, never paraphrased.
+      if (mounted) setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final outcome = _outcome;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _LabeledField(
+          label: 'pack-import-manifest-field',
+          hint: 'manifest JSON (id / version / vertical / signature …)',
+          controller: _manifest,
+          maxLines: 3,
+        ),
+        const SizedBox(height: 8),
+        _LabeledField(
+          label: 'pack-import-tarball-field',
+          hint: 'pack tarball, base64',
+          controller: _tarball,
+          maxLines: 3,
+        ),
+        const SizedBox(height: 8),
+        Semantics(
+          label: 'pack-import-allow-mismatch',
+          identifier: 'pack-import-allow-mismatch',
+          container: true,
+          explicitChildNodes: true,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Checkbox(
+                value: _allowVerticalMismatch,
+                visualDensity: VisualDensity.compact,
+                onChanged: (v) =>
+                    setState(() => _allowVerticalMismatch = v ?? false),
+              ),
+              Text(
+                'allow vertical mismatch (REQ-SUB-03 override)',
+                style: text.bodySmall,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        _ActionButton(
+          label: 'pack-import-submit',
+          text: _busy ? 'Importing…' : 'Import pack',
+          onPressed: _busy ? null : _import,
+        ),
+        if (_error != null) _ErrorText(_error!),
+        if (outcome != null)
+          Semantics(
+            label: 'pack-import-result',
+            identifier: 'pack-import-result',
+            container: true,
+            explicitChildNodes: true,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                'imported ${outcome.pack}@v${outcome.version} '
+                '(${outcome.pagesImported ?? 0} pages)',
+                style: text.bodySmall?.copyWith(color: kSuccess),
+              ),
+            ),
+          ),
       ],
     );
   }
