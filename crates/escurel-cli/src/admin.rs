@@ -100,6 +100,13 @@ pub enum PackCmd {
         #[arg(long)]
         acknowledge_conflicts: bool,
     },
+    /// Drop a pack subscription: removes its base pages + version pin.
+    Unsubscribe {
+        #[arg(long)]
+        tenant: String,
+        #[arg(long)]
+        id: String,
+    },
     /// The subscribed skill packs and their pinned versions.
     List {
         #[arg(long)]
@@ -346,6 +353,13 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
                 .await
                 .map_err(Into::into)
         }
+        AdminCmd::Pack(PackCmd::Unsubscribe { tenant, id }) => client
+            .call_raw(
+                "unsubscribe_pack",
+                json!({ "tenant_id": tenant, "pack_id": id }),
+            )
+            .await
+            .map_err(Into::into),
         AdminCmd::Pack(PackCmd::List { tenant }) => {
             let _ = tenant; // single-tenant gateway; kept for symmetry
             client.list_packs().await.map_err(Into::into)

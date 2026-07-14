@@ -23,6 +23,17 @@ Prometheus scrape, optionally on a dedicated listener), and the
 two document-ingest routes `POST /ingest` + `POST /ingest/upload`
 (see [Instance backends](#instance-backends)).
 
+**Execution labels (WI-8 / REQ-LABEL-01).** Every `tools/list` entry
+carries an additive `execution: "deterministic" | "orchestration"`
+label. `deterministic` = the result is a pure function of KB state +
+arguments (reads, queries, validation, bundle builds); `orchestration`
+= the call advances loop state (writes, events, sessions, lifecycle).
+The default for a new tool is `orchestration` (fail-closed: nothing
+masquerades as deterministic compute by omission). This makes the
+interlocked-loops "deterministic-first" invariant machine-visible: a
+per-phase tool surface can hand a compute step deterministic tools
+only.
+
 Auth is the same on both (OIDC Bearer in `Authorization`
 header; see [`platform.md`](platform.md#auth)). Tenant resolution
 is the same (one tenant per token claim). Quotas apply uniformly.
@@ -906,6 +917,7 @@ empty value means "this gateway's tenant".
 | `tenant_import` | `{tenant_id, tarball_b64}` | `{bytes_imported}` | restore markdown into an existing tenant (blocking) |
 | `export_pack` | `{tenant_id, id, version, vertical, publisher, skills, include_instances?}` | `{manifest, tarball_b64, bytes}` | build a **skill pack**: a deterministic tar+gz of the named skills' pages (+ instances when `include_instances`) with an HMAC-signed `manifest` (`{format_version, id, version, vertical, publisher, page_count, content_hash, signature}`). Requires `ESCUREL_PACK_SECRET` (refuses unsigned, `pack_secret_not_configured`); fails closed on credential-shaped page content (`pack_secret_detected`). See ADR-0006 |
 | `import_pack` | `{tenant_id, manifest, tarball_b64, allow_vertical_mismatch?}` | `{pack, version, vertical, pages_imported, layer}` | import a signed pack as the tenant's pinned, **read-only base layer**: signature + `content_hash` verify fail-closed **before** unpacking (`pack_signature_invalid`); unsafe pack ids refuse (`pack_id_invalid`); unsafe entry paths / malformed pages refuse (`pack_malformed`) with the WHOLE pack validated before the first page lands (a bad page ⇒ zero landed pages); pages land under the reserved `markdown/base/<pack>/` namespace stamped `layer: base@<id>@v<version>`; the pin is recorded in `pack_subscriptions` (a canonical input, like the credential registry). A version change on a subscribed pack refuses (`pack_version_pinned`), a same-version re-publish with different bytes refuses (`pack_content_mismatch`) — upgrades are an explicit future `rebase`; an unrelated vertical refuses (`vertical_mismatch`) unless `allow_vertical_mismatch`; a skill id another indexed skill page already declares refuses (`pack_skill_collision` — explicit shadowing is a future feature). Transport-neutral: an air-gapped tarball and a live pull are the same call. See ADR-0007 |
+| `unsubscribe_pack` | `{tenant_id, pack_id}` | `{pack, pages_removed}` | drop a subscription cleanly: every base page the pack landed is removed (so `rebuild` cannot resurrect orphaned base content), then the pin; tenant overlays survive (a shadow simply stops shadowing); a later `import_pack` starts from zero. Refuses unknown packs (`pack_not_subscribed`) |
 | `list_packs` | `{}` | `{packs: [{pack_id, version, vertical, publisher, content_hash}]}` | the subscribed packs and their pins |
 | `rebase_pack` | `{tenant_id, manifest, tarball_b64, acknowledge_conflicts?}` | `{ok, issues, pack, from_version, to_version, pages_imported, pages_removed, conflicts_acknowledged}` | the **reviewed upgrade** of a subscribed pack (REQ-REBASE-01/02) — the only operation that moves a version pin. Validates like `import_pack` (verify before unpack, whole pack before the first write); a field the tenant's shadow overrides AND the new version changes surfaces as a `rebase_conflict` Issue (`skill <id> · <field>`, body included) and blocks until `acknowledge_conflicts=true` — never auto-resolved; orphaned base pages the new version no longer ships are removed; the pin moves last. Refuses non-subscribed packs (`pack_not_subscribed`) and non-upgrades (`pack_rebase_not_an_upgrade`) |
 | `submit_promotion` | `{tenant_id, candidate_id, vertical, skills}` | `{manifest, tarball_b64, bytes, event_id}` | the L2→L3 **harvest**: propose a scrubbed, signed pack candidate from this node's own skills. **Default-deny** (REQ-PROMO-01): every id must be a tenant-authored SKILL page carrying the curator-set `promotable: true` marker — instances never promote, base-layer pages are the hub's; one ineligible id refuses the whole request (`promotion_not_eligible`). The deterministic scrubber (the export deny set) fails the submission closed on credential-shaped content (`pack_secret_detected`). Setting `promotable: true` via `update_page` is itself curator-gated (`promotable_requires_curator` for non-admin callers). Every submission emits an immutable audit event (`source: "promotion"`, what/when/by-whom). Maker/checker: the candidate carries `version: 0`; a hub curator reviews and publishes deliberately. See ADR-0008 |

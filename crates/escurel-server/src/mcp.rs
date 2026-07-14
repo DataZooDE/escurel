@@ -1066,6 +1066,10 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             return tool_rebase_pack(state, params.arguments).await;
         }
+        "unsubscribe_pack" => {
+            require_admin(role)?;
+            return tool_unsubscribe_pack(state, params.arguments).await;
+        }
         "submit_promotion" => {
             require_admin(role)?;
             return tool_submit_promotion(state, subject, params.arguments).await;
@@ -4543,6 +4547,62 @@ async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
     }))
 }
 
+#[derive(Deserialize)]
+struct UnsubscribePackArgs {
+    tenant_id: String,
+    pack_id: String,
+}
+
+/// Admin: cleanly drop a subscription — every base page the pack landed
+/// (so `rebuild` cannot resurrect orphaned base content) AND the pin
+/// row. Tenant overlay pages survive untouched; a shadow simply stops
+/// shadowing. A later `import_pack` starts from zero.
+async fn tool_unsubscribe_pack(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: UnsubscribePackArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("unsubscribe_pack: {e}")))?;
+    if !crate::pack::is_safe_pack_token(&a.pack_id) {
+        return Err(JsonRpcError::internal(
+            "pack_id_invalid: not a safe pack id",
+        ));
+    }
+    let indexer = admin_indexer(state)?.clone();
+    ensure_tenant_matches(&indexer, &a.tenant_id)?;
+    let subs = indexer
+        .list_pack_subscriptions()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("unsubscribe_pack: {e}")))?;
+    if !subs.iter().any(|s| s.pack_id == a.pack_id) {
+        return Err(JsonRpcError::internal(format!(
+            "pack_not_subscribed: `{}` has no subscription on this node",
+            a.pack_id
+        )));
+    }
+    let page_ids = indexer
+        .base_page_ids(&a.pack_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("unsubscribe_pack scan: {e}")))?;
+    let mut pages_removed = 0u32;
+    for page_id in &page_ids {
+        indexer
+            .remove_page(page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("unsubscribe_pack `{page_id}`: {e}")))?;
+        pages_removed += 1;
+    }
+    indexer
+        .refresh_fts()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("unsubscribe_pack refresh_fts: {e}")))?;
+    // The pin goes LAST — a failed removal leaves the subscription
+    // visible so the operator re-runs rather than losing track of a
+    // half-removed pack.
+    indexer
+        .delete_pack_subscription(&a.pack_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("unsubscribe_pack pin: {e}")))?;
+    Ok(json!({ "pack": a.pack_id, "pages_removed": pages_removed }))
+}
+
 /// Admin: the subscribed packs and their pins (REQ-SUB-01).
 async fn tool_list_packs(state: &AppState) -> Result<Value, JsonRpcError> {
     let indexer = admin_indexer(state)?.clone();
@@ -5671,6 +5731,19 @@ fn tools_list_payload() -> Value {
                 json!({ "type": "object", "properties": {} }),
             ),
             tool_entry(
+                "unsubscribe_pack",
+                "Admin: drop a pack subscription — removes every base page it \
+                 landed and the version pin; tenant overlays survive.",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id", "pack_id"],
+                    "properties": {
+                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                        "pack_id": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
                 "rebase_pack",
                 "Admin: the reviewed upgrade of a subscribed pack — the only \
                  operation that moves a version pin. Shadow-vs-upstream \
@@ -5769,11 +5842,64 @@ fn tools_list_payload() -> Value {
     })
 }
 
+/// The WI-8 deterministic set (REQ-LABEL-01): tools whose result is a
+/// pure function of KB state + arguments — reads, queries, validation,
+/// and pack/bundle builds. Everything NOT listed labels `orchestration`
+/// (advances loop state: writes, events, sessions, lifecycle) — the
+/// fail-closed default, so a forgotten new tool can never masquerade as
+/// deterministic compute. A per-phase tool surface can hand a compute
+/// step deterministic tools only ("the LLM never does critical
+/// arithmetic").
+const DETERMINISTIC_TOOLS: &[&str] = &[
+    "search",
+    "resolve",
+    "expand",
+    "neighbours",
+    "list_skills",
+    "list_instances",
+    "query_instance",
+    "run_stored_query",
+    "validate",
+    "fetch_blob",
+    "list_snapshots",
+    "list_messages",
+    "list_inbox",
+    "list_events",
+    "list_credentials",
+    "list_endpoints",
+    "list_packs",
+    "list_group_members",
+    "validate_bindings",
+    "validate_endpoints",
+    "tenant_list",
+    "tenant_get",
+    "admin_quota",
+    "admin_audit",
+    "admin_index_query",
+    "admin_list_lanes",
+    "admin_lane_keys",
+    "admin_lane_blob",
+    "admin_webhook_deliveries",
+    "tenant_export",
+    "export_pack",
+];
+
+fn execution_label(name: &str) -> &'static str {
+    if DETERMINISTIC_TOOLS.contains(&name) {
+        "deterministic"
+    } else {
+        "orchestration"
+    }
+}
+
 fn tool_entry(name: &str, description: &str, input_schema: Value) -> Value {
     json!({
         "name": name,
         "description": description,
         "inputSchema": input_schema,
+        // WI-8 (REQ-LABEL-01): additive execution label; see
+        // DETERMINISTIC_TOOLS for the definition.
+        "execution": execution_label(name),
     })
 }
 

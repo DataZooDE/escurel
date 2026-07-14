@@ -121,6 +121,16 @@ impl Indexer {
         Ok(())
     }
 
+    /// Drop a subscription pin row (`unsubscribe_pack`).
+    pub async fn delete_pack_subscription(&self, pack_id: &str) -> Result<(), IndexerError> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "DELETE FROM pack_subscriptions WHERE pack_id = ?",
+            duckdb::params![pack_id],
+        )?;
+        Ok(())
+    }
+
     /// Every subscribed pack, ordered by pack id.
     pub async fn list_pack_subscriptions(&self) -> Result<Vec<PackSubscription>, IndexerError> {
         let conn = self.conn.lock().await;
