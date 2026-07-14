@@ -597,6 +597,23 @@ declaring `layer: overlay` are unaffected. `list_skills` reports each
 skill's `layer` (`"overlay"` default, or the `base@<pack>@<version>`
 pin) so agents and operators can tell stable from editable.
 
+**Shadowing (REQ-LAYER-03).** A tenant overlay skill page MAY declare
+the same skill id as an imported base page — that is how a tenant
+specialises pack content without forking it. Page-level precedence
+with drift visibility: `resolve` prefers the overlay; `list_skills`
+reports ONE entry per skill id (the overlay) with an additive
+`shadows: "base@<pack>@<version>"` pin; `expand` of the shadowing
+overlay carries an additive `shadow` object —
+`{base_page_id, pack, base: {…the base page's frontmatter…}}` — so the
+base values stay visible, never silently masked (the same namespacing
+discipline as the sql_view `source` object). The base page itself is
+untouched (INV-SHADOW): expanding it directly returns the pack's
+pristine content, and a future pack upgrade rebases against it.
+`import_pack` therefore lands a base skill beneath an existing tenant
+skill of the same id (the overlay direction of `pack_skill_collision`
+no longer refuses; two BASE pages with one id still do — no precedence
+exists between packs).
+
 ### Events / inbox (M7 — Event-sourcing surface)
 
 Events are the dynamic input of the memory triad (Events · Skills ·

@@ -145,6 +145,42 @@ impl Indexer {
         Ok(out)
     }
 
+    /// The base-layer skill page a tenant overlay page shadows: the pack
+    /// page under `markdown/base/` declaring the same slug, or `None`.
+    /// Returns `(base_page_id, base_layer_pin, base_frontmatter_json)` —
+    /// the drift-visibility payload `expand`/`list_skills` surface
+    /// (REQ-LAYER-03: the overlay wins for display, the base value stays
+    /// visible, never silently masked).
+    pub async fn shadowed_base(
+        &self,
+        slug: &str,
+        own_page_id: &str,
+    ) -> Result<Option<(String, String, serde_json::Value)>, IndexerError> {
+        let conn = self.conn.lock().await;
+        let row: Option<(String, String)> = match conn.query_row(
+            "SELECT page_id, frontmatter::VARCHAR FROM pages \
+             WHERE page_type = 'skill' AND slug = ? \
+               AND page_id LIKE 'markdown/base/%' AND page_id != ? \
+             LIMIT 1",
+            duckdb::params![slug, own_page_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ) {
+            Ok(v) => Some(v),
+            Err(duckdb::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+        let Some((page_id, fm_json)) = row else {
+            return Ok(None);
+        };
+        let fm: serde_json::Value = serde_json::from_str(&fm_json)?;
+        let pin = fm
+            .get("layer")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        Ok(Some((page_id, pin, fm)))
+    }
+
     /// The page id of an EXISTING skill page declaring `skill_id` under a
     /// different page id than `landing_page_id`, or `None`. Import uses
     /// this to refuse a pack whose skill would silently shadow (or be

@@ -302,7 +302,11 @@ returns `layer_read_only`; so does a draft that *declares* `layer:
 base@…` (base pages are created by pack import only). `list_skills`
 reports each skill's `layer` so an agent can tell the stable,
 firm-authored substrate from the tenant's own editable pages. To
-specialise a base skill, author an overlay page — never edit the base.
+specialise a base skill, author an overlay page with the same skill id
+— never edit the base: the overlay then **shadows** the base
+(`resolve` prefers it; `list_skills` shows one entry carrying a
+`shadows: base@<pack>@<version>` pin; `expand` exposes the base
+frontmatter under a `shadow` object so drift stays visible).
 
 ## Writing
 

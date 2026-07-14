@@ -52,3 +52,52 @@ class LayerBadge extends StatelessWidget {
     );
   }
 }
+
+/// Tiny pill on a tenant overlay skill that SHADOWS a pack-imported
+/// base skill (REQ-LAYER-03): shows the shadowed pin so operators see
+/// "this is a specialisation of pack content" at a glance. Carries a
+/// stable `skill-shadow:<id>` semantics label (the rodney selector
+/// contract) — do not rename casually.
+class ShadowBadge extends StatelessWidget {
+  const ShadowBadge({super.key, required this.skillId, required this.shadows});
+
+  final String skillId;
+
+  /// The shadowed base pin, e.g. `base@logistics-midmarket@v7`.
+  final String shadows;
+
+  @override
+  Widget build(BuildContext context) {
+    final pin = shadows.startsWith('base@')
+        ? shadows.substring('base@'.length)
+        : shadows;
+    final text = Theme.of(context).textTheme;
+    return Semantics(
+      label: 'skill-shadow:$skillId',
+      identifier: 'skill-shadow:$skillId',
+      container: true,
+      explicitChildNodes: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: kSurfaceContainerHigh,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.layers_outlined, size: 9, color: kOnSurfaceVariant),
+            const SizedBox(width: 3),
+            Text(
+              'shadows $pin',
+              style: text.labelSmall?.copyWith(
+                color: kOnSurfaceVariant,
+                fontSize: 9,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
