@@ -170,6 +170,44 @@ sk_entity=$(mcp_int list_skills '{}' 'r.skills.filter(function(s){return !s.is_e
   || fail "expected event-typed + entity-bound skills (event=$sk_event entity=$sk_entity)"
 note "probe ok: skills event-typed=$sk_event, entity-bound=$sk_entity"
 
+# --- layers + packs (federation UI): the seeded base/overlay pair ------
+# The crm-demo seed carries a base-layer playbook skill
+# (base/crm-essentials/skills/playbook.md, `layer: base@crm-essentials@v1`)
+# shadowed by a tenant overlay of the same id (skills/playbook.md), so the
+# explorer's LayerBadge / ShadowBadge / ShadowPane have real data in demo
+# mode.
+#
+# NOTE — list_packs is deliberately NOT probed: the seed's base pages are
+# file-seeded through ESCUREL_SEED_DIR, not imported via `import_pack`, so
+# no subscription pin exists and list_packs is legitimately empty here.
+# The import → pin path is covered by the no-mock Rust e2e pack_import.rs.
+#
+# NOTE — no rodney presence assertions for the badges / shadow pane: they
+# are nested inside catalogue rows and the entity editor (excludeSemantics
+# territory — see SCOPE above; only top-level container labels materialise
+# reliably). Behaviour is asserted via the /mcp probes below plus the
+# flutter widget tests (shadow_pane_test.dart, catalogue_layer_badge_test.dart).
+note "probe: list_skills folds the shadowed playbook to one overlay entry"
+pb="r.skills.find(function(s){return s.id==='playbook'})"
+pb_n=$(mcp_int list_skills '{}' "r.skills.filter(function(s){return s.id==='playbook'}).length")
+expect_int "one playbook entry (base folded under overlay)" "$pb_n" "1"
+pb_layer=$(mcp_int list_skills '{}' "(($pb)&&($pb).layer)||''")
+expect_int "playbook layer" "$pb_layer" "overlay"
+pb_shadows=$(mcp_int list_skills '{}' "(($pb)&&($pb).shadows)||''")
+expect_int "playbook shadows pin" "$pb_shadows" "base@crm-essentials@v1"
+
+note "probe: expand of the shadowing overlay carries the shadow object"
+sh_base=$(mcp_int expand '{"page_id":"markdown/skills/playbook.md"}' "(r.shadow&&r.shadow.base_page_id)||''")
+expect_int "shadow.base_page_id" "$sh_base" "markdown/base/crm-essentials/skills/playbook.md"
+sh_drift=$(mcp_int expand '{"page_id":"markdown/skills/playbook.md"}' "String((r.shadow&&r.shadow.base&&r.shadow.base.stage_gates)||'')+'~'+String((r.frontmatter&&r.frontmatter.stage_gates)||'')")
+expect_int "stage_gates drift (base~overlay)" "$sh_drift" "4~5"
+
+# The base skill itself is shadowed out of list_skills (one entry per id),
+# so its `layer` pin is asserted on the page directly.
+note "probe: the seeded base page carries its layer pin"
+base_layer=$(mcp_int expand '{"page_id":"markdown/base/crm-essentials/skills/playbook.md"}' "(r.frontmatter&&r.frontmatter.layer)||''")
+expect_int "base page layer" "$base_layer" "base@crm-essentials@v1"
+
 # --- external instance backends: wire surface + document ingestion -----
 # The `attachment` skill (examples/crm-demo/skills/attachment.md) declares a
 # `document` backend, so list_skills must carry the additive backend +
