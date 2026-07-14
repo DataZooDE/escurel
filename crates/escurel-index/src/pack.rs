@@ -159,9 +159,12 @@ impl Indexer {
     /// `markdown/base/<pack>/` prefix). The rebase path diffs this
     /// against the incoming version to find orphans.
     pub async fn base_page_ids(&self, pack_id: &str) -> Result<Vec<String>, IndexerError> {
-        let prefix = format!("{RESERVED_BASE_PREFIX}{pack_id}/%");
+        // Literal prefix match — `_` is a valid pack-id character AND a
+        // SQL LIKE single-char wildcard, so a LIKE pattern here could
+        // match (and delete) another pack's pages (codex review).
+        let prefix = format!("{RESERVED_BASE_PREFIX}{pack_id}/");
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare("SELECT page_id FROM pages WHERE page_id LIKE ?")?;
+        let mut stmt = conn.prepare("SELECT page_id FROM pages WHERE starts_with(page_id, ?)")?;
         let rows = stmt.query_map(duckdb::params![prefix], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {
@@ -190,6 +193,12 @@ impl Indexer {
     /// new pack version no longer ships — never exposed on the agent
     /// write surface.
     pub async fn remove_page(&self, page_id: &str) -> Result<(), IndexerError> {
+        // Lane file FIRST (agy review): rows are how a retry FINDS the
+        // page (`base_page_ids` scans the index), so deleting rows first
+        // would orphan the file forever on a crash between the two. A
+        // missing file is tolerated — that IS the retry case.
+        let key = Key::new(self.tenant(), page_id.to_owned())?;
+        let _ = self.lane_store().delete(&key).await;
         {
             let conn = self.conn.lock().await;
             conn.execute(
@@ -217,8 +226,6 @@ impl Indexer {
                 duckdb::params![page_id],
             )?;
         }
-        let key = Key::new(self.tenant(), page_id.to_owned())?;
-        self.lane_store().delete(&key).await?;
         Ok(())
     }
 
@@ -253,11 +260,11 @@ impl Indexer {
         slug: &str,
         pack_id: &str,
     ) -> Result<Option<String>, IndexerError> {
-        let prefix = format!("{RESERVED_BASE_PREFIX}{pack_id}/%");
+        let prefix = format!("{RESERVED_BASE_PREFIX}{pack_id}/");
         let conn = self.conn.lock().await;
         match conn.query_row(
             "SELECT page_id FROM pages \
-             WHERE page_type = 'skill' AND slug = ? AND page_id LIKE ? \
+             WHERE page_type = 'skill' AND slug = ? AND starts_with(page_id, ?) \
              LIMIT 1",
             duckdb::params![slug, prefix],
             |r| r.get::<_, String>(0),

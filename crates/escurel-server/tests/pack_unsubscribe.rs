@@ -151,6 +151,61 @@ async fn a_shadowing_overlay_survives_and_stops_reporting_the_pin() {
 }
 
 #[tokio::test]
+async fn underscore_pack_ids_cannot_delete_a_siblings_pages() {
+    // codex review: `_` is a valid pack-id char AND a SQL LIKE wildcard —
+    // unsubscribing `foo_bar` must not remove `foo-bar`'s pages.
+    let p = start(FixtureBuilder::new().tenant(TENANT).done()).await;
+    for (pack, skill_id) in [("foo_bar", "alpha"), ("foo-bar", "beta")] {
+        let pages = vec![(
+            format!("skills/{skill_id}.md"),
+            format!("---\ntype: skill\nid: {skill_id}\ndescription: x\n---\n# {skill_id}\n"),
+        )];
+        let tarball = escurel_server::pack::build_tarball(&pages).unwrap();
+        let mut m = escurel_types::PackManifest {
+            format_version: escurel_server::pack::PACK_FORMAT_VERSION,
+            id: pack.into(),
+            version: 1,
+            vertical: "logistics".into(),
+            publisher: "hub.test".into(),
+            page_count: 1,
+            content_hash: escurel_server::pack::content_hash(&tarball),
+            signature: String::new(),
+        };
+        m.signature = escurel_server::pack::sign_manifest(&m, PACK_SECRET);
+        let r = call(
+            &p,
+            Role::Admin,
+            "import_pack",
+            json!({ "tenant_id": TENANT, "manifest": m, "tarball_b64": B64.encode(&tarball) }),
+        )
+        .await;
+        assert!(r.get("error").is_none(), "{r}");
+    }
+    let r = call(
+        &p,
+        Role::Admin,
+        "unsubscribe_pack",
+        json!({ "tenant_id": TENANT, "pack_id": "foo_bar" }),
+    )
+    .await;
+    assert!(r.get("error").is_none(), "{r}");
+    assert_eq!(r["result"]["structuredContent"]["pages_removed"], 1, "{r}");
+    // The sibling's page survives.
+    let ex = call(
+        &p,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": "markdown/base/foo-bar/skills/beta.md" }),
+    )
+    .await;
+    assert!(
+        !ex["result"]["structuredContent"]["page"].is_null(),
+        "sibling pack's page must survive: {ex}"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn unsubscribe_refuses_unknown_packs_and_agents() {
     let p = start(FixtureBuilder::new().tenant(TENANT).done()).await;
     let r = call(

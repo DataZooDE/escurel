@@ -65,6 +65,12 @@ async fn every_tool_carries_an_execution_label() {
         "capture_event",
         "open_session",
         "import_pack",
+        // agy review: network probes + server runtime state are NOT
+        // pure functions of KB state.
+        "validate_bindings",
+        "validate_endpoints",
+        "admin_quota",
+        "admin_webhook_deliveries",
     ] {
         assert_eq!(exec_of(orch), "orchestration", "{orch}");
     }

@@ -4577,6 +4577,10 @@ async fn tool_unsubscribe_pack(state: &AppState, args: Value) -> Result<Value, J
             a.pack_id
         )));
     }
+    // Admin lifecycle ops on the SAME pack (unsubscribe vs concurrent
+    // import/rebase) are not concurrent-safe — same single-operator
+    // posture as the import/rebase crash windows: recovery is re-running
+    // the idempotent operation (agy review, documented).
     let page_ids = indexer
         .base_page_ids(&a.pack_id)
         .await
@@ -5844,7 +5848,9 @@ fn tools_list_payload() -> Value {
 
 /// The WI-8 deterministic set (REQ-LABEL-01): tools whose result is a
 /// pure function of KB state + arguments — reads, queries, validation,
-/// and pack/bundle builds. Everything NOT listed labels `orchestration`
+/// and pack/bundle builds. NOT listed (agy review): the binding/endpoint
+/// validators (live network probes), the quota snapshot and webhook
+/// delivery log (server runtime state, not KB state). Everything NOT listed labels `orchestration`
 /// (advances loop state: writes, events, sessions, lifecycle) — the
 /// fail-closed default, so a forgotten new tool can never masquerade as
 /// deterministic compute. A per-phase tool surface can hand a compute
@@ -5869,17 +5875,13 @@ const DETERMINISTIC_TOOLS: &[&str] = &[
     "list_endpoints",
     "list_packs",
     "list_group_members",
-    "validate_bindings",
-    "validate_endpoints",
     "tenant_list",
     "tenant_get",
-    "admin_quota",
     "admin_audit",
     "admin_index_query",
     "admin_list_lanes",
     "admin_lane_keys",
     "admin_lane_blob",
-    "admin_webhook_deliveries",
     "tenant_export",
     "export_pack",
 ];
