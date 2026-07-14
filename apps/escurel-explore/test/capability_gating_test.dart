@@ -304,6 +304,37 @@ class _CapStubClient implements EscurelClient {
   Future<List<BindingStatus>> validateBindings() => inner.validateBindings();
 
   @override
+  Future<List<PackSubscriptionInfo>> listPacks() => inner.listPacks();
+
+  @override
+  Future<PackOpResult> importPack(
+    String manifestJson,
+    String tarballBase64, {
+    bool allowVerticalMismatch = false,
+  }) => inner.importPack(
+    manifestJson,
+    tarballBase64,
+    allowVerticalMismatch: allowVerticalMismatch,
+  );
+
+  @override
+  Future<PackOpResult> rebasePack(
+    String manifestJson,
+    String tarballBase64, {
+    bool acknowledgeConflicts = false,
+    bool dryRun = false,
+  }) => inner.rebasePack(
+    manifestJson,
+    tarballBase64,
+    acknowledgeConflicts: acknowledgeConflicts,
+    dryRun: dryRun,
+  );
+
+  @override
+  Future<PackOpResult> unsubscribePack(String packId) =>
+      inner.unsubscribePack(packId);
+
+  @override
   Future<String> createSqlInstance({
     required String skill,
     required String id,
@@ -315,7 +346,8 @@ class _CapStubClient implements EscurelClient {
     required String contentType,
     required List<int> bytes,
     String? title,
-  }) => inner.ingestUpload(contentType: contentType, bytes: bytes, title: title);
+  }) =>
+      inner.ingestUpload(contentType: contentType, bytes: bytes, title: title);
 
   @override
   void close() => inner.close();
