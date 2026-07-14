@@ -234,6 +234,129 @@ async fn expand_of_the_shadowing_overlay_exposes_base_fields() {
 }
 
 #[tokio::test]
+async fn a_shadow_does_not_hide_a_pack_vs_pack_collision() {
+    // codex P1: with an overlay AND pack A both declaring the id, a
+    // LIMIT-1 conflict lookup could return the overlay and let pack B
+    // slip a SECOND base page in — two base pages, no precedence.
+    let p = start(
+        FixtureBuilder::new()
+            .tenant(TENANT)
+            .skill("pallet-consolidation", OVERLAY_SKILL)
+            .done(),
+    )
+    .await;
+    let imp = import_base_pack(&p).await;
+    assert!(imp.get("error").is_none(), "{imp}");
+
+    // Pack B (different id, same vertical) ships the same skill id.
+    let pages = vec![(
+        "skills/pallet-consolidation.md".to_owned(),
+        BASE_SKILL_IN_PACK.to_owned(),
+    )];
+    let tarball = escurel_server::pack::build_tarball(&pages).unwrap();
+    let mut manifest = escurel_types::PackManifest {
+        format_version: escurel_server::pack::PACK_FORMAT_VERSION,
+        id: "logistics-extras".into(),
+        version: 1,
+        vertical: "logistics-midmarket".into(),
+        publisher: "hub.test".into(),
+        page_count: 1,
+        content_hash: escurel_server::pack::content_hash(&tarball),
+        signature: String::new(),
+    };
+    manifest.signature = escurel_server::pack::sign_manifest(&manifest, PACK_SECRET);
+    let second = call(
+        &p,
+        Role::Admin,
+        "import_pack",
+        json!({
+            "tenant_id": TENANT,
+            "manifest": manifest,
+            "tarball_b64": B64.encode(&tarball),
+        }),
+    )
+    .await;
+    let msg = second["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("pack_skill_collision"),
+        "the shadow must not hide the base-vs-base collision: {second}"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_promotable_shadowing_overlay_still_promotes() {
+    // codex P2: the promotion resolver must prefer the tenant overlay
+    // over the shadowed base page for the same id.
+    let p = start(FixtureBuilder::new().tenant(TENANT).done()).await;
+    let imp = import_base_pack(&p).await;
+    assert!(imp.get("error").is_none(), "{imp}");
+    let promotable_overlay = "---\ntype: skill\nid: pallet-consolidation\n\
+        description: Acme-specialised, curated for harvest.\npromotable: true\n---\n\
+        # pallet-consolidation\n\nTenant-specialised body.\n";
+    let w = call(
+        &p,
+        Role::Admin,
+        "update_page",
+        json!({ "page_id": OVERLAY_PAGE_ID, "content": promotable_overlay }),
+    )
+    .await;
+    assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+
+    let r = call(
+        &p,
+        Role::Admin,
+        "submit_promotion",
+        json!({
+            "tenant_id": TENANT,
+            "candidate_id": "logistics-harvest",
+            "vertical": "logistics-midmarket",
+            "skills": ["pallet-consolidation"],
+        }),
+    )
+    .await;
+    assert!(
+        r.get("error").is_none(),
+        "the OVERLAY is promotable; the shadowed base must not block it: {r}"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn agents_cannot_author_a_shadow_over_a_base_skill() {
+    // agy MUST-FIX: shadowing changes which skill DEFINITION governs the
+    // id's instances (backend binding, ACL, required_frontmatter) — an
+    // unprivileged agent authoring `markdown/skills/<base-id>.md` would
+    // hijack pack governance. Shadow creation is curator (admin) work.
+    let p = start(FixtureBuilder::new().tenant(TENANT).done()).await;
+    let imp = import_base_pack(&p).await;
+    assert!(imp.get("error").is_none(), "{imp}");
+
+    let w = call(
+        &p,
+        Role::Agent,
+        "update_page",
+        json!({ "page_id": OVERLAY_PAGE_ID, "content": OVERLAY_SKILL }),
+    )
+    .await;
+    let r = &w["result"]["structuredContent"];
+    assert_eq!(r["ok"], false, "agent-authored shadow must refuse: {w}");
+    assert_eq!(r["issues"][0]["code"], "shadow_requires_curator");
+
+    // The curator (admin) may author it — covered by the other tests,
+    // re-asserted here for the contrast.
+    let w = call(
+        &p,
+        Role::Admin,
+        "update_page",
+        json!({ "page_id": OVERLAY_PAGE_ID, "content": OVERLAY_SKILL }),
+    )
+    .await;
+    assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+    p.shutdown().await;
+}
+
+#[tokio::test]
 async fn import_lands_as_shadow_under_an_existing_tenant_skill() {
     // Overlay first (the tenant authored the skill before subscribing),
     // pack second: the import must land as the shadowed base instead of

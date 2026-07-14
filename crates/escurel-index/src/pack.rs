@@ -145,6 +145,61 @@ impl Indexer {
         Ok(out)
     }
 
+    /// Every indexed base page of `pack_id` (under its reserved
+    /// `markdown/base/<pack>/` prefix). The rebase path diffs this
+    /// against the incoming version to find orphans.
+    pub async fn base_page_ids(&self, pack_id: &str) -> Result<Vec<String>, IndexerError> {
+        let prefix = format!("{RESERVED_BASE_PREFIX}{pack_id}/%");
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare("SELECT page_id FROM pages WHERE page_id LIKE ?")?;
+        let rows = stmt.query_map(duckdb::params![prefix], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// The canonical lane content of `page_id`, or `None` when absent.
+    pub async fn page_content(&self, page_id: &str) -> Result<Option<String>, IndexerError> {
+        let key = Key::new(self.tenant(), page_id.to_owned())?;
+        match self.lane_store().read(&key).await {
+            Ok(body) => Ok(Some(
+                std::str::from_utf8(&body)
+                    .map_err(|_| IndexerError::NotUtf8 {
+                        page_id: page_id.to_owned(),
+                    })?
+                    .to_owned(),
+            )),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Remove a page entirely: its `pages`/`blocks`/`links` rows and its
+    /// canonical lane file. Used by the rebase path for base pages the
+    /// new pack version no longer ships — never exposed on the agent
+    /// write surface.
+    pub async fn remove_page(&self, page_id: &str) -> Result<(), IndexerError> {
+        {
+            let conn = self.conn.lock().await;
+            conn.execute(
+                "DELETE FROM blocks WHERE page_id = ?",
+                duckdb::params![page_id],
+            )?;
+            conn.execute(
+                "DELETE FROM links WHERE src_page = ?",
+                duckdb::params![page_id],
+            )?;
+            conn.execute(
+                "DELETE FROM pages WHERE page_id = ?",
+                duckdb::params![page_id],
+            )?;
+        }
+        let key = Key::new(self.tenant(), page_id.to_owned())?;
+        self.lane_store().delete(&key).await?;
+        Ok(())
+    }
+
     /// The base-layer skill page a tenant overlay page shadows: the pack
     /// page under `markdown/base/` declaring the same slug, or `None`.
     /// Returns `(base_page_id, base_layer_pin, base_frontmatter_json)` —
@@ -181,12 +236,14 @@ impl Indexer {
         Ok(Some((page_id, pin, fm)))
     }
 
-    /// The page id of an EXISTING skill page declaring `skill_id` under a
-    /// different page id than `landing_page_id`, or `None`. Import uses
-    /// this to refuse a pack whose skill would silently shadow (or be
-    /// shadowed by) an already-indexed skill — slug resolution between
-    /// two same-id skill pages is otherwise non-deterministic (agy
-    /// review). The explicit shadow-merge feature will relax this.
+    /// The page id of an EXISTING **base-layer** skill page declaring
+    /// `skill_id` under a different page id than `landing_page_id`, or
+    /// `None`. Import/rebase use this to refuse a pack whose skill
+    /// another PACK already provides (base-vs-base has no precedence);
+    /// tenant overlay pages are deliberately excluded — a colliding
+    /// overlay is the shadow feature, and a LIMIT-1 lookup that could
+    /// return the overlay would hide the base-vs-base collision behind
+    /// it (codex review P1).
     pub async fn skill_page_conflict(
         &self,
         skill_id: &str,
@@ -196,6 +253,7 @@ impl Indexer {
         match conn.query_row(
             "SELECT page_id FROM pages \
              WHERE page_type = 'skill' AND slug = ? AND page_id != ? \
+               AND page_id LIKE 'markdown/base/%' \
              LIMIT 1",
             duckdb::params![skill_id, landing_page_id],
             |r| r.get::<_, String>(0),
@@ -231,7 +289,8 @@ impl Indexer {
                 let page_id: Option<String> = match conn.query_row(
                     "SELECT page_id FROM pages \
                      WHERE (slug = ? OR page_id = ?) \
-                     ORDER BY CASE WHEN page_type = 'skill' THEN 0 ELSE 1 END \
+                     ORDER BY CASE WHEN page_type = 'skill' THEN 0 ELSE 1 END, \
+                              (page_id LIKE 'markdown/base/%') \
                      LIMIT 1",
                     duckdb::params![skill, skill],
                     |r| r.get(0),

@@ -2288,6 +2288,47 @@ async fn tool_update_page(
         }));
     }
 
+    // Shadow-creation gate (REQ-LAYER-03 / agy review): an overlay skill
+    // page with a base skill's id changes which DEFINITION governs that
+    // id's instances — backend binding, ACL, required_frontmatter. That
+    // is curator work; an unprivileged agent authoring one would hijack
+    // pack governance. Keyed on the draft's own skill id vs the indexed
+    // base pages, so it also holds for the auto-merge path (the id is
+    // identical on every side of a merge).
+    if !caller.is_admin
+        && let Ok(parsed) = escurel_md::parse(&a.content)
+        && parsed.frontmatter.page_type == PageType::Skill
+    {
+        let skill_id = parsed
+            .frontmatter
+            .fields
+            .get("id")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if !skill_id.is_empty()
+            && indexer
+                .skill_page_conflict(&skill_id, &a.page_id)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("update_page shadow gate: {e}")))?
+                .is_some()
+        {
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "shadow_requires_curator",
+                    "location": "frontmatter.id",
+                    "message": format!(
+                        "skill `{skill_id}` is provided by a subscribed pack; authoring \
+                         an overlay that shadows it changes which definition governs \
+                         its instances — only a curator (admin role) may do that"
+                    ),
+                }],
+            }));
+        }
+    }
+
     // Deterministic per-instance WRITE ACL (symmetric to the read ACL):
     // only the resolved owner (or admin) may mutate an owner-private
     // instance; public/no-owner instances are admin-write-only. `Off`

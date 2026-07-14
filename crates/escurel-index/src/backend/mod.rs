@@ -437,7 +437,8 @@ impl Indexer {
         let row: Option<String> = conn
             .query_row(
                 "SELECT frontmatter::VARCHAR FROM pages \
-                 WHERE page_type = 'skill' AND (slug = ? OR page_id = ?) LIMIT 1",
+                 WHERE page_type = 'skill' AND (slug = ? OR page_id = ?) \
+                 ORDER BY (page_id LIKE 'markdown/base/%') LIMIT 1",
                 duckdb::params![skill_id, skill_id],
                 |r| r.get(0),
             )
