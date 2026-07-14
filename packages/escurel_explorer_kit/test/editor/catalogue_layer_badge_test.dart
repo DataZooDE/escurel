@@ -12,13 +12,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-SkillSummary _skill(String id, {String layer = 'overlay'}) => SkillSummary(
-  id: id,
-  description: '',
-  requiredFrontmatter: const [],
-  optionalFrontmatter: const [],
-  layer: layer,
-);
+SkillSummary _skill(String id, {String layer = 'overlay', String? shadows}) =>
+    SkillSummary(
+      id: id,
+      description: '',
+      requiredFrontmatter: const [],
+      optionalFrontmatter: const [],
+      layer: layer,
+      shadows: shadows,
+    );
 
 Future<void> _pump(WidgetTester tester, List<SkillSummary> skills) async {
   tester.view.physicalSize = const Size(1400, 1000);
@@ -55,5 +57,18 @@ void main() {
     expect(find.text('logistics-midmarket@v7'), findsOneWidget);
     // The tenant-authored overlay skill is unremarkable — no badge.
     expect(find.bySemanticsLabel('skill-layer:local-notes'), findsNothing);
+  });
+
+  testWidgets('a shadowing overlay carries the shadows pin', (tester) async {
+    await _pump(tester, [
+      _skill('local-notes'),
+      _skill('pallet-consolidation', shadows: 'base@logistics-midmarket@v7'),
+    ]);
+    expect(
+      find.bySemanticsLabel('skill-shadow:pallet-consolidation'),
+      findsOneWidget,
+    );
+    expect(find.text('shadows logistics-midmarket@v7'), findsOneWidget);
+    expect(find.bySemanticsLabel('skill-shadow:local-notes'), findsNothing);
   });
 }

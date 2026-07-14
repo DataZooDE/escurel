@@ -1290,6 +1290,7 @@ async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpcError> {
                     }
                 },
                 layer: s.layer.unwrap_or_else(|| "overlay".to_owned()),
+                shadows: s.shadows,
             })
             .collect(),
     };
@@ -1503,6 +1504,26 @@ async fn tool_expand(
                 let hlc =
                     u64::try_from(backend.max_hlc(&e_page_id).await.unwrap_or(0)).unwrap_or(0);
                 page["version"] = json!(Version::from_op_count(hlc).as_str());
+            }
+            // Shadowed base (REQ-LAYER-03): when a tenant OVERLAY skill page
+            // shadows a pack-imported base skill of the same slug, expose the
+            // base page + its frontmatter under a namespaced `shadow` object —
+            // the same drift-visibility discipline as the sql_view `source`
+            // namespace: the overlay wins for display, the base value stays
+            // visible, never silently masked.
+            if e.page.page_type == PageType::Skill
+                && !e_page_id.starts_with(escurel_index::pack::RESERVED_BASE_PREFIX)
+                && let Some(slug) = e.page.slug.as_deref()
+                && let Some((base_page_id, pin, base_fm)) = indexer
+                    .shadowed_base(slug, &e_page_id)
+                    .await
+                    .map_err(|err| JsonRpcError::internal(format!("expand shadow: {err}")))?
+            {
+                page["shadow"] = json!({
+                    "base_page_id": base_page_id,
+                    "pack": pin,
+                    "base": base_fm,
+                });
             }
             // SQL-view overlay: render a BOUNDED projection beneath the overlay
             // body (REQ-SQL-06), and expose projected source columns under a
@@ -2265,6 +2286,47 @@ async fn tool_update_page(
                             (admin role) may set or keep it",
             }],
         }));
+    }
+
+    // Shadow-creation gate (REQ-LAYER-03 / agy review): an overlay skill
+    // page with a base skill's id changes which DEFINITION governs that
+    // id's instances — backend binding, ACL, required_frontmatter. That
+    // is curator work; an unprivileged agent authoring one would hijack
+    // pack governance. Keyed on the draft's own skill id vs the indexed
+    // base pages, so it also holds for the auto-merge path (the id is
+    // identical on every side of a merge).
+    if !caller.is_admin
+        && let Ok(parsed) = escurel_md::parse(&a.content)
+        && parsed.frontmatter.page_type == PageType::Skill
+    {
+        let skill_id = parsed
+            .frontmatter
+            .fields
+            .get("id")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if !skill_id.is_empty()
+            && indexer
+                .skill_page_conflict(&skill_id, &a.page_id)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("update_page shadow gate: {e}")))?
+                .is_some()
+        {
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "shadow_requires_curator",
+                    "location": "frontmatter.id",
+                    "message": format!(
+                        "skill `{skill_id}` is provided by a subscribed pack; authoring \
+                         an overlay that shadows it changes which definition governs \
+                         its instances — only a curator (admin role) may do that"
+                    ),
+                }],
+            }));
+        }
     }
 
     // Deterministic per-instance WRITE ACL (symmetric to the read ACL):
@@ -3984,13 +4046,20 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
             .await
             .map_err(|e| JsonRpcError::internal(format!("import_pack conflict check: {e}")))?
         {
-            return Err(JsonRpcError::internal(format!(
-                "pack_skill_collision: pack `{}` ships skill `{skill_id}` but this \
-                 node already indexes it at `{existing}`; two pages declaring one \
-                 skill id resolve non-deterministically — unsubscribe the other \
-                 source first (explicit shadowing is a future feature)",
-                a.manifest.id
-            )));
+            // A colliding TENANT OVERLAY page is the shadow feature
+            // (REQ-LAYER-03): the overlay wins for display, the base
+            // lands beneath it. Only a collision with ANOTHER pack's
+            // base page refuses — no precedence exists between two
+            // base pages.
+            if existing.starts_with(escurel_index::pack::RESERVED_BASE_PREFIX) {
+                return Err(JsonRpcError::internal(format!(
+                    "pack_skill_collision: pack `{}` ships skill `{skill_id}` but \
+                     another pack already provides it at `{existing}`; two base \
+                     pages declaring one skill id resolve non-deterministically — \
+                     unsubscribe the other pack first",
+                    a.manifest.id
+                )));
+            }
         }
     }
 

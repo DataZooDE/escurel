@@ -233,9 +233,13 @@ impl Indexer {
         let placeholders = std::iter::repeat_n("?", slugs.len())
             .collect::<Vec<_>>()
             .join(", ");
+        // Overlay-shadows-base determinism (REQ-LAYER-03): with a shadow
+        // pair both rows match; base rows sort FIRST so the overlay's
+        // frontmatter overwrites it in the map below (last write wins).
         let sql = format!(
             "SELECT slug, frontmatter::VARCHAR FROM pages \
-             WHERE page_type = 'skill' AND slug IN ({placeholders})"
+             WHERE page_type = 'skill' AND slug IN ({placeholders}) \
+             ORDER BY (page_id LIKE 'markdown/base/%') DESC"
         );
         let bindings: Vec<String> = slugs.iter().map(|s| (*s).to_owned()).collect();
 

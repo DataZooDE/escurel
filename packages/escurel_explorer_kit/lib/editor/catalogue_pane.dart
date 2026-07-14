@@ -92,6 +92,13 @@ class _SkillTile extends ConsumerWidget {
                             LayerBadge(skillId: skill.id, layer: skill.layer),
                             const SizedBox(width: 4),
                           ],
+                          if (skill.shadows != null) ...[
+                            ShadowBadge(
+                              skillId: skill.id,
+                              shadows: skill.shadows!,
+                            ),
+                            const SizedBox(width: 4),
+                          ],
                           if (skill.acl != null) _AclBadge(acl: skill.acl!),
                         ],
                       ),

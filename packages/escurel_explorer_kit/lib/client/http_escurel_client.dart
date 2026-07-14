@@ -295,6 +295,7 @@ class HttpEscurelClient implements EscurelClient {
             // Stability layer (REQ-LAYER-04); absent on older servers ⇒
             // overlay (tenant-authored, editable).
             layer: (s['layer'] as String?) ?? 'overlay',
+            shadows: s['shadows'] as String?,
           ),
         )
         .toList();

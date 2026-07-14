@@ -245,6 +245,13 @@ pub struct Skill {
     /// `"overlay"`.
     #[serde(default = "default_layer")]
     pub layer: String,
+    /// When this overlay skill shadows a pack-imported base skill of the
+    /// same id (REQ-LAYER-03): the shadowed base's `base@<pack>@<version>`
+    /// pin. Absent otherwise. The catalogue reports one entry per skill
+    /// id — the overlay — so the pin is how an agent sees "this skill is a
+    /// tenant specialisation of pack content".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadows: Option<String>,
 }
 
 /// The default page layer: tenant-authored, editable.

@@ -58,6 +58,12 @@ pub struct SkillInfo {
     /// (read-only at this node), `None` for a tenant-authored skill (the
     /// `overlay` default — every pre-layer page).
     pub layer: Option<String>,
+    /// When this tenant-authored skill SHADOWS a pack-imported base skill
+    /// of the same id (REQ-LAYER-03): the shadowed base's
+    /// `base@<pack>@<version>` pin. The catalogue reports one entry per
+    /// skill id — the overlay — carrying this pin; the base row is folded
+    /// away, never listed twice.
+    pub shadows: Option<String>,
 }
 
 /// A skill's per-CRUD group grants. Each verb is a list of group names
@@ -230,7 +236,39 @@ impl Indexer {
                     .get("layer")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
+                shadows: None,
             });
+        }
+
+        // Fold shadows (REQ-LAYER-03): when an overlay skill and a
+        // base-layer skill share an id, the catalogue reports ONE entry —
+        // the overlay, carrying the shadowed base's pin — so agents never
+        // see the same skill id twice.
+        let base_pins: std::collections::HashMap<String, String> = out
+            .iter()
+            .filter_map(|s| {
+                s.layer
+                    .as_deref()
+                    .filter(|l| l.starts_with("base@"))
+                    .map(|l| (s.id.clone(), l.to_owned()))
+            })
+            .collect();
+        let overlay_ids: std::collections::HashSet<String> = out
+            .iter()
+            .filter(|s| !s.layer.as_deref().is_some_and(|l| l.starts_with("base@")))
+            .map(|s| s.id.clone())
+            .collect();
+        out.retain(|s| {
+            // Drop a base row only when an overlay row shadows its id.
+            !(s.layer.as_deref().is_some_and(|l| l.starts_with("base@"))
+                && overlay_ids.contains(&s.id))
+        });
+        for s in &mut out {
+            if !s.layer.as_deref().is_some_and(|l| l.starts_with("base@"))
+                && let Some(pin) = base_pins.get(&s.id)
+            {
+                s.shadows = Some(pin.clone());
+            }
         }
         Ok(out)
     }
@@ -466,12 +504,19 @@ impl Indexer {
             }
         }
         // Scenario overlay wins over base for the same slug; without a
-        // scenario, resolve only the shared base.
+        // scenario, resolve only the shared base. Orthogonally, a tenant
+        // OVERLAY page wins over a pack-imported base-layer page with the
+        // same slug (REQ-LAYER-03 shadowing): base pages live under the
+        // reserved `markdown/base/` namespace, so the prefix is the
+        // deterministic discriminant.
         if let Some(sc) = scenario {
-            sql.push_str(" AND (scenario = ? OR scenario IS NULL) ORDER BY scenario NULLS LAST");
+            sql.push_str(
+                " AND (scenario = ? OR scenario IS NULL) ORDER BY scenario NULLS LAST, \
+                 (page_id LIKE 'markdown/base/%')",
+            );
             binds.push(sc.to_owned());
         } else {
-            sql.push_str(" AND scenario IS NULL");
+            sql.push_str(" AND scenario IS NULL ORDER BY (page_id LIKE 'markdown/base/%')");
         }
         sql.push_str(" LIMIT 1");
 

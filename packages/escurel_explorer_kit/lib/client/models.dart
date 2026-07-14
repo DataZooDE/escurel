@@ -376,6 +376,7 @@ class SkillSummary {
     this.backendKind = 'markdown',
     this.capabilities = const SkillCapabilities(),
     this.layer = 'overlay',
+    this.shadows,
   });
 
   /// The backend a skill's instances live in (`markdown` | `sql_view` |
@@ -419,6 +420,12 @@ class SkillSummary {
   /// `'base@<pack>@<version>'` for a skill imported from a subscribed
   /// pack, read-only at this node.
   final String layer;
+
+  /// When this overlay skill shadows a pack-imported base skill of the
+  /// same id (REQ-LAYER-03): the shadowed base's `base@<pack>@<version>`
+  /// pin, else null. The catalogue shows one entry per skill id — the
+  /// overlay — carrying this pin.
+  final String? shadows;
 
   /// Whether this skill was imported from a subscribed pack (its layer
   /// is a `base@<pack>@<version>` pin). Base skills are read-only: the
