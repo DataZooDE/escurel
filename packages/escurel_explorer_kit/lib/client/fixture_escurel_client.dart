@@ -318,6 +318,14 @@ class FixtureEscurelClient implements EscurelClient {
     final ref = refs.first;
     final candidates =
         _pages.values.where((p) {
+            if (ref.skill == 'skill') {
+              // `skill::` is the reserved namespace for the skill
+              // DEFINITION page itself (issue #212): `[[skill::<id>]]`
+              // matches by page type + declared id — a skill page's
+              // `skill` column holds its own id, never the literal
+              // "skill" (mirrors read.rs).
+              return p.pageType == md.PageType.skill && p.skill == ref.id;
+            }
             if (ref.skill != null) {
               return p.skill == ref.skill && p.id.endsWith('__${ref.id}');
             }

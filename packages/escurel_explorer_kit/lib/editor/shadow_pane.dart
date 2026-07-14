@@ -1,7 +1,38 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../client/models.dart';
 import '../theme/app_theme.dart';
+
+/// Canonical display form of a frontmatter value: scalars render bare;
+/// maps/lists render as key-sorted JSON so the same content always reads
+/// (and compares) the same regardless of YAML/JSON key order. Used for
+/// BOTH the drift comparison and the rendered cell — a Dart debug string
+/// (`{b: 1, a: 2}`) must never leak into the UI, and key order must never
+/// read as drift.
+String canonicalValueString(Object? v) {
+  if (v is! Map && v is! List) return '$v';
+  try {
+    return jsonEncode(_sortedDeep(v));
+  } on Object {
+    // Non-JSON-encodable value — fall back to the raw string.
+    return '$v';
+  }
+}
+
+Object? _sortedDeep(Object? v) {
+  if (v is Map) {
+    final entries =
+        v.entries
+            .map((e) => MapEntry('${e.key}', _sortedDeep(e.value)))
+            .toList()
+          ..sort((a, b) => a.key.compareTo(b.key));
+    return {for (final e in entries) e.key: e.value};
+  }
+  if (v is List) return [for (final e in v) _sortedDeep(e)];
+  return v;
+}
 
 /// Renders the *shadow-drift* section of a shadowing overlay skill page
 /// (REQ-LAYER-03): the pack pin the shadowed base was imported under, plus
@@ -94,10 +125,12 @@ class _BaseFieldsTable extends StatelessWidget {
   final Map<String, dynamic> overlay;
 
   /// The overlay overrides a base field iff it carries the key with a
-  /// different (stringified) value. An absent overlay key is *not* drift —
-  /// nothing was explicitly overridden.
+  /// different value under the CANONICAL encoding (key-sorted JSON for
+  /// collections) — map key order must never read as drift. An absent
+  /// overlay key is *not* drift — nothing was explicitly overridden.
   bool _drifts(String key) =>
-      overlay.containsKey(key) && '${overlay[key]}' != '${base[key]}';
+      overlay.containsKey(key) &&
+      canonicalValueString(overlay[key]) != canonicalValueString(base[key]);
 
   @override
   Widget build(BuildContext context) {
@@ -124,7 +157,12 @@ class _BaseFieldsTable extends StatelessWidget {
                     style: text.labelMedium?.copyWith(color: kOnSurfaceVariant),
                   ),
                 ),
-                Expanded(child: Text('${e.value}', style: text.bodySmall)),
+                Expanded(
+                  child: Text(
+                    canonicalValueString(e.value),
+                    style: text.bodySmall,
+                  ),
+                ),
                 if (_drifts(e.key))
                   _DriftMark(field: e.key, overlayValue: overlay[e.key]),
               ],
@@ -169,7 +207,7 @@ class _DriftMark extends StatelessWidget {
             ),
             const SizedBox(width: 4),
             Text(
-              'overlay: $overlayValue',
+              'overlay: ${canonicalValueString(overlayValue)}',
               style: text.labelSmall?.copyWith(
                 color: kOnSecondaryContainer,
                 fontSize: 9,

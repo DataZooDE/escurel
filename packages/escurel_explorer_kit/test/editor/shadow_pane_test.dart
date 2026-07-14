@@ -101,4 +101,36 @@ void main() {
     // The drifted overlay value is shown alongside the base value.
     expect(find.textContaining('Acme-specialised procedure.'), findsOneWidget);
   });
+
+  testWidgets('non-scalar values compare canonically and render as sorted '
+      'JSON', (tester) async {
+    final page = _page(
+      frontmatter: const {
+        // Same map content as the base, different key order — must
+        // NOT read as drift (canonical, key-sorted comparison).
+        'routing': {'b': 1, 'a': 2},
+        // A genuinely different list — real drift.
+        'tags': ['crm', 'demo'],
+      },
+      shadow: const ShadowInfo(
+        basePageId: 'base/crm-essentials/skills/playbook.md',
+        pack: 'base@crm-essentials@v1',
+        base: {
+          'routing': {'a': 2, 'b': 1},
+          'tags': ['crm', 'essentials'],
+        },
+      ),
+    );
+    await _pump(tester, page);
+
+    // Key order is not drift.
+    expect(find.bySemanticsLabel('shadow-drift:routing'), findsNothing);
+    // The base cell renders canonical JSON, not a Dart debug string.
+    expect(find.text('{"a":2,"b":1}'), findsOneWidget);
+    expect(find.textContaining('{a: 2, b: 1}'), findsNothing);
+    // A truly-different list IS drift, both sides rendered canonically.
+    expect(find.bySemanticsLabel('shadow-drift:tags'), findsOneWidget);
+    expect(find.text('["crm","essentials"]'), findsOneWidget);
+    expect(find.textContaining('["crm","demo"]'), findsOneWidget);
+  });
 }

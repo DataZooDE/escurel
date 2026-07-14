@@ -8,6 +8,45 @@ import '../client/models.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
 
+/// The most pasted tarball base64 the import card accepts (~5 MB of
+/// text). Larger packs go through the escurel CLI, not a browser paste.
+const int packImportMaxTarballChars = 5 * 1024 * 1024;
+
+/// Client-side pre-flight for the paste-based import card: cap the
+/// pasted tarball size and require the manifest keys the server needs
+/// (`id`, `version`, `content_hash`, `signature`) BEFORE a wire
+/// round-trip. Returns a precise error string, or null when sendable.
+/// Server-side verification (signature, hash, vertical) still runs —
+/// this only turns paste mistakes into instant, named errors.
+@visibleForTesting
+String? validatePackImportInput(String manifestJson, String tarballB64) {
+  if (tarballB64.length > packImportMaxTarballChars) {
+    return 'tarball_too_large: pasted base64 is ${tarballB64.length} chars '
+        '(max $packImportMaxTarballChars) — use the escurel CLI for large '
+        'packs';
+  }
+  Object? decoded;
+  try {
+    decoded = jsonDecode(manifestJson);
+  } on FormatException catch (e) {
+    return 'manifest_invalid_json: ${e.message}';
+  }
+  if (decoded is! Map<String, dynamic>) {
+    return 'manifest_invalid_json: the manifest must be a JSON object';
+  }
+  final manifest = decoded;
+  final missing = [
+    'id',
+    'version',
+    'content_hash',
+    'signature',
+  ].where((k) => !manifest.containsKey(k)).toList();
+  if (missing.isNotEmpty) {
+    return 'manifest_missing_keys: ${missing.join(', ')}';
+  }
+  return null;
+}
+
 /// The Backends panel of the Dev Inspector — the operator's trigger surface
 /// for the external-instance backends. Four cards, each driving one
 /// admin-gated action against the real client:
@@ -752,10 +791,13 @@ class _SubscribedPacksState extends ConsumerState<_SubscribedPacks> {
   }
 
   Future<void> _unsubscribe(String packId) async {
+    // The armed state is deliberately KEPT while the call is in flight —
+    // clearing it up front flips the row back to the unarmed icon
+    // mid-request (review finding). The confirm button disables via
+    // `_busy` instead; the armed state clears on completion.
     setState(() {
       _busy = true;
       _error = null;
-      _armedUnsubscribe = null;
     });
     try {
       await ref.read(escurelClientProvider).unsubscribePack(packId);
@@ -767,7 +809,12 @@ class _SubscribedPacksState extends ConsumerState<_SubscribedPacks> {
     } on EscurelClientException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _armedUnsubscribe = null;
+        });
+      }
     }
   }
 
@@ -780,21 +827,23 @@ class _SubscribedPacksState extends ConsumerState<_SubscribedPacks> {
             label: 'pack-unsubscribe-confirm:${p.packId}',
             identifier: 'pack-unsubscribe-confirm:${p.packId}',
             button: true,
-            onTap: () => _unsubscribe(p.packId),
+            onTap: _busy ? null : () => _unsubscribe(p.packId),
             excludeSemantics: true,
             child: FilledButton(
               style: FilledButton.styleFrom(
                 backgroundColor: kError,
                 visualDensity: VisualDensity.compact,
               ),
-              onPressed: () => _unsubscribe(p.packId),
-              child: const Text('Confirm'),
+              onPressed: _busy ? null : () => _unsubscribe(p.packId),
+              child: Text(_busy ? 'Removing…' : 'Confirm'),
             ),
           ),
           IconButton(
             icon: const Icon(Icons.close, size: 16),
             tooltip: 'cancel',
-            onPressed: () => setState(() => _armedUnsubscribe = null),
+            onPressed: _busy
+                ? null
+                : () => setState(() => _armedUnsubscribe = null),
           ),
         ],
       );
@@ -803,12 +852,14 @@ class _SubscribedPacksState extends ConsumerState<_SubscribedPacks> {
       label: 'pack-unsubscribe:${p.packId}',
       identifier: 'pack-unsubscribe:${p.packId}',
       button: true,
-      onTap: () => setState(() => _armedUnsubscribe = p.packId),
+      onTap: _busy ? null : () => setState(() => _armedUnsubscribe = p.packId),
       excludeSemantics: true,
       child: IconButton(
         icon: const Icon(Icons.link_off, size: 18),
         tooltip: 'unsubscribe',
-        onPressed: () => setState(() => _armedUnsubscribe = p.packId),
+        onPressed: _busy
+            ? null
+            : () => setState(() => _armedUnsubscribe = p.packId),
       ),
     );
   }
@@ -899,6 +950,19 @@ class _ImportPackState extends ConsumerState<_ImportPack> {
   }
 
   Future<void> _import() async {
+    // Pre-flight the paste before any wire round-trip: size cap +
+    // required manifest keys, with a precise named error.
+    final preflight = validatePackImportInput(
+      _manifest.text.trim(),
+      _tarball.text.trim(),
+    );
+    if (preflight != null) {
+      setState(() {
+        _error = preflight;
+        _outcome = null;
+      });
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;

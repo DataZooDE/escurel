@@ -308,6 +308,25 @@ Firm-authored escalation ladder.
       expect(escalation.pageId, 'base/crm-essentials/skills/escalation.md');
     });
 
+    test(
+      'resolve handles the reserved skill:: namespace (definition pages)',
+      () async {
+        final client = layered();
+        // `[[skill::<id>]]` targets the skill DEFINITION page itself
+        // (issue #212) — the server matches page_type = skill, never a
+        // literal `skill` column (read.rs).
+        final customer = await client.resolve('[[skill::customer]]');
+        expect(customer.exists, isTrue);
+        expect(customer.pageId, 'customer');
+        expect(customer.pageType, md.PageType.skill);
+        // A shadowed id resolves to the OVERLAY definition page.
+        final playbook = await client.resolve('[[skill::playbook]]');
+        expect(playbook.exists, isTrue);
+        expect(playbook.pageId, 'playbook');
+        expect(playbook.pageType, md.PageType.skill);
+      },
+    );
+
     test('expand of a non-shadowing page carries no shadow', () async {
       final client = layered();
       expect((await client.expand('customer')).shadow, isNull);
