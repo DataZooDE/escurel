@@ -325,7 +325,8 @@ async fn admin_pack_export_writes_tarball_and_manifest() {
     assert_eq!(r["pages_imported"], 1);
     assert_eq!(r["layer"], "base@crm-core@v1");
 
-    // And the pin is visible on the spoke.
+    // And the pin is visible on the spoke — with the full subscription
+    // row (identity, provenance, integrity), not just id + version.
     let listed = spoke_admin(v(&["admin", "pack", "list", "--tenant", TENANT]))
         .await
         .unwrap();
@@ -333,6 +334,14 @@ async fn admin_pack_export_writes_tarball_and_manifest() {
     assert_eq!(packs.len(), 1, "{listed:?}");
     assert_eq!(packs[0]["pack_id"], "crm-core");
     assert_eq!(packs[0]["version"], 1);
+    assert_eq!(packs[0]["vertical"], "crm", "{packs:?}");
+    assert_eq!(packs[0]["publisher"], "hub.test", "{packs:?}");
+    assert!(
+        packs[0]["content_hash"]
+            .as_str()
+            .is_some_and(|h| h.starts_with("sha256:")),
+        "{packs:?}"
+    );
 
     // Unsubscribe drops pages + pin (agy review: exercise the actual
     // CLI command, not only the parity mapping).
@@ -355,6 +364,143 @@ async fn admin_pack_export_writes_tarball_and_manifest() {
 
     spoke.shutdown().await;
     h.process.shutdown().await;
+}
+
+/// The pack UPGRADE path end to end through the CLI: export v1 on the
+/// hub → import into a spoke → export v2 → `pack rebase --dry-run`
+/// (plan only, pin stays) → real `pack rebase` (pin moves), observed
+/// via `pack list` on the spoke.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admin_pack_rebase_moves_the_pin_on_a_spoke() {
+    let h = start().await;
+    let export = |version: &'static str, out: String| {
+        let args = v(&[
+            "admin",
+            "pack",
+            "export",
+            "--tenant",
+            TENANT,
+            "--id",
+            "crm-core",
+            "--version",
+            version,
+            "--vertical",
+            "crm",
+            "--publisher",
+            "hub.test",
+            "--skill",
+            "customer",
+            "--out",
+            &out,
+        ]);
+        admin(&h, args)
+    };
+    let v1 = h.tenants_root.join("crm-core.v1.tgz");
+    let v2 = h.tenants_root.join("crm-core.v2.tgz");
+    let v1_str = v1.to_str().unwrap().to_owned();
+    let v2_str = v2.to_str().unwrap().to_owned();
+    export("1", v1_str.clone()).await;
+    export("2", v2_str.clone()).await;
+
+    // A spoke with its own empty corpus subscribes at v1.
+    let spoke = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+        config_overrides: ConfigOverrides {
+            pack_secret: Some("cli-pack-secret".to_owned()),
+            ..Default::default()
+        },
+    })
+    .await;
+    let spoke_addr = spoke.base_url().strip_prefix("http://").unwrap().to_owned();
+    let spoke_token = spoke.mint_token(TENANT, Role::Admin);
+    let spoke_admin = |args: Vec<String>| {
+        let addr = spoke_addr.clone();
+        let token = spoke_token.clone();
+        tokio::task::spawn_blocking(move || {
+            Command::cargo_bin("escurel")
+                .unwrap()
+                .env("ESCUREL_SERVER", format!("http://{addr}"))
+                .env("ESCUREL_TOKEN", token)
+                .args(&args)
+                .assert()
+                .success()
+                .get_output()
+                .clone()
+        })
+    };
+    spoke_admin(v(&[
+        "admin", "pack", "import", "--tenant", TENANT, "--in", &v1_str,
+    ]))
+    .await
+    .unwrap();
+
+    // Dry-run first: the plan comes back, the pin does not move.
+    let dry = spoke_admin(v(&[
+        "admin",
+        "pack",
+        "rebase",
+        "--tenant",
+        TENANT,
+        "--in",
+        &v2_str,
+        "--dry-run",
+    ]))
+    .await
+    .unwrap();
+    let r = json(&dry);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["dry_run"], true, "{r}");
+    assert_eq!(r["would_import"], 1, "{r}");
+    assert_eq!(r["would_remove"], 0, "{r}");
+    assert_eq!(r["from_version"], 1, "{r}");
+    assert_eq!(r["to_version"], 2, "{r}");
+    let listed = spoke_admin(v(&["admin", "pack", "list", "--tenant", TENANT]))
+        .await
+        .unwrap();
+    assert_eq!(
+        json(&listed)["packs"][0]["version"],
+        1,
+        "dry-run must not move the pin: {listed:?}"
+    );
+
+    // Real rebase: the pin moves to v2.
+    let reb = spoke_admin(v(&[
+        "admin", "pack", "rebase", "--tenant", TENANT, "--in", &v2_str,
+    ]))
+    .await
+    .unwrap();
+    let r = json(&reb);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["to_version"], 2, "{r}");
+    let listed = spoke_admin(v(&["admin", "pack", "list", "--tenant", TENANT]))
+        .await
+        .unwrap();
+    let packs = json(&listed)["packs"].as_array().unwrap().clone();
+    assert_eq!(packs.len(), 1, "{listed:?}");
+    assert_eq!(packs[0]["pack_id"], "crm-core");
+    assert_eq!(packs[0]["version"], 2, "the pin moved: {packs:?}");
+
+    spoke.shutdown().await;
+    h.process.shutdown().await;
+}
+
+/// `pack list --tenant` is kept for symmetry with the other pack
+/// commands, but the gateway is single-tenant — its help text must say
+/// so instead of implying cross-tenant reach.
+#[test]
+fn pack_list_help_documents_the_single_tenant_gateway() {
+    let out = Command::cargo_bin("escurel")
+        .unwrap()
+        .args(["admin", "pack", "list", "--help"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        help.contains("single-tenant"),
+        "--tenant help must note the single-tenant gateway:\n{help}"
+    );
 }
 
 /// `pack verify` is purely LOCAL: it checks the manifest HMAC + the
@@ -486,7 +632,7 @@ async fn admin_pack_submit_promotion_writes_candidate_files() {
             "submit-promotion",
             "--tenant",
             TENANT,
-            "--candidate-id",
+            "--id",
             "crm-harvest",
             "--vertical",
             "crm",
@@ -510,6 +656,33 @@ async fn admin_pack_submit_promotion_writes_candidate_files() {
             .join("crm-harvest.pack.tgz.manifest.json")
             .is_file()
     );
+
+    // Back-compat: `--candidate-id` stays as a hidden alias of `--id`
+    // (scripts written against the original flag keep working).
+    let alias_out = h.tenants_root.join("crm-harvest-2.pack.tgz");
+    let alias_out_str = alias_out.to_str().unwrap().to_owned();
+    let sub = admin(
+        &h,
+        v(&[
+            "admin",
+            "pack",
+            "submit-promotion",
+            "--tenant",
+            TENANT,
+            "--candidate-id",
+            "crm-harvest-2",
+            "--vertical",
+            "crm",
+            "--skill",
+            "customer",
+            "--out",
+            &alias_out_str,
+        ]),
+    )
+    .await;
+    assert_eq!(json(&sub)["candidate"], "crm-harvest-2");
+    assert!(alias_out.is_file());
+
     h.process.shutdown().await;
 }
 

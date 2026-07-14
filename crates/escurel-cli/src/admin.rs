@@ -125,6 +125,8 @@ pub enum PackCmd {
     },
     /// The subscribed skill packs and their pinned versions.
     List {
+        /// Kept for symmetry with the other pack commands; the gateway
+        /// is single-tenant, so the value is not sent anywhere.
         #[arg(long)]
         tenant: String,
     },
@@ -135,9 +137,10 @@ pub enum PackCmd {
     SubmitPromotion {
         #[arg(long)]
         tenant: String,
-        /// Candidate pack identity for hub review.
-        #[arg(long)]
-        candidate_id: String,
+        /// Candidate pack identity for hub review. (`--candidate-id`
+        /// remains as a hidden back-compat alias.)
+        #[arg(long, alias = "candidate-id")]
+        id: String,
         /// The vertical the candidate belongs to.
         #[arg(long)]
         vertical: String,
@@ -408,14 +411,14 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
         }
         AdminCmd::Pack(PackCmd::SubmitPromotion {
             tenant,
-            candidate_id,
+            id,
             vertical,
             skills,
             out,
             manifest_out,
         }) => {
             let (manifest, bytes, event_id) = client
-                .submit_promotion(&tenant, &candidate_id, &vertical, &skills)
+                .submit_promotion(&tenant, &id, &vertical, &skills)
                 .await?;
             let manifest_path = manifest_out.unwrap_or_else(|| format!("{out}.manifest.json"));
             let n = bytes.len();
