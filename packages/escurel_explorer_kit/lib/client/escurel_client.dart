@@ -246,6 +246,34 @@ abstract class EscurelClient {
   /// (`list_packs`, admin; REQ-SUB-01).
   Future<List<PackSubscriptionInfo>> listPacks();
 
+  /// Import a signed skill pack as this node's pinned, read-only base
+  /// layer (`import_pack`, admin; REQ-SUB-01/02/03). [manifestJson] is
+  /// the pack manifest as pasted JSON; [tarballBase64] the signed
+  /// tarball. A cross-vertical subscription is refused unless
+  /// [allowVerticalMismatch] is set (REQ-SUB-03).
+  Future<PackOpResult> importPack(
+    String manifestJson,
+    String tarballBase64, {
+    bool allowVerticalMismatch = false,
+  });
+
+  /// The reviewed upgrade of a subscribed pack (`rebase_pack`, admin;
+  /// REQ-REBASE-01/02) — the only operation that moves a version pin.
+  /// Conflicts block (`ok: false` + `rebase_conflict` issues) until the
+  /// operator passes [acknowledgeConflicts]. [dryRun] is passed through
+  /// additively (preview-only rebase; older servers ignore the flag).
+  Future<PackOpResult> rebasePack(
+    String manifestJson,
+    String tarballBase64, {
+    bool acknowledgeConflicts = false,
+    bool dryRun = false,
+  });
+
+  /// Cleanly drop a subscription (`unsubscribe_pack`, admin): every base
+  /// page the pack landed plus the pin row. Overlay pages survive; a
+  /// shadow simply stops shadowing.
+  Future<PackOpResult> unsubscribePack(String packId);
+
   /// Re-probe every SQL-view binding; report drift / unreachable sources
   /// (`validate_bindings`, admin).
   Future<List<BindingStatus>> validateBindings();

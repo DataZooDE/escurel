@@ -240,6 +240,52 @@ class PackSubscriptionInfo {
       );
 }
 
+/// Result of a pack lifecycle operation (`import_pack` / `rebase_pack` /
+/// `unsubscribe_pack`). Field names mirror the server payloads; absent
+/// fields stay null (each tool reports a different subset). A blocked
+/// rebase reports `ok: false` plus typed `rebase_conflict` [issues].
+class PackOpResult {
+  const PackOpResult({
+    this.ok = true,
+    this.pack = '',
+    this.version,
+    this.pagesImported,
+    this.pagesRemoved,
+    this.issues = const [],
+  });
+
+  final bool ok;
+  final String pack;
+  final int? version;
+  final int? pagesImported;
+  final int? pagesRemoved;
+
+  /// Typed conflicts from a blocked rebase (`rebase_conflict`).
+  final List<Issue> issues;
+
+  factory PackOpResult.fromJson(Map<String, dynamic> j) => PackOpResult(
+    ok: (j['ok'] as bool?) ?? true,
+    pack: (j['pack'] as String?) ?? '',
+    version: ((j['version'] ?? j['to_version']) as num?)?.toInt(),
+    pagesImported: (j['pages_imported'] as num?)?.toInt(),
+    pagesRemoved: (j['pages_removed'] as num?)?.toInt(),
+    issues: (j['issues'] as List? ?? const [])
+        .whereType<Map>()
+        .map(
+          (i) => Issue(
+            severity: switch (i['severity'] as String?) {
+              'warning' => IssueSeverity.warning,
+              'info' => IssueSeverity.info,
+              _ => IssueSeverity.error,
+            },
+            code: (i['code'] as String?) ?? '',
+            message: (i['message'] as String?) ?? '',
+          ),
+        )
+        .toList(),
+  );
+}
+
 /// A registered external-source credential — name/connector only, never the
 /// secret (`list_credentials`).
 class CredentialInfo {

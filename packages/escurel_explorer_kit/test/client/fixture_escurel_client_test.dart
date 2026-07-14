@@ -319,6 +319,55 @@ Firm-authored escalation ladder.
         isNull,
       );
     });
+
+    test(
+      'unsubscribePack drops the pack pages, the pack row, and the shadow',
+      () async {
+        final client = layered();
+        final r = await client.unsubscribePack('crm-essentials');
+        expect(r.pack, 'crm-essentials');
+        expect(r.pagesRemoved, 2); // playbook base + escalation base
+        expect(await client.listPacks(), isEmpty);
+        // The overlay survives untouched; it simply stops shadowing.
+        final playbook = (await client.listSkills()).firstWhere(
+          (s) => s.id == 'playbook',
+        );
+        expect(playbook.shadows, isNull);
+        expect((await client.expand('playbook')).shadow, isNull);
+        // The base-only skill is gone from the catalogue.
+        expect(
+          (await client.listSkills()).where((s) => s.id == 'escalation'),
+          isEmpty,
+        );
+      },
+    );
+
+    test('unsubscribePack of an unknown pack refuses', () async {
+      await expectLater(
+        layered().unsubscribePack('not-subscribed'),
+        throwsA(
+          isA<EscurelToolException>().having(
+            (e) => e.code,
+            'code',
+            'pack_not_subscribed',
+          ),
+        ),
+      );
+    });
+
+    test(
+      'importPack / rebasePack are not implemented in fixture mode',
+      () async {
+        await expectLater(
+          layered().importPack('{}', 'AAAA'),
+          throwsA(isA<EscurelUnsupportedException>()),
+        );
+        await expectLater(
+          layered().rebasePack('{}', 'AAAA'),
+          throwsA(isA<EscurelUnsupportedException>()),
+        );
+      },
+    );
   });
 
   // ── directory pass (runs only when examples/ is present) ──────

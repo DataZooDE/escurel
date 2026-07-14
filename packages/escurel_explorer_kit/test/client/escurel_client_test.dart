@@ -266,6 +266,25 @@ class _StubClient implements EscurelClient {
       throw notYetImplemented('list_packs');
 
   @override
+  Future<PackOpResult> importPack(
+    String manifestJson,
+    String tarballBase64, {
+    bool allowVerticalMismatch = false,
+  }) async => throw notYetImplemented('import_pack');
+
+  @override
+  Future<PackOpResult> rebasePack(
+    String manifestJson,
+    String tarballBase64, {
+    bool acknowledgeConflicts = false,
+    bool dryRun = false,
+  }) async => throw notYetImplemented('rebase_pack');
+
+  @override
+  Future<PackOpResult> unsubscribePack(String packId) async =>
+      throw notYetImplemented('unsubscribe_pack');
+
+  @override
   Future<void> deleteCredential(String name) async =>
       throw notYetImplemented('delete_credential');
 

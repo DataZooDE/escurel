@@ -23,6 +23,18 @@ FixtureEscurelClient _client() => FixtureEscurelClient.fromSources(
   instanceFiles: const {},
 );
 
+/// A fixture corpus that also carries a base-layer skill from a
+/// subscribed pack, so `listPacks` synthesizes a real subscription row.
+FixtureEscurelClient _subscribedClient() => FixtureEscurelClient.fromSources(
+  skillFiles: {
+    'erp_customer.md':
+        '---\ntype: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
+    'base/crm-essentials/skills/playbook.md':
+        '---\ntype: skill\nid: playbook\ndescription: Firm playbook.\nlayer: base@crm-essentials@v1\n---\n\n# playbook',
+  },
+  instanceFiles: const {},
+);
+
 Future<void> _pump(WidgetTester tester, EscurelClient client) async {
   tester.view.physicalSize = const Size(1200, 1600);
   tester.view.devicePixelRatio = 1.0;
@@ -38,7 +50,7 @@ Future<void> _pump(WidgetTester tester, EscurelClient client) async {
 }
 
 void main() {
-  testWidgets('renders the five trigger cards', (tester) async {
+  testWidgets('renders the six trigger cards', (tester) async {
     await _pump(tester, _client());
     expect(find.bySemanticsLabel('backend-admin-panel'), findsOneWidget);
     expect(find.bySemanticsLabel('cred-register-button'), findsOneWidget);
@@ -46,6 +58,7 @@ void main() {
     expect(find.bySemanticsLabel('create-sql-submit'), findsOneWidget);
     expect(find.bySemanticsLabel('ingest-submit'), findsOneWidget);
     expect(find.bySemanticsLabel('list-packs-button'), findsOneWidget);
+    expect(find.bySemanticsLabel('pack-import-submit'), findsOneWidget);
   });
 
   testWidgets('listing packs shows the empty-state for an overlay-only node', (
@@ -56,10 +69,69 @@ void main() {
     await _pump(tester, _client());
     await tester.tap(find.bySemanticsLabel('list-packs-button'));
     await tester.pumpAndSettle();
-    expect(
-      find.textContaining('no packs subscribed'),
-      findsOneWidget,
+    expect(find.textContaining('no packs subscribed'), findsOneWidget);
+  });
+
+  testWidgets(
+    'unsubscribing a pack requires a confirm step and removes the row',
+    (tester) async {
+      final client = _subscribedClient();
+      await _pump(tester, client);
+      await tester.tap(find.bySemanticsLabel('list-packs-button'));
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('pack-item:crm-essentials'), findsOneWidget);
+
+      // First tap only ARMS the action — nothing is removed yet.
+      await tester.tap(
+        find.bySemanticsLabel('pack-unsubscribe:crm-essentials'),
+      );
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('pack-item:crm-essentials'), findsOneWidget);
+      expect(
+        find.bySemanticsLabel('pack-unsubscribe-confirm:crm-essentials'),
+        findsOneWidget,
+      );
+
+      // The confirm tap drives the real client and refreshes the list.
+      await tester.tap(
+        find.bySemanticsLabel('pack-unsubscribe-confirm:crm-essentials'),
+      );
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('pack-item:crm-essentials'), findsNothing);
+      expect(find.textContaining('no packs subscribed'), findsOneWidget);
+      // The client really dropped the subscription (not just the row).
+      expect(await client.listPacks(), isEmpty);
+    },
+  );
+
+  testWidgets('the import-pack card renders its paste-based surface', (
+    tester,
+  ) async {
+    await _pump(tester, _client());
+    expect(find.bySemanticsLabel('pack-import-manifest-field'), findsOneWidget);
+    expect(find.bySemanticsLabel('pack-import-tarball-field'), findsOneWidget);
+    expect(find.bySemanticsLabel('pack-import-allow-mismatch'), findsOneWidget);
+    expect(find.bySemanticsLabel('pack-import-submit'), findsOneWidget);
+  });
+
+  testWidgets('a failing import surfaces the client error verbatim', (
+    tester,
+  ) async {
+    // The fixture client does not implement import_pack — the error
+    // message must reach the card unaltered (server codes like
+    // `pack_signature_invalid` surface the same way over HTTP).
+    await _pump(tester, _client());
+    await tester.enterText(
+      find.bySemanticsLabel('pack-import-manifest-field'),
+      '{"id":"crm-essentials","version":1}',
     );
+    await tester.enterText(
+      find.bySemanticsLabel('pack-import-tarball-field'),
+      'AAAA',
+    );
+    await tester.tap(find.bySemanticsLabel('pack-import-submit'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('import_pack'), findsOneWidget);
   });
 
   testWidgets('registering a credential surfaces it in the list', (

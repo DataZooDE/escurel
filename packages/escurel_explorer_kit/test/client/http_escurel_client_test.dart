@@ -441,6 +441,111 @@ void main() {
     });
 
     test(
+      'import_pack sends the decoded manifest + tarball + mismatch flag',
+      () async {
+        Map<String, dynamic>? sent;
+        mock.toolHandlers['import_pack'] = (args) {
+          sent = args;
+          return {
+            'pack': 'logistics-midmarket',
+            'version': 7,
+            'vertical': 'logistics-midmarket',
+            'pages_imported': 3,
+            'layer': 'base@logistics-midmarket@v7',
+          };
+        };
+        final r = await client.importPack(
+          '{"id":"logistics-midmarket","version":7}',
+          'dGFyYmFsbA==',
+          allowVerticalMismatch: true,
+        );
+        // The manifest travels as a JSON OBJECT (the server deserializes
+        // a PackManifest), not as the raw pasted string.
+        expect(sent!['manifest'], {'id': 'logistics-midmarket', 'version': 7});
+        expect(sent!['tarball_b64'], 'dGFyYmFsbA==');
+        expect(sent!['allow_vertical_mismatch'], isTrue);
+        expect(sent!['tenant_id'], '');
+        expect(r.ok, isTrue);
+        expect(r.pack, 'logistics-midmarket');
+        expect(r.version, 7);
+        expect(r.pagesImported, 3);
+      },
+    );
+
+    test('importPack refuses a non-JSON manifest client-side', () async {
+      await expectLater(
+        client.importPack('not json', 'AAAA'),
+        throwsA(
+          isA<EscurelToolException>().having(
+            (e) => e.code,
+            'code',
+            'manifest_invalid_json',
+          ),
+        ),
+      );
+    });
+
+    test(
+      'rebase_pack passes acknowledge_conflicts + the additive dry_run flag',
+      () async {
+        Map<String, dynamic>? sent;
+        mock.toolHandlers['rebase_pack'] = (args) {
+          sent = args;
+          return {
+            'ok': false,
+            'issues': [
+              {
+                'severity': 'error',
+                'code': 'rebase_conflict',
+                'message': 'severity_threshold changed upstream',
+              },
+            ],
+          };
+        };
+        final r = await client.rebasePack(
+          '{"id":"logistics-midmarket","version":8}',
+          'dGFyYmFsbA==',
+          dryRun: true,
+        );
+        expect(sent!['acknowledge_conflicts'], isFalse);
+        // dry_run is sent additively — the backend may not know the flag
+        // yet, but an unknown field must not be silently dropped here.
+        expect(sent!['dry_run'], isTrue);
+        expect(r.ok, isFalse);
+        expect(r.issues.single.code, 'rebase_conflict');
+      },
+    );
+
+    test('unsubscribe_pack sends the pack id and parses the result', () async {
+      Map<String, dynamic>? sent;
+      mock.toolHandlers['unsubscribe_pack'] = (args) {
+        sent = args;
+        return {'pack': 'logistics-midmarket', 'pages_removed': 4};
+      };
+      final r = await client.unsubscribePack('logistics-midmarket');
+      expect(sent!['pack_id'], 'logistics-midmarket');
+      expect(r.pack, 'logistics-midmarket');
+      expect(r.pagesRemoved, 4);
+    });
+
+    test('a pack tool error surfaces the server code verbatim', () async {
+      mock.nextError = (
+        code: -32000,
+        message: 'pack_signature_invalid: manifest signature does not verify',
+      );
+      await expectLater(
+        client.importPack('{"id":"p","version":1}', 'AAAA'),
+        throwsA(
+          isA<EscurelToolException>().having(
+            (e) => e.message,
+            'message',
+            contains('pack_signature_invalid'),
+          ),
+        ),
+      );
+    });
+
+    test(
       'list_instances maps filter to frontmatter_key/value + order_by + limit',
       () async {
         Map<String, dynamic>? receivedArgs;

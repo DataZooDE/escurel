@@ -915,6 +915,41 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<PackOpResult> importPack(
+    String manifestJson,
+    String tarballBase64, {
+    bool allowVerticalMismatch = false,
+  }) async => throw notYetImplemented('import_pack');
+
+  @override
+  Future<PackOpResult> rebasePack(
+    String manifestJson,
+    String tarballBase64, {
+    bool acknowledgeConflicts = false,
+    bool dryRun = false,
+  }) async => throw notYetImplemented('rebase_pack');
+
+  @override
+  Future<PackOpResult> unsubscribePack(String packId) async {
+    // Mirror the server: drop every base page the pack landed; the
+    // synthesized pack list (listPacks) then empties on its own and any
+    // shadow simply stops shadowing. Overlay pages survive untouched.
+    final prefix = 'base@$packId@';
+    final doomed = _pages.entries
+        .where((e) => _layerOf(e.value.frontmatter).startsWith(prefix))
+        .map((e) => e.key)
+        .toList();
+    if (doomed.isEmpty) {
+      throw EscurelToolException(
+        'pack_not_subscribed: `$packId` has no subscription on this node',
+        code: 'pack_not_subscribed',
+      );
+    }
+    doomed.forEach(_pages.remove);
+    return PackOpResult(pack: packId, pagesRemoved: doomed.length);
+  }
+
+  @override
   Future<List<BindingStatus>> validateBindings() async {
     // Report every sql_view instance as healthy in the fixture.
     return _pages.values
