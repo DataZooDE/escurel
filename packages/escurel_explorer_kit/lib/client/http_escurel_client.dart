@@ -217,6 +217,11 @@ class HttpEscurelClient implements EscurelClient {
       // document: the returned blocks are a bounded chunk lead (REQ-DOC-05).
       chunksTotal: (result['chunks_total'] as num?)?.toInt(),
       chunksTruncated: (result['chunks_truncated'] as bool?) ?? false,
+      // overlay-shadows-base: the shadowed base page behind a shadowing
+      // overlay skill (REQ-LAYER-03) — absent on non-shadowing pages.
+      shadow: result['shadow'] is Map<String, dynamic>
+          ? ShadowInfo.fromJson(result['shadow'] as Map<String, dynamic>)
+          : null,
     );
   }
 

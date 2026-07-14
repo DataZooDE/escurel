@@ -360,6 +360,66 @@ void main() {
       },
     );
 
+    test(
+      'expand surfaces the shadow object on a shadowing overlay skill page',
+      () async {
+        // REQ-LAYER-03: expanding a tenant overlay skill that shadows a
+        // pack-imported base skill carries an additive `shadow` object —
+        // the shadowed base's page id, pack pin, and frontmatter — so
+        // drift stays visible, never silently masked.
+        mock.toolHandlers['expand'] = (_) => {
+          'page': {
+            'page_id': 'markdown/skills/pallet-consolidation.md',
+            'skill': 'pallet-consolidation',
+            'page_type': 'skill',
+          },
+          'frontmatter': {
+            'id': 'pallet-consolidation',
+            'description': 'Acme-specialised procedure.',
+          },
+          'body': '# pallet-consolidation',
+          'blocks': <Map<String, dynamic>>[],
+          'wikilinks_out': <String>[],
+          'shadow': {
+            'base_page_id':
+                'markdown/base/logistics-midmarket/skills/pallet-consolidation.md',
+            'pack': 'base@logistics-midmarket@v7',
+            'base': {
+              'id': 'pallet-consolidation',
+              'description': 'Firm-authored canonical procedure (v1).',
+              'severity_threshold': 10,
+            },
+          },
+        };
+        final page = await client.expand(
+          'markdown/skills/pallet-consolidation.md',
+        );
+        expect(page.shadow, isNotNull);
+        expect(
+          page.shadow!.basePageId,
+          'markdown/base/logistics-midmarket/skills/pallet-consolidation.md',
+        );
+        expect(page.shadow!.pack, 'base@logistics-midmarket@v7');
+        expect(page.shadow!.base['severity_threshold'], 10);
+
+        // A page with no `shadow` in the reply parses to null (older
+        // servers / non-shadowing pages).
+        mock.toolHandlers['expand'] = (_) => {
+          'page': {
+            'page_id': 'markdown/skills/local-notes.md',
+            'skill': 'local-notes',
+            'page_type': 'skill',
+          },
+          'frontmatter': {'id': 'local-notes'},
+          'body': '',
+          'blocks': <Map<String, dynamic>>[],
+          'wikilinks_out': <String>[],
+        };
+        final plain = await client.expand('markdown/skills/local-notes.md');
+        expect(plain.shadow, isNull);
+      },
+    );
+
     test('list_packs parses the subscription pins', () async {
       mock.toolHandlers['list_packs'] = (_) => {
         'packs': [
@@ -464,16 +524,17 @@ void main() {
       },
     );
 
-    test('version tolerates a plain-text body (escurel returns a bare string)',
-        () async {
-      // escurel-server answers /version with `text/plain` "0.0.0-dev", not
-      // JSON. The client must not throw a cast error; it surfaces the string.
-      mock.rawRouteHandlers['/version'] = '0.0.0-dev';
-      final v = await client.version();
-      expect(v.version, '0.0.0-dev');
-      expect(v.app, 'escurel-server');
-      expect(v.capabilities, contains(BackendCapability.none));
-    },
+    test(
+      'version tolerates a plain-text body (escurel returns a bare string)',
+      () async {
+        // escurel-server answers /version with `text/plain` "0.0.0-dev", not
+        // JSON. The client must not throw a cast error; it surfaces the string.
+        mock.rawRouteHandlers['/version'] = '0.0.0-dev';
+        final v = await client.version();
+        expect(v.version, '0.0.0-dev');
+        expect(v.app, 'escurel-server');
+        expect(v.capabilities, contains(BackendCapability.none));
+      },
     );
   });
 
