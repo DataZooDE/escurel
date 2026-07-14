@@ -887,6 +887,7 @@ empty value means "this gateway's tenant".
 | `tenant_delete` | `{tenant_id, confirm}` (`confirm` must equal `tenant_id`) | `{deleted}` | hard-delete a tenant + its on-disk state |
 | `tenant_export` | `{tenant_id}` | `{format_version, tarball_b64, bytes, sha256}` (tarball: canonical **markdown only**, gzip'd; `sha256` = hex of the tarball body) | export (blocking) |
 | `tenant_import` | `{tenant_id, tarball_b64}` | `{bytes_imported}` | restore markdown into an existing tenant (blocking) |
+| `export_pack` | `{tenant_id, id, version, vertical, publisher, skills, include_instances?}` | `{manifest, tarball_b64, bytes}` | build a **skill pack**: a deterministic tar+gz of the named skills' pages (+ instances when `include_instances`) with an HMAC-signed `manifest` (`{format_version, id, version, vertical, publisher, page_count, content_hash, signature}`). Requires `ESCUREL_PACK_SECRET` (refuses unsigned, `pack_secret_not_configured`); fails closed on credential-shaped page content (`pack_secret_detected`). See ADR-0006 |
 | `admin_audit` | `{tenant_id}` | `{markdown_not_in_duckdb: [...], indexed_but_no_markdown: [...]}` | drift detection (two-way diff) |
 | `rebuild` | `{tenant_id}` | `{done, total, current_page}` | recover the index from canonical markdown (blocking) |
 | `attach_external` | `{tenant_id, source_url}` | `{source_id}` (derived catalog alias) | attach an external read-only DuckDB source |

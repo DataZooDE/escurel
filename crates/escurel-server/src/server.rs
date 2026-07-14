@@ -172,6 +172,12 @@ pub struct ServerConfig {
     /// `X-Escurel-Webhook-Signature: sha256=<hex>` so the receiver can
     /// trust the POST; `None` (default) leaves the POST unsigned.
     pub webhook_secret: Option<String>,
+    /// Shared secret signing/verifying skill packs
+    /// (`ESCUREL_PACK_SECRET`, REQ-PACK-02). `Some` enables
+    /// `export_pack` (packs are signed, always — export refuses without
+    /// it) and pack verification on import. `None` (default) disables
+    /// the pack surface fail-closed.
+    pub pack_secret: Option<String>,
     /// Dedicated Prometheus `/metrics` listener
     /// (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default
     /// `0.0.0.0:9090`). Served on its own port — tailnet-only in the
@@ -300,6 +306,9 @@ pub(crate) struct AppState {
     /// `Some`, `capture_event` fires a fire-and-forget POST of the new
     /// event; `None` (default) is a no-op.
     pub(crate) webhook: Option<crate::webhook::Webhook>,
+    /// Shared pack-signing secret (`ESCUREL_PACK_SECRET`). `None` →
+    /// the pack surface refuses fail-closed.
+    pub(crate) pack_secret: Option<String>,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -349,6 +358,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
             .webhook_url
             .clone()
             .map(|url| crate::webhook::Webhook::new(url, config.webhook_secret.clone())),
+        pack_secret: config.pack_secret.clone(),
     };
 
     let mut app = Router::new()

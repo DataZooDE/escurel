@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use escurel_client::{
     AdminClient, AttachExternalRequest, AuditRequest, CompactLanesRequest,
-    DeleteChatHistoryRequest, EmbeddingReloadRequest, HealthRequest, QuotaGetRequest,
-    RebuildRequest, TenantCreateRequest, TenantDeleteRequest, TenantExportRequest,
+    DeleteChatHistoryRequest, EmbeddingReloadRequest, ExportPackRequest, HealthRequest,
+    QuotaGetRequest, RebuildRequest, TenantCreateRequest, TenantDeleteRequest, TenantExportRequest,
     TenantGetRequest, TenantListRequest, TenantSpec, TenantUpdateRequest,
 };
 use serde_json::{Value, json};
@@ -59,6 +59,45 @@ pub enum AdminCmd {
     CompactLanes {
         #[arg(long)]
         tenant: String,
+    },
+    /// Skill packs — the versioned, signed unit of distribution
+    /// between escurel nodes.
+    #[command(subcommand)]
+    Pack(PackCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PackCmd {
+    /// Build a versioned, HMAC-signed skill pack from a tenant's
+    /// corpus; writes the tarball and its manifest to files.
+    Export {
+        #[arg(long)]
+        tenant: String,
+        /// Pack identity, e.g. `logistics-midmarket`.
+        #[arg(long)]
+        id: String,
+        /// Monotonic pack version.
+        #[arg(long)]
+        version: u32,
+        /// The vertical this pack belongs to.
+        #[arg(long)]
+        vertical: String,
+        /// Publisher identity, e.g. `hub.stuttgart-ai`.
+        #[arg(long)]
+        publisher: String,
+        /// Skill ids whose pages form the pack subtree (repeatable).
+        #[arg(long = "skill", required = true)]
+        skills: Vec<String>,
+        /// Also bundle each skill's instance pages.
+        #[arg(long)]
+        include_instances: bool,
+        /// Output file path for the pack tarball.
+        #[arg(long)]
+        out: String,
+        /// Output file path for `pack.manifest.json` (defaults to
+        /// `<out>.manifest.json`).
+        #[arg(long)]
+        manifest_out: Option<String>,
     },
 }
 
@@ -208,6 +247,41 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
             Ok(json!({
                 "ops_compacted": p.ops_compacted,
                 "bytes_reclaimed": p.bytes_reclaimed,
+            }))
+        }
+        AdminCmd::Pack(PackCmd::Export {
+            tenant,
+            id,
+            version,
+            vertical,
+            publisher,
+            skills,
+            include_instances,
+            out,
+            manifest_out,
+        }) => {
+            let (manifest, bytes) = client
+                .export_pack(ExportPackRequest {
+                    tenant_id: tenant,
+                    id,
+                    version,
+                    vertical,
+                    publisher,
+                    skills,
+                    include_instances,
+                })
+                .await?;
+            let manifest_path = manifest_out.unwrap_or_else(|| format!("{out}.manifest.json"));
+            let n = bytes.len();
+            std::fs::write(&out, bytes).with_context(|| format!("writing pack to {out}"))?;
+            std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
+                .with_context(|| format!("writing manifest to {manifest_path}"))?;
+            Ok(json!({
+                "bytes_exported": n,
+                "path": out,
+                "manifest_path": manifest_path,
+                "content_hash": manifest.content_hash,
+                "pack": format!("{}@v{}", manifest.id, manifest.version),
             }))
         }
     }

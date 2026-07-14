@@ -184,6 +184,8 @@ pub enum IndexerError {
     MetaSkillProtected { reason: String },
     #[error("transfer rejected: {0}")]
     Transfer(String),
+    #[error("pack skill `{skill}` has no skill page in this tenant")]
+    PackSkillMissing { skill: String },
 }
 
 /// What a DuckDB→DuckDB merge does on a `page_id` already in the target.

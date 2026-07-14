@@ -19,6 +19,7 @@ acceptance gates that apply.
 | [0003](0003-capture-webhook-hmac-auth.md) | Authenticated capture webhook (HMAC-SHA256 + tenant identity) | Accepted |
 | [0004](0004-rbac-groups.md) | Group/role-based per-instance ACL (group ACL v1) | Accepted |
 | [0005](0005-page-layer-model.md) | The page `layer` model (pinned base vs editable overlay) | Accepted |
+| [0006](0006-skill-packs.md) | Skill packs: the signed unit of knowledge distribution | Accepted |
 
 New ADRs are numbered sequentially (`0002-…`, `0003-…`). An ADR
 is never edited after acceptance except to update its **Status**

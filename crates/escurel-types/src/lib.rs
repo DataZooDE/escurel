@@ -27,6 +27,7 @@ mod chat;
 mod core;
 mod events;
 mod null;
+mod pack;
 mod session;
 mod workflow;
 
@@ -35,5 +36,6 @@ pub use agent::*;
 pub use chat::*;
 pub use core::*;
 pub use events::*;
+pub use pack::*;
 pub use session::*;
 pub use workflow::*;

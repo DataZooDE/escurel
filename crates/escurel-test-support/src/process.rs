@@ -97,6 +97,10 @@ pub struct ConfigOverrides {
     /// `X-Escurel-Webhook-Signature: sha256=<hex>`. `None` (default)
     /// leaves the POST unsigned.
     pub webhook_secret: Option<String>,
+    /// Shared secret signing/verifying skill packs
+    /// (production `ESCUREL_PACK_SECRET`). `None` (default) keeps the
+    /// pack surface off — `export_pack` refuses fail-closed.
+    pub pack_secret: Option<String>,
     /// JWT claim the verifier reads the subject's group memberships from
     /// (production `ESCUREL_AUTH_GROUPS_CLAIM`; e.g. `triton_sender_groups`
     /// in the Triton-fronted topology). `None` keeps the default (`roles`).
@@ -346,6 +350,7 @@ impl EscurelProcess {
             demo_dir: overrides.demo_dir.clone(),
             webhook_url: overrides.webhook_url.clone(),
             webhook_secret: overrides.webhook_secret.clone(),
+            pack_secret: overrides.pack_secret.clone(),
             // Metrics on their own random port, mirroring production's
             // dedicated listener (production defaults to :9090).
             metrics_listen: Some("127.0.0.1:0".to_owned()),
