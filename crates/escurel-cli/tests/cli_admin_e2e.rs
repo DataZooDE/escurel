@@ -357,6 +357,118 @@ async fn admin_pack_export_writes_tarball_and_manifest() {
     h.process.shutdown().await;
 }
 
+/// `pack verify` is purely LOCAL: it checks the manifest HMAC + the
+/// tarball content hash with `ESCUREL_PACK_SECRET` from the environment
+/// and never talks to a server — the receiving side of the air-gapped
+/// transport, before anything is imported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admin_pack_verify_is_local_and_fail_closed() {
+    let h = start().await;
+    let out = h.tenants_root.join("verify-me.pack.tgz");
+    let out_str = out.to_str().unwrap().to_owned();
+    admin(
+        &h,
+        v(&[
+            "admin",
+            "pack",
+            "export",
+            "--tenant",
+            TENANT,
+            "--id",
+            "crm-core",
+            "--version",
+            "1",
+            "--vertical",
+            "crm",
+            "--publisher",
+            "hub.test",
+            "--skill",
+            "customer",
+            "--out",
+            &out_str,
+        ]),
+    )
+    .await;
+
+    // Local verify: no server needed — point ESCUREL_SERVER at a dead
+    // address to prove no network call happens.
+    let verify = |input: String, secret: Option<&'static str>| {
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = Command::cargo_bin("escurel").unwrap();
+            cmd.env("ESCUREL_SERVER", "http://127.0.0.1:1")
+                .env_remove("ESCUREL_TOKEN")
+                .env_remove("ESCUREL_PACK_SECRET")
+                .args(["admin", "pack", "verify", "--in", &input]);
+            if let Some(s) = secret {
+                cmd.env("ESCUREL_PACK_SECRET", s);
+            }
+            cmd.output().unwrap()
+        })
+    };
+
+    // Authentic pack + right secret ⇒ ok, with the pinned identity.
+    let ok = verify(out_str.clone(), Some("cli-pack-secret"))
+        .await
+        .unwrap();
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let r = json(&ok);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["pack"], "crm-core");
+    assert_eq!(r["version"], 1);
+    assert!(
+        r["content_hash"].as_str().unwrap().starts_with("sha256:"),
+        "{r}"
+    );
+
+    // One flipped byte in the tarball ⇒ pack_signature_invalid.
+    let corrupt = h.tenants_root.join("corrupt.pack.tgz");
+    let mut bytes = std::fs::read(&out).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0x01;
+    std::fs::write(&corrupt, &bytes).unwrap();
+    std::fs::copy(
+        h.tenants_root.join("verify-me.pack.tgz.manifest.json"),
+        h.tenants_root.join("corrupt.pack.tgz.manifest.json"),
+    )
+    .unwrap();
+    let bad = verify(
+        corrupt.to_str().unwrap().to_owned(),
+        Some("cli-pack-secret"),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !bad.status.success(),
+        "tampered pack must fail verification"
+    );
+    let err: Value = serde_json::from_slice(&bad.stderr).expect("stderr is JSON");
+    assert!(
+        err["error"]
+            .as_str()
+            .unwrap()
+            .contains("pack_signature_invalid"),
+        "got: {err}"
+    );
+
+    // No ESCUREL_PACK_SECRET ⇒ a clear, actionable error.
+    let unset = verify(out_str.clone(), None).await.unwrap();
+    assert!(!unset.status.success());
+    let err: Value = serde_json::from_slice(&unset.stderr).expect("stderr is JSON");
+    assert!(
+        err["error"]
+            .as_str()
+            .unwrap()
+            .contains("ESCUREL_PACK_SECRET"),
+        "got: {err}"
+    );
+
+    h.process.shutdown().await;
+}
+
 /// Harvest a promotion candidate through the CLI: the curator-marked
 /// skill leaves as a signed candidate bundle + manifest, and the
 /// server's audit event id comes back.

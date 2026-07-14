@@ -4265,6 +4265,10 @@ struct RebasePackArgs {
     /// explicitly acknowledges them.
     #[serde(default)]
     acknowledge_conflicts: bool,
+    /// Plan only: run the full validation + conflict scan, apply
+    /// NOTHING, and report what a real rebase would do.
+    #[serde(default)]
+    dry_run: bool,
 }
 
 /// Admin: the reviewed upgrade of a subscribed pack (REQ-REBASE-01/02)
@@ -4484,6 +4488,32 @@ async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
                 }));
             }
         }
+    }
+    // Plan only: everything above (verify, unpack, stamp, collision +
+    // conflict scans) ran exactly as a real rebase would; report the
+    // would-import / would-remove counts and apply NOTHING. `ok` means
+    // "a real run would apply cleanly without acknowledgement".
+    if a.dry_run {
+        let old_page_ids = indexer
+            .base_page_ids(&a.manifest.id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack orphan scan: {e}")))?;
+        let new_ids: std::collections::HashSet<&str> =
+            stamped_pages.iter().map(|(id, _)| id.as_str()).collect();
+        let would_remove = old_page_ids
+            .iter()
+            .filter(|id| !new_ids.contains(id.as_str()))
+            .count();
+        return Ok(json!({
+            "ok": issues.is_empty(),
+            "dry_run": true,
+            "issues": issues,
+            "pack": a.manifest.id,
+            "from_version": from_version,
+            "to_version": a.manifest.version,
+            "would_import": stamped_pages.len(),
+            "would_remove": would_remove,
+        }));
     }
     if !issues.is_empty() && !a.acknowledge_conflicts {
         return Ok(json!({ "ok": false, "issues": issues }));
@@ -5763,6 +5793,10 @@ fn tools_list_payload() -> Value {
                         "acknowledge_conflicts": {
                             "type": "boolean",
                             "description": "Apply despite rebase_conflict Issues (the human review). Default false."
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "Plan only: run the full validation + conflict scan, apply nothing, and report {would_import, would_remove}. Default false."
                         }
                     }
                 }),

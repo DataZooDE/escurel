@@ -22,6 +22,10 @@ escurel-client = { path = "../escurel-client" }
 # `escurel ui` launches the interactive k9s-style terminal browser, which
 # is itself pure presentation over escurel-client.
 escurel-tui = { path = "../escurel-tui" }
+# `admin pack verify` is purely local: it re-uses the shared pack
+# signing/verification primitives (escurel_types::pack) — the CLI must
+# NOT depend on escurel-server for this.
+escurel-types = { path = "../escurel-types" }
 # preserve_order keeps emitted JSON / table columns in the order the
 # command authored them, not alphabetised.
 serde_json = { version = "1", features = ["preserve_order"] }

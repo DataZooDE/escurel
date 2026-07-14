@@ -350,12 +350,16 @@ impl AdminClient {
 
     /// Reviewed upgrade of a subscribed pack. Returns the server's raw
     /// result: `{ok, issues}` on conflicts, or the upgrade summary.
+    /// With `dry_run` the server runs the full validation + conflict
+    /// scan, applies nothing, and reports the plan
+    /// (`{would_import, would_remove, …}`).
     pub async fn rebase_pack(
         &self,
         tenant_id: &str,
         manifest: &escurel_types::PackManifest,
         tarball: Vec<u8>,
         acknowledge_conflicts: bool,
+        dry_run: bool,
     ) -> Result<Value, Error> {
         self.transport
             .call(
@@ -365,6 +369,7 @@ impl AdminClient {
                     "manifest": manifest,
                     "tarball_b64": B64.encode(&tarball),
                     "acknowledge_conflicts": acknowledge_conflicts,
+                    "dry_run": dry_run,
                 }),
             )
             .await

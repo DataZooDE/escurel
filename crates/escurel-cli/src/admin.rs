@@ -99,6 +99,22 @@ pub enum PackCmd {
         /// Apply despite rebase_conflict Issues (the human review).
         #[arg(long)]
         acknowledge_conflicts: bool,
+        /// Plan only: run the full validation + conflict scan on the
+        /// server, apply nothing, report {would_import, would_remove}.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Verify a pack's signature + content hash LOCALLY — no server
+    /// call. Reads the shared pack secret from `ESCUREL_PACK_SECRET`;
+    /// the receiving half of the air-gapped transport, before anything
+    /// is imported.
+    Verify {
+        /// Input pack tarball file path.
+        #[arg(long = "in")]
+        input: String,
+        /// Path to its manifest (defaults to `<in>.manifest.json`).
+        #[arg(long)]
+        manifest: Option<String>,
     },
     /// Drop a pack subscription: removes its base pages + version pin.
     Unsubscribe {
@@ -340,6 +356,7 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
             input,
             manifest,
             acknowledge_conflicts,
+            dry_run,
         }) => {
             let manifest_path = manifest.unwrap_or_else(|| format!("{input}.manifest.json"));
             let manifest: escurel_client::PackManifest = serde_json::from_slice(
@@ -349,9 +366,34 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
             .with_context(|| format!("parsing manifest {manifest_path}"))?;
             let bytes = std::fs::read(&input).with_context(|| format!("reading pack {input}"))?;
             client
-                .rebase_pack(&tenant, &manifest, bytes, acknowledge_conflicts)
+                .rebase_pack(&tenant, &manifest, bytes, acknowledge_conflicts, dry_run)
                 .await
                 .map_err(Into::into)
+        }
+        AdminCmd::Pack(PackCmd::Verify { input, manifest }) => {
+            // Purely local: the whole point is verifying a bundle BEFORE
+            // trusting it enough to send anywhere — no server round-trip.
+            let secret = std::env::var("ESCUREL_PACK_SECRET").map_err(|_| {
+                anyhow::anyhow!(
+                    "ESCUREL_PACK_SECRET is not set — `pack verify` checks the manifest \
+                     HMAC locally and needs the shared pack secret in the environment"
+                )
+            })?;
+            let manifest_path = manifest.unwrap_or_else(|| format!("{input}.manifest.json"));
+            let manifest: escurel_client::PackManifest = serde_json::from_slice(
+                &std::fs::read(&manifest_path)
+                    .with_context(|| format!("reading manifest {manifest_path}"))?,
+            )
+            .with_context(|| format!("parsing manifest {manifest_path}"))?;
+            let tarball = std::fs::read(&input).with_context(|| format!("reading pack {input}"))?;
+            escurel_types::pack::verify_pack(&manifest, &tarball, &secret)
+                .map_err(|reason| anyhow::anyhow!(reason))?;
+            Ok(json!({
+                "ok": true,
+                "pack": manifest.id,
+                "version": manifest.version,
+                "content_hash": manifest.content_hash,
+            }))
         }
         AdminCmd::Pack(PackCmd::Unsubscribe { tenant, id }) => client
             .call_raw(

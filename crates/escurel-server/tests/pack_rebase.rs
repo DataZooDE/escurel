@@ -115,6 +115,21 @@ async fn rebase(p: &EscurelProcess, manifest: &Value, tarball: &str, ack: bool) 
     .await
 }
 
+async fn rebase_dry_run(p: &EscurelProcess, manifest: &Value, tarball: &str) -> Value {
+    call(
+        p,
+        Role::Admin,
+        "rebase_pack",
+        json!({
+            "tenant_id": TENANT,
+            "manifest": manifest,
+            "tarball_b64": tarball,
+            "dry_run": true,
+        }),
+    )
+    .await
+}
+
 #[tokio::test]
 async fn clean_upgrade_applies_and_moves_the_pin() {
     // AT-REBASE-1: no overlay overlap ⇒ the upgrade applies silently.
@@ -238,6 +253,112 @@ async fn conflicting_override_surfaces_issues_and_leaves_the_base_unchanged() {
     let sc = &ex["result"]["structuredContent"];
     assert_eq!(sc["frontmatter"]["description"], "acme-special.");
     assert_eq!(sc["shadow"]["base"]["description"], "alpha v2.", "{ex}");
+
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn dry_run_reports_the_plan_without_applying_anything() {
+    // A clean upgrade under dry_run: full validation + conflict scan run,
+    // the would-import / would-remove counts come back, and NOTHING moves
+    // — no page writes, no orphan removal, the pin stays.
+    let p = start().await;
+    import_v1(&p).await;
+    let (m2, t2) = signed(&v2_pages(), 2);
+    let r = rebase_dry_run(&p, &m2, &t2).await;
+    assert!(r.get("error").is_none(), "{r}");
+    let sc = &r["result"]["structuredContent"];
+    assert_eq!(sc["ok"], true, "{r}");
+    assert_eq!(sc["dry_run"], true, "{r}");
+    assert_eq!(sc["issues"].as_array().map(Vec::len), Some(0), "{r}");
+    assert_eq!(sc["would_import"], 2, "alpha + gamma: {r}");
+    assert_eq!(sc["would_remove"], 1, "beta is orphaned: {r}");
+    assert_eq!(sc["from_version"], 1);
+    assert_eq!(sc["to_version"], 2);
+
+    // Pages untouched: alpha still carries v1 content + pin, beta alive.
+    let ex = call(
+        &p,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": "markdown/base/logistics/skills/alpha.md" }),
+    )
+    .await;
+    let fm = &ex["result"]["structuredContent"]["frontmatter"];
+    assert_eq!(fm["description"], "alpha v1.", "{ex}");
+    assert_eq!(fm["layer"], "base@logistics@v1", "{ex}");
+    let beta = call(
+        &p,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": "markdown/base/logistics/skills/beta.md" }),
+    )
+    .await;
+    assert!(
+        !beta["result"]["structuredContent"]["page"].is_null(),
+        "dry-run must not remove orphans: {beta}"
+    );
+
+    // The pin did not move.
+    let packs = call(&p, Role::Admin, "list_packs", json!({})).await;
+    assert_eq!(
+        packs["result"]["structuredContent"]["packs"][0]["version"], 1,
+        "{packs}"
+    );
+
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn dry_run_with_conflicts_lists_the_same_issues_and_applies_nothing() {
+    // The shadow-vs-upstream conflict scan runs under dry_run exactly as
+    // in a real rebase; `ok:false` + the rebase_conflict Issues come
+    // back, and the base/pin stay untouched.
+    let p = start().await;
+    import_v1(&p).await;
+    let w = call(
+        &p,
+        Role::Admin,
+        "update_page",
+        json!({ "page_id": "markdown/skills/alpha.md",
+                "content": skill("alpha", "acme-special.", "") }),
+    )
+    .await;
+    assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+
+    let (m2, t2) = signed(&v2_pages(), 2);
+    let r = rebase_dry_run(&p, &m2, &t2).await;
+    let sc = &r["result"]["structuredContent"];
+    assert_eq!(sc["ok"], false, "conflicts ⇒ not clean: {r}");
+    assert_eq!(sc["dry_run"], true, "{r}");
+    let issues = sc["issues"].as_array().expect("issues");
+    assert!(
+        issues.iter().any(|i| i["code"] == "rebase_conflict"
+            && i["location"].as_str().unwrap_or_default().contains("alpha")
+            && i["location"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("description")),
+        "{r}"
+    );
+
+    // Nothing applied.
+    let ex = call(
+        &p,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": "markdown/base/logistics/skills/alpha.md" }),
+    )
+    .await;
+    assert_eq!(
+        ex["result"]["structuredContent"]["frontmatter"]["description"],
+        "alpha v1."
+    );
+    let packs = call(&p, Role::Admin, "list_packs", json!({})).await;
+    assert_eq!(
+        packs["result"]["structuredContent"]["packs"][0]["version"], 1,
+        "{packs}"
+    );
 
     p.shutdown().await;
 }

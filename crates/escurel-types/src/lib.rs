@@ -27,7 +27,11 @@ mod chat;
 mod core;
 mod events;
 mod null;
-mod pack;
+// Public as a MODULE (not glob-re-exported functions): the pack
+// signing/verification primitives read best namespaced —
+// `escurel_types::pack::verify_pack` — while the manifest TYPES stay
+// flat like every other wire type.
+pub mod pack;
 mod session;
 mod workflow;
 

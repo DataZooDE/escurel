@@ -10,5 +10,12 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+# Pack manifest signing/verification (`pack` module): HMAC-SHA256 over
+# the canonical manifest JSON + SHA-256 over the tarball bytes. These
+# live here (next to `PackManifest`) so BOTH the server and the CLI's
+# offline `pack verify` share one implementation without the CLI
+# depending on escurel-server.
+hmac = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
