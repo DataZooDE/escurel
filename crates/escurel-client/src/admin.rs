@@ -348,6 +348,28 @@ impl AdminClient {
             .await
     }
 
+    /// Reviewed upgrade of a subscribed pack. Returns the server's raw
+    /// result: `{ok, issues}` on conflicts, or the upgrade summary.
+    pub async fn rebase_pack(
+        &self,
+        tenant_id: &str,
+        manifest: &escurel_types::PackManifest,
+        tarball: Vec<u8>,
+        acknowledge_conflicts: bool,
+    ) -> Result<Value, Error> {
+        self.transport
+            .call(
+                "rebase_pack",
+                json!({
+                    "tenant_id": tenant_id,
+                    "manifest": manifest,
+                    "tarball_b64": B64.encode(&tarball),
+                    "acknowledge_conflicts": acknowledge_conflicts,
+                }),
+            )
+            .await
+    }
+
     /// The subscribed skill packs and their pinned versions.
     pub async fn list_packs(&self) -> Result<Value, Error> {
         self.transport.call("list_packs", json!({})).await
