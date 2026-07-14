@@ -371,13 +371,22 @@ async fn list_skills(client: &Client) -> Result<Value> {
         .skills
         .into_iter()
         .map(|s| {
-            json!({
+            let mut skill = json!({
                 "id": s.id,
                 "description": s.description,
                 "required_frontmatter": s.required_frontmatter,
                 "optional_frontmatter": s.optional_frontmatter,
                 "is_event_typed": s.is_event_typed,
-            })
+                // REQ-LAYER-04: `overlay` (tenant-authored, editable) or
+                // `base@<pack>@<version>` (pack-imported, read-only).
+                "layer": s.layer,
+            });
+            // REQ-LAYER-03: the shadowed base's pin, only when this
+            // overlay shadows a pack skill of the same id.
+            if let Some(shadows) = s.shadows {
+                skill["shadows"] = json!(shadows);
+            }
+            skill
         })
         .collect();
     Ok(json!({ "skills": skills }))
@@ -416,7 +425,7 @@ async fn expand(client: &Client, page_id: String) -> Result<Value> {
             ..Default::default()
         })
         .await?;
-    Ok(json!({
+    let mut out = json!({
         "page": resp.page.map(page_ref),
         "frontmatter": json_or_null(&resp.frontmatter),
         "body": resp.body,
@@ -431,7 +440,13 @@ async fn expand(client: &Client, page_id: String) -> Result<Value> {
             "version": opt(&w.version),
             "alias": opt(&w.alias),
         })).collect::<Vec<_>>(),
-    }))
+    });
+    // Shadowed-base drift object (REQ-LAYER-03): printed only when the
+    // server reports one (a tenant overlay shadowing a pack base skill).
+    if let Some(shadow) = resp.shadow {
+        out["shadow"] = shadow;
+    }
+    Ok(out)
 }
 
 /// Parse an optional CLI string argument as JSON; empty/absent → `null`.

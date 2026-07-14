@@ -87,6 +87,28 @@ fn expand_response_null_page() {
     let back = serde_json::to_value(&resp).unwrap();
     // page omitted on serialize (skip_serializing_if None)
     assert!(back.get("page").is_none());
+    // shadow is additive: absent on the wire ⇒ None, omitted on serialize.
+    assert!(resp.shadow.is_none());
+    assert!(back.get("shadow").is_none());
+}
+
+#[test]
+fn expand_response_carries_the_shadow_object() {
+    // REQ-LAYER-03: a shadowing overlay's expand carries the shadowed
+    // base under `shadow` (base page id + pin + base frontmatter).
+    let wire = json!({
+        "page": null,
+        "shadow": {
+            "base_page_id": "markdown/base/logistics/skills/alpha.md",
+            "pack": "base@logistics@v1",
+            "base": { "description": "upstream." },
+        },
+    });
+    let resp: ExpandResponse = serde_json::from_value(wire).unwrap();
+    let shadow = resp.shadow.as_ref().expect("shadow decoded");
+    assert_eq!(shadow["pack"], "base@logistics@v1");
+    let back = serde_json::to_value(&resp).unwrap();
+    assert_eq!(back["shadow"]["base"]["description"], "upstream.");
 }
 
 #[test]
@@ -401,6 +423,7 @@ fn roundtrip_agent() {
             content: "c".into(),
         }],
         wikilinks_out: vec![WikilinkParsed::default()],
+        shadow: Some(json!({ "base_page_id": "markdown/base/p/skills/s.md" })),
     });
     rt(ResolveResponse {
         parsed: Some(WikilinkParsed::default()),

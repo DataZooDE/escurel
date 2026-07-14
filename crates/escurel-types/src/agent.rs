@@ -123,6 +123,13 @@ pub struct ExpandResponse {
     pub body: String,
     pub blocks: Vec<ExpandBlock>,
     pub wikilinks_out: Vec<WikilinkParsed>,
+    /// Shadowed-base drift object (REQ-LAYER-03): when the expanded page
+    /// is a tenant overlay skill shadowing a pack-imported base skill,
+    /// the server emits `{base_page_id, pack, base}` here — the overlay
+    /// wins for display, the base value stays visible. Absent otherwise
+    /// (additive; old servers never emit it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<Value>,
 }
 
 // ── neighbours ────────────────────────────────────────────────────

@@ -99,6 +99,22 @@ pub enum PackCmd {
         /// Apply despite rebase_conflict Issues (the human review).
         #[arg(long)]
         acknowledge_conflicts: bool,
+        /// Plan only: run the full validation + conflict scan on the
+        /// server, apply nothing, report {would_import, would_remove}.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Verify a pack's signature + content hash LOCALLY — no server
+    /// call. Reads the shared pack secret from `ESCUREL_PACK_SECRET`;
+    /// the receiving half of the air-gapped transport, before anything
+    /// is imported.
+    Verify {
+        /// Input pack tarball file path.
+        #[arg(long = "in")]
+        input: String,
+        /// Path to its manifest (defaults to `<in>.manifest.json`).
+        #[arg(long)]
+        manifest: Option<String>,
     },
     /// Drop a pack subscription: removes its base pages + version pin.
     Unsubscribe {
@@ -109,6 +125,8 @@ pub enum PackCmd {
     },
     /// The subscribed skill packs and their pinned versions.
     List {
+        /// Kept for symmetry with the other pack commands; the gateway
+        /// is single-tenant, so the value is not sent anywhere.
         #[arg(long)]
         tenant: String,
     },
@@ -119,9 +137,10 @@ pub enum PackCmd {
     SubmitPromotion {
         #[arg(long)]
         tenant: String,
-        /// Candidate pack identity for hub review.
-        #[arg(long)]
-        candidate_id: String,
+        /// Candidate pack identity for hub review. (`--candidate-id`
+        /// remains as a hidden back-compat alias.)
+        #[arg(long, alias = "candidate-id")]
+        id: String,
         /// The vertical the candidate belongs to.
         #[arg(long)]
         vertical: String,
@@ -228,6 +247,35 @@ pub struct DeleteChatArgs {
     pub before_ts: Option<String>,
     #[arg(long)]
     pub author: Option<String>,
+}
+
+/// `pack verify`, purely LOCAL: check the manifest HMAC then the
+/// tarball content hash with the shared secret from
+/// `ESCUREL_PACK_SECRET`. Takes no client — main.rs dispatches it
+/// BEFORE any transport is constructed, so a bogus `ESCUREL_SERVER` /
+/// malformed `ESCUREL_TOKEN` cannot block an offline verification.
+pub fn verify_pack_local(input: &str, manifest: Option<String>) -> Result<Value> {
+    let secret = std::env::var("ESCUREL_PACK_SECRET").map_err(|_| {
+        anyhow::anyhow!(
+            "ESCUREL_PACK_SECRET is not set — `pack verify` checks the manifest \
+             HMAC locally and needs the shared pack secret in the environment"
+        )
+    })?;
+    let manifest_path = manifest.unwrap_or_else(|| format!("{input}.manifest.json"));
+    let manifest: escurel_client::PackManifest = serde_json::from_slice(
+        &std::fs::read(&manifest_path)
+            .with_context(|| format!("reading manifest {manifest_path}"))?,
+    )
+    .with_context(|| format!("parsing manifest {manifest_path}"))?;
+    let tarball = std::fs::read(input).with_context(|| format!("reading pack {input}"))?;
+    escurel_types::pack::verify_pack(&manifest, &tarball, &secret)
+        .map_err(|reason| anyhow::anyhow!(reason))?;
+    Ok(json!({
+        "ok": true,
+        "pack": manifest.id,
+        "version": manifest.version,
+        "content_hash": manifest.content_hash,
+    }))
 }
 
 fn tenant_json(s: Option<TenantSpec>) -> Value {
@@ -340,6 +388,7 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
             input,
             manifest,
             acknowledge_conflicts,
+            dry_run,
         }) => {
             let manifest_path = manifest.unwrap_or_else(|| format!("{input}.manifest.json"));
             let manifest: escurel_client::PackManifest = serde_json::from_slice(
@@ -348,11 +397,20 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
             )
             .with_context(|| format!("parsing manifest {manifest_path}"))?;
             let bytes = std::fs::read(&input).with_context(|| format!("reading pack {input}"))?;
-            client
-                .rebase_pack(&tenant, &manifest, bytes, acknowledge_conflicts)
-                .await
-                .map_err(Into::into)
+            let r = if dry_run {
+                client
+                    .rebase_pack_dry_run(&tenant, &manifest, bytes, acknowledge_conflicts)
+                    .await
+            } else {
+                client
+                    .rebase_pack(&tenant, &manifest, bytes, acknowledge_conflicts)
+                    .await
+            };
+            r.map_err(Into::into)
         }
+        // Normally intercepted in main.rs BEFORE any client exists (the
+        // command is purely local); kept here so the dispatch stays total.
+        AdminCmd::Pack(PackCmd::Verify { input, manifest }) => verify_pack_local(&input, manifest),
         AdminCmd::Pack(PackCmd::Unsubscribe { tenant, id }) => client
             .call_raw(
                 "unsubscribe_pack",
@@ -366,14 +424,14 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
         }
         AdminCmd::Pack(PackCmd::SubmitPromotion {
             tenant,
-            candidate_id,
+            id,
             vertical,
             skills,
             out,
             manifest_out,
         }) => {
             let (manifest, bytes, event_id) = client
-                .submit_promotion(&tenant, &candidate_id, &vertical, &skills)
+                .submit_promotion(&tenant, &id, &vertical, &skills)
                 .await?;
             let manifest_path = manifest_out.unwrap_or_else(|| format!("{out}.manifest.json"));
             let n = bytes.len();

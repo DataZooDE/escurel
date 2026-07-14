@@ -22,6 +22,10 @@ escurel-client = { path = "../escurel-client" }
 # `escurel ui` launches the interactive k9s-style terminal browser, which
 # is itself pure presentation over escurel-client.
 escurel-tui = { path = "../escurel-tui" }
+# `admin pack verify` is purely local: it re-uses the shared pack
+# signing/verification primitives (escurel_types::pack) — the CLI must
+# NOT depend on escurel-server for this.
+escurel-types = { path = "../escurel-types" }
 # preserve_order keeps emitted JSON / table columns in the order the
 # command authored them, not alphabetised.
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -36,9 +40,16 @@ ulid = "1"
 assert_cmd = "2"
 # Decode the base64 blob `page blob` returns, in the ingest e2e.
 base64 = "0.22"
+# The layer/shadow e2e seeds base pages through a test-owned Indexer
+# (`seed_from_dir` — the pack-import path); fixtures can't create
+# `layer: base@…` pages because they replay through `update_page`.
+duckdb = { version = "1", default-features = false }
 # Admin e2e spawns a gateway with a real TenantStore + quota wired.
 escurel-admin = { path = "../escurel-admin" }
+escurel-embed = { path = "../escurel-embed" }
+escurel-index = { path = "../escurel-index" }
 escurel-quota = { path = "../escurel-quota" }
+escurel-storage = { path = "../escurel-storage" }
 escurel-test-support = { path = "../escurel-test-support" }
 # The parity guard reads the live `tools/list` off the running gateway.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

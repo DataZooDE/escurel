@@ -459,6 +459,158 @@ async fn chat_append_reads_content_from_stdin() {
     h.process.shutdown().await;
 }
 
+// --- layer / shadows (REQ-LAYER-03/04) ------------------------------
+
+/// `skill list` must surface each skill's `layer` (+ the `shadows` pin
+/// when a tenant overlay shadows a pack base skill), and `page expand`
+/// must print the server's `shadow` drift object — the CLI half of the
+/// pack-layer visibility contract.
+///
+/// Base pages are seeded through a test-owned `Indexer` +
+/// `seed_from_dir` (the same canonical import path a pack import uses),
+/// NOT `FixtureBuilder`: fixtures replay through `update_page`, which
+/// rejects `layer: base@…` (see `layer_read_only.rs`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skill_list_and_page_expand_surface_layer_and_shadow() {
+    use std::sync::Arc;
+
+    const BASE_SKILL: &str = "---\n\
+type: skill\n\
+id: pallet-consolidation\n\
+description: Firm-authored canonical procedure (v7).\n\
+layer: base@logistics-midmarket@v7\n\
+---\n\
+# pallet-consolidation\n\nFirm-authored body.\n";
+    const OVERLAY_SKILL: &str = "---\n\
+type: skill\n\
+id: pallet-consolidation\n\
+description: Acme-specialised procedure.\n\
+---\n\
+# pallet-consolidation\n\nTenant-specialised body.\n";
+    const PLAIN_SKILL: &str = "---\n\
+type: skill\n\
+id: local-notes\n\
+description: Tenant-authored notes skill.\n\
+---\n\
+# local-notes\n";
+
+    let store_dir = tempfile::TempDir::new().unwrap();
+    let db_dir = tempfile::TempDir::new().unwrap();
+    let seed_dir = tempfile::TempDir::new().unwrap();
+    let base_skills = seed_dir.path().join("base/logistics-midmarket/skills");
+    std::fs::create_dir_all(&base_skills).unwrap();
+    std::fs::create_dir_all(seed_dir.path().join("skills")).unwrap();
+    std::fs::write(base_skills.join("pallet-consolidation.md"), BASE_SKILL).unwrap();
+    std::fs::write(
+        seed_dir.path().join("skills/pallet-consolidation.md"),
+        OVERLAY_SKILL,
+    )
+    .unwrap();
+    std::fs::write(seed_dir.path().join("skills/local-notes.md"), PLAIN_SKILL).unwrap();
+
+    let store: Arc<dyn escurel_storage::LaneStore> = Arc::new(escurel_storage::FsStore::new(
+        store_dir.path().to_path_buf(),
+    ));
+    let embedder: Arc<dyn escurel_embed::Embedder> =
+        Arc::new(escurel_embed::ZeroEmbedder::default());
+    let conn = duckdb::Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    escurel_index::Migrator::up(&conn).unwrap();
+    let indexer = Arc::new(escurel_index::Indexer::new(store, embedder, conn, TENANT).unwrap());
+    indexer.seed_from_dir(seed_dir.path()).await.unwrap();
+
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        config_overrides: ConfigOverrides {
+            indexer: Some(indexer),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let http_addr = process
+        .base_url()
+        .strip_prefix("http://")
+        .unwrap()
+        .to_owned();
+    let run = |args: Vec<String>| {
+        let addr = http_addr.clone();
+        tokio::task::spawn_blocking(move || {
+            Command::cargo_bin("escurel")
+                .unwrap()
+                .env("ESCUREL_SERVER", format!("http://{addr}"))
+                .env_remove("ESCUREL_TOKEN")
+                .args(&args)
+                .assert()
+                .success()
+                .get_output()
+                .clone()
+        })
+    };
+
+    // skill list: the shadowing overlay carries layer + the base pin;
+    // the plain tenant skill carries layer only (shadows omitted).
+    let out = run(v(&["skill", "list"])).await.unwrap();
+    let skills = json(&out)["skills"].as_array().unwrap().clone();
+    let shadowing = skills
+        .iter()
+        .find(|s| s["id"] == "pallet-consolidation")
+        .expect("overlay skill listed");
+    assert_eq!(shadowing["layer"], "overlay", "{skills:?}");
+    assert_eq!(
+        shadowing["shadows"], "base@logistics-midmarket@v7",
+        "{skills:?}"
+    );
+    let plain = skills
+        .iter()
+        .find(|s| s["id"] == "local-notes")
+        .expect("plain skill listed");
+    assert_eq!(plain["layer"], "overlay", "{skills:?}");
+    assert!(
+        plain.get("shadows").is_none(),
+        "shadows must be omitted when null: {plain}"
+    );
+
+    // page expand of the shadowing overlay: the `shadow` drift object
+    // (base page id + pin + base frontmatter) must be printed.
+    let out = run(v(&[
+        "page",
+        "expand",
+        "markdown/skills/pallet-consolidation.md",
+    ]))
+    .await
+    .unwrap();
+    let val = json(&out);
+    assert_eq!(
+        val["frontmatter"]["description"],
+        "Acme-specialised procedure."
+    );
+    assert_eq!(
+        val["shadow"]["base_page_id"],
+        "markdown/base/logistics-midmarket/skills/pallet-consolidation.md",
+        "{val}"
+    );
+    assert_eq!(
+        val["shadow"]["pack"], "base@logistics-midmarket@v7",
+        "{val}"
+    );
+    assert_eq!(
+        val["shadow"]["base"]["description"], "Firm-authored canonical procedure (v7).",
+        "base value visible, not silently masked: {val}"
+    );
+
+    // A non-shadowing page prints no shadow key (additive field).
+    let out = run(v(&["page", "expand", "markdown/skills/local-notes.md"]))
+        .await
+        .unwrap();
+    assert!(
+        json(&out).get("shadow").is_none(),
+        "no shadow object for a plain page: {}",
+        json(&out)
+    );
+
+    process.shutdown().await;
+}
+
 // --- auth modes ----------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

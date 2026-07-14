@@ -123,6 +123,12 @@ async fn run(cli: Cli) -> Result<()> {
     let value = match cli.cmd {
         // `ui` returns directly: it owns the terminal and produces no value.
         Command::Ui => return escurel_tui::run(&cli.server, token).await,
+        // `pack verify` is purely LOCAL — dispatched before any client is
+        // constructed, so a bogus ESCUREL_SERVER or a malformed
+        // ESCUREL_TOKEN cannot block an offline verification.
+        Command::Admin(admin::AdminCmd::Pack(admin::PackCmd::Verify { input, manifest })) => {
+            admin::verify_pack_local(&input, manifest)?
+        }
         Command::Admin(cmd) => {
             let client = AdminClient::connect(&cli.server, token).await?;
             admin::run(&client, cmd).await?

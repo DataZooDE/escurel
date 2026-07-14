@@ -17,12 +17,13 @@
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
 
-use escurel_types::PackManifest;
-
-type HmacSha256 = Hmac<Sha256>;
+// The pure signing/verification primitives live in escurel-types::pack
+// (next to `PackManifest`) so offline consumers — the CLI's local
+// `pack verify` — share one implementation without depending on this
+// crate. Re-exported here so existing server code and tests keep the
+// `crate::pack::verify_pack` spelling.
+pub use escurel_types::pack::{content_hash, sign_manifest, verify_pack};
 
 /// The pack tarball/manifest layout version. Bump on any layout change.
 pub const PACK_FORMAT_VERSION: u32 = 1;
@@ -45,66 +46,6 @@ pub fn build_tarball(pages: &[(String, String)]) -> std::io::Result<Vec<u8>> {
     }
     let gz = tar.into_inner()?;
     gz.finish()
-}
-
-/// `sha256:<hex>` over the tarball bytes.
-#[must_use]
-pub fn content_hash(tarball: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(tarball))
-}
-
-/// The canonical signing payload: the manifest JSON with `signature`
-/// emptied. Field order is fixed by the struct, so the bytes are
-/// deterministic.
-fn signing_payload(manifest: &PackManifest) -> Vec<u8> {
-    let unsigned = PackManifest {
-        signature: String::new(),
-        ..manifest.clone()
-    };
-    serde_json::to_vec(&unsigned).expect("manifest serializes")
-}
-
-/// Sign `manifest` (its `signature` field is ignored) with the shared
-/// pack secret: `sha256=<hex HMAC-SHA256>` over the canonical
-/// manifest-sans-signature JSON.
-#[must_use]
-pub fn sign_manifest(manifest: &PackManifest, secret: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac accepts any key len");
-    mac.update(&signing_payload(manifest));
-    format!("sha256={:x}", mac.finalize().into_bytes())
-}
-
-/// Verify a pack before trusting it (REQ-PACK-02, fail-closed): the
-/// manifest signature must be authentic under `secret` and
-/// `content_hash` must cover `tarball`. Returns the typed reason on
-/// the first failure. Signature comparison is constant-time (the HMAC
-/// verify), mirroring the webhook receiver.
-pub fn verify_pack(manifest: &PackManifest, tarball: &[u8], secret: &str) -> Result<(), String> {
-    let Some(sig_hex) = manifest.signature.strip_prefix("sha256=") else {
-        return Err("pack_signature_invalid: manifest signature is not `sha256=<hex>`".to_owned());
-    };
-    let Ok(sig_bytes) = hex_decode(sig_hex) else {
-        return Err("pack_signature_invalid: manifest signature is not valid hex".to_owned());
-    };
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac accepts any key len");
-    mac.update(&signing_payload(manifest));
-    if mac.verify_slice(&sig_bytes).is_err() {
-        return Err(
-            "pack_signature_invalid: manifest signature does not verify under the \
-             configured pack secret"
-                .to_owned(),
-        );
-    }
-    // The signature covers content_hash, so only now is the hash trusted.
-    let actual = content_hash(tarball);
-    if actual != manifest.content_hash {
-        return Err(format!(
-            "pack_signature_invalid: tarball hash `{actual}` does not match the \
-             signed manifest content_hash `{}` (bundle tampered or truncated)",
-            manifest.content_hash
-        ));
-    }
-    Ok(())
 }
 
 /// Decode a pack tarball into `(relative path, content)` entries,
@@ -212,19 +153,10 @@ pub fn is_safe_pack_token(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
 }
 
-/// Lowercase/uppercase-hex decode without a new dependency.
-fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
-    if !s.len().is_multiple_of(2) {
-        return Err(());
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| ()))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use escurel_types::PackManifest;
+
     use super::*;
 
     fn manifest(hash: &str, secret: &str) -> PackManifest {
