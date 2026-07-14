@@ -274,7 +274,9 @@ impl Metrics {
     /// (`processed` / `failed` / `dead_letter` / `converged`) for `tenant`.
     /// Count one CONFIRMED page write (WI-6): `origin` is `"runner"`
     /// when the write carried runner/workflow provenance, else
-    /// `"human"`. Refused writes never count.
+    /// `"human"`. Refused writes never count. Origin is the caller's
+    /// self-declared #246 provenance (the same trust model as the
+    /// page-edited suppression) — a trend signal, not an auth boundary.
     pub fn inc_write(&self, tenant: &str, origin: &str) {
         self.writes.with_label_values(&[tenant, origin]).inc();
     }

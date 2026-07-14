@@ -4379,7 +4379,7 @@ async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
     // "Field" includes the body. Deterministic set intersection — no
     // merge, no heuristics.
     let mut issues: Vec<Value> = Vec::new();
-    for (page_id, stamped) in &stamped_pages {
+    for (_page_id, stamped) in &stamped_pages {
         let Ok(new_page) = escurel_md::parse(stamped) else {
             continue;
         };
@@ -4393,9 +4393,18 @@ async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
             .and_then(escurel_md::YamlValue::as_str)
             .unwrap_or_default()
             .to_owned();
-        // The shadow, if any: a non-base skill page with this slug.
+        // The shadow, if any: the overlay skill page found BY SLUG —
+        // a shadow can live at any page id, not only the canonical
+        // `markdown/skills/<id>.md` (codex review).
+        let Some(overlay_id) = indexer
+            .overlay_skill_page_id(&skill_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack overlay lookup: {e}")))?
+        else {
+            continue;
+        };
         let Some(overlay_content) = indexer
-            .page_content(&format!("markdown/skills/{skill_id}.md"))
+            .page_content(&overlay_id)
             .await
             .map_err(|e| JsonRpcError::internal(format!("rebase_pack overlay read: {e}")))?
         else {
@@ -4404,9 +4413,18 @@ async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
         let Ok(overlay) = escurel_md::parse(&overlay_content) else {
             continue;
         };
-        // The currently-pinned base page (absent for pages new in vN+1).
+        // The currently-pinned base page — found BY SLUG within this
+        // pack's namespace, so an upstream file move cannot dodge the
+        // diff (codex review). Absent for skills new in vN+1.
+        let Some(old_base_id) = indexer
+            .pack_base_skill_page_id(&skill_id, &a.manifest.id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack base lookup: {e}")))?
+        else {
+            continue;
+        };
         let Some(old_content) = indexer
-            .page_content(page_id)
+            .page_content(&old_base_id)
             .await
             .map_err(|e| JsonRpcError::internal(format!("rebase_pack base read: {e}")))?
         else {
@@ -4469,6 +4487,11 @@ async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
     let conflicts_acknowledged = issues.len() as u32;
 
     // Apply: land the new version, remove orphans, move the pin LAST.
+    // Crash-recovery note (agy review): conflicts block BEFORE any write,
+    // so human review always happened by this point; a crash inside this
+    // block leaves v{N+1} pages with the old pin — recovery is re-running
+    // the same rebase (page upsert + orphan removal are idempotent), and
+    // the pin never claims a version whose pages didn't fully land.
     let old_page_ids = indexer
         .base_page_ids(&a.manifest.id)
         .await
