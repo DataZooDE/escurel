@@ -2475,6 +2475,21 @@ async fn tool_update_page(
                 "v1".to_owned()
             };
 
+            // WI-6 absorption instrumentation: count the CONFIRMED write by
+            // origin — the same runner/workflow-provenance discriminator the
+            // page-edited suppression below uses. The runner/human ratio over
+            // time is the interlocked-loops convergence curve.
+            let origin = if a
+                .provenance
+                .as_ref()
+                .is_some_and(|p| p.get("workflow").is_some() || p.get("runner").is_some())
+            {
+                "runner"
+            } else {
+                "human"
+            };
+            state.metrics.inc_write(indexer.tenant(), origin);
+
             // #246 eager per-edit improvement: an OUT-OF-BAND edit (no runner
             // provenance) optionally emits a `page-edited` inbox event so the
             // reactive loop re-lints/re-verifies the touched page. Runner-

@@ -44,6 +44,8 @@ pub struct Metrics {
     /// `escurel_runner_runs_total{tenant,status}` — agent-runner runs by
     /// terminal status (`processed`/`failed`/`dead_letter`/`converged`).
     runner_runs: IntCounterVec,
+    /// Confirmed page writes by origin (WI-6 absorption instrumentation).
+    writes: IntCounterVec,
     /// `escurel_runner_throttled_total{reason}` — quota throttles by reason.
     runner_throttled: IntCounterVec,
     /// `escurel_runner_queue_depth` — current dispatch-queue depth.
@@ -126,6 +128,17 @@ impl Metrics {
         )
         .expect("valid counter opts");
 
+        let writes = IntCounterVec::new(
+            Opts::new(
+                "escurel_writes_total",
+                "Confirmed page writes by tenant and origin (human | runner) — \
+                 the L2 absorption signal (WI-6): the runner/human ratio over \
+                 time is the interlocked-loops convergence curve.",
+            ),
+            &["tenant", "origin"],
+        )
+        .expect("valid counter opts");
+
         let runner_throttled = IntCounterVec::new(
             Opts::new(
                 "escurel_runner_throttled_total",
@@ -172,6 +185,9 @@ impl Metrics {
             .register(Box::new(runner_runs.clone()))
             .expect("register escurel_runner_runs_total");
         registry
+            .register(Box::new(writes.clone()))
+            .expect("register writes");
+        registry
             .register(Box::new(runner_throttled.clone()))
             .expect("register escurel_runner_throttled_total");
         registry
@@ -191,6 +207,7 @@ impl Metrics {
             live_sessions,
             audit_drift,
             runner_runs,
+            writes,
             runner_throttled,
             runner_queue_depth,
             runner_cascade_depth_max,
@@ -255,6 +272,13 @@ impl Metrics {
 
     /// Record one agent-runner run reaching a terminal `status`
     /// (`processed` / `failed` / `dead_letter` / `converged`) for `tenant`.
+    /// Count one CONFIRMED page write (WI-6): `origin` is `"runner"`
+    /// when the write carried runner/workflow provenance, else
+    /// `"human"`. Refused writes never count.
+    pub fn inc_write(&self, tenant: &str, origin: &str) {
+        self.writes.with_label_values(&[tenant, origin]).inc();
+    }
+
     pub fn inc_runner_run(&self, tenant: &str, status: &str) {
         self.runner_runs.with_label_values(&[tenant, status]).inc();
     }
