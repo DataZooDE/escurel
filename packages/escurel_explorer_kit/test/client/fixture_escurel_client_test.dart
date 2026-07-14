@@ -181,6 +181,146 @@ void main() {
     });
   });
 
+  // ── layers + packs (REQ-LAYER-03/04, REQ-SUB-01 fixture parity) ──
+
+  group('FixtureEscurelClient (layers + packs)', () {
+    const basePlaybook = '''---
+type: skill
+id: playbook
+description: Firm-authored engagement playbook (crm-essentials v1).
+layer: base@crm-essentials@v1
+required_frontmatter: [name]
+stage_gates: 4
+---
+
+# playbook
+
+Firm-authored canonical playbook.
+''';
+
+    const overlayPlaybook = '''---
+type: skill
+id: playbook
+description: Demo-specialised engagement playbook.
+required_frontmatter: [name]
+stage_gates: 5
+---
+
+# playbook
+
+Demo-specialised playbook.
+''';
+
+    const baseOnlyEscalation = '''---
+type: skill
+id: escalation
+description: Firm-authored escalation ladder.
+layer: base@crm-essentials@v1
+---
+
+# escalation
+
+Firm-authored escalation ladder.
+''';
+
+    FixtureEscurelClient layered() => FixtureEscurelClient.fromSources(
+      skillFiles: const {
+        'customer.md': _customerSkill,
+        'base/crm-essentials/skills/playbook.md': basePlaybook,
+        'playbook.md': overlayPlaybook,
+        'base/crm-essentials/skills/escalation.md': baseOnlyEscalation,
+      },
+      instanceFiles: const {},
+    );
+
+    test('a base-layer skill page reports its layer pin', () async {
+      final skills = await layered().listSkills();
+      final escalation = skills.firstWhere((s) => s.id == 'escalation');
+      expect(escalation.layer, 'base@crm-essentials@v1');
+      expect(escalation.isBaseLayer, isTrue);
+      expect(escalation.shadows, isNull);
+    });
+
+    test('a plain skill reports the overlay default', () async {
+      final skills = await layered().listSkills();
+      final customer = skills.firstWhere((s) => s.id == 'customer');
+      expect(customer.layer, 'overlay');
+      expect(customer.isBaseLayer, isFalse);
+      expect(customer.shadows, isNull);
+    });
+
+    test('an overlay shadowing a base skill folds to ONE catalogue entry '
+        'carrying the shadowed pin', () async {
+      final skills = await layered().listSkills();
+      final playbooks = skills.where((s) => s.id == 'playbook').toList();
+      expect(playbooks, hasLength(1));
+      final playbook = playbooks.single;
+      // The overlay wins; it carries the shadowed base's pin.
+      expect(playbook.layer, 'overlay');
+      expect(playbook.shadows, 'base@crm-essentials@v1');
+      expect(playbook.description, 'Demo-specialised engagement playbook.');
+    });
+
+    test(
+      'listPacks synthesizes one subscription per distinct base pack',
+      () async {
+        final packs = await layered().listPacks();
+        expect(packs, hasLength(1));
+        expect(packs.single.packId, 'crm-essentials');
+        expect(packs.single.version, 1);
+        expect(packs.single.vertical, 'demo');
+        expect(packs.single.publisher, 'demo');
+      },
+    );
+
+    test('a node with no base pages still reports zero packs', () async {
+      expect(await _inlineClient().listPacks(), isEmpty);
+    });
+
+    test('expand of the shadowing overlay carries the shadow object', () async {
+      final client = layered();
+      final page = await client.expand('playbook');
+      expect(page.shadow, isNotNull);
+      expect(page.shadow!.pack, 'base@crm-essentials@v1');
+      expect(page.shadow!.basePageId, 'base/crm-essentials/skills/playbook.md');
+      // The base frontmatter is exposed so drift stays visible.
+      expect(page.shadow!.base['stage_gates'], 4);
+      expect(page.frontmatter['stage_gates'], 5);
+
+      // INV-SHADOW: the base page stays pristine and expandable.
+      final base = await client.expand(page.shadow!.basePageId);
+      expect(base.frontmatter['stage_gates'], 4);
+      expect(base.shadow, isNull);
+    });
+
+    test('resolve prefers the overlay over its shadowed base '
+        '(and still finds a base-only skill)', () async {
+      final client = layered();
+      // Shadowed id → the overlay page wins (server precedence:
+      // base pages order last).
+      final playbook = await client.resolve('[[playbook]]');
+      expect(playbook.exists, isTrue);
+      expect(playbook.pageId, 'playbook');
+      // A base-only skill still resolves (to its base page) so the
+      // catalogue's skill-page tap works in fixture mode.
+      final escalation = await client.resolve('[[escalation]]');
+      expect(escalation.exists, isTrue);
+      expect(escalation.pageId, 'base/crm-essentials/skills/escalation.md');
+    });
+
+    test('expand of a non-shadowing page carries no shadow', () async {
+      final client = layered();
+      expect((await client.expand('customer')).shadow, isNull);
+      // A base-only skill (nothing shadows it) also carries none.
+      expect(
+        (await client.expand(
+          'base/crm-essentials/skills/escalation.md',
+        )).shadow,
+        isNull,
+      );
+    });
+  });
+
   // ── directory pass (runs only when examples/ is present) ──────
   //
   // After the examples/crm-demo branch (#11) merges to main, this

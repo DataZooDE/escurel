@@ -77,8 +77,15 @@ class FixtureEscurelClient implements EscurelClient {
         );
       }
       final id = parsed.frontmatter.fields['id'] as String? ?? basename;
-      pages[id] = _ParsedPage(
-        id: id,
+      // A base-layer skill page (`layer: base@<pack>@vN`, REQ-LAYER-04)
+      // lands under the reserved base namespace — mirroring the server's
+      // `markdown/base/<pack>/` prefix — so a tenant overlay skill with
+      // the same id can coexist and shadow it (REQ-LAYER-03).
+      final pageKey = _isBaseLayer(parsed.frontmatter.fields)
+          ? _basePageIdFor(_layerOf(parsed.frontmatter.fields), id)
+          : id;
+      pages[pageKey] = _ParsedPage(
+        id: pageKey,
         skill: id,
         pageType: md.PageType.skill,
         frontmatter: parsed.frontmatter.fields,
@@ -198,27 +205,53 @@ class FixtureEscurelClient implements EscurelClient {
 
   @override
   Future<List<SkillSummary>> listSkills() async {
-    return _pages.values.where((p) => p.pageType == md.PageType.skill).map((p) {
-      final required = _stringList(p.frontmatter['required_frontmatter']);
-      return SkillSummary(
-        id: p.id,
-        description: (p.frontmatter['description'] as String?) ?? '',
-        requiredFrontmatter: required,
-        optionalFrontmatter: _stringList(p.frontmatter['optional_frontmatter']),
-        // Mirror the backend: event-typed iff `required_frontmatter`
-        // includes `at` (read.rs).
-        isEventTyped: required.contains('at'),
-        // Instance-ACL hints from the skill frontmatter; default to
-        // public/ownerless when absent (→ operator-editable). The full
-        // per-CRUD `acl:` block is parsed when present (legacy
-        // `visibility:` skills rely on the operatorEditable fallback).
-        visibility: (p.frontmatter['visibility'] as String?) ?? 'public',
-        ownerField: p.frontmatter['owner_field'] as String?,
-        acl: SkillAcl.fromJson(p.frontmatter['acl']),
-        backendKind: _backendKind(p.frontmatter),
-        capabilities: _capabilitiesFor(_backendKind(p.frontmatter)),
-      );
-    }).toList();
+    final skillPages = _pages.values
+        .where((p) => p.pageType == md.PageType.skill)
+        .toList();
+    // Fold shadows the way the server does (REQ-LAYER-03): when an
+    // overlay skill and a base-layer skill share an id, the catalogue
+    // reports ONE entry — the overlay, carrying the shadowed base's pin.
+    final basePins = <String, String>{
+      for (final p in skillPages)
+        if (_isBaseLayer(p.frontmatter)) p.skill: _layerOf(p.frontmatter),
+    };
+    final overlayIds = skillPages
+        .where((p) => !_isBaseLayer(p.frontmatter))
+        .map((p) => p.skill)
+        .toSet();
+    return skillPages
+        .where(
+          // Drop a base row only when an overlay row shadows its id.
+          (p) => !(_isBaseLayer(p.frontmatter) && overlayIds.contains(p.skill)),
+        )
+        .map((p) {
+          final required = _stringList(p.frontmatter['required_frontmatter']);
+          final isBase = _isBaseLayer(p.frontmatter);
+          return SkillSummary(
+            id: p.skill,
+            description: (p.frontmatter['description'] as String?) ?? '',
+            requiredFrontmatter: required,
+            optionalFrontmatter: _stringList(
+              p.frontmatter['optional_frontmatter'],
+            ),
+            // Mirror the backend: event-typed iff `required_frontmatter`
+            // includes `at` (read.rs).
+            isEventTyped: required.contains('at'),
+            // Instance-ACL hints from the skill frontmatter; default to
+            // public/ownerless when absent (→ operator-editable). The full
+            // per-CRUD `acl:` block is parsed when present (legacy
+            // `visibility:` skills rely on the operatorEditable fallback).
+            visibility: (p.frontmatter['visibility'] as String?) ?? 'public',
+            ownerField: p.frontmatter['owner_field'] as String?,
+            acl: SkillAcl.fromJson(p.frontmatter['acl']),
+            backendKind: _backendKind(p.frontmatter),
+            capabilities: _capabilitiesFor(_backendKind(p.frontmatter)),
+            // Stability layer (REQ-LAYER-04); absent ⇒ overlay.
+            layer: _layerOf(p.frontmatter),
+            shadows: isBase ? null : basePins[p.skill],
+          );
+        })
+        .toList();
   }
 
   @override
@@ -283,12 +316,25 @@ class FixtureEscurelClient implements EscurelClient {
       );
     }
     final ref = refs.first;
-    final candidates = _pages.values.where((p) {
-      if (ref.skill != null) {
-        return p.skill == ref.skill && p.id.endsWith('__${ref.id}');
-      }
-      return p.id == ref.id || p.id.endsWith('__${ref.id}');
-    });
+    final candidates =
+        _pages.values.where((p) {
+            if (ref.skill != null) {
+              return p.skill == ref.skill && p.id.endsWith('__${ref.id}');
+            }
+            // Skill pages also match by their skill id — a base-layer skill
+            // page's page id lives under `base/<pack>/…`, so `[[<id>]]` must
+            // find it via the declared id, not the path.
+            return p.id == ref.id ||
+                p.id.endsWith('__${ref.id}') ||
+                (p.pageType == md.PageType.skill && p.skill == ref.id);
+          }).toList()
+          // Overlay wins over a shadowed base for the same id (REQ-LAYER-03)
+          // — mirror the server's `ORDER BY page_id LIKE 'markdown/base/%'`.
+          ..sort(
+            (a, b) => (_isBaseLayer(a.frontmatter) ? 1 : 0).compareTo(
+              _isBaseLayer(b.frontmatter) ? 1 : 0,
+            ),
+          );
 
     if (candidates.isEmpty) {
       return ResolveResult(
@@ -334,6 +380,28 @@ class FixtureEscurelClient implements EscurelClient {
       // Surface a version once a page has been written so the editor can
       // round-trip it as `baseVersion`. Seeded pages report none.
       version: p.writeSeq == 0 ? null : 'fx-${p.writeSeq}',
+      shadow: _shadowFor(p),
+    );
+  }
+
+  /// The shadowed base behind [p] when it is a tenant OVERLAY skill page
+  /// shadowing a base-layer skill of the same id (REQ-LAYER-03), else null.
+  ShadowInfo? _shadowFor(_ParsedPage p) {
+    if (p.pageType != md.PageType.skill || _isBaseLayer(p.frontmatter)) {
+      return null;
+    }
+    final bases = _pages.values.where(
+      (c) =>
+          c.pageType == md.PageType.skill &&
+          c.skill == p.skill &&
+          _isBaseLayer(c.frontmatter),
+    );
+    if (bases.isEmpty) return null;
+    final base = bases.first;
+    return ShadowInfo(
+      basePageId: base.id,
+      pack: _layerOf(base.frontmatter),
+      base: base.frontmatter,
     );
   }
 
@@ -823,7 +891,28 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<List<PackSubscriptionInfo>> listPacks() async => const [];
+  Future<List<PackSubscriptionInfo>> listPacks() async {
+    // Synthesize a subscription per distinct pack pinned by any
+    // `layer: base@<pack>@v<N>` page in the corpus (REQ-SUB-01 demo
+    // parity). Vertical/publisher are demo placeholders — file-seeded
+    // base pages carry no manifest.
+    final packs = <String, PackSubscriptionInfo>{};
+    for (final p in _pages.values) {
+      final m = _basePinRe.firstMatch(_layerOf(p.frontmatter));
+      if (m == null) continue;
+      final packId = m.group(1)!;
+      packs.putIfAbsent(
+        packId,
+        () => PackSubscriptionInfo(
+          packId: packId,
+          version: int.parse(m.group(2)!),
+          vertical: 'demo',
+          publisher: 'demo',
+        ),
+      );
+    }
+    return packs.values.toList();
+  }
 
   @override
   Future<List<BindingStatus>> validateBindings() async {
@@ -941,6 +1030,25 @@ class FixtureEscurelClient implements EscurelClient {
   static String _backendKind(Map<String, dynamic> fm) {
     final backend = fm['backend'] as Map?;
     return (backend?['kind'] as String?) ?? 'markdown';
+  }
+
+  /// A page's stability layer (REQ-LAYER-04): the frontmatter `layer:`
+  /// pin, or the `overlay` default when absent.
+  static String _layerOf(Map<String, dynamic> fm) =>
+      (fm['layer'] as String?) ?? 'overlay';
+
+  static bool _isBaseLayer(Map<String, dynamic> fm) =>
+      _layerOf(fm).startsWith('base@');
+
+  /// Matches a base pin `base@<pack>@v<N>` → (pack, N).
+  static final _basePinRe = RegExp(r'^base@(.+)@v(\d+)$');
+
+  /// Where a base-layer skill page lands in the fixture corpus —
+  /// mirrors the server's reserved `markdown/base/<pack>/` namespace.
+  static String _basePageIdFor(String pin, String id) {
+    final m = _basePinRe.firstMatch(pin);
+    final pack = m?.group(1) ?? 'pack';
+    return 'base/$pack/skills/$id.md';
   }
 
   static SkillCapabilities _capabilitiesFor(String kind) => switch (kind) {
