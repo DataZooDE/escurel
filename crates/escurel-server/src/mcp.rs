@@ -4492,7 +4492,8 @@ async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
     // Plan only: everything above (verify, unpack, stamp, collision +
     // conflict scans) ran exactly as a real rebase would; report the
     // would-import / would-remove counts and apply NOTHING. `ok` means
-    // "a real run would apply cleanly without acknowledgement".
+    // "a real run with these SAME arguments would apply" — clean, or
+    // conflicted-but-acknowledged; the issues stay listed either way.
     if a.dry_run {
         let old_page_ids = indexer
             .base_page_ids(&a.manifest.id)
@@ -4505,7 +4506,7 @@ async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
             .filter(|id| !new_ids.contains(id.as_str()))
             .count();
         return Ok(json!({
-            "ok": issues.is_empty(),
+            "ok": issues.is_empty() || a.acknowledge_conflicts,
             "dry_run": true,
             "issues": issues,
             "pack": a.manifest.id,

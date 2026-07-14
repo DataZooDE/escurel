@@ -350,10 +350,34 @@ impl AdminClient {
 
     /// Reviewed upgrade of a subscribed pack. Returns the server's raw
     /// result: `{ok, issues}` on conflicts, or the upgrade summary.
-    /// With `dry_run` the server runs the full validation + conflict
-    /// scan, applies nothing, and reports the plan
-    /// (`{would_import, would_remove, …}`).
+    /// (Signature kept stable for downstream consumers; the plan-only
+    /// variant is [`Self::rebase_pack_dry_run`].)
     pub async fn rebase_pack(
+        &self,
+        tenant_id: &str,
+        manifest: &escurel_types::PackManifest,
+        tarball: Vec<u8>,
+        acknowledge_conflicts: bool,
+    ) -> Result<Value, Error> {
+        self.rebase_pack_inner(tenant_id, manifest, tarball, acknowledge_conflicts, false)
+            .await
+    }
+
+    /// Plan-only rebase: the server runs the full validation + conflict
+    /// scan, applies nothing, and reports the plan
+    /// (`{ok, dry_run, issues, would_import, would_remove, …}`).
+    pub async fn rebase_pack_dry_run(
+        &self,
+        tenant_id: &str,
+        manifest: &escurel_types::PackManifest,
+        tarball: Vec<u8>,
+        acknowledge_conflicts: bool,
+    ) -> Result<Value, Error> {
+        self.rebase_pack_inner(tenant_id, manifest, tarball, acknowledge_conflicts, true)
+            .await
+    }
+
+    async fn rebase_pack_inner(
         &self,
         tenant_id: &str,
         manifest: &escurel_types::PackManifest,

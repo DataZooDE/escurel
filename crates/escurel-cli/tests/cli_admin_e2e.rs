@@ -536,13 +536,15 @@ async fn admin_pack_verify_is_local_and_fail_closed() {
     )
     .await;
 
-    // Local verify: no server needed — point ESCUREL_SERVER at a dead
-    // address to prove no network call happens.
+    // Local verify: no server, no client — GARBAGE in ESCUREL_SERVER
+    // (no scheme, would fail client construction) and a token that is
+    // not a legal HTTP header value prove the command never builds a
+    // transport, let alone dials one.
     let verify = |input: String, secret: Option<&'static str>| {
         tokio::task::spawn_blocking(move || {
             let mut cmd = Command::cargo_bin("escurel").unwrap();
-            cmd.env("ESCUREL_SERVER", "http://127.0.0.1:1")
-                .env_remove("ESCUREL_TOKEN")
+            cmd.env("ESCUREL_SERVER", "not-a-url")
+                .env("ESCUREL_TOKEN", "not\na-header-value")
                 .env_remove("ESCUREL_PACK_SECRET")
                 .args(["admin", "pack", "verify", "--in", &input]);
             if let Some(s) = secret {

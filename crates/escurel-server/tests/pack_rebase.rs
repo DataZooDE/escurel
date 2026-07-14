@@ -115,7 +115,7 @@ async fn rebase(p: &EscurelProcess, manifest: &Value, tarball: &str, ack: bool) 
     .await
 }
 
-async fn rebase_dry_run(p: &EscurelProcess, manifest: &Value, tarball: &str) -> Value {
+async fn rebase_dry_run(p: &EscurelProcess, manifest: &Value, tarball: &str, ack: bool) -> Value {
     call(
         p,
         Role::Admin,
@@ -124,6 +124,7 @@ async fn rebase_dry_run(p: &EscurelProcess, manifest: &Value, tarball: &str) -> 
             "tenant_id": TENANT,
             "manifest": manifest,
             "tarball_b64": tarball,
+            "acknowledge_conflicts": ack,
             "dry_run": true,
         }),
     )
@@ -265,7 +266,7 @@ async fn dry_run_reports_the_plan_without_applying_anything() {
     let p = start().await;
     import_v1(&p).await;
     let (m2, t2) = signed(&v2_pages(), 2);
-    let r = rebase_dry_run(&p, &m2, &t2).await;
+    let r = rebase_dry_run(&p, &m2, &t2, false).await;
     assert!(r.get("error").is_none(), "{r}");
     let sc = &r["result"]["structuredContent"];
     assert_eq!(sc["ok"], true, "{r}");
@@ -327,7 +328,7 @@ async fn dry_run_with_conflicts_lists_the_same_issues_and_applies_nothing() {
     assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
 
     let (m2, t2) = signed(&v2_pages(), 2);
-    let r = rebase_dry_run(&p, &m2, &t2).await;
+    let r = rebase_dry_run(&p, &m2, &t2, false).await;
     let sc = &r["result"]["structuredContent"];
     assert_eq!(sc["ok"], false, "conflicts ⇒ not clean: {r}");
     assert_eq!(sc["dry_run"], true, "{r}");
@@ -342,7 +343,21 @@ async fn dry_run_with_conflicts_lists_the_same_issues_and_applies_nothing() {
         "{r}"
     );
 
-    // Nothing applied.
+    // With the acknowledgement, a REAL rebase of these exact arguments
+    // would apply — so the dry-run plan says ok, keeps the issues
+    // listed for the record, and still applies nothing.
+    let r = rebase_dry_run(&p, &m2, &t2, true).await;
+    let sc = &r["result"]["structuredContent"];
+    assert_eq!(sc["ok"], true, "acknowledged ⇒ a real run applies: {r}");
+    assert_eq!(sc["dry_run"], true, "{r}");
+    assert!(
+        sc["issues"]
+            .as_array()
+            .is_some_and(|i| i.iter().any(|i| i["code"] == "rebase_conflict")),
+        "issues stay visible under acknowledgement: {r}"
+    );
+
+    // Nothing applied (by either dry-run).
     let ex = call(
         &p,
         Role::Agent,
