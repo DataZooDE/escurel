@@ -194,10 +194,68 @@ impl Indexer {
                 "DELETE FROM pages WHERE page_id = ?",
                 duckdb::params![page_id],
             )?;
+            // CRDT history hygiene (agy review): a removed page's op log
+            // and snapshots would otherwise linger forever. Events keep
+            // their instance_page_id untouched — the event log is the
+            // immutable audit record.
+            conn.execute(
+                "DELETE FROM crdt_ops WHERE page_id = ?",
+                duckdb::params![page_id],
+            )?;
+            conn.execute(
+                "DELETE FROM crdt_snapshots WHERE page_id = ?",
+                duckdb::params![page_id],
+            )?;
         }
         let key = Key::new(self.tenant(), page_id.to_owned())?;
         self.lane_store().delete(&key).await?;
         Ok(())
+    }
+
+    /// The tenant OVERLAY skill page declaring `slug` (any page id
+    /// outside the reserved base namespace), or `None`. The rebase
+    /// conflict scan uses this instead of assuming the canonical
+    /// `markdown/skills/<id>.md` path (codex review: a shadow can live
+    /// at any page id).
+    pub async fn overlay_skill_page_id(&self, slug: &str) -> Result<Option<String>, IndexerError> {
+        let conn = self.conn.lock().await;
+        match conn.query_row(
+            "SELECT page_id FROM pages \
+             WHERE page_type = 'skill' AND slug = ? \
+               AND page_id NOT LIKE 'markdown/base/%' \
+             LIMIT 1",
+            duckdb::params![slug],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// The currently-pinned base skill page of ONE pack declaring
+    /// `slug`, or `None`. The rebase conflict scan diffs against this —
+    /// found by slug, not by the incoming entry's landing path, so an
+    /// upstream file move within the pack cannot dodge the diff (codex
+    /// review).
+    pub async fn pack_base_skill_page_id(
+        &self,
+        slug: &str,
+        pack_id: &str,
+    ) -> Result<Option<String>, IndexerError> {
+        let prefix = format!("{RESERVED_BASE_PREFIX}{pack_id}/%");
+        let conn = self.conn.lock().await;
+        match conn.query_row(
+            "SELECT page_id FROM pages \
+             WHERE page_type = 'skill' AND slug = ? AND page_id LIKE ? \
+             LIMIT 1",
+            duckdb::params![slug, prefix],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// The base-layer skill page a tenant overlay page shadows: the pack

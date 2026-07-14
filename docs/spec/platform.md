@@ -289,8 +289,13 @@ names are `_`-separated: `escurel.tool_calls` is exposed as
 metric OTLP export is not yet wired.
 
 **Implemented today:** `escurel_tool_calls`,
-`escurel_tool_latency_ms`, `escurel_live_sessions_open`, and
-`escurel_audit_drift`, plus the gateway-level `escurel_up` and
+`escurel_tool_latency_ms`, `escurel_live_sessions_open`,
+`escurel_audit_drift`, and
+`escurel_writes_total{tenant,origin}` (confirmed page writes by
+origin `human` | `runner`, keyed on the #246 runner/workflow
+provenance — the L2 absorption signal: the runner/human ratio over
+time is the interlocked-loops convergence curve, WI-6), plus the
+gateway-level `escurel_up` and
 `escurel_requests_total{route,status}`. The remaining
 histograms/gauges in the table above (`write_lock_wait_ms`,
 `embed_batch_size`, `embed_queue_depth`, `storage_bytes`) are

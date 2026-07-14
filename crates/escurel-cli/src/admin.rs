@@ -85,6 +85,21 @@ pub enum PackCmd {
         #[arg(long)]
         allow_vertical_mismatch: bool,
     },
+    /// Reviewed upgrade of a subscribed pack (the only operation that
+    /// moves a version pin). Conflicts block unless acknowledged.
+    Rebase {
+        #[arg(long)]
+        tenant: String,
+        /// Input pack tarball (the NEW version).
+        #[arg(long = "in")]
+        input: String,
+        /// Path to its manifest (defaults to `<in>.manifest.json`).
+        #[arg(long)]
+        manifest: Option<String>,
+        /// Apply despite rebase_conflict Issues (the human review).
+        #[arg(long)]
+        acknowledge_conflicts: bool,
+    },
     /// The subscribed skill packs and their pinned versions.
     List {
         #[arg(long)]
@@ -312,6 +327,24 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
                 .import_pack(&tenant, &manifest, bytes, allow_vertical_mismatch)
                 .await?;
             Ok(r)
+        }
+        AdminCmd::Pack(PackCmd::Rebase {
+            tenant,
+            input,
+            manifest,
+            acknowledge_conflicts,
+        }) => {
+            let manifest_path = manifest.unwrap_or_else(|| format!("{input}.manifest.json"));
+            let manifest: escurel_client::PackManifest = serde_json::from_slice(
+                &std::fs::read(&manifest_path)
+                    .with_context(|| format!("reading manifest {manifest_path}"))?,
+            )
+            .with_context(|| format!("parsing manifest {manifest_path}"))?;
+            let bytes = std::fs::read(&input).with_context(|| format!("reading pack {input}"))?;
+            client
+                .rebase_pack(&tenant, &manifest, bytes, acknowledge_conflicts)
+                .await
+                .map_err(Into::into)
         }
         AdminCmd::Pack(PackCmd::List { tenant }) => {
             let _ = tenant; // single-tenant gateway; kept for symmetry

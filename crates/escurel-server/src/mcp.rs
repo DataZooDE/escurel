@@ -1062,6 +1062,10 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             return tool_list_packs(state).await;
         }
+        "rebase_pack" => {
+            require_admin(role)?;
+            return tool_rebase_pack(state, params.arguments).await;
+        }
         "submit_promotion" => {
             require_admin(role)?;
             return tool_submit_promotion(state, subject, params.arguments).await;
@@ -2470,6 +2474,21 @@ async fn tool_update_page(
             } else {
                 "v1".to_owned()
             };
+
+            // WI-6 absorption instrumentation: count the CONFIRMED write by
+            // origin — the same runner/workflow-provenance discriminator the
+            // page-edited suppression below uses. The runner/human ratio over
+            // time is the interlocked-loops convergence curve.
+            let origin = if a
+                .provenance
+                .as_ref()
+                .is_some_and(|p| p.get("workflow").is_some() || p.get("runner").is_some())
+            {
+                "runner"
+            } else {
+                "human"
+            };
+            state.metrics.inc_write(indexer.tenant(), origin);
 
             // #246 eager per-edit improvement: an OUT-OF-BAND edit (no runner
             // provenance) optionally emits a `page-edited` inbox event so the
@@ -4233,6 +4252,297 @@ async fn tool_submit_promotion(
     }))
 }
 
+#[derive(Deserialize)]
+struct RebasePackArgs {
+    tenant_id: String,
+    manifest: escurel_types::PackManifest,
+    tarball_b64: String,
+    /// The human half of the review: conflicts block until the operator
+    /// explicitly acknowledges them.
+    #[serde(default)]
+    acknowledge_conflicts: bool,
+}
+
+/// Admin: the reviewed upgrade of a subscribed pack (REQ-REBASE-01/02)
+/// — the ONLY operation that moves a version pin. Conflicts — the
+/// tenant's shadow overrides a field the new version also changed —
+/// surface as typed `rebase_conflict` Issues and block until the
+/// operator passes `acknowledge_conflicts`; nothing auto-resolves.
+/// Trust/validation mirrors `import_pack` (verify before unpack, whole
+/// pack validates before the first write); orphaned base pages the new
+/// version no longer ships are removed; the pin moves LAST.
+async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: RebasePackArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("rebase_pack: {e}")))?;
+    let Some(secret) = state.pack_secret.clone() else {
+        return Err(JsonRpcError::internal(
+            "pack_secret_not_configured: rebase_pack cannot verify a pack without \
+             ESCUREL_PACK_SECRET",
+        ));
+    };
+    if !crate::pack::is_safe_pack_token(&a.manifest.id)
+        || !crate::pack::is_safe_pack_token(&a.manifest.vertical)
+    {
+        return Err(JsonRpcError::internal(
+            "pack_id_invalid: id and vertical must be safe tokens",
+        ));
+    }
+    if a.manifest.version == 0 {
+        return Err(JsonRpcError::internal(
+            "pack_candidate_not_importable: version 0 is the promotion-candidate \
+             sentinel; a rebase target is a published version",
+        ));
+    }
+    let indexer = admin_indexer(state)?.clone();
+    ensure_tenant_matches(&indexer, &a.tenant_id)?;
+
+    let tarball = B64
+        .decode(a.tarball_b64.as_bytes())
+        .map_err(|e| JsonRpcError::invalid_params(format!("tarball_b64 is not base64: {e}")))?;
+    crate::pack::verify_pack(&a.manifest, &tarball, &secret).map_err(JsonRpcError::internal)?;
+
+    let subs = indexer
+        .list_pack_subscriptions()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("rebase_pack subscriptions: {e}")))?;
+    let Some(existing) = subs.iter().find(|s| s.pack_id == a.manifest.id) else {
+        return Err(JsonRpcError::internal(format!(
+            "pack_not_subscribed: `{}` has no subscription on this node — use \
+             import_pack for a first subscription",
+            a.manifest.id
+        )));
+    };
+    if a.manifest.version <= existing.version {
+        return Err(JsonRpcError::internal(format!(
+            "pack_rebase_not_an_upgrade: `{}` is pinned at v{}; a rebase target must \
+             be a later version (same-version refreshes are import_pack's job)",
+            a.manifest.id, existing.version
+        )));
+    }
+    let from_version = existing.version;
+
+    // Validate + stamp the WHOLE incoming version before any write —
+    // the same discipline as import.
+    let entries = crate::pack::unpack_entries(&tarball).map_err(JsonRpcError::internal)?;
+    let layer = format!("base@{}@v{}", a.manifest.id, a.manifest.version);
+    let prefix = format!(
+        "{}{}/",
+        escurel_index::pack::RESERVED_BASE_PREFIX,
+        a.manifest.id
+    );
+    let mut stamped_pages: Vec<(String, String)> = Vec::with_capacity(entries.len());
+    for (rel, content) in &entries {
+        let stamped = crate::pack::stamp_layer(content, &layer).map_err(JsonRpcError::internal)?;
+        stamped_pages.push((format!("{prefix}{rel}"), stamped));
+    }
+    let mut skill_ids_in_pack: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (page_id, stamped) in &stamped_pages {
+        let Ok(parsed) = escurel_md::parse(stamped) else {
+            continue;
+        };
+        if parsed.frontmatter.page_type != PageType::Skill {
+            continue;
+        }
+        let skill_id = parsed
+            .frontmatter
+            .fields
+            .get("id")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if skill_id.is_empty() {
+            continue;
+        }
+        if !skill_ids_in_pack.insert(skill_id.clone()) {
+            return Err(JsonRpcError::internal(format!(
+                "pack_skill_collision: `{}` v{} ships skill `{skill_id}` more than once",
+                a.manifest.id, a.manifest.version
+            )));
+        }
+        if let Some(other) = indexer
+            .skill_page_conflict(&skill_id, page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack conflict check: {e}")))?
+            && !other.starts_with(&prefix)
+        {
+            return Err(JsonRpcError::internal(format!(
+                "pack_skill_collision: `{}` v{} ships skill `{skill_id}` but another \
+                 pack provides it at `{other}`",
+                a.manifest.id, a.manifest.version
+            )));
+        }
+    }
+
+    // Conflict detection (REQ-REBASE-01): for every incoming page whose
+    // OLD base a tenant overlay shadows, a field the upstream changed
+    // AND the overlay overrides is a conflict the operator must see.
+    // "Field" includes the body. Deterministic set intersection — no
+    // merge, no heuristics.
+    let mut issues: Vec<Value> = Vec::new();
+    for (_page_id, stamped) in &stamped_pages {
+        let Ok(new_page) = escurel_md::parse(stamped) else {
+            continue;
+        };
+        if new_page.frontmatter.page_type != PageType::Skill {
+            continue;
+        }
+        let skill_id = new_page
+            .frontmatter
+            .fields
+            .get("id")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        // The shadow, if any: the overlay skill page found BY SLUG —
+        // a shadow can live at any page id, not only the canonical
+        // `markdown/skills/<id>.md` (codex review).
+        let Some(overlay_id) = indexer
+            .overlay_skill_page_id(&skill_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack overlay lookup: {e}")))?
+        else {
+            continue;
+        };
+        let Some(overlay_content) = indexer
+            .page_content(&overlay_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack overlay read: {e}")))?
+        else {
+            continue;
+        };
+        let Ok(overlay) = escurel_md::parse(&overlay_content) else {
+            continue;
+        };
+        // The currently-pinned base page — found BY SLUG within this
+        // pack's namespace, so an upstream file move cannot dodge the
+        // diff (codex review). Absent for skills new in vN+1.
+        let Some(old_base_id) = indexer
+            .pack_base_skill_page_id(&skill_id, &a.manifest.id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack base lookup: {e}")))?
+        else {
+            continue;
+        };
+        let Some(old_content) = indexer
+            .page_content(&old_base_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack base read: {e}")))?
+        else {
+            continue;
+        };
+        let Ok(old_page) = escurel_md::parse(&old_content) else {
+            continue;
+        };
+
+        let old_fm = &old_page.frontmatter.fields;
+        let new_fm = &new_page.frontmatter.fields;
+        let overlay_fm = &overlay.frontmatter.fields;
+        // Keys the upstream changed (added/removed/altered), minus the
+        // importer-stamped `layer`.
+        let mut changed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (k, v) in new_fm {
+            let key = k.as_str().unwrap_or_default().to_owned();
+            if key == "layer" {
+                continue;
+            }
+            if old_fm.get(k) != Some(v) {
+                changed.insert(key);
+            }
+        }
+        for (k, _) in old_fm {
+            let key = k.as_str().unwrap_or_default().to_owned();
+            if key != "layer" && new_fm.get(k).is_none() {
+                changed.insert(key);
+            }
+        }
+        if old_page.body != new_page.body {
+            changed.insert("body".to_owned());
+        }
+        // Keys the overlay overrides relative to the OLD base.
+        for key in changed {
+            let overridden = if key == "body" {
+                overlay.body != old_page.body
+            } else {
+                let k = escurel_md::YamlValue::String(key.clone());
+                overlay_fm.get(&k).is_some() && overlay_fm.get(&k) != old_fm.get(&k)
+            };
+            if overridden {
+                issues.push(json!({
+                    "severity": "error",
+                    "code": "rebase_conflict",
+                    "location": format!("skill {skill_id} · {key}"),
+                    "message": format!(
+                        "the tenant overlay overrides `{key}` of skill `{skill_id}` and \
+                         `{}` v{} also changes it — review the shadow, then re-run with \
+                         acknowledge_conflicts=true",
+                        a.manifest.id, a.manifest.version
+                    ),
+                }));
+            }
+        }
+    }
+    if !issues.is_empty() && !a.acknowledge_conflicts {
+        return Ok(json!({ "ok": false, "issues": issues }));
+    }
+    let conflicts_acknowledged = issues.len() as u32;
+
+    // Apply: land the new version, remove orphans, move the pin LAST.
+    // Crash-recovery note (agy review): conflicts block BEFORE any write,
+    // so human review always happened by this point; a crash inside this
+    // block leaves v{N+1} pages with the old pin — recovery is re-running
+    // the same rebase (page upsert + orphan removal are idempotent), and
+    // the pin never claims a version whose pages didn't fully land.
+    let old_page_ids = indexer
+        .base_page_ids(&a.manifest.id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("rebase_pack orphan scan: {e}")))?;
+    let new_ids: std::collections::HashSet<&str> =
+        stamped_pages.iter().map(|(id, _)| id.as_str()).collect();
+    let mut pages_imported = 0u32;
+    for (page_id, stamped) in &stamped_pages {
+        indexer
+            .update_page(page_id, stamped)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack `{page_id}`: {e}")))?;
+        pages_imported += 1;
+    }
+    let mut pages_removed = 0u32;
+    for old_id in &old_page_ids {
+        if !new_ids.contains(old_id.as_str()) {
+            indexer.remove_page(old_id).await.map_err(|e| {
+                JsonRpcError::internal(format!("rebase_pack remove `{old_id}`: {e}"))
+            })?;
+            pages_removed += 1;
+        }
+    }
+    indexer
+        .refresh_fts()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("rebase_pack refresh_fts: {e}")))?;
+    indexer
+        .record_pack_subscription(&escurel_index::pack::PackSubscription {
+            pack_id: a.manifest.id.clone(),
+            version: a.manifest.version,
+            vertical: a.manifest.vertical.clone(),
+            publisher: a.manifest.publisher.clone(),
+            content_hash: a.manifest.content_hash.clone(),
+            signature: a.manifest.signature.clone(),
+        })
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("rebase_pack subscription: {e}")))?;
+
+    Ok(json!({
+        "ok": true,
+        "issues": [],
+        "pack": a.manifest.id,
+        "from_version": from_version,
+        "to_version": a.manifest.version,
+        "pages_imported": pages_imported,
+        "pages_removed": pages_removed,
+        "conflicts_acknowledged": conflicts_acknowledged,
+    }))
+}
+
 /// Admin: the subscribed packs and their pins (REQ-SUB-01).
 async fn tool_list_packs(state: &AppState) -> Result<Value, JsonRpcError> {
     let indexer = admin_indexer(state)?.clone();
@@ -5359,6 +5669,26 @@ fn tools_list_payload() -> Value {
                 "list_packs",
                 "Admin: the subscribed skill packs and their pinned versions.",
                 json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "rebase_pack",
+                "Admin: the reviewed upgrade of a subscribed pack — the only \
+                 operation that moves a version pin. Shadow-vs-upstream \
+                 conflicts surface as rebase_conflict Issues and block until \
+                 acknowledge_conflicts=true; orphaned base pages are removed.",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id", "manifest", "tarball_b64"],
+                    "properties": {
+                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                        "manifest": { "type": "object", "description": "The signed manifest of the NEW version." },
+                        "tarball_b64": { "type": "string", "description": "The new version's tarball, base64." },
+                        "acknowledge_conflicts": {
+                            "type": "boolean",
+                            "description": "Apply despite rebase_conflict Issues (the human review). Default false."
+                        }
+                    }
+                }),
             ),
             tool_entry(
                 "submit_promotion",
