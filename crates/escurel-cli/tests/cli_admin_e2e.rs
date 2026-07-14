@@ -334,6 +334,25 @@ async fn admin_pack_export_writes_tarball_and_manifest() {
     assert_eq!(packs[0]["pack_id"], "crm-core");
     assert_eq!(packs[0]["version"], 1);
 
+    // Unsubscribe drops pages + pin (agy review: exercise the actual
+    // CLI command, not only the parity mapping).
+    let un = spoke_admin(v(&[
+        "admin",
+        "pack",
+        "unsubscribe",
+        "--tenant",
+        TENANT,
+        "--id",
+        "crm-core",
+    ]))
+    .await
+    .unwrap();
+    assert_eq!(json(&un)["pages_removed"], 1, "{un:?}");
+    let listed = spoke_admin(v(&["admin", "pack", "list", "--tenant", TENANT]))
+        .await
+        .unwrap();
+    assert!(json(&listed)["packs"].as_array().unwrap().is_empty());
+
     spoke.shutdown().await;
     h.process.shutdown().await;
 }
