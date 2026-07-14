@@ -262,6 +262,10 @@ class _StubClient implements EscurelClient {
       throw notYetImplemented('list_credentials');
 
   @override
+  Future<List<PackSubscriptionInfo>> listPacks() async =>
+      throw notYetImplemented('list_packs');
+
+  @override
   Future<void> deleteCredential(String name) async =>
       throw notYetImplemented('delete_credential');
 

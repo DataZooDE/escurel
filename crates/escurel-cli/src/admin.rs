@@ -68,6 +68,28 @@ pub enum AdminCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum PackCmd {
+    /// Import a signed skill pack (tarball + manifest files) as this
+    /// tenant's pinned, read-only base layer. Works from an offline
+    /// tarball — the air-gapped transport is the same call.
+    Import {
+        #[arg(long)]
+        tenant: String,
+        /// Input pack tarball file path.
+        #[arg(long = "in")]
+        input: String,
+        /// Path to `pack.manifest.json` (defaults to
+        /// `<in>.manifest.json`).
+        #[arg(long)]
+        manifest: Option<String>,
+        /// Explicitly permit subscribing across verticals.
+        #[arg(long)]
+        allow_vertical_mismatch: bool,
+    },
+    /// The subscribed skill packs and their pinned versions.
+    List {
+        #[arg(long)]
+        tenant: String,
+    },
     /// Build a versioned, HMAC-signed skill pack from a tenant's
     /// corpus; writes the tarball and its manifest to files.
     Export {
@@ -248,6 +270,28 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
                 "ops_compacted": p.ops_compacted,
                 "bytes_reclaimed": p.bytes_reclaimed,
             }))
+        }
+        AdminCmd::Pack(PackCmd::Import {
+            tenant,
+            input,
+            manifest,
+            allow_vertical_mismatch,
+        }) => {
+            let manifest_path = manifest.unwrap_or_else(|| format!("{input}.manifest.json"));
+            let manifest: escurel_client::PackManifest = serde_json::from_slice(
+                &std::fs::read(&manifest_path)
+                    .with_context(|| format!("reading manifest {manifest_path}"))?,
+            )
+            .with_context(|| format!("parsing manifest {manifest_path}"))?;
+            let bytes = std::fs::read(&input).with_context(|| format!("reading pack {input}"))?;
+            let r = client
+                .import_pack(&tenant, &manifest, bytes, allow_vertical_mismatch)
+                .await?;
+            Ok(r)
+        }
+        AdminCmd::Pack(PackCmd::List { tenant }) => {
+            let _ = tenant; // single-tenant gateway; kept for symmetry
+            client.list_packs().await.map_err(Into::into)
         }
         AdminCmd::Pack(PackCmd::Export {
             tenant,

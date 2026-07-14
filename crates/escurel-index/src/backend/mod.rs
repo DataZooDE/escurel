@@ -533,6 +533,11 @@ impl Indexer {
     /// `layer_read_only` `Issue`; `None` when the write is allowed.
     ///
     /// Rejected, fail-closed:
+    /// * the page id sits under the reserved
+    ///   [`crate::pack::RESERVED_BASE_PREFIX`] — that namespace belongs to
+    ///   pack import alone, even for page ids no import has landed yet.
+    ///   The check is static (no DB read), so a racing import can neither
+    ///   be squatted nor bypassed between guard and write.
     /// * the STORED page carries `layer: base@…` — it was imported from a
     ///   subscribed pack and is read-only at this node. Keying off the
     ///   stored layer (not the draft's) means stripping the `layer:` field
@@ -551,6 +556,13 @@ impl Indexer {
         page_id: &str,
         content: &str,
     ) -> Result<Option<String>, IndexerError> {
+        if page_id.starts_with(crate::pack::RESERVED_BASE_PREFIX) {
+            return Ok(Some(format!(
+                "page `{page_id}` is under the reserved `{}` namespace — pack-managed, \
+                 read-only at this node; author an overlay page to specialise it",
+                crate::pack::RESERVED_BASE_PREFIX
+            )));
+        }
         if let Some(layer) = self
             .page_layer(page_id)
             .await?

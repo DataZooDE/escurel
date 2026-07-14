@@ -278,6 +278,60 @@ async fn admin_pack_export_writes_tarball_and_manifest() {
             .starts_with("sha256="),
         "{manifest}"
     );
+
+    // Offline-tarball import (the air-gapped transport): the two files
+    // written above are all a SPOKE needs — a separate gateway with its
+    // own empty corpus (importing back into the exporting tenant would
+    // correctly refuse with pack_skill_collision: the tenant's own
+    // `customer` skill page already declares the id).
+    let spoke = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+        config_overrides: ConfigOverrides {
+            pack_secret: Some("cli-pack-secret".to_owned()),
+            ..Default::default()
+        },
+    })
+    .await;
+    let spoke_addr = spoke.base_url().strip_prefix("http://").unwrap().to_owned();
+    let spoke_token = spoke.mint_token(TENANT, Role::Admin);
+    let spoke_admin = |args: Vec<String>| {
+        let addr = spoke_addr.clone();
+        let token = spoke_token.clone();
+        tokio::task::spawn_blocking(move || {
+            Command::cargo_bin("escurel")
+                .unwrap()
+                .env("ESCUREL_SERVER", format!("http://{addr}"))
+                .env("ESCUREL_TOKEN", token)
+                .args(&args)
+                .assert()
+                .success()
+                .get_output()
+                .clone()
+        })
+    };
+    // The manifest path defaults to `<in>.manifest.json`, so only
+    // `--in` is passed.
+    let imp = spoke_admin(v(&[
+        "admin", "pack", "import", "--tenant", TENANT, "--in", &out_str,
+    ]))
+    .await
+    .unwrap();
+    let r = json(&imp);
+    assert_eq!(r["pack"], "crm-core");
+    assert_eq!(r["pages_imported"], 1);
+    assert_eq!(r["layer"], "base@crm-core@v1");
+
+    // And the pin is visible on the spoke.
+    let listed = spoke_admin(v(&["admin", "pack", "list", "--tenant", TENANT]))
+        .await
+        .unwrap();
+    let packs = json(&listed)["packs"].as_array().unwrap().clone();
+    assert_eq!(packs.len(), 1, "{listed:?}");
+    assert_eq!(packs[0]["pack_id"], "crm-core");
+    assert_eq!(packs[0]["version"], 1);
+
+    spoke.shutdown().await;
     h.process.shutdown().await;
 }
 

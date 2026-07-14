@@ -32,7 +32,7 @@ impl Migrator {
     /// artifact manifest and a DuckDB→DuckDB transfer refuses an artifact
     /// whose `SCHEMA_VERSION` differs from the live tenant's (the row shapes
     /// wouldn't line up).
-    pub const SCHEMA_VERSION: u32 = 6;
+    pub const SCHEMA_VERSION: u32 = 7;
 
     /// Load the per-connection extension/session state Escurel relies on:
     /// auto-install/-load, `INSTALL`+`LOAD` of `vss`+`fts`, and the
@@ -78,6 +78,16 @@ impl Migrator {
     /// drop it.
     pub fn ensure_external_endpoints(conn: &Connection) -> Result<(), MigrationError> {
         conn.execute_batch(STAGE_10_EXTERNAL_ENDPOINTS)?;
+        Ok(())
+    }
+
+    /// Ensure the `pack_subscriptions` table (skill-pack pins, REQ-SUB-01)
+    /// exists. Idempotent (`CREATE TABLE IF NOT EXISTS`) and run on EVERY
+    /// connection like [`Migrator::ensure_external_credentials`]. A SEPARATE
+    /// canonical input (not derivable from `pages/`), so `rebuild` must NOT
+    /// drop it.
+    pub fn ensure_pack_subscriptions(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_11_PACK_SUBSCRIPTIONS)?;
         Ok(())
     }
 
@@ -128,6 +138,9 @@ impl Migrator {
         // Remote-backend endpoint registry (openapi/mcp). Idempotent + also
         // run on every reopen via `ensure_external_endpoints`.
         conn.execute_batch(STAGE_10_EXTERNAL_ENDPOINTS)?;
+        // Skill-pack subscription pins. Idempotent + also run on every
+        // reopen via `ensure_pack_subscriptions`.
+        conn.execute_batch(STAGE_11_PACK_SUBSCRIPTIONS)?;
         Ok(())
     }
 }
@@ -142,6 +155,7 @@ const STAGE_7_GROUP_MEMBERS: &str = include_str!("../sql/0005_group_members.sql"
 const STAGE_8_EXTERNAL_CREDENTIALS: &str = include_str!("../sql/0006_external_credentials.sql");
 const STAGE_9_BLOCK_CONTEXT: &str = include_str!("../sql/0007_block_context.sql");
 const STAGE_10_EXTERNAL_ENDPOINTS: &str = include_str!("../sql/0008_external_endpoints.sql");
+const STAGE_11_PACK_SUBSCRIPTIONS: &str = include_str!("../sql/0009_pack_subscriptions.sql");
 
 #[cfg(test)]
 mod tests {

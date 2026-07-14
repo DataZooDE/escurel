@@ -1054,6 +1054,14 @@ async fn dispatch_tools_call(
             require_admin(role)?;
             return tool_export_pack(state, params.arguments).await;
         }
+        "import_pack" => {
+            require_admin(role)?;
+            return tool_import_pack(state, params.arguments).await;
+        }
+        "list_packs" => {
+            require_admin(role)?;
+            return tool_list_packs(state).await;
+        }
         "tenant_import" => {
             require_admin(role)?;
             return tool_tenant_import(state, params.arguments).await;
@@ -3684,6 +3692,14 @@ async fn tool_export_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
             "export_pack: id, vertical, publisher and at least one skill are required",
         ));
     }
+    // Same token rules the importer enforces (defence in depth): the id
+    // becomes the spoke's landing prefix + layer stamp.
+    if !crate::pack::is_safe_pack_token(&a.id) || !crate::pack::is_safe_pack_token(&a.vertical) {
+        return Err(JsonRpcError::invalid_params(
+            "export_pack: id and vertical must be lowercase alphanumerics plus . _ - \
+             (max 64 chars)",
+        ));
+    }
     let indexer = admin_indexer(state)?.clone();
     // A wrong `tenant_id` must not silently export this gateway's
     // (only) tenant (mirrors `rebuild`).
@@ -3730,6 +3746,216 @@ async fn tool_export_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
         "manifest": manifest,
         "tarball_b64": B64.encode(&tarball),
         "bytes": bytes,
+    }))
+}
+
+#[derive(Deserialize)]
+struct ImportPackArgs {
+    tenant_id: String,
+    manifest: escurel_types::PackManifest,
+    tarball_b64: String,
+    /// Loud escape hatch for REQ-SUB-03: a cross-vertical subscription
+    /// is refused unless the operator explicitly overrides.
+    #[serde(default)]
+    allow_vertical_mismatch: bool,
+}
+
+/// Admin: import a signed skill pack as this tenant's pinned, read-only
+/// **base layer** (REQ-SUB-01/02/03) — the L3→L2 coupler. Fail-closed:
+/// signature + content hash verify before anything is unpacked
+/// (`pack_signature_invalid`); unsafe entry paths refuse
+/// (`pack_malformed`); a version change on a subscribed pack refuses
+/// (`pack_version_pinned` — upgrades are an explicit future `rebase`,
+/// never silent); an unrelated vertical refuses (`vertical_mismatch`)
+/// unless explicitly overridden. Transport-neutral by construction: the
+/// caller supplies the bytes, so an air-gapped tarball import and a
+/// live pull are the same call (INV-AIRGAP).
+async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: ImportPackArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("import_pack: {e}")))?;
+    let Some(secret) = state.pack_secret.clone() else {
+        return Err(JsonRpcError::internal(
+            "pack_secret_not_configured: import_pack cannot verify a pack without \
+             ESCUREL_PACK_SECRET",
+        ));
+    };
+    // Identity tokens are interpolated into the landing page-id prefix
+    // and the stamped `layer:` line — unsafe characters would smuggle
+    // path segments or YAML keys, signed or not (agy review).
+    if !crate::pack::is_safe_pack_token(&a.manifest.id) {
+        return Err(JsonRpcError::internal(format!(
+            "pack_id_invalid: `{}` is not a safe pack id (lowercase alphanumerics \
+             plus . _ -, max 64 chars)",
+            a.manifest.id.escape_default()
+        )));
+    }
+    if !crate::pack::is_safe_pack_token(&a.manifest.vertical) {
+        return Err(JsonRpcError::internal(format!(
+            "pack_id_invalid: vertical `{}` is not a safe token",
+            a.manifest.vertical.escape_default()
+        )));
+    }
+    let indexer = admin_indexer(state)?.clone();
+    ensure_tenant_matches(&indexer, &a.tenant_id)?;
+
+    // 1. Trust before touch (REQ-PACK-02): authenticate the manifest,
+    //    then bind the bytes to it — nothing is unpacked before this.
+    let tarball = B64
+        .decode(a.tarball_b64.as_bytes())
+        .map_err(|e| JsonRpcError::invalid_params(format!("tarball_b64 is not base64: {e}")))?;
+    crate::pack::verify_pack(&a.manifest, &tarball, &secret).map_err(JsonRpcError::internal)?;
+
+    // 2. Subscription pins. Same pack id: only the pinned version may
+    //    re-import (idempotent refresh); anything else is an explicit
+    //    future rebase. New pack id: the vertical guard applies.
+    let subs = indexer
+        .list_pack_subscriptions()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("import_pack subscriptions: {e}")))?;
+    if let Some(existing) = subs.iter().find(|s| s.pack_id == a.manifest.id) {
+        if existing.version != a.manifest.version {
+            return Err(JsonRpcError::internal(format!(
+                "pack_version_pinned: pack `{}` is pinned at v{}; importing v{} requires \
+                 an explicit rebase (upgrades never happen silently)",
+                a.manifest.id, existing.version, a.manifest.version
+            )));
+        }
+        // Same version, different bytes: a re-published v{N} would let a
+        // hub mutate a pinned base without the version moving (codex
+        // review). Idempotent re-import means the SAME content.
+        if existing.content_hash != a.manifest.content_hash {
+            return Err(JsonRpcError::internal(format!(
+                "pack_content_mismatch: pack `{}`@v{} is pinned at {} but this bundle \
+                 hashes to {}; same-version re-publishes are refused — bump the pack \
+                 version instead",
+                a.manifest.id, a.manifest.version, existing.content_hash, a.manifest.content_hash
+            )));
+        }
+    } else if let Some(other) = subs.iter().find(|s| s.vertical != a.manifest.vertical)
+        && !a.allow_vertical_mismatch
+    {
+        return Err(JsonRpcError::internal(format!(
+            "vertical_mismatch: this node is subscribed to vertical `{}` (pack `{}`) \
+             but `{}` declares vertical `{}`; cross-vertical mixing resets the \
+             convergence ramp — pass allow_vertical_mismatch=true to override",
+            other.vertical, other.pack_id, a.manifest.id, a.manifest.vertical
+        )));
+    }
+
+    // 3. Unpack, then validate + stamp EVERY entry before the first
+    //    write (codex review / agy MUST-FIX 5): a malformed page means
+    //    zero landed pages, never a half-imported base layer. Path
+    //    safety (zip-slip) is enforced inside `unpack_entries`.
+    let entries = crate::pack::unpack_entries(&tarball).map_err(JsonRpcError::internal)?;
+    let layer = format!("base@{}@v{}", a.manifest.id, a.manifest.version);
+    let prefix = format!(
+        "{}{}/",
+        escurel_index::pack::RESERVED_BASE_PREFIX,
+        a.manifest.id
+    );
+    let mut stamped_pages: Vec<(String, String)> = Vec::with_capacity(entries.len());
+    for (rel, content) in &entries {
+        let stamped = crate::pack::stamp_layer(content, &layer).map_err(JsonRpcError::internal)?;
+        stamped_pages.push((format!("{prefix}{rel}"), stamped));
+    }
+
+    // A skill page whose id another indexed skill page already declares
+    // would make slug resolution non-deterministic (silent shadowing —
+    // agy review). Checked BEFORE the first write; re-imports of the
+    // same pack land on the same page ids and pass.
+    for (page_id, stamped) in &stamped_pages {
+        let Ok(parsed) = escurel_md::parse(stamped) else {
+            continue; // stamp_layer already parsed; defensive only
+        };
+        if parsed.frontmatter.page_type != PageType::Skill {
+            continue;
+        }
+        let skill_id = parsed
+            .frontmatter
+            .fields
+            .get("id")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if skill_id.is_empty() {
+            continue;
+        }
+        if let Some(existing) = indexer
+            .skill_page_conflict(&skill_id, page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("import_pack conflict check: {e}")))?
+        {
+            return Err(JsonRpcError::internal(format!(
+                "pack_skill_collision: pack `{}` ships skill `{skill_id}` but this \
+                 node already indexes it at `{existing}`; two pages declaring one \
+                 skill id resolve non-deterministically — unsubscribe the other \
+                 source first (explicit shadowing is a future feature)",
+                a.manifest.id
+            )));
+        }
+    }
+
+    // All validation done — land the pages (lane store + index in one
+    // step; upsert ⇒ idempotent). A mid-loop failure here is an I/O
+    // catastrophe (disk full), not a content problem; the pin below is
+    // still only written after every page landed.
+    let mut pages_imported = 0u32;
+    for (page_id, stamped) in &stamped_pages {
+        indexer
+            .update_page(page_id, stamped)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("import_pack `{page_id}`: {e}")))?;
+        pages_imported += 1;
+    }
+    // FTS has no incremental refresh; rebuild it over the now-landed
+    // blocks so the imported pages are searchable (same discipline as
+    // `seed_from_dir`).
+    indexer
+        .refresh_fts()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("import_pack refresh_fts: {e}")))?;
+
+    // 4. Record the pin LAST — a failed import must not leave a
+    //    subscription row claiming pages that never landed.
+    indexer
+        .record_pack_subscription(&escurel_index::pack::PackSubscription {
+            pack_id: a.manifest.id.clone(),
+            version: a.manifest.version,
+            vertical: a.manifest.vertical.clone(),
+            publisher: a.manifest.publisher.clone(),
+            content_hash: a.manifest.content_hash.clone(),
+            signature: a.manifest.signature.clone(),
+        })
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("import_pack subscription: {e}")))?;
+
+    Ok(json!({
+        "pack": a.manifest.id,
+        "version": a.manifest.version,
+        "vertical": a.manifest.vertical,
+        "pages_imported": pages_imported,
+        "layer": layer,
+    }))
+}
+
+/// Admin: the subscribed packs and their pins (REQ-SUB-01).
+async fn tool_list_packs(state: &AppState) -> Result<Value, JsonRpcError> {
+    let indexer = admin_indexer(state)?.clone();
+    let subs = indexer
+        .list_pack_subscriptions()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_packs: {e}")))?;
+    Ok(json!({
+        "packs": subs
+            .into_iter()
+            .map(|s| json!({
+                "pack_id": s.pack_id,
+                "version": s.version,
+                "vertical": s.vertical,
+                "publisher": s.publisher,
+                "content_hash": s.content_hash,
+            }))
+            .collect::<Vec<_>>(),
     }))
 }
 
@@ -3968,8 +4194,23 @@ async fn tool_open_session(
 
     // Base-layer guard (REQ-LAYER-02): live co-authoring must not bypass
     // the `update_page` read-only guard — an open session's `apply_op`
-    // stream would edit a base page byte by byte. Session-only servers
-    // (`indexer = None`) have no page corpus, so no base pages to guard.
+    // stream would edit a base page byte by byte. The reserved-prefix
+    // half is static (no indexer needed) and race-free.
+    if a.page_id
+        .starts_with(escurel_index::pack::RESERVED_BASE_PREFIX)
+    {
+        return Err(JsonRpcError {
+            code: -32000,
+            message: format!(
+                "layer_read_only: page `{}` is under the reserved `{}` namespace — \
+                 pack-managed, read-only at this node",
+                a.page_id,
+                escurel_index::pack::RESERVED_BASE_PREFIX
+            ),
+        });
+    }
+    // Session-only servers (`indexer = None`) have no page corpus, so no
+    // stored base pages to guard beyond the prefix above.
     if let Some(ix) = indexer {
         let layer = ix
             .page_layer(&a.page_id)
@@ -4797,6 +5038,32 @@ fn tools_list_payload() -> Value {
                         }
                     }
                 }),
+            ),
+            tool_entry(
+                "import_pack",
+                "Admin: import a signed skill pack as this tenant's pinned, \
+                 read-only base layer. Verifies signature + content hash \
+                 fail-closed before unpacking; refuses silent version \
+                 changes (pack_version_pinned) and cross-vertical mixing \
+                 (vertical_mismatch, overridable).",
+                json!({
+                    "type": "object",
+                    "required": ["tenant_id", "manifest", "tarball_b64"],
+                    "properties": {
+                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                        "manifest": { "type": "object", "description": "The signed pack.manifest.json object." },
+                        "tarball_b64": { "type": "string", "description": "The pack tarball, base64." },
+                        "allow_vertical_mismatch": {
+                            "type": "boolean",
+                            "description": "Explicitly permit subscribing across verticals. Default false."
+                        }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_packs",
+                "Admin: the subscribed skill packs and their pinned versions.",
+                json!({ "type": "object", "properties": {} }),
             ),
             tool_entry(
                 "tenant_import",

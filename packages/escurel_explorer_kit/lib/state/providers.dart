@@ -159,6 +159,12 @@ final credentialsProvider = FutureProvider<List<CredentialInfo>>((ref) {
   return ref.watch(escurelClientProvider).listCredentials();
 });
 
+/// The subscribed skill packs and their pinned versions (admin,
+/// REQ-SUB-01) — the provenance behind the read-only base layer.
+final packsProvider = FutureProvider<List<PackSubscriptionInfo>>((ref) {
+  return ref.watch(escurelClientProvider).listPacks();
+});
+
 /// Instances of a given skill, keyed by skill id.
 final instancesProvider = FutureProvider.family<List<InstanceSummary>, String>((
   ref,
