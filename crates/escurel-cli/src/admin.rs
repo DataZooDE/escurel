@@ -90,6 +90,30 @@ pub enum PackCmd {
         #[arg(long)]
         tenant: String,
     },
+    /// Propose a scrubbed pack candidate from this node's promotable
+    /// skills (the L2→L3 harvest); writes the candidate tarball + its
+    /// manifest to files for hub review. Default-deny + fail-closed;
+    /// every submission is audit-evented server-side.
+    SubmitPromotion {
+        #[arg(long)]
+        tenant: String,
+        /// Candidate pack identity for hub review.
+        #[arg(long)]
+        candidate_id: String,
+        /// The vertical the candidate belongs to.
+        #[arg(long)]
+        vertical: String,
+        /// Promotable skill ids to harvest (repeatable).
+        #[arg(long = "skill", required = true)]
+        skills: Vec<String>,
+        /// Output file path for the candidate tarball.
+        #[arg(long)]
+        out: String,
+        /// Output file path for the manifest (defaults to
+        /// `<out>.manifest.json`).
+        #[arg(long)]
+        manifest_out: Option<String>,
+    },
     /// Build a versioned, HMAC-signed skill pack from a tenant's
     /// corpus; writes the tarball and its manifest to files.
     Export {
@@ -292,6 +316,30 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
         AdminCmd::Pack(PackCmd::List { tenant }) => {
             let _ = tenant; // single-tenant gateway; kept for symmetry
             client.list_packs().await.map_err(Into::into)
+        }
+        AdminCmd::Pack(PackCmd::SubmitPromotion {
+            tenant,
+            candidate_id,
+            vertical,
+            skills,
+            out,
+            manifest_out,
+        }) => {
+            let (manifest, bytes, event_id) = client
+                .submit_promotion(&tenant, &candidate_id, &vertical, &skills)
+                .await?;
+            let manifest_path = manifest_out.unwrap_or_else(|| format!("{out}.manifest.json"));
+            let n = bytes.len();
+            std::fs::write(&out, bytes).with_context(|| format!("writing candidate to {out}"))?;
+            std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
+                .with_context(|| format!("writing manifest to {manifest_path}"))?;
+            Ok(json!({
+                "bytes_exported": n,
+                "path": out,
+                "manifest_path": manifest_path,
+                "event_id": event_id,
+                "candidate": manifest.id,
+            }))
         }
         AdminCmd::Pack(PackCmd::Export {
             tenant,

@@ -284,6 +284,47 @@ impl AdminClient {
         Ok((manifest, bytes))
     }
 
+    /// Propose a scrubbed pack candidate from this node's promotable
+    /// skills (the L2→L3 harvest, REQ-PROMO-01..04). Returns the signed
+    /// candidate manifest, the decoded tarball bytes, and the audit
+    /// event id the server recorded.
+    pub async fn submit_promotion(
+        &self,
+        tenant_id: &str,
+        candidate_id: &str,
+        vertical: &str,
+        skills: &[String],
+    ) -> Result<(escurel_types::PackManifest, Vec<u8>, String), Error> {
+        let result = self
+            .transport
+            .call(
+                "submit_promotion",
+                json!({
+                    "tenant_id": tenant_id,
+                    "candidate_id": candidate_id,
+                    "vertical": vertical,
+                    "skills": skills,
+                }),
+            )
+            .await?;
+        let manifest: escurel_types::PackManifest =
+            serde_json::from_value(result.get("manifest").cloned().unwrap_or_default())
+                .map_err(|e| Error::Decode(format!("submit_promotion: manifest: {e}")))?;
+        let b64 = result
+            .get("tarball_b64")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Decode("submit_promotion: missing `tarball_b64`".to_owned()))?;
+        let bytes = B64
+            .decode(b64.as_bytes())
+            .map_err(|e| Error::Decode(format!("submit_promotion: tarball_b64: {e}")))?;
+        let event_id = result
+            .get("event_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        Ok((manifest, bytes, event_id))
+    }
+
     /// Import a signed skill pack as this tenant's pinned, read-only
     /// base layer (REQ-SUB-01/02). Returns the server's import summary
     /// (`{pack, version, vertical, pages_imported, layer}`).

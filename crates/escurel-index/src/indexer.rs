@@ -186,6 +186,8 @@ pub enum IndexerError {
     Transfer(String),
     #[error("pack skill `{skill}` has no skill page in this tenant")]
     PackSkillMissing { skill: String },
+    #[error("promotion_not_eligible: {reason}")]
+    PromotionNotEligible { reason: String },
 }
 
 /// What a DuckDB→DuckDB merge does on a `page_id` already in the target.

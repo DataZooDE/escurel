@@ -21,6 +21,7 @@ acceptance gates that apply.
 | [0005](0005-page-layer-model.md) | The page `layer` model (pinned base vs editable overlay) | Accepted |
 | [0006](0006-skill-packs.md) | Skill packs: the signed unit of knowledge distribution | Accepted |
 | [0007](0007-pack-subscribe-import.md) | Pack subscribe/import: the pinned base layer at the spoke | Accepted |
+| [0008](0008-promotion-scrub-gate.md) | The promotion + scrub gate (the L2→L3 harvest) | Accepted |
 
 New ADRs are numbered sequentially (`0002-…`, `0003-…`). An ADR
 is never edited after acceptance except to update its **Status**
