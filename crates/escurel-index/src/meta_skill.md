@@ -21,7 +21,10 @@ Two valid policies — pick whichever fits the task:
 
 - **Catalogue-first.** Call `list_skills`. The result is the full
   Tier 1 catalogue of `(id, description)` for every skill in this
-  tenant. Match your question against the descriptions; descend
+  tenant — each row also carries its `layer` (`overlay` or a
+  `base@<pack>@v<N>` pack pin) and, when a tenant overlay
+  specialises a pack skill, a `shadows` pin (see `## Layers &
+  packs`). Match your question against the descriptions; descend
   to instances via `list_instances(<skill>)`. ~1 call per
   cold-start question.
 
@@ -127,6 +130,18 @@ the hood:
   when the MCP transport does not support op streaming, or
   when you're authoring a whole new page from scratch.
 
+Both modes are layer-gated. A page whose frontmatter carries
+`layer: base@<pack>@v<N>` — every page under `markdown/base/` —
+was imported from a subscribed skill pack and is **read-only**
+at this node: `update_page` returns `{ok: false, issues:
+[{code: 'layer_read_only', ...}]}` and `open_session` refuses
+with an error prefixed `layer_read_only:`. Do not retry, and do
+not strip the `layer:` field — the guard keys off the stored
+page. To specialise a base skill, author a separate *overlay*
+page declaring the same skill id (curator-gated: a non-curator
+write returns `shadow_requires_curator`). See `## Layers &
+packs`.
+
 Before either, call `validate(<content>)` to see what the
 indexer would say without committing. All three (`validate`,
 `apply_op`, `update_page`) return the same issue shape:
@@ -149,7 +164,7 @@ wikilink — the catalogue is itself a `note` instance).
 | `resolve` | `[[wikilink]]` → `(page_id, skill, exists)` |
 | `expand` | page id → body + blocks + wikilinks_out |
 | `neighbours` | graph traversal, typed-filterable |
-| `list_skills` | the Tier 1 catalogue |
+| `list_skills` | the Tier 1 catalogue; each row carries `layer` (`overlay` \| `base@<pack>@v<N>`) and, for a shadowing overlay, a `shadows` pin |
 | `list_instances` | enumerate instances of a skill, optional frontmatter filter, optional ordering (`order_by`) — typical event-log call is `list_instances('meeting', filter={at: '>= 2026-04-01'}, order_by='at desc')` |
 | `run_stored_query` | execute a `[[query::*]]` instance with typed parameters |
 | `validate` | dry-run the indexer's checks on a draft |
@@ -195,3 +210,33 @@ make it land on the right passage instead of a near-miss.
   wikilink. `mentions: [Acme]` in frontmatter is an unvalidated
   freeform string; `[[customer::acme-corp]]` is a validated
   citation.
+
+## Layers & packs
+
+Some pages in this tenant may be imported from a subscribed
+**skill pack**: they carry `layer: base@<pack>@v<N>` in
+frontmatter, live under `markdown/base/`, and are **read-only**
+at this node (see `## Writing`). Every other page is an
+*overlay* — tenant-authored and editable; a page with no
+`layer:` field is an overlay page.
+
+- `list_skills` reports each skill's `layer`, so one call tells
+  the stable, imported substrate apart from editable pages.
+- A tenant overlay skill page may **shadow** a base skill by
+  declaring the same skill id. `resolve` prefers the overlay;
+  `list_skills` shows ONE entry for the id, carrying a
+  `shadows: base@<pack>@v<N>` pin; `expand` of the shadowing
+  overlay carries a `shadow` object — `{base_page_id, pack,
+  base: {...the base page's frontmatter...}}` — so the pack's
+  original values stay visible. Read `shadow.base` when you
+  need to know what the pack originally said; `expand` of the
+  base page itself still returns its pristine content.
+- `promotable: true` on a skill page is a **curator-set**
+  marker (it makes the page eligible for promotion back to the
+  publishing hub). Never set or copy it in a draft — a
+  non-curator write carrying it is rejected
+  `promotable_requires_curator`.
+- Pack management (import, upgrade, unsubscribe, promotion) is
+  an **operator concern** behind admin-gated tools. You read
+  base pages with the ordinary primitives; you never manage
+  packs.

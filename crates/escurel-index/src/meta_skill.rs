@@ -133,6 +133,39 @@ mod tests {
     }
 
     #[test]
+    fn canonical_markdown_carries_layers_and_packs_guidance() {
+        let sections = section_headers(META_SKILL_MD);
+        // The layers/packs section is appended AFTER the anti-patterns
+        // (append-only extension of the protected baseline).
+        let anti = sections
+            .iter()
+            .position(|s| s == "## Anti-patterns")
+            .expect("anti-patterns present");
+        let layers = sections
+            .iter()
+            .position(|s| s == "## Layers & packs")
+            .expect("layers-and-packs section present");
+        assert!(
+            anti < layers,
+            "## Layers & packs must sit after the anti-patterns; got {sections:?}"
+        );
+        // Key guidance tokens for consuming agents.
+        for token in [
+            "layer_read_only",
+            "base@<pack>@v<N>",
+            "markdown/base/",
+            "shadows",
+            "shadow_requires_curator",
+            "promotable_requires_curator",
+        ] {
+            assert!(
+                META_SKILL_MD.contains(token),
+                "layers/packs guidance must mention {token:?}"
+            );
+        }
+    }
+
+    #[test]
     fn canonical_markdown_declares_the_escurel_skill() {
         let parsed = parse(META_SKILL_MD).expect("meta-skill parses");
         assert_eq!(parsed.frontmatter.page_type, PageType::Skill);
