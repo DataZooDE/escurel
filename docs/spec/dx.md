@@ -250,6 +250,8 @@ What it does **not** guarantee:
 - The shape of `ConfigOverrides` (it expands as new server knobs land — additive only).
 - Internal types: `Indexer`, `LaneStore`, `OidcVerifier`. Tests that reach for those import `escurel-server` directly and accept the churn.
 
+One override worth naming: `ConfigOverrides.pack_secret` arms the skill-pack surface (the pack tools refuse without a signing secret, `pack_secret_not_configured`). The recipe for federation tests is two `EscurelProcess` gateways sharing the secret — a hub exports over `/mcp`, a spoke imports the same bytes — as exercised by the pack acceptance tests (`crates/escurel-server/tests/pack_export.rs`, `pack_import.rs`, `promotion_gate.rs`).
+
 ## Implementation status
 
 **Delivered.** All three pieces ship in the workspace:
