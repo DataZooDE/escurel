@@ -71,7 +71,9 @@ class _GatedUnsubscribeClient implements EscurelClient {
 }
 
 Future<void> _pump(WidgetTester tester, EscurelClient client) async {
-  tester.view.physicalSize = const Size(1200, 1600);
+  // Tall enough that every card (incl. the last, Import pack) stays
+  // on-stage — off-screen buttons make `tester.tap` silently miss.
+  tester.view.physicalSize = const Size(1200, 2400);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -85,7 +87,7 @@ Future<void> _pump(WidgetTester tester, EscurelClient client) async {
 }
 
 void main() {
-  testWidgets('renders the six trigger cards', (tester) async {
+  testWidgets('renders the seven trigger cards', (tester) async {
     await _pump(tester, _client());
     expect(find.bySemanticsLabel('backend-admin-panel'), findsOneWidget);
     expect(find.bySemanticsLabel('cred-register-button'), findsOneWidget);
@@ -94,6 +96,88 @@ void main() {
     expect(find.bySemanticsLabel('ingest-submit'), findsOneWidget);
     expect(find.bySemanticsLabel('list-packs-button'), findsOneWidget);
     expect(find.bySemanticsLabel('pack-import-submit'), findsOneWidget);
+    expect(find.bySemanticsLabel('endpoint-register-button'), findsOneWidget);
+    expect(find.bySemanticsLabel('validate-endpoints-button'), findsOneWidget);
+  });
+
+  testWidgets('registering a remote endpoint surfaces it in the list '
+      'and never echoes the secret', (tester) async {
+    final client = _client();
+    await _pump(tester, client);
+    // Empty registry → honest empty-state.
+    expect(find.textContaining('no endpoints registered'), findsOneWidget);
+
+    await tester.enterText(
+      find.bySemanticsLabel('endpoint-name-field'),
+      'yahoo_finance',
+    );
+    await tester.enterText(
+      find.bySemanticsLabel('endpoint-url-field'),
+      'https://query1.finance.yahoo.com',
+    );
+    await tester.enterText(
+      find.bySemanticsLabel('endpoint-secret-field'),
+      'tok-3nt',
+    );
+    await tester.tap(find.bySemanticsLabel('endpoint-register-button'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('endpoints-list'), findsOneWidget);
+    expect(
+      find.bySemanticsLabel('endpoint-item:yahoo_finance'),
+      findsOneWidget,
+    );
+    // Kind + URL are shown; the secret value never comes back.
+    expect(
+      find.textContaining('https://query1.finance.yahoo.com'),
+      findsWidgets,
+    );
+    expect(find.text('tok-3nt'), findsNothing);
+    // The client really holds the registration (a non-empty secret
+    // registers bearer auth server-side).
+    final eps = await client.listEndpoints();
+    expect(eps.single.name, 'yahoo_finance');
+    expect(eps.single.kind, 'openapi');
+    expect(eps.single.authScheme, 'bearer');
+  });
+
+  testWidgets('validating endpoints shows per-endpoint reachability', (
+    tester,
+  ) async {
+    final client = _client();
+    await client.registerEndpoint(
+      name: 'upstream_kb',
+      kind: 'mcp',
+      baseUrl: 'http://127.0.0.1:9999/mcp',
+    );
+    await _pump(tester, client);
+    expect(find.bySemanticsLabel('endpoint-item:upstream_kb'), findsOneWidget);
+
+    await tester.tap(find.bySemanticsLabel('validate-endpoints-button'));
+    await tester.pumpAndSettle();
+    // The fixture registry probes every endpoint reachable; the status
+    // lands on the endpoint's row.
+    expect(find.text('ok'), findsOneWidget);
+  });
+
+  testWidgets('deleting a remote endpoint removes it from the registry', (
+    tester,
+  ) async {
+    final client = _client();
+    await client.registerEndpoint(
+      name: 'crm_rest',
+      kind: 'openapi',
+      baseUrl: 'http://127.0.0.1:9999',
+    );
+    await _pump(tester, client);
+    expect(find.bySemanticsLabel('endpoint-item:crm_rest'), findsOneWidget);
+
+    await tester.tap(find.bySemanticsLabel('endpoint-delete:crm_rest'));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('endpoint-item:crm_rest'), findsNothing);
+    expect(find.textContaining('no endpoints registered'), findsOneWidget);
+    // The registry itself dropped it (not just the row).
+    expect(await client.listEndpoints(), isEmpty);
   });
 
   testWidgets('listing packs shows the empty-state for an overlay-only node', (

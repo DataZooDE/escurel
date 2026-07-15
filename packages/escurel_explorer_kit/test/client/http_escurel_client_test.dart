@@ -791,6 +791,80 @@ void main() {
     });
 
     test(
+      'register_endpoint sends kind/base_url and the optional secret',
+      () async {
+        Map<String, dynamic>? args;
+        mock.toolHandlers['register_endpoint'] = (a) {
+          args = a;
+          return {'ok': true, 'name': 'yahoo_finance'};
+        };
+        await client.registerEndpoint(
+          name: 'yahoo_finance',
+          kind: 'openapi',
+          baseUrl: 'https://query1.finance.yahoo.com',
+          auth: 'bearer',
+          secret: 's3cr3t',
+        );
+        expect(args!['name'], 'yahoo_finance');
+        expect(args!['kind'], 'openapi');
+        expect(args!['base_url'], 'https://query1.finance.yahoo.com');
+        expect(args!['auth'], 'bearer');
+        expect(args!['secret'], 's3cr3t');
+        expect(args!.containsKey('auth_header'), isFalse);
+      },
+    );
+
+    test('list_endpoints parses without a secret field', () async {
+      mock.toolHandlers['list_endpoints'] = (_) => {
+        'endpoints': [
+          {
+            'name': 'yahoo_finance',
+            'kind': 'openapi',
+            'base_url': 'https://query1.finance.yahoo.com',
+            'auth_scheme': 'none',
+            'created_by': 'admin',
+          },
+        ],
+      };
+      final eps = await client.listEndpoints();
+      expect(eps.single.name, 'yahoo_finance');
+      expect(eps.single.kind, 'openapi');
+      expect(eps.single.baseUrl, 'https://query1.finance.yahoo.com');
+      expect(eps.single.authScheme, 'none');
+    });
+
+    test('delete_endpoint sends the name', () async {
+      Map<String, dynamic>? args;
+      mock.toolHandlers['delete_endpoint'] = (a) {
+        args = a;
+        return {'ok': true};
+      };
+      await client.deleteEndpoint('yahoo_finance');
+      expect(args!['name'], 'yahoo_finance');
+    });
+
+    test('validate_endpoints parses per-endpoint reachability', () async {
+      mock.toolHandlers['validate_endpoints'] = (_) => {
+        'ok': false,
+        'unreachable': 1,
+        'endpoints': [
+          {'name': 'up', 'kind': 'mcp', 'status': 'ok'},
+          {
+            'name': 'down',
+            'kind': 'openapi',
+            'status': 'unreachable',
+            'detail': 'transport error: connect refused',
+          },
+        ],
+      };
+      final health = await client.validateEndpoints();
+      expect(health, hasLength(2));
+      expect(health.first.healthy, isTrue);
+      expect(health.last.healthy, isFalse);
+      expect(health.last.detail, contains('refused'));
+    });
+
+    test(
       'ingestUpload posts base64 to /ingest/upload and parses the outcome',
       () async {
         mock.routeHandlers['/ingest/upload'] = () => {

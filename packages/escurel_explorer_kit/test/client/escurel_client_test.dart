@@ -293,6 +293,28 @@ class _StubClient implements EscurelClient {
       throw notYetImplemented('validate_bindings');
 
   @override
+  Future<void> registerEndpoint({
+    required String name,
+    required String kind,
+    required String baseUrl,
+    String auth = 'none',
+    String? authHeader,
+    String? secret,
+  }) async => throw notYetImplemented('register_endpoint');
+
+  @override
+  Future<List<EndpointInfo>> listEndpoints() async =>
+      throw notYetImplemented('list_endpoints');
+
+  @override
+  Future<void> deleteEndpoint(String name) async =>
+      throw notYetImplemented('delete_endpoint');
+
+  @override
+  Future<List<EndpointHealth>> validateEndpoints() async =>
+      throw notYetImplemented('validate_endpoints');
+
+  @override
   Future<String> createSqlInstance({
     required String skill,
     required String id,

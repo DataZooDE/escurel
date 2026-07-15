@@ -334,6 +334,64 @@ class BindingStatus {
   );
 }
 
+/// One admin-registered remote-backend endpoint — base URL + auth scheme,
+/// never the secret (`list_endpoints`, REQ-REMOTE-05).
+class EndpointInfo {
+  const EndpointInfo({
+    required this.name,
+    required this.kind,
+    required this.baseUrl,
+    this.authScheme = 'none',
+    this.createdAt,
+    this.createdBy,
+  });
+
+  final String name;
+
+  /// `openapi` | `mcp`.
+  final String kind;
+  final String baseUrl;
+
+  /// `none` | `bearer` | `api_key`.
+  final String authScheme;
+  final String? createdAt;
+  final String? createdBy;
+
+  factory EndpointInfo.fromJson(Map<String, dynamic> j) => EndpointInfo(
+    name: (j['name'] as String?) ?? '',
+    kind: (j['kind'] as String?) ?? '',
+    baseUrl: (j['base_url'] as String?) ?? '',
+    authScheme: (j['auth_scheme'] as String?) ?? 'none',
+    createdAt: j['created_at'] as String?,
+    createdBy: j['created_by'] as String?,
+  );
+}
+
+/// Reachability of one registered endpoint from `validate_endpoints`:
+/// `ok` | `unreachable` (+ a transport detail when unreachable).
+class EndpointHealth {
+  const EndpointHealth({
+    required this.name,
+    required this.kind,
+    required this.status,
+    this.detail,
+  });
+
+  final String name;
+  final String kind;
+  final String status;
+  final String? detail;
+
+  bool get healthy => status == 'ok';
+
+  factory EndpointHealth.fromJson(Map<String, dynamic> j) => EndpointHealth(
+    name: (j['name'] as String?) ?? '',
+    kind: (j['kind'] as String?) ?? '',
+    status: (j['status'] as String?) ?? 'unknown',
+    detail: j['detail'] as String?,
+  );
+}
+
 /// The outcome of a document ingestion (`/ingest` or `/ingest/upload`):
 /// `materialised` | `extraction_failed` | `no_handler` | `queued`.
 class IngestOutcome {

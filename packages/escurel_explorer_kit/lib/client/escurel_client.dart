@@ -286,6 +286,33 @@ abstract class EscurelClient {
     String? overlayBody,
   });
 
+  /// Register (or replace) a named remote-backend endpoint a `openapi`/`mcp`
+  /// skill references via `backend.endpoint` (`register_endpoint`, admin).
+  /// The base URL + optional secret are stored server-side, never echoed —
+  /// the SSRF / secrets-in-markdown guard. [kind] is `openapi` | `mcp`;
+  /// [auth] is `none` | `bearer` | `api_key` ([secret] required for the
+  /// latter two, [authHeader] only for `api_key`).
+  Future<void> registerEndpoint({
+    required String name,
+    required String kind,
+    required String baseUrl,
+    String auth = 'none',
+    String? authHeader,
+    String? secret,
+  });
+
+  /// List registered remote-backend endpoints WITHOUT secrets
+  /// (`list_endpoints`, admin).
+  Future<List<EndpointInfo>> listEndpoints();
+
+  /// Remove a registered endpoint by name (`delete_endpoint`, admin).
+  Future<void> deleteEndpoint(String name);
+
+  /// Probe every registered endpoint's reachability
+  /// (`validate_endpoints`, admin): an `openapi` endpoint answers a GET on
+  /// its base URL, an `mcp` endpoint a `tools/list`.
+  Future<List<EndpointHealth>> validateEndpoints();
+
   /// Upload a document for ingestion (`POST /ingest/upload`): the backend
   /// deposits the bytes into the inbox, records an ingest Event, and runs
   /// the worker. Returns the outcome (materialised / extraction_failed /

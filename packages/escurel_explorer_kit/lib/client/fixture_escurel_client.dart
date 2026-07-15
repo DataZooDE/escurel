@@ -1066,9 +1066,56 @@ class FixtureEscurelClient implements EscurelClient {
     );
   }
 
+  // ── remote-backend endpoint registry (in-memory demo) ───────
+
+  @override
+  Future<void> registerEndpoint({
+    required String name,
+    required String kind,
+    required String baseUrl,
+    String auth = 'none',
+    String? authHeader,
+    String? secret,
+  }) async {
+    if (kind != 'openapi' && kind != 'mcp') {
+      throw EscurelToolException(
+        'kind must be openapi|mcp, got `$kind`',
+        code: 'invalid_params',
+      );
+    }
+    // Mirror the server: idempotent upsert on name; the secret is stored
+    // (here: discarded) server-side and never echoed back.
+    _endpoints[name] = EndpointInfo(
+      name: name,
+      kind: kind,
+      baseUrl: baseUrl,
+      authScheme: auth,
+      createdBy: 'fixture',
+    );
+  }
+
+  @override
+  Future<List<EndpointInfo>> listEndpoints() async =>
+      _endpoints.values.toList();
+
+  @override
+  Future<void> deleteEndpoint(String name) async {
+    _endpoints.remove(name);
+  }
+
+  @override
+  Future<List<EndpointHealth>> validateEndpoints() async {
+    // The fixture registry is in-memory — every endpoint probes `ok`
+    // (mirroring validateBindings' all-healthy fixture report).
+    return _endpoints.values
+        .map((e) => EndpointHealth(name: e.name, kind: e.kind, status: 'ok'))
+        .toList();
+  }
+
   // ── helpers ─────────────────────────────────────────────────
 
   final Map<String, CredentialInfo> _credentials = {};
+  final Map<String, EndpointInfo> _endpoints = {};
 
   static String _backendKind(Map<String, dynamic> fm) {
     final backend = fm['backend'] as Map?;
