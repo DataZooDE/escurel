@@ -304,6 +304,50 @@ class _CapStubClient implements EscurelClient {
   Future<List<BindingStatus>> validateBindings() => inner.validateBindings();
 
   @override
+  Future<QueryResult> queryInstance(
+    String queryRef, {
+    Map<String, Object?> params = const {},
+  }) => inner.queryInstance(queryRef, params: params);
+
+  @override
+  Future<String> createRemoteInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) => inner.createRemoteInstance(
+    skill: skill,
+    id: id,
+    overlayBody: overlayBody,
+  );
+
+  @override
+  Future<void> registerEndpoint({
+    required String name,
+    required String kind,
+    required String baseUrl,
+    String auth = 'none',
+    String? authHeader,
+    String? secret,
+  }) => inner.registerEndpoint(
+    name: name,
+    kind: kind,
+    baseUrl: baseUrl,
+    auth: auth,
+    authHeader: authHeader,
+    secret: secret,
+  );
+
+  @override
+  Future<List<EndpointInfo>> listEndpoints() => inner.listEndpoints();
+
+  @override
+  Future<void> deleteEndpoint(String name) => inner.deleteEndpoint(name);
+
+  @override
+  Future<List<EndpointHealth>> validateEndpoints() =>
+      inner.validateEndpoints();
+
+  @override
   Future<List<PackSubscriptionInfo>> listPacks() => inner.listPacks();
 
   @override
