@@ -23,6 +23,7 @@ instance.
 | [`opportunity`](skills/opportunity.md) | named, valued sales motion |
 | [`project`](skills/project.md) | delivery engagement post-close |
 | [`attachment`](skills/attachment.md) | **document-backed** skill — uploaded files (PDF/DOCX/text), extracted + chunked; read-only |
+| [`erp_order`](skills/erp_order.md) | **sql_view-backed** skill — read-only DuckDB view over [`sources/erp/*.json`](sources/erp/); read-only |
 
 The [`attachment`](skills/attachment.md) skill demonstrates an **external
 instance backend** (`backend: kind: document`): rather than authoring a
@@ -30,6 +31,29 @@ markdown page, you upload a file to `POST /ingest/upload` and escurel extracts,
 chunks, and embeds it into a read-only page-with-chunks. `scripts/verify-demo.sh`
 ingests a real PDF through it. See
 [the meta-skill](skills/escurel.md#instance-backends) for the backend concept.
+
+## External instance backends (`scripts/demo-setup.sh`)
+
+`ESCUREL_SEED_DIR` only seeds *markdown pages*. External instances are
+backend-managed — they must be materialised through the admin tools
+against a running server. After booting the demo server, run
+
+```bash
+scripts/demo-setup.sh          # ESCUREL_DEMO_BASE overrides the default :8080
+```
+
+which (idempotently):
+
+1. **sql_view** — resolves the `erp_order` skill's repo-relative
+   `source.relation` to the absolute [`sources/erp/`](sources/erp/) path
+   (DuckDB resolves the `json_dir` glob against the server cwd) and
+   materialises `[[erp_order::book]]` via `create_sql_instance`.
+   `expand` on that instance then returns a bounded row projection with
+   the projected columns mirrored under the `source.<field>` namespace —
+   fully offline.
+
+The no-mock acceptance for this flow lives in
+`crates/escurel-server/tests/crm_demo_backends.rs`.
 
 ## Instances — the Hoffmann chain (Brief scenario A)
 
