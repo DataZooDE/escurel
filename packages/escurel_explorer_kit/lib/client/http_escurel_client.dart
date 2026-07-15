@@ -430,6 +430,48 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<void> registerEndpoint({
+    required String name,
+    required String kind,
+    required String baseUrl,
+    String auth = 'none',
+    String? authHeader,
+    String? secret,
+  }) async {
+    await _call('register_endpoint', {
+      'name': name,
+      'kind': kind,
+      'base_url': baseUrl,
+      'auth': auth,
+      'auth_header': ?authHeader,
+      'secret': ?secret,
+    });
+  }
+
+  @override
+  Future<List<EndpointInfo>> listEndpoints() async {
+    final result = await _call('list_endpoints', const {});
+    return (result['endpoints'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(EndpointInfo.fromJson)
+        .toList();
+  }
+
+  @override
+  Future<void> deleteEndpoint(String name) async {
+    await _call('delete_endpoint', {'name': name});
+  }
+
+  @override
+  Future<List<EndpointHealth>> validateEndpoints() async {
+    final result = await _call('validate_endpoints', const {});
+    return (result['endpoints'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(EndpointHealth.fromJson)
+        .toList();
+  }
+
+  @override
   Future<IngestOutcome> ingestUpload({
     required String contentType,
     required List<int> bytes,

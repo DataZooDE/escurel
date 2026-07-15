@@ -61,8 +61,10 @@ pub fn resolve_projection(resp: &Value, project: &BTreeMap<String, String>) -> M
 
 /// Read a value out of `v` by a dotted JSON path. Accepts a leading `$` /
 /// `$.` (JSONPath-lite) or a bare dotted key; `$` alone (or an empty path)
-/// returns the whole value. Only object member access is supported (no array
-/// indexing / filters) — enough for the projection maps a binding declares.
+/// returns the whole value. Object member access plus dotted **numeric
+/// array indices** (`$.chart.result.0.meta` — the Yahoo-Finance chart
+/// shape) are supported; no filters/wildcards — enough for the projection
+/// maps a binding declares.
 #[must_use]
 pub fn json_path_get<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
     let trimmed = path
@@ -74,7 +76,12 @@ pub fn json_path_get<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
     }
     let mut cur = v;
     for seg in trimmed.split('.') {
-        cur = cur.get(seg)?;
+        cur = match cur {
+            // A numeric segment indexes into an array; any other segment
+            // against an array (or an out-of-bounds index) is None.
+            Value::Array(a) => a.get(seg.parse::<usize>().ok()?)?,
+            other => other.get(seg)?,
+        };
     }
     Some(cur)
 }
@@ -298,6 +305,35 @@ mod tests {
         assert_eq!(json_path_get(&v, "$"), Some(&v));
         assert_eq!(json_path_get(&v, "$.missing"), None);
         assert_eq!(json_path_get(&v, "a.b.c"), None);
+    }
+
+    #[test]
+    fn json_path_get_numeric_segment_indexes_arrays() {
+        // The Yahoo-Finance chart shape the crm-demo `stock_quote` skill
+        // projects: the interesting fields sit behind `chart.result[0]`.
+        let v = json!({
+            "chart": {
+                "result": [
+                    { "meta": { "symbol": "SAP", "regularMarketPrice": 231.55 } }
+                ],
+                "error": null
+            }
+        });
+        assert_eq!(
+            json_path_get(&v, "$.chart.result.0.meta.symbol"),
+            Some(&json!("SAP"))
+        );
+        assert_eq!(
+            json_path_get(&v, "chart.result.0.meta.regularMarketPrice"),
+            Some(&json!(231.55))
+        );
+        // Out-of-bounds index resolves to None (projection skips the field).
+        assert_eq!(json_path_get(&v, "$.chart.result.1.meta.symbol"), None);
+        // A non-numeric segment against an array is None, not a panic.
+        assert_eq!(json_path_get(&v, "$.chart.result.meta"), None);
+        // A numeric key on an OBJECT still resolves as a member.
+        let o = json!({ "0": "zero" });
+        assert_eq!(json_path_get(&o, "$.0"), Some(&json!("zero")));
     }
 
     #[test]

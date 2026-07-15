@@ -48,17 +48,20 @@ String? validatePackImportInput(String manifestJson, String tarballB64) {
 }
 
 /// The Backends panel of the Dev Inspector — the operator's trigger surface
-/// for the external-instance backends. Four cards, each driving one
+/// for the external-instance backends. Seven cards, each driving one
 /// admin-gated action against the real client:
 ///
 ///   1. Credential registry — register / list / delete named source
 ///      credentials (the secret is write-only; only names + connectors
 ///      come back).
-///   2. Binding health — run `validate_bindings` and read each SQL view's
+///   2. Remote endpoints — register / list / delete the named
+///      openapi/mcp upstreams remote skills bind to, and probe their
+///      reachability (`validate_endpoints`). The secret is write-only.
+///   3. Binding health — run `validate_bindings` and read each SQL view's
 ///      drift status (a degraded binding reads fail-closed).
-///   3. Create SQL instance — materialise a read-only view-backed instance
+///   4. Create SQL instance — materialise a read-only view-backed instance
 ///      from a `sql_view` skill.
-///   4. Document ingestion — upload bytes through `/ingest/upload` and watch
+///   5. Document ingestion — upload bytes through `/ingest/upload` and watch
 ///      the evented pipeline's outcome (event id, handler skill, chunk
 ///      count, or a parked Issue).
 ///
@@ -78,6 +81,8 @@ class BackendAdminPanel extends ConsumerWidget {
         padding: const EdgeInsets.all(16),
         children: const [
           _Card(title: 'Source credentials', child: _CredentialRegistry()),
+          SizedBox(height: 16),
+          _Card(title: 'Remote endpoints', child: _RemoteEndpoints()),
           SizedBox(height: 16),
           _Card(title: 'Binding health', child: _BindingHealth()),
           SizedBox(height: 16),
@@ -279,7 +284,240 @@ class _CredentialRegistryState extends ConsumerState<_CredentialRegistry> {
   }
 }
 
-// ── 2. Binding health ───────────────────────────────────────────────
+// ── 2. Remote endpoints ─────────────────────────────────────────────
+
+/// The remote-backend endpoint registry (`register_endpoint` /
+/// `list_endpoints` / `delete_endpoint`) plus the reachability probe
+/// (`validate_endpoints`). openapi/mcp skills bind to these upstreams by
+/// NAME — base URL + secret live server-side (the SSRF /
+/// secrets-in-markdown guard), so the secret field here is write-only.
+/// Stable labels (rodney selector contract): `endpoint-name-field`,
+/// `endpoint-kind-field`, `endpoint-url-field`, `endpoint-secret-field`,
+/// `endpoint-register-button`, `endpoints-list`, `endpoint-item:<name>`,
+/// `endpoint-delete:<name>`, `validate-endpoints-button`.
+class _RemoteEndpoints extends ConsumerStatefulWidget {
+  const _RemoteEndpoints();
+
+  @override
+  ConsumerState<_RemoteEndpoints> createState() => _RemoteEndpointsState();
+}
+
+class _RemoteEndpointsState extends ConsumerState<_RemoteEndpoints> {
+  final _name = TextEditingController();
+  final _url = TextEditingController();
+  final _secret = TextEditingController();
+  String _kind = 'openapi';
+  String? _error;
+  bool _busy = false;
+
+  /// Last `validate_endpoints` probe, keyed by endpoint name; rendered on
+  /// each row. Null until the operator runs a probe.
+  Map<String, EndpointHealth>? _health;
+
+  static const _kinds = ['openapi', 'mcp'];
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _url.dispose();
+    _secret.dispose();
+    super.dispose();
+  }
+
+  Future<void> _register() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      // A non-empty secret registers bearer auth; empty stays `none`
+      // (the server refuses bearer/api_key without a secret).
+      final secret = _secret.text;
+      await ref
+          .read(escurelClientProvider)
+          .registerEndpoint(
+            name: _name.text.trim(),
+            kind: _kind,
+            baseUrl: _url.text.trim(),
+            auth: secret.isEmpty ? 'none' : 'bearer',
+            secret: secret.isEmpty ? null : secret,
+          );
+      _name.clear();
+      _url.clear();
+      _secret.clear();
+      ref.invalidate(endpointsProvider);
+    } on EscurelClientException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _delete(String name) async {
+    try {
+      await ref.read(escurelClientProvider).deleteEndpoint(name);
+      if (!mounted) return;
+      setState(() => _health?.remove(name));
+      ref.invalidate(endpointsProvider);
+    } on EscurelClientException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    }
+  }
+
+  Future<void> _validate() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final probes = await ref.read(escurelClientProvider).validateEndpoints();
+      if (mounted) {
+        setState(() => _health = {for (final h in probes) h.name: h});
+      }
+    } on EscurelClientException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Widget _statusFor(EndpointInfo e, TextTheme text) {
+    final probe = _health?[e.name];
+    if (probe == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: Text(
+        probe.status,
+        style: text.bodySmall?.copyWith(
+          color: probe.healthy ? kSuccess : kError,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final endpoints = ref.watch(endpointsProvider);
+    final text = Theme.of(context).textTheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _LabeledField(
+                label: 'endpoint-name-field',
+                hint: 'name (e.g. yahoo_finance)',
+                controller: _name,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Semantics(
+              label: 'endpoint-kind-field',
+              identifier: 'endpoint-kind-field',
+              child: DropdownButton<String>(
+                value: _kind,
+                items: [
+                  for (final k in _kinds)
+                    DropdownMenuItem(value: k, child: Text(k)),
+                ],
+                onChanged: (v) => v == null ? null : setState(() => _kind = v),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _LabeledField(
+          label: 'endpoint-url-field',
+          hint: 'base URL (REST base or MCP /mcp URL)',
+          controller: _url,
+        ),
+        const SizedBox(height: 8),
+        _LabeledField(
+          label: 'endpoint-secret-field',
+          hint: 'bearer secret (optional, write-only)',
+          controller: _secret,
+          obscure: true,
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            _ActionButton(
+              label: 'endpoint-register-button',
+              text: _busy ? 'Registering…' : 'Register endpoint',
+              onPressed: _busy ? null : _register,
+            ),
+            const SizedBox(width: 8),
+            _ActionButton(
+              label: 'validate-endpoints-button',
+              text: _busy ? 'Probing…' : 'Validate endpoints',
+              onPressed: _busy ? null : _validate,
+            ),
+          ],
+        ),
+        if (_error != null) _ErrorText(_error!),
+        const SizedBox(height: 10),
+        endpoints.when(
+          loading: () => const _Spinner(),
+          error: (e, _) => _ErrorText('$e'),
+          data: (list) => list.isEmpty
+              ? Text(
+                  'no endpoints registered',
+                  style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+                )
+              : Semantics(
+                  label: 'endpoints-list',
+                  identifier: 'endpoints-list',
+                  explicitChildNodes: true,
+                  container: true,
+                  child: Column(
+                    children: [
+                      for (final e in list)
+                        Semantics(
+                          label: 'endpoint-item:${e.name}',
+                          identifier: 'endpoint-item:${e.name}',
+                          container: true,
+                          explicitChildNodes: true,
+                          child: ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(e.name, style: text.bodyMedium),
+                            subtitle: Text(
+                              '${e.kind} · ${e.baseUrl}',
+                              style: text.bodySmall?.copyWith(
+                                color: kOnSurfaceVariant,
+                              ),
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                _statusFor(e, text),
+                                Semantics(
+                                  label: 'endpoint-delete:${e.name}',
+                                  identifier: 'endpoint-delete:${e.name}',
+                                  button: true,
+                                  child: IconButton(
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      size: 18,
+                                    ),
+                                    onPressed: () => _delete(e.name),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+// ── 3. Binding health ───────────────────────────────────────────────
 
 class _BindingHealth extends ConsumerStatefulWidget {
   const _BindingHealth();

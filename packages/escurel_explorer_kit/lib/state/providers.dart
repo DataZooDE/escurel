@@ -159,6 +159,13 @@ final credentialsProvider = FutureProvider<List<CredentialInfo>>((ref) {
   return ref.watch(escurelClientProvider).listCredentials();
 });
 
+/// The registered remote-backend endpoints (admin). Base URL + auth scheme
+/// only — the secret never leaves the server (REQ-REMOTE-05). Invalidated
+/// after a register/delete so the registry list refreshes.
+final endpointsProvider = FutureProvider<List<EndpointInfo>>((ref) {
+  return ref.watch(escurelClientProvider).listEndpoints();
+});
+
 // (No packsProvider here on purpose: the Subscribed-packs admin card is
 // refresh-on-demand and reads `listPacks()` straight off the client —
 // see `_SubscribedPacks` in inspector/backend_admin_panel.dart.)

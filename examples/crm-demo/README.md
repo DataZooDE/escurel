@@ -23,6 +23,8 @@ instance.
 | [`opportunity`](skills/opportunity.md) | named, valued sales motion |
 | [`project`](skills/project.md) | delivery engagement post-close |
 | [`attachment`](skills/attachment.md) | **document-backed** skill — uploaded files (PDF/DOCX/text), extracted + chunked; read-only |
+| [`erp_order`](skills/erp_order.md) | **sql_view-backed** skill — read-only DuckDB view over [`sources/erp/*.json`](sources/erp/); read-only |
+| [`stock_quote`](skills/stock_quote.md) | **openapi-backed** skill — live quote proxied from the Yahoo Finance chart API; read-only |
 
 The [`attachment`](skills/attachment.md) skill demonstrates an **external
 instance backend** (`backend: kind: document`): rather than authoring a
@@ -30,6 +32,47 @@ markdown page, you upload a file to `POST /ingest/upload` and escurel extracts,
 chunks, and embeds it into a read-only page-with-chunks. `scripts/verify-demo.sh`
 ingests a real PDF through it. See
 [the meta-skill](skills/escurel.md#instance-backends) for the backend concept.
+
+## External instance backends (`scripts/demo-setup.sh`)
+
+`ESCUREL_SEED_DIR` only seeds *markdown pages*. External instances are
+backend-managed — they must be materialised through the admin tools
+against a running server. After booting the demo server, run
+
+```bash
+scripts/demo-setup.sh          # ESCUREL_DEMO_BASE overrides the default :8080
+```
+
+which (idempotently):
+
+1. **sql_view** — resolves the `erp_order` skill's repo-relative
+   `source.relation` to the absolute [`sources/erp/`](sources/erp/) path
+   (DuckDB resolves the `json_dir` glob against the server cwd) and
+   materialises `[[erp_order::book]]` via `create_sql_instance`.
+   `expand` on that instance then returns a bounded row projection with
+   the projected columns mirrored under the `source.<field>` namespace —
+   fully offline.
+2. **openapi** — registers the `yahoo_finance` endpoint (default
+   `https://query1.finance.yahoo.com`; override with
+   `ESCUREL_DEMO_YAHOO_BASE`) and materialises `[[stock_quote::sap]]`
+   via `create_remote_instance`. Note escurel never fetches the OpenAPI
+   document: `register_endpoint` takes only name/kind/base-URL/auth, and
+   the per-operation binding (read path + JSONPath projection over
+   `chart.result[0].meta`) lives on the
+   [`stock_quote`](skills/stock_quote.md) skill page. The
+   [`sources/yahoo-finance-openapi.json`](sources/yahoo-finance-openapi.json)
+   spec documents that operation for humans/agents.
+
+   **Live quotes require internet.** Offline, `expand` on the quote
+   instance shows the documented fail-closed degraded path — a
+   `backend_projection.issue`, never a fabricated price — and
+   `validate_endpoints` reports the endpoint `unreachable`. That
+   degraded path is itself part of the demo.
+
+The no-mock acceptance for both flows lives in
+`crates/escurel-server/tests/crm_demo_backends.rs` (the openapi tests
+run against a real local Yahoo-shaped HTTP server; the internet is
+never touched by tests).
 
 ## Instances — the Hoffmann chain (Brief scenario A)
 
@@ -76,3 +119,17 @@ calls for them — likely in a later PR once live mode lands.
   validated by the `validate()` tool when M3 lands.
 
 [brief]: ../../docs/notes/
+
+> **Restart note.** Boot-time seeding re-writes the seeded `erp_order`
+> skill page (including its repo-relative `relation:`) on every start,
+> which undoes demo-setup's absolute-path rewrite. `demo-setup.sh` is
+> idempotent — simply re-run it after every server restart. (Running
+> the server from the repository root also works without the rewrite.)
+
+> **Yahoo Finance caveats.** The chart endpoint
+> (`query1.finance.yahoo.com/v8/finance/chart/{symbol}`) is unofficial
+> and undocumented: Yahoo may rate-limit, require browser-like
+> `User-Agent` headers, or block requests without cookies at any time.
+> When the fetch fails, the `stock_quote` instance shows escurel's
+> fail-closed degraded Issue instead of live data — that path is itself
+> part of the demo.

@@ -45,6 +45,7 @@ note() { echo ">>> $*"; }
 command -v "$RODNEY" >/dev/null || fail "rodney not on PATH"
 command -v flutter >/dev/null || fail "flutter not on PATH"
 command -v curl >/dev/null || fail "curl not on PATH"
+command -v jq >/dev/null || fail "jq not on PATH (scripts/demo-setup.sh needs it)"
 
 # The served bundle must run in HTTP mode so it talks to the gateway's
 # own /mcp (same origin); plain `flutter build web` stays in standalone
@@ -76,6 +77,12 @@ trap cleanup EXIT
 note "waiting for /healthz"
 for _ in $(seq 1 120); do curl -fsS "$BASE/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS "$BASE/healthz" >/dev/null 2>&1 || fail "server did not come up"
+
+# Materialise the external-backend demo content (sql_view erp_order::book +
+# the yahoo_finance endpoint / stock_quote::sap remote instance). Idempotent;
+# lives in its own script because ESCUREL_SEED_DIR only seeds markdown pages.
+note "running scripts/demo-setup.sh against $BASE"
+ESCUREL_DEMO_BASE="$BASE" "$ROOT/scripts/demo-setup.sh" || fail "demo-setup.sh failed"
 
 mkdir -p "$SHOTS"
 "$RODNEY" start >/dev/null 2>&1 || fail "rodney start"
@@ -211,10 +218,9 @@ expect_int "base page layer" "$base_layer" "base@crm-essentials@v1"
 # --- external instance backends: wire surface + document ingestion -----
 # The `attachment` skill (examples/crm-demo/skills/attachment.md) declares a
 # `document` backend, so list_skills must carry the additive backend +
-# capabilities wire (PR-1b) and report it read-only. (The sql_view backend
-# needs an attached external DB + a registered credential — out of scope for
-# the air-gapped demo; it's covered by the no-mock Rust e2e
-# sql_view_backend.rs / fusion_acl.rs. Noted here so the gap is explicit.)
+# capabilities wire (PR-1b) and report it read-only. The sql_view + openapi
+# backends are covered below via the demo-setup content (erp_order over the
+# offline json_dir extract; stock_quote against Yahoo, degraded-tolerant).
 note "probe: list_skills carries the backend + capabilities wire (PR-1b)"
 attach="r.skills.find(function(s){return s.id==='attachment'})"
 bk_doc=$(mcp_int list_skills '{}' "(($attach)&&($attach).backend&&($attach).backend.kind)||''")
@@ -260,6 +266,42 @@ IFS='~' read -r pdf_status pdf_handler pdf_chunks <<< "$PDFING"
 [[ "$pdf_handler" == "attachment" ]] || fail "PDF ingest routed to wrong skill (got '$pdf_handler')"
 [[ "$pdf_chunks" =~ ^[1-9] ]] || fail "PDF ingest produced no chunks (got '$pdf_chunks')"
 note "probe ok: PDF ingest → status=$pdf_status handler=$pdf_handler chunks=$pdf_chunks"
+
+# --- external instance backends: sql_view + openapi (demo-setup content) -
+# Materialised above by scripts/demo-setup.sh. The erp_order path is fully
+# offline (json_dir over sources/erp); the stock_quote path points at the
+# real Yahoo endpoint, so its expand probe tolerates BOTH outcomes — live
+# fields with internet, the documented fail-closed degraded Issue without.
+note "probe: erp_order is a read-only sql_view skill"
+erp="r.skills.find(function(s){return s.id==='erp_order'})"
+bk_sql=$(mcp_int list_skills '{}' "(($erp)&&($erp).backend&&($erp).backend.kind)||''")
+expect_int "erp_order backend kind" "$bk_sql" "sql_view"
+erp_ro=$(mcp_int list_skills '{}' "String((($erp)&&($erp).capabilities&&($erp).capabilities.writable))")
+expect_int "erp_order is read-only" "$erp_ro" "false"
+
+note "probe: erp_order::book expands to a bounded projection + source namespace"
+ERP_PAGE='{"page_id":"markdown/instances/erp_order/book.md"}'
+erp_rows=$(mcp_int expand "$ERP_PAGE" "(r.backend_projection&&r.backend_projection.rows&&r.backend_projection.rows.length)||0")
+[[ "$erp_rows" -ge 5 ]] || fail "expected >=5 projected ERP rows (got '$erp_rows')"
+erp_src=$(mcp_int expand "$ERP_PAGE" "typeof(((r.backend_projection&&r.backend_projection.source)||{}).customer)")
+expect_int "source.customer namespace" "$erp_src" "string"
+note "probe ok: erp projection rows = $erp_rows"
+
+note "probe: yahoo_finance endpoint registered + stock_quote skill listed"
+ep_reg=$(mcp_int list_endpoints '{}' "r.endpoints.some(function(e){return e.name==='yahoo_finance'&&e.kind==='openapi'})")
+expect_int "yahoo_finance endpoint registered" "$ep_reg" "true"
+sq="r.skills.find(function(s){return s.id==='stock_quote'})"
+bk_oa=$(mcp_int list_skills '{}' "(($sq)&&($sq).backend&&($sq).backend.kind)||''")
+expect_int "stock_quote backend kind" "$bk_oa" "openapi"
+
+note "probe: stock_quote::sap expand — live fields OR the documented degraded Issue"
+quote=$(mcp_int expand '{"page_id":"markdown/instances/stock_quote/sap.md"}' \
+  "(function(p){if(!p)return 'missing';if(p.fields&&p.fields.price!==undefined)return 'live:'+p.fields.price;if(typeof p.issue==='string')return 'degraded';return 'unexpected'})(r.backend_projection)")
+case "$quote" in
+  live:*)   note "probe ok: stock quote is LIVE ($quote)" ;;
+  degraded) note "probe ok: stock quote degraded offline (fail-closed Issue — the documented path)" ;;
+  *)        fail "stock_quote expand neither live nor degraded (got '$quote')" ;;
+esac
 
 # --- group ACL v1: admin membership tools round-trip through the gateway -
 # The demo server runs without a verifier (dev/on-host), so admin tools
