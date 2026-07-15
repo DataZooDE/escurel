@@ -851,6 +851,40 @@ void main() {
     });
 
     test(
+      'create_remote_instance sends skill/id and returns the page id',
+      () async {
+        Map<String, dynamic>? args;
+        mock.toolHandlers['create_remote_instance'] = (a) {
+          args = a;
+          return {
+            'page_id': 'markdown/instances/quote/aapl.md',
+            'kind': 'openapi',
+            'endpoint': 'yahoo_finance',
+          };
+        };
+        final pageId = await client.createRemoteInstance(
+          skill: 'quote',
+          id: 'aapl',
+          overlayBody: '# AAPL\n',
+        );
+        expect(pageId, 'markdown/instances/quote/aapl.md');
+        expect(args!['skill'], 'quote');
+        expect(args!['id'], 'aapl');
+        expect(args!['overlay_body'], '# AAPL\n');
+      },
+    );
+
+    test('create_remote_instance omits an absent overlay_body', () async {
+      Map<String, dynamic>? args;
+      mock.toolHandlers['create_remote_instance'] = (a) {
+        args = a;
+        return {'page_id': 'markdown/instances/quote/aapl.md'};
+      };
+      await client.createRemoteInstance(skill: 'quote', id: 'aapl');
+      expect(args!.containsKey('overlay_body'), isFalse);
+    });
+
+    test(
       'register_endpoint sends kind/base_url and the optional secret',
       () async {
         Map<String, dynamic>? args;

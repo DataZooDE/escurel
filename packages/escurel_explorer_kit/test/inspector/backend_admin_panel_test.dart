@@ -86,9 +86,21 @@ Future<void> _pump(WidgetTester tester, EscurelClient client) async {
   await tester.pumpAndSettle();
 }
 
+/// A fixture corpus that also declares a remote (openapi) skill, so the
+/// create-remote card has a skill to offer.
+FixtureEscurelClient _remoteClient() => FixtureEscurelClient.fromSources(
+  skillFiles: {
+    'erp_customer.md':
+        '---\ntype: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
+    'quote.md':
+        '---\ntype: skill\nid: quote\ndescription: Live quotes.\nbackend:\n  kind: openapi\n  endpoint: yahoo_finance\n---\n\n# quote',
+  },
+  instanceFiles: const {},
+);
+
 void main() {
-  testWidgets('renders the seven trigger cards', (tester) async {
-    await _pump(tester, _client());
+  testWidgets('renders the eight trigger cards', (tester) async {
+    await _pump(tester, _remoteClient());
     expect(find.bySemanticsLabel('backend-admin-panel'), findsOneWidget);
     expect(find.bySemanticsLabel('cred-register-button'), findsOneWidget);
     expect(find.bySemanticsLabel('validate-bindings-button'), findsOneWidget);
@@ -98,6 +110,65 @@ void main() {
     expect(find.bySemanticsLabel('pack-import-submit'), findsOneWidget);
     expect(find.bySemanticsLabel('endpoint-register-button'), findsOneWidget);
     expect(find.bySemanticsLabel('validate-endpoints-button'), findsOneWidget);
+    expect(find.bySemanticsLabel('create-remote-submit'), findsOneWidget);
+  });
+
+  testWidgets('creating a remote instance reports the new page id', (
+    tester,
+  ) async {
+    final client = _remoteClient();
+    // The skill's binding names this endpoint; register it first — the
+    // real create path fails closed on an unregistered endpoint.
+    await client.registerEndpoint(
+      name: 'yahoo_finance',
+      kind: 'openapi',
+      baseUrl: 'https://query1.finance.yahoo.com',
+    );
+    await _pump(tester, client);
+
+    expect(find.bySemanticsLabel('create-remote-skill-field'), findsOneWidget);
+    await tester.enterText(
+      find.bySemanticsLabel('create-remote-id-field'),
+      'aapl',
+    );
+    await tester.tap(find.bySemanticsLabel('create-remote-submit'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('create-remote-result'), findsOneWidget);
+    expect(find.textContaining('quote__aapl'), findsOneWidget);
+    // The instance actually exists on the client now, bound to the
+    // skill's endpoint.
+    final page = await client.expand('quote__aapl');
+    expect(page.backendKind, 'openapi');
+    expect(page.backendRef?['endpoint'], 'yahoo_finance');
+  });
+
+  testWidgets('creating a remote instance fails closed on an unregistered '
+      'endpoint, error verbatim', (tester) async {
+    // No registerEndpoint call — the skill references yahoo_finance but
+    // nothing is registered, mirroring the server's refusal.
+    await _pump(tester, _remoteClient());
+    await tester.enterText(
+      find.bySemanticsLabel('create-remote-id-field'),
+      'aapl',
+    );
+    await tester.tap(find.bySemanticsLabel('create-remote-submit'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('create-remote-result'), findsNothing);
+    expect(
+      find.textContaining('endpoint `yahoo_finance` is not registered'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the create-remote card states when no remote skill exists', (
+    tester,
+  ) async {
+    // _client() declares only sql_view + document skills.
+    await _pump(tester, _client());
+    expect(find.bySemanticsLabel('create-remote-submit'), findsNothing);
+    expect(find.textContaining('no openapi/mcp skills'), findsOneWidget);
   });
 
   testWidgets('registering a remote endpoint surfaces it in the list '

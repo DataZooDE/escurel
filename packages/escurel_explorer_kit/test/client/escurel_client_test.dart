@@ -322,6 +322,13 @@ class _StubClient implements EscurelClient {
   }) async => throw notYetImplemented('create_sql_instance');
 
   @override
+  Future<String> createRemoteInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) async => throw notYetImplemented('create_remote_instance');
+
+  @override
   Future<IngestOutcome> ingestUpload({
     required String contentType,
     required List<int> bytes,

@@ -430,6 +430,20 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<String> createRemoteInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) async {
+    final result = await _call('create_remote_instance', {
+      'skill': skill,
+      'id': id,
+      'overlay_body': ?overlayBody,
+    });
+    return (result['page_id'] as String?) ?? '';
+  }
+
+  @override
   Future<void> registerEndpoint({
     required String name,
     required String kind,

@@ -48,7 +48,7 @@ String? validatePackImportInput(String manifestJson, String tarballB64) {
 }
 
 /// The Backends panel of the Dev Inspector — the operator's trigger surface
-/// for the external-instance backends. Seven cards, each driving one
+/// for the external-instance backends. Eight cards, each driving one
 /// admin-gated action against the real client:
 ///
 ///   1. Credential registry — register / list / delete named source
@@ -57,13 +57,20 @@ String? validatePackImportInput(String manifestJson, String tarballB64) {
 ///   2. Remote endpoints — register / list / delete the named
 ///      openapi/mcp upstreams remote skills bind to, and probe their
 ///      reachability (`validate_endpoints`). The secret is write-only.
-///   3. Binding health — run `validate_bindings` and read each SQL view's
+///   3. Create remote instance — materialise an openapi/mcp instance from
+///      a skill declaring a remote backend (`create_remote_instance`);
+///      only the overlay page is stored, the data is fetched live on
+///      expand.
+///   4. Binding health — run `validate_bindings` and read each SQL view's
 ///      drift status (a degraded binding reads fail-closed).
-///   4. Create SQL instance — materialise a read-only view-backed instance
+///   5. Create SQL instance — materialise a read-only view-backed instance
 ///      from a `sql_view` skill.
-///   5. Document ingestion — upload bytes through `/ingest/upload` and watch
+///   6. Document ingestion — upload bytes through `/ingest/upload` and watch
 ///      the evented pipeline's outcome (event id, handler skill, chunk
 ///      count, or a parked Issue).
+///   7. Subscribed packs — list / unsubscribe the pinned skill packs behind
+///      the read-only base layer.
+///   8. Import pack — paste-import a signed skill pack.
 ///
 /// Every interactive widget carries a stable `Semantics(label:)` — the
 /// rodney selector contract for `scripts/verify-demo.sh`.
@@ -83,6 +90,11 @@ class BackendAdminPanel extends ConsumerWidget {
           _Card(title: 'Source credentials', child: _CredentialRegistry()),
           SizedBox(height: 16),
           _Card(title: 'Remote endpoints', child: _RemoteEndpoints()),
+          SizedBox(height: 16),
+          _Card(
+            title: 'Create remote instance',
+            child: _CreateRemoteInstance(),
+          ),
           SizedBox(height: 16),
           _Card(title: 'Binding health', child: _BindingHealth()),
           SizedBox(height: 16),
@@ -517,7 +529,150 @@ class _RemoteEndpointsState extends ConsumerState<_RemoteEndpoints> {
   }
 }
 
-// ── 3. Binding health ───────────────────────────────────────────────
+// ── 3. Create remote instance ───────────────────────────────────────
+
+/// Materialise an openapi/mcp instance from a skill declaring a remote
+/// backend (`create_remote_instance`, admin). Mirrors the create-SQL card:
+/// the binding (kind + endpoint) comes from the skill's `backend:` block,
+/// never this form — an unregistered endpoint fails closed server-side and
+/// the refusal surfaces verbatim. Stable labels (rodney selector
+/// contract): `create-remote-skill-field`, `create-remote-id-field`,
+/// `create-remote-body-field`, `create-remote-submit`,
+/// `create-remote-result`.
+class _CreateRemoteInstance extends ConsumerStatefulWidget {
+  const _CreateRemoteInstance();
+
+  @override
+  ConsumerState<_CreateRemoteInstance> createState() =>
+      _CreateRemoteInstanceState();
+}
+
+class _CreateRemoteInstanceState extends ConsumerState<_CreateRemoteInstance> {
+  final _id = TextEditingController();
+  final _body = TextEditingController();
+  String? _skill;
+  String? _resultPageId;
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _id.dispose();
+    _body.dispose();
+    super.dispose();
+  }
+
+  Future<void> _create(String skill) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+      _resultPageId = null;
+    });
+    try {
+      final body = _body.text.trim();
+      final pageId = await ref
+          .read(escurelClientProvider)
+          .createRemoteInstance(
+            skill: skill,
+            id: _id.text.trim(),
+            overlayBody: body.isEmpty ? null : body,
+          );
+      if (mounted) setState(() => _resultPageId = pageId);
+      ref.invalidate(instancesProvider(skill));
+    } on EscurelClientException catch (e) {
+      // The server's refusal (unregistered endpoint, non-remote skill) is
+      // the operator's diagnosis — verbatim, never paraphrased.
+      if (mounted) setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final catalogue = ref.watch(skillsCatalogueProvider);
+    final remoteSkills =
+        catalogue.asData?.value
+            .where((s) => s.backendKind == 'openapi' || s.backendKind == 'mcp')
+            .map((s) => s.id)
+            .toList() ??
+        const <String>[];
+    final skill =
+        _skill ?? (remoteSkills.isNotEmpty ? remoteSkills.first : null);
+
+    if (remoteSkills.isEmpty) {
+      return Text(
+        'no openapi/mcp skills declared',
+        style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Semantics(
+              label: 'create-remote-skill-field',
+              identifier: 'create-remote-skill-field',
+              // A bare Semantics label merges into the dropdown's own
+              // node and vanishes; a container keeps it addressable
+              // (the rodney ax-find contract, and the widget test).
+              container: true,
+              explicitChildNodes: true,
+              child: DropdownButton<String>(
+                value: skill,
+                items: [
+                  for (final s in remoteSkills)
+                    DropdownMenuItem(value: s, child: Text(s)),
+                ],
+                onChanged: (v) => setState(() => _skill = v),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _LabeledField(
+                label: 'create-remote-id-field',
+                hint: 'instance id (e.g. aapl)',
+                controller: _id,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _LabeledField(
+          label: 'create-remote-body-field',
+          hint: 'overlay markdown body (optional)',
+          controller: _body,
+          maxLines: 3,
+        ),
+        const SizedBox(height: 8),
+        _ActionButton(
+          label: 'create-remote-submit',
+          text: _busy ? 'Creating…' : 'Create remote instance',
+          onPressed: (_busy || skill == null) ? null : () => _create(skill),
+        ),
+        if (_error != null) _ErrorText(_error!),
+        if (_resultPageId != null)
+          Semantics(
+            label: 'create-remote-result',
+            identifier: 'create-remote-result',
+            container: true,
+            explicitChildNodes: true,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                'created $_resultPageId — data is fetched live on expand',
+                style: text.bodySmall?.copyWith(color: kSuccess),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+// ── 4. Binding health ───────────────────────────────────────────────
 
 class _BindingHealth extends ConsumerStatefulWidget {
   const _BindingHealth();

@@ -286,6 +286,19 @@ abstract class EscurelClient {
     String? overlayBody,
   });
 
+  /// Materialise a remote (`openapi`/`mcp`) instance from a skill that
+  /// declares a remote backend (`create_remote_instance`, admin). The
+  /// binding — kind + endpoint — comes from the skill's `backend:` block,
+  /// not the caller; the referenced endpoint must be registered
+  /// (fail-closed otherwise). Only the overlay page is stored — the data
+  /// is fetched live from the upstream on every expand. Returns the new
+  /// page id.
+  Future<String> createRemoteInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  });
+
   /// Register (or replace) a named remote-backend endpoint a `openapi`/`mcp`
   /// skill references via `backend.endpoint` (`register_endpoint`, admin).
   /// The base URL + optional secret are stored server-side, never echoed —

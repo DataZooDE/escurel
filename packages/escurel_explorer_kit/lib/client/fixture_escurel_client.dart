@@ -1005,6 +1005,61 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<String> createRemoteInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) async {
+    // Mirror the server's gates verbatim: the binding comes from the
+    // skill's `backend:` block (never the caller), and an unregistered
+    // endpoint fails closed before anything is materialised.
+    final skillPages = _pages.values.where(
+      (p) => p.pageType == md.PageType.skill && p.skill == skill,
+    );
+    final backend = skillPages.isEmpty
+        ? null
+        : skillPages.first.frontmatter['backend'] as Map?;
+    final kind = backend?['kind'] as String?;
+    if (kind != 'openapi' && kind != 'mcp') {
+      throw EscurelToolException(
+        'skill `$skill` does not declare a remote (openapi/mcp) backend',
+        code: 'invalid_params',
+      );
+    }
+    final endpoint = backend?['endpoint'] as String?;
+    if (endpoint == null) {
+      throw EscurelToolException(
+        'skill `$skill` has an incomplete remote backend binding '
+        '(endpoint/read missing)',
+        code: 'invalid_params',
+      );
+    }
+    if (!_endpoints.containsKey(endpoint)) {
+      throw EscurelToolException(
+        'endpoint `$endpoint` is not registered',
+        code: 'invalid_params',
+      );
+    }
+    final qualifiedId = '${skill}__$id';
+    _pages[qualifiedId] = _ParsedPage(
+      id: qualifiedId,
+      skill: skill,
+      pageType: md.PageType.instance,
+      frontmatter: {
+        'type': 'instance',
+        'skill': skill,
+        'id': id,
+        'name': id,
+        'backend_ref': {'kind': kind, 'endpoint': endpoint},
+      },
+      body: overlayBody ?? '# $id',
+      wikilinksOut: const [],
+      writeSeq: ++_writeSeq,
+    );
+    return qualifiedId;
+  }
+
+  @override
   Future<IngestOutcome> ingestUpload({
     required String contentType,
     required List<int> bytes,
