@@ -850,6 +850,35 @@ void main() {
       expect(args!['skill'], 'customers');
     });
 
+    test('query_instance sends ref/params and parses rows+schema', () async {
+      Map<String, dynamic>? args;
+      mock.toolHandlers['query_instance'] = (a) {
+        args = a;
+        return {
+          'rows': [
+            {'name': 'Acme', 'total': 50},
+          ],
+          'schema': [
+            {'name': 'name', 'type': 'VARCHAR'},
+            {'name': 'total', 'type': 'BIGINT'},
+          ],
+          'truncated': true,
+        };
+      };
+      final r = await client.queryInstance(
+        '[[query::customers-by-name]]',
+        params: {'min': 10},
+      );
+      // `ref` is the documented wire key; the wikilink form is accepted
+      // and normalised server-side.
+      expect(args!['ref'], '[[query::customers-by-name]]');
+      expect(args!['params'], {'min': 10});
+      expect(r.rows.single['total'], 50);
+      expect(r.columns.map((c) => c.name).toList(), ['name', 'total']);
+      expect(r.columns.first.dartType, 'VARCHAR');
+      expect(r.truncated, isTrue);
+    });
+
     test(
       'create_remote_instance sends skill/id and returns the page id',
       () async {

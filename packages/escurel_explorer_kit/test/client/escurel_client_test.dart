@@ -322,6 +322,12 @@ class _StubClient implements EscurelClient {
   }) async => throw notYetImplemented('create_sql_instance');
 
   @override
+  Future<QueryResult> queryInstance(
+    String queryRef, {
+    Map<String, Object?> params = const {},
+  }) async => throw notYetImplemented('query_instance');
+
+  @override
   Future<String> createRemoteInstance({
     required String skill,
     required String id,

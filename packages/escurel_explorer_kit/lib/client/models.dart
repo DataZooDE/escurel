@@ -728,11 +728,16 @@ class QueryResult {
     required this.columns,
     required this.rows,
     this.snapshotVersion,
+    this.truncated = false,
   });
 
   final List<QueryColumn> columns;
   final List<Map<String, Object?>> rows;
   final String? snapshotVersion;
+
+  /// `query_instance` only: whether the server capped the result set
+  /// (the tool's additive `truncated` flag). Always false elsewhere.
+  final bool truncated;
 }
 
 // ── validate / update_page ──────────────────────────────────────

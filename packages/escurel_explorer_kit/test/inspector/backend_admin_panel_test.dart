@@ -98,8 +98,61 @@ FixtureEscurelClient _remoteClient() => FixtureEscurelClient.fromSources(
   instanceFiles: const {},
 );
 
+/// A fixture corpus with a `[[query::*]]` report page targeting a
+/// sql_view instance — the query-instance card's round-trip corpus.
+/// The target instance itself is created through the real client
+/// (`createSqlInstance`) inside the test.
+FixtureEscurelClient _queryClient() => FixtureEscurelClient.fromSources(
+  skillFiles: {
+    'erp_customer.md':
+        '---\ntype: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
+    'query.md':
+        '---\ntype: skill\nid: query\ndescription: Reusable reads.\n---\n\n# query',
+  },
+  instanceFiles: {
+    'customers-by-name.md':
+        '---\ntype: instance\nskill: query\nid: customers-by-name\ntarget: "[[erp_customer::eu]]"\n---\n\n# customers-by-name',
+  },
+);
+
+/// Delegates the panel's auto-loaded surfaces to the fixture but answers
+/// `queryInstance` with a canned 60-row result, so the card's display
+/// cap (~50 rows + truncation note) is observable. Any surface not
+/// forwarded routes to `noSuchMethod` and fails loudly.
+class _CannedQueryClient implements EscurelClient {
+  _CannedQueryClient(this._inner);
+
+  final EscurelClient _inner;
+
+  @override
+  Future<List<SkillSummary>> listSkills() => _inner.listSkills();
+
+  @override
+  Future<List<CredentialInfo>> listCredentials() => _inner.listCredentials();
+
+  @override
+  Future<List<EndpointInfo>> listEndpoints() => _inner.listEndpoints();
+
+  @override
+  Future<QueryResult> queryInstance(
+    String queryRef, {
+    Map<String, Object?> params = const {},
+  }) async => QueryResult(
+    columns: const [QueryColumn(name: 'n', dartType: 'int')],
+    rows: [
+      for (var i = 0; i < 60; i++) {'n': i},
+    ],
+  );
+
+  @override
+  void close() => _inner.close();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 void main() {
-  testWidgets('renders the eight trigger cards', (tester) async {
+  testWidgets('renders the nine trigger cards', (tester) async {
     await _pump(tester, _remoteClient());
     expect(find.bySemanticsLabel('backend-admin-panel'), findsOneWidget);
     expect(find.bySemanticsLabel('cred-register-button'), findsOneWidget);
@@ -111,6 +164,82 @@ void main() {
     expect(find.bySemanticsLabel('endpoint-register-button'), findsOneWidget);
     expect(find.bySemanticsLabel('validate-endpoints-button'), findsOneWidget);
     expect(find.bySemanticsLabel('create-remote-submit'), findsOneWidget);
+    expect(find.bySemanticsLabel('query-instance-run'), findsOneWidget);
+  });
+
+  testWidgets('running a query renders the tabular result', (tester) async {
+    final client = _queryClient();
+    // Materialise the report's target through the real client first.
+    await client.createSqlInstance(skill: 'erp_customer', id: 'eu');
+    await _pump(tester, client);
+
+    await tester.enterText(
+      find.bySemanticsLabel('query-instance-ref-field'),
+      '[[query::customers-by-name]]',
+    );
+    await tester.tap(find.bySemanticsLabel('query-instance-run'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('query-result-table'), findsOneWidget);
+    // The fixture's minimal computation projects the target instance's
+    // scalar frontmatter — its id lands in the table.
+    expect(find.text('id'), findsOneWidget);
+    expect(find.text('eu'), findsWidgets);
+  });
+
+  testWidgets('an unknown query ref surfaces the error verbatim', (
+    tester,
+  ) async {
+    await _pump(tester, _queryClient());
+    await tester.enterText(
+      find.bySemanticsLabel('query-instance-ref-field'),
+      'no-such-report',
+    );
+    await tester.tap(find.bySemanticsLabel('query-instance-run'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('query-result-table'), findsNothing);
+    expect(
+      find.textContaining('query `no-such-report` not found'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('invalid params JSON is refused before any wire call', (
+    tester,
+  ) async {
+    await _pump(tester, _queryClient());
+    await tester.enterText(
+      find.bySemanticsLabel('query-instance-ref-field'),
+      'customers-by-name',
+    );
+    await tester.enterText(
+      find.bySemanticsLabel('query-instance-params-field'),
+      '{min: nope',
+    );
+    await tester.tap(find.bySemanticsLabel('query-instance-run'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('params_invalid_json'), findsOneWidget);
+    expect(find.bySemanticsLabel('query-result-table'), findsNothing);
+  });
+
+  testWidgets('the result table caps displayed rows and says so', (
+    tester,
+  ) async {
+    await _pump(tester, _CannedQueryClient(_queryClient()));
+    await tester.enterText(
+      find.bySemanticsLabel('query-instance-ref-field'),
+      'big-report',
+    );
+    await tester.tap(find.bySemanticsLabel('query-instance-run'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('query-result-table'), findsOneWidget);
+    // Row 49 is the last displayed; row 50 is beyond the display cap.
+    expect(find.text('49'), findsOneWidget);
+    expect(find.text('50'), findsNothing);
+    expect(find.textContaining('showing 50 of 60 rows'), findsOneWidget);
   });
 
   testWidgets('creating a remote instance reports the new page id', (

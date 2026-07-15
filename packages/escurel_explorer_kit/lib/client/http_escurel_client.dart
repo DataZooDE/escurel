@@ -633,6 +633,37 @@ class HttpEscurelClient implements EscurelClient {
     );
   }
 
+  @override
+  Future<QueryResult> queryInstance(
+    String queryRef, {
+    Map<String, Object?> params = const {},
+  }) async {
+    // `ref` is the documented wire key (the `[[query::id]]` wikilink form
+    // is accepted and normalised server-side); the response carries
+    // `schema` (name + type per column) — not run_stored_query's `columns`.
+    final result = await _call('query_instance', {
+      'ref': queryRef,
+      'params': params,
+    });
+    final columns = (result['schema'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(
+          (c) => QueryColumn(
+            name: (c['name'] as String?) ?? '',
+            dartType: (c['type'] as String?) ?? 'dynamic',
+          ),
+        )
+        .toList();
+    final rows = (result['rows'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .toList();
+    return QueryResult(
+      columns: columns,
+      rows: rows,
+      truncated: (result['truncated'] as bool?) ?? false,
+    );
+  }
+
   // ── write tools ─────────────────────────────────────────────
 
   @override

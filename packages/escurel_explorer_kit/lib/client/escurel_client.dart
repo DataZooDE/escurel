@@ -114,6 +114,17 @@ abstract class EscurelClient {
     Map<String, Object?> params = const {},
   });
 
+  /// Run a `[[query::*]]` report that declares `target: [[skill::id]]`
+  /// against that sql_view instance's view (`query_instance`). [queryRef]
+  /// is the query id, `query::id`, or its `[[query::id]]` wikilink —
+  /// normalised server-side. Runtime [params] bind as prepared-statement
+  /// values (never interpolated); the target instance's ACL gates the
+  /// read, fail-closed.
+  Future<QueryResult> queryInstance(
+    String queryRef, {
+    Map<String, Object?> params = const {},
+  });
+
   // ── write primitives ────────────────────────────────────────
 
   /// Dry-run the indexer's validation pipeline against [content].
