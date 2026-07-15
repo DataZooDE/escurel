@@ -462,57 +462,66 @@ impl Indexer {
         skills: &[String],
         include_instances: bool,
     ) -> Result<Vec<(String, String)>, IndexerError> {
-        let mut page_ids: Vec<String> = Vec::new();
+        // Collect (page_id, lane-relative path). The pages table stores
+        // LOGICAL page ids (`skill::x`, `<skill>::<id>`), so the entry
+        // path must be reconstructed from (page_type, skill, slug) —
+        // `skills/<slug>.md` / `instances/<skill>/<slug>.md`. (Deriving
+        // it by stripping a `markdown/` prefix silently produced invalid
+        // tar entries like `requirement::logi-req` that import rejected.)
+        let mut pages: Vec<(String, String)> = Vec::new();
         {
             let conn = self.conn.lock().await;
             for skill in skills {
-                let skill_page: Option<String> = match conn.query_row(
-                    "SELECT page_id FROM pages \
+                let skill_page: Option<(String, String)> = match conn.query_row(
+                    "SELECT page_id, slug FROM pages \
                      WHERE page_type = 'skill' AND (slug = ? OR page_id = ?) \
                      LIMIT 1",
                     duckdb::params![skill, skill],
-                    |r| r.get(0),
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
                 ) {
                     Ok(v) => Some(v),
                     Err(duckdb::Error::QueryReturnedNoRows) => None,
                     Err(e) => return Err(e.into()),
                 };
-                let Some(skill_page) = skill_page else {
+                let Some((skill_page_id, skill_slug)) = skill_page else {
                     return Err(IndexerError::PackSkillMissing {
                         skill: skill.clone(),
                     });
                 };
-                page_ids.push(skill_page);
+                pages.push((skill_page_id, format!("skills/{skill_slug}.md")));
 
                 if include_instances {
                     let mut stmt = conn.prepare(
-                        "SELECT page_id FROM pages \
+                        "SELECT page_id, skill, slug FROM pages \
                          WHERE page_type = 'instance' AND skill = ? \
                          ORDER BY page_id",
                     )?;
-                    let rows = stmt.query_map(duckdb::params![skill], |r| r.get::<_, String>(0))?;
+                    let rows = stmt.query_map(duckdb::params![skill], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
+                    })?;
                     for row in rows {
-                        page_ids.push(row?);
+                        let (page_id, inst_skill, slug) = row?;
+                        pages.push((page_id, format!("instances/{inst_skill}/{slug}.md")));
                     }
                 }
             }
         }
-        page_ids.sort();
-        page_ids.dedup();
+        pages.sort();
+        pages.dedup();
 
-        let mut out = Vec::with_capacity(page_ids.len());
+        let mut out = Vec::with_capacity(pages.len());
         let store = self.lane_store();
-        for page_id in page_ids {
+        for (page_id, rel) in pages {
             let key = Key::new(self.tenant(), page_id.clone())?;
             let body = store.read(&key).await?;
             let content = std::str::from_utf8(&body)
                 .map_err(|_| IndexerError::NotUtf8 {
                     page_id: page_id.clone(),
                 })?
-                .to_owned();
-            let rel = page_id
-                .strip_prefix("markdown/")
-                .unwrap_or(page_id.as_str())
                 .to_owned();
             out.push((rel, content));
         }

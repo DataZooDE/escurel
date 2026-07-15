@@ -701,3 +701,98 @@ async fn import_pack_requires_admin_role() {
     hub.shutdown().await;
     spoke.shutdown().await;
 }
+
+/// Regression for the export path-construction bug: pages authored
+/// through the PUBLIC `update_page` API are stored with LOGICAL page
+/// ids (`skill::x`, `<skill>::<id>`), not lane paths. The exporter used
+/// to emit those verbatim as tar entries (`requirement::logi-req`),
+/// which import then rejected as unsafe paths. The fix reconstructs
+/// `skills/<slug>.md` / `instances/<skill>/<slug>.md` from
+/// (page_type, skill, slug). This round-trips an update_page-authored
+/// skill + instance hub→spoke.
+#[tokio::test]
+async fn export_of_api_authored_pages_roundtrips_to_spoke() {
+    let hub = start(HUB_TENANT, FixtureBuilder::new().tenant(HUB_TENANT).done()).await;
+    let spoke = start_spoke().await;
+
+    // Author a skill AND an instance through the public write path.
+    let skill = "---\ntype: skill\nid: playbook\ndescription: A reusable playbook.\n\
+                 required_frontmatter: [title]\n---\n# playbook\n";
+    let inst =
+        "---\ntype: instance\nskill: playbook\nid: p1\ntitle: First playbook\n---\n# First\n";
+    let w = call(
+        &hub,
+        HUB_TENANT,
+        Role::Admin,
+        "update_page",
+        json!({ "page_id": "skill::playbook", "content": skill }),
+    )
+    .await;
+    assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+    let w = call(
+        &hub,
+        HUB_TENANT,
+        Role::Admin,
+        "update_page",
+        json!({ "page_id": "playbook::p1", "content": inst }),
+    )
+    .await;
+    assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+
+    // Export with instances — the previously-broken path.
+    let ex = call(
+        &hub,
+        HUB_TENANT,
+        Role::Admin,
+        "export_pack",
+        json!({
+            "tenant_id": HUB_TENANT, "id": "playbooks", "version": 1,
+            "vertical": "ops", "publisher": "hub",
+            "skills": ["playbook"], "include_instances": true,
+        }),
+    )
+    .await;
+    let sc = &ex["result"]["structuredContent"];
+    let manifest = sc["manifest"].clone();
+    let tarball_b64 = sc["tarball_b64"].as_str().unwrap().to_owned();
+
+    // Import onto the spoke — must NOT fail with pack_malformed.
+    let im = call(
+        &spoke,
+        SPOKE_TENANT,
+        Role::Admin,
+        "import_pack",
+        json!({
+            "tenant_id": SPOKE_TENANT, "manifest": manifest, "tarball_b64": tarball_b64,
+            "allow_vertical_mismatch": true,
+        }),
+    )
+    .await;
+    let r = &im["result"]["structuredContent"];
+    assert_eq!(r["pages_imported"], 2, "skill + instance imported: {im}");
+
+    // The imported instance is indexed and enumerable on the spoke
+    // (base pages live under the reserved base/<pack>/ namespace; they
+    // surface via list_instances, the path a consumer library uses).
+    let li = call(
+        &spoke,
+        SPOKE_TENANT,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "playbook" }),
+    )
+    .await;
+    let instances = li["result"]["structuredContent"]["instances"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        instances
+            .iter()
+            .any(|i| i["frontmatter"]["title"] == "First playbook"),
+        "imported instance enumerable on spoke: {li}"
+    );
+
+    hub.shutdown().await;
+    spoke.shutdown().await;
+}

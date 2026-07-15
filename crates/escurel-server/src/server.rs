@@ -289,6 +289,16 @@ pub(crate) struct AppState {
     /// deployment opts in via `ESCUREL_EMIT_EDIT_EVENTS`.
     pub(crate) emit_edit_events: bool,
     pub(crate) crdt_backend: Option<Arc<dyn CrdtBackend>>,
+    /// #246 follow-up: serializes the whole optimistic-concurrency
+    /// section of `update_page` (head-version read → staleness check /
+    /// auto-merge → indexed write → `new_version` assignment). Without
+    /// it the staleness check races the write: N simultaneous writes
+    /// carrying the same stale `base_version` all pass validation and
+    /// silently last-write-win, while the same writes issued
+    /// sequentially conflict correctly. One gate per gateway is exact,
+    /// not merely broad: a gateway serves exactly one tenant, and the
+    /// tenant write path is single-writer by design.
+    pub(crate) update_page_gate: Arc<tokio::sync::Mutex<()>>,
     /// Live embedder seam swapped by `embedding_reload`. `None`
     /// when no reloadable embedder is wired.
     pub(crate) embedder_reload: Option<Arc<ReloadableEmbedder>>,
@@ -350,6 +360,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         emit_edit_events: config.emit_edit_events,
         tenant_store: config.tenant_store.clone(),
         crdt_backend: config.crdt_backend.clone(),
+        update_page_gate: Arc::new(tokio::sync::Mutex::new(())),
         embedder_reload: config.embedder_reload.clone(),
         embedder_factory: config.embedder_factory.clone(),
         sessions: Arc::new(SessionManager::new()),
