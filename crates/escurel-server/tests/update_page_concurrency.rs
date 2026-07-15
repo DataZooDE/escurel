@@ -180,3 +180,81 @@ async fn edit_event_fires_for_out_of_band_write_and_is_suppressed_for_runner() {
 
     h.process.shutdown().await;
 }
+
+/// The staleness check, the indexed write and the `new_version`
+/// assignment must be ATOMIC with respect to each other. Before the
+/// `update_page_gate`, N simultaneous writes carrying the same stale
+/// `base_version` all read the same pre-write head, all passed
+/// validation, and all reported the same `new_version` — silent
+/// last-write-wins where the identical writes issued sequentially
+/// conflict. Ten racing writers: exactly one may win cleanly per
+/// version; every other must observe conflict/auto-merge, and the
+/// reported `new_version`s must be unique.
+#[tokio::test]
+async fn simultaneous_stale_writes_serialize_under_the_gate() {
+    let h = start(false).await;
+
+    // Establish v1 and read it back as everyone's shared base.
+    let w = structured(
+        &call(
+            &h.process,
+            "update_page",
+            json!({
+        "page_id": C1_PAGE, "content": body("v1 body.") }),
+        )
+        .await,
+    );
+    assert_eq!(w["ok"], true);
+    let base = w["new_version"].as_str().unwrap().to_string();
+
+    let mut tasks = Vec::new();
+    for i in 0..10 {
+        let p_url = h.process.mcp_url();
+        let token = h.process.mint_token(TENANT, Role::Agent);
+        let base = base.clone();
+        tasks.push(tokio::spawn(async move {
+            let env: Value = reqwest::Client::new()
+                .post(p_url)
+                .header("authorization", format!("Bearer {token}"))
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": { "name": "update_page", "arguments": {
+                        "page_id": C1_PAGE,
+                        "content": format!(
+                            "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nwriter {i} body.\n"
+                        ),
+                        "base_version": base,
+                    } } }))
+                .send().await.unwrap().json().await.unwrap();
+            env["result"]["structuredContent"].clone()
+        }));
+    }
+
+    let mut clean_wins = 0;
+    let mut new_versions = std::collections::BTreeSet::new();
+    for t in tasks {
+        let r = t.await.unwrap();
+        let ok = r["ok"] == json!(true);
+        let merged = r["auto_merged"] == json!(true);
+        if ok {
+            let v = r["new_version"].as_str().unwrap().to_string();
+            assert!(
+                new_versions.insert(v.clone()),
+                "two writes reported the same new_version {v}: the gate is not serializing"
+            );
+            if !merged {
+                clean_wins += 1;
+            }
+        } else {
+            // A conflicted stale write is a correct outcome.
+            assert_eq!(
+                r["issues"][0]["code"], "conflict",
+                "unexpected refusal: {r}"
+            );
+        }
+    }
+    assert_eq!(
+        clean_wins, 1,
+        "exactly one racer may win cleanly against the shared base; the rest \
+         must auto-merge or conflict"
+    );
+}

@@ -2379,6 +2379,15 @@ async fn tool_update_page(
     // unmergeable one falls back to `{ok:false, code:conflict, head_content}`
     // for the client to re-draft. Enforced only when a CRDT backend is wired;
     // otherwise behaviour is unchanged.
+    //
+    // The gate makes check-then-write atomic: the staleness decision, the
+    // indexed write, and the `new_version` assignment must not interleave
+    // with another `update_page`, or N simultaneous writes carrying the
+    // same stale base all pass validation and silently last-write-win
+    // (observed downstream: 20 racing read-modify-writes converged to one
+    // survivor). Held to the end of the version bump below; every early
+    // return releases it on drop.
+    let _cas_gate = state.update_page_gate.lock().await;
     let head_hlc = match state.crdt_backend.as_ref() {
         Some(b) => u64::try_from(b.max_hlc(&a.page_id).await.unwrap_or(0)).unwrap_or(0),
         None => 0,
