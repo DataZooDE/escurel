@@ -119,3 +119,17 @@ calls for them — likely in a later PR once live mode lands.
   validated by the `validate()` tool when M3 lands.
 
 [brief]: ../../docs/notes/
+
+> **Restart note.** Boot-time seeding re-writes the seeded `erp_order`
+> skill page (including its repo-relative `relation:`) on every start,
+> which undoes demo-setup's absolute-path rewrite. `demo-setup.sh` is
+> idempotent — simply re-run it after every server restart. (Running
+> the server from the repository root also works without the rewrite.)
+
+> **Yahoo Finance caveats.** The chart endpoint
+> (`query1.finance.yahoo.com/v8/finance/chart/{symbol}`) is unofficial
+> and undocumented: Yahoo may rate-limit, require browser-like
+> `User-Agent` headers, or block requests without cookies at any time.
+> When the fetch fails, the `stock_quote` instance shows escurel's
+> fail-closed degraded Issue instead of live data — that path is itself
+> part of the demo.

@@ -48,7 +48,7 @@ String? validatePackImportInput(String manifestJson, String tarballB64) {
 }
 
 /// The Backends panel of the Dev Inspector — the operator's trigger surface
-/// for the external-instance backends. Four cards, each driving one
+/// for the external-instance backends. Seven cards, each driving one
 /// admin-gated action against the real client:
 ///
 ///   1. Credential registry — register / list / delete named source
