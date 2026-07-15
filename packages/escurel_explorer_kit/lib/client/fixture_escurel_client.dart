@@ -569,6 +569,59 @@ class FixtureEscurelClient implements EscurelClient {
   }) async => throw notYetImplemented('run_stored_query');
 
   @override
+  Future<QueryResult> queryInstance(
+    String queryRef, {
+    Map<String, Object?> params = const {},
+  }) async {
+    // Mirror the server's normalisation: `[[query::sales]]` /
+    // `query::sales` / `sales` all resolve the same report page.
+    var slug = queryRef.trim();
+    if (slug.startsWith('[[')) slug = slug.substring(2);
+    if (slug.endsWith(']]')) slug = slug.substring(0, slug.length - 2);
+    if (slug.startsWith('query::')) slug = slug.substring('query::'.length);
+
+    final query =
+        _pages['query__$slug'] ??
+        (throw EscurelToolException(
+          'query `$slug` not found',
+          code: 'invalid_params',
+        ));
+    final target = query.frontmatter['target'] as String?;
+    final refs = target == null
+        ? const <WikilinkRef>[]
+        : parseWikilinks(target);
+    final ref = refs.isEmpty ? null : refs.first;
+    if (ref == null || ref.skill == null || ref.id == null) {
+      throw EscurelToolException(
+        'query `$slug` declares no target: [[skill::id]]',
+        code: 'invalid_params',
+      );
+    }
+    final instance =
+        _pages['${ref.skill}__${ref.id}'] ??
+        (throw EscurelToolException(
+          'target `$target` not found',
+          code: 'invalid_params',
+        ));
+    // The fixture has no SQL engine behind the view, so the minimal REAL
+    // computation is a one-row projection of the target instance's scalar
+    // frontmatter (params are accepted but nothing binds them). Enough
+    // for the runner card's round-trip; the HTTP client covers the wire.
+    final row = <String, Object?>{
+      for (final e in instance.frontmatter.entries)
+        if (e.value is String || e.value is num || e.value is bool)
+          e.key: e.value,
+    };
+    return QueryResult(
+      columns: [
+        for (final e in row.entries)
+          QueryColumn(name: e.key, dartType: '${e.value.runtimeType}'),
+      ],
+      rows: [row],
+    );
+  }
+
+  @override
   Future<ValidationResult> validate(String content, {String? asPageId}) async {
     if (!_writeEnabled) throw notYetImplemented('validate');
     return ValidationResult(issues: _validateContent(content));
@@ -996,6 +1049,65 @@ class FixtureEscurelClient implements EscurelClient {
         'id': id,
         'name': id,
         'backend_ref': {'kind': 'sql_view', 'view': view},
+      },
+      body: overlayBody ?? '# $id',
+      wikilinksOut: const [],
+      writeSeq: ++_writeSeq,
+    );
+    return qualifiedId;
+  }
+
+  @override
+  Future<String> createRemoteInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) async {
+    // Mirror the server's gates verbatim: the binding comes from the
+    // skill's `backend:` block (never the caller), and an unregistered
+    // endpoint fails closed before anything is materialised.
+    final skillPages = _pages.values.where(
+      (p) => p.pageType == md.PageType.skill && p.skill == skill,
+    );
+    final backend = skillPages.isEmpty
+        ? null
+        : skillPages.first.frontmatter['backend'] as Map?;
+    final kind = backend?['kind'] as String?;
+    if (kind != 'openapi' && kind != 'mcp') {
+      throw EscurelToolException(
+        'skill `$skill` does not declare a remote (openapi/mcp) backend',
+        code: 'invalid_params',
+      );
+    }
+    final endpoint = backend?['endpoint'] as String?;
+    // Mirror the server contract: a remote binding needs BOTH the
+    // endpoint and a `read` operation; the real create_remote_instance
+    // rejects either omission with `endpoint/read missing` (codex
+    // review — a laxer fixture would greenlight skills that fail live).
+    if (endpoint == null || backend?['read'] is! Map) {
+      throw EscurelToolException(
+        'skill `$skill` has an incomplete remote backend binding '
+        '(endpoint/read missing)',
+        code: 'invalid_params',
+      );
+    }
+    if (!_endpoints.containsKey(endpoint)) {
+      throw EscurelToolException(
+        'endpoint `$endpoint` is not registered',
+        code: 'invalid_params',
+      );
+    }
+    final qualifiedId = '${skill}__$id';
+    _pages[qualifiedId] = _ParsedPage(
+      id: qualifiedId,
+      skill: skill,
+      pageType: md.PageType.instance,
+      frontmatter: {
+        'type': 'instance',
+        'skill': skill,
+        'id': id,
+        'name': id,
+        'backend_ref': {'kind': kind, 'endpoint': endpoint},
       },
       body: overlayBody ?? '# $id',
       wikilinksOut: const [],

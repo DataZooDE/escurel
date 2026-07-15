@@ -4,8 +4,9 @@ import '../client/models.dart';
 import '../theme/app_theme.dart';
 
 /// Renders the *external-backend* section of an instance page beneath the
-/// overlay frontmatter: a bounded SQL-view projection or a document's
-/// chunk/extraction status. Native `markdown` instances render nothing.
+/// overlay frontmatter: a bounded SQL-view projection, a document's
+/// chunk/extraction status, or a remote (openapi/mcp) instance's LIVE
+/// upstream projection. Native `markdown` instances render nothing.
 ///
 /// This is the "understand & debug from a high level" surface (the explicit
 /// ask): an operator sees which backend a page is bound to, the live view
@@ -46,7 +47,9 @@ class BackendPane extends StatelessWidget {
             if (kind == 'sql_view')
               _SqlProjection(projection: page.backendProjection)
             else if (kind == 'document')
-              _DocumentStatus(page: page),
+              _DocumentStatus(page: page)
+            else if (kind == 'openapi' || kind == 'mcp')
+              _RemoteProjection(projection: page.backendProjection),
           ],
         ),
       ),
@@ -63,10 +66,18 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
-    final label = kind == 'sql_view'
-        ? 'SQL view (read-only)'
-        : 'Document (read-only)';
-    final ref = backendRef?['view'] ?? backendRef?['blob_id'] ?? '';
+    final label = switch (kind) {
+      'sql_view' => 'SQL view (read-only)',
+      'document' => 'Document (read-only)',
+      // Remote instances hold no local data — every expand is a live
+      // upstream read against the named endpoint.
+      _ => 'Remote $kind (live)',
+    };
+    final ref =
+        backendRef?['view'] ??
+        backendRef?['blob_id'] ??
+        backendRef?['endpoint'] ??
+        '';
     return Row(
       children: [
         const Icon(Icons.lock_outline, size: 14, color: kOnSurfaceVariant),
@@ -104,7 +115,7 @@ class _SqlProjection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (p.degraded)
-          _DegradedBanner(code: p.issueCode!, message: p.issueMessage),
+          _DegradedBanner(code: p.issueCode, message: p.issueMessage),
         if (p.degraded) const SizedBox(height: 8),
         Semantics(
           label: 'backend-projection',
@@ -173,6 +184,101 @@ class _RowsTable extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// The live upstream projection of a remote (`openapi`/`mcp`) instance:
+/// the projected field→value rows plus the endpoint they were fetched
+/// from, or — the fail-closed path — the plain-string issue rendered
+/// prominently. Nothing is materialised locally; every expand re-reads
+/// the upstream.
+class _RemoteProjection extends StatelessWidget {
+  const _RemoteProjection({required this.projection});
+
+  final BackendProjection? projection;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final p = projection;
+    if (p == null) {
+      return Text(
+        'no live projection returned',
+        style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+      );
+    }
+    if (p.degraded) {
+      // Fail closed: the overlay page still renders, but no fields table
+      // pretends data came back — only the upstream's issue, verbatim.
+      return _DegradedBanner(code: p.issueCode, message: p.issueMessage);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Semantics(
+          label: 'backend-projection',
+          identifier: 'backend-projection',
+          container: true,
+          explicitChildNodes: true,
+          child: p.fields.isEmpty
+              ? Text(
+                  'upstream returned no projected fields',
+                  style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Bounded like the sql_view row projection: a large
+                    // upstream payload must not stretch the editor
+                    // (agy review).
+                    for (final e in p.fields.entries.take(24))
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 1),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 96,
+                              child: Text(
+                                e.key,
+                                style: text.labelSmall?.copyWith(
+                                  color: kOnSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Text(
+                                '${e.value ?? '—'}',
+                                style: text.bodySmall,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (p.fields.length > 24)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          '… ${p.fields.length - 24} more fields not shown',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: kOnSurfaceVariant),
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+        if (p.endpoint != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              'live from ${p.endpoint} — fetched on expand, nothing stored',
+              style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -262,9 +368,10 @@ class _StatusChip extends StatelessWidget {
 }
 
 class _DegradedBanner extends StatelessWidget {
-  const _DegradedBanner({required this.code, this.message});
+  const _DegradedBanner({this.code, this.message});
 
-  final String code;
+  /// sql_view issues carry a code; remote failures are a bare message.
+  final String? code;
   final String? message;
 
   @override
@@ -291,11 +398,19 @@ class _DegradedBanner extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(code, style: text.labelMedium?.copyWith(color: kError)),
+                  if (code != null)
+                    Text(
+                      code!,
+                      style: text.labelMedium?.copyWith(color: kError),
+                    ),
                   if (message != null)
                     Text(
                       message!,
-                      style: text.bodySmall?.copyWith(color: kOnSurface),
+                      // With no code (a remote string issue) the message IS
+                      // the headline — render it in the error style.
+                      style: code == null
+                          ? text.labelMedium?.copyWith(color: kError)
+                          : text.bodySmall?.copyWith(color: kOnSurface),
                     ),
                   Text(
                     'reads fail closed until the binding is revalidated',

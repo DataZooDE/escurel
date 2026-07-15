@@ -430,6 +430,20 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<String> createRemoteInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  }) async {
+    final result = await _call('create_remote_instance', {
+      'skill': skill,
+      'id': id,
+      'overlay_body': ?overlayBody,
+    });
+    return (result['page_id'] as String?) ?? '';
+  }
+
+  @override
   Future<void> registerEndpoint({
     required String name,
     required String kind,
@@ -616,6 +630,37 @@ class HttpEscurelClient implements EscurelClient {
       columns: columns,
       rows: rows,
       snapshotVersion: result['snapshot_version'] as String?,
+    );
+  }
+
+  @override
+  Future<QueryResult> queryInstance(
+    String queryRef, {
+    Map<String, Object?> params = const {},
+  }) async {
+    // `ref` is the documented wire key (the `[[query::id]]` wikilink form
+    // is accepted and normalised server-side); the response carries
+    // `schema` (name + type per column) — not run_stored_query's `columns`.
+    final result = await _call('query_instance', {
+      'ref': queryRef,
+      'params': params,
+    });
+    final columns = (result['schema'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(
+          (c) => QueryColumn(
+            name: (c['name'] as String?) ?? '',
+            dartType: (c['type'] as String?) ?? 'dynamic',
+          ),
+        )
+        .toList();
+    final rows = (result['rows'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .toList();
+    return QueryResult(
+      columns: columns,
+      rows: rows,
+      truncated: (result['truncated'] as bool?) ?? false,
     );
   }
 

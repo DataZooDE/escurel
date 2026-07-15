@@ -86,9 +86,74 @@ Future<void> _pump(WidgetTester tester, EscurelClient client) async {
   await tester.pumpAndSettle();
 }
 
+/// A fixture corpus that also declares a remote (openapi) skill, so the
+/// create-remote card has a skill to offer.
+FixtureEscurelClient _remoteClient() => FixtureEscurelClient.fromSources(
+  skillFiles: {
+    'erp_customer.md':
+        '---\ntype: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
+    'quote.md':
+        '---\ntype: skill\nid: quote\ndescription: Live quotes.\nbackend:\n  kind: openapi\n  endpoint: yahoo_finance\n  read:\n    path: /v8/finance/chart/{symbol}\n---\n\n# quote',
+  },
+  instanceFiles: const {},
+);
+
+/// A fixture corpus with a `[[query::*]]` report page targeting a
+/// sql_view instance — the query-instance card's round-trip corpus.
+/// The target instance itself is created through the real client
+/// (`createSqlInstance`) inside the test.
+FixtureEscurelClient _queryClient() => FixtureEscurelClient.fromSources(
+  skillFiles: {
+    'erp_customer.md':
+        '---\ntype: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
+    'query.md':
+        '---\ntype: skill\nid: query\ndescription: Reusable reads.\n---\n\n# query',
+  },
+  instanceFiles: {
+    'customers-by-name.md':
+        '---\ntype: instance\nskill: query\nid: customers-by-name\ntarget: "[[erp_customer::eu]]"\n---\n\n# customers-by-name',
+  },
+);
+
+/// Delegates the panel's auto-loaded surfaces to the fixture but answers
+/// `queryInstance` with a canned 60-row result, so the card's display
+/// cap (~50 rows + truncation note) is observable. Any surface not
+/// forwarded routes to `noSuchMethod` and fails loudly.
+class _CannedQueryClient implements EscurelClient {
+  _CannedQueryClient(this._inner);
+
+  final EscurelClient _inner;
+
+  @override
+  Future<List<SkillSummary>> listSkills() => _inner.listSkills();
+
+  @override
+  Future<List<CredentialInfo>> listCredentials() => _inner.listCredentials();
+
+  @override
+  Future<List<EndpointInfo>> listEndpoints() => _inner.listEndpoints();
+
+  @override
+  Future<QueryResult> queryInstance(
+    String queryRef, {
+    Map<String, Object?> params = const {},
+  }) async => QueryResult(
+    columns: const [QueryColumn(name: 'n', dartType: 'int')],
+    rows: [
+      for (var i = 0; i < 60; i++) {'n': i},
+    ],
+  );
+
+  @override
+  void close() => _inner.close();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 void main() {
-  testWidgets('renders the seven trigger cards', (tester) async {
-    await _pump(tester, _client());
+  testWidgets('renders the nine trigger cards', (tester) async {
+    await _pump(tester, _remoteClient());
     expect(find.bySemanticsLabel('backend-admin-panel'), findsOneWidget);
     expect(find.bySemanticsLabel('cred-register-button'), findsOneWidget);
     expect(find.bySemanticsLabel('validate-bindings-button'), findsOneWidget);
@@ -98,6 +163,141 @@ void main() {
     expect(find.bySemanticsLabel('pack-import-submit'), findsOneWidget);
     expect(find.bySemanticsLabel('endpoint-register-button'), findsOneWidget);
     expect(find.bySemanticsLabel('validate-endpoints-button'), findsOneWidget);
+    expect(find.bySemanticsLabel('create-remote-submit'), findsOneWidget);
+    expect(find.bySemanticsLabel('query-instance-run'), findsOneWidget);
+  });
+
+  testWidgets('running a query renders the tabular result', (tester) async {
+    final client = _queryClient();
+    // Materialise the report's target through the real client first.
+    await client.createSqlInstance(skill: 'erp_customer', id: 'eu');
+    await _pump(tester, client);
+
+    await tester.enterText(
+      find.bySemanticsLabel('query-instance-ref-field'),
+      '[[query::customers-by-name]]',
+    );
+    await tester.tap(find.bySemanticsLabel('query-instance-run'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('query-result-table'), findsOneWidget);
+    // The fixture's minimal computation projects the target instance's
+    // scalar frontmatter — its id lands in the table.
+    expect(find.text('id'), findsOneWidget);
+    expect(find.text('eu'), findsWidgets);
+  });
+
+  testWidgets('an unknown query ref surfaces the error verbatim', (
+    tester,
+  ) async {
+    await _pump(tester, _queryClient());
+    await tester.enterText(
+      find.bySemanticsLabel('query-instance-ref-field'),
+      'no-such-report',
+    );
+    await tester.tap(find.bySemanticsLabel('query-instance-run'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('query-result-table'), findsNothing);
+    expect(
+      find.textContaining('query `no-such-report` not found'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('invalid params JSON is refused before any wire call', (
+    tester,
+  ) async {
+    await _pump(tester, _queryClient());
+    await tester.enterText(
+      find.bySemanticsLabel('query-instance-ref-field'),
+      'customers-by-name',
+    );
+    await tester.enterText(
+      find.bySemanticsLabel('query-instance-params-field'),
+      '{min: nope',
+    );
+    await tester.tap(find.bySemanticsLabel('query-instance-run'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('params_invalid_json'), findsOneWidget);
+    expect(find.bySemanticsLabel('query-result-table'), findsNothing);
+  });
+
+  testWidgets('the result table caps displayed rows and says so', (
+    tester,
+  ) async {
+    await _pump(tester, _CannedQueryClient(_queryClient()));
+    await tester.enterText(
+      find.bySemanticsLabel('query-instance-ref-field'),
+      'big-report',
+    );
+    await tester.tap(find.bySemanticsLabel('query-instance-run'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('query-result-table'), findsOneWidget);
+    // Row 49 is the last displayed; row 50 is beyond the display cap.
+    expect(find.text('49'), findsOneWidget);
+    expect(find.text('50'), findsNothing);
+    expect(find.textContaining('showing 50 of 60 rows'), findsOneWidget);
+  });
+
+  testWidgets('creating a remote instance reports the new page id', (
+    tester,
+  ) async {
+    final client = _remoteClient();
+    // The skill's binding names this endpoint; register it first — the
+    // real create path fails closed on an unregistered endpoint.
+    await client.registerEndpoint(
+      name: 'yahoo_finance',
+      kind: 'openapi',
+      baseUrl: 'https://query1.finance.yahoo.com',
+    );
+    await _pump(tester, client);
+
+    expect(find.bySemanticsLabel('create-remote-skill-field'), findsOneWidget);
+    await tester.enterText(
+      find.bySemanticsLabel('create-remote-id-field'),
+      'aapl',
+    );
+    await tester.tap(find.bySemanticsLabel('create-remote-submit'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('create-remote-result'), findsOneWidget);
+    expect(find.textContaining('quote__aapl'), findsOneWidget);
+    // The instance actually exists on the client now, bound to the
+    // skill's endpoint.
+    final page = await client.expand('quote__aapl');
+    expect(page.backendKind, 'openapi');
+    expect(page.backendRef?['endpoint'], 'yahoo_finance');
+  });
+
+  testWidgets('creating a remote instance fails closed on an unregistered '
+      'endpoint, error verbatim', (tester) async {
+    // No registerEndpoint call — the skill references yahoo_finance but
+    // nothing is registered, mirroring the server's refusal.
+    await _pump(tester, _remoteClient());
+    await tester.enterText(
+      find.bySemanticsLabel('create-remote-id-field'),
+      'aapl',
+    );
+    await tester.tap(find.bySemanticsLabel('create-remote-submit'));
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('create-remote-result'), findsNothing);
+    expect(
+      find.textContaining('endpoint `yahoo_finance` is not registered'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the create-remote card states when no remote skill exists', (
+    tester,
+  ) async {
+    // _client() declares only sql_view + document skills.
+    await _pump(tester, _client());
+    expect(find.bySemanticsLabel('create-remote-submit'), findsNothing);
+    expect(find.textContaining('no openapi/mcp skills'), findsOneWidget);
   });
 
   testWidgets('registering a remote endpoint surfaces it in the list '

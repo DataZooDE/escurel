@@ -145,6 +145,82 @@ void main() {
     expect(find.text('showing 2 of 42 chunks'), findsOneWidget);
   });
 
+  testWidgets('a remote openapi instance renders the live projection', (
+    tester,
+  ) async {
+    // The remote wire shape differs from sql_view: `source` is the endpoint
+    // NAME (a string) and the projected values arrive under `fields`.
+    final page = _page(
+      frontmatter: const {
+        'name': 'AAPL',
+        'backend_ref': {'kind': 'openapi', 'endpoint': 'yahoo_finance'},
+      },
+      projection: const BackendProjection(
+        endpoint: 'yahoo_finance',
+        fields: {'symbol': 'AAPL', 'price': 189.31, 'currency': 'USD'},
+      ),
+    );
+    await _pump(tester, page);
+
+    expect(
+      find.bySemanticsLabel('backend-pane:${page.pageId}'),
+      findsOneWidget,
+    );
+    expect(find.bySemanticsLabel('backend-projection'), findsOneWidget);
+    expect(find.text('Remote openapi (live)'), findsOneWidget);
+    // The projected fields render as key/value rows.
+    expect(find.text('symbol'), findsOneWidget);
+    expect(find.text('AAPL'), findsOneWidget);
+    expect(find.text('price'), findsOneWidget);
+    expect(find.text('189.31'), findsOneWidget);
+    expect(find.text('currency'), findsOneWidget);
+    expect(find.text('USD'), findsOneWidget);
+    // Provenance: the endpoint the values were fetched from.
+    expect(find.textContaining('yahoo_finance'), findsWidgets);
+    expect(find.bySemanticsLabel('binding-degraded'), findsNothing);
+  });
+
+  testWidgets('a degraded remote read surfaces the fail-closed issue', (
+    tester,
+  ) async {
+    // A remote failure arrives as `{ issue: "<message>" }` — a plain string,
+    // not the sql_view `{code, message}` object. The message must render
+    // verbatim and prominently: the fail-closed path is part of the demo.
+    final page = _page(
+      frontmatter: const {
+        'backend_ref': {'kind': 'mcp', 'endpoint': 'upstream_kb'},
+      },
+      projection: const BackendProjection(
+        issueMessage: 'endpoint `upstream_kb` is not registered',
+      ),
+    );
+    await _pump(tester, page);
+
+    expect(find.text('Remote mcp (live)'), findsOneWidget);
+    expect(find.bySemanticsLabel('binding-degraded'), findsOneWidget);
+    expect(
+      find.text('endpoint `upstream_kb` is not registered'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('fail closed'), findsOneWidget);
+    // No fields table pretends data came back.
+    expect(find.bySemanticsLabel('backend-projection'), findsNothing);
+  });
+
+  testWidgets('a remote projection with no fields states so honestly', (
+    tester,
+  ) async {
+    final page = _page(
+      frontmatter: const {
+        'backend_ref': {'kind': 'openapi', 'endpoint': 'crm_rest'},
+      },
+      projection: const BackendProjection(endpoint: 'crm_rest'),
+    );
+    await _pump(tester, page);
+    expect(find.textContaining('no projected fields'), findsOneWidget);
+    expect(find.bySemanticsLabel('binding-degraded'), findsNothing);
+  });
+
   testWidgets('the server `ok` document status renders as healthy', (
     tester,
   ) async {

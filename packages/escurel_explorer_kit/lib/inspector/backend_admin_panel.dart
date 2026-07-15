@@ -48,7 +48,7 @@ String? validatePackImportInput(String manifestJson, String tarballB64) {
 }
 
 /// The Backends panel of the Dev Inspector — the operator's trigger surface
-/// for the external-instance backends. Seven cards, each driving one
+/// for the external-instance backends. Nine cards, each driving one
 /// admin-gated action against the real client:
 ///
 ///   1. Credential registry — register / list / delete named source
@@ -57,13 +57,23 @@ String? validatePackImportInput(String manifestJson, String tarballB64) {
 ///   2. Remote endpoints — register / list / delete the named
 ///      openapi/mcp upstreams remote skills bind to, and probe their
 ///      reachability (`validate_endpoints`). The secret is write-only.
-///   3. Binding health — run `validate_bindings` and read each SQL view's
+///   3. Create remote instance — materialise an openapi/mcp instance from
+///      a skill declaring a remote backend (`create_remote_instance`);
+///      only the overlay page is stored, the data is fetched live on
+///      expand.
+///   4. Binding health — run `validate_bindings` and read each SQL view's
 ///      drift status (a degraded binding reads fail-closed).
-///   4. Create SQL instance — materialise a read-only view-backed instance
+///   5. Create SQL instance — materialise a read-only view-backed instance
 ///      from a `sql_view` skill.
-///   5. Document ingestion — upload bytes through `/ingest/upload` and watch
+///   6. Query instance — run a `[[query::*]]` report against its target
+///      sql_view instance (`query_instance`) with runtime params, tabular
+///      result (display capped at ~50 rows).
+///   7. Document ingestion — upload bytes through `/ingest/upload` and watch
 ///      the evented pipeline's outcome (event id, handler skill, chunk
 ///      count, or a parked Issue).
+///   8. Subscribed packs — list / unsubscribe the pinned skill packs behind
+///      the read-only base layer.
+///   9. Import pack — paste-import a signed skill pack.
 ///
 /// Every interactive widget carries a stable `Semantics(label:)` — the
 /// rodney selector contract for `scripts/verify-demo.sh`.
@@ -84,9 +94,16 @@ class BackendAdminPanel extends ConsumerWidget {
           SizedBox(height: 16),
           _Card(title: 'Remote endpoints', child: _RemoteEndpoints()),
           SizedBox(height: 16),
+          _Card(
+            title: 'Create remote instance',
+            child: _CreateRemoteInstance(),
+          ),
+          SizedBox(height: 16),
           _Card(title: 'Binding health', child: _BindingHealth()),
           SizedBox(height: 16),
           _Card(title: 'Create SQL-view instance', child: _CreateSqlInstance()),
+          SizedBox(height: 16),
+          _Card(title: 'Query instance', child: _QueryInstance()),
           SizedBox(height: 16),
           _Card(title: 'Document ingestion', child: _DocumentIngest()),
           SizedBox(height: 16),
@@ -517,7 +534,150 @@ class _RemoteEndpointsState extends ConsumerState<_RemoteEndpoints> {
   }
 }
 
-// ── 3. Binding health ───────────────────────────────────────────────
+// ── 3. Create remote instance ───────────────────────────────────────
+
+/// Materialise an openapi/mcp instance from a skill declaring a remote
+/// backend (`create_remote_instance`, admin). Mirrors the create-SQL card:
+/// the binding (kind + endpoint) comes from the skill's `backend:` block,
+/// never this form — an unregistered endpoint fails closed server-side and
+/// the refusal surfaces verbatim. Stable labels (rodney selector
+/// contract): `create-remote-skill-field`, `create-remote-id-field`,
+/// `create-remote-body-field`, `create-remote-submit`,
+/// `create-remote-result`.
+class _CreateRemoteInstance extends ConsumerStatefulWidget {
+  const _CreateRemoteInstance();
+
+  @override
+  ConsumerState<_CreateRemoteInstance> createState() =>
+      _CreateRemoteInstanceState();
+}
+
+class _CreateRemoteInstanceState extends ConsumerState<_CreateRemoteInstance> {
+  final _id = TextEditingController();
+  final _body = TextEditingController();
+  String? _skill;
+  String? _resultPageId;
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _id.dispose();
+    _body.dispose();
+    super.dispose();
+  }
+
+  Future<void> _create(String skill) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+      _resultPageId = null;
+    });
+    try {
+      final body = _body.text.trim();
+      final pageId = await ref
+          .read(escurelClientProvider)
+          .createRemoteInstance(
+            skill: skill,
+            id: _id.text.trim(),
+            overlayBody: body.isEmpty ? null : body,
+          );
+      if (mounted) setState(() => _resultPageId = pageId);
+      ref.invalidate(instancesProvider(skill));
+    } on EscurelClientException catch (e) {
+      // The server's refusal (unregistered endpoint, non-remote skill) is
+      // the operator's diagnosis — verbatim, never paraphrased.
+      if (mounted) setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final catalogue = ref.watch(skillsCatalogueProvider);
+    final remoteSkills =
+        catalogue.asData?.value
+            .where((s) => s.backendKind == 'openapi' || s.backendKind == 'mcp')
+            .map((s) => s.id)
+            .toList() ??
+        const <String>[];
+    final skill =
+        _skill ?? (remoteSkills.isNotEmpty ? remoteSkills.first : null);
+
+    if (remoteSkills.isEmpty) {
+      return Text(
+        'no openapi/mcp skills declared',
+        style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Semantics(
+              label: 'create-remote-skill-field',
+              identifier: 'create-remote-skill-field',
+              // A bare Semantics label merges into the dropdown's own
+              // node and vanishes; a container keeps it addressable
+              // (the rodney ax-find contract, and the widget test).
+              container: true,
+              explicitChildNodes: true,
+              child: DropdownButton<String>(
+                value: skill,
+                items: [
+                  for (final s in remoteSkills)
+                    DropdownMenuItem(value: s, child: Text(s)),
+                ],
+                onChanged: (v) => setState(() => _skill = v),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _LabeledField(
+                label: 'create-remote-id-field',
+                hint: 'instance id (e.g. aapl)',
+                controller: _id,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _LabeledField(
+          label: 'create-remote-body-field',
+          hint: 'overlay markdown body (optional)',
+          controller: _body,
+          maxLines: 3,
+        ),
+        const SizedBox(height: 8),
+        _ActionButton(
+          label: 'create-remote-submit',
+          text: _busy ? 'Creating…' : 'Create remote instance',
+          onPressed: (_busy || skill == null) ? null : () => _create(skill),
+        ),
+        if (_error != null) _ErrorText(_error!),
+        if (_resultPageId != null)
+          Semantics(
+            label: 'create-remote-result',
+            identifier: 'create-remote-result',
+            container: true,
+            explicitChildNodes: true,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                'created $_resultPageId — data is fetched live on expand',
+                style: text.bodySmall?.copyWith(color: kSuccess),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+// ── 4. Binding health ───────────────────────────────────────────────
 
 class _BindingHealth extends ConsumerStatefulWidget {
   const _BindingHealth();
@@ -719,7 +879,206 @@ class _CreateSqlInstanceState extends ConsumerState<_CreateSqlInstance> {
   }
 }
 
-// ── 4. Document ingestion ───────────────────────────────────────────
+// ── 6. Query instance ───────────────────────────────────────────────
+
+/// The most result rows the query card renders; anything beyond is
+/// counted, not drawn (the server already bounds the set — this bounds
+/// the DOM).
+const int queryInstanceDisplayedRowCap = 50;
+
+/// Run a `[[query::*]]` report against its target sql_view instance
+/// (`query_instance`): query ref + optional runtime params (a JSON
+/// object, bound server-side as prepared-statement values), tabular
+/// result. Errors — unknown query, missing target, ACL refusal — surface
+/// verbatim. Stable labels (rodney selector contract):
+/// `query-instance-ref-field`, `query-instance-params-field`,
+/// `query-instance-run`, `query-result-table`.
+class _QueryInstance extends ConsumerStatefulWidget {
+  const _QueryInstance();
+
+  @override
+  ConsumerState<_QueryInstance> createState() => _QueryInstanceState();
+}
+
+class _QueryInstanceState extends ConsumerState<_QueryInstance> {
+  final _ref = TextEditingController();
+  final _params = TextEditingController();
+  QueryResult? _result;
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _ref.dispose();
+    _params.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run() async {
+    // Pre-flight the params paste before any wire round-trip: a precise
+    // named error beats a server 500 on malformed JSON.
+    var params = const <String, Object?>{};
+    final raw = _params.text.trim();
+    if (raw.isNotEmpty) {
+      Object? decoded;
+      try {
+        decoded = jsonDecode(raw);
+      } on FormatException catch (e) {
+        setState(() {
+          _error = 'params_invalid_json: ${e.message}';
+          _result = null;
+        });
+        return;
+      }
+      if (decoded is! Map<String, dynamic>) {
+        setState(() {
+          _error = 'params_invalid_json: params must be a JSON object';
+          _result = null;
+        });
+        return;
+      }
+      params = decoded;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+      _result = null;
+    });
+    try {
+      final r = await ref
+          .read(escurelClientProvider)
+          .queryInstance(_ref.text.trim(), params: params);
+      if (mounted) setState(() => _result = r);
+    } on EscurelClientException catch (e) {
+      // The server's refusal is the operator's diagnosis — verbatim.
+      if (mounted) setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final result = _result;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _LabeledField(
+          label: 'query-instance-ref-field',
+          hint: 'query id or [[query::id]]',
+          controller: _ref,
+        ),
+        const SizedBox(height: 8),
+        _LabeledField(
+          label: 'query-instance-params-field',
+          hint: 'runtime params, JSON object (optional, e.g. {"min": 10})',
+          controller: _params,
+          maxLines: 2,
+        ),
+        const SizedBox(height: 8),
+        _ActionButton(
+          label: 'query-instance-run',
+          text: _busy ? 'Running…' : 'Run query',
+          onPressed: _busy ? null : _run,
+        ),
+        if (_error != null) _ErrorText(_error!),
+        if (result != null) ...[
+          const SizedBox(height: 10),
+          _QueryResultTable(result: result),
+        ],
+      ],
+    );
+  }
+}
+
+class _QueryResultTable extends StatelessWidget {
+  const _QueryResultTable({required this.result});
+
+  final QueryResult result;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final total = result.rows.length;
+    final shown = result.rows.take(queryInstanceDisplayedRowCap).toList();
+    // Schema names the columns (even on an empty result); fall back to
+    // a union of row keys for a client that reports no schema.
+    final columns = result.columns.map((c) => c.name).toList();
+    if (columns.isEmpty) {
+      for (final r in shown) {
+        for (final k in r.keys) {
+          if (!columns.contains(k)) columns.add(k);
+        }
+      }
+    }
+    return Semantics(
+      label: 'query-result-table',
+      identifier: 'query-result-table',
+      container: true,
+      explicitChildNodes: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (shown.isEmpty || columns.isEmpty)
+            Text(
+              'query returned no rows',
+              style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+            )
+          else
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: DataTable(
+                headingRowHeight: 28,
+                dataRowMinHeight: 24,
+                dataRowMaxHeight: 36,
+                columnSpacing: 20,
+                columns: [
+                  for (final c in columns)
+                    DataColumn(
+                      label: Text(
+                        c,
+                        style: text.labelMedium?.copyWith(
+                          color: kOnSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                ],
+                rows: [
+                  for (final r in shown)
+                    DataRow(
+                      cells: [
+                        for (final c in columns)
+                          DataCell(
+                            Text('${r[c] ?? '—'}', style: text.bodySmall),
+                          ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          if (total > shown.length)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                'showing ${shown.length} of $total rows',
+                style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+              ),
+            ),
+          if (result.truncated)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                'server truncated the result set',
+                style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── 7. Document ingestion ───────────────────────────────────────────
 
 class _DocumentIngest extends ConsumerStatefulWidget {
   const _DocumentIngest();

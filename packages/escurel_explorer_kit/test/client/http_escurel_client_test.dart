@@ -744,6 +744,66 @@ void main() {
       expect(page.backendProjection!.issueCode, 'binding_degraded');
     });
 
+    test('expand parses a remote (openapi/mcp) live projection', () async {
+      // The remote wire shape (remote_backend::fetch_projection) differs
+      // from sql_view: `source` is the endpoint NAME (a string, not the
+      // projected-column map) and the values arrive under `fields`.
+      mock.toolHandlers['expand'] = (_) => {
+        'page': {
+          'page_id': 'quote__aapl',
+          'skill': 'quote',
+          'page_type': 'instance',
+        },
+        'frontmatter': {
+          'backend_ref': {'kind': 'openapi', 'endpoint': 'yahoo_finance'},
+        },
+        'body': '# AAPL',
+        'blocks': <Map<String, dynamic>>[],
+        'wikilinks_out': <String>[],
+        'backend_projection': {
+          'source': 'yahoo_finance',
+          'fields': {'symbol': 'AAPL', 'price': 189.31, 'currency': 'USD'},
+        },
+      };
+      final page = await client.expand('quote__aapl');
+      expect(page.backendKind, 'openapi');
+      final p = page.backendProjection!;
+      expect(p.endpoint, 'yahoo_finance');
+      expect(p.fields['symbol'], 'AAPL');
+      expect(p.fields['price'], 189.31);
+      expect(p.degraded, isFalse);
+      // The sql_view-shaped members stay at their honest defaults.
+      expect(p.rows, isEmpty);
+      expect(p.source, isEmpty);
+    });
+
+    test('expand parses a degraded remote projection (string issue)', () async {
+      // Exact live payload observed from a real openapi expand: the issue
+      // is a plain STRING (unlike sql_view's {code, message} object) and
+      // view/rows/source are entirely absent.
+      mock.toolHandlers['expand'] = (_) => {
+        'page': {
+          'page_id': 'quote__aapl',
+          'skill': 'quote',
+          'page_type': 'instance',
+        },
+        'frontmatter': {
+          'backend_ref': {'kind': 'openapi', 'endpoint': 'yahoo_finance'},
+        },
+        'body': '',
+        'blocks': <Map<String, dynamic>>[],
+        'wikilinks_out': <String>[],
+        'backend_projection': {'issue': 'upstream status 429: null'},
+      };
+      final page = await client.expand('quote__aapl');
+      final p = page.backendProjection!;
+      expect(p.degraded, isTrue);
+      expect(p.issueCode, isNull);
+      expect(p.issueMessage, 'upstream status 429: null');
+      expect(p.rows, isEmpty);
+      expect(p.fields, isEmpty);
+    });
+
     test('list_credentials parses without a secret field', () async {
       mock.toolHandlers['list_credentials'] = (_) => {
         'credentials': [
@@ -788,6 +848,69 @@ void main() {
       );
       expect(pageId, 'markdown/instances/customers/us.md');
       expect(args!['skill'], 'customers');
+    });
+
+    test('query_instance sends ref/params and parses rows+schema', () async {
+      Map<String, dynamic>? args;
+      mock.toolHandlers['query_instance'] = (a) {
+        args = a;
+        return {
+          'rows': [
+            {'name': 'Acme', 'total': 50},
+          ],
+          'schema': [
+            {'name': 'name', 'type': 'VARCHAR'},
+            {'name': 'total', 'type': 'BIGINT'},
+          ],
+          'truncated': true,
+        };
+      };
+      final r = await client.queryInstance(
+        '[[query::customers-by-name]]',
+        params: {'min': 10},
+      );
+      // `ref` is the documented wire key; the wikilink form is accepted
+      // and normalised server-side.
+      expect(args!['ref'], '[[query::customers-by-name]]');
+      expect(args!['params'], {'min': 10});
+      expect(r.rows.single['total'], 50);
+      expect(r.columns.map((c) => c.name).toList(), ['name', 'total']);
+      expect(r.columns.first.dartType, 'VARCHAR');
+      expect(r.truncated, isTrue);
+    });
+
+    test(
+      'create_remote_instance sends skill/id and returns the page id',
+      () async {
+        Map<String, dynamic>? args;
+        mock.toolHandlers['create_remote_instance'] = (a) {
+          args = a;
+          return {
+            'page_id': 'markdown/instances/quote/aapl.md',
+            'kind': 'openapi',
+            'endpoint': 'yahoo_finance',
+          };
+        };
+        final pageId = await client.createRemoteInstance(
+          skill: 'quote',
+          id: 'aapl',
+          overlayBody: '# AAPL\n',
+        );
+        expect(pageId, 'markdown/instances/quote/aapl.md');
+        expect(args!['skill'], 'quote');
+        expect(args!['id'], 'aapl');
+        expect(args!['overlay_body'], '# AAPL\n');
+      },
+    );
+
+    test('create_remote_instance omits an absent overlay_body', () async {
+      Map<String, dynamic>? args;
+      mock.toolHandlers['create_remote_instance'] = (a) {
+        args = a;
+        return {'page_id': 'markdown/instances/quote/aapl.md'};
+      };
+      await client.createRemoteInstance(skill: 'quote', id: 'aapl');
+      expect(args!.containsKey('overlay_body'), isFalse);
     });
 
     test(

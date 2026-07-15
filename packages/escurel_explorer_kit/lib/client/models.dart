@@ -175,39 +175,75 @@ class ShadowInfo {
   );
 }
 
-/// The bounded projection of a `sql_view` instance's view (`expand`'s
-/// `backend_projection`): rows, the projected `source.<field>` map, and an
-/// optional Issue (e.g. `binding_degraded` — reads fail closed on drift).
+/// An instance's `backend_projection` from `expand` — one Dart object over
+/// two wire families:
+///
+///  * `sql_view`: the bounded projection of the view's rows, the projected
+///    `source.<field>` column map, and an optional `{code, message}` Issue
+///    (e.g. `binding_degraded` — reads fail closed on drift).
+///  * remote (`openapi`/`mcp`): the LIVE upstream read — the [endpoint]
+///    name plus the projected [fields] map on success, or a plain-string
+///    issue ([issueMessage] only, no code) on any failure.
 class BackendProjection {
   const BackendProjection({
-    required this.view,
-    required this.rows,
-    required this.source,
+    this.view = '',
+    this.rows = const [],
+    this.source = const {},
     this.truncated = false,
     this.issueCode,
     this.issueMessage,
+    this.endpoint,
+    this.fields = const {},
   });
 
   final String view;
   final List<Map<String, dynamic>> rows;
+
+  /// sql_view: the projected `source.<overlay_field>` column map. Remote
+  /// projections reuse the `source` wire key for the endpoint NAME instead
+  /// — that lands in [endpoint], and this map stays empty.
   final Map<String, dynamic> source;
   final bool truncated;
+
+  /// sql_view issue code (`binding_degraded`, `source_unavailable`, …).
+  /// A remote failure carries no code — only [issueMessage] is set.
   final String? issueCode;
   final String? issueMessage;
 
-  bool get degraded => issueCode != null;
+  /// Remote (openapi/mcp) only: the registered endpoint the live values
+  /// were fetched from (the wire's string-typed `source`).
+  final String? endpoint;
+
+  /// Remote (openapi/mcp) only: the projected field→value map
+  /// (`{symbol, price, currency, …}`). Empty for sql_view projections.
+  final Map<String, dynamic> fields;
+
+  bool get degraded => issueCode != null || issueMessage != null;
 
   factory BackendProjection.fromJson(Map<String, dynamic> j) {
-    final issue = j['issue'] as Map<String, dynamic>?;
+    // Two wire families share this object. sql_view:
+    //   { view, rows, source: {col: val}, truncated?, issue?: {code, message} }
+    // remote (openapi/mcp), from remote_backend::fetch_projection:
+    //   { source: "<endpoint name>", fields: {…} }  |  { issue: "<message>" }
+    // Parse tolerantly: `source` may be a map or a string, `issue` an
+    // object or a plain string, and any key may be absent.
+    final issue = j['issue'];
+    final source = j['source'];
     return BackendProjection(
       view: (j['view'] as String?) ?? '',
       rows: (j['rows'] as List? ?? const [])
           .cast<Map<String, dynamic>>()
           .toList(),
-      source: Map<String, dynamic>.from(j['source'] as Map? ?? const {}),
+      source: source is Map ? Map<String, dynamic>.from(source) : const {},
       truncated: (j['truncated'] as bool?) ?? false,
-      issueCode: issue?['code'] as String?,
-      issueMessage: issue?['message'] as String?,
+      issueCode: issue is Map ? issue['code']?.toString() : null,
+      issueMessage: switch (issue) {
+        final Map m => m['message']?.toString(),
+        final String s => s,
+        _ => null,
+      },
+      endpoint: source is String ? source : null,
+      fields: Map<String, dynamic>.from(j['fields'] as Map? ?? const {}),
     );
   }
 }
@@ -692,11 +728,16 @@ class QueryResult {
     required this.columns,
     required this.rows,
     this.snapshotVersion,
+    this.truncated = false,
   });
 
   final List<QueryColumn> columns;
   final List<Map<String, Object?>> rows;
   final String? snapshotVersion;
+
+  /// `query_instance` only: whether the server capped the result set
+  /// (the tool's additive `truncated` flag). Always false elsewhere.
+  final bool truncated;
 }
 
 // ── validate / update_page ──────────────────────────────────────

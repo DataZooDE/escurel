@@ -114,6 +114,17 @@ abstract class EscurelClient {
     Map<String, Object?> params = const {},
   });
 
+  /// Run a `[[query::*]]` report that declares `target: [[skill::id]]`
+  /// against that sql_view instance's view (`query_instance`). [queryRef]
+  /// is the query id, `query::id`, or its `[[query::id]]` wikilink —
+  /// normalised server-side. Runtime [params] bind as prepared-statement
+  /// values (never interpolated); the target instance's ACL gates the
+  /// read, fail-closed.
+  Future<QueryResult> queryInstance(
+    String queryRef, {
+    Map<String, Object?> params = const {},
+  });
+
   // ── write primitives ────────────────────────────────────────
 
   /// Dry-run the indexer's validation pipeline against [content].
@@ -281,6 +292,19 @@ abstract class EscurelClient {
   /// Materialise a `sql_view` instance from its skill's `backend.source`
   /// binding (`create_sql_instance`, admin). Returns the new page id.
   Future<String> createSqlInstance({
+    required String skill,
+    required String id,
+    String? overlayBody,
+  });
+
+  /// Materialise a remote (`openapi`/`mcp`) instance from a skill that
+  /// declares a remote backend (`create_remote_instance`, admin). The
+  /// binding — kind + endpoint — comes from the skill's `backend:` block,
+  /// not the caller; the referenced endpoint must be registered
+  /// (fail-closed otherwise). Only the overlay page is stored — the data
+  /// is fetched live from the upstream on every expand. Returns the new
+  /// page id.
+  Future<String> createRemoteInstance({
     required String skill,
     required String id,
     String? overlayBody,
