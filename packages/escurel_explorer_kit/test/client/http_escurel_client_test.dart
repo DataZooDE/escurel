@@ -744,6 +744,66 @@ void main() {
       expect(page.backendProjection!.issueCode, 'binding_degraded');
     });
 
+    test('expand parses a remote (openapi/mcp) live projection', () async {
+      // The remote wire shape (remote_backend::fetch_projection) differs
+      // from sql_view: `source` is the endpoint NAME (a string, not the
+      // projected-column map) and the values arrive under `fields`.
+      mock.toolHandlers['expand'] = (_) => {
+        'page': {
+          'page_id': 'quote__aapl',
+          'skill': 'quote',
+          'page_type': 'instance',
+        },
+        'frontmatter': {
+          'backend_ref': {'kind': 'openapi', 'endpoint': 'yahoo_finance'},
+        },
+        'body': '# AAPL',
+        'blocks': <Map<String, dynamic>>[],
+        'wikilinks_out': <String>[],
+        'backend_projection': {
+          'source': 'yahoo_finance',
+          'fields': {'symbol': 'AAPL', 'price': 189.31, 'currency': 'USD'},
+        },
+      };
+      final page = await client.expand('quote__aapl');
+      expect(page.backendKind, 'openapi');
+      final p = page.backendProjection!;
+      expect(p.endpoint, 'yahoo_finance');
+      expect(p.fields['symbol'], 'AAPL');
+      expect(p.fields['price'], 189.31);
+      expect(p.degraded, isFalse);
+      // The sql_view-shaped members stay at their honest defaults.
+      expect(p.rows, isEmpty);
+      expect(p.source, isEmpty);
+    });
+
+    test('expand parses a degraded remote projection (string issue)', () async {
+      // Exact live payload observed from a real openapi expand: the issue
+      // is a plain STRING (unlike sql_view's {code, message} object) and
+      // view/rows/source are entirely absent.
+      mock.toolHandlers['expand'] = (_) => {
+        'page': {
+          'page_id': 'quote__aapl',
+          'skill': 'quote',
+          'page_type': 'instance',
+        },
+        'frontmatter': {
+          'backend_ref': {'kind': 'openapi', 'endpoint': 'yahoo_finance'},
+        },
+        'body': '',
+        'blocks': <Map<String, dynamic>>[],
+        'wikilinks_out': <String>[],
+        'backend_projection': {'issue': 'upstream status 429: null'},
+      };
+      final page = await client.expand('quote__aapl');
+      final p = page.backendProjection!;
+      expect(p.degraded, isTrue);
+      expect(p.issueCode, isNull);
+      expect(p.issueMessage, 'upstream status 429: null');
+      expect(p.rows, isEmpty);
+      expect(p.fields, isEmpty);
+    });
+
     test('list_credentials parses without a secret field', () async {
       mock.toolHandlers['list_credentials'] = (_) => {
         'credentials': [
