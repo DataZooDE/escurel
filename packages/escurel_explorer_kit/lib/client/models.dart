@@ -236,9 +236,9 @@ class BackendProjection {
           .toList(),
       source: source is Map ? Map<String, dynamic>.from(source) : const {},
       truncated: (j['truncated'] as bool?) ?? false,
-      issueCode: issue is Map ? issue['code'] as String? : null,
+      issueCode: issue is Map ? issue['code']?.toString() : null,
       issueMessage: switch (issue) {
-        final Map m => m['message'] as String?,
+        final Map m => m['message']?.toString(),
         final String s => s,
         _ => null,
       },

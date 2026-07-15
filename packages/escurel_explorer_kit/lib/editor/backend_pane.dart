@@ -229,7 +229,10 @@ class _RemoteProjection extends StatelessWidget {
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    for (final e in p.fields.entries)
+                    // Bounded like the sql_view row projection: a large
+                    // upstream payload must not stretch the editor
+                    // (agy review).
+                    for (final e in p.fields.entries.take(24))
                       Padding(
                         padding: const EdgeInsets.symmetric(vertical: 1),
                         child: Row(
@@ -251,6 +254,17 @@ class _RemoteProjection extends StatelessWidget {
                               ),
                             ),
                           ],
+                        ),
+                      ),
+                    if (p.fields.length > 24)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          '… ${p.fields.length - 24} more fields not shown',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: kOnSurfaceVariant),
                         ),
                       ),
                   ],

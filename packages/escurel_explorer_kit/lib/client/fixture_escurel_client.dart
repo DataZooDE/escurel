@@ -1080,7 +1080,11 @@ class FixtureEscurelClient implements EscurelClient {
       );
     }
     final endpoint = backend?['endpoint'] as String?;
-    if (endpoint == null) {
+    // Mirror the server contract: a remote binding needs BOTH the
+    // endpoint and a `read` operation; the real create_remote_instance
+    // rejects either omission with `endpoint/read missing` (codex
+    // review — a laxer fixture would greenlight skills that fail live).
+    if (endpoint == null || backend?['read'] is! Map) {
       throw EscurelToolException(
         'skill `$skill` has an incomplete remote backend binding '
         '(endpoint/read missing)',

@@ -93,7 +93,7 @@ FixtureEscurelClient _remoteClient() => FixtureEscurelClient.fromSources(
     'erp_customer.md':
         '---\ntype: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
     'quote.md':
-        '---\ntype: skill\nid: quote\ndescription: Live quotes.\nbackend:\n  kind: openapi\n  endpoint: yahoo_finance\n---\n\n# quote',
+        '---\ntype: skill\nid: quote\ndescription: Live quotes.\nbackend:\n  kind: openapi\n  endpoint: yahoo_finance\n  read:\n    path: /v8/finance/chart/{symbol}\n---\n\n# quote',
   },
   instanceFiles: const {},
 );
