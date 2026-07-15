@@ -1,0 +1,90 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Yahoo Finance chart API (subset)",
+    "description": "Hand-written minimal description of the public chart endpoint the crm-demo `stock_quote` skill proxies. escurel does NOT consume this document — `register_endpoint` takes only `{name, kind, base_url, auth}` and the per-operation binding (read path + JSONPath projection) lives on the skill page. This spec is the human/agent-facing contract for what that binding calls.",
+    "version": "8.0.0"
+  },
+  "servers": [{ "url": "https://query1.finance.yahoo.com" }],
+  "paths": {
+    "/v8/finance/chart/{symbol}": {
+      "get": {
+        "operationId": "getChart",
+        "summary": "Quote metadata + OHLC series for one symbol",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "example": "SAP"
+          },
+          {
+            "name": "interval",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["1m", "5m", "15m", "1d", "1wk", "1mo"],
+              "default": "1d"
+            }
+          },
+          {
+            "name": "range",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["1d", "5d", "1mo", "6mo", "1y", "5y", "max"],
+              "default": "1d"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Chart envelope; the quote metadata sits at chart.result[0].meta.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "chart": {
+                      "type": "object",
+                      "properties": {
+                        "result": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "meta": {
+                                "type": "object",
+                                "properties": {
+                                  "symbol": { "type": "string" },
+                                  "currency": { "type": "string" },
+                                  "exchangeName": { "type": "string" },
+                                  "regularMarketPrice": { "type": "number" },
+                                  "chartPreviousClose": { "type": "number" },
+                                  "regularMarketDayHigh": { "type": "number" },
+                                  "regularMarketDayLow": { "type": "number" }
+                                }
+                              },
+                              "timestamp": {
+                                "type": "array",
+                                "items": { "type": "integer" }
+                              },
+                              "indicators": { "type": "object" }
+                            }
+                          }
+                        },
+                        "error": { "nullable": true }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Unknown symbol." }
+        }
+      }
+    }
+  }
+}

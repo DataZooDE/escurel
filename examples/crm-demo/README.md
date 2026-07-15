@@ -24,6 +24,7 @@ instance.
 | [`project`](skills/project.md) | delivery engagement post-close |
 | [`attachment`](skills/attachment.md) | **document-backed** skill — uploaded files (PDF/DOCX/text), extracted + chunked; read-only |
 | [`erp_order`](skills/erp_order.md) | **sql_view-backed** skill — read-only DuckDB view over [`sources/erp/*.json`](sources/erp/); read-only |
+| [`stock_quote`](skills/stock_quote.md) | **openapi-backed** skill — live quote proxied from the Yahoo Finance chart API; read-only |
 
 The [`attachment`](skills/attachment.md) skill demonstrates an **external
 instance backend** (`backend: kind: document`): rather than authoring a
@@ -51,9 +52,27 @@ which (idempotently):
    `expand` on that instance then returns a bounded row projection with
    the projected columns mirrored under the `source.<field>` namespace —
    fully offline.
+2. **openapi** — registers the `yahoo_finance` endpoint (default
+   `https://query1.finance.yahoo.com`; override with
+   `ESCUREL_DEMO_YAHOO_BASE`) and materialises `[[stock_quote::sap]]`
+   via `create_remote_instance`. Note escurel never fetches the OpenAPI
+   document: `register_endpoint` takes only name/kind/base-URL/auth, and
+   the per-operation binding (read path + JSONPath projection over
+   `chart.result[0].meta`) lives on the
+   [`stock_quote`](skills/stock_quote.md) skill page. The
+   [`sources/yahoo-finance-openapi.json`](sources/yahoo-finance-openapi.json)
+   spec documents that operation for humans/agents.
 
-The no-mock acceptance for this flow lives in
-`crates/escurel-server/tests/crm_demo_backends.rs`.
+   **Live quotes require internet.** Offline, `expand` on the quote
+   instance shows the documented fail-closed degraded path — a
+   `backend_projection.issue`, never a fabricated price — and
+   `validate_endpoints` reports the endpoint `unreachable`. That
+   degraded path is itself part of the demo.
+
+The no-mock acceptance for both flows lives in
+`crates/escurel-server/tests/crm_demo_backends.rs` (the openapi tests
+run against a real local Yahoo-shaped HTTP server; the internet is
+never touched by tests).
 
 ## Instances — the Hoffmann chain (Brief scenario A)
 

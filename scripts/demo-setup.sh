@@ -11,6 +11,13 @@
 #      `relation:` at the ABSOLUTE sources/erp dir (DuckDB resolves the
 #      glob against the server cwd; resolving here makes the demo
 #      cwd-independent), then `create_sql_instance` the `book` instance.
+#   2. openapi — register the `yahoo_finance` endpoint (base URL + auth
+#      live server-side; escurel does NOT fetch the OpenAPI document —
+#      the per-op binding is on the stock_quote skill page, the spec at
+#      examples/crm-demo/sources/yahoo-finance-openapi.json is the
+#      human/agent-facing contract) and `create_remote_instance` the
+#      `sap` quote. Live quotes need internet; offline, `expand` shows
+#      the documented fail-closed degraded Issue — itself a feature demo.
 #
 # The server is expected to run without a verifier (the demo default), so
 # the admin tools are open. Point ESCUREL_DEMO_BASE elsewhere to target a
@@ -58,5 +65,21 @@ jq -e '.result.structuredContent.ok == true' >/dev/null <<<"$UPD" \
 note "erp_order: materialising instance [[erp_order::book]]"
 CREATED=$(mcp create_sql_instance '{"skill":"erp_order","id":"book","overlay_body":"# ERP order book\nRead-only mirror of the ERP order extract shipped with the demo."}')
 note "erp_order: $(jq -c '.result.structuredContent' <<<"$CREATED")"
+
+# --- 2. openapi: stock_quote via the Yahoo Finance chart API ------------
+
+# Override for offline/e2e runs pointing at a local Yahoo-shaped upstream.
+YAHOO_BASE="${ESCUREL_DEMO_YAHOO_BASE:-https://query1.finance.yahoo.com}"
+
+note "stock_quote: registering endpoint yahoo_finance -> $YAHOO_BASE"
+REG_ARGS=$(jq -cn --arg u "$YAHOO_BASE" '{name:"yahoo_finance",kind:"openapi",base_url:$u}')
+REG=$(mcp register_endpoint "$REG_ARGS")
+jq -e '.result.structuredContent.ok == true' >/dev/null <<<"$REG" \
+  || fail "register_endpoint rejected: $REG"
+
+note "stock_quote: materialising instance [[stock_quote::sap]]"
+QUOTE=$(mcp create_remote_instance '{"skill":"stock_quote","id":"sap"}')
+note "stock_quote: $(jq -c '.result.structuredContent' <<<"$QUOTE")"
+note "stock_quote: live quotes need internet; offline, expand degrades to a fail-closed Issue (by design)"
 
 note "demo setup complete"
