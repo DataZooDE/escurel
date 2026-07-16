@@ -614,7 +614,10 @@ class HttpEscurelClient implements EscurelClient {
       'query_id': queryId,
       'params': params,
     });
-    final columns = (result['columns'] as List? ?? const [])
+    // The server emits `schema: [{name, type}]` (see mcp.rs
+    // tool_run_stored_query) — the previous `columns` key never existed
+    // on this wire, so column metadata was silently dropped.
+    final columns = (result['schema'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
         .map(
           (c) => QueryColumn(
