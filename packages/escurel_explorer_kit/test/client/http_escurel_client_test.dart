@@ -420,6 +420,27 @@ void main() {
       },
     );
 
+    test('run_stored_query parses the server schema into columns', () async {
+      // The server emits `schema: [{name, type}]` (mcp.rs
+      // tool_run_stored_query) — the client used to read a
+      // non-existent `columns` key and silently dropped all column
+      // metadata.
+      mock.toolHandlers['run_stored_query'] = (_) => {
+        'rows': [
+          {'customer': 'acme', 'total': 12000},
+        ],
+        'schema': [
+          {'name': 'customer', 'type': 'VARCHAR'},
+          {'name': 'total', 'type': 'BIGINT'},
+        ],
+      };
+      final r = await client.runStoredQuery('sales_by_customer');
+      expect(r.rows, hasLength(1));
+      expect(r.columns, hasLength(2), reason: 'schema must not be dropped');
+      expect(r.columns.first.name, 'customer');
+      expect(r.columns.first.dartType, 'VARCHAR');
+    });
+
     test('list_packs parses the subscription pins', () async {
       mock.toolHandlers['list_packs'] = (_) => {
         'packs': [
