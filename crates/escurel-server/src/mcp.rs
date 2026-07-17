@@ -40,8 +40,8 @@ use escurel_crdt::{
 };
 use escurel_index::{
     AclCaller, AppendChatMessage, Capabilities, ChatMessage, Direction, EventInfo, Granularity,
-    Indexer, IndexerError, Issue, ListChatMessages, NewEvent, OrderDir, Severity, Visibility,
-    derive_attach_alias, is_safe_attach_source,
+    Indexer, IndexerError, IndexerHandle, Issue, ListChatMessages, NewEvent, OrderDir, Severity,
+    Visibility, derive_attach_alias, is_safe_attach_source,
 };
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
@@ -414,9 +414,12 @@ async fn ingest_gate(
         )
             .into_response());
     }
+    // Capture the CURRENT indexer once per request (hot-swap seam):
+    // the whole ingest runs against one consistent indexer even if a
+    // snapshot adoption swaps mid-flight.
     match state.indexer.as_ref() {
-        Some(i) => Ok((
-            std::sync::Arc::clone(i),
+        Some(h) => Ok((
+            h.current(),
             IngestCaller {
                 subject,
                 groups,
@@ -992,13 +995,18 @@ async fn dispatch_tools_call(
     let params: ToolsCallParams = serde_json::from_value(params)
         .map_err(|e| JsonRpcError::invalid_params(format!("tools/call params: {e}")))?;
 
+    // Capture the CURRENT indexer ONCE at dispatch entry (hot-swap
+    // seam, `IndexerHandle`): the whole tool call runs against one
+    // consistent indexer even if a snapshot adoption swaps mid-flight.
+    let current_indexer: Option<Arc<Indexer>> = state.indexer.as_ref().map(IndexerHandle::current);
+
     // Session tools depend on `crdt_backend` + `sessions`, not on
     // the indexer. Route them before the indexer gate.
     match params.name.as_str() {
         "open_session" => {
             return tool_open_session(
                 state.crdt_backend.as_ref(),
-                state.indexer.as_deref(),
+                current_indexer.as_deref(),
                 Arc::clone(&state.sessions),
                 state.quota.as_ref(),
                 tenant_id,
@@ -1103,7 +1111,7 @@ async fn dispatch_tools_call(
         _ => {}
     }
 
-    let indexer = state.indexer.as_ref().ok_or_else(|| {
+    let indexer = current_indexer.as_ref().ok_or_else(|| {
         JsonRpcError::internal("server has no indexer wired; tools/call is unavailable")
     })?;
 
@@ -2950,8 +2958,8 @@ fn tool_admin_quota(
     // returning the caller's own snapshot.
     let req: TenantIdArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("admin_quota: {e}")))?;
-    if let Some(indexer) = state.indexer.as_ref() {
-        ensure_tenant_matches(indexer, &req.tenant_id)?;
+    if let Some(handle) = state.indexer.as_ref() {
+        ensure_tenant_matches(&handle.current(), &req.tenant_id)?;
     }
     let quota = state
         .quota
@@ -3645,11 +3653,13 @@ fn tenant_store(state: &AppState) -> Result<&Arc<dyn TenantStore>, JsonRpcError>
         .ok_or_else(|| JsonRpcError::internal("server has no tenant_store wired"))
 }
 
-/// `state.indexer` or a failed-precondition error.
-fn admin_indexer(state: &AppState) -> Result<&Arc<Indexer>, JsonRpcError> {
+/// The CURRENT indexer from `state.indexer` (captured once per admin
+/// tool call — hot-swap seam) or a failed-precondition error.
+fn admin_indexer(state: &AppState) -> Result<Arc<Indexer>, JsonRpcError> {
     state
         .indexer
         .as_ref()
+        .map(IndexerHandle::current)
         .ok_or_else(|| JsonRpcError::internal("server has no indexer wired"))
 }
 
@@ -3871,7 +3881,7 @@ async fn tool_export_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
              (max 64 chars)",
         ));
     }
-    let indexer = admin_indexer(state)?.clone();
+    let indexer = admin_indexer(state)?;
     // A wrong `tenant_id` must not silently export this gateway's
     // (only) tenant (mirrors `rebuild`).
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
@@ -3978,7 +3988,7 @@ async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
             a.manifest.id
         )));
     }
-    let indexer = admin_indexer(state)?.clone();
+    let indexer = admin_indexer(state)?;
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
 
     // 1. Trust before touch (REQ-PACK-02): authenticate the manifest,
@@ -4185,7 +4195,7 @@ async fn tool_submit_promotion(
              alphanumerics plus . _ - (max 64 chars)",
         ));
     }
-    let indexer = admin_indexer(state)?.clone();
+    let indexer = admin_indexer(state)?;
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
 
     // Default-deny eligibility (skills-only, promotable, overlay).
@@ -4310,7 +4320,7 @@ async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRp
              sentinel; a rebase target is a published version",
         ));
     }
-    let indexer = admin_indexer(state)?.clone();
+    let indexer = admin_indexer(state)?;
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
 
     let tarball = B64
@@ -4605,7 +4615,7 @@ async fn tool_unsubscribe_pack(state: &AppState, args: Value) -> Result<Value, J
             "pack_id_invalid: not a safe pack id",
         ));
     }
-    let indexer = admin_indexer(state)?.clone();
+    let indexer = admin_indexer(state)?;
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
     let subs = indexer
         .list_pack_subscriptions()
@@ -4649,7 +4659,7 @@ async fn tool_unsubscribe_pack(state: &AppState, args: Value) -> Result<Value, J
 
 /// Admin: the subscribed packs and their pins (REQ-SUB-01).
 async fn tool_list_packs(state: &AppState) -> Result<Value, JsonRpcError> {
-    let indexer = admin_indexer(state)?.clone();
+    let indexer = admin_indexer(state)?;
     let subs = indexer
         .list_pack_subscriptions()
         .await
@@ -4779,7 +4789,7 @@ struct AttachExternalArgs {
 async fn tool_attach_external(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
     let a: AttachExternalArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("attach_external: {e}")))?;
-    let indexer = admin_indexer(state)?.clone();
+    let indexer = admin_indexer(state)?;
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
     // Reject an unsafe source before it reaches the ATTACH SQL.
     // DuckDB has no parameter binding for ATTACH, so this is the
@@ -4827,7 +4837,7 @@ async fn tool_rebuild(state: &AppState, args: Value) -> Result<Value, JsonRpcErr
         validate_tenant_id(&a.tenant_id)
             .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
     }
-    let indexer = admin_indexer(state)?.clone();
+    let indexer = admin_indexer(state)?;
     // A wrong `tenant_id` must not silently rebuild this gateway's
     // (only) tenant.
     ensure_tenant_matches(&indexer, &a.tenant_id)?;

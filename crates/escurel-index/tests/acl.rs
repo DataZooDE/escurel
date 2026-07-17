@@ -460,6 +460,7 @@ async fn group_members_table_present_after_reopen() {
     // Reopen as production does: load_extensions + ensure_group_members.
     let conn = Connection::open(&path).unwrap();
     Migrator::load_extensions(&conn).unwrap();
+    Migrator::enable_hnsw_persistence(&conn).unwrap();
     Migrator::ensure_group_members(&conn).unwrap();
     conn.execute_batch(
         "INSERT INTO group_members (group_id, subject) VALUES ('team-acme', 'whatsapp:222');",

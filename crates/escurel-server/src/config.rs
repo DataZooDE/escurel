@@ -63,13 +63,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use duckdb::Connection;
 use escurel_admin::FsTenantStore;
 use escurel_auth::{OidcConfig, OidcVerifier};
 use escurel_crdt::{CrdtBackend, DuckdbCrdtBackend};
 use escurel_embed::{Embedder, ReloadableEmbedder, ZeroEmbedder};
 use escurel_index::backend::ContextualizeMode;
-use escurel_index::{Indexer, Migrator};
+use escurel_index::snapshot::{AttachRetrievalFn, IndexStore, SingleFileStore, SnapshotError};
+use escurel_index::{Indexer, IndexerHandle};
 use escurel_quota::{QuotaConfig, QuotaManager};
 use escurel_storage::{FsStore, LaneStore};
 use serde::Deserialize;
@@ -205,6 +205,27 @@ pub enum ConfigError {
     Migrate(#[from] escurel_index::schema::MigrationError),
     #[error("building indexer: {0}")]
     Indexer(#[from] escurel_index::IndexerError),
+}
+
+/// Map an [`IndexStore`] open failure back onto the exact
+/// [`ConfigError`] variants the inline boot used to produce, so the
+/// fatal-boot error surface is unchanged by the seam extraction.
+impl From<SnapshotError> for ConfigError {
+    fn from(e: SnapshotError) -> Self {
+        match e {
+            SnapshotError::DataDir { path, source } => ConfigError::DataDir { path, source },
+            SnapshotError::DuckdbOpen { path, source } => ConfigError::DuckdbOpen { path, source },
+            SnapshotError::Migrate(m) => ConfigError::Migrate(m),
+            SnapshotError::Indexer(i) => ConfigError::Indexer(i),
+            // Unreachable from `SingleFileStore::open`; kept total so the
+            // `?` conversion compiles for any IndexStore backend.
+            SnapshotError::Unsupported(reason) => ConfigError::InvalidValue {
+                var: "ESCUREL_SERVER_DATA_DIR",
+                value: String::new(),
+                reason,
+            },
+        }
+    }
 }
 
 /// TOML base layer. Every field is optional; env vars overlay it.
@@ -881,14 +902,14 @@ impl EscurelConfig {
         let embed_cfg = self.with_tenant_embedding(tenant_spec.as_ref());
         let embedder = Arc::new(embed_cfg.build_embedder().await);
 
-        // 4. Per-tenant DuckDB: open/create, migrate if fresh, build
-        //    the indexer. A second connection on the same file backs
-        //    the CRDT layer (the indexer owns its connection and does
-        //    not expose it; the crdt_* tables it touches are disjoint
-        //    from the indexer's pages/links/blocks, so the cross-table
-        //    stale-read trap in the second-connection note does not
-        //    apply here — see
-        //    docs/notes/discovered/2026-05-26-server-binary-crdt-second-connection.md).
+        // 4. Per-tenant DuckDB via the `IndexStore` seam (DuckLake PR 2).
+        //    `SingleFileStore::open()` reproduces the classic boot sequence
+        //    verbatim: open/create the file, migrate if fresh, `try_clone`
+        //    the CRDT connection off the same instance, build the indexer,
+        //    fresh-only rebuild, optional seed, meta-skill. See
+        //    `escurel_index::snapshot::SingleFileStore` (and
+        //    docs/notes/discovered/2026-05-26-server-binary-crdt-second-connection.md
+        //    for why the CRDT connection must be a clone, not a re-open).
         // Validate the configured tenant id before it is joined into
         // a filesystem path. `ESCUREL_TENANT=../other` would
         // otherwise escape the tenant root and open a DuckDB file
@@ -902,127 +923,45 @@ impl EscurelConfig {
         })?;
 
         let tenant_dir = self.data_dir.join("tenants").join(&self.tenant);
-        std::fs::create_dir_all(&tenant_dir).map_err(|source| ConfigError::DataDir {
-            path: tenant_dir.display().to_string(),
-            source,
-        })?;
-        let db_path = tenant_dir.join("escurel.duckdb");
-        // Derived-index boot policy. `Always` drops the DuckDB (a rebuildable
-        // cache) + its WAL so the fresh-boot path below reconstructs a clean
-        // index from the canonical markdown LaneStore — the container default,
-        // replacing the old shell `rm *.duckdb` ENTRYPOINT hack (vss's
-        // experimental HNSW persistence segfaults when a restart reloads the
-        // on-disk index). `IfMissing` (default) leaves an existing index in
-        // place for a fast, re-embed-free restart. The markdown corpus is never
-        // touched. NOTE: this drops derived state that is NOT restored by the
-        // rebuild (chat/CRDT, credential/endpoint registries); with `Always`
-        // those must live in the canonical LaneStore or be re-registered — the
-        // same trade-off the previous ENTRYPOINT hack carried.
-        if self.rebuild_index_on_boot == RebuildIndexOnBoot::Always && db_path.exists() {
-            std::fs::remove_file(&db_path).map_err(|source| ConfigError::DataDir {
-                path: db_path.display().to_string(),
-                source,
-            })?;
-            // Best-effort WAL removal — absent after a clean checkpoint.
-            let _ = std::fs::remove_file(tenant_dir.join("escurel.duckdb.wal"));
-        }
-        let fresh = !db_path.exists();
-        let conn = Connection::open(&db_path).map_err(|source| ConfigError::DuckdbOpen {
-            path: db_path.display().to_string(),
-            source,
-        })?;
-        // `vss`/`fts` + the HNSW-persistence flag are per-connection session
-        // state, so load them on EVERY boot — not only when the DB is fresh.
-        // The schema DDL (`up`) is one-time, but a restart against an existing
-        // DB still needs these extensions loaded on this write connection, or
-        // modifying the HNSW-indexed `blocks` table fails ("unknown index type
-        // 'HNSW'"). `INSTALL` is idempotent.
-        Migrator::load_extensions(&conn)?;
-        if fresh {
-            Migrator::up(&conn)?;
-        }
-        // Group ACL v1: ensure the `group_members` table on EVERY boot
-        // (idempotent), so a tenant DB provisioned before this table
-        // existed gains it on the next restart. `up` (fresh only) also
-        // creates it; the `IF NOT EXISTS` makes this a no-op there.
-        Migrator::ensure_group_members(&conn)?;
-        // SQL-view credential registry: ensure on EVERY boot (idempotent),
-        // like group_members. A separate canonical input, never dropped by
-        // rebuild.
-        Migrator::ensure_external_credentials(&conn)?;
-        // Remote-backend endpoint registry (openapi/mcp): ensure on EVERY boot
-        // (idempotent), like the credential registry. Separate canonical input.
-        Migrator::ensure_external_endpoints(&conn)?;
-        // Skill-pack subscription pins: ensure on EVERY boot (idempotent),
-        // like the credential registry. Separate canonical input.
-        Migrator::ensure_pack_subscriptions(&conn)?;
-        // Contextual Retrieval (GH #216): ensure `blocks.context` on EVERY
-        // boot (idempotent), so a tenant DB provisioned before the column
-        // existed gains it before `refresh_fts` indexes it.
-        Migrator::ensure_block_context(&conn)?;
 
-        // The CRDT backend MUST share the SAME DuckDB instance as the indexer.
-        // A second `Connection::open` on the same file is a separate database
-        // instance with its own buffer manager + WAL; their checkpoints race
-        // and the CRDT instance silently clobbers the indexer's committed
-        // writes — chat_messages appends commit in-process but are LOST across
-        // a restart (see docs/notes/discovered/2026-05-24-duckdb-second-connection-stale.md
-        // + 2026-05-26-server-binary-crdt-second-connection.md). `try_clone`
-        // opens a second connection to the ALREADY-OPENED database, so the two
-        // share one instance + MVCC. Clone before `conn` moves into the indexer.
-        let crdt_conn = conn.try_clone().map_err(|source| ConfigError::DuckdbOpen {
-            path: db_path.display().to_string(),
-            source,
-        })?;
-        Migrator::load_extensions(&crdt_conn)?;
+        // Retrieval-attach hook: runs inside `open()` at exactly the point
+        // the inline boot used to call `attach_retrieval` (after
+        // `Indexer::new`, before the fresh-boot rebuild). It attaches a
+        // second-stage cross-encoder when `[retrieval].rerank` is on (issue
+        // #215) and/or Matryoshka two-pass vector search when
+        // `[retrieval].two_pass` is on (issue #218). A reranker load failure
+        // is degraded-start — log + run without rerank, never fatal —
+        // mirroring the embedder.
+        let attach_cfg = self.clone();
+        let attach: AttachRetrievalFn = Arc::new(move |base: Indexer| {
+            let cfg = attach_cfg.clone();
+            Box::pin(async move { cfg.attach_retrieval(base).await })
+        });
 
-        // Build the indexer with the contextual-retrieval mode (GH #216), then
-        // attach the retrieval stages: a second-stage cross-encoder when
-        // `[retrieval].rerank` is on (issue #215, default-on where the `rerank`
-        // feature is built) and/or Matryoshka two-pass vector search when
-        // `[retrieval].two_pass` is on (issue #218). A reranker load failure is
-        // degraded-start — log + run without rerank, never fatal — mirroring
-        // the embedder.
-        let base_indexer = Indexer::new(
-            Arc::clone(&store),
-            Arc::clone(&embedder) as Arc<dyn Embedder>,
-            conn,
-            self.tenant.clone(),
-        )?
-        .with_contextualize(self.ingest_contextualize);
-        let indexer = Arc::new(self.attach_retrieval(base_indexer).await);
-
-        // Cattle-node-loss recovery: when the DuckDB file was just
-        // created but the LaneStore still holds canonical markdown
-        // (fresh host / wiped local volume), rebuild the index from
-        // that markdown so the server doesn't serve an empty corpus
-        // until an operator runs the admin rebuild. On a genuine
-        // first boot the store is empty and this is a fast no-op.
-        // (codex pre-v1 review — the binary boot path must honour the
-        // crash-recovery contract in docs/spec/storage.md, not just
-        // the admin RPC.)
-        if fresh {
-            indexer.rebuild().await?;
-        }
-
-        // Optional seed: import a directory of markdown (e.g.
-        // `examples/crm-demo`) into this tenant at boot. Idempotent
-        // (upsert by body_hash), so it's safe to leave set across
-        // restarts; powers the HTTP demo without manual fs placement.
-        if let Some(dir) = self.seed_dir.as_ref() {
-            indexer.seed_from_dir(dir).await?;
-        }
-
-        // Every served tenant ships the mandatory `escurel` meta-skill
-        // — the agent's in-corpus navigation doc (locked decision 3,
-        // docs/contract/agent-interface.md). Idempotent: a no-op when
-        // the tenant already carries an `escurel` skill page.
-        indexer.ensure_meta_skill().await?;
+        let single_file = SingleFileStore {
+            tenant_dir,
+            // `Always` drops the DuckDB (a rebuildable cache) + its WAL — the
+            // container default, replacing the old shell `rm *.duckdb`
+            // ENTRYPOINT hack. `IfMissing` (default) keeps an existing index
+            // for a fast, re-embed-free restart.
+            rebuild_on_boot: self.rebuild_index_on_boot == RebuildIndexOnBoot::Always,
+            store: Arc::clone(&store),
+            embedder: Arc::clone(&embedder) as Arc<dyn Embedder>,
+            tenant: self.tenant.clone(),
+            contextualize: self.ingest_contextualize,
+            attach_retrieval: Some(attach),
+            seed_dir: self.seed_dir.clone(),
+        };
+        let opened = single_file.open().await?;
+        let indexer = opened.indexer;
+        let crdt_conn = opened
+            .crdt_conn
+            .expect("SingleFileStore::open always returns a CRDT connection");
 
         // CRDT backend over a SECOND CONNECTION TO THE SAME INSTANCE (cloned
-        // above before `conn` moved into the indexer) — not a second
-        // `Connection::open`, which would be a separate instance that clobbers
-        // chat writes on checkpoint.
+        // inside `open()` before the write connection moved into the indexer)
+        // — not a second `Connection::open`, which would be a separate
+        // instance that clobbers chat writes on checkpoint.
         let crdt_backend: Arc<dyn CrdtBackend> =
             Arc::new(DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn))));
 
@@ -1064,7 +1003,7 @@ impl EscurelConfig {
             // The hard tenant boundary is driven by the configured tenant,
             // independent of the indexer, so it holds for every route.
             served_tenant: Some(self.tenant.clone()),
-            indexer: Some(indexer),
+            indexer: Some(IndexerHandle::fixed(indexer)),
             verifier,
             quota,
             tenant_store: Some(tenant_store),

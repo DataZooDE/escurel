@@ -21,6 +21,7 @@ use tempfile::TempDir;
 fn vec_heads(db: &Path) -> Vec<(String, i64, f32)> {
     let conn = duckdb::Connection::open(db).unwrap();
     Migrator::load_extensions(&conn).unwrap();
+    Migrator::enable_hnsw_persistence(&conn).unwrap();
     let mut stmt = conn
         .prepare("SELECT page_id, ordinal, dense_vec[1] FROM blocks ORDER BY page_id, ordinal")
         .unwrap();
@@ -99,6 +100,7 @@ async fn transfer_carries_embeddings_verbatim_and_is_idempotent() {
     let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(live.path().to_path_buf()));
     let conn = duckdb::Connection::open(&live_db).unwrap();
     Migrator::load_extensions(&conn).unwrap();
+    Migrator::enable_hnsw_persistence(&conn).unwrap();
     let embedder: Arc<dyn Embedder> = Arc::new(HashEmbedder::default());
     let idx = Indexer::new(store, embedder, conn, "acme").unwrap();
     let hits = idx

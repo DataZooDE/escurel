@@ -61,6 +61,7 @@ async fn loader_build_materialises_documents_with_vectors_and_manifest() {
     // Reopen the loader DuckDB: pages + blocks landed, every block has a vector.
     let conn = duckdb::Connection::open(out.path().join("escurel.duckdb")).unwrap();
     Migrator::load_extensions(&conn).unwrap();
+    Migrator::enable_hnsw_persistence(&conn).unwrap();
     let pages: i64 = conn
         .query_row(
             "SELECT count(*) FROM pages WHERE page_type='instance'",

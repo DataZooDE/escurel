@@ -16,7 +16,7 @@ use escurel_admin::TenantStore;
 use escurel_auth::OidcVerifier;
 use escurel_crdt::CrdtBackend;
 use escurel_embed::{Embedder, ReloadableEmbedder};
-use escurel_index::Indexer;
+use escurel_index::IndexerHandle;
 use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
 use escurel_quota::QuotaManager;
 use serde_json::json;
@@ -109,10 +109,15 @@ pub struct ServerConfig {
     /// runs without a verifier). When both this and `indexer` are set
     /// they name the same tenant.
     pub served_tenant: Option<String>,
-    /// Per-tenant indexer. None disables the `/mcp` endpoint
-    /// (useful for health-only deployments). `tools/call` returns
-    /// a JSON-RPC `method not found` when absent.
-    pub indexer: Option<Arc<Indexer>>,
+    /// Per-tenant indexer behind the hot-swap seam
+    /// ([`IndexerHandle`] — request paths capture the current
+    /// `Arc<Indexer>` once at dispatch entry; a snapshot adoption can
+    /// swap a fresh indexer in without a restart). Wrap a plain
+    /// indexer with [`IndexerHandle::fixed`]. None disables the
+    /// `/mcp` endpoint (useful for health-only deployments);
+    /// `tools/call` returns a JSON-RPC `method not found` when
+    /// absent.
+    pub indexer: Option<IndexerHandle>,
     /// OIDC verifier. When `Some`, `/mcp` requires a valid
     /// `Authorization: Bearer <jwt>` header; `None` runs the
     /// gateway unauthenticated (dev / on-host use).
@@ -274,7 +279,7 @@ pub(crate) struct AppState {
     /// mismatch). Sourced from config, not the indexer, so the boundary
     /// holds even for control-plane deployments with no indexer wired.
     pub(crate) served_tenant: Option<String>,
-    pub(crate) indexer: Option<Arc<Indexer>>,
+    pub(crate) indexer: Option<IndexerHandle>,
     pub(crate) verifier: Option<Arc<OidcVerifier>>,
     pub(crate) quota: Option<Arc<QuotaManager>>,
     pub(crate) tenant_store: Option<Arc<dyn TenantStore>>,
@@ -344,10 +349,12 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
     // explicit config value (always set in production); fall back to the
     // indexer's tenant so a caller that only wires an indexer still gets
     // the boundary. `None` only when neither is set (unconfigured dev).
-    let served_tenant = config
-        .served_tenant
-        .clone()
-        .or_else(|| config.indexer.as_ref().map(|i| i.tenant().to_owned()));
+    let served_tenant = config.served_tenant.clone().or_else(|| {
+        config
+            .indexer
+            .as_ref()
+            .map(|h| h.current().tenant().to_owned())
+    });
     let state = AppState {
         write_acl: config.write_acl,
         version: config.version.clone(),

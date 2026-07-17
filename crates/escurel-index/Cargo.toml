@@ -39,6 +39,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # see docs/notes/discovered/2026-06-20-duckdb-download-instead-of-build.md.
 duckdb = { version = "1", default-features = false }
 anyhow = "1"
+# Lock-free hot-swap cell backing `snapshot::IndexerHandle` — request
+# paths `load` the current `Arc<Indexer>` while a snapshot adoption
+# `swap`s a freshly opened one in (DuckLake IndexStore seam).
+arc-swap = "1"
 async-trait = "0.1"
 # `escurel-crdt` is pulled in solely so we can implement its
 # `CitationLookup` trait on top of the `Indexer`'s DuckDB

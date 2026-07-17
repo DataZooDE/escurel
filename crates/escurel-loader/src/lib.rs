@@ -149,6 +149,7 @@ impl LoaderBuilder {
         // per-connection extensions, migrate a fresh DB, ensure the
         // boot-idempotent tables.
         Migrator::load_extensions(&conn)?;
+        Migrator::enable_hnsw_persistence(&conn)?;
         Migrator::up(&conn)?;
         Migrator::ensure_group_members(&conn)?;
         Migrator::ensure_external_credentials(&conn)?;
@@ -385,6 +386,7 @@ pub async fn transfer(
     let fresh = !db_path.exists();
     let conn = duckdb::Connection::open(&db_path)?;
     Migrator::load_extensions(&conn)?;
+    Migrator::enable_hnsw_persistence(&conn)?;
     if fresh {
         Migrator::up(&conn)?;
     }
