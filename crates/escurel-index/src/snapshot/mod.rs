@@ -14,6 +14,7 @@
 //! [`IndexerHandle::swap`] a freshly opened indexer in without a
 //! restart and without tearing an in-flight request.
 
+mod lake;
 mod store;
 
 use std::sync::Arc;
@@ -25,6 +26,10 @@ use thiserror::Error;
 use crate::indexer::{Indexer, IndexerError};
 use crate::schema::MigrationError;
 
+pub use lake::{
+    LakeConfig, ObjectStoreSecret, attach_lake, attach_sql, install_load_sql, publish_lake,
+    secret_sql,
+};
 pub use store::{AttachRetrievalFn, SingleFileStore};
 
 /// Errors surfaced by an [`IndexStore`] backend.
@@ -55,6 +60,14 @@ pub enum SnapshotError {
     /// single-file backend never publishes snapshots).
     #[error("{0}")]
     Unsupported(&'static str),
+    /// A [`LakeConfig`] field failed the splice guards (unsafe character,
+    /// empty value, secret/scheme mismatch, missing local data dir).
+    #[error("invalid lake config: {0}")]
+    InvalidLakeConfig(String),
+    /// A lake SQL statement (INSTALL/LOAD, CREATE SECRET, ATTACH, publish
+    /// transaction) failed.
+    #[error("lake SQL failed: {0}")]
+    LakeSql(#[from] duckdb::Error),
 }
 
 /// A freshly opened per-tenant index: the boot-ready [`Indexer`] plus
@@ -78,10 +91,25 @@ pub struct AdoptedIndex {
     pub snapshot_id: i64,
 }
 
-/// Outcome of [`IndexStore::publish`]. Placeholder for the DuckLake
-/// backend (PR 3) — the single-file backend never publishes.
+/// Outcome of a lake publish ([`publish_lake`] / [`IndexStore::publish`]).
+/// The single-file backend never publishes; the DuckLake path fills every
+/// field from the committed lake state.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct PublishReport {}
+pub struct PublishReport {
+    /// Newest DuckLake snapshot id after the publish committed (`-1` when
+    /// `skipped` — nothing was attached, so no snapshot was consulted).
+    pub snapshot_id: i64,
+    /// The [`Indexer::mutation_epoch`] this publish captured. Feed it back
+    /// as `last_published_epoch` on the next call to skip clean publishes.
+    pub epoch: u64,
+    /// Rows published to `lake.pages` (`0` when `skipped`).
+    pub pages: u64,
+    /// Rows published to `lake.blocks` (`0` when `skipped`).
+    pub blocks: u64,
+    /// `true` when the epoch matched `last_published_epoch` and the publish
+    /// was a no-op (no attach, no transaction, no snapshot).
+    pub skipped: bool,
+}
 
 /// How a per-tenant index is opened at boot, published as a snapshot,
 /// and re-adopted from the latest snapshot.

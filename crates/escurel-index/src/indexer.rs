@@ -9,6 +9,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use duckdb::{Connection, params};
@@ -52,6 +53,14 @@ pub struct Indexer {
     /// only for the transaction. Mirrors the spec's per-tenant write
     /// lock (`docs/spec/platform.md §Concurrency`).
     write_lock: Mutex<()>,
+    /// Dirty counter for the DuckLake publish loop: bumped once per
+    /// committed index mutation ([`Self::update_page`],
+    /// [`Self::write_document_blocks`] — the shared tail of
+    /// [`Self::materialize_document`] — [`Self::merge_from_attached`] and
+    /// [`Self::rebuild_with_progress`]). `publish_lake` compares
+    /// [`Self::mutation_epoch`] against the last-published value and skips
+    /// the publish when nothing changed. Monotone; only equality matters.
+    mutation_epoch: AtomicU64,
     tenant: String,
     /// Second-stage cross-encoder reranker. [`NoopReranker`] by default
     /// (identity), so the rerank stage is a no-op until a real reranker
@@ -239,6 +248,7 @@ impl Indexer {
             embedder,
             conn: Mutex::new(conn),
             write_lock: Mutex::new(()),
+            mutation_epoch: AtomicU64::new(0),
             tenant: tenant.into(),
             reranker: Arc::new(NoopReranker),
             retrieval: RetrievalConfig::disabled(),
@@ -308,6 +318,31 @@ impl Indexer {
     #[must_use]
     pub fn tenant(&self) -> &str {
         &self.tenant
+    }
+
+    /// Current value of the dirty counter — bumped once per committed
+    /// index mutation. The DuckLake publish loop records the epoch it
+    /// published and skips the next publish when this still matches
+    /// (see the field doc on `mutation_epoch`).
+    #[must_use]
+    pub fn mutation_epoch(&self) -> u64 {
+        self.mutation_epoch.load(Ordering::Acquire)
+    }
+
+    /// Bump the dirty counter after a committed mutation. Call at the
+    /// tail of every write path that changed `pages`/`links`/`blocks`
+    /// (AFTER the transaction committed — a rolled-back write must not
+    /// dirty the epoch).
+    fn bump_mutation_epoch(&self) {
+        self.mutation_epoch.fetch_add(1, Ordering::Release);
+    }
+
+    /// Take the per-tenant write lock — the same lock
+    /// [`Self::update_page`] serialises writers through. `publish_lake`
+    /// holds it across the whole publish so a snapshot can't interleave
+    /// with an in-flight ingest's embed→write sequence.
+    pub(crate) async fn write_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.write_lock.lock().await
     }
 
     /// The canonical markdown [`LaneStore`] this indexer reads/writes.
@@ -551,6 +586,7 @@ impl Indexer {
         )?;
 
         tx.commit()?;
+        self.bump_mutation_epoch();
         Ok(())
     }
 
@@ -700,6 +736,7 @@ impl Indexer {
             )?;
         }
         tx.commit()?;
+        self.bump_mutation_epoch();
         Ok(())
     }
 
@@ -835,6 +872,7 @@ impl Indexer {
         )?;
         drop(conn);
         self.refresh_fts().await?;
+        self.bump_mutation_epoch();
 
         Ok(MergeReport {
             source_pages: source_pages as usize,
@@ -986,6 +1024,11 @@ impl Indexer {
         // (REQ-NF-02). Runs after the overlays are re-indexed so the
         // referenced-set is authoritative. Inbox blobs are retained.
         crate::backend::document::reclaim_orphan_blobs(self).await?;
+        // The truncate itself is a mutation even when zero pages were
+        // re-indexed (the per-page `update_page` calls above bump too —
+        // the counter is monotone, only equality vs. last-published
+        // matters, so over-counting is harmless).
+        self.bump_mutation_epoch();
         Ok(())
     }
 
