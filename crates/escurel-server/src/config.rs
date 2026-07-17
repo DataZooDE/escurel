@@ -58,6 +58,14 @@
 //! | `ESCUREL_EMBEDDING_DEVICE` | `cpu` | candle device (informational; CPU only today) |
 //! | `ESCUREL_EMBEDDING_DIM` | `768` | vector dimension |
 //! | `ESCUREL_GEMINI_API_KEY` | — | Gemini API key (provider=gemini; unset → zero fallback) |
+//! | `ESCUREL_INDEX_BACKEND` | `single-file` | `single-file` or `ducklake` — selects the [`escurel_index::snapshot::IndexStore`] backend (DuckLake PR 6) |
+//! | `ESCUREL_ROLE` | `writer` | `writer` or `reader` — `reader` requires `ESCUREL_INDEX_BACKEND=ducklake`; a reader boots with NO local single-file DuckDB, adopting the lake's newest published snapshot instead |
+//! | `ESCUREL_DUCKLAKE_CATALOG_DSN` | — | DuckLake catalog DSN — a Postgres key/value DSN (contains `=`) or a DuckDB-file catalog path; required when `ESCUREL_INDEX_BACKEND=ducklake` |
+//! | `ESCUREL_DUCKLAKE_DATA_PATH` | — | DuckLake `DATA_PATH` — `gs://…`, `s3://…`, or a local directory; required when `ESCUREL_INDEX_BACKEND=ducklake` |
+//! | `ESCUREL_DUCKLAKE_GCS_KEY_ID` / `ESCUREL_DUCKLAKE_GCS_SECRET` | — | GCS HMAC key pair; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `gs://` |
+//! | `ESCUREL_DUCKLAKE_S3_ENDPOINT` / `_S3_ACCESS_KEY_ID` / `_S3_SECRET_ACCESS_KEY` / `_S3_REGION` | — / — / — / `us-east-1` | S3 (or MinIO) credentials; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `s3://` |
+//! | `ESCUREL_DUCKLAKE_S3_USE_SSL` | `true` | whether the S3/MinIO endpoint above is TLS |
+//! | `ESCUREL_SNAPSHOT_REFRESH_SECS` | `30` | a reader's background lake-poll interval (seconds); see `escurel_server::snapshot_refresh::RefreshTask` |
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -68,7 +76,10 @@ use escurel_auth::{OidcConfig, OidcVerifier};
 use escurel_crdt::{CrdtBackend, DuckdbCrdtBackend};
 use escurel_embed::{Embedder, ReloadableEmbedder, ZeroEmbedder};
 use escurel_index::backend::ContextualizeMode;
-use escurel_index::snapshot::{AttachRetrievalFn, IndexStore, SingleFileStore, SnapshotError};
+use escurel_index::snapshot::{
+    AttachRetrievalFn, IndexStore, LakeConfig, ObjectStoreSecret, SingleFileStore, SnapshotError,
+    adopt_lake,
+};
 use escurel_index::{Indexer, IndexerHandle};
 use escurel_quota::{QuotaConfig, QuotaManager};
 use escurel_storage::{FsStore, LaneStore};
@@ -105,6 +116,30 @@ pub enum RebuildIndexOnBoot {
     Always,
     /// Keep an existing derived DuckDB; rebuild only when it is missing.
     IfMissing,
+}
+
+/// `IndexStore` backend selector (`ESCUREL_INDEX_BACKEND`, DuckLake PR 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexBackend {
+    /// The classic one-DuckDB-file-per-tenant backend
+    /// ([`SingleFileStore`]). The only backend before this PR.
+    SingleFile,
+    /// A Postgres-catalog DuckLake, published by a writer and adopted
+    /// by readers (`escurel_index::snapshot::{attach_lake, adopt_lake}`).
+    DuckLake,
+}
+
+/// This instance's role (`ESCUREL_ROLE`, DuckLake PR 6). A `Reader`
+/// requires [`IndexBackend::DuckLake`] — there is no such thing as a
+/// single-file reader, because a single-file DuckDB has exactly one
+/// writer-serving instance by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerRole {
+    /// Owns the canonical index; may attach + publish a DuckLake.
+    Writer,
+    /// Serves a read-only copy adopted from a published DuckLake
+    /// snapshot; no local single-file DuckDB, no CRDT/chat surface.
+    Reader,
 }
 
 /// Embedding provider selector.
@@ -176,6 +211,8 @@ pub enum ConfigError {
     },
     #[error("{var} is required when ESCUREL_STORAGE_BACKEND=s3")]
     MissingS3Field { var: &'static str },
+    #[error("{var} is required when ESCUREL_INDEX_BACKEND=ducklake")]
+    MissingLakeField { var: &'static str },
     #[error(
         "ESCUREL_EMBEDDING_PROVIDER={provider} requires the `{feature}` cargo feature; \
          this binary was built without it"
@@ -451,6 +488,19 @@ pub struct EscurelConfig {
     /// (`ESCUREL_REBUILD_INDEX_ON_BOOT`; default `if-missing`). The container
     /// image sets `always` to sidestep the HNSW-persistence-reload segfault.
     pub rebuild_index_on_boot: RebuildIndexOnBoot,
+    /// `IndexStore` backend selector (`ESCUREL_INDEX_BACKEND`, default
+    /// `single-file`, DuckLake PR 6).
+    pub index_backend: IndexBackend,
+    /// This instance's role (`ESCUREL_ROLE`, default `writer`).
+    pub role: ServerRole,
+    /// The DuckLake this instance attaches to/adopts from. `Some` iff
+    /// `index_backend == DuckLake`; validated + built from the
+    /// `ESCUREL_DUCKLAKE_*` vars at [`EscurelConfig::from_env`] time.
+    pub lake: Option<LakeConfig>,
+    /// A reader's background lake-poll interval, seconds
+    /// (`ESCUREL_SNAPSHOT_REFRESH_SECS`, default `30`). Unused by a
+    /// writer or the single-file backend.
+    pub snapshot_refresh_secs: u64,
 }
 
 /// Source of an environment lookup — abstracted so `from_env` is
@@ -831,6 +881,60 @@ impl EscurelConfig {
             None => toml_cfg.retrieval.coarse_candidates.unwrap_or(500),
         };
 
+        // --- DuckLake backend / role (PR 6) ---
+        let role = match env
+            .get("ESCUREL_ROLE")
+            .unwrap_or_else(|| "writer".to_owned())
+            .as_str()
+        {
+            "writer" => ServerRole::Writer,
+            "reader" => ServerRole::Reader,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    var: "ESCUREL_ROLE",
+                    value: other.to_owned(),
+                    reason: "expected `writer` or `reader`",
+                });
+            }
+        };
+        let index_backend = match env
+            .get("ESCUREL_INDEX_BACKEND")
+            .unwrap_or_else(|| "single-file".to_owned())
+            .as_str()
+        {
+            "single-file" => IndexBackend::SingleFile,
+            "ducklake" => IndexBackend::DuckLake,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    var: "ESCUREL_INDEX_BACKEND",
+                    value: other.to_owned(),
+                    reason: "expected `single-file` or `ducklake`",
+                });
+            }
+        };
+        // Fail closed: a single-file DuckDB has exactly one
+        // writer-serving instance by construction — "reader" only makes
+        // sense against a DuckLake.
+        if role == ServerRole::Reader && index_backend != IndexBackend::DuckLake {
+            return Err(ConfigError::InvalidValue {
+                var: "ESCUREL_ROLE",
+                value: "reader".to_owned(),
+                reason: "reader role requires ESCUREL_INDEX_BACKEND=ducklake",
+            });
+        }
+        let lake = match index_backend {
+            IndexBackend::DuckLake => Some(build_lake_config(env)?),
+            IndexBackend::SingleFile => None,
+        };
+        let snapshot_refresh_secs = match env.get("ESCUREL_SNAPSHOT_REFRESH_SECS") {
+            Some(raw) => raw.parse::<u64>().map_err(|_| ConfigError::InvalidValue {
+                var: "ESCUREL_SNAPSHOT_REFRESH_SECS",
+                value: raw,
+                reason: "expected a non-negative integer (seconds)",
+            })?,
+            None => 30,
+        };
+
         Ok(Self {
             version,
             env: server_env,
@@ -860,6 +964,10 @@ impl EscurelConfig {
             metrics_listen,
             ingest_contextualize,
             rebuild_index_on_boot,
+            index_backend,
+            role,
+            lake,
+            snapshot_refresh_secs,
         })
     }
 }
@@ -875,6 +983,57 @@ fn require_s3(
         .ok_or(ConfigError::MissingS3Field { var })
 }
 
+/// Required-when-ducklake env lookup, mirroring [`require_s3`].
+fn require_lake(env: &dyn EnvSource, var: &'static str) -> Result<String, ConfigError> {
+    env.get(var)
+        .filter(|v| !v.is_empty())
+        .ok_or(ConfigError::MissingLakeField { var })
+}
+
+/// Build a [`LakeConfig`] from the `ESCUREL_DUCKLAKE_*` vars. The catalog
+/// DSN and DATA_PATH are always required; the object-store credential set
+/// is picked from the `DATA_PATH` scheme — `gs://` needs the GCS pair,
+/// `s3://` needs the S3 quadruple, anything else (a local directory) needs
+/// neither. Splice/shape validation (safe characters, local-dir
+/// existence, secret/scheme agreement) happens later, in
+/// `escurel_index::snapshot::lake::validate` — this function only decides
+/// WHICH fields are required, not whether their values are well-formed.
+fn build_lake_config(env: &dyn EnvSource) -> Result<LakeConfig, ConfigError> {
+    let catalog_dsn = require_lake(env, "ESCUREL_DUCKLAKE_CATALOG_DSN")?;
+    let data_path = require_lake(env, "ESCUREL_DUCKLAKE_DATA_PATH")?;
+    let object_store = if data_path.starts_with("gs://") {
+        ObjectStoreSecret::Gcs {
+            key_id: require_lake(env, "ESCUREL_DUCKLAKE_GCS_KEY_ID")?,
+            secret: require_lake(env, "ESCUREL_DUCKLAKE_GCS_SECRET")?,
+        }
+    } else if data_path.starts_with("s3://") {
+        let use_ssl = match env.get("ESCUREL_DUCKLAKE_S3_USE_SSL") {
+            Some(raw) => matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            ),
+            None => true,
+        };
+        ObjectStoreSecret::S3 {
+            endpoint: require_lake(env, "ESCUREL_DUCKLAKE_S3_ENDPOINT")?,
+            access_key_id: require_lake(env, "ESCUREL_DUCKLAKE_S3_ACCESS_KEY_ID")?,
+            secret_access_key: require_lake(env, "ESCUREL_DUCKLAKE_S3_SECRET_ACCESS_KEY")?,
+            region: env
+                .get("ESCUREL_DUCKLAKE_S3_REGION")
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "us-east-1".to_owned()),
+            use_ssl,
+        }
+    } else {
+        ObjectStoreSecret::None
+    };
+    Ok(LakeConfig {
+        catalog_dsn,
+        data_path,
+        object_store,
+    })
+}
+
 /// A fully-wired, booted server plus the handles a long-running
 /// process needs to keep alive (tempdirs, the reloadable embedder).
 pub struct BootedServer {
@@ -882,6 +1041,12 @@ pub struct BootedServer {
     /// The reloadable embedder seam — the `embedding_reload` admin
     /// RPC swaps a freshly-loaded model in here without restarting.
     pub embedder: Arc<ReloadableEmbedder>,
+    /// A ducklake reader's background poll/adopt/hot-swap loop
+    /// (DuckLake PR 6). `Some` only for `ESCUREL_INDEX_BACKEND=ducklake`
+    /// together with `ESCUREL_ROLE=reader`; the caller (`main.rs`) must
+    /// shut it down alongside `handle` on SIGTERM so the task doesn't
+    /// outlive the process's other background work.
+    pub refresh_handle: Option<crate::snapshot_refresh::RefreshHandle>,
 }
 
 impl EscurelConfig {
@@ -970,18 +1135,102 @@ impl EscurelConfig {
             attach_retrieval: Some(attach),
             seed_dir: self.seed_dir.clone(),
         };
-        let opened = single_file.open().await?;
-        let indexer = opened.indexer;
-        let crdt_conn = opened
-            .crdt_conn
-            .expect("SingleFileStore::open always returns a CRDT connection");
+        // Branch on (index_backend, role) — the DuckLake PR 6 decision
+        // table:
+        //   (SingleFile, *)     → today's boot, unchanged (PR 2's
+        //                         zero-behaviour-change guarantee).
+        //   (DuckLake, Writer)  → today's boot PLUS an idempotent `ATTACH`
+        //                         on the indexer's own connection, so a
+        //                         later publish (an admin tool — NOT built
+        //                         in this PR) never pays a fresh attach.
+        //                         The writer still owns bootstrap
+        //                         (CRDT/chat, seed, meta-skill); re-homing
+        //                         those off the writer is Phase B, out of
+        //                         scope here.
+        //   (DuckLake, Reader)  → NO local single-file DuckDB. A
+        //                         synchronous `adopt_lake` runs BEFORE the
+        //                         HTTP listener binds — boot fails if the
+        //                         lake has never been published or is
+        //                         incompatible, the same "not available
+        //                         until built" semantics the single-file
+        //                         path already has — then a `RefreshTask`
+        //                         keeps the served snapshot current
+        //                         without a restart. No CRDT/chat/seed/
+        //                         meta-skill (Phase B, again out of scope).
+        let (indexer_handle, crdt_backend, reader_mode, refresh_handle): (
+            IndexerHandle,
+            Option<Arc<dyn CrdtBackend>>,
+            bool,
+            Option<crate::snapshot_refresh::RefreshHandle>,
+        ) = match (self.index_backend, self.role) {
+            (IndexBackend::DuckLake, ServerRole::Reader) => {
+                let lake_cfg = self.lake.as_ref().expect(
+                    "ESCUREL_INDEX_BACKEND=ducklake always carries a LakeConfig \
+                     (EscurelConfig::from_env validated this)",
+                );
+                let adopted = adopt_lake(
+                    lake_cfg,
+                    Arc::clone(&store),
+                    Arc::clone(&embedder) as Arc<dyn Embedder>,
+                    &self.tenant,
+                    None,
+                )
+                .await?
+                .ok_or_else(|| ConfigError::InvalidValue {
+                    var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
+                    value: lake_cfg.catalog_dsn.clone(),
+                    reason: "lake has never been published; a reader cannot boot from an \
+                             empty lake — publish from a writer first",
+                })?;
+                let handle = IndexerHandle::fixed(adopted.indexer);
+                let refresh = crate::snapshot_refresh::RefreshTask::new(
+                    handle.clone(),
+                    lake_cfg.clone(),
+                    Arc::clone(&store),
+                    Arc::clone(&embedder) as Arc<dyn Embedder>,
+                    self.tenant.clone(),
+                    Duration::from_secs(self.snapshot_refresh_secs),
+                    Some(adopted.snapshot_id),
+                )
+                .spawn();
+                (handle, None, true, Some(refresh))
+            }
+            (backend, _writer_role) => {
+                let opened = single_file.open().await?;
+                let indexer = opened.indexer;
+                let crdt_conn = opened
+                    .crdt_conn
+                    .expect("SingleFileStore::open always returns a CRDT connection");
 
-        // CRDT backend over a SECOND CONNECTION TO THE SAME INSTANCE (cloned
-        // inside `open()` before the write connection moved into the indexer)
-        // — not a second `Connection::open`, which would be a separate
-        // instance that clobbers chat writes on checkpoint.
-        let crdt_backend: Arc<dyn CrdtBackend> =
-            Arc::new(DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn))));
+                // CRDT backend over a SECOND CONNECTION TO THE SAME INSTANCE
+                // (cloned inside `open()` before the write connection moved
+                // into the indexer) — not a second `Connection::open`,
+                // which would be a separate instance that clobbers chat
+                // writes on checkpoint.
+                let crdt_backend: Arc<dyn CrdtBackend> =
+                    Arc::new(DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn))));
+
+                if backend == IndexBackend::DuckLake {
+                    // Writer: attach the lake idempotently on the
+                    // indexer's own connection (`ATTACH IF NOT EXISTS`)
+                    // so a later publish never pays a fresh attach.
+                    // Fail-closed: a broken lake config fails the boot,
+                    // same posture as the reader's synchronous adopt.
+                    let lake_cfg = self.lake.as_ref().expect(
+                        "ESCUREL_INDEX_BACKEND=ducklake always carries a LakeConfig \
+                         (EscurelConfig::from_env validated this)",
+                    );
+                    indexer.attach_lake(lake_cfg).await?;
+                }
+
+                (
+                    IndexerHandle::fixed(indexer),
+                    Some(crdt_backend),
+                    false,
+                    None,
+                )
+            }
+        };
 
         // 5. OIDC verifier (only when an issuer is configured).
         let verifier = self.build_verifier();
@@ -1021,11 +1270,18 @@ impl EscurelConfig {
             // The hard tenant boundary is driven by the configured tenant,
             // independent of the indexer, so it holds for every route.
             served_tenant: Some(self.tenant.clone()),
-            indexer: Some(IndexerHandle::fixed(indexer)),
+            indexer: Some(indexer_handle),
             verifier,
             quota,
             tenant_store: Some(tenant_store),
-            crdt_backend: Some(crdt_backend),
+            crdt_backend,
+            // A ducklake reader has no local write surface: no CRDT/chat,
+            // no per-instance page edits, no event bus (Phase B — re-
+            // homing those off the writer — is out of scope for this
+            // PR). `dispatch_tools_call` consults this to reject the
+            // mutating / chat-and-CRDT tool surface with a typed error
+            // instead of silently misbehaving against an absent backend.
+            reader_mode,
             // Hot-reload seam: the live embedder plus a factory that
             // rebuilds it from this config on demand. The
             // `embedding_reload` admin RPC retries a degraded-start
@@ -1053,7 +1309,11 @@ impl EscurelConfig {
                 reason: "failed to bind / serve",
             })?;
 
-        Ok(BootedServer { handle, embedder })
+        Ok(BootedServer {
+            handle,
+            embedder,
+            refresh_handle,
+        })
     }
 
     async fn build_lane_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {

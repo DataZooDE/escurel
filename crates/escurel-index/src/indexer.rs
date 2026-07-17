@@ -337,6 +337,26 @@ impl Indexer {
         self.mutation_epoch.fetch_add(1, Ordering::Release);
     }
 
+    /// Attach a DuckLake onto THIS indexer's own connection, read-write
+    /// and idempotently (`ATTACH IF NOT EXISTS`, DuckLake PR 6). Lets a
+    /// writer boot with the lake already attached so a later publish
+    /// (`crate::snapshot::publish_lake`) — or a future admin publish
+    /// tool — never pays a fresh `ATTACH` round-trip. `conn`'s field
+    /// visibility is `pub(crate)`, so this method is the only way a
+    /// caller outside `escurel-index` can reach the live connection for
+    /// an attach.
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::snapshot::attach_lake`].
+    pub async fn attach_lake(
+        &self,
+        cfg: &crate::snapshot::LakeConfig,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        let conn = self.conn.lock().await;
+        crate::snapshot::attach_lake(&conn, cfg, false)
+    }
+
     /// Take the per-tenant write lock — the same lock
     /// [`Self::update_page`] serialises writers through. `publish_lake`
     /// holds it across the whole publish so a snapshot can't interleave
