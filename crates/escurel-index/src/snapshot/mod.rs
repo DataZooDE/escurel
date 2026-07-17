@@ -27,8 +27,8 @@ use crate::indexer::{Indexer, IndexerError};
 use crate::schema::MigrationError;
 
 pub use lake::{
-    LakeConfig, ObjectStoreSecret, attach_lake, attach_sql, install_load_sql, publish_lake,
-    secret_sql,
+    LakeConfig, ObjectStoreSecret, adopt_lake, attach_lake, attach_sql, install_load_sql,
+    latest_lake_snapshot_id, publish_lake, secret_sql,
 };
 pub use store::{AttachRetrievalFn, SingleFileStore};
 
@@ -64,6 +64,12 @@ pub enum SnapshotError {
     /// empty value, secret/scheme mismatch, missing local data dir).
     #[error("invalid lake config: {0}")]
     InvalidLakeConfig(String),
+    /// The lake's `escurel_manifest` disagrees with this reader — wrong
+    /// schema version, foreign embedder `model_id`/`dim`, or data tables
+    /// with no manifest at all. Fail-closed: [`adopt_lake`] returns this
+    /// BEFORE loading a single row (loader-transfer precedent).
+    #[error("lake incompatible: {0}")]
+    LakeIncompatible(String),
     /// A lake SQL statement (INSTALL/LOAD, CREATE SECRET, ATTACH, publish
     /// transaction) failed.
     #[error("lake SQL failed: {0}")]
@@ -89,6 +95,15 @@ pub struct OpenedIndex {
 pub struct AdoptedIndex {
     pub indexer: Arc<Indexer>,
     pub snapshot_id: i64,
+}
+
+impl std::fmt::Debug for AdoptedIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdoptedIndex")
+            .field("tenant", &self.indexer.tenant())
+            .field("snapshot_id", &self.snapshot_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Outcome of a lake publish ([`publish_lake`] / [`IndexStore::publish`]).
