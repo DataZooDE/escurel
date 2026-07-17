@@ -2,10 +2,10 @@
 
 Scripts: [`spikes/ducklake/`](../../../spikes/ducklake/). Environment: DuckDB
 CLI v1.5.4, extensions `ducklake d318a545` / `httpfs c3f215a` / `vss b833341`
-/ `fts 6814ec9`; docker Postgres 16 + MinIO. The Cloud SQL + GCS leg of
-spike 1 is parameterised (`ESCUREL_SPIKE_PG_DSN` / `ESCUREL_SPIKE_DATA_PATH` /
-`ESCUREL_SPIKE_GCS_*`) and still **pending** — blocked on GCP provisioning
-(runbook in the plan); rerun and append its numbers here.
+/ `fts 6814ec9`; docker Postgres 16 + MinIO, plus the **real Cloud SQL +
+GCS leg** (instance `ducklake-metadata`, bucket
+`hetzner-agent-backplane-escurel-lake`, both europe-west1; dev machine on a
+residential connection in Germany).
 
 ## Spike 1 — live Postgres catalog + S3 data path round-trip: PASS
 
@@ -30,7 +30,14 @@ spike 1 is parameterised (`ESCUREL_SPIKE_PG_DSN` / `ESCUREL_SPIKE_DATA_PATH` /
   reader attach+fidelity checks+bulk-load+HNSW+query 2.9 s (includes
   extension loading); ATTACH + 10 `ducklake_snapshots()` polls 0.13 s —
   the change-detection poll is millisecond-cheap against a local catalog.
-  Cloud SQL RTT tax: measure in the pending cloud leg.
+- **Cloud leg (real Cloud SQL + GCS): PASS**, same isolation result (poll saw
+  only `{1000, 2000}`). The RTT tax: writer create+insert 1 000 rows 6.7 s
+  (vs 0.56 s local); reader full adopt path 8.9 s (vs 2.9 s); per-op —
+  ATTACH 0.76 s, `count(*)` over GCS Parquet 0.95 s, one
+  `ducklake_snapshots()` poll **≈ 0.20 s**, bulk-load of 2 000 vector rows
+  from GCS 1.36 s. Conclusion: a 30 s reader poll cadence costs ~0.7 % of a
+  core; publish/adopt latencies are dominated by object-store round-trips,
+  acceptable and expected to improve from substrate hosts (same region).
 
 ## Spike 2 — reader cold-start (bulk-load + in-memory HNSW + FTS): PASS
 
