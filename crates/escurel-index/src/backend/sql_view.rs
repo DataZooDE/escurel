@@ -523,7 +523,10 @@ fn is_valid_identifier(s: &str) -> bool {
 /// stack a second statement (mirrors `is_safe_attach_source`). The relation
 /// / filter come from an operator-authored skill page, but we still validate
 /// defensively — they are spliced (DuckDB has no binding for these positions).
-fn is_safe_sql_fragment(s: &str) -> bool {
+/// `pub(crate)`: reused verbatim by the DuckLake attach/secret builders
+/// (`crate::snapshot::lake`), which splice the catalog DSN / data path /
+/// object-store credentials into ATTACH + CREATE SECRET statements.
+pub(crate) fn is_safe_sql_fragment(s: &str) -> bool {
     !s.chars()
         .any(|c| c == '\'' || c == '"' || c == ';' || c == '`' || c == '\\' || c.is_control())
 }

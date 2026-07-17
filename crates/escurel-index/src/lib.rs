@@ -66,5 +66,8 @@ pub use read::{
 pub use retrieval::RetrievalConfig;
 pub use schema::Migrator;
 pub use search::{Granularity, SearchHit};
-pub use snapshot::{IndexStore, IndexerHandle, OpenedIndex, SingleFileStore, SnapshotError};
+pub use snapshot::{
+    IndexStore, IndexerHandle, LakeConfig, ObjectStoreSecret, OpenedIndex, PublishReport,
+    SingleFileStore, SnapshotError,
+};
 pub use validate::{Issue, Severity};

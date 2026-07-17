@@ -72,6 +72,10 @@ pub use sql_view::{
 // Crate-internal: `query_instance` allow-lists the `{{target}}` view
 // identifier through the same `vw_`-prefix guard the projection path uses.
 pub(crate) use sql_view::is_managed_view;
+// Crate-internal: the DuckLake attach/secret builders (`snapshot::lake`)
+// validate their spliced DSN / data path / credentials with the same
+// splice guard the SQL-view backend uses. Do NOT weaken it.
+pub(crate) use sql_view::is_safe_sql_fragment;
 
 /// Which storage / representation strategy backs a skill's instances.
 ///

@@ -22,6 +22,12 @@ kreuzberg = ["dep:kreuzberg", "dep:html-to-markdown-rs"]
 # escurel-storage `s3` MinIO test) so a default `cargo test` on a Docker-less
 # box doesn't fail. Run with `--features live-postgres`.
 live-postgres = []
+# Opt-in live DuckLake publish integration test (ducklake_publish_live.rs) —
+# boots a real Postgres (catalog) + MinIO (s3:// DATA_PATH) testcontainer
+# pair, so it needs Docker. OFF by default like `live-postgres`. Enables the
+# `escurel-storage/s3` feature so the test can create the MinIO bucket with
+# the real S3Store. Run with `--features live-ducklake`.
+live-ducklake = ["escurel-storage/s3"]
 # Variant B of Contextual Retrieval (#216): an LLM writes a one-sentence
 # situating context per chunk at ingest. OFF by default — it is a NETWORK path
 # (pulls reqwest), at odds with the deterministic/air-gap default; the default
@@ -92,8 +98,10 @@ tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 async-trait = "0.1"
 # Live SQL-view connector round-trip (sql_view_postgres.rs): a real Postgres
-# in a testcontainer + a real libpq client to seed it. No mocks.
-testcontainers-modules = { version = "0.15", features = ["postgres"] }
+# in a testcontainer + a real libpq client to seed it. No mocks. `minio` is
+# for the live DuckLake publish test (ducklake_publish_live.rs, feature
+# `live-ducklake`): a real MinIO backs the lake's `s3://` DATA_PATH.
+testcontainers-modules = { version = "0.15", features = ["postgres", "minio"] }
 tokio-postgres = "0.7"
 
 [lints]

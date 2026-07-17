@@ -224,6 +224,19 @@ impl From<SnapshotError> for ConfigError {
                 value: String::new(),
                 reason,
             },
+            // DuckLake variants (PR 3) — also unreachable from
+            // `SingleFileStore::open`; the server grows a lake config
+            // surface in a later PR (5-6). Mapped mechanically so the
+            // conversion stays total.
+            SnapshotError::InvalidLakeConfig(value) => ConfigError::InvalidValue {
+                var: "ESCUREL_LAKE",
+                value,
+                reason: "invalid lake config",
+            },
+            SnapshotError::LakeSql(source) => ConfigError::DuckdbOpen {
+                path: "ducklake".to_owned(),
+                source,
+            },
         }
     }
 }
