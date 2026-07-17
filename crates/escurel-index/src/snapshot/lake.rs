@@ -13,9 +13,13 @@
 //! `;`, backslash, control chars — see `backend/sql_view.rs`). The attach
 //! alias is FIXED (`lake`), never caller-supplied.
 
-use duckdb::{Connection, params};
+use std::sync::Arc;
 
-use super::{PublishReport, SnapshotError};
+use duckdb::{Connection, params};
+use escurel_embed::Embedder;
+use escurel_storage::LaneStore;
+
+use super::{AdoptedIndex, PublishReport, SnapshotError};
 use crate::backend::is_safe_sql_fragment;
 use crate::indexer::{BLOCKS_DENSE_VEC_DIM, Indexer};
 use crate::schema::Migrator;
@@ -331,6 +335,189 @@ pub async fn publish_lake(
         blocks: u64::try_from(blocks).unwrap_or(0),
         skipped: false,
     })
+}
+
+/// Does `lake.<table>` exist? (information_schema over the attached
+/// catalog — works on a `READ_ONLY` attach.) `table` is only ever a
+/// compile-time constant here; both values bind as parameters anyway.
+fn lake_table_exists(conn: &Connection, table: &str) -> Result<bool, duckdb::Error> {
+    let n: i64 = conn.query_row(
+        "SELECT count(*) FROM information_schema.tables \
+         WHERE table_catalog = ? AND table_name = ?",
+        params![LAKE_ALIAS, table],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// Newest snapshot id in the attached lake.
+fn lake_latest_snapshot(conn: &Connection) -> Result<i64, duckdb::Error> {
+    conn.query_row(
+        &format!("SELECT max(snapshot_id) FROM ducklake_snapshots('{LAKE_ALIAS}')"),
+        [],
+        |r| r.get(0),
+    )
+}
+
+/// Cheap change poll: newest published lake snapshot id, `Ok(None)` when
+/// the lake exists but was never published (no `escurel_manifest` yet).
+///
+/// Opens a throwaway in-memory scout connection, attaches `READ_ONLY`,
+/// reads `max(snapshot_id) FROM ducklake_snapshots('lake')`, and drops
+/// the connection (the implicit detach). Spike-measured at ≈0.2 s per
+/// poll against a real Cloud SQL catalog — a 30 s cadence is ~0.7 % of
+/// a core. A lake whose catalog does not exist yet (the writer has
+/// never attached) surfaces as an `Err` — callers treat poll errors as
+/// retryable, not fatal.
+pub async fn latest_lake_snapshot_id(cfg: &LakeConfig) -> Result<Option<i64>, SnapshotError> {
+    let conn = Connection::open_in_memory().map_err(|source| SnapshotError::DuckdbOpen {
+        path: ":memory: (lake poll)".to_owned(),
+        source,
+    })?;
+    attach_lake(&conn, cfg, true)?;
+    if !lake_table_exists(&conn, "escurel_manifest")? {
+        return Ok(None);
+    }
+    Ok(Some(lake_latest_snapshot(&conn)?))
+}
+
+/// Fail-closed manifest compatibility gate (loader-transfer precedent —
+/// see `escurel-loader::transfer`): the lake's pinned `schema_version`
+/// and embedding space (`model_id` + `dim`) must equal this reader's,
+/// or the adopt refuses before loading a single row.
+fn check_manifest_compat(conn: &Connection, embedder: &dyn Embedder) -> Result<(), SnapshotError> {
+    let (schema_version, model_id, dim): (i64, String, i64) = conn.query_row(
+        &format!("SELECT schema_version, model_id, dim FROM {LAKE_ALIAS}.escurel_manifest"),
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    if schema_version != i64::from(Migrator::SCHEMA_VERSION) {
+        return Err(SnapshotError::LakeIncompatible(format!(
+            "lake schema_version {schema_version} != reader schema_version {}",
+            Migrator::SCHEMA_VERSION
+        )));
+    }
+    if model_id != embedder.model_id() {
+        return Err(SnapshotError::LakeIncompatible(format!(
+            "lake embedding model_id `{model_id}` != reader model_id `{}`",
+            embedder.model_id()
+        )));
+    }
+    if dim != BLOCKS_DENSE_VEC_DIM as i64 {
+        return Err(SnapshotError::LakeIncompatible(format!(
+            "lake embedding dim {dim} != reader dim {BLOCKS_DENSE_VEC_DIM}"
+        )));
+    }
+    Ok(())
+}
+
+/// Adopt the newest lake snapshot into a FRESH in-memory indexer — the
+/// reader half of the DuckLake snapshot cycle. `Ok(None)` when the
+/// newest snapshot id equals `current` (already being served) or the
+/// lake was never published.
+///
+/// The sequence (spike-verified, docs/notes/discovered/2026-07-17-*):
+/// 1. `Connection::open_in_memory()` — MANDATORY: a file-backed DB
+///    refuses `CREATE INDEX … USING HNSW` without the experimental
+///    persistence flag, which readers must not rely on. `SET
+///    temp_directory` points spill at a per-tenant tmp dir.
+/// 2. Attach the lake `READ_ONLY` (no `DATA_INLINING_ROW_LIMIT` —
+///    that's writer-side; readers must also read inlined rows).
+/// 3. No-op gate (`current` == newest snapshot id), then the
+///    fail-closed manifest gate ([`check_manifest_compat`]; data tables
+///    without a manifest are refused too).
+/// 4. Local schema: `Migrator::up` + the every-boot `ensure_*` set the
+///    single-file boot runs (the DB is always fresh here, so `up`
+///    always applies).
+/// 5. [`Indexer::load_from_lake`]: bulk `INSERT … BY NAME` carrying
+///    vectors verbatim with the `dense_vec::FLOAT[768]` cast-back,
+///    HNSW built after the load, one FTS refresh; returns the snapshot
+///    id read inside the SAME transaction as the copy.
+/// 6. `DETACH` the lake — the adopted indexer keeps no catalog
+///    connection open while serving.
+///
+/// The `store`/`embedder` are what [`Indexer::new`] needs at query time
+/// (query embedding, blob reads); the embedder MUST be the same model
+/// the writer publishes with — that is exactly what the manifest gate
+/// enforces.
+pub async fn adopt_lake(
+    cfg: &LakeConfig,
+    store: Arc<dyn LaneStore>,
+    embedder: Arc<dyn Embedder>,
+    tenant: &str,
+    current: Option<i64>,
+) -> Result<Option<AdoptedIndex>, SnapshotError> {
+    let conn = Connection::open_in_memory().map_err(|source| SnapshotError::DuckdbOpen {
+        path: ":memory: (lake adopt)".to_owned(),
+        source,
+    })?;
+    set_spill_directory(&conn, tenant)?;
+    // vss/fts before any DDL; the attach brings ducklake (+httpfs/postgres).
+    Migrator::load_extensions(&conn)?;
+    attach_lake(&conn, cfg, true)?;
+
+    // Never-published lake: nothing to adopt — unless data tables exist
+    // without a manifest, which is not "empty" but "unlabelled" → refuse.
+    if !lake_table_exists(&conn, "escurel_manifest")? {
+        if lake_table_exists(&conn, "pages")? {
+            return Err(SnapshotError::LakeIncompatible(
+                "lake has data tables but no escurel_manifest".to_owned(),
+            ));
+        }
+        return Ok(None);
+    }
+    // No-op gate before the (heavier) local schema work.
+    let latest = lake_latest_snapshot(&conn)?;
+    if current == Some(latest) {
+        return Ok(None);
+    }
+    check_manifest_compat(&conn, embedder.as_ref())?;
+
+    // Local schema — mirror the single-file boot's every-boot set. The
+    // DB is always fresh here so `up` always runs; NO
+    // `enable_hnsw_persistence` beyond the one `up` itself sets
+    // (harmless no-op in-memory), the reader never persists HNSW.
+    Migrator::up(&conn)?;
+    Migrator::ensure_group_members(&conn)?;
+    Migrator::ensure_external_credentials(&conn)?;
+    Migrator::ensure_external_endpoints(&conn)?;
+    Migrator::ensure_pack_subscriptions(&conn)?;
+    Migrator::ensure_block_context(&conn)?;
+
+    // `contextualize` is not mirrored: it is an INGEST-side knob and the
+    // adopted indexer never ingests; the default mode is correct here.
+    let indexer = Indexer::new(store, embedder, conn, tenant)?;
+    let snapshot_id = indexer.load_from_lake(LAKE_ALIAS).await?;
+    {
+        let conn = indexer.conn.lock().await;
+        conn.execute_batch(&format!("DETACH {LAKE_ALIAS};"))?;
+    }
+    Ok(Some(AdoptedIndex {
+        indexer: Arc::new(indexer),
+        snapshot_id,
+    }))
+}
+
+/// `SET temp_directory` so the in-memory reader can spill large
+/// intermediates to disk instead of OOMing (nothing else in the
+/// codebase sets one — file-backed DBs default to `<db>.tmp`, but an
+/// in-memory DB has no default spill location). Per-tenant path under
+/// the OS temp dir; fail-closed on a splice-unsafe path like every
+/// other spliced literal in this module.
+fn set_spill_directory(conn: &Connection, tenant: &str) -> Result<(), SnapshotError> {
+    let dir = std::env::temp_dir().join(format!("escurel-adopt-{tenant}"));
+    std::fs::create_dir_all(&dir).map_err(|source| SnapshotError::DataDir {
+        path: dir.display().to_string(),
+        source,
+    })?;
+    let dir = dir.display().to_string();
+    if !is_safe_sql_fragment(&dir) {
+        return Err(SnapshotError::InvalidLakeConfig(
+            "temp_directory path contains a splice-unsafe character".to_owned(),
+        ));
+    }
+    conn.execute_batch(&format!("SET temp_directory = '{dir}';"))?;
+    Ok(())
 }
 
 #[cfg(test)]

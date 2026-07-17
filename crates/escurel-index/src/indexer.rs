@@ -880,6 +880,68 @@ impl Indexer {
         })
     }
 
+    /// Bulk-load this (FRESH, empty) indexer from an already-attached
+    /// DuckLake catalog (`alias`) — the reader half of the DuckLake
+    /// snapshot cycle (`snapshot::adopt_lake`), borrowing
+    /// [`Self::merge_from_attached`]'s fast-path shape: rows copy
+    /// DuckDB→DuckDB with `INSERT … BY NAME` (no re-embedding), HNSW is
+    /// (re)built after the load via [`Self::reindex_vectors`], the BM25
+    /// FTS snapshot refreshes once at the end.
+    ///
+    /// Differences from `merge_from_attached`, both lake-shaped:
+    /// - `blocks.dense_vec` is cast back `::FLOAT[768]` — the lake
+    ///   carries the `FLOAT[]` *list* type because DuckLake rejects the
+    ///   fixed-width array (spike note 2026-07-17) — and the cast runs
+    ///   BEFORE the HNSW build so the index is over the array type;
+    /// - the registry tables (`group_members`, `external_endpoints`,
+    ///   `pack_subscriptions`) come along (`external_credentials` is
+    ///   never in a lake; chat/CRDT/events stay empty — Phase B);
+    /// - no collision handling: the target is a freshly migrated
+    ///   in-memory DB, so every source row is new by construction.
+    ///
+    /// Returns the lake snapshot id observed by the SAME transaction
+    /// that copied the rows, so the id names exactly the state that was
+    /// loaded even if a writer publishes mid-adopt.
+    pub(crate) async fn load_from_lake(&self, alias: &str) -> Result<i64, IndexerError> {
+        if !is_valid_attach_alias(alias) {
+            return Err(IndexerError::InvalidExternalSource {
+                reason: "attach alias is not a valid identifier",
+            });
+        }
+        let snapshot_id: i64 = {
+            let mut conn = self.conn.lock().await;
+            // Per-row HNSW maintenance is slow; drop, bulk-insert, rebuild.
+            conn.execute_batch("DROP INDEX IF EXISTS hnsw_blocks_vec;")?;
+            let tx = conn.transaction()?;
+            // Read the snapshot id INSIDE the copy transaction: DuckLake
+            // gives snapshot-consistent reads per transaction, so this id
+            // is the one every SELECT below serves.
+            let snapshot_id: i64 = tx.query_row(
+                &format!("SELECT max(snapshot_id) FROM ducklake_snapshots('{alias}')"),
+                [],
+                |r| r.get(0),
+            )?;
+            tx.execute_batch(&format!(
+                "INSERT INTO pages  BY NAME SELECT * FROM {alias}.pages; \
+                 INSERT INTO links  BY NAME SELECT * FROM {alias}.links; \
+                 INSERT INTO group_members      BY NAME SELECT * FROM {alias}.group_members; \
+                 INSERT INTO external_endpoints BY NAME SELECT * FROM {alias}.external_endpoints; \
+                 INSERT INTO pack_subscriptions BY NAME SELECT * FROM {alias}.pack_subscriptions; \
+                 INSERT INTO blocks BY NAME SELECT * \
+                   REPLACE (dense_vec::FLOAT[{BLOCKS_DENSE_VEC_DIM}] AS dense_vec) \
+                   FROM {alias}.blocks;"
+            ))?;
+            tx.commit()?;
+            snapshot_id
+        };
+        // HNSW after the load (the in-memory reader DB needs no
+        // experimental-persistence flag), then one FTS refresh. Both
+        // re-take the connection lock, so the guard above must be gone.
+        self.reindex_vectors().await?;
+        self.refresh_fts().await?;
+        Ok(snapshot_id)
+    }
+
     /// Read an inbox blob by id (delegates to the LaneStore). Used by the
     /// document ingest worker, which only holds an `Arc<Indexer>`.
     pub async fn read_inbox_blob(

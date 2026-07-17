@@ -237,6 +237,11 @@ impl From<SnapshotError> for ConfigError {
                 path: "ducklake".to_owned(),
                 source,
             },
+            SnapshotError::LakeIncompatible(value) => ConfigError::InvalidValue {
+                var: "ESCUREL_LAKE",
+                value,
+                reason: "lake incompatible with this reader",
+            },
         }
     }
 }
