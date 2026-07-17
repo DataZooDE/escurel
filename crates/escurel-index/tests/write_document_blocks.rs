@@ -61,6 +61,7 @@ async fn write_document_blocks_stores_given_vectors_verbatim() {
     // Reopen read-side and read the first element of each chunk's dense_vec.
     let conn = duckdb::Connection::open(&db_path).unwrap();
     Migrator::load_extensions(&conn).unwrap();
+    Migrator::enable_hnsw_persistence(&conn).unwrap();
     let mut stmt = conn
         .prepare("SELECT dense_vec[1] FROM blocks WHERE page_id = ? ORDER BY ordinal")
         .unwrap();

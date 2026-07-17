@@ -6,6 +6,7 @@ fn live() {
     let p = std::env::var("DB").unwrap();
     let conn = Connection::open(&p).expect("open");
     Migrator::load_extensions(&conn).ok();
+    Migrator::enable_hnsw_persistence(&conn).ok();
     let c = |s: &str| -> i64 { conn.query_row(s, [], |r| r.get(0)).unwrap_or(-1) };
     println!(
         "pages={} chat_messages={} crdt_ops={}",

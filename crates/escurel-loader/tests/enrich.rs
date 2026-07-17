@@ -40,6 +40,7 @@ async fn sidecar_metadata_lands_in_instance_frontmatter() {
 
     let conn = duckdb::Connection::open(out.path().join("escurel.duckdb")).unwrap();
     Migrator::load_extensions(&conn).unwrap();
+    Migrator::enable_hnsw_persistence(&conn).unwrap();
 
     // The enriched doc carries wp/doctype/titel/nummer frontmatter.
     let (wp, doctype, titel): (String, String, String) = conn

@@ -28,10 +28,11 @@ LOAD vss;
 INSTALL fts;
 LOAD fts;
 
--- HNSW persistence is gated behind an "experimental" flag in the
--- vss extension. The Escurel storage spec (storage.md §HNSW
--- persistence model) relies on the on-disk HNSW index being
--- loaded as-is on `DuckDB.Open()` and rolled back atomically on
--- mid-write SIGKILL, so persistent HNSW is mandatory.
--- See docs/notes/discovered/2026-05-24-vss-hnsw-experimental-persistence.md.
-SET hnsw_enable_experimental_persistence = true;
+-- NOTE: the experimental-HNSW-persistence flag
+-- (`SET hnsw_enable_experimental_persistence = true;`) deliberately
+-- does NOT live here any more. It is per-connection session state
+-- that only PERSISTENT (single-file) databases need; snapshot-style
+-- backends must be able to load vss/fts without also opting into
+-- experimental HNSW persistence. It is applied explicitly by
+-- `Migrator::enable_hnsw_persistence` (and by `Migrator::up`, whose
+-- HNSW `CREATE INDEX` requires it on a file-backed DB).

@@ -17,7 +17,7 @@ use escurel_client::{Client, SecretString};
 use escurel_crdt::CrdtBackend;
 use escurel_embed::ReloadableEmbedder;
 use escurel_embed::{Embedder, ZeroEmbedder};
-use escurel_index::{Indexer, Migrator};
+use escurel_index::{Indexer, IndexerHandle, Migrator};
 use escurel_quota::QuotaManager;
 use escurel_server::{
     AlwaysReady, EmbedderFactory, ReadinessProbe, ServerConfig, ServerHandle, WriteAclMode, serve,
@@ -337,7 +337,10 @@ impl EscurelProcess {
             version,
             readiness,
             served_tenant: Some(served_tenant.clone()),
-            indexer: indexer.clone(),
+            // The gateway takes the indexer behind the hot-swap seam;
+            // tests keep handing a plain `Arc<Indexer>` and we wrap it
+            // as a fixed (never-swapped) handle.
+            indexer: indexer.clone().map(IndexerHandle::fixed),
             verifier,
             quota: overrides.quota.clone(),
             // #247: tests start un-suspended; a test flips it via tenant_update.

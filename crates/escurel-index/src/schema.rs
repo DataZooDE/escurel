@@ -35,8 +35,8 @@ impl Migrator {
     pub const SCHEMA_VERSION: u32 = 7;
 
     /// Load the per-connection extension/session state Escurel relies on:
-    /// auto-install/-load, `INSTALL`+`LOAD` of `vss`+`fts`, and the
-    /// experimental-HNSW-persistence flag (see `sql/0001_a_autoload.sql`).
+    /// auto-install/-load plus `INSTALL`+`LOAD` of `vss`+`fts`
+    /// (see `sql/0001_a_autoload.sql`).
     ///
     /// This is **per-connection session state**, not durable schema — `LOAD`
     /// and `SET` apply only to the connection that ran them. It MUST run on
@@ -45,8 +45,34 @@ impl Migrator {
     /// DB that skips this cannot modify the HNSW-indexed `blocks` table
     /// (`Cannot bind index 'blocks', unknown index type 'HNSW'`). `INSTALL` is
     /// idempotent (a no-op once the binary is on disk / baked in the image).
+    ///
+    /// NOTE: this no longer sets the experimental-HNSW-persistence flag.
+    /// Connections over a **persistent (file-backed)** database must ALSO call
+    /// [`Migrator::enable_hnsw_persistence`] — see that method for why the
+    /// flag is opt-in per connection.
     pub fn load_extensions(conn: &Connection) -> Result<(), MigrationError> {
         conn.execute_batch(STAGE_1_AUTOLOAD)?;
+        Ok(())
+    }
+
+    /// Enable experimental HNSW persistence on this connection.
+    ///
+    /// HNSW persistence is gated behind an "experimental" flag in the vss
+    /// extension. The Escurel storage spec (storage.md §HNSW persistence
+    /// model) relies on the on-disk HNSW index being loaded as-is on
+    /// `DuckDB.Open()` and rolled back atomically on mid-write SIGKILL, so
+    /// persistent HNSW is mandatory for the single-file backend. See
+    /// docs/notes/discovered/2026-05-24-vss-hnsw-experimental-persistence.md.
+    ///
+    /// Like [`Migrator::load_extensions`] this is **per-connection session
+    /// state**: call it on every connection that reads or writes a
+    /// file-backed index (the single-file boot path, the offline loader, the
+    /// eval harness, …). It is deliberately SEPARATE from `load_extensions`
+    /// so snapshot-style backends can load vss/fts without opting into
+    /// experimental persistence (DuckLake `IndexStore` seam). `vss` must be
+    /// loaded first — the flag belongs to the extension.
+    pub fn enable_hnsw_persistence(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch("SET hnsw_enable_experimental_persistence = true;")?;
         Ok(())
     }
 
@@ -118,6 +144,11 @@ impl Migrator {
         // chat-only schema bumps can be added without disturbing
         // the core tables.
         conn.execute_batch(STAGE_1_AUTOLOAD)?;
+        // Stage 2 creates the HNSW index on `blocks`; on a file-backed DB
+        // that DDL requires the experimental-persistence flag on THIS
+        // connection (the flag used to live in stage 1 — it moved out so
+        // `load_extensions` alone no longer implies persistent HNSW).
+        Self::enable_hnsw_persistence(conn)?;
         conn.execute_batch(STAGE_2_TABLES_AND_INDEXES)?;
         // `blocks.context` (GH #216) must exist BEFORE stage 3 builds the
         // FTS index over ('body', 'context').
@@ -193,9 +224,11 @@ mod tests {
         }
 
         // Restart: the DB already exists, so production skips `up` and only
-        // runs `load_extensions`. Writing the HNSW table must still succeed.
+        // runs `load_extensions` + `enable_hnsw_persistence` (the single-file
+        // reopen recipe). Writing the HNSW table must still succeed.
         let conn = Connection::open(&path).expect("reopen");
         Migrator::load_extensions(&conn).expect("load_extensions on reopen");
+        Migrator::enable_hnsw_persistence(&conn).expect("enable_hnsw_persistence on reopen");
         insert(&conn, "b-reopen")
             .expect("modifying the HNSW-indexed blocks table after reopen must succeed");
 

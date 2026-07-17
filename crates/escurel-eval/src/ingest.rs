@@ -40,6 +40,7 @@ pub fn open_indexer(
     let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.to_path_buf()));
     let conn = duckdb::Connection::open(db_path)?;
     Migrator::load_extensions(&conn)?;
+    Migrator::enable_hnsw_persistence(&conn)?;
     if fresh {
         Migrator::up(&conn)?;
     }

@@ -75,6 +75,7 @@ async fn build_source(dir: &TempDir) -> std::path::PathBuf {
 fn head_of(db: &std::path::Path, id: &str) -> Option<f32> {
     let conn = duckdb::Connection::open(db).unwrap();
     Migrator::load_extensions(&conn).unwrap();
+    Migrator::enable_hnsw_persistence(&conn).unwrap();
     conn.query_row(
         "SELECT dense_vec[1] FROM blocks WHERE page_id = ? ORDER BY ordinal LIMIT 1",
         [page_id(id)],

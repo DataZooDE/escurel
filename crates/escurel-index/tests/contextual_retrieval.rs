@@ -191,6 +191,7 @@ async fn stored_matrix_body_verbatim_context_carries_prefix() {
 
     let conn = Connection::open(db.path().join("escurel.duckdb")).unwrap();
     Migrator::load_extensions(&conn).unwrap();
+    Migrator::enable_hnsw_persistence(&conn).unwrap();
     let (body, context): (String, Option<String>) = conn
         .query_row(
             "SELECT body, context FROM blocks WHERE page_type = 'instance'",
@@ -243,6 +244,7 @@ async fn contextualize_off_stores_no_context() {
 
     let conn = Connection::open(db.path().join("escurel.duckdb")).unwrap();
     Migrator::load_extensions(&conn).unwrap();
+    Migrator::enable_hnsw_persistence(&conn).unwrap();
     let (body, context): (String, Option<String>) = conn
         .query_row(
             "SELECT body, context FROM blocks WHERE page_type = 'instance'",

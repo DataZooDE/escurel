@@ -36,6 +36,7 @@ pub mod read;
 pub mod retrieval;
 pub mod schema;
 pub mod search;
+pub mod snapshot;
 pub mod validate;
 
 pub use acl::AclCaller;
@@ -65,4 +66,5 @@ pub use read::{
 pub use retrieval::RetrievalConfig;
 pub use schema::Migrator;
 pub use search::{Granularity, SearchHit};
+pub use snapshot::{IndexStore, IndexerHandle, OpenedIndex, SingleFileStore, SnapshotError};
 pub use validate::{Issue, Severity};
