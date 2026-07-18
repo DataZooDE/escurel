@@ -26,7 +26,9 @@ use tokio::sync::Mutex;
 // Re-export the chat-history surface so consumers and tests can
 // import the input/output types from the same module path as
 // `Indexer` itself.
-pub use crate::chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
+pub use crate::chat::{
+    AppendChatMessage, ChatBackend, ChatMessage, ChatPage, ListChatMessages, SearchChatMessages,
+};
 
 /// Hard-coded vector dimension for `blocks.dense_vec` (EmbeddingGemma
 /// default). The schema declares `FLOAT[768]`; any embedder passed to
@@ -75,6 +77,17 @@ pub struct Indexer {
     /// `ESCUREL_INGEST_CONTEXTUALIZE`. Read by `rebuild_documents` so a
     /// from-scratch rebuild reproduces the same stored chunk text.
     pub(crate) contextualize: crate::backend::ContextualizeMode,
+    /// Which physical table `append_chat_message` / `list_chat_messages`
+    /// / `delete_chat_history` / `search_chat_messages` read and write
+    /// (DuckLake PR 8, Phase B). Unset (→ [`ChatBackend::Local`], the
+    /// single-file backend's behaviour, byte-identical to before this PR)
+    /// until [`Self::attach_chat_pg`] runs. A `OnceLock` (not a plain
+    /// field) because — unlike the reranker/retrieval builders, which run
+    /// before the indexer is handed out — the writer boot path only has
+    /// an `Arc<Indexer>` (from `SingleFileStore::open`) by the time it
+    /// knows whether to attach the chat Postgres connection, so the
+    /// setter needs `&self`, not `self`.
+    chat_backend: std::sync::OnceLock<ChatBackend>,
 }
 
 /// One document chunk handed to the index write path (GH #216, Contextual
@@ -253,7 +266,58 @@ impl Indexer {
             reranker: Arc::new(NoopReranker),
             retrieval: RetrievalConfig::disabled(),
             contextualize: crate::backend::ContextualizeMode::default(),
+            chat_backend: std::sync::OnceLock::new(),
         })
+    }
+
+    /// The chat backend this indexer is currently wired to —
+    /// [`ChatBackend::Local`] until [`Self::attach_chat_pg`] has run.
+    pub(crate) fn chat_backend(&self) -> ChatBackend {
+        self.chat_backend
+            .get()
+            .cloned()
+            .unwrap_or(ChatBackend::Local)
+    }
+
+    /// `true` once [`Self::attach_chat_pg`] has wired this indexer onto
+    /// the shared chat Postgres table. `escurel-server`'s ducklake-reader
+    /// dispatch gate (DuckLake PR 8) consults this to decide whether
+    /// `append_message`/`list_messages` are servable on a reader — a
+    /// reader boots with `crdt_backend: None` and no local write surface,
+    /// but chat rows now live in a table every replica can reach, so
+    /// those two tools stop being reader-unsupported exactly when this is
+    /// `true`.
+    #[must_use]
+    pub fn has_shared_chat(&self) -> bool {
+        matches!(self.chat_backend(), ChatBackend::AttachedPostgres { .. })
+    }
+
+    /// Attach the shared chat Postgres table onto THIS indexer's own
+    /// connection, read-write and idempotently (DuckLake PR 8, mirrors
+    /// [`Self::attach_lake`]'s "attach on my own connection" shape), and
+    /// point every subsequent `append_chat_message` / `list_chat_messages`
+    /// / `delete_chat_history` / `search_chat_messages` call at it instead
+    /// of the local `chat_messages` table. Idempotent to call twice (the
+    /// underlying `ATTACH IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS`
+    /// are); the server calls this once at boot for a ducklake writer OR
+    /// reader, reusing `LakeConfig::catalog_dsn` — no separate chat config
+    /// needed.
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::snapshot::attach_chat_pg`].
+    pub async fn attach_chat_pg(
+        &self,
+        catalog_dsn: &str,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        {
+            let conn = self.conn.lock().await;
+            crate::snapshot::attach_chat_pg(&conn, catalog_dsn)?;
+        }
+        let _ = self.chat_backend.set(ChatBackend::AttachedPostgres {
+            alias: crate::snapshot::CHAT_PG_ALIAS.to_owned(),
+        });
+        Ok(())
     }
 
     /// Attach a second-stage reranker and its [`RetrievalConfig`].

@@ -45,6 +45,11 @@ rerank = ["escurel-embed/rerank"]
 #     an LLM situates each chunk at ingest. OFF by default (a network path);
 #     needs ESCUREL_INGEST_CONTEXTUALIZE=llm + ESCUREL_CONTEXTUALIZE_LLM_ENDPOINT.
 contextualize-llm = ["escurel-index/contextualize-llm"]
+#   --features live-ducklake → opt-in live integration test
+#     (tests/reader_role_chat.rs) booting a real Postgres testcontainer for
+#     the DuckLake catalog + the Phase B chat table (DuckLake PR 8). OFF by
+#     default (needs Docker), mirroring escurel-index's own `live-ducklake`.
+live-ducklake = []
 
 [dependencies]
 async-trait = "0.1"
@@ -103,6 +108,10 @@ tokio-tungstenite = "0.24"
 wiremock = "0.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
+# Live Postgres testcontainer for the `live-ducklake` chat re-homing test
+# (tests/reader_role_chat.rs, DuckLake PR 8) — mirrors escurel-index's own
+# `live-ducklake` dev-dependency.
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 
 [lints]
 workspace = true
