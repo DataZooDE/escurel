@@ -1023,28 +1023,26 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     "tenant_import",
 ];
 
-/// CRDT/session/event tool surface a ducklake reader must reject
-/// outright — READS included, not just writes — because a reader boots
-/// with `crdt_backend: None`: there is no live-session / event-bus
-/// backend to read from at all. Re-homing that surface off the writer is
-/// PRs 9-10, out of scope here.
+/// CRDT/session tool surface a ducklake reader must reject outright —
+/// READS included, not just writes — because a reader boots with
+/// `crdt_backend: None`: there is no live-session backend to read from
+/// at all. Re-homing that surface off the writer is PR 10, out of scope
+/// here.
 ///
 /// `append_message`/`list_messages` used to live in this list too
 /// (DuckLake PR 6) — chat had nowhere for a reader to read from or write
-/// to. DuckLake PR 8 (Phase B) gives chat a durable home every replica
+/// to. DuckLake PR 8 (Phase B) gave chat a durable home every replica
 /// can reach (a shared attached-Postgres table), so those two tools moved
 /// to a narrower, dynamic check in [`dispatch_tools_call`]: reader-
 /// rejected only when the CURRENT indexer has no shared chat backend
-/// attached (see [`escurel_index::Indexer::has_shared_chat`]) — a static
-/// list can't express "supported when the deployment is wired for it".
+/// attached (see [`escurel_index::Indexer::has_shared_chat`]). DuckLake
+/// PR 9 (Phase B, events) does the exact same thing for `capture_event` /
+/// `assign_event` / `list_events` / `list_inbox` — a static list can't
+/// express "supported when the deployment is wired for it".
 const UNSUPPORTED_ON_REPLICA_TOOLS: &[&str] = &[
     "open_session",
     "apply_op",
     "close_session",
-    "capture_event",
-    "assign_event",
-    "list_events",
-    "list_inbox",
     "list_snapshots",
 ];
 
@@ -1062,6 +1060,12 @@ const CHAT_TOOLS: &[&str] = &[
     "list_messages",
     "admin_delete_chat_history",
 ];
+
+/// The events tool surface `dispatch_tools_call`'s dynamic reader gate
+/// covers (DuckLake PR 9, Phase B) — mirrors [`CHAT_TOOLS`] exactly:
+/// reader-rejected only when the CURRENT indexer has no shared events
+/// backend attached (see [`escurel_index::Indexer::has_shared_events`]).
+const EVENTS_TOOLS: &[&str] = &["capture_event", "assign_event", "list_events", "list_inbox"];
 
 async fn dispatch_tools_call(
     state: &crate::server::AppState,
@@ -1105,6 +1109,19 @@ async fn dispatch_tools_call(
         && !current_indexer
             .as_deref()
             .is_some_and(Indexer::has_shared_chat)
+    {
+        return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
+    }
+
+    // Dynamic events gate (DuckLake PR 9): mirrors the chat gate above
+    // exactly — a reader rejects `capture_event`/`assign_event`/
+    // `list_events`/`list_inbox` UNLESS the current indexer has a shared
+    // events backend attached.
+    if state.reader_mode
+        && EVENTS_TOOLS.contains(&params.name.as_str())
+        && !current_indexer
+            .as_deref()
+            .is_some_and(Indexer::has_shared_events)
     {
         return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
     }
@@ -6293,15 +6310,18 @@ impl JsonRpcError {
             ),
         }
     }
-    /// A ducklake reader replica has no chat/CRDT/session/event-bus
-    /// backend at all (`crdt_backend: None`) — re-homing that surface
-    /// off the writer (Phase B) is not built (DuckLake PR 6).
+    /// A ducklake reader replica has no CRDT/session backend at all
+    /// (`crdt_backend: None`), and its chat/events surfaces are
+    /// unsupported UNLESS the deployment's shared attached-Postgres
+    /// backend is wired (`has_shared_chat`/`has_shared_events`, DuckLake
+    /// PRs 8-9). Re-homing the remaining CRDT/session surface off the
+    /// writer (Phase B) is PR 10, not built yet.
     fn unsupported_on_replica(tool: impl Into<String>) -> Self {
         let tool = tool.into();
         Self {
             code: -32005,
             message: format!(
-                "`{tool}` is unsupported on a ducklake replica: no chat/CRDT/event-bus \
+                "`{tool}` is unsupported on a ducklake replica: no chat/events/CRDT \
                  backend is wired here"
             ),
         }

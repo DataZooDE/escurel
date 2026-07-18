@@ -29,6 +29,9 @@ use tokio::sync::Mutex;
 pub use crate::chat::{
     AppendChatMessage, ChatBackend, ChatMessage, ChatPage, ListChatMessages, SearchChatMessages,
 };
+// Re-export the events-backend seam (DuckLake PR 9) alongside the
+// chat one above — same rationale, same shape.
+pub use crate::events::EventsBackend;
 
 /// Hard-coded vector dimension for `blocks.dense_vec` (EmbeddingGemma
 /// default). The schema declares `FLOAT[768]`; any embedder passed to
@@ -88,6 +91,13 @@ pub struct Indexer {
     /// knows whether to attach the chat Postgres connection, so the
     /// setter needs `&self`, not `self`.
     chat_backend: std::sync::OnceLock<ChatBackend>,
+    /// Which physical table `capture_event` / `assign_event` /
+    /// `list_events` / `list_inbox` read and write (DuckLake PR 9, Phase
+    /// B). Unset (→ [`EventsBackend::Local`], the single-file backend's
+    /// behaviour, byte-identical to before this PR) until
+    /// [`Self::attach_events_pg`] runs. Mirrors [`Self::chat_backend`]
+    /// exactly, including the `OnceLock` rationale.
+    events_backend: std::sync::OnceLock<EventsBackend>,
 }
 
 /// One document chunk handed to the index write path (GH #216, Contextual
@@ -267,6 +277,7 @@ impl Indexer {
             retrieval: RetrievalConfig::disabled(),
             contextualize: crate::backend::ContextualizeMode::default(),
             chat_backend: std::sync::OnceLock::new(),
+            events_backend: std::sync::OnceLock::new(),
         })
     }
 
@@ -316,6 +327,57 @@ impl Indexer {
         }
         let _ = self.chat_backend.set(ChatBackend::AttachedPostgres {
             alias: crate::snapshot::CHAT_PG_ALIAS.to_owned(),
+        });
+        Ok(())
+    }
+
+    /// The events backend this indexer is currently wired to —
+    /// [`EventsBackend::Local`] until [`Self::attach_events_pg`] has run.
+    pub(crate) fn events_backend(&self) -> EventsBackend {
+        self.events_backend
+            .get()
+            .cloned()
+            .unwrap_or(EventsBackend::Local)
+    }
+
+    /// `true` once [`Self::attach_events_pg`] has wired this indexer onto
+    /// the shared events Postgres table. `escurel-server`'s ducklake-
+    /// reader dispatch gate (DuckLake PR 9) consults this to decide
+    /// whether `capture_event`/`assign_event`/`list_events`/`list_inbox`
+    /// are servable on a reader — a reader boots with no local write
+    /// surface, but event rows now live in a table every replica can
+    /// reach, so those four tools stop being reader-unsupported exactly
+    /// when this is `true`.
+    #[must_use]
+    pub fn has_shared_events(&self) -> bool {
+        matches!(
+            self.events_backend(),
+            EventsBackend::AttachedPostgres { .. }
+        )
+    }
+
+    /// Attach the shared events Postgres table onto THIS indexer's own
+    /// connection, read-write and idempotently (DuckLake PR 9, mirrors
+    /// [`Self::attach_chat_pg`] exactly), and point every subsequent
+    /// `capture_event` / `assign_event` / `list_events` / `list_inbox`
+    /// call at it instead of the local `events` table. Idempotent to
+    /// call twice; the server calls this once at boot for a ducklake
+    /// writer OR reader, reusing `LakeConfig::catalog_dsn` — no separate
+    /// events config needed.
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::snapshot::attach_events_pg`].
+    pub async fn attach_events_pg(
+        &self,
+        catalog_dsn: &str,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        {
+            let conn = self.conn.lock().await;
+            crate::snapshot::attach_events_pg(&conn, catalog_dsn)?;
+        }
+        let _ = self.events_backend.set(EventsBackend::AttachedPostgres {
+            alias: crate::snapshot::EVENTS_PG_ALIAS.to_owned(),
         });
         Ok(())
     }

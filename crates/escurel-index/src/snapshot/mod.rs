@@ -15,6 +15,7 @@
 //! restart and without tearing an in-flight request.
 
 mod chat_pg;
+mod events_pg;
 mod lake;
 mod store;
 
@@ -28,6 +29,9 @@ use crate::indexer::{Indexer, IndexerError};
 use crate::schema::MigrationError;
 
 pub use chat_pg::{CHAT_PG_ALIAS, attach_chat_pg, attach_chat_pg_sql, create_chat_pg_table_sql};
+pub use events_pg::{
+    EVENTS_PG_ALIAS, attach_events_pg, attach_events_pg_sql, create_events_pg_table_sql,
+};
 pub use lake::{
     LakeConfig, ObjectStoreSecret, adopt_lake, attach_lake, attach_sql, gc_lake_snapshots,
     install_load_sql, latest_lake_snapshot_id, publish_lake, secret_sql,
