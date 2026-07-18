@@ -606,6 +606,14 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<void> assignEvent(String eventId, String instancePageId) async {
+    await _call('assign_event', {
+      'event_id': eventId,
+      'instance_page_id': instancePageId,
+    });
+  }
+
+  @override
   Future<QueryResult> runStoredQuery(
     String queryId, {
     Map<String, Object?> params = const {},

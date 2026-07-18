@@ -563,6 +563,30 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<void> assignEvent(String eventId, String instancePageId) async {
+    final i = _events.indexWhere((e) => e.eventId == eventId);
+    if (i < 0) {
+      throw EscurelToolException(
+        'unknown event: $eventId',
+        code: 'events.not_found',
+      );
+    }
+    final e = _events[i];
+    _events[i] = Event(
+      eventId: e.eventId,
+      at: e.at,
+      source: e.source,
+      mime: e.mime,
+      labelSkill: e.labelSkill,
+      instancePageId: instancePageId,
+      status: 'processed',
+      title: e.title,
+      body: e.body,
+      provenance: e.provenance,
+    );
+  }
+
+  @override
   Future<QueryResult> runStoredQuery(
     String queryId, {
     Map<String, Object?> params = const {},

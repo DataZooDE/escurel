@@ -181,6 +181,49 @@ void main() {
     });
   });
 
+  // ── event assignment (capture → assign → instance history) ──────
+
+  group('FixtureEscurelClient (event assignment)', () {
+    test('capture then assign lands the event in the instance history',
+        () async {
+      final client = _inlineClient();
+      addTearDown(client.close);
+
+      final ev = await client.captureEvent(
+        source: 'test',
+        labelSkill: 'comment',
+        instancePageId: 'customer::acme',
+        title: 'probe',
+        body: '{"text":"hi"}',
+      );
+      // Mirrors the server: capture always lands in the inbox; only
+      // assign_event moves it onto the instance timeline.
+      expect(ev.status, 'inbox');
+      expect(
+        (await client.listEvents('customer::acme')).map((e) => e.eventId),
+        isNot(contains(ev.eventId)),
+      );
+
+      await client.assignEvent(ev.eventId, 'customer::acme');
+
+      final history = await client.listEvents('customer::acme');
+      expect(history.map((e) => e.eventId), contains(ev.eventId));
+      expect(
+        (await client.listInbox()).map((e) => e.eventId),
+        isNot(contains(ev.eventId)),
+      );
+    });
+
+    test('assignEvent of an unknown event id refuses', () async {
+      final client = _inlineClient();
+      addTearDown(client.close);
+      await expectLater(
+        client.assignEvent('no-such-event', 'customer::acme'),
+        throwsA(isA<EscurelToolException>()),
+      );
+    });
+  });
+
   // ── layers + packs (REQ-LAYER-03/04, REQ-SUB-01 fixture parity) ──
 
   group('FixtureEscurelClient (layers + packs)', () {

@@ -108,6 +108,11 @@ abstract class EscurelClient {
     Map<String, dynamic>? provenance,
   });
 
+  /// Move a captured event out of the inbox onto an instance's
+  /// timeline (`status: processed`). Capture + assign is the two-step
+  /// write path every emitter (conch, coral, a UI) uses.
+  Future<void> assignEvent(String eventId, String instancePageId);
+
   /// Execute a `[[query::*]]` stored query with bound parameters.
   Future<QueryResult> runStoredQuery(
     String queryId, {

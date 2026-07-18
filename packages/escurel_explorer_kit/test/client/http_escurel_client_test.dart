@@ -138,6 +138,25 @@ void main() {
   });
 
   group('MCP envelope', () {
+    test('assign_event sends event id + instance page id', () async {
+      Map<String, dynamic>? receivedArgs;
+      mock.toolHandlers['assign_event'] = (args) {
+        receivedArgs = args;
+        return {
+          'event_id': args['event_id'],
+          'instance_page_id': args['instance_page_id'],
+          'status': 'processed',
+        };
+      };
+
+      await client.assignEvent('ev-123', 'issue::aa11bb');
+
+      expect(receivedArgs, {
+        'event_id': 'ev-123',
+        'instance_page_id': 'issue::aa11bb',
+      });
+    });
+
     test(
       'search posts JSON-RPC 2.0 to /mcp with method=tools/call and correct args',
       () async {
