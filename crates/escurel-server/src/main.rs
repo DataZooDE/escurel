@@ -34,6 +34,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // addresses for operator visibility once we're up.
     let booted = config.build().await?;
     let handle = booted.handle;
+    let refresh_handle = booted.refresh_handle;
 
     tracing::info!(
         http = %handle.local_addr,
@@ -52,6 +53,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     wait_for_shutdown().await;
 
     tracing::info!("escurel-server received shutdown signal; draining");
+    // A ducklake reader's RefreshTask must stop alongside the HTTP/metrics
+    // listeners — otherwise the poll loop outlives everything else on a
+    // graceful stop.
+    if let Some(refresh) = refresh_handle {
+        refresh.shutdown().await;
+    }
     handle.shutdown().await;
     Ok(())
 }

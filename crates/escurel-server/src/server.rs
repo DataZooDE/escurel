@@ -190,6 +190,15 @@ pub struct ServerConfig {
     /// disables metrics scraping entirely. Tests pass
     /// `Some("127.0.0.1:0")`.
     pub metrics_listen: Option<String>,
+    /// This instance is a ducklake reader (`ESCUREL_ROLE=reader`,
+    /// DuckLake PR 6): no local write surface. `dispatch_tools_call`
+    /// consults this to reject the mutating tool surface
+    /// (`read_only_replica`) and the chat/CRDT/session/event tool
+    /// surface (`unsupported_on_replica`) with a typed JSON-RPC error,
+    /// instead of running them against a `None` `crdt_backend` /
+    /// missing write path. `false` (the default) is every existing
+    /// deployment shape — single-file or a ducklake writer.
+    pub reader_mode: bool,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -324,6 +333,8 @@ pub(crate) struct AppState {
     /// Shared pack-signing secret (`ESCUREL_PACK_SECRET`). `None` →
     /// the pack surface refuses fail-closed.
     pub(crate) pack_secret: Option<String>,
+    /// See [`ServerConfig::reader_mode`].
+    pub(crate) reader_mode: bool,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -377,6 +388,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
             .clone()
             .map(|url| crate::webhook::Webhook::new(url, config.webhook_secret.clone())),
         pack_secret: config.pack_secret.clone(),
+        reader_mode: config.reader_mode,
     };
 
     let mut app = Router::new()

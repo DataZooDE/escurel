@@ -984,6 +984,54 @@ fn wrap_tool_result(payload: Value) -> Value {
     })
 }
 
+/// Mutating tool surface a ducklake reader must reject (DuckLake PR 6):
+/// each of these writes into the SERVING index, which on a reader is a
+/// throwaway in-memory copy adopted from the lake (`adopt_lake`) — any
+/// write here is either silently discarded on the next `RefreshTask`
+/// hot-swap or, worse, never reaches the writer/lake at all. The writer
+/// is the only mutation path; a reader is read-only by construction.
+const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
+    "update_page",
+    "rebuild",
+    "compact_lanes",
+    "import_pack",
+    "rebase_pack",
+    "unsubscribe_pack",
+    "submit_promotion",
+    "attach_external",
+    "add_group_member",
+    "remove_group_member",
+    "register_credential",
+    "delete_credential",
+    "create_sql_instance",
+    "register_endpoint",
+    "delete_endpoint",
+    "create_remote_instance",
+    "tenant_create",
+    "tenant_update",
+    "tenant_delete",
+    "tenant_import",
+    "admin_delete_chat_history",
+];
+
+/// Chat/CRDT/session/event tool surface a ducklake reader must reject
+/// outright — READS included, not just writes — because a reader boots
+/// with `crdt_backend: None` (Phase B, re-homing that surface off the
+/// writer, is out of scope for this PR): there is no live-session /
+/// chat-history / event-bus backend to read from at all.
+const UNSUPPORTED_ON_REPLICA_TOOLS: &[&str] = &[
+    "open_session",
+    "apply_op",
+    "close_session",
+    "append_message",
+    "list_messages",
+    "capture_event",
+    "assign_event",
+    "list_events",
+    "list_inbox",
+    "list_snapshots",
+];
+
 async fn dispatch_tools_call(
     state: &crate::server::AppState,
     tenant_id: &str,
@@ -994,6 +1042,19 @@ async fn dispatch_tools_call(
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
         .map_err(|e| JsonRpcError::invalid_params(format!("tools/call params: {e}")))?;
+
+    // Ducklake-reader gate (DuckLake PR 6): reject the mutating tool
+    // surface and the chat/CRDT/session/event tool surface EARLY —
+    // before any tool-specific handler runs, before the indexer/session
+    // routing below — with a typed error naming which bucket applies.
+    if state.reader_mode {
+        if READ_ONLY_REPLICA_TOOLS.contains(&params.name.as_str()) {
+            return Err(JsonRpcError::read_only_replica(params.name.clone()));
+        }
+        if UNSUPPORTED_ON_REPLICA_TOOLS.contains(&params.name.as_str()) {
+            return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
+        }
+    }
 
     // Capture the CURRENT indexer ONCE at dispatch entry (hot-swap
     // seam, `IndexerHandle`): the whole tool call runs against one
@@ -6094,6 +6155,34 @@ impl JsonRpcError {
         Self {
             code: -32002,
             message: msg.into(),
+        }
+    }
+    /// A ducklake reader replica cannot serve a mutating tool — its
+    /// index is a throwaway copy adopted from the lake; only the writer
+    /// mutates (DuckLake PR 6). App-defined code, distinct from
+    /// [`Self::unsupported_on_replica`] so a client can tell "try the
+    /// writer" apart from "this surface doesn't exist here at all".
+    fn read_only_replica(tool: impl Into<String>) -> Self {
+        let tool = tool.into();
+        Self {
+            code: -32004,
+            message: format!(
+                "`{tool}` is unavailable: this is a read-only ducklake replica; \
+                 retry against the writer instance"
+            ),
+        }
+    }
+    /// A ducklake reader replica has no chat/CRDT/session/event-bus
+    /// backend at all (`crdt_backend: None`) — re-homing that surface
+    /// off the writer (Phase B) is not built (DuckLake PR 6).
+    fn unsupported_on_replica(tool: impl Into<String>) -> Self {
+        let tool = tool.into();
+        Self {
+            code: -32005,
+            message: format!(
+                "`{tool}` is unsupported on a ducklake replica: no chat/CRDT/event-bus \
+                 backend is wired here"
+            ),
         }
     }
     fn into_response(self, id: Value) -> axum::response::Response {

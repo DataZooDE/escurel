@@ -17,12 +17,22 @@ pub struct ReadinessReport {
     pub lane_store: bool,
     pub indexer: bool,
     pub embedder: bool,
+    /// Has this instance's serving index adopted at least one snapshot?
+    /// Single-file and ducklake-writer boots build their index
+    /// synchronously (same as `indexer` above), so this is `true` the
+    /// moment `/readyz` can be asked at all. A ducklake reader
+    /// (DuckLake PR 6) also adopts synchronously at boot — before the
+    /// HTTP listener binds — so today this field is `true` for every
+    /// probeable instance; it exists as a distinct signal for a FUTURE
+    /// async-cold-start reader design, not because this PR's readers can
+    /// ever observe it `false`.
+    pub index_snapshot: bool,
 }
 
 impl ReadinessReport {
     #[must_use]
     pub fn all_up(&self) -> bool {
-        self.lane_store && self.indexer && self.embedder
+        self.lane_store && self.indexer && self.embedder && self.index_snapshot
     }
 }
 
@@ -49,6 +59,7 @@ impl ReadinessProbe for AlwaysReady {
             lane_store: true,
             indexer: true,
             embedder: true,
+            index_snapshot: true,
         }
     }
 }

@@ -113,6 +113,12 @@ pub struct ConfigOverrides {
     /// one Escurel also trusts Triton's (or another service's) signer.
     /// Requires an auth mode with a verifier (not `Disabled`).
     pub extra_issuers: Vec<(String, String)>,
+    /// Boot the gateway in ducklake-reader mode (DuckLake PR 6): the
+    /// mutating tool surface and the chat/CRDT/session/event tool
+    /// surface are rejected with a typed JSON-RPC error. `false`
+    /// (default) is every other test — a writer or a health-only
+    /// gateway.
+    pub reader_mode: bool,
 }
 
 impl std::fmt::Debug for ConfigOverrides {
@@ -134,6 +140,7 @@ impl std::fmt::Debug for ConfigOverrides {
                 "embedder_factory_overridden",
                 &self.embedder_factory.is_some(),
             )
+            .field("reader_mode", &self.reader_mode)
             .finish()
     }
 }
@@ -357,6 +364,7 @@ impl EscurelProcess {
             // Metrics on their own random port, mirroring production's
             // dedicated listener (production defaults to :9090).
             metrics_listen: Some("127.0.0.1:0".to_owned()),
+            reader_mode: overrides.reader_mode,
         };
         let handle = serve(cfg)
             .await

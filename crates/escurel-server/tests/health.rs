@@ -22,6 +22,7 @@ fn ready_all_up() -> Arc<dyn ReadinessProbe> {
         lane_store: true,
         indexer: true,
         embedder: true,
+        index_snapshot: true,
     }))
 }
 
@@ -30,6 +31,7 @@ fn ready_one_down() -> Arc<dyn ReadinessProbe> {
         lane_store: true,
         indexer: false,
         embedder: true,
+        index_snapshot: true,
     }))
 }
 

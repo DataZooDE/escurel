@@ -61,6 +61,12 @@ impl ReadinessProbe for DependencyProbe {
             // we got here it is open + migrated.
             indexer: true,
             embedder: self.embedder.is_loaded(),
+            // Single-file, ducklake-writer, and ducklake-reader all build
+            // their serving index SYNCHRONOUSLY at boot (the reader's
+            // `adopt_lake` runs before the HTTP listener binds — see
+            // `EscurelConfig::build`), so by the time this probe can be
+            // asked at all, a snapshot has already been adopted.
+            index_snapshot: true,
         }
     }
 }
