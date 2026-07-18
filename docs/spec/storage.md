@@ -11,7 +11,10 @@ The storage layer carries three concerns:
    CRDT op log + the frontmatter index.
 3. **External attached data** — read-only DuckLake catalogs
    mounted as `external.ducklake` for the origin axis, via
-   DuckDB's `ATTACH` mechanism.
+   DuckDB's `ATTACH` mechanism. *(Spec concept, not yet built —*
+   *do not confuse with the DuckLake **storage backend** below,*
+   *which is a different, shipped feature: escurel's own derived*
+   *index living in DuckLake, not a foreign read-only source.)*
 
 All three sit behind one trait, `LaneStore`, so the
 filesystem-backed default and the S3-backed variant share the
@@ -245,6 +248,38 @@ LLM-driven processor swap in without touching intake/materialise (v1 is
 deterministic). `rebuild` re-extracts → re-chunks → re-embeds from the retained
 blob; the FTS reindex is debounced/batched (dense HNSW is live on append, only
 BM25 lags).
+
+## DuckLake storage backend (writer/reader replicas)
+
+Shipped feature ([ADR-0009](../adr/0009-ducklake-postgres-catalog.md),
+design summary [`docs/notes/2026-07-18-ducklake-architecture.md`](../notes/2026-07-18-ducklake-architecture.md)) —
+distinct from the read-only `external.ducklake` origin-axis concept above,
+which remains unimplemented. This backend lets the derived index (the
+"single per-tenant DuckDB store" described earlier in this doc) run as
+stateless read replicas sharing one corpus, instead of one single-writer
+DuckDB file.
+
+Selected via `ESCUREL_INDEX_BACKEND=single-file` (default, today's
+behaviour, byte-identical) or `ducklake`. When `ducklake`,
+`ESCUREL_ROLE=writer` (default) keeps a local single-file DuckDB as before
+and additionally attaches a DuckLake catalog — Postgres for metadata
+(`ESCUREL_DUCKLAKE_CATALOG_DSN`), Parquet on GCS/S3/local dir for data
+(`ESCUREL_DUCKLAKE_DATA_PATH`) — to publish snapshots on demand or on a
+timer. `ESCUREL_ROLE=reader` has **no local DuckDB file**: it adopts the
+latest published snapshot into an in-memory DuckDB at boot and polls for
+new ones every `ESCUREL_SNAPSHOT_REFRESH_SECS` (default 30s), hot-swapping
+the serving `Indexer` with no restart and no torn in-flight requests.
+
+`pages`/`links`/`blocks` (+ the `group_members`/`external_endpoints`/
+`pack_subscriptions` registries) are the shared corpus mirrored into the
+lake; `external_credentials` never leaves the writer. Three per-user data
+classes that need strong consistency instead of eventual — `chat_messages`,
+`events`, and `crdt_ops`/`crdt_snapshots` — are re-homed to shared Postgres
+tables in the same Cloud SQL database (`chat_pg`/`events_pg`/`crdt_pg`),
+attached **read-write** from every replica including readers; see the
+design note for the full per-table breakdown and the CRDT scope boundary
+(durable storage is shared across replicas; live cross-replica session
+failover is not).
 
 ## DuckDB schema
 
