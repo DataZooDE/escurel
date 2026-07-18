@@ -1242,10 +1242,18 @@ impl EscurelConfig {
                     // adopted-but-ephemeral local `chat_messages` table in
                     // that shape — acceptable, it never has durable rows
                     // to begin with on a reader.
+                    // Phase B (DuckLake PR 9): the reader ALSO gets
+                    // read-write access to the shared events Postgres
+                    // table — same rationale, same `is_pg_catalog` gate,
+                    // same `catalog_dsn` reuse as chat above.
                     if lake_cfg.is_pg_catalog() {
                         adopted
                             .indexer
                             .attach_chat_pg(&lake_cfg.catalog_dsn)
+                            .await?;
+                        adopted
+                            .indexer
+                            .attach_events_pg(&lake_cfg.catalog_dsn)
                             .await?;
                     }
                     let handle = IndexerHandle::fixed(adopted.indexer);
@@ -1295,8 +1303,13 @@ impl EscurelConfig {
                         // reader-only — reusing the same catalog_dsn (see
                         // the reader arm above for the `is_pg_catalog`
                         // rationale).
+                        // Phase B (DuckLake PR 9): the writer ALSO moves
+                        // onto the shared events Postgres table — events
+                        // re-homing is symmetric across every replica,
+                        // same as chat above.
                         if lake_cfg.is_pg_catalog() {
                             indexer.attach_chat_pg(&lake_cfg.catalog_dsn).await?;
+                            indexer.attach_events_pg(&lake_cfg.catalog_dsn).await?;
                         }
 
                         // Optional periodic publish (PR 7):
