@@ -29,12 +29,17 @@ pub mod backend;
 pub mod codec;
 pub mod error;
 pub mod livedoc;
+pub mod pg;
 pub mod reconciler;
 
 pub use backend::{CrdtBackend, DuckdbCrdtBackend};
 pub use codec::{body_from_snapshot, snapshot_bytes_from_markdown, three_way_merge};
 pub use error::Error;
 pub use livedoc::{LiveDoc, hydrate_content};
+pub use pg::{
+    CRDT_OPS_PG_TABLE, CRDT_PG_ALIAS, CRDT_SNAPSHOTS_PG_TABLE, attach_crdt_pg, attach_crdt_pg_sql,
+    create_crdt_ops_pg_table_sql, create_crdt_snapshots_pg_table_sql,
+};
 pub use reconciler::{CitationLookup, Decision, ExternalEditReconciler};
 
 /// Raw Loro op bytes — the wire payload that

@@ -80,6 +80,11 @@ pub enum SnapshotError {
     /// transaction) failed.
     #[error("lake SQL failed: {0}")]
     LakeSql(#[from] duckdb::Error),
+    /// The CRDT op-log re-homing attach (`escurel_crdt::attach_crdt_pg`,
+    /// DuckLake PR 10) failed — an invalid `catalog_dsn` or a SQL error
+    /// running the attach/create-table statements.
+    #[error("crdt pg attach failed: {0}")]
+    Crdt(#[from] escurel_crdt::Error),
 }
 
 /// A freshly opened per-tenant index: the boot-ready [`Indexer`] plus

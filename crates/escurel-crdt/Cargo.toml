@@ -29,6 +29,13 @@ escurel-storage = { path = "../escurel-storage" }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
 
+[features]
+# Opt-in live integration test (`tests/ducklake_crdt_live.rs`): a real
+# Postgres testcontainer backs `crdt_pg.escurel_crdt_ops` /
+# `crdt_pg.escurel_crdt_snapshots`. Off by default (needs Docker),
+# mirroring `escurel-index`'s own `live-ducklake` feature.
+live-ducklake = []
+
 [dev-dependencies]
 bytes = "1"
 escurel-index = { path = "../escurel-index" }
@@ -36,6 +43,10 @@ escurel-index = { path = "../escurel-index" }
 escurel-md = { path = "../escurel-md" }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Live Postgres testcontainer for the `live-ducklake` CRDT re-homing test
+# (`tests/ducklake_crdt_live.rs`, DuckLake PR 10) — only pulled in behind
+# the `live-ducklake` dev-dependency, mirroring `escurel-server`'s own.
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 
 [lints]
 workspace = true

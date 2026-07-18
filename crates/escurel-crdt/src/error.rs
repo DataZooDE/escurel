@@ -36,6 +36,14 @@ pub enum Error {
     /// into its public types.
     #[error("citation lookup error: {0}")]
     Citation(String),
+
+    /// A `pg::attach_crdt_pg_sql` DSN failed the splice guards (empty
+    /// value, or a splice-unsafe character) — DuckLake PR 10's shared
+    /// op-log re-homing. Mirrors `escurel_index::snapshot::SnapshotError::
+    /// InvalidLakeConfig` for the same failure mode, named locally since
+    /// this crate does not depend on `escurel-index`.
+    #[error("invalid crdt pg config: {0}")]
+    InvalidConfig(String),
 }
 
 impl From<loro::LoroError> for Error {

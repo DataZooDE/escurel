@@ -1023,28 +1023,16 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     "tenant_import",
 ];
 
-/// CRDT/session tool surface a ducklake reader must reject outright —
-/// READS included, not just writes — because a reader boots with
-/// `crdt_backend: None`: there is no live-session backend to read from
-/// at all. Re-homing that surface off the writer is PR 10, out of scope
-/// here.
-///
-/// `append_message`/`list_messages` used to live in this list too
-/// (DuckLake PR 6) — chat had nowhere for a reader to read from or write
-/// to. DuckLake PR 8 (Phase B) gave chat a durable home every replica
-/// can reach (a shared attached-Postgres table), so those two tools moved
-/// to a narrower, dynamic check in [`dispatch_tools_call`]: reader-
-/// rejected only when the CURRENT indexer has no shared chat backend
-/// attached (see [`escurel_index::Indexer::has_shared_chat`]). DuckLake
-/// PR 9 (Phase B, events) does the exact same thing for `capture_event` /
-/// `assign_event` / `list_events` / `list_inbox` — a static list can't
-/// express "supported when the deployment is wired for it".
-const UNSUPPORTED_ON_REPLICA_TOOLS: &[&str] = &[
-    "open_session",
-    "apply_op",
-    "close_session",
-    "list_snapshots",
-];
+/// Tool surface a ducklake reader must reject outright when the
+/// deployment has no relevant shared backend attached. This static list
+/// is now EMPTY of CRDT/session tools — DuckLake PR 10 (Phase B) moved
+/// `open_session` / `apply_op` / `close_session` / `list_snapshots` to
+/// the dynamic [`CRDT_TOOLS`] check below, mirroring [`CHAT_TOOLS`] /
+/// [`EVENTS_TOOLS`] exactly. Kept as a (currently empty) named constant
+/// rather than deleted outright so a future reader-unsupported-always
+/// tool has an obvious place to land, and so the dynamic-gate doc
+/// comments below can keep referring to it by name.
+const UNSUPPORTED_ON_REPLICA_TOOLS: &[&str] = &[];
 
 /// The chat tool surface `dispatch_tools_call`'s dynamic reader gate
 /// covers — split out from [`UNSUPPORTED_ON_REPLICA_TOOLS`] (and, for
@@ -1066,6 +1054,38 @@ const CHAT_TOOLS: &[&str] = &[
 /// reader-rejected only when the CURRENT indexer has no shared events
 /// backend attached (see [`escurel_index::Indexer::has_shared_events`]).
 const EVENTS_TOOLS: &[&str] = &["capture_event", "assign_event", "list_events", "list_inbox"];
+
+/// The CRDT/session tool surface `dispatch_tools_call`'s dynamic reader
+/// gate covers (DuckLake PR 10, Phase B) — mirrors [`CHAT_TOOLS`] /
+/// [`EVENTS_TOOLS`] exactly: reader-rejected only when the CURRENT
+/// indexer has no shared CRDT backend attached (see
+/// [`escurel_index::Indexer::has_shared_crdt`]).
+///
+/// Gated on the INDEXER's `has_shared_crdt` for all four tools, including
+/// the three session ones (`open_session`/`apply_op`/`close_session`,
+/// which route through `state.crdt_backend`, not the indexer) — both
+/// seams are attached from the SAME `catalog_dsn` at the SAME boot step
+/// (`EscurelConfig::build`'s `is_pg_catalog()` branch), so they always
+/// agree; checking the indexer keeps this list's shape identical to
+/// [`CHAT_TOOLS`]/[`EVENTS_TOOLS`] rather than inventing a second style
+/// of dynamic check just for these three tools.
+///
+/// Scope note: this makes the durable STORAGE (`crdt_ops`/
+/// `crdt_snapshots`) reachable from every replica — it does NOT give a
+/// live editing session cross-replica failover. `SessionManager` still
+/// runs one `LiveDoc` actor per page in-process; a session opened on
+/// replica A and continued on replica B is not the same actor. What this
+/// buys a reader: `list_snapshots` works for any page (even one whose
+/// history was written by the writer or another reader), and a session
+/// opened fresh on any replica loads correct history from the shared
+/// table. Ingress affinity for a live session is a documented future
+/// follow-up, not built here.
+const CRDT_TOOLS: &[&str] = &[
+    "open_session",
+    "apply_op",
+    "close_session",
+    "list_snapshots",
+];
 
 async fn dispatch_tools_call(
     state: &crate::server::AppState,
@@ -1122,6 +1142,19 @@ async fn dispatch_tools_call(
         && !current_indexer
             .as_deref()
             .is_some_and(Indexer::has_shared_events)
+    {
+        return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
+    }
+
+    // Dynamic CRDT gate (DuckLake PR 10): mirrors the chat/events gates
+    // above exactly — a reader rejects `open_session`/`apply_op`/
+    // `close_session`/`list_snapshots` UNLESS the current indexer has a
+    // shared CRDT backend attached.
+    if state.reader_mode
+        && CRDT_TOOLS.contains(&params.name.as_str())
+        && !current_indexer
+            .as_deref()
+            .is_some_and(Indexer::has_shared_crdt)
     {
         return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
     }
