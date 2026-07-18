@@ -75,8 +75,14 @@ pub struct LakeConfig {
 }
 
 impl LakeConfig {
-    /// Postgres catalog (`=` in the DSN) vs DuckDB-file catalog.
-    fn is_pg_catalog(&self) -> bool {
+    /// Postgres catalog (`=` in the DSN) vs DuckDB-file catalog. `pub`
+    /// (DuckLake PR 8): the server boot path uses this to decide whether
+    /// to attach the shared chat Postgres table — a DuckDB-file catalog
+    /// (dev/test only; production per ADR-0009 is always Postgres) has
+    /// no Postgres database to attach chat into, so chat stays on the
+    /// local `chat_messages` table in that shape.
+    #[must_use]
+    pub fn is_pg_catalog(&self) -> bool {
         self.catalog_dsn.contains('=')
     }
 

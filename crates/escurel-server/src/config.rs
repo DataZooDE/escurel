@@ -1232,6 +1232,22 @@ impl EscurelConfig {
                         reason: "lake has never been published; a reader cannot boot from an \
                              empty lake — publish from a writer first",
                     })?;
+                    // Phase B (DuckLake PR 8): a reader gets read-write
+                    // access to the shared chat Postgres table, reusing
+                    // `catalog_dsn` — no separate config. Only when the
+                    // catalog is genuinely Postgres (`is_pg_catalog`); a
+                    // DuckDB-file catalog (dev/test-only shape; production
+                    // per ADR-0009 is always Postgres) has no Postgres
+                    // database to attach into, so chat falls back to the
+                    // adopted-but-ephemeral local `chat_messages` table in
+                    // that shape — acceptable, it never has durable rows
+                    // to begin with on a reader.
+                    if lake_cfg.is_pg_catalog() {
+                        adopted
+                            .indexer
+                            .attach_chat_pg(&lake_cfg.catalog_dsn)
+                            .await?;
+                    }
                     let handle = IndexerHandle::fixed(adopted.indexer);
                     let refresh = crate::snapshot_refresh::RefreshTask::new(
                         handle.clone(),
@@ -1272,6 +1288,16 @@ impl EscurelConfig {
                          (EscurelConfig::from_env validated this)",
                         );
                         indexer.attach_lake(lake_cfg).await?;
+
+                        // Phase B (DuckLake PR 8): the writer ALSO moves
+                        // onto the shared chat Postgres table — chat
+                        // re-homing is symmetric across every replica, not
+                        // reader-only — reusing the same catalog_dsn (see
+                        // the reader arm above for the `is_pg_catalog`
+                        // rationale).
+                        if lake_cfg.is_pg_catalog() {
+                            indexer.attach_chat_pg(&lake_cfg.catalog_dsn).await?;
+                        }
 
                         // Optional periodic publish (PR 7):
                         // `ESCUREL_SNAPSHOT_PUBLISH_SECS > 0`. `0` (default)

@@ -542,3 +542,19 @@ async fn append_persists_metadata_json() {
     assert_eq!(page.messages.len(), 1);
     assert_eq!(page.messages[0].metadata.as_ref(), Some(&meta));
 }
+
+/// Regression guard for DuckLake PR 8 (Phase B, chat re-homing): a
+/// single-file-backend `Indexer::new` construction — this test's whole
+/// harness — must NOT be wired onto the shared attached-Postgres chat
+/// table. `Indexer::attach_chat_pg` is the ONLY thing that flips
+/// `has_shared_chat`; nothing in this file's construction path calls it,
+/// so every other test above is exercising the exact same local
+/// `chat_messages` table as before this PR (byte-identical behaviour).
+#[tokio::test]
+async fn single_file_backend_chat_unaffected() {
+    let h = fresh_harness();
+    assert!(
+        !h.indexer.has_shared_chat(),
+        "single-file boot must default to the local chat_messages table"
+    );
+}

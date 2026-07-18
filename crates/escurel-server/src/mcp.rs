@@ -1021,25 +1021,46 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     "tenant_update",
     "tenant_delete",
     "tenant_import",
-    "admin_delete_chat_history",
 ];
 
-/// Chat/CRDT/session/event tool surface a ducklake reader must reject
+/// CRDT/session/event tool surface a ducklake reader must reject
 /// outright — READS included, not just writes — because a reader boots
-/// with `crdt_backend: None` (Phase B, re-homing that surface off the
-/// writer, is out of scope for this PR): there is no live-session /
-/// chat-history / event-bus backend to read from at all.
+/// with `crdt_backend: None`: there is no live-session / event-bus
+/// backend to read from at all. Re-homing that surface off the writer is
+/// PRs 9-10, out of scope here.
+///
+/// `append_message`/`list_messages` used to live in this list too
+/// (DuckLake PR 6) — chat had nowhere for a reader to read from or write
+/// to. DuckLake PR 8 (Phase B) gives chat a durable home every replica
+/// can reach (a shared attached-Postgres table), so those two tools moved
+/// to a narrower, dynamic check in [`dispatch_tools_call`]: reader-
+/// rejected only when the CURRENT indexer has no shared chat backend
+/// attached (see [`escurel_index::Indexer::has_shared_chat`]) — a static
+/// list can't express "supported when the deployment is wired for it".
 const UNSUPPORTED_ON_REPLICA_TOOLS: &[&str] = &[
     "open_session",
     "apply_op",
     "close_session",
-    "append_message",
-    "list_messages",
     "capture_event",
     "assign_event",
     "list_events",
     "list_inbox",
     "list_snapshots",
+];
+
+/// The chat tool surface `dispatch_tools_call`'s dynamic reader gate
+/// covers — split out from [`UNSUPPORTED_ON_REPLICA_TOOLS`] (and, for
+/// `admin_delete_chat_history`, out of [`READ_ONLY_REPLICA_TOOLS`])
+/// because whether they're servable depends on the CURRENT indexer's
+/// chat backend, not just `state.reader_mode` (DuckLake PR 8). The GDPR
+/// delete path deliberately gets the same treatment as append/list: on
+/// the shared attached-Postgres table a delete from ANY replica removes
+/// the rows for every replica (same physical table), so there is no
+/// reason to force it through the writer once chat is re-homed.
+const CHAT_TOOLS: &[&str] = &[
+    "append_message",
+    "list_messages",
+    "admin_delete_chat_history",
 ];
 
 async fn dispatch_tools_call(
@@ -1070,6 +1091,23 @@ async fn dispatch_tools_call(
     // seam, `IndexerHandle`): the whole tool call runs against one
     // consistent indexer even if a snapshot adoption swaps mid-flight.
     let current_indexer: Option<Arc<Indexer>> = state.indexer.as_ref().map(IndexerHandle::current);
+
+    // Dynamic chat gate (DuckLake PR 8): a reader rejects
+    // `append_message`/`list_messages` UNLESS the current indexer has a
+    // shared chat backend attached (`ESCUREL_INDEX_BACKEND=ducklake` with
+    // a Postgres catalog — see `EscurelConfig::build`). Checked against
+    // the SAME captured indexer the rest of this call runs against, so a
+    // hot-swap mid-flight can't disagree with itself. Every non-reader
+    // deployment (single-file, or a ducklake writer) is completely
+    // unaffected — this block is inert there.
+    if state.reader_mode
+        && CHAT_TOOLS.contains(&params.name.as_str())
+        && !current_indexer
+            .as_deref()
+            .is_some_and(Indexer::has_shared_chat)
+    {
+        return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
+    }
 
     // Session tools depend on `crdt_backend` + `sessions`, not on
     // the indexer. Route them before the indexer gate.

@@ -23,12 +23,49 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use duckdb::params;
 use escurel_embed::EmbedError;
 use ulid::Ulid;
 
 use crate::indexer::{BLOCKS_DENSE_VEC_DIM, Indexer, IndexerError, format_vector_literal};
 use crate::read::OrderDir;
+
+/// Table name for the shared attached-Postgres chat table (DuckLake PR 8,
+/// Phase B). Lives here (not `snapshot::chat_pg`) because `chat.rs` owns
+/// the chat concept; `snapshot::chat_pg` imports it back for the
+/// `CREATE TABLE` DDL so the name is defined exactly once.
+pub const CHAT_PG_TABLE_NAME: &str = "escurel_chat_messages";
+
+/// Which physical table [`Indexer`]'s chat methods (`append_chat_message`
+/// / `list_chat_messages` / `delete_chat_history` /
+/// `search_chat_messages`) read and write.
+///
+/// `Local` (the default `Indexer::new` construction) is today's
+/// single-file behaviour, byte-identical: the per-tenant `chat_messages`
+/// table, no `tenant` column (tenancy is implicit — one DuckDB file per
+/// tenant). `AttachedPostgres` (DuckLake PR 8) points every ducklake
+/// replica — writer AND every reader — at ONE shared, writable Postgres
+/// table (`snapshot::attach_chat_pg`), scoped by an explicit `tenant`
+/// column since the physical table is no longer implicitly
+/// single-tenant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatBackend {
+    /// The local per-tenant `chat_messages` table.
+    Local,
+    /// An attached, read-write Postgres table shared by every replica.
+    /// `alias` is the DuckDB `ATTACH` alias (`snapshot::CHAT_PG_ALIAS`,
+    /// duplicated here as a plain `String` rather than a crate
+    /// cross-reference so `chat.rs` has no dependency on the `snapshot`
+    /// module — the alias is a SQL identifier, not shared state).
+    AttachedPostgres { alias: String },
+}
+
+/// Input to [`Indexer::search_chat_messages`].
+#[derive(Debug, Clone)]
+pub struct SearchChatMessages<'a> {
+    pub chat_group_id: &'a str,
+    pub query: &'a str,
+    pub limit: usize,
+}
 
 /// One message in a chat-group's history.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +170,28 @@ impl Cursor {
 }
 
 impl Indexer {
+    /// The table this indexer's chat methods read/write:
+    /// `chat_messages` (local) or `<alias>.escurel_chat_messages`
+    /// (attached Postgres, DuckLake PR 8).
+    fn chat_table(&self) -> String {
+        match self.chat_backend() {
+            ChatBackend::Local => "chat_messages".to_owned(),
+            ChatBackend::AttachedPostgres { alias } => format!("{alias}.{CHAT_PG_TABLE_NAME}"),
+        }
+    }
+
+    /// `Some(tenant)` when chat rows must be scoped by an explicit
+    /// `tenant` column (the attached-Postgres table is one physical
+    /// relation shared by every replica of this deployment); `None` for
+    /// the local table, whose tenancy is implicit (one DuckDB file per
+    /// tenant, no `tenant` column at all).
+    fn chat_tenant_scope(&self) -> Option<&str> {
+        match self.chat_backend() {
+            ChatBackend::Local => None,
+            ChatBackend::AttachedPostgres { .. } => Some(self.tenant()),
+        }
+    }
+
     /// Append one message to a chat-group's history.
     ///
     /// Behaviour:
@@ -194,32 +253,84 @@ impl Indexer {
         // Vector literal is inlined (no string params; values come
         // from a trusted embedder), parameters cover all string
         // inputs. COALESCE lets a NULL `ts` parameter fall through
-        // to CURRENT_TIMESTAMP without a second statement; RETURNING
-        // reads back the resolved value as RFC-3339 UTC.
+        // to CURRENT_TIMESTAMP without a second statement.
+        //
+        // The attached-Postgres table has no `metadata JSON` column
+        // (JSON round-tripping through the DuckDB Postgres connector is
+        // untested for this PR) — it stores the same JSON text as a
+        // plain VARCHAR, so the `::JSON` cast is Local-only; the
+        // `tenant` column is likewise AttachedPostgres-only.
+        let table = self.chat_table();
         let vec_expr = dense_vec_literal.as_deref().unwrap_or("NULL");
-        let sql = format!(
-            "INSERT INTO chat_messages \
-             (chat_group_id, msg_id, ts, role, author, content, metadata, dense_vec, embedded) \
-             VALUES (?, ?, \
-                     COALESCE(TRY_CAST(? AS TIMESTAMP), CURRENT_TIMESTAMP), \
-                     ?, ?, ?, ?::JSON, {vec_expr}, ?) \
-             RETURNING strftime(ts, '%Y-%m-%dT%H:%M:%SZ')"
-        );
+        let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> = Vec::new();
+        // `Some(ts)` when `ts` was already resolved (and the INSERT ran
+        // with no `RETURNING`); `None` when the INSERT itself resolves
+        // and returns it (the `RETURNING` path, Local only — see below).
+        let mut already_resolved_ts: Option<String> = None;
+        let sql = match self.chat_tenant_scope() {
+            None => {
+                bindings.push(Box::new(input.chat_group_id.to_owned()));
+                bindings.push(Box::new(msg_id.clone()));
+                bindings.push(Box::new(input.ts.map(str::to_owned)));
+                bindings.push(Box::new(input.role.to_owned()));
+                bindings.push(Box::new(input.author.map(str::to_owned)));
+                bindings.push(Box::new(input.content.to_owned()));
+                bindings.push(Box::new(metadata_json.clone()));
+                bindings.push(Box::new(input.embed));
+                format!(
+                    "INSERT INTO {table} \
+                     (chat_group_id, msg_id, ts, role, author, content, metadata, dense_vec, embedded) \
+                     VALUES (?, ?, \
+                             COALESCE(TRY_CAST(? AS TIMESTAMP), CURRENT_TIMESTAMP), \
+                             ?, ?, ?, ?::JSON, {vec_expr}, ?) \
+                     RETURNING strftime(ts, '%Y-%m-%dT%H:%M:%SZ')"
+                )
+            }
+            Some(tenant) => {
+                // The DuckDB Postgres connector rejects `RETURNING` on an
+                // insert into an attached Postgres table ("Binder Error:
+                // RETURNING clause not yet supported for insertion into
+                // Postgres table" — probed empirically against a live
+                // container). Resolve + format `ts` FIRST with a plain
+                // scalar `SELECT` (touches no table, so it's an ordinary
+                // DuckDB query, not an attached-table insert), then bind
+                // the resolved, already-RFC-3339 value straight into the
+                // INSERT instead of leaning on COALESCE/RETURNING there.
+                let resolved_ts: String = conn.query_row(
+                    "SELECT strftime(COALESCE(TRY_CAST(? AS TIMESTAMP), CURRENT_TIMESTAMP), \
+                     '%Y-%m-%dT%H:%M:%SZ')",
+                    [input.ts],
+                    |row| row.get(0),
+                )?;
+                already_resolved_ts = Some(resolved_ts.clone());
+                bindings.push(Box::new(tenant.to_owned()));
+                bindings.push(Box::new(input.chat_group_id.to_owned()));
+                bindings.push(Box::new(msg_id.clone()));
+                bindings.push(Box::new(resolved_ts));
+                bindings.push(Box::new(input.role.to_owned()));
+                bindings.push(Box::new(input.author.map(str::to_owned)));
+                bindings.push(Box::new(input.content.to_owned()));
+                bindings.push(Box::new(metadata_json.clone()));
+                bindings.push(Box::new(input.embed));
+                format!(
+                    "INSERT INTO {table} \
+                     (tenant, chat_group_id, msg_id, ts, role, author, content, metadata, dense_vec, embedded) \
+                     VALUES (?, ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, {vec_expr}, ?)"
+                )
+            }
+        };
 
-        let stored_ts: String = conn.query_row(
-            &sql,
-            params![
-                input.chat_group_id,
-                msg_id,
-                input.ts,
-                input.role,
-                input.author,
-                input.content,
-                metadata_json,
-                input.embed,
-            ],
-            |row| row.get(0),
-        )?;
+        let param_refs: Vec<&dyn duckdb::ToSql> = bindings
+            .iter()
+            .map(|b| b.as_ref() as &dyn duckdb::ToSql)
+            .collect();
+        let stored_ts: String = match already_resolved_ts {
+            Some(ts) => {
+                conn.execute(&sql, param_refs.as_slice())?;
+                ts
+            }
+            None => conn.query_row(&sql, param_refs.as_slice(), |row| row.get(0))?,
+        };
 
         Ok(ChatMessage {
             chat_group_id: input.chat_group_id.to_owned(),
@@ -268,6 +379,10 @@ impl Indexer {
         let mut where_clauses = vec!["chat_group_id = ?".to_owned()];
         let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> =
             vec![Box::new(input.chat_group_id.to_owned())];
+        if let Some(tenant) = self.chat_tenant_scope() {
+            where_clauses.push("tenant = ?".to_owned());
+            bindings.push(Box::new(tenant.to_owned()));
+        }
 
         if let Some(since) = input.since {
             where_clauses.push("ts >= TRY_CAST(? AS TIMESTAMP)".to_owned());
@@ -285,11 +400,12 @@ impl Indexer {
             bindings.push(Box::new(c.msg_id.clone()));
         }
 
+        let table = self.chat_table();
         let sql = format!(
             "SELECT chat_group_id, msg_id, \
                     strftime(ts, '%Y-%m-%dT%H:%M:%SZ'), \
                     role, author, content, metadata::VARCHAR, embedded \
-             FROM chat_messages \
+             FROM {table} \
              WHERE {where_clause} \
              ORDER BY ts {order}, msg_id {order} \
              LIMIT ?",
@@ -379,6 +495,13 @@ impl Indexer {
         let mut where_clauses: Vec<&str> = Vec::new();
         let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> = Vec::new();
 
+        // Scoped to this tenant on the shared attached-Postgres table
+        // (DuckLake PR 8) — "all `None`" must still never delete another
+        // tenant's history sharing the same physical relation.
+        if let Some(tenant) = self.chat_tenant_scope() {
+            where_clauses.push("tenant = ?");
+            bindings.push(Box::new(tenant.to_owned()));
+        }
         if let Some(g) = chat_group_id {
             where_clauses.push("chat_group_id = ?");
             bindings.push(Box::new(g.to_owned()));
@@ -392,13 +515,11 @@ impl Indexer {
             bindings.push(Box::new(ts.to_owned()));
         }
 
+        let table = self.chat_table();
         let sql = if where_clauses.is_empty() {
-            "DELETE FROM chat_messages".to_owned()
+            format!("DELETE FROM {table}")
         } else {
-            format!(
-                "DELETE FROM chat_messages WHERE {}",
-                where_clauses.join(" AND ")
-            )
+            format!("DELETE FROM {table} WHERE {}", where_clauses.join(" AND "))
         };
 
         let conn = self.conn.lock().await;
@@ -408,5 +529,98 @@ impl Indexer {
             .collect();
         let n = conn.execute(&sql, param_refs.as_slice())?;
         Ok(n)
+    }
+
+    /// Embedding-similarity search over one chat group's embedded
+    /// messages (`dense_vec IS NOT NULL`), nearest first.
+    ///
+    /// The local `chat_messages` table carries an HNSW index
+    /// (`hnsw_chat_vec`) but a chat group's history is small enough that
+    /// a plain `ORDER BY array_cosine_distance(...) LIMIT n` scan is fine
+    /// without it — this is also the ONLY option over the attached-
+    /// Postgres table (DuckLake PR 8), which has no HNSW at all (the
+    /// `vss` index type does not exist on an attached Postgres relation).
+    /// `dense_vec` there is `FLOAT[]` (list, not the fixed-width
+    /// `FLOAT[768]` array Postgres attach cannot store — same lesson as
+    /// the lake's own blocks table), so the query casts it back
+    /// `::FLOAT[768]` before computing the distance; the local table is
+    /// already `FLOAT[768]` and needs no cast.
+    pub async fn search_chat_messages(
+        &self,
+        input: SearchChatMessages<'_>,
+    ) -> Result<Vec<ChatMessage>, IndexerError> {
+        let vectors = self.embedder.embed(&[input.query]).await?;
+        let v0 = vectors.into_iter().next().ok_or_else(|| {
+            IndexerError::Embed(EmbedError::Backend(
+                "embedder returned no vectors for a single-text batch".to_owned(),
+            ))
+        })?;
+        if v0.len() != BLOCKS_DENSE_VEC_DIM {
+            return Err(IndexerError::EmbedderDimMismatch {
+                expected: BLOCKS_DENSE_VEC_DIM,
+                got: v0.len(),
+            });
+        }
+        let q_lit = format!(
+            "{}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]",
+            format_vector_literal(&v0)
+        );
+        let dense_vec_expr = match self.chat_backend() {
+            ChatBackend::Local => "dense_vec".to_owned(),
+            ChatBackend::AttachedPostgres { .. } => {
+                format!("dense_vec::FLOAT[{BLOCKS_DENSE_VEC_DIM}]")
+            }
+        };
+
+        let mut where_clauses = vec![
+            "chat_group_id = ?".to_owned(),
+            "dense_vec IS NOT NULL".to_owned(),
+        ];
+        let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> =
+            vec![Box::new(input.chat_group_id.to_owned())];
+        if let Some(tenant) = self.chat_tenant_scope() {
+            where_clauses.push("tenant = ?".to_owned());
+            bindings.push(Box::new(tenant.to_owned()));
+        }
+        bindings.push(Box::new(input.limit as i64));
+
+        let table = self.chat_table();
+        let sql = format!(
+            "SELECT chat_group_id, msg_id, \
+                    strftime(ts, '%Y-%m-%dT%H:%M:%SZ'), \
+                    role, author, content, metadata::VARCHAR, embedded \
+             FROM {table} \
+             WHERE {where_clause} \
+             ORDER BY array_cosine_distance({dense_vec_expr}, {q_lit}) ASC \
+             LIMIT ?",
+            where_clause = where_clauses.join(" AND "),
+        );
+
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let param_refs: Vec<&dyn duckdb::ToSql> = bindings
+            .iter()
+            .map(|b| b.as_ref() as &dyn duckdb::ToSql)
+            .collect();
+        let mut rows = stmt.query(param_refs.as_slice())?;
+
+        let mut messages = Vec::new();
+        while let Some(row) = rows.next()? {
+            let metadata_json: Option<String> = row.get(6)?;
+            messages.push(ChatMessage {
+                chat_group_id: row.get(0)?,
+                msg_id: row.get(1)?,
+                ts: row.get(2)?,
+                role: row.get(3)?,
+                author: row.get(4)?,
+                content: row.get(5)?,
+                metadata: match metadata_json {
+                    Some(s) => Some(serde_json::from_str(&s)?),
+                    None => None,
+                },
+                embedded: row.get(7)?,
+            });
+        }
+        Ok(messages)
     }
 }
