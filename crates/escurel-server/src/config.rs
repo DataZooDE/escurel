@@ -73,6 +73,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use duckdb::Connection;
 use escurel_admin::FsTenantStore;
 use escurel_auth::{OidcConfig, OidcVerifier};
 use escurel_crdt::{CrdtBackend, DuckdbCrdtBackend};
@@ -244,6 +245,11 @@ pub enum ConfigError {
     Migrate(#[from] escurel_index::schema::MigrationError),
     #[error("building indexer: {0}")]
     Indexer(#[from] escurel_index::IndexerError),
+    /// The CRDT op-log re-homing attach (`DuckdbCrdtBackend::
+    /// attach_shared_pg`, DuckLake PR 10) failed on the session-actor
+    /// connection.
+    #[error("crdt pg attach failed: {0}")]
+    CrdtPg(#[from] escurel_crdt::Error),
 }
 
 /// Map an [`IndexStore`] open failure back onto the exact
@@ -281,6 +287,11 @@ impl From<SnapshotError> for ConfigError {
                 value,
                 reason: "lake incompatible with this reader",
             },
+            // DuckLake PR 10 — the indexer's OWN crdt-pg attach
+            // (`Indexer::attach_crdt_pg`) failing on the indexer's own
+            // connection maps onto the same `ConfigError::CrdtPg` variant
+            // as `DuckdbCrdtBackend::attach_shared_pg`'s failure below.
+            SnapshotError::Crdt(e) => ConfigError::CrdtPg(e),
         }
     }
 }
@@ -1246,6 +1257,21 @@ impl EscurelConfig {
                     // read-write access to the shared events Postgres
                     // table — same rationale, same `is_pg_catalog` gate,
                     // same `catalog_dsn` reuse as chat above.
+                    // Phase B (DuckLake PR 10): the reader ALSO gets a
+                    // live CRDT backend over the shared op-log/snapshot
+                    // Postgres tables — same `is_pg_catalog` gate, same
+                    // `catalog_dsn` reuse. TWO independent attaches, per
+                    // `Indexer::attach_crdt_pg`'s doc: one on the
+                    // indexer's own connection (so `list_snapshots` can
+                    // read it), one on a fresh connection dedicated to the
+                    // `DuckdbCrdtBackend` session-actor path — mirrors the
+                    // writer's "own connection for chat/events, separate
+                    // `crdt_conn` for the session actor" split, just
+                    // without a local single-file connection to clone
+                    // from (a reader has none — CRDT here never touches
+                    // local tables, only the attached Postgres ones, so a
+                    // bare in-memory connection is sufficient).
+                    let mut reader_crdt_backend: Option<Arc<dyn CrdtBackend>> = None;
                     if lake_cfg.is_pg_catalog() {
                         adopted
                             .indexer
@@ -1255,6 +1281,23 @@ impl EscurelConfig {
                             .indexer
                             .attach_events_pg(&lake_cfg.catalog_dsn)
                             .await?;
+                        adopted
+                            .indexer
+                            .attach_crdt_pg(&lake_cfg.catalog_dsn)
+                            .await?;
+
+                        let crdt_conn = Connection::open_in_memory().map_err(|source| {
+                            ConfigError::DuckdbOpen {
+                                path: "<in-memory ducklake-reader crdt connection>".to_owned(),
+                                source,
+                            }
+                        })?;
+                        let backend = DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn)));
+                        backend
+                            .attach_shared_pg(&lake_cfg.catalog_dsn, &self.tenant)
+                            .await
+                            .map_err(ConfigError::CrdtPg)?;
+                        reader_crdt_backend = Some(Arc::new(backend));
                     }
                     let handle = IndexerHandle::fixed(adopted.indexer);
                     let refresh = crate::snapshot_refresh::RefreshTask::new(
@@ -1267,7 +1310,7 @@ impl EscurelConfig {
                         Some(adopted.snapshot_id),
                     )
                     .spawn();
-                    (handle, None, true, Some(refresh), None)
+                    (handle, reader_crdt_backend, true, Some(refresh), None)
                 }
                 (backend, _writer_role) => {
                     let opened = single_file.open().await?;
@@ -1281,8 +1324,14 @@ impl EscurelConfig {
                     // into the indexer) — not a second `Connection::open`,
                     // which would be a separate instance that clobbers chat
                     // writes on checkpoint.
-                    let crdt_backend: Arc<dyn CrdtBackend> =
-                        Arc::new(DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn))));
+                    //
+                    // Kept as the CONCRETE type (not yet `Arc<dyn
+                    // CrdtBackend>`) until after the `is_pg_catalog` branch
+                    // below — `attach_shared_pg` (DuckLake PR 10) is only on
+                    // `DuckdbCrdtBackend` itself, not the trait, and needs to
+                    // run before the backend is handed out.
+                    let crdt_backend_concrete =
+                        DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn)));
 
                     let mut publish_task_handle = None;
                     if backend == IndexBackend::DuckLake {
@@ -1307,9 +1356,22 @@ impl EscurelConfig {
                         // onto the shared events Postgres table — events
                         // re-homing is symmetric across every replica,
                         // same as chat above.
+                        // Phase B (DuckLake PR 10): the writer ALSO moves
+                        // its CRDT op-log/snapshots onto the shared
+                        // Postgres tables — TWO attaches (see the field doc
+                        // on `Indexer::crdt_pg_backend`): one on the
+                        // indexer's own connection (so `list_snapshots`
+                        // reads the shared table), one on
+                        // `crdt_backend_concrete`'s own connection (so the
+                        // live-session actor path does).
                         if lake_cfg.is_pg_catalog() {
                             indexer.attach_chat_pg(&lake_cfg.catalog_dsn).await?;
                             indexer.attach_events_pg(&lake_cfg.catalog_dsn).await?;
+                            indexer.attach_crdt_pg(&lake_cfg.catalog_dsn).await?;
+                            crdt_backend_concrete
+                                .attach_shared_pg(&lake_cfg.catalog_dsn, &self.tenant)
+                                .await
+                                .map_err(ConfigError::CrdtPg)?;
                         }
 
                         // Optional periodic publish (PR 7):
@@ -1331,6 +1393,7 @@ impl EscurelConfig {
                         }
                     }
 
+                    let crdt_backend: Arc<dyn CrdtBackend> = Arc::new(crdt_backend_concrete);
                     (
                         IndexerHandle::fixed(indexer),
                         Some(crdt_backend),

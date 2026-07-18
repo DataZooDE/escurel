@@ -285,3 +285,50 @@ async fn close_commit_after_reopen_without_ops_does_not_dup_snapshot() -> Result
     assert_eq!(n, 1, "snapshot must not be duplicated on no-op close");
     Ok(())
 }
+
+/// DuckLake PR 10 regression: a plain [`DuckdbCrdtBackend`] over the
+/// classic local `crdt_ops`/`crdt_snapshots` file must be byte-identical
+/// to its pre-PR-10 behaviour — `has_shared_crdt()` stays `false` and
+/// every op/snapshot round-trips through the LOCAL tables, never the
+/// attached-Postgres ones, when `attach_shared_pg` was never called.
+/// Mirrors `escurel-index`'s own "Local is the untouched default" style
+/// of regression test for `ChatBackend`/`EventsBackend`.
+#[tokio::test]
+async fn local_backend_is_unaffected_by_the_shared_pg_seam() -> Result<()> {
+    let (_dir, conn) = fresh_db()?;
+    let backend = DuckdbCrdtBackend::new(Arc::clone(&conn));
+    assert!(
+        !backend.has_shared_crdt(),
+        "a backend that never called attach_shared_pg must stay in Local mode"
+    );
+
+    let backend: Arc<dyn CrdtBackend> = Arc::new(backend);
+    let mut client = Client::new();
+    let doc = LiveDoc::open(backend.clone(), "page-local-only").await?;
+    let op = client.insert(0, "local");
+    doc.apply_op(op).await?;
+    let _ = doc.close(true).await?;
+
+    // The row landed in the LOCAL table (no `tenant` column, no
+    // `crdt_pg` alias) — exactly the pre-PR-10 schema.
+    let (op_count, snap_count): (i64, i64) = {
+        let guard = conn.lock().await;
+        let ops: i64 = guard.query_row(
+            "SELECT count(*) FROM crdt_ops WHERE page_id = ?",
+            ["page-local-only"],
+            |row| row.get(0),
+        )?;
+        let snaps: i64 = guard.query_row(
+            "SELECT count(*) FROM crdt_snapshots WHERE page_id = ?",
+            ["page-local-only"],
+            |row| row.get(0),
+        )?;
+        (ops, snaps)
+    };
+    assert_eq!(op_count, 1, "op must land in the local crdt_ops table");
+    assert_eq!(
+        snap_count, 1,
+        "snapshot must land in the local crdt_snapshots table"
+    );
+    Ok(())
+}

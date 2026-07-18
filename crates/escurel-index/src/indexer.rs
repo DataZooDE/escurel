@@ -98,6 +98,32 @@ pub struct Indexer {
     /// [`Self::attach_events_pg`] runs. Mirrors [`Self::chat_backend`]
     /// exactly, including the `OnceLock` rationale.
     events_backend: std::sync::OnceLock<EventsBackend>,
+    /// Which physical table [`crate::crdt_history`]'s `list_snapshots` /
+    /// `seed_snapshot_history` read and write (DuckLake PR 10, Phase B).
+    /// Unset (→ [`CrdtPgBackend::Local`]) until [`Self::attach_crdt_pg`]
+    /// runs. This is DELIBERATELY SEPARATE from
+    /// [`escurel_crdt::DuckdbCrdtBackend`]'s own attach — that backend
+    /// owns a different `Connection` (the live-session path holds its own
+    /// clone), while `list_snapshots`/`seed_snapshot_history` read
+    /// `crdt_snapshots` off THIS indexer's own connection, bypassing the
+    /// `CrdtBackend` trait entirely. Both attach the SAME `catalog_dsn`
+    /// under the SAME alias (`escurel_crdt::CRDT_PG_ALIAS`) at the same
+    /// boot step, so they always agree on which physical table is "the"
+    /// shared CRDT store.
+    crdt_pg_backend: std::sync::OnceLock<CrdtPgBackend>,
+}
+
+/// Which physical tables [`Indexer::list_snapshots`] /
+/// [`Indexer::seed_snapshot_history`] read and write. Mirrors
+/// [`ChatBackend`] / [`EventsBackend`] exactly — see
+/// [`Indexer::crdt_pg_backend`]'s field doc for why this is a distinct
+/// seam from [`escurel_crdt::DuckdbCrdtBackend`]'s own attach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CrdtPgBackend {
+    /// The local per-tenant `crdt_snapshots` table.
+    Local,
+    /// The attached, read-write Postgres table shared by every replica.
+    AttachedPostgres { alias: String },
 }
 
 /// One document chunk handed to the index write path (GH #216, Contextual
@@ -278,6 +304,7 @@ impl Indexer {
             contextualize: crate::backend::ContextualizeMode::default(),
             chat_backend: std::sync::OnceLock::new(),
             events_backend: std::sync::OnceLock::new(),
+            crdt_pg_backend: std::sync::OnceLock::new(),
         })
     }
 
@@ -378,6 +405,62 @@ impl Indexer {
         }
         let _ = self.events_backend.set(EventsBackend::AttachedPostgres {
             alias: crate::snapshot::EVENTS_PG_ALIAS.to_owned(),
+        });
+        Ok(())
+    }
+
+    /// The CRDT-pg backend `list_snapshots`/`seed_snapshot_history`
+    /// currently read/write — [`CrdtPgBackend::Local`] until
+    /// [`Self::attach_crdt_pg`] has run.
+    pub(crate) fn crdt_pg_backend(&self) -> CrdtPgBackend {
+        self.crdt_pg_backend
+            .get()
+            .cloned()
+            .unwrap_or(CrdtPgBackend::Local)
+    }
+
+    /// `true` once [`Self::attach_crdt_pg`] has wired this indexer onto
+    /// the shared CRDT Postgres tables (DuckLake PR 10). `escurel-server`'s
+    /// ducklake-reader dispatch gate consults this to decide whether
+    /// `open_session`/`apply_op`/`close_session`/`list_snapshots` are
+    /// servable on a reader — a reader boots with no local CRDT write
+    /// surface, but op/snapshot rows now live in a table every replica can
+    /// reach, so those four tools stop being reader-unsupported exactly
+    /// when this is `true`.
+    #[must_use]
+    pub fn has_shared_crdt(&self) -> bool {
+        matches!(
+            self.crdt_pg_backend(),
+            CrdtPgBackend::AttachedPostgres { .. }
+        )
+    }
+
+    /// Attach the shared CRDT Postgres tables onto THIS indexer's own
+    /// connection, read-write and idempotently (DuckLake PR 10, mirrors
+    /// [`Self::attach_chat_pg`]/[`Self::attach_events_pg`] exactly), and
+    /// point [`crate::crdt_history::Indexer::list_snapshots`] /
+    /// `seed_snapshot_history` at them instead of the local
+    /// `crdt_snapshots` table. Idempotent to call twice; the server calls
+    /// this once at boot for a ducklake writer OR reader, reusing
+    /// `LakeConfig::catalog_dsn` — no separate CRDT config needed. Does
+    /// NOT attach [`escurel_crdt::DuckdbCrdtBackend`]'s own connection —
+    /// that is a separate attach the server boot code runs on the
+    /// session-actor connection (see the field doc on
+    /// [`Self::crdt_pg_backend`] for why the two are independent).
+    ///
+    /// # Errors
+    ///
+    /// See [`escurel_crdt::attach_crdt_pg`].
+    pub async fn attach_crdt_pg(
+        &self,
+        catalog_dsn: &str,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        {
+            let conn = self.conn.lock().await;
+            escurel_crdt::attach_crdt_pg(&conn, catalog_dsn)?;
+        }
+        let _ = self.crdt_pg_backend.set(CrdtPgBackend::AttachedPostgres {
+            alias: escurel_crdt::CRDT_PG_ALIAS.to_owned(),
         });
         Ok(())
     }

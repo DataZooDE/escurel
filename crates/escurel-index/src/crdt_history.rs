@@ -13,10 +13,34 @@
 use duckdb::params;
 use escurel_md::wikilink::parse_wikilinks;
 
-use crate::indexer::{Indexer, IndexerError};
+use crate::indexer::{CrdtPgBackend, Indexer, IndexerError};
 use crate::read::{BlockInfo, ExpandedPage, PageRef};
 
 impl Indexer {
+    /// The table [`Self::list_snapshots`] / [`Self::seed_snapshot_history`]
+    /// read/write: `crdt_snapshots` (local) or
+    /// `<alias>.escurel_crdt_snapshots` (attached Postgres, DuckLake
+    /// PR 10). Mirrors `chat.rs::chat_table` / `events.rs::events_table`.
+    fn crdt_snapshots_table(&self) -> String {
+        match self.crdt_pg_backend() {
+            CrdtPgBackend::Local => "crdt_snapshots".to_owned(),
+            CrdtPgBackend::AttachedPostgres { alias } => {
+                format!("{alias}.{}", escurel_crdt::CRDT_SNAPSHOTS_PG_TABLE)
+            }
+        }
+    }
+
+    /// `Some(tenant)` when snapshot rows must be scoped by an explicit
+    /// `tenant` column (the attached-Postgres table); `None` for the
+    /// local table, whose tenancy is implicit. Mirrors
+    /// `chat.rs::chat_tenant_scope`.
+    fn crdt_tenant_scope(&self) -> Option<&str> {
+        match self.crdt_pg_backend() {
+            CrdtPgBackend::Local => None,
+            CrdtPgBackend::AttachedPostgres { .. } => Some(self.tenant()),
+        }
+    }
+
     /// Seed a page's CRDT snapshot history: one snapshot per `(taken_at,
     /// markdown)` state, stamped at the given wall-clock time. This is
     /// how the demo gives an instance a *real* state-over-time history
@@ -29,23 +53,57 @@ impl Indexer {
         states: &[(&str, &str)],
     ) -> Result<(), IndexerError> {
         let conn = self.conn.lock().await;
+        let table = self.crdt_snapshots_table();
+        let tenant_scope = self.crdt_tenant_scope();
+
         // Strictly-increasing hlc above any existing snapshot for the
         // page so the `(page_id, snapshot_hlc)` PK never collides.
-        let mut hlc: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(snapshot_hlc), 0) FROM crdt_snapshots WHERE page_id = ?",
-                params![page_id],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
+        let mut hlc: i64 = match tenant_scope {
+            None => conn
+                .query_row(
+                    &format!(
+                        "SELECT COALESCE(MAX(snapshot_hlc), 0) FROM {table} WHERE page_id = ?"
+                    ),
+                    params![page_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+            Some(tenant) => conn
+                .query_row(
+                    &format!(
+                        "SELECT COALESCE(MAX(snapshot_hlc), 0) FROM {table} \
+                         WHERE page_id = ? AND tenant = ?"
+                    ),
+                    params![page_id, tenant],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+        };
         for (taken_at, markdown) in states {
             let bytes = escurel_crdt::snapshot_bytes_from_markdown(markdown)?;
             hlc += 1;
-            conn.execute(
-                "INSERT INTO crdt_snapshots (page_id, snapshot_hlc, snapshot_bytes, taken_at) \
-                 VALUES (?, ?, ?, TRY_CAST(? AS TIMESTAMP))",
-                params![page_id, hlc, bytes, taken_at],
-            )?;
+            match tenant_scope {
+                None => {
+                    conn.execute(
+                        &format!(
+                            "INSERT INTO {table} \
+                             (page_id, snapshot_hlc, snapshot_bytes, taken_at) \
+                             VALUES (?, ?, ?, TRY_CAST(? AS TIMESTAMP))"
+                        ),
+                        params![page_id, hlc, bytes, taken_at],
+                    )?;
+                }
+                Some(tenant) => {
+                    conn.execute(
+                        &format!(
+                            "INSERT INTO {table} \
+                             (tenant, page_id, snapshot_hlc, snapshot_bytes, taken_at) \
+                             VALUES (?, ?, ?, ?, TRY_CAST(? AS TIMESTAMP))"
+                        ),
+                        params![tenant, page_id, hlc, bytes, taken_at],
+                    )?;
+                }
+            }
         }
         Ok(())
     }
@@ -56,14 +114,30 @@ impl Indexer {
     /// error) when the page has no recorded history.
     pub async fn list_snapshots(&self, page_id: &str) -> Result<Vec<String>, IndexerError> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
-            "SELECT strftime(taken_at, '%Y-%m-%dT%H:%M:%SZ') FROM crdt_snapshots \
-             WHERE page_id = ? ORDER BY taken_at ASC, snapshot_hlc ASC",
-        )?;
-        let rows = stmt.query_map(params![page_id], |r| r.get::<_, String>(0))?;
+        let table = self.crdt_snapshots_table();
         let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
+        match self.crdt_tenant_scope() {
+            None => {
+                let mut stmt = conn.prepare(&format!(
+                    "SELECT strftime(taken_at, '%Y-%m-%dT%H:%M:%SZ') FROM {table} \
+                     WHERE page_id = ? ORDER BY taken_at ASC, snapshot_hlc ASC"
+                ))?;
+                let rows = stmt.query_map(params![page_id], |r| r.get::<_, String>(0))?;
+                for r in rows {
+                    out.push(r?);
+                }
+            }
+            Some(tenant) => {
+                let mut stmt = conn.prepare(&format!(
+                    "SELECT strftime(taken_at, '%Y-%m-%dT%H:%M:%SZ') FROM {table} \
+                     WHERE page_id = ? AND tenant = ? \
+                     ORDER BY taken_at ASC, snapshot_hlc ASC"
+                ))?;
+                let rows = stmt.query_map(params![page_id, tenant], |r| r.get::<_, String>(0))?;
+                for r in rows {
+                    out.push(r?);
+                }
+            }
         }
         Ok(out)
     }
@@ -72,6 +146,17 @@ impl Indexer {
 /// The newest snapshot for `page_id` taken at-or-before `as_of`, or
 /// `None` when the page has no snapshot history reaching back that far
 /// (the caller then falls through to the current-state path).
+///
+/// Deliberately NOT re-homed by DuckLake PR 10: this always reads the
+/// LOCAL `crdt_snapshots` table, even when [`Indexer::attach_crdt_pg`] has
+/// run. `expand(as_of=T)` (its only caller) was already reader-servable
+/// pre-PR-10 (it's a read tool, never on `UNSUPPORTED_ON_REPLICA_TOOLS`);
+/// PR 10's scope is `list_snapshots` + the session tools specifically, per
+/// the approved plan. A reader's `expand(as_of=T)` against a page whose
+/// snapshot history lives only in the shared Postgres table is a known,
+/// pre-existing-shaped gap (the same "as_of/expand needs the seed history
+/// re-homed too" gap chat/events don't have an equivalent of), left for a
+/// follow-up if it's ever needed on a reader.
 pub(crate) fn load_snapshot_at(
     conn: &duckdb::Connection,
     page_id: &str,
