@@ -41,6 +41,7 @@ pub mod pack;
 mod remote_backend;
 mod server;
 mod session;
+pub mod snapshot_refresh;
 mod tenant_archive;
 mod webhook;
 mod ws;
