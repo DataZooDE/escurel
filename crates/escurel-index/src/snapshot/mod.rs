@@ -27,8 +27,8 @@ use crate::indexer::{Indexer, IndexerError};
 use crate::schema::MigrationError;
 
 pub use lake::{
-    LakeConfig, ObjectStoreSecret, adopt_lake, attach_lake, attach_sql, install_load_sql,
-    latest_lake_snapshot_id, publish_lake, secret_sql,
+    LakeConfig, ObjectStoreSecret, adopt_lake, attach_lake, attach_sql, gc_lake_snapshots,
+    install_load_sql, latest_lake_snapshot_id, publish_lake, secret_sql,
 };
 pub use store::{AttachRetrievalFn, SingleFileStore};
 

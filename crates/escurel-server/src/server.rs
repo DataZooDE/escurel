@@ -17,6 +17,7 @@ use escurel_auth::OidcVerifier;
 use escurel_crdt::CrdtBackend;
 use escurel_embed::{Embedder, ReloadableEmbedder};
 use escurel_index::IndexerHandle;
+use escurel_index::snapshot::LakeConfig;
 use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
 use escurel_quota::QuotaManager;
 use serde_json::json;
@@ -199,6 +200,22 @@ pub struct ServerConfig {
     /// missing write path. `false` (the default) is every existing
     /// deployment shape — single-file or a ducklake writer.
     pub reader_mode: bool,
+    /// The DuckLake this instance attaches to/publishes, when
+    /// `ESCUREL_INDEX_BACKEND=ducklake` (DuckLake PR 7). `None` for
+    /// the single-file backend — the `publish_snapshot` admin tool
+    /// then refuses with a typed precondition error rather than
+    /// running against a backend that never publishes.
+    pub lake: Option<LakeConfig>,
+    /// Snapshot retention count for the GC pass a successful
+    /// `publish_snapshot` (manual or periodic) runs afterwards
+    /// (`ESCUREL_SNAPSHOT_KEEP`, default `5`). `0` disables GC.
+    pub snapshot_keep: u32,
+    /// The mutation epoch the last successful publish captured,
+    /// shared between the `publish_snapshot` admin tool and the
+    /// optional periodic [`crate::snapshot_publish::PublishTask`] so
+    /// neither re-publishes a clean lake the other just published.
+    /// `None` until the first publish since boot.
+    pub last_published_epoch: Arc<std::sync::Mutex<Option<u64>>>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -335,6 +352,12 @@ pub(crate) struct AppState {
     pub(crate) pack_secret: Option<String>,
     /// See [`ServerConfig::reader_mode`].
     pub(crate) reader_mode: bool,
+    /// See [`ServerConfig::lake`].
+    pub(crate) lake: Option<LakeConfig>,
+    /// See [`ServerConfig::snapshot_keep`].
+    pub(crate) snapshot_keep: u32,
+    /// See [`ServerConfig::last_published_epoch`].
+    pub(crate) last_published_epoch: Arc<std::sync::Mutex<Option<u64>>>,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -389,6 +412,9 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
             .map(|url| crate::webhook::Webhook::new(url, config.webhook_secret.clone())),
         pack_secret: config.pack_secret.clone(),
         reader_mode: config.reader_mode,
+        lake: config.lake.clone(),
+        snapshot_keep: config.snapshot_keep,
+        last_published_epoch: Arc::clone(&config.last_published_epoch),
     };
 
     let mut app = Router::new()

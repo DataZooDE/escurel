@@ -66,6 +66,8 @@
 //! | `ESCUREL_DUCKLAKE_S3_ENDPOINT` / `_S3_ACCESS_KEY_ID` / `_S3_SECRET_ACCESS_KEY` / `_S3_REGION` | — / — / — / `us-east-1` | S3 (or MinIO) credentials; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `s3://` |
 //! | `ESCUREL_DUCKLAKE_S3_USE_SSL` | `true` | whether the S3/MinIO endpoint above is TLS |
 //! | `ESCUREL_SNAPSHOT_REFRESH_SECS` | `30` | a reader's background lake-poll interval (seconds); see `escurel_server::snapshot_refresh::RefreshTask` |
+//! | `ESCUREL_SNAPSHOT_PUBLISH_SECS` | `0` | a writer's optional periodic publish interval (seconds); `0` disables it (manual-only, via the `publish_snapshot` admin tool) — see `escurel_server::snapshot_publish::PublishTask` |
+//! | `ESCUREL_SNAPSHOT_KEEP` | `5` | how many DuckLake snapshots to retain after a successful publish; the GC pass never touches the current snapshot |
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -501,6 +503,15 @@ pub struct EscurelConfig {
     /// (`ESCUREL_SNAPSHOT_REFRESH_SECS`, default `30`). Unused by a
     /// writer or the single-file backend.
     pub snapshot_refresh_secs: u64,
+    /// A writer's optional periodic publish interval, seconds
+    /// (`ESCUREL_SNAPSHOT_PUBLISH_SECS`, default `0` = disabled,
+    /// manual-only via the `publish_snapshot` admin tool). Unused by a
+    /// reader or the single-file backend.
+    pub snapshot_publish_secs: u64,
+    /// DuckLake snapshot retention count (`ESCUREL_SNAPSHOT_KEEP`,
+    /// default `5`). `0` disables the GC pass a successful publish runs
+    /// afterwards.
+    pub snapshot_keep: u32,
 }
 
 /// Source of an environment lookup — abstracted so `from_env` is
@@ -934,6 +945,22 @@ impl EscurelConfig {
             })?,
             None => 30,
         };
+        let snapshot_publish_secs = match env.get("ESCUREL_SNAPSHOT_PUBLISH_SECS") {
+            Some(raw) => raw.parse::<u64>().map_err(|_| ConfigError::InvalidValue {
+                var: "ESCUREL_SNAPSHOT_PUBLISH_SECS",
+                value: raw,
+                reason: "expected a non-negative integer (seconds); 0 disables the periodic publish task",
+            })?,
+            None => 0,
+        };
+        let snapshot_keep = match env.get("ESCUREL_SNAPSHOT_KEEP") {
+            Some(raw) => raw.parse::<u32>().map_err(|_| ConfigError::InvalidValue {
+                var: "ESCUREL_SNAPSHOT_KEEP",
+                value: raw,
+                reason: "expected a non-negative integer; 0 disables snapshot GC",
+            })?,
+            None => 5,
+        };
 
         Ok(Self {
             version,
@@ -968,6 +995,8 @@ impl EscurelConfig {
             role,
             lake,
             snapshot_refresh_secs,
+            snapshot_publish_secs,
+            snapshot_keep,
         })
     }
 }
@@ -1047,7 +1076,26 @@ pub struct BootedServer {
     /// shut it down alongside `handle` on SIGTERM so the task doesn't
     /// outlive the process's other background work.
     pub refresh_handle: Option<crate::snapshot_refresh::RefreshHandle>,
+    /// A ducklake writer's optional periodic publish loop (DuckLake PR
+    /// 7). `Some` only for `ESCUREL_INDEX_BACKEND=ducklake` +
+    /// `ESCUREL_ROLE=writer` + `ESCUREL_SNAPSHOT_PUBLISH_SECS > 0`; the
+    /// caller must shut it down alongside `handle` on SIGTERM, same as
+    /// `refresh_handle`.
+    pub publish_handle: Option<crate::snapshot_publish::PublishHandle>,
 }
+
+/// The five backend handles `EscurelConfig::build`'s (index_backend,
+/// role) match produces: the hot-swap seam, the optional CRDT backend
+/// (writer-only), whether this boot is a ducklake reader, and the two
+/// optional background task handles (a reader's poll loop / a writer's
+/// optional periodic publish loop).
+type BootIndex = (
+    IndexerHandle,
+    Option<Arc<dyn CrdtBackend>>,
+    bool,
+    Option<crate::snapshot_refresh::RefreshHandle>,
+    Option<crate::snapshot_publish::PublishHandle>,
+);
 
 impl EscurelConfig {
     /// Build every backend the gateway needs and `serve()` it.
@@ -1157,80 +1205,102 @@ impl EscurelConfig {
         //                         keeps the served snapshot current
         //                         without a restart. No CRDT/chat/seed/
         //                         meta-skill (Phase B, again out of scope).
-        let (indexer_handle, crdt_backend, reader_mode, refresh_handle): (
-            IndexerHandle,
-            Option<Arc<dyn CrdtBackend>>,
-            bool,
-            Option<crate::snapshot_refresh::RefreshHandle>,
-        ) = match (self.index_backend, self.role) {
-            (IndexBackend::DuckLake, ServerRole::Reader) => {
-                let lake_cfg = self.lake.as_ref().expect(
-                    "ESCUREL_INDEX_BACKEND=ducklake always carries a LakeConfig \
-                     (EscurelConfig::from_env validated this)",
-                );
-                let adopted = adopt_lake(
-                    lake_cfg,
-                    Arc::clone(&store),
-                    Arc::clone(&embedder) as Arc<dyn Embedder>,
-                    &self.tenant,
-                    None,
-                )
-                .await?
-                .ok_or_else(|| ConfigError::InvalidValue {
-                    var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
-                    value: lake_cfg.catalog_dsn.clone(),
-                    reason: "lake has never been published; a reader cannot boot from an \
-                             empty lake — publish from a writer first",
-                })?;
-                let handle = IndexerHandle::fixed(adopted.indexer);
-                let refresh = crate::snapshot_refresh::RefreshTask::new(
-                    handle.clone(),
-                    lake_cfg.clone(),
-                    Arc::clone(&store),
-                    Arc::clone(&embedder) as Arc<dyn Embedder>,
-                    self.tenant.clone(),
-                    Duration::from_secs(self.snapshot_refresh_secs),
-                    Some(adopted.snapshot_id),
-                )
-                .spawn();
-                (handle, None, true, Some(refresh))
-            }
-            (backend, _writer_role) => {
-                let opened = single_file.open().await?;
-                let indexer = opened.indexer;
-                let crdt_conn = opened
-                    .crdt_conn
-                    .expect("SingleFileStore::open always returns a CRDT connection");
-
-                // CRDT backend over a SECOND CONNECTION TO THE SAME INSTANCE
-                // (cloned inside `open()` before the write connection moved
-                // into the indexer) — not a second `Connection::open`,
-                // which would be a separate instance that clobbers chat
-                // writes on checkpoint.
-                let crdt_backend: Arc<dyn CrdtBackend> =
-                    Arc::new(DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn))));
-
-                if backend == IndexBackend::DuckLake {
-                    // Writer: attach the lake idempotently on the
-                    // indexer's own connection (`ATTACH IF NOT EXISTS`)
-                    // so a later publish never pays a fresh attach.
-                    // Fail-closed: a broken lake config fails the boot,
-                    // same posture as the reader's synchronous adopt.
+        // Shared between the `publish_snapshot` admin tool and an
+        // optional periodic `PublishTask` (DuckLake PR 7) so neither
+        // re-publishes an epoch the other just published. Built
+        // unconditionally — inert (never read) on every non-ducklake-
+        // writer boot shape.
+        let last_published_epoch = Arc::new(std::sync::Mutex::new(None));
+        let (indexer_handle, crdt_backend, reader_mode, refresh_handle, publish_handle): BootIndex =
+            match (self.index_backend, self.role) {
+                (IndexBackend::DuckLake, ServerRole::Reader) => {
                     let lake_cfg = self.lake.as_ref().expect(
                         "ESCUREL_INDEX_BACKEND=ducklake always carries a LakeConfig \
-                         (EscurelConfig::from_env validated this)",
+                     (EscurelConfig::from_env validated this)",
                     );
-                    indexer.attach_lake(lake_cfg).await?;
+                    let adopted = adopt_lake(
+                        lake_cfg,
+                        Arc::clone(&store),
+                        Arc::clone(&embedder) as Arc<dyn Embedder>,
+                        &self.tenant,
+                        None,
+                    )
+                    .await?
+                    .ok_or_else(|| ConfigError::InvalidValue {
+                        var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
+                        value: lake_cfg.catalog_dsn.clone(),
+                        reason: "lake has never been published; a reader cannot boot from an \
+                             empty lake — publish from a writer first",
+                    })?;
+                    let handle = IndexerHandle::fixed(adopted.indexer);
+                    let refresh = crate::snapshot_refresh::RefreshTask::new(
+                        handle.clone(),
+                        lake_cfg.clone(),
+                        Arc::clone(&store),
+                        Arc::clone(&embedder) as Arc<dyn Embedder>,
+                        self.tenant.clone(),
+                        Duration::from_secs(self.snapshot_refresh_secs),
+                        Some(adopted.snapshot_id),
+                    )
+                    .spawn();
+                    (handle, None, true, Some(refresh), None)
                 }
+                (backend, _writer_role) => {
+                    let opened = single_file.open().await?;
+                    let indexer = opened.indexer;
+                    let crdt_conn = opened
+                        .crdt_conn
+                        .expect("SingleFileStore::open always returns a CRDT connection");
 
-                (
-                    IndexerHandle::fixed(indexer),
-                    Some(crdt_backend),
-                    false,
-                    None,
-                )
-            }
-        };
+                    // CRDT backend over a SECOND CONNECTION TO THE SAME INSTANCE
+                    // (cloned inside `open()` before the write connection moved
+                    // into the indexer) — not a second `Connection::open`,
+                    // which would be a separate instance that clobbers chat
+                    // writes on checkpoint.
+                    let crdt_backend: Arc<dyn CrdtBackend> =
+                        Arc::new(DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn))));
+
+                    let mut publish_task_handle = None;
+                    if backend == IndexBackend::DuckLake {
+                        // Writer: attach the lake idempotently on the
+                        // indexer's own connection (`ATTACH IF NOT EXISTS`)
+                        // so a later publish never pays a fresh attach.
+                        // Fail-closed: a broken lake config fails the boot,
+                        // same posture as the reader's synchronous adopt.
+                        let lake_cfg = self.lake.as_ref().expect(
+                            "ESCUREL_INDEX_BACKEND=ducklake always carries a LakeConfig \
+                         (EscurelConfig::from_env validated this)",
+                        );
+                        indexer.attach_lake(lake_cfg).await?;
+
+                        // Optional periodic publish (PR 7):
+                        // `ESCUREL_SNAPSHOT_PUBLISH_SECS > 0`. `0` (default)
+                        // keeps publishing manual-only via the
+                        // `publish_snapshot` admin tool.
+                        if self.snapshot_publish_secs > 0 {
+                            let handle = IndexerHandle::fixed(Arc::clone(&indexer));
+                            publish_task_handle = Some(
+                                crate::snapshot_publish::PublishTask::new(
+                                    handle,
+                                    lake_cfg.clone(),
+                                    Duration::from_secs(self.snapshot_publish_secs),
+                                    self.snapshot_keep,
+                                    Arc::clone(&last_published_epoch),
+                                )
+                                .spawn(),
+                            );
+                        }
+                    }
+
+                    (
+                        IndexerHandle::fixed(indexer),
+                        Some(crdt_backend),
+                        false,
+                        None,
+                        publish_task_handle,
+                    )
+                }
+            };
 
         // 5. OIDC verifier (only when an issuer is configured).
         let verifier = self.build_verifier();
@@ -1282,6 +1352,13 @@ impl EscurelConfig {
             // mutating / chat-and-CRDT tool surface with a typed error
             // instead of silently misbehaving against an absent backend.
             reader_mode,
+            // DuckLake publish/GC surface (PR 7): `None` for the
+            // single-file backend, so `publish_snapshot` refuses with a
+            // typed precondition error rather than running against a
+            // backend that never publishes.
+            lake: self.lake.clone(),
+            snapshot_keep: self.snapshot_keep,
+            last_published_epoch: Arc::clone(&last_published_epoch),
             // Hot-reload seam: the live embedder plus a factory that
             // rebuilds it from this config on demand. The
             // `embedding_reload` admin RPC retries a degraded-start
@@ -1313,6 +1390,7 @@ impl EscurelConfig {
             handle,
             embedder,
             refresh_handle,
+            publish_handle,
         })
     }
 

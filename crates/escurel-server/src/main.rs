@@ -35,6 +35,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let booted = config.build().await?;
     let handle = booted.handle;
     let refresh_handle = booted.refresh_handle;
+    let publish_handle = booted.publish_handle;
 
     tracing::info!(
         http = %handle.local_addr,
@@ -58,6 +59,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // graceful stop.
     if let Some(refresh) = refresh_handle {
         refresh.shutdown().await;
+    }
+    // A ducklake writer's optional periodic PublishTask (PR 7) must stop
+    // alongside everything else, same reasoning as the reader's
+    // RefreshTask above.
+    if let Some(publish) = publish_handle {
+        publish.shutdown().await;
     }
     handle.shutdown().await;
     Ok(())
