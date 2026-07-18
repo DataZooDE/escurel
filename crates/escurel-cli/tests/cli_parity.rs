@@ -166,6 +166,10 @@ const COVERAGE: &[(&str, Coverage)] = &[
         "write_instance",
         Excluded("event-sourced write op; MCP-only"),
     ),
+    (
+        "publish_snapshot",
+        Excluded("ducklake ops trigger; MCP-only (DuckLake PR 7)"),
+    ),
 ];
 
 /// Read the live `tools/list` names from a running gateway.

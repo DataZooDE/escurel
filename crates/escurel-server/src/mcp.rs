@@ -38,6 +38,7 @@ use escurel_crdt::{
     CrdtBackend, Op, Snapshot, Version, hydrate_content, snapshot_bytes_from_markdown,
     three_way_merge,
 };
+use escurel_index::snapshot::{gc_lake_snapshots, publish_lake};
 use escurel_index::{
     AclCaller, AppendChatMessage, Capabilities, ChatMessage, Direction, EventInfo, Granularity,
     Indexer, IndexerError, IndexerHandle, Issue, ListChatMessages, NewEvent, OrderDir, Severity,
@@ -48,8 +49,8 @@ use escurel_quota::{Dimension, QuotaError, QuotaManager};
 use escurel_storage::{Key, StoreError};
 use escurel_types::{
     AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
-    ListSkillsResponse, QuotaGetResponse, RebuildProgress, Skill as TypesSkill,
-    SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
+    ListSkillsResponse, PublishSnapshotResponse, QuotaGetResponse, RebuildProgress,
+    Skill as TypesSkill, SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
     SkillCapabilities as TypesSkillCapabilities, TenantCreateResponse, TenantDeleteResponse,
     TenantGetResponse, TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec,
     TenantUpdateResponse, WebhookDeliveriesResponse, WebhookDelivery,
@@ -915,7 +916,11 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         || name.starts_with("tenant_")
         || matches!(
             name,
-            "rebuild" | "compact_lanes" | "attach_external" | "embedding_reload"
+            "rebuild"
+                | "compact_lanes"
+                | "attach_external"
+                | "embedding_reload"
+                | "publish_snapshot"
         )
     {
         return None;
@@ -1003,6 +1008,11 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     "remove_group_member",
     "register_credential",
     "delete_credential",
+    // A reader has no local mutation surface to publish FROM (it only
+    // ever adopts). "retry against the writer" is the exact correct
+    // guidance here, so `publish_snapshot` reuses this bucket rather
+    // than a bespoke reader-side error (DuckLake PR 7).
+    "publish_snapshot",
     "create_sql_instance",
     "register_endpoint",
     "delete_endpoint",
@@ -1162,6 +1172,10 @@ async fn dispatch_tools_call(
         "compact_lanes" => {
             require_admin(role)?;
             return tool_compact_lanes(state, params.arguments).await;
+        }
+        "publish_snapshot" => {
+            require_admin(role)?;
+            return tool_publish_snapshot(state).await;
         }
         // Outbound-webhook delivery log (observability). Needs only the
         // webhook handle on AppState, so it routes before the indexer gate.
@@ -4923,6 +4937,63 @@ async fn tool_rebuild(state: &AppState, args: Value) -> Result<Value, JsonRpcErr
     })
 }
 
+/// Admin: trigger a DuckLake publish + retention GC on demand
+/// (DuckLake PR 7). Idempotently re-attaches the lake (safe every call —
+/// `ATTACH IF NOT EXISTS`), then [`publish_lake`] using this gateway's
+/// shared `last_published_epoch` (so a manual call and the optional
+/// periodic [`crate::snapshot_publish::PublishTask`] never duplicate a
+/// publish), and — only on an actual (non-skipped) publish — a
+/// follow-up [`gc_lake_snapshots`] pass down to `ESCUREL_SNAPSHOT_KEEP`.
+/// A GC failure is logged, not surfaced as an error: the publish itself
+/// already committed and the response should still report it.
+async fn tool_publish_snapshot(state: &AppState) -> Result<Value, JsonRpcError> {
+    let lake_cfg = state.lake.as_ref().ok_or_else(|| {
+        JsonRpcError::publish_unavailable(
+            "no DuckLake configured on this gateway (ESCUREL_INDEX_BACKEND != ducklake)",
+        )
+    })?;
+    let indexer = admin_indexer(state)?;
+    indexer
+        .attach_lake(lake_cfg)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("publish_snapshot: attach_lake: {e}")))?;
+
+    let last_epoch = *state
+        .last_published_epoch
+        .lock()
+        .expect("last_published_epoch lock");
+    let report = publish_lake(&indexer, lake_cfg, last_epoch)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("publish_snapshot: {e}")))?;
+
+    let mut pruned_snapshots = 0u64;
+    if !report.skipped {
+        *state
+            .last_published_epoch
+            .lock()
+            .expect("last_published_epoch lock") = Some(report.epoch);
+        match gc_lake_snapshots(&indexer, lake_cfg, state.snapshot_keep).await {
+            Ok(n) => pruned_snapshots = n,
+            Err(e) => {
+                tracing::warn!(
+                    target: "escurel",
+                    error = %e,
+                    "publish_snapshot: gc_lake_snapshots failed (publish itself committed)"
+                );
+            }
+        }
+    }
+
+    to_value(PublishSnapshotResponse {
+        snapshot_id: report.snapshot_id,
+        epoch: report.epoch,
+        pages: report.pages,
+        blocks: report.blocks,
+        skipped: report.skipped,
+        pruned_snapshots,
+    })
+}
+
 async fn tool_compact_lanes(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
     let a: TenantIdArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("compact_lanes: {e}")))?;
@@ -5938,6 +6009,18 @@ fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
+                "publish_snapshot",
+                "Admin: trigger a DuckLake publish of this writer's current \
+                 index state, then prune old snapshots down to \
+                 `ESCUREL_SNAPSHOT_KEEP`. A no-op (`skipped: true`) when \
+                 nothing changed since the last publish. Unavailable on a \
+                 non-ducklake gateway or a ducklake reader replica.",
+                json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            ),
+            tool_entry(
                 "attach_external",
                 "Admin: attach an external read-only DuckDB source; the \
                  catalog alias is derived from `source_url` and returned as \
@@ -6183,6 +6266,18 @@ impl JsonRpcError {
                 "`{tool}` is unsupported on a ducklake replica: no chat/CRDT/event-bus \
                  backend is wired here"
             ),
+        }
+    }
+    /// `publish_snapshot` has no lake to publish to — the single-file
+    /// backend (`ESCUREL_INDEX_BACKEND` unset or `single-file`), which
+    /// never publishes snapshots at all (DuckLake PR 7). Distinct from
+    /// [`Self::read_only_replica`] (a reader IS ducklake-backed, just
+    /// not the writer) so a client can tell "wrong backend entirely"
+    /// apart from "wrong instance of the right backend".
+    fn publish_unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            code: -32006,
+            message: format!("`publish_snapshot` is unavailable: {}", reason.into()),
         }
     }
     fn into_response(self, id: Value) -> axum::response::Response {

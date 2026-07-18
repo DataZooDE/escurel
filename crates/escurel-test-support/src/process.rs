@@ -365,6 +365,14 @@ impl EscurelProcess {
             // dedicated listener (production defaults to :9090).
             metrics_listen: Some("127.0.0.1:0".to_owned()),
             reader_mode: overrides.reader_mode,
+            // DuckLake publish/GC surface (PR 7): this harness always
+            // boots the single-file backend, so there is no lake to
+            // publish against; `publish_snapshot` refuses with a typed
+            // precondition error, matching production's single-file
+            // shape.
+            lake: None,
+            snapshot_keep: 5,
+            last_published_epoch: Arc::new(std::sync::Mutex::new(None)),
         };
         let handle = serve(cfg)
             .await

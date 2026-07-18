@@ -12,7 +12,8 @@ use std::sync::Arc;
 use duckdb::Connection;
 use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::snapshot::{
-    LakeConfig, ObjectStoreSecret, attach_sql, install_load_sql, publish_lake, secret_sql,
+    LakeConfig, ObjectStoreSecret, attach_sql, gc_lake_snapshots, install_load_sql, publish_lake,
+    secret_sql,
 };
 use escurel_index::{Indexer, Migrator};
 use escurel_storage::{FsStore, LaneStore};
@@ -249,4 +250,86 @@ async fn publish_skips_when_clean() {
         lake_snapshot_count(&cfg) > snapshots_after_first,
         "a dirty publish must create a new snapshot"
     );
+}
+
+/// `gc_lake_snapshots` prunes down to (at most) `keep` snapshots and
+/// never touches the current one — publish 5 distinct snapshots (the
+/// initial ATTACH/CREATE snapshots plus one per `update_page`+publish),
+/// then GC with `keep = 2` and assert the count settles to exactly the
+/// retention target (DuckLake never expires the newest snapshot, so
+/// this is the exact, not just upper-bound, count — verified
+/// interactively first, see
+/// docs/notes/discovered/2026-07-18-ducklake-snapshot-gc.md).
+#[tokio::test]
+async fn gc_prunes_to_the_keep_count() {
+    let h = fresh_harness();
+    let cfg = lake_config(&h);
+
+    let mut last_epoch = None;
+    for i in 0..5 {
+        h.indexer
+            .update_page(
+                &format!("markdown/instances/customer/c{i}.md"),
+                ACME_INSTANCE,
+            )
+            .await
+            .unwrap();
+        let report = publish_lake(&h.indexer, &cfg, last_epoch)
+            .await
+            .expect("publish");
+        last_epoch = Some(report.epoch);
+    }
+    let before = lake_snapshot_count(&cfg);
+    assert!(
+        before > 2,
+        "need more than `keep` snapshots to prove GC ran: {before}"
+    );
+
+    let pruned = gc_lake_snapshots(&h.indexer, &cfg, 2).await.expect("gc");
+    assert!(pruned > 0, "gc must report at least one pruned snapshot");
+    assert_eq!(
+        lake_snapshot_count(&cfg),
+        2,
+        "gc must settle the snapshot count at exactly `keep`"
+    );
+}
+
+/// `keep = 0` disables GC — a no-op, not a "prune everything" footgun.
+#[tokio::test]
+async fn gc_keep_zero_disables_gc() {
+    let h = fresh_harness();
+    let cfg = lake_config(&h);
+    h.indexer
+        .update_page("markdown/skills/customer.md", CUSTOMER_SKILL)
+        .await
+        .unwrap();
+    publish_lake(&h.indexer, &cfg, None).await.expect("publish");
+    let before = lake_snapshot_count(&cfg);
+
+    let pruned = gc_lake_snapshots(&h.indexer, &cfg, 0)
+        .await
+        .expect("gc no-op");
+    assert_eq!(pruned, 0);
+    assert_eq!(lake_snapshot_count(&cfg), before);
+}
+
+/// Fewer published snapshots than `keep` — `ducklake_expire_snapshots`
+/// with a `NULL` `older_than` crashes the extension (discovered note),
+/// so `gc_lake_snapshots` must short-circuit before ever calling it.
+#[tokio::test]
+async fn gc_noop_when_fewer_snapshots_than_keep() {
+    let h = fresh_harness();
+    let cfg = lake_config(&h);
+    h.indexer
+        .update_page("markdown/skills/customer.md", CUSTOMER_SKILL)
+        .await
+        .unwrap();
+    publish_lake(&h.indexer, &cfg, None).await.expect("publish");
+    let before = lake_snapshot_count(&cfg);
+
+    let pruned = gc_lake_snapshots(&h.indexer, &cfg, 1000)
+        .await
+        .expect("gc must not crash when keep exceeds the snapshot count");
+    assert_eq!(pruned, 0);
+    assert_eq!(lake_snapshot_count(&cfg), before);
 }

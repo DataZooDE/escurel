@@ -235,6 +235,29 @@ pub struct CompactProgress {
     pub bytes_reclaimed: u64,
 }
 
+/// `publish_snapshot` response (DuckLake PR 7): the committed
+/// [`escurel_index::snapshot::PublishReport`](../../escurel_index/snapshot/struct.PublishReport.html)
+/// fields plus how many stale snapshots the follow-up GC pass pruned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PublishSnapshotResponse {
+    /// Newest DuckLake snapshot id after the publish committed (`-1`
+    /// when `skipped`).
+    pub snapshot_id: i64,
+    /// The `Indexer::mutation_epoch` this publish captured.
+    pub epoch: u64,
+    /// Rows published to `lake.pages` (`0` when `skipped`).
+    pub pages: u64,
+    /// Rows published to `lake.blocks` (`0` when `skipped`).
+    pub blocks: u64,
+    /// `true` when the epoch matched the last published epoch — no-op,
+    /// no new snapshot, no GC pass ran.
+    pub skipped: bool,
+    /// How many stale snapshots the retention GC pass pruned (`0` when
+    /// `skipped`, GC is disabled, or nothing was over budget).
+    pub pruned_snapshots: u64,
+}
+
 // ── chat history / quota / health ─────────────────────────────────
 
 /// `admin_delete_chat_history` arguments. Each filter is optional

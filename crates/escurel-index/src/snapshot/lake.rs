@@ -337,6 +337,80 @@ pub async fn publish_lake(
     })
 }
 
+/// Prune old DuckLake snapshots (+ the Parquet files only they
+/// reference), keeping the `keep` most recent snapshots (DuckLake
+/// program, PR 7).
+///
+/// `keep == 0` disables GC outright (a no-op, `Ok(0)`) — the same
+/// "0 = disabled" convention `ESCUREL_SNAPSHOT_PUBLISH_SECS` uses.
+/// Otherwise: read the `keep`-th-from-newest snapshot's `snapshot_time`
+/// as the cutoff (`ORDER BY snapshot_id DESC LIMIT 1 OFFSET keep - 1`;
+/// fewer than `keep` snapshots exist → no cutoff row → nothing to
+/// prune), then `CALL ducklake_expire_snapshots(.., older_than =>
+/// cutoff)` followed by `CALL ducklake_cleanup_old_files(..,
+/// cleanup_all => true)` to reclaim the now-orphaned Parquet.
+///
+/// Verified empirically against a scratch lake (`duckdb` CLI,
+/// docs/notes/discovered/2026-07-18-ducklake-snapshot-gc.md):
+/// `ducklake_expire_snapshots` NEVER prunes the current (newest)
+/// snapshot even when `older_than` names a time after it, and passing
+/// `older_than => NULL` crashes the extension with an internal error —
+/// the `Option` guard above exists specifically to avoid that call
+/// shape.
+///
+/// Takes the indexer's write lock + connection mutex like
+/// [`publish_lake`] (same non-reentrant-mutex discipline) so a
+/// concurrent publish and a concurrent GC never interleave their SQL on
+/// the one connection.
+pub async fn gc_lake_snapshots(
+    ix: &Indexer,
+    cfg: &LakeConfig,
+    keep: u32,
+) -> Result<u64, SnapshotError> {
+    if keep == 0 {
+        return Ok(0);
+    }
+    let _write = ix.write_guard().await;
+    let conn = ix.conn.lock().await;
+    attach_lake(&conn, cfg, false)?;
+
+    let cutoff: Option<String> = match conn.query_row(
+        &format!(
+            "SELECT CAST(snapshot_time AS VARCHAR) FROM ducklake_snapshots('{LAKE_ALIAS}') \
+             ORDER BY snapshot_id DESC LIMIT 1 OFFSET ?"
+        ),
+        params![i64::from(keep) - 1],
+        |r| r.get(0),
+    ) {
+        Ok(v) => Some(v),
+        Err(duckdb::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(SnapshotError::LakeSql(e)),
+    };
+    let Some(cutoff) = cutoff else {
+        // Fewer published snapshots than `keep` — nothing to prune.
+        return Ok(0);
+    };
+
+    let before: i64 = conn.query_row(
+        &format!("SELECT count(*) FROM ducklake_snapshots('{LAKE_ALIAS}')"),
+        [],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        &format!("CALL ducklake_expire_snapshots('{LAKE_ALIAS}', older_than => ?::TIMESTAMPTZ)"),
+        params![cutoff],
+    )?;
+    conn.execute_batch(&format!(
+        "CALL ducklake_cleanup_old_files('{LAKE_ALIAS}', cleanup_all => true);"
+    ))?;
+    let after: i64 = conn.query_row(
+        &format!("SELECT count(*) FROM ducklake_snapshots('{LAKE_ALIAS}')"),
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(u64::try_from(before.saturating_sub(after)).unwrap_or(0))
+}
+
 /// Does `lake.<table>` exist? (information_schema over the attached
 /// catalog — works on a `READ_ONLY` attach.) `table` is only ever a
 /// compile-time constant here; both values bind as parameters anyway.
