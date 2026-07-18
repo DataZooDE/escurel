@@ -1,6 +1,6 @@
 # ADR-0009 — DuckLake derived-index backend with a live Postgres catalog
 
-**Status:** Proposed, 2026-07-17.
+**Status:** Accepted, 2026-07-18.
 **Scope:** escurel's derived-index storage layer (`escurel-index` + server boot).
 The markdown LaneStore stays the source of truth; the external contract
 (MCP-over-HTTP + WS on `:8080`, JWT, markdown-as-truth) is unchanged.
@@ -82,9 +82,69 @@ Move the derived index into **DuckLake**:
   and atomic; incremental mirroring + `ducklake_merge_adjacent_files`
   compaction are named follow-ups.
 
+## Implementation (2026-07-18)
+
+Shipped as 10 PRs on `DataZooDE/escurel` main, in order:
+
+| PR | GitHub | What |
+|---|---|---|
+| 1 | [#288](https://github.com/DataZooDE/escurel/pull/288) | Validation spikes (this ADR's findings above) + ADR draft |
+| 2 | [#289](https://github.com/DataZooDE/escurel/pull/289) | `IndexStore` seam + `IndexerHandle` — zero behavior change |
+| 3 | [#290](https://github.com/DataZooDE/escurel/pull/290) | `LakeConfig` + attach/secret builders + `publish_lake` + dirty counter |
+| 4 | [#291](https://github.com/DataZooDE/escurel/pull/291) | `adopt_lake` — reader bulk-load into an in-memory indexer |
+| 5 | [#292](https://github.com/DataZooDE/escurel/pull/292) | Reader refresh task — poll, adopt, hot-swap |
+| 6 | [#293](https://github.com/DataZooDE/escurel/pull/293) | `ESCUREL_INDEX_BACKEND`/`ESCUREL_ROLE` wiring, bootable reader, replica tool gating, readiness |
+| 7 | [#294](https://github.com/DataZooDE/escurel/pull/294) | `publish_snapshot` admin tool + periodic publish + snapshot GC |
+| 8 | [#295](https://github.com/DataZooDE/escurel/pull/295) | Phase B: chat re-homed to an attached-Postgres shared table |
+| 9 | [#296](https://github.com/DataZooDE/escurel/pull/296) | Phase B: events re-homed to an attached-Postgres shared table |
+| 10 | [#297](https://github.com/DataZooDE/escurel/pull/297) | Phase B: CRDT ops/snapshots re-homed to an attached-Postgres table |
+
+Full architecture summary: [`docs/notes/2026-07-18-ducklake-architecture.md`](../notes/2026-07-18-ducklake-architecture.md).
+
+**Real-world discoveries beyond the pre-implementation spikes** (each has a
+`docs/notes/discovered/` entry):
+
+1. **DuckLake rejects `FLOAT[768]`** (fixed-size arrays) — lake tables store
+   `FLOAT[]`; readers cast back before the HNSW build (spike-anticipated,
+   confirmed in PR 3).
+2. **DuckDB's Postgres connector rejects `INSERT … RETURNING`** on any
+   attached-Postgres write (`ATTACH … TYPE postgres`, not just the
+   `ducklake:postgres:` catalog protocol) — discovered in PR 8 (chat),
+   documented, and the fix pattern (resolve server-side values via a separate
+   scalar `SELECT` first) was reused verbatim in PRs 9 and 10 with zero
+   rediscovery cost.
+3. **`BLOB` maps cleanly to Postgres `bytea`** through the same attach and
+   round-trips byte-exact via `duckdb::ToSql` — verified empirically in PR 10
+   before writing the CRDT op-log tables, precisely because the `FLOAT[768]`
+   and `RETURNING` surprises above made "verify column-type behavior first"
+   the house habit for this program.
+
+**Phase B landed differently than originally sketched.** The plan's
+Phase-B section proposed per-user object-storage prefixes (append-only
+objects in GCS/Hetzner) for chat/events/CRDT. The shipped design instead
+re-homes each to a **shared Postgres table** (`chat_pg`/`events_pg`/`crdt_pg`)
+in the *same* Cloud SQL database as the lake catalog, all reusing
+`LakeConfig.catalog_dsn` — zero new config surface, and every replica
+(writer and every reader) attaches read-write to these tables at boot. This
+is simpler than the object-prefix design and still satisfies the original
+requirements (strong consistency, GDPR delete-by-row, no shared corpus
+mutation) because a normal SQL table already gives read-your-writes and
+transactional deletes for free.
+
+**CRDT scope boundary (explicit, not a gap):** PR 10 makes durable CRDT
+*storage* reachable from every replica — a reader can `list_snapshots` for
+any page, and a session opened fresh on any replica loads correct history.
+It does **not** build live cross-replica session failover: `SessionManager`
+still runs one in-process `LiveDoc` actor per page, with no ingress-affinity
+mechanism to route a page's `apply_op` calls back to whichever replica
+opened its session. Loro's CRDT convergence makes this eventually-safe if it
+ever happens by accident; making it a *supported* flow is a documented
+follow-up, not attempted here.
+
 ## Follow-ups
 
 Substrate repo: ADR-0015 rev.3 amendment; IaC for bucket/SA/HMAC/Cloud SQL +
 Secret Manager + deploy wiring; host-pin/STOP-FIRST removal; replica count.
-Escurel: Phase B per-user re-homing (chat/events/CRDT); snapshot
-expiry/compaction cadence; incremental FTS; `sslmode=verify-ca`.
+Escurel: CRDT live cross-replica session affinity (ingress stickiness);
+snapshot expiry/compaction cadence beyond the `ESCUREL_SNAPSHOT_KEEP` count
+retention already shipped; incremental FTS; `sslmode=verify-ca`.
