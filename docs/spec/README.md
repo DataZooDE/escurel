@@ -80,7 +80,7 @@ are the ones with the largest blast radius if changed later.
 | **2** | **Deployment** | **Single binary `escurel-server`, self-hosted; same binary scales to multi-tenant SaaS** | One process per node; multi-tenancy is in-process (see decision 8) |
 | 3 | Auth | Generic OIDC discovery; tenant id is one OIDC claim (`tenant` by default, configurable) | See [`platform.md`](platform.md#auth) |
 | 4 | Embedding model — default | **Gemini** (`gemini-embedding-001`) over HTTPS, 768d — the binary ships the `gemini` feature and the runtime default is `provider = gemini` | Hosted; needs `ESCUREL_GEMINI_API_KEY`. With no key it falls back to zero-vector embeddings (a warning is logged) so keyless dev/CI boots stay clean. **Not air-gappable** — see 4a |
-| 4a | Embedding model — air-gapped / local | **EmbeddingGemma** (`google/embeddinggemma-300m`), 768d, Matryoshka-trained, multilingual, via candle — `provider = embeddinggemma` | Open weights, no cloud egress; what the substrate jobspec pins. Loads on first start, cached under `${ESCUREL_DATA_DIR}/cache/models/`. `provider = zero` is the offline stub (lexical search only) |
+| 4a | Embedding model — air-gapped / local | A **BERT-family sentence-transformer** (default `BAAI/bge-base-en-v1.5`, 768d), via candle — `provider = embeddinggemma`. *(EmbeddingGemma (`google/embeddinggemma-300m`) is the intended target but candle-transformers has no `gemma3` embedding path yet, so it cannot load today — see #299.)* | Open weights, no cloud egress. Loads on first start, cached under `${ESCUREL_DATA_DIR}/cache/models/`. `provider = zero` is the offline stub (lexical search only). Set `ESCUREL_EMBEDDER_REQUIRED=1` to fail closed rather than degrade to zero-vector retrieval |
 | 5 | Embed/rerank runtime | **candle** (pure Rust) | No external runtime; CUDA/Metal feature flags; sidecar adapter exists as a trait impl for future use |
 | **6** | **Transports** | **MCP-over-HTTP** + **WebSocket** (live mode); HTTP is the sole transport | See [`protocol.md`](protocol.md) for each |
 | 7 | Storage backend | **Local FS for dev; S3 LaneStore is the production backend.** S3-compatible stores supported via `object_store::aws` (verified: AWS S3, MinIO, Hetzner Object Storage); FS retained as a dev-only convenience | DuckDB supports object-store URLs via `httpfs`, DuckLake natively; markdown ships through the same trait |
@@ -304,8 +304,8 @@ backend = "fs"                # "fs" or "s3"
 # prefix = "tenants/"
 
 [embedding]
-provider = "embeddinggemma"   # or "gemini" or "sidecar"
-model = "google/embeddinggemma-300m"
+provider = "embeddinggemma"   # candle BERT sentence-transformer; or "gemini" / "sidecar"
+model = "BAAI/bge-base-en-v1.5"   # BERT-family; candle has no gemma3 path yet (#299)
 device = "cpu"                # "cpu", "cuda:0", "metal"
 dim = 768                     # Matryoshka truncation; 768|512|256|128
 # [embedding.gemini]

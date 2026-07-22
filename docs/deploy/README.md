@@ -76,12 +76,19 @@ export ESCUREL_SERVER_LISTEN_HTTP=127.0.0.1:8080
 # Filesystem LaneStore — no S3, no spool-to-cloud.
 export ESCUREL_STORAGE_BACKEND=fs
 
-# EmbeddingGemma via candle; on a laptop, let it fetch to the HF cache
-# under $ESCUREL_SERVER_DATA_DIR/cache/models/ on first start.
+# A BERT-family sentence-transformer via candle; on a laptop, let it
+# fetch to the HF cache under $ESCUREL_SERVER_DATA_DIR/cache/models/ on
+# first start. NOTE: the candle backend is BERT-only today — it cannot
+# load `google/embeddinggemma-300m` (a gemma3 model), so use a BERT
+# sentence-transformer such as BAAI/bge-base-en-v1.5 (768d). EmbeddingGemma
+# returns once gemma3 lands in candle-transformers (#299).
 export ESCUREL_EMBEDDING_PROVIDER=embeddinggemma
-export ESCUREL_EMBEDDING_MODEL=google/embeddinggemma-300m
+export ESCUREL_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
 export ESCUREL_EMBEDDING_DEVICE=cpu
 export ESCUREL_EMBEDDING_DIM=768
+# Optional: refuse to boot on a degraded (zero-vector) embedder instead of
+# silently falling back to FTS-only retrieval.
+export ESCUREL_EMBEDDER_REQUIRED=1
 
 # Auth: point at whatever issuer you run locally. For test-issuer
 # integration runs see crates/escurel-test-support (AuthMode::TestIssuer).
@@ -152,10 +159,13 @@ ESCUREL_STORAGE_BACKEND=fs
 
 ESCUREL_EMBEDDING_PROVIDER=embeddinggemma
 # Staged onto the VM once — absolute local path, loaded via from_local
-# (no egress).
-ESCUREL_EMBEDDING_MODEL=/opt/escurel/models/embeddinggemma-300m
+# (no egress). Must be a BERT-family sentence-transformer (candle is
+# BERT-only today; see #299) — e.g. a locally-baked BAAI/bge-base-en-v1.5.
+ESCUREL_EMBEDDING_MODEL=/opt/escurel/models/bge-base-en-v1.5
 ESCUREL_EMBEDDING_DEVICE=cpu
 ESCUREL_EMBEDDING_DIM=768
+# Air-gapped: fail closed rather than serve zero-vector retrieval.
+ESCUREL_EMBEDDER_REQUIRED=1
 
 ESCUREL_AUTH_OIDC_ISSUER=https://auth.example.com/realms/main
 ESCUREL_AUTH_OIDC_AUDIENCE=escurel

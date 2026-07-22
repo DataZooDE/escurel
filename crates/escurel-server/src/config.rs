@@ -53,10 +53,11 @@
 //! | `ESCUREL_AUTH_JWKS_URI_2` | derived from issuer #2 | explicit JWKS URL for the second issuer (e.g. Carl's `<issuer>/jwks.json`) |
 //! | `ESCUREL_AUTH_OIDC_ISSUER_3` (… `_N`) | — | further trusted issuers, read as a contiguous `_2.._N` sequence (e.g. `_3` = the escurel-explore BFF's browser auth bridge); a gap stops the scan |
 //! | `ESCUREL_AUTH_JWKS_URI_3` (… `_N`) | derived from issuer #N | explicit JWKS URL for the Nth issuer |
-//! | `ESCUREL_EMBEDDING_PROVIDER` | `gemini` | `zero`, `gemini`, or `embeddinggemma` (gemini with no key → zero fallback) |
-//! | `ESCUREL_EMBEDDING_MODEL` | provider default | model id |
+//! | `ESCUREL_EMBEDDING_PROVIDER` | `gemini` | `zero`, `gemini`, or `embeddinggemma` (a candle BERT-family sentence-transformer; gemini with no key → zero fallback) |
+//! | `ESCUREL_EMBEDDING_MODEL` | provider default | model id (candle default: `BAAI/bge-base-en-v1.5`, a BERT sentence-transformer — the candle backend has no Gemma3 path yet, see #299) |
 //! | `ESCUREL_EMBEDDING_DEVICE` | `cpu` | candle device (informational; CPU only today) |
 //! | `ESCUREL_EMBEDDING_DIM` | `768` | vector dimension |
+//! | `ESCUREL_EMBEDDER_REQUIRED` | `false` | when `true`, a failed real-embedder load aborts boot instead of silently degrading to zero-vector (FTS-only) retrieval (#299) |
 //! | `ESCUREL_GEMINI_API_KEY` | — | Gemini API key (provider=gemini; unset → zero fallback) |
 //! | `ESCUREL_INDEX_BACKEND` | `single-file` | `single-file` or `ducklake` — selects the [`escurel_index::snapshot::IndexStore`] backend (DuckLake PR 6) |
 //! | `ESCUREL_ROLE` | `writer` | `writer` or `reader` — `reader` requires `ESCUREL_INDEX_BACKEND=ducklake`; a reader boots with NO local single-file DuckDB, adopting the lake's newest published snapshot instead |
@@ -441,6 +442,13 @@ pub struct EscurelConfig {
     pub embedding_model: Option<String>,
     pub embedding_device: String,
     pub embedding_dim: usize,
+    /// `ESCUREL_EMBEDDER_REQUIRED` (default `false`): when `true`, a failed
+    /// real-embedder load aborts the boot instead of silently degrading to a
+    /// zero-vector `ZeroEmbedder` (FTS-only retrieval). Off preserves the
+    /// degrade-then-reload baseline — keyless dev/CI boots (loaded zero
+    /// fallback) and air-gapped recovery via the `embedding_reload` admin RPC
+    /// keep working. See #299.
+    pub embedder_required: bool,
     pub gemini_api_key: Option<String>,
     /// Second-stage rerank mode (`[retrieval].rerank`, default-on where the
     /// `rerank` feature is built). `Off` reproduces first-stage-only ranking.
@@ -818,6 +826,15 @@ impl EscurelConfig {
             None => toml_cfg.embedding.dim.unwrap_or(DEFAULT_DIM),
         };
         let gemini_api_key = env.get("ESCUREL_GEMINI_API_KEY");
+        // #299: opt-in — a failed real-embedder load becomes a fatal boot
+        // error rather than a silent zero-vector degrade.
+        let embedder_required = match env.get("ESCUREL_EMBEDDER_REQUIRED") {
+            Some(raw) => matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            ),
+            None => false,
+        };
 
         // --- ingest (GH #216, Variant A) ---
         // Default `structural`; `off` restores verbatim chunk text. Unknown
@@ -986,6 +1003,7 @@ impl EscurelConfig {
             embedding_model,
             embedding_device,
             embedding_dim,
+            embedder_required,
             gemini_api_key,
             rerank_mode,
             rerank_candidates,
@@ -1142,7 +1160,7 @@ impl EscurelConfig {
         //    degraded-start, not fatal. The effective config folds in the
         //    tenant's `embedding_provider` when it declares one.
         let embed_cfg = self.with_tenant_embedding(tenant_spec.as_ref());
-        let embedder = Arc::new(embed_cfg.build_embedder().await);
+        let embedder = Arc::new(embed_cfg.build_embedder().await?);
 
         // 4. Per-tenant DuckDB via the `IndexStore` seam (DuckLake PR 2).
         //    `SingleFileStore::open()` reproduces the classic boot sequence
@@ -1543,10 +1561,23 @@ impl EscurelConfig {
 
     /// Build the embedder behind the reloadable seam. A load failure
     /// (real model missing / unreachable) is logged and degrades to a
-    /// `ZeroEmbedder` placeholder rather than aborting the boot.
-    async fn build_embedder(&self) -> ReloadableEmbedder {
+    /// `ZeroEmbedder` placeholder rather than aborting the boot — unless
+    /// `ESCUREL_EMBEDDER_REQUIRED` is set, in which case the failure is
+    /// propagated and the boot aborts (#299).
+    async fn build_embedder(&self) -> Result<ReloadableEmbedder, ConfigError> {
         match self.load_real_embedder().await {
-            Ok(inner) => ReloadableEmbedder::loaded(inner),
+            Ok(inner) => Ok(ReloadableEmbedder::loaded(inner)),
+            Err(e) if self.embedder_required => {
+                // Fail loud: the operator opted into a hard embedder
+                // requirement, so a degraded (zero-vector, FTS-only) boot is
+                // not acceptable — surface the load failure as fatal.
+                tracing::error!(
+                    error = %e,
+                    provider = ?self.embedding_provider,
+                    "embedder failed to load and ESCUREL_EMBEDDER_REQUIRED is set; aborting boot"
+                );
+                Err(e)
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -1554,7 +1585,7 @@ impl EscurelConfig {
                     "embedder failed to load; booting degraded — /readyz embedder=false, \
                      retry via the embedding_reload admin RPC"
                 );
-                ReloadableEmbedder::degraded(self.embedding_dim)
+                Ok(ReloadableEmbedder::degraded(self.embedding_dim))
             }
         }
     }
@@ -1667,10 +1698,18 @@ impl EscurelConfig {
 
     #[cfg(feature = "embeddinggemma")]
     async fn load_embeddinggemma(&self) -> Result<Arc<dyn Embedder>, ConfigError> {
+        // Default to a BERT-family sentence-transformer that the candle
+        // backend can actually load today. `google/embeddinggemma-300m` is a
+        // `gemma3_text` model — candle-transformers has no Gemma3 embedding
+        // path yet (its config even parses differently: `hidden_activation`
+        // vs BERT's `hidden_act`), so it fails to load and silently degrades.
+        // `BAAI/bge-base-en-v1.5` is 768-dim (matching the default
+        // `ESCUREL_EMBEDDING_DIM`) and loads cleanly. Revisit EmbeddingGemma
+        // once `gemma3` lands in candle-transformers. See #299.
         let repo = self
             .embedding_model
             .clone()
-            .unwrap_or_else(|| "google/embeddinggemma-300m".to_owned());
+            .unwrap_or_else(|| "BAAI/bge-base-en-v1.5".to_owned());
         // `from_hf_hub` is async (it fetches the weights into the HF
         // cache on a cold start); `build` is async so we await it
         // directly. Substrate production bakes the model into the
@@ -1680,7 +1719,7 @@ impl EscurelConfig {
             .map_err(|e| ConfigError::InvalidValue {
                 var: "ESCUREL_EMBEDDING_MODEL",
                 value: e.to_string(),
-                reason: "failed to load EmbeddingGemma",
+                reason: "failed to load the candle (BERT-family) sentence-transformer",
             })?;
         Ok(Arc::new(loaded))
     }
