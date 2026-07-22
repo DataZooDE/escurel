@@ -1480,13 +1480,21 @@ impl EscurelConfig {
             metrics_listen: self.metrics_listen.clone(),
         };
 
-        let handle = serve(server_config)
-            .await
-            .map_err(|e| ConfigError::InvalidValue {
-                var: "ESCUREL_SERVER_LISTEN_HTTP",
+        let handle = serve(server_config).await.map_err(|e| {
+            // Attribute a bind failure to the knob that actually controls
+            // the listener that failed — a busy metrics port sends the
+            // operator to `ESCUREL_OBSERVABILITY_METRICS_LISTEN`, not the
+            // HTTP dial (#301).
+            let var = match &e {
+                crate::ServerError::MetricsBind { .. } => "ESCUREL_OBSERVABILITY_METRICS_LISTEN",
+                _ => "ESCUREL_SERVER_LISTEN_HTTP",
+            };
+            ConfigError::InvalidValue {
+                var,
                 value: e.to_string(),
                 reason: "failed to bind / serve",
-            })?;
+            }
+        })?;
 
         Ok(BootedServer {
             handle,

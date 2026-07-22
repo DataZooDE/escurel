@@ -326,6 +326,44 @@ async fn degraded_embedder_start_boots_with_readyz_false() {
     booted.handle.shutdown().await;
 }
 
+/// #301: when the dedicated metrics listener fails to bind (its port is
+/// already taken — the multi-instance-on-one-host case), the fatal config
+/// error must be attributed to `ESCUREL_OBSERVABILITY_METRICS_LISTEN`, the
+/// knob that actually controls it — NOT to `ESCUREL_SERVER_LISTEN_HTTP`,
+/// which sends operators to the wrong dial.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_bind_failure_names_the_metrics_var() {
+    let data_dir = TempDir::new().unwrap();
+    // Occupy a port so the metrics listener collides with it. Hold the
+    // std listener open for the duration of the build attempt.
+    let squatter = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken = squatter.local_addr().unwrap();
+
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
+        // HTTP binds cleanly on an ephemeral port; only metrics collides.
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", &taken.to_string()),
+    ])))
+    .unwrap();
+
+    // `BootedServer` isn't `Debug`, so match rather than `expect_err`.
+    let msg = match cfg.build().await {
+        Ok(_) => panic!("metrics bind must fail when its port is taken"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.contains("ESCUREL_OBSERVABILITY_METRICS_LISTEN"),
+        "metrics bind failure must name the metrics var: {msg}"
+    );
+    assert!(
+        !msg.contains("ESCUREL_SERVER_LISTEN_HTTP"),
+        "metrics bind failure must NOT be misattributed to the HTTP var: {msg}"
+    );
+
+    drop(squatter);
+}
+
 /// Gemini is the default provider, but with no API key the build must fall
 /// back to a (loaded) ZeroEmbedder — NOT degrade — so keyless dev/CI/air-gapped
 /// boots stay clean: `/readyz` is 200 with `embedder: true`.

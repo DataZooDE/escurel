@@ -235,6 +235,16 @@ pub enum ServerError {
         #[source]
         source: std::io::Error,
     },
+    /// The dedicated Prometheus `/metrics` listener failed to bind. Kept
+    /// distinct from `Bind` so the config layer attributes the fatal error
+    /// to `ESCUREL_OBSERVABILITY_METRICS_LISTEN` — the knob that actually
+    /// controls it — rather than the HTTP listen knob (see #301).
+    #[error("metrics bind {addr} failed: {source}")]
+    MetricsBind {
+        addr: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("axum server failed: {0}")]
     Serve(#[from] std::io::Error),
 }
@@ -526,7 +536,7 @@ async fn spawn_metrics(
         .with_state(state);
     let listener = TcpListener::bind(addr)
         .await
-        .map_err(|e| ServerError::Bind {
+        .map_err(|e| ServerError::MetricsBind {
             addr: addr.to_owned(),
             source: e,
         })?;
