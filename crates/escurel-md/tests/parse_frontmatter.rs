@@ -150,3 +150,32 @@ fn unknown_type_value_errors() {
         "expected InvalidType, got: {err:?}",
     );
 }
+
+#[test]
+fn set_frontmatter_bool_stamps_flag_and_preserves_body() {
+    // #300: stamp `archived: true` onto an existing page; the flag round-trips
+    // through parse and the body is preserved verbatim.
+    let input = "---\ntype: instance\nskill: customer\nid: acme\n---\n# Acme\n\nBody text.\n";
+    let out =
+        escurel_md::set_frontmatter_bool(input, "archived", true).expect("stamp archived flag");
+
+    let page = parse(&out).expect("re-parse stamped page");
+    assert_eq!(page.frontmatter.page_type, PageType::Instance);
+    assert_eq!(
+        page.frontmatter.fields["archived"].as_bool(),
+        Some(true),
+        "archived flag must be present and true"
+    );
+    // Original keys survive the round-trip.
+    assert_eq!(page.frontmatter.fields["id"].as_str(), Some("acme"));
+    assert_eq!(page.frontmatter.fields["skill"].as_str(), Some("customer"));
+    // Body is unchanged.
+    assert_eq!(page.body, "# Acme\n\nBody text.\n");
+}
+
+#[test]
+fn set_frontmatter_bool_rejects_malformed_input() {
+    let err = escurel_md::set_frontmatter_bool("no frontmatter here", "archived", true)
+        .expect_err("malformed input must error");
+    assert!(matches!(err, ParseError::MissingFrontmatter));
+}

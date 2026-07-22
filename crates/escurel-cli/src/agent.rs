@@ -7,8 +7,8 @@ use std::io::Read as _;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use escurel_client::{
-    AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, ExpandRequest,
-    ListEventsRequest, ListInboxRequest, ListInstancesRequest, ListMessagesRequest,
+    AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, DeletePageRequest,
+    ExpandRequest, ListEventsRequest, ListInboxRequest, ListInstancesRequest, ListMessagesRequest,
     ListSkillsRequest, NeighboursRequest, QueryInstanceRequest, ResolveRequest,
     RunStoredQueryRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
 };
@@ -67,6 +67,15 @@ pub enum PageCmd {
     Validate { page_id: String },
     /// Upsert a markdown page. Body is read from stdin.
     Update { page_id: String },
+    /// Soft-delete (archive) a markdown page: retract it from discovery
+    /// while retaining the canonical markdown for audit (#300).
+    Delete {
+        page_id: String,
+        /// Optimistic-concurrency guard: the version last read. Omit to
+        /// delete unconditionally.
+        #[arg(long)]
+        base_version: Option<String>,
+    },
     /// Fetch the original retained bytes of a document-backed instance
     /// (base64 + content type) for a faithful preview.
     Blob { page_id: String },
@@ -288,6 +297,10 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Page(PageCmd::Expand { page_id }) => expand(client, page_id).await,
         Command::Page(PageCmd::Validate { page_id }) => validate(client, page_id).await,
         Command::Page(PageCmd::Update { page_id }) => update_page(client, page_id).await,
+        Command::Page(PageCmd::Delete {
+            page_id,
+            base_version,
+        }) => delete_page(client, page_id, base_version).await,
         Command::Page(PageCmd::Blob { page_id }) => fetch_blob(client, page_id).await,
         Command::Page(PageCmd::Snapshots { page_id }) => list_snapshots(client, page_id).await,
         Command::Link(LinkCmd::Neighbours(a)) => neighbours(client, a).await,
@@ -491,6 +504,28 @@ async fn update_page(client: &Client, page_id: String) -> Result<Value> {
             "location": opt(&i.location),
         })).collect::<Vec<_>>(),
         "new_version": opt(&resp.new_version),
+    }))
+}
+
+async fn delete_page(
+    client: &Client,
+    page_id: String,
+    base_version: Option<String>,
+) -> Result<Value> {
+    let resp = client
+        .delete_page(DeletePageRequest {
+            page_id,
+            base_version: base_version.unwrap_or_default(),
+        })
+        .await?;
+    Ok(json!({
+        "ok": resp.ok,
+        "issues": resp.issues.into_iter().map(|i| json!({
+            "code": i.code,
+            "message": i.message,
+            "location": opt(&i.location),
+        })).collect::<Vec<_>>(),
+        "page_id": opt(&resp.page_id),
     }))
 }
 

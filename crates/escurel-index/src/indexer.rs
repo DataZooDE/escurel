@@ -819,6 +819,89 @@ impl Indexer {
         Ok(())
     }
 
+    /// The canonical markdown for `page_id` from the LaneStore (frontmatter +
+    /// body, as authored), or `None` when no such page exists.
+    ///
+    /// Distinct from [`Self::expand`], which reconstructs a projected view;
+    /// this returns the raw blob the write guards (`may_write_page`,
+    /// `backend_read_only_rejection`, `layer_read_only_rejection`) parse — so
+    /// a caller with no new draft (e.g. `delete_page`) can run those gates
+    /// against what is actually stored.
+    pub async fn read_page_markdown(&self, page_id: &str) -> Result<Option<String>, IndexerError> {
+        let key = Key::new(self.tenant.as_str(), page_id.to_owned())?;
+        match self.store.read(&key).await {
+            Ok(bytes) => {
+                let s = std::str::from_utf8(&bytes)
+                    .map_err(|_| IndexerError::NotUtf8 {
+                        page_id: page_id.to_owned(),
+                    })?
+                    .to_owned();
+                Ok(Some(s))
+            }
+            Err(escurel_storage::StoreError::NotFound(_)) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Soft-delete (archive) the page `page_id` (#300).
+    ///
+    /// Retracts the page from discovery — drops its `pages`/`blocks` rows and
+    /// its OWN outbound `links` edges (`src_page`, symmetric with the
+    /// `update_page` link refresh) — while KEEPING the canonical markdown in
+    /// the LaneStore as the audit record, re-stamped `archived: true`. The
+    /// marker makes a from-scratch rebuild/seed skip the page (the retraction
+    /// survives a rebuild) and makes the delete reversible (clear the flag, or
+    /// re-`update_page` the id).
+    ///
+    /// Inbound edges (other live pages linking to this one) are left intact:
+    /// they belong to those pages' content and a rebuild would recreate them,
+    /// so removing them here would only diverge the index from the source
+    /// until the next rebuild. They become ordinary dangling wikilinks that
+    /// `validate` surfaces; the retracted page itself no longer resolves.
+    ///
+    /// Returns `true` when a page was archived, `false` when `page_id` had no
+    /// canonical markdown (already gone / never existed). The mandatory
+    /// `escurel` meta-skill cannot be archived.
+    pub async fn delete_page(&self, page_id: &str) -> Result<bool, IndexerError> {
+        // Same write lock update_page holds — a delete is a whole-page write.
+        let _write = self.write_lock.lock().await;
+
+        if crate::meta_skill::is_meta_skill_page(page_id) {
+            return Err(IndexerError::MetaSkillProtected {
+                reason: "the mandatory `escurel` meta-skill cannot be deleted".to_owned(),
+            });
+        }
+
+        // The canonical markdown is both the source of truth and the audit
+        // record. Absent → nothing to retract.
+        let key = Key::new(self.tenant.as_str(), page_id.to_owned())?;
+        let existing = match self.store.read(&key).await {
+            Ok(bytes) => bytes,
+            Err(escurel_storage::StoreError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let content = std::str::from_utf8(&existing).map_err(|_| IndexerError::NotUtf8 {
+            page_id: page_id.to_owned(),
+        })?;
+
+        // Retain the markdown, re-stamped archived, so rebuild/audit keep the
+        // record but skip re-indexing it.
+        let archived = escurel_md::set_frontmatter_bool(content, "archived", true)?;
+        self.store.write(&key, Bytes::from(archived)).await?;
+
+        // Drop the derived-index rows in one transaction.
+        {
+            let mut conn = self.conn.lock().await;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
+            tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
+            tx.execute("DELETE FROM links WHERE src_page = ?", params![page_id])?;
+            tx.commit()?;
+        }
+        self.bump_mutation_epoch();
+        Ok(true)
+    }
+
     /// Materialise a document instance: write the overlay page (its
     /// frontmatter carries the `backend_ref`) and index `chunks` as N
     /// `blocks` rows under the **one** `page_id` (distinct `chunk-<i>`
@@ -1295,7 +1378,13 @@ impl Indexer {
             let content = std::str::from_utf8(&body).map_err(|_| IndexerError::NotUtf8 {
                 page_id: path.clone(),
             })?;
-            self.update_page(&path, content).await?;
+            // #300: a soft-deleted page is retained in the lane for audit but
+            // kept out of the derived index, so the retraction survives a
+            // from-scratch rebuild. Progress still advances so `done` reaches
+            // `total`.
+            if !is_archived(content) {
+                self.update_page(&path, content).await?;
+            }
             on_progress(RebuildProgress {
                 done: (idx as u64) + 1,
                 total,
@@ -1355,6 +1444,11 @@ impl Indexer {
             let page_id = format!("markdown/{relpath}");
             let key = Key::new(self.tenant.as_str(), page_id.clone())?;
             self.store.write(&key, Bytes::from(content.clone())).await?;
+            // #300: retain a soft-deleted page in the lane but keep it out of
+            // the index (symmetric with the rebuild skip above).
+            if is_archived(content) {
+                continue;
+            }
             self.update_page(&page_id, content).await?;
         }
         // FTS has no incremental refresh PRAGMA; rebuild it over the
@@ -1737,6 +1831,23 @@ fn render_yaml_markup(v: &escurel_md::YamlValue) -> String {
             .join(", "),
         Y::Tagged(t) => render_yaml_markup(&t.value),
     }
+}
+
+/// Whether a page's markdown carries `archived: true` in its frontmatter — a
+/// soft-deleted (retracted) page (#300). Such pages are retained in the
+/// LaneStore for audit but skipped by rebuild/seed so they stay out of the
+/// derived index. A parse failure is treated as not-archived (the normal
+/// index path will surface the error).
+fn is_archived(content: &str) -> bool {
+    parse(content)
+        .ok()
+        .and_then(|p| {
+            p.frontmatter
+                .fields
+                .get("archived")
+                .and_then(escurel_md::YamlValue::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 /// Convert a YAML mapping into a JSON string for the `pages.frontmatter`

@@ -929,9 +929,8 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         // `apply_op` is a write; `open_session` debits a session
         // slot (semaphore, not a token bucket) inside the tool
         // body; `close_session` is a cleanup and does not debit.
-        "update_page" | "apply_op" | "append_message" | "capture_event" | "assign_event" => {
-            Dimension::Writes
-        }
+        "update_page" | "delete_page" | "apply_op" | "append_message" | "capture_event"
+        | "assign_event" => Dimension::Writes,
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -997,6 +996,7 @@ fn wrap_tool_result(payload: Value) -> Value {
 /// is the only mutation path; a reader is read-only by construction.
 const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     "update_page",
+    "delete_page",
     "rebuild",
     "compact_lanes",
     "import_pack",
@@ -1314,6 +1314,9 @@ async fn dispatch_tools_call(
         "validate" => tool_validate(indexer, params.arguments).await,
         "update_page" => {
             tool_update_page(state, indexer, caller, state.write_acl, params.arguments).await
+        }
+        "delete_page" => {
+            tool_delete_page(state, indexer, caller, state.write_acl, params.arguments).await
         }
         "append_message" => {
             tool_append_message(indexer, caller, state.write_acl, params.arguments).await
@@ -2706,6 +2709,170 @@ async fn tool_update_page(
             }],
         })),
         Err(e) => Err(JsonRpcError::internal(format!("update_page: {e}"))),
+    }
+}
+
+#[derive(Deserialize)]
+struct DeletePageArgs {
+    page_id: String,
+    /// Optimistic-concurrency guard (#300, symmetric with `update_page`): the
+    /// version the client last read. A stale value conflicts.
+    #[serde(default)]
+    base_version: Option<String>,
+}
+
+/// #300 `delete_page`: soft-delete (archive) a markdown page/instance. Mirrors
+/// `update_page`'s gates — backend/layer read-only, write-ACL, meta-skill — but
+/// evaluates them against the STORED page, since a delete carries no new draft.
+/// The page is retracted from discovery (index rows + link edges dropped) while
+/// its canonical markdown is retained, re-stamped `archived: true`, for audit.
+async fn tool_delete_page(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: DeletePageArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("delete_page: {e}")))?;
+
+    // Fetch the stored markdown; a missing page is a typed `not_found`, not a
+    // 500. Idempotent: a second delete (page already retracted) also
+    // reports `not_found`.
+    let Some(existing) = indexer
+        .read_page_markdown(&a.page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("delete_page read: {e}")))?
+    else {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_found",
+                "location": "page_id",
+                "message": format!("no page `{}` to delete", a.page_id),
+            }],
+        }));
+    };
+
+    // Read-only-backend guard: a sql_view/document instance is managed by its
+    // backend, not the markdown write surface — deleting the overlay here
+    // would desync it. Evaluated against the stored content.
+    if let Some(reason) = indexer
+        .backend_read_only_rejection(&a.page_id, &existing)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("delete_page backend guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "backend_read_only",
+                "location": "frontmatter.backend_ref",
+                "message": reason,
+            }],
+        }));
+    }
+
+    // Base-layer guard: a page imported from a subscribed pack is read-only at
+    // this node — it cannot be deleted here (unsubscribe the pack instead).
+    if let Some(reason) = indexer
+        .layer_read_only_rejection(&a.page_id, &existing)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("delete_page layer guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "layer_read_only",
+                "location": "frontmatter.layer",
+                "message": reason,
+            }],
+        }));
+    }
+
+    // Write ACL: a delete is an overwrite of the existing page, so the caller
+    // must own it (or be admin). Passing the stored content as the write
+    // content yields the own-the-existing-page (Verb::Update) decision.
+    if write_acl != crate::server::WriteAclMode::Off {
+        let allowed = indexer
+            .may_write_page(&caller, &a.page_id, &existing)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("delete_page acl: {e}")))?;
+        if !allowed {
+            if write_acl == crate::server::WriteAclMode::Log {
+                tracing::warn!(
+                    subject = %caller.subject,
+                    page_id = %a.page_id,
+                    "write-ACL would deny this delete (log mode) — allowing"
+                );
+            } else {
+                return Ok(json!({
+                    "ok": false,
+                    "issues": [{
+                        "severity": "error",
+                        "code": "forbidden",
+                        "location": "frontmatter",
+                        "message": format!(
+                            "delete denied: caller `{}` does not own instance `{}`",
+                            caller.subject, a.page_id
+                        ),
+                    }],
+                }));
+            }
+        }
+    }
+
+    // Optimistic concurrency (#300, symmetric with update_page): a stale
+    // `base_version` means the page changed since the caller read it — refuse
+    // rather than retract a page they have not seen. Held under the same CAS
+    // gate so the check-then-delete cannot interleave with an update_page.
+    let _cas_gate = state.update_page_gate.lock().await;
+    if let (Some(backend), Some(base)) = (state.crdt_backend.as_ref(), a.base_version.as_deref()) {
+        let head_hlc = u64::try_from(backend.max_hlc(&a.page_id).await.unwrap_or(0)).unwrap_or(0);
+        let head = Version::from_op_count(head_hlc);
+        if base != head.as_str() {
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "conflict",
+                    "location": "base_version",
+                    "message": format!(
+                        "base_version {base} is stale (head is {}); re-read before deleting",
+                        head.as_str()
+                    ),
+                }],
+            }));
+        }
+    }
+
+    match indexer.delete_page(&a.page_id).await {
+        Ok(true) => {
+            state.metrics.inc_write(indexer.tenant(), "human");
+            Ok(json!({ "ok": true, "issues": [], "page_id": a.page_id }))
+        }
+        // The page vanished between the read above and here (racing delete).
+        Ok(false) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_found",
+                "location": "page_id",
+                "message": format!("no page `{}` to delete", a.page_id),
+            }],
+        })),
+        Err(IndexerError::MetaSkillProtected { reason }) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "meta_skill_protected",
+                "location": "frontmatter",
+                "message": reason,
+            }],
+        })),
+        Err(e) => Err(JsonRpcError::internal(format!("delete_page: {e}"))),
     }
 }
 
@@ -5436,6 +5603,26 @@ fn tools_list_payload() -> Value {
                         "content": { "type": "string" },
                         "base_version": { "type": "string" },
                         "provenance": { "type": "object" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "delete_page",
+                "Soft-delete (archive) a markdown page/instance: retract it from \
+                 discovery (search/resolve/neighbours/list) by dropping its index \
+                 rows and link edges, while retaining the canonical markdown \
+                 (stamped `archived: true`) as an audit record a rebuild skips. \
+                 Optional `base_version` (from a prior read's `version`) guards \
+                 against deleting a page that changed since you read it \
+                 (`{ok:false, issues:[{code:conflict}]}`). Returns \
+                 `{ok:false, issues:[{code:not_found}]}` for an absent page. The \
+                 mandatory `escurel` meta-skill cannot be deleted.",
+                json!({
+                    "type": "object",
+                    "required": ["page_id"],
+                    "properties": {
+                        "page_id": { "type": "string" },
+                        "base_version": { "type": "string" }
                     }
                 }),
             ),

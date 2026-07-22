@@ -128,6 +128,32 @@ pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
     })
 }
 
+/// Set a boolean frontmatter field on a page and re-serialize the whole
+/// markdown document (frontmatter block + unchanged body).
+///
+/// Used to stamp a soft-delete marker (`archived: true`) onto a page's
+/// canonical markdown so the derived index can drop the page while the
+/// LaneStore retains the record and a from-scratch rebuild skips it
+/// (escurel-index `delete_page`, #300).
+///
+/// The frontmatter is re-serialized from the parsed YAML mapping, so key
+/// order and formatting are normalised and any comments in the block are not
+/// preserved — acceptable for a page being retracted.
+///
+/// # Errors
+///
+/// Returns [`ParseError`] when `input` is not a well-formed page, or when the
+/// mapping cannot be re-serialized as YAML.
+pub fn set_frontmatter_bool(input: &str, key: &str, value: bool) -> Result<String, ParseError> {
+    let page = parse(input)?;
+    let mut fields = page.frontmatter.fields.clone();
+    fields.insert(YamlValue::String(key.to_owned()), YamlValue::Bool(value));
+    // `to_string` terminates with a newline, so the closing `---` follows on
+    // its own line directly after the serialized block.
+    let yaml = serde_yaml_ng::to_string(&YamlValue::Mapping(fields))?;
+    Ok(format!("---\n{yaml}---\n{}", page.body))
+}
+
 /// Locate the closing `---` line. Returns `(yaml_block, body_slice)`
 /// where `body_slice` starts at the first character after the
 /// closing delimiter's trailing newline (or is empty if the
