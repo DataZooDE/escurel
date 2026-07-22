@@ -420,6 +420,24 @@ pub struct UpdatePageResponse {
     pub new_version: String,
 }
 
+/// `delete_page` arguments (#300). MCP wire keys: `page_id`, optional
+/// `base_version` (optimistic-concurrency guard, empty = unguarded).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DeletePageRequest {
+    pub page_id: String,
+    pub base_version: String,
+}
+
+/// MCP wire keys: `ok`, `issues`, `page_id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DeletePageResponse {
+    pub ok: bool,
+    pub issues: Vec<ValidationIssue>,
+    pub page_id: String,
+}
+
 // ── outbound webhook delivery log ─────────────────────────────────
 
 /// One outbound-webhook delivery outcome (group ACL-independent

@@ -64,11 +64,12 @@ pub use error::{Error, JSONRPC_ADMIN_REQUIRED};
 // from `escurel_proto::v1`, now sourced from `escurel-types`.
 pub use escurel_types::{
     AppendMessageRequest, AppendMessageResponse, AssignEventRequest, AssignEventResponse,
-    CaptureEventRequest, ChatMessage, Edge, Event, ExpandBlock, ExpandRequest, ExpandResponse,
-    InstanceInfo, ListEventsRequest, ListEventsResponse, ListInboxRequest, ListInboxResponse,
-    ListInstancesRequest, ListInstancesResponse, ListMessagesRequest, ListMessagesResponse,
-    ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse,
-    PageRef, QueryInstanceRequest, QueryInstanceResponse, ResolveRequest, ResolveResponse,
+    CaptureEventRequest, ChatMessage, DeletePageRequest, DeletePageResponse, Edge, Event,
+    ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, ListEventsRequest,
+    ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
+    ListInstancesResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
+    ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse, PageRef,
+    QueryInstanceRequest, QueryInstanceResponse, ResolveRequest, ResolveResponse,
     RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill,
     StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest,
     ValidateResponse, ValidationIssue, WikilinkParsed,
@@ -276,6 +277,17 @@ impl Client {
                 json!({ "page_id": req.page_id, "content": req.content }),
             )
             .await
+    }
+
+    /// Soft-delete (archive) a markdown page (#300). Retracts it from
+    /// discovery while retaining the canonical markdown for audit. An empty
+    /// `base_version` skips the optimistic-concurrency guard.
+    pub async fn delete_page(&self, req: DeletePageRequest) -> Result<DeletePageResponse, Error> {
+        let mut args = json!({ "page_id": req.page_id });
+        if !req.base_version.is_empty() {
+            args["base_version"] = json!(req.base_version);
+        }
+        self.transport.call_typed("delete_page", args).await
     }
 
     /// Append a message to a chat-group's conversation history

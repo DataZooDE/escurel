@@ -55,6 +55,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("query_instance", Agent(&["query", "instance"])),
     ("validate", Agent(&["page", "validate"])),
     ("update_page", Agent(&["page", "update"])),
+    ("delete_page", Agent(&["page", "delete"])),
     ("append_message", Agent(&["chat", "append"])),
     ("list_messages", Agent(&["chat", "list"])),
     ("capture_event", Agent(&["event", "capture"])),
