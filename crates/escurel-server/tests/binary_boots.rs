@@ -53,6 +53,9 @@ fn from_env_builds_fs_config_with_defaults() {
     // `gemini_default_without_key_falls_back_to_zero`.
     assert_eq!(cfg.embedding_provider, EmbeddingProvider::Gemini);
     assert_eq!(cfg.embedding_dim, 768);
+    // #299: degrade-then-reload is the baseline; requiring the embedder is
+    // opt-in via ESCUREL_EMBEDDER_REQUIRED.
+    assert!(!cfg.embedder_required);
     assert!(cfg.auth.is_none());
 }
 
@@ -362,6 +365,34 @@ async fn metrics_bind_failure_names_the_metrics_var() {
     );
 
     drop(squatter);
+}
+
+/// #299: `ESCUREL_EMBEDDER_REQUIRED=1` turns the silent degraded start into
+/// a loud, fatal boot error. Same load-failure trigger as the degraded test
+/// above (embeddinggemma provider, feature absent in the test build), but the
+/// server must refuse to boot rather than come up on zero-vector retrieval.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn embedder_required_makes_a_failed_load_fatal() {
+    let data_dir = TempDir::new().unwrap();
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_SERVER_DATA_DIR", data_dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
+        ("ESCUREL_EMBEDDING_PROVIDER", "embeddinggemma"),
+        ("ESCUREL_EMBEDDER_REQUIRED", "1"),
+    ])))
+    .unwrap();
+    assert!(cfg.embedder_required, "flag should parse to true");
+
+    // `BootedServer` isn't `Debug`, so match rather than `expect_err`.
+    let msg = match cfg.build().await {
+        Ok(_) => panic!("ESCUREL_EMBEDDER_REQUIRED=1 must make a failed embedder load fatal"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.to_lowercase().contains("embed"),
+        "fatal boot error should concern the embedder: {msg}"
+    );
 }
 
 /// Gemini is the default provider, but with no API key the build must fall
