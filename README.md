@@ -3,11 +3,13 @@
 > *Escurel* — old French for *knowledge-base*.
 
 Escurel is a multi-tenant knowledge-base service for agents. It exposes
-a 12-tool MCP surface (plus HTTP and WebSocket bindings), stores
-each tenant's data in a single per-tenant DuckDB file using the `vss`
-and `fts` extensions, and treats a `pages/` markdown directory as the
-canonical source of truth. Live multi-author editing is backed by a
-Loro CRDT layer persisted into DuckDB.
+a broad MCP tool surface — the twelve canonical agent tools of the
+[contract](docs/contract/agent-interface.md) plus the event-bus, chat-history,
+external-backend, pack, live-session, and admin surfaces (60+ tools in total),
+with HTTP and WebSocket bindings — stores each tenant's data in a single
+per-tenant DuckDB file using the `vss` and `fts` extensions, and treats a
+`markdown/` directory as the canonical source of truth. Live multi-author
+editing is backed by a Loro CRDT layer persisted into DuckDB.
 
 Instances are native markdown by default, but a skill can also declare an
 **external instance backend**: a read-only `sql_view` over an attached
