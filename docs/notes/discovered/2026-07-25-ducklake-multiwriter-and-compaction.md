@@ -1,6 +1,6 @@
-# DuckLake is multi-writer, but cannot compact an append-shaped table
+# DuckLake is multi-writer; its compaction calls are no-ops, but CREATE OR REPLACE compacts
 
-Two Phase-0 spikes for the question "can `chat_messages` / `events` live in
+Four Phase-0 spikes for the question "can `chat_messages` / `events` live in
 DuckLake tables instead of the attached Cloud SQL Postgres?". Reproducers:
 `crates/escurel-index/tests/ducklake_spikes_live.rs`
 (`cargo test -p escurel-index --features live-ducklake --test ducklake_spikes_live -- --nocapture`).
