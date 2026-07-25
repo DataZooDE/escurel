@@ -313,3 +313,101 @@ async fn s2c_which_compaction_call_actually_compacts() {
     }
     println!("S2c RESULT: started at files={before}, rows={N}");
 }
+
+/// S3 — can ONE connection attach the same lake twice under two aliases,
+/// one READ_ONLY (the corpus, as `adopt_lake` needs) and one read-write
+/// (an append-shaped chat/events table)? If yes, a lake-backed chat
+/// surface is a second attach alongside the existing one, mirroring how
+/// `chat_pg`/`events_pg`/`crdt_pg` sit beside the corpus. If no, the
+/// reader's corpus attach itself has to become read-write.
+#[tokio::test]
+async fn s3_same_lake_attached_twice_on_one_connection() {
+    let live = live().await;
+
+    // Seed a table via a plain writer first.
+    let w = conn_for(&live.cfg, false);
+    w.execute_batch("CREATE TABLE IF NOT EXISTS lake.appends (who VARCHAR, n INTEGER);")
+        .unwrap();
+    w.execute("INSERT INTO lake.appends VALUES ('seed', 0)", [])
+        .unwrap();
+
+    // Fresh connection: attach READ_ONLY as `lake` (corpus shape), then
+    // attach the SAME lake read-write under a second alias.
+    let c = Connection::open_in_memory().unwrap();
+    c.execute_batch(&install_load_sql(&live.cfg)).unwrap();
+    if let Some(sql) = secret_sql(&live.cfg).unwrap() {
+        c.execute_batch(&sql).unwrap();
+    }
+    c.execute_batch(&attach_sql(&live.cfg, true).unwrap())
+        .unwrap();
+
+    let second = attach_sql(&live.cfg, false)
+        .unwrap()
+        .replace(" AS lake ", " AS lake_rw ");
+    let attach_res = c.execute_batch(&second);
+    let attach_err = attach_res
+        .as_ref()
+        .err()
+        .map(std::string::ToString::to_string);
+
+    let wrote = if attach_err.is_none() {
+        c.execute("INSERT INTO lake_rw.appends VALUES ('second', 1)", [])
+            .map(|n| n.to_string())
+            .unwrap_or_else(|e| format!("ERR: {e}"))
+    } else {
+        "skipped".to_owned()
+    };
+    let readonly_sees: i64 = c
+        .query_row("SELECT count(*) FROM lake.appends", [], |r| r.get(0))
+        .unwrap_or(-1);
+
+    println!(
+        "S3 RESULT: second attach err={attach_err:?}, rw insert={wrote}, \
+         read_only alias sees {readonly_sees} row(s)",
+    );
+}
+
+/// S4 — since no built-in compaction call works (S2), can we compact the
+/// way `publish_lake` already does: `CREATE OR REPLACE TABLE t AS SELECT
+/// * FROM t`? That is the proven pattern in this codebase for the corpus
+/// tables, and ADR-0009 notes it "rewrites all Parquet per publish", i.e.
+/// it collapses to one file per table. If it works on an append-shaped
+/// table, self-compaction replaces the missing ducklake primitive.
+#[tokio::test]
+async fn s4_self_compaction_via_create_or_replace() {
+    let live = live().await;
+    let w = conn_for(&live.cfg, false);
+    w.execute_batch("CREATE TABLE IF NOT EXISTS lake.appends (who VARCHAR, n INTEGER);")
+        .unwrap();
+    const N: i32 = 100;
+    for i in 0..N {
+        w.execute("INSERT INTO lake.appends VALUES ('w', ?)", [i])
+            .unwrap();
+    }
+    let before = count_data_files(&w);
+    let rows_before = count_rows(&w);
+
+    let res =
+        w.execute_batch("CREATE OR REPLACE TABLE lake.appends AS SELECT * FROM lake.appends;");
+    let err = res.as_ref().err().map(std::string::ToString::to_string);
+    let after = count_data_files(&w);
+    let rows_after = count_rows(&w);
+
+    // Old snapshots still reference the superseded files; expiry + cleanup
+    // is what actually removes them from the object store.
+    let _ = w.execute_batch(
+        "CALL ducklake_expire_snapshots('lake', older_than => now()::TIMESTAMPTZ); \
+         CALL ducklake_cleanup_old_files('lake', cleanup_all => true);",
+    );
+    let after_gc = count_data_files(&w);
+
+    println!(
+        "S4 RESULT: {N} appends → files before={before} after_replace={after} \
+         after_gc={after_gc}, rows {rows_before}->{rows_after}, err={err:?}",
+    );
+    assert_eq!(
+        rows_after,
+        i64::from(N),
+        "self-compaction must preserve rows"
+    );
+}

@@ -66,23 +66,67 @@ Count files by globbing the data path
 (`glob('s3://.../**/*.parquet')`), which is what the data-inlining note
 does.
 
+## S3 — the same lake can be attached twice on one connection: **works**
+
+One connection attached the lake `READ_ONLY` as `lake` (the corpus shape
+`adopt_lake` needs) and the SAME lake read-write under a second alias:
+
+```
+second attach err=None, rw insert=1, read_only alias sees 2 row(s)
+```
+
+The read-only alias observes the read-write insert immediately, with no
+re-attach. So a lake-backed chat/events surface is a second attach
+alongside the corpus one — mirroring how `chat_pg` / `events_pg` /
+`crdt_pg` sit beside it today — and the reader's corpus attach does not
+have to become read-write.
+
+## S4 — self-compaction via `CREATE OR REPLACE TABLE`: **works, and fixes S2**
+
+No built-in compaction call does anything (S2). But `publish_lake` already
+compacts the corpus tables by construction: ADR-0009:81-83 notes
+`CREATE OR REPLACE TABLE ... AS SELECT` "rewrites all Parquet per
+publish". Applied to an append-shaped table:
+
+```
+100 appends → files before=100 after_replace=101 after_gc=1, rows 100->100
+```
+
+`CREATE OR REPLACE TABLE lake.t AS SELECT * FROM lake.t` writes one
+consolidated file; the superseded files are still referenced by older
+snapshots, so `ducklake_expire_snapshots` + `ducklake_cleanup_old_files`
+(both already implemented in `gc_lake_snapshots`) is what actually removes
+them. **100 files → 1.** Rows preserved.
+
+**This is the missing compaction primitive**, built from machinery that
+already exists in this repo rather than from a ducklake feature that does
+not work.
+
 ## What this means for the design
 
-An append-per-message lake table grows one S3 object per message,
-unbounded, with no working compaction. Mitigations, in order of strength:
+Taken together the four spikes clear the path:
 
-1. **Batch appends into one transaction** — one file per flush window
-   rather than per message. Makes file growth proportional to *time*, not
-   traffic. Necessary regardless; not sufficient on its own.
-2. **Retention** — deleting old rows also rewrites files on a lake, so it
-   bounds reads but not necessarily object count.
-3. **Keep the hot, high-cardinality surface on a transactional store** and
-   use the lake for the cold/bulk tail — the shape `docs/spec/storage.md`
-   already prescribes for high-volume events.
+- **S1** — readers can append directly; no write-forwarding, and none of
+  the 11 reader-servable tools regress.
+- **S3** — the surface is a second attach beside the corpus, not a change
+  to the corpus attach.
+- **S2 + S4** — file-per-append is real and ducklake's own compaction is a
+  no-op, but a periodic `CREATE OR REPLACE TABLE` + expire + cleanup
+  collapses the table back to one file. File count is therefore bounded by
+  *(compaction interval × append rate)*, not unbounded.
 
-S1 removes the *correctness* objection to lake-backed chat/events. S2 is an
-*operational* one and it is unresolved: it needs a decision, not a
-workaround, before the surface is built.
+Note what S4 does **not** need: batching appends into a flush window. That
+was the obvious mitigation for file-per-append, but it would have delayed
+cross-replica visibility by the flush interval — breaking the
+read-your-writes invariant asserted in `ducklake_chat_live.rs:98`
+("a separate replica sees the row immediately"). Per-append commit plus
+periodic self-compaction keeps that invariant and bounds the file count.
+
+The cost moves to compaction instead: `CREATE OR REPLACE` rewrites the
+whole table, so it is O(rows) per run. That makes retention
+(`delete_chat_history(before_ts)`) the thing that bounds compaction cost,
+and the compaction interval a tunable trade between object count and
+rewrite volume.
 
 The spike assertions in `ducklake_spikes_live.rs` deliberately pin the
 current no-op behaviour. If a ducklake upgrade starts compacting, that test
