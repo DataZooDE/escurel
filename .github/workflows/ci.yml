@@ -91,6 +91,19 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The SHIPPED feature set. Without this, `s3.rs` and `gcs.rs` are
+      # never compiled on the merge path — they are behind optional
+      # features and nothing here passed `--features`. That is how the
+      # S3 backend reached production unbuildable: the Dockerfile
+      # selected a feature CI had never once compiled.
+      #
+      # clippy (not test) because the backends' own integration tests
+      # need real containers and run in `live.yml`; this step exists to
+      # prove the code still compiles and lints under the flags the
+      # release artifacts actually use.
+      - name: cargo clippy (shipped features)
+        run: cargo clippy -p escurel-server -p escurel-storage --features s3,gcs --all-targets -- -D warnings
+
       - name: cargo test
         run: cargo test --workspace --all-targets
 
