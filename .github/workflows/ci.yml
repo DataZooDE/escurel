@@ -39,19 +39,30 @@ env:
   CARGO_BUILD_JOBS: "1"
 
 jobs:
-  ci:
-    name: fmt + clippy + test + build
+  # The four gates run as SEPARATE jobs, each on its own runner.
+  #
+  # They used to be four steps in one job, which meant one `target/`
+  # holding check, test AND release artifacts for a workspace that
+  # statically links libduckdb — already close enough to a hosted
+  # runner's limits that this file carries `CARGO_BUILD_JOBS=1` and
+  # `*_DEBUG=0` to survive. Adding the s3/gcs SDK trees tipped it over:
+  # runs died mid-step with exit 143 and with "the operation was
+  # canceled".
+  #
+  # That failure mode is self-sustaining, which is the real reason to
+  # split: a cancelled job SKIPS the cache-save step, so a run that dies
+  # leaves no warm cache, and the next run starts cold and dies in the
+  # same place. Separate runners give each gate its own memory, disk and
+  # cache key, so one slow gate cannot starve the others or poison the
+  # cache for all of them.
+
+  lint:
+    name: fmt + clippy
     runs-on: ubuntu-latest
-    # DuckDB is no longer compiled from source — libduckdb-sys downloads
-    # the precompiled libduckdb (see .cargo/config.toml: DUCKDB_DOWNLOAD_LIB).
-    # `CARGO_BUILD_JOBS=1` (the link-memory cap, see env above) still
-    # serialises linking, so keep generous headroom for the release stage.
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
-      # rust-toolchain.toml drives the channel + components; rustup
-      # honours it automatically on first invocation.
       - name: Install Rust toolchain
         run: |
           rustup show active-toolchain || rustup toolchain install
@@ -59,64 +70,88 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          # Bumped from `workspace` to invalidate caches that hold the
-          # libduckdb-sys build-script fingerprint but NOT the downloaded
-          # libduckdb (the old caches link-fail with `cannot find -lduckdb`).
-          shared-key: workspace-duckdb-dl
-          # The build script downloads libduckdb into this custom dir and
-          # bakes its path into the cached link-search output. It is NOT a
-          # standard cargo artifact, so cache it explicitly — otherwise a
-          # cache hit restores the fingerprint (script does not re-run) but
-          # not the .so, and the final test/release link fails.
+          shared-key: ci-lint
           cache-directories: target/duckdb-download
-          # Save the cache even when a later step fails — without this, a
-          # single test failure throws away the warm cache and every push
-          # re-pays the cold dependency build.
           cache-on-failure: true
 
-      # Safety net for cache restores that lack the downloaded libduckdb
-      # (e.g. an older cache, or a partial restore): the libduckdb-sys
-      # build script only re-downloads when it actually re-runs, so force
-      # that by cleaning just that crate when the .so is absent.
       - name: Ensure libduckdb is present (cache-restore safety)
         run: |
           if ! ls target/duckdb-download/*/*/libduckdb.so >/dev/null 2>&1; then
             echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
             cargo clean -p libduckdb-sys || true
           fi
-
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add rustfmt clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-test
+          cache-directories: target/duckdb-download
+          cache-on-failure: true
+
+      - name: Ensure libduckdb is present (cache-restore safety)
+        run: |
+          if ! ls target/duckdb-download/*/*/libduckdb.so >/dev/null 2>&1; then
+            echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
+            cargo clean -p libduckdb-sys || true
+          fi
       - name: cargo test
         run: cargo test --workspace --all-targets
 
+  build:
+    name: build --release
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add rustfmt clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-build
+          cache-directories: target/duckdb-download
+          cache-on-failure: true
+
+      - name: Ensure libduckdb is present (cache-restore safety)
+        run: |
+          if ! ls target/duckdb-download/*/*/libduckdb.so >/dev/null 2>&1; then
+            echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
+            cargo clean -p libduckdb-sys || true
+          fi
       - name: cargo build --release
         run: cargo build --workspace --release
 
-  # The SHIPPED feature set, in its OWN job.
+  # The SHIPPED feature set.
   #
   # Without this, `s3.rs` and `gcs.rs` are never compiled on the merge
-  # path — they sit behind optional features and the job above passes no
+  # path — they sit behind optional features and no other job passes
   # `--features`. That is how the S3 backend reached production
   # unbuildable: the Dockerfile selected a feature CI had never once
   # compiled.
   #
-  # Why a separate job rather than another step in `ci`: the AWS and
-  # Google SDK dependency trees are large, and the main job already runs
-  # `CARGO_BUILD_JOBS=1` with a 90-minute budget because this workspace
-  # statically links libduckdb and sits near the runner's memory ceiling.
-  # Adding those trees to the same `target/` pushed `cargo build
-  # --release` into a SIGTERM (exit 143). Its own runner keeps that
-  # budget intact.
-  #
   # clippy without `--all-targets`: the backends' own integration tests
-  # need real containers and run in `live.yml`. This job's job is to
-  # prove the library code still compiles and lints under the flags the
-  # release artifacts actually use.
+  # need real containers and run in `live.yml`. This job proves the
+  # library code compiles and lints under the flags the release
+  # artifacts actually use.
   features:
     name: clippy (shipped features)
     runs-on: ubuntu-latest
@@ -127,11 +162,11 @@ jobs:
       - name: Install Rust toolchain
         run: |
           rustup show active-toolchain || rustup toolchain install
-          rustup component add clippy
+          rustup component add rustfmt clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: features-s3-gcs
+          shared-key: ci-features-s3-gcs
           cache-directories: target/duckdb-download
           cache-on-failure: true
 
@@ -141,6 +176,5 @@ jobs:
             echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
             cargo clean -p libduckdb-sys || true
           fi
-
       - name: cargo clippy --features s3,gcs
         run: cargo clippy -p escurel-server -p escurel-storage --features s3,gcs -- -D warnings
