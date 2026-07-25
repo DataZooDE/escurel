@@ -115,17 +115,24 @@ pub trait LaneStore: Send + Sync + 'static {
 implementation maps it to a filesystem path or an S3 object
 key.
 
-Two implementations ship in v1:
+Three implementations ship:
 
 - **`FsStore`**. `${ESCUREL_DATA_DIR}/tenants/<tenant>/<rest>`.
   Writes go to `<rest>.tmp` and `rename(2)` to publish (atomic
   on POSIX same-filesystem). `url()` returns `file://...`.
-- **`S3Store`**. Backed by `object_store::aws`. Keys are
-  S3 paths under a configured prefix. `url()` returns `s3://...`,
-  consumed by DuckDB's `httpfs` extension when reading or by
-  DuckLake when an external catalog is attached. Writes use
-  multipart upload; on drop with no `commit()` the multipart
-  is aborted. The S3 backend assumes only basic S3 semantics
+- **`S3Store`**. Backed by the official `aws-sdk-s3` crate (not
+  `object_store`), with an explicit endpoint override, static
+  credentials and forced path-style addressing — no ambient AWS
+  credential chain is consulted. Keys are S3 paths under a
+  configured prefix. `url()` returns `s3://...`, consumed by
+  DuckDB's `httpfs` extension when reading or by DuckLake when an
+  external catalog is attached. Writes are a single atomic
+  `PutObject` (S3 is atomic at the object level, so no
+  temp-then-rename dance is needed and no multipart is used);
+  the returned `Version` is the object's version-id, falling
+  back to its etag. `delete()` HEADs first because S3
+  DeleteObject is idempotent and would otherwise not honour the
+  trait's `NotFound` contract. The S3 backend assumes only basic S3 semantics
   (GET/PUT/DELETE/list/multipart-upload, path-style addressing,
   no STS, no presigned URLs, no AWS-S3-Tables-or-Vectors
   specific APIs). Verified backends: AWS S3, MinIO, Hetzner
@@ -139,10 +146,40 @@ Two implementations ship in v1:
   acceptable workaround; configure the LaneStore against the
   object-store hostname directly.
 
+- **`GcsStore`**. Backed by the official `google-cloud-storage`
+  crate. Same object layout as `S3Store`
+  (`{prefix}/tenants/{tenant}/{path}`), so one bucket is readable
+  by either backend and a migration is a copy rather than a
+  rewrite. `url()` returns `gs://...`. Credentials are
+  **Application Default Credentials**: the metadata server /
+  workload identity on GCP, or a service-account key file
+  (`ESCUREL_STORAGE_GCS_CREDENTIALS_PATH`) off it. Writes are a
+  single atomic object write; the `Version` is the object's
+  generation. Unlike S3, `delete()` on a missing key is already a
+  404, so no HEAD-first dance is needed.
+
+  *Residency note*: the DataZoo substrate's SPEC §5 keeps
+  app/customer data on Hetzner Object Storage and only
+  recovery/integrity-critical data on GCP, so `GcsStore` is a
+  portability backend for GCP-hosted deployments — substrate
+  tenant lanes must not be pointed at it.
+
 DuckDB happily operates against an object-store URL via
 `httpfs`; we do not need to round-trip data through the
-server process. The S3 backend is gated behind the `s3` Cargo
-feature.
+server process. The S3 and GCS backends are gated behind the
+`s3` and `gcs` Cargo features respectively; the published
+container image and the release binaries build both.
+
+### Adding a backend
+
+Implement the five required `LaneStore` methods (`read`, `write`,
+`list`, `delete`, `url`) and override `backend()` and `size()`;
+the blob layer rides on the defaults. Then run the shared
+contract — `crates/escurel-storage/tests/conformance/` —
+against it. Backend-specific behaviour (URL scheme, client
+construction, atomicity mechanism) stays in the per-backend test
+file; everything the trait owes any backend belongs in the shared
+suite so the implementations cannot drift apart.
 
 ## Indexer
 

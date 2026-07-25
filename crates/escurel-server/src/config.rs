@@ -33,7 +33,11 @@
 //! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
 //! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
 //! | `ESCUREL_REBUILD_INDEX_ON_BOOT` | `if-missing` | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent) or `always` (drop + rebuild from the markdown LaneStore each start; the container default — HNSW-persistence-reload workaround) |
-//! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs` or `s3` |
+//! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs`, `s3` or `gcs` |
+//! | `ESCUREL_STORAGE_GCS_BUCKET` | — | GCS bucket (backend=gcs) |
+//! | `ESCUREL_STORAGE_GCS_PREFIX` | `` | GCS key prefix (backend=gcs) |
+//! | `ESCUREL_STORAGE_GCS_CREDENTIALS_PATH` | — | service-account key file (backend=gcs); unset = ADC, i.e. the metadata server on GCP |
+//! | `ESCUREL_STORAGE_GCS_ENDPOINT` | — | GCS endpoint override (backend=gcs); emulator/tests only |
 //! | `ESCUREL_STORAGE_S3_BUCKET` | — | S3 bucket (backend=s3) |
 //! | `ESCUREL_STORAGE_S3_ENDPOINT` | — | S3 endpoint URL (backend=s3) |
 //! | `ESCUREL_STORAGE_S3_PREFIX` | `` | S3 key prefix (backend=s3) |
@@ -103,6 +107,7 @@ const DEFAULT_DIM: usize = 768;
 pub enum StorageBackend {
     Fs,
     S3,
+    Gcs,
 }
 
 /// When to drop + rebuild the derived DuckDB index at boot
@@ -214,8 +219,19 @@ pub enum ConfigError {
         value: String,
         reason: &'static str,
     },
-    #[error("{var} is required when ESCUREL_STORAGE_BACKEND=s3")]
-    MissingS3Field { var: &'static str },
+    #[error("{var} is required when ESCUREL_STORAGE_BACKEND={backend}")]
+    MissingStorageField {
+        var: &'static str,
+        backend: &'static str,
+    },
+    #[error(
+        "ESCUREL_STORAGE_BACKEND={backend} requires the `{feature}` cargo feature; \
+         this binary was built without it"
+    )]
+    StorageFeatureDisabled {
+        backend: &'static str,
+        feature: &'static str,
+    },
     #[error("{var} is required when ESCUREL_INDEX_BACKEND=ducklake")]
     MissingLakeField { var: &'static str },
     #[error(
@@ -428,6 +444,17 @@ pub struct S3Config {
     pub secret_access_key: String,
 }
 
+/// GCS lane-store settings. No key/secret fields: credentials are
+/// Application Default Credentials, so the only credential knob is which
+/// ADC source to use (`credentials_path` for the off-GCP key-file path).
+#[derive(Debug, Clone)]
+pub struct GcsConfig {
+    pub bucket: String,
+    pub prefix: String,
+    pub credentials_path: Option<String>,
+    pub endpoint: Option<String>,
+}
+
 /// Resolved, validated configuration for the server binary.
 #[derive(Debug, Clone)]
 pub struct EscurelConfig {
@@ -438,6 +465,7 @@ pub struct EscurelConfig {
     pub tenant: String,
     pub storage_backend: StorageBackend,
     pub s3: Option<S3Config>,
+    pub gcs: Option<GcsConfig>,
     pub auth: Option<AuthConfig>,
     pub embedding_provider: EmbeddingProvider,
     pub embedding_model: Option<String>,
@@ -697,11 +725,12 @@ impl EscurelConfig {
         let storage_backend = match backend_str.as_str() {
             "fs" => StorageBackend::Fs,
             "s3" => StorageBackend::S3,
+            "gcs" => StorageBackend::Gcs,
             other => {
                 return Err(ConfigError::InvalidValue {
                     var: "ESCUREL_STORAGE_BACKEND",
                     value: other.to_owned(),
-                    reason: "expected `fs` or `s3`",
+                    reason: "expected `fs`, `s3` or `gcs`",
                 });
             }
         };
@@ -723,6 +752,28 @@ impl EscurelConfig {
                     .unwrap_or_else(|| "us-east-1".to_owned()),
                 access_key_id: require_s3(env, "ESCUREL_STORAGE_S3_ACCESS_KEY_ID", None)?,
                 secret_access_key: require_s3(env, "ESCUREL_STORAGE_S3_SECRET_ACCESS_KEY", None)?,
+            })
+        } else {
+            None
+        };
+        let gcs = if storage_backend == StorageBackend::Gcs {
+            Some(GcsConfig {
+                bucket: env
+                    .get("ESCUREL_STORAGE_GCS_BUCKET")
+                    .filter(|v| !v.is_empty())
+                    .ok_or(ConfigError::MissingStorageField {
+                        var: "ESCUREL_STORAGE_GCS_BUCKET",
+                        backend: "gcs",
+                    })?,
+                prefix: env.get("ESCUREL_STORAGE_GCS_PREFIX").unwrap_or_default(),
+                // Both optional: absent means ADC (metadata server on GCP)
+                // and the real GCS endpoint.
+                credentials_path: env
+                    .get("ESCUREL_STORAGE_GCS_CREDENTIALS_PATH")
+                    .filter(|v| !v.is_empty()),
+                endpoint: env
+                    .get("ESCUREL_STORAGE_GCS_ENDPOINT")
+                    .filter(|v| !v.is_empty()),
             })
         } else {
             None
@@ -1026,6 +1077,7 @@ impl EscurelConfig {
             tenant,
             storage_backend,
             s3,
+            gcs,
             auth,
             embedding_provider,
             embedding_model,
@@ -1067,7 +1119,7 @@ fn require_s3(
     env.get(var)
         .or(toml_val)
         .filter(|v| !v.is_empty())
-        .ok_or(ConfigError::MissingS3Field { var })
+        .ok_or(ConfigError::MissingStorageField { var, backend: "s3" })
 }
 
 /// Required-when-ducklake env lookup, mirroring [`require_s3`].
@@ -1561,13 +1613,15 @@ impl EscurelConfig {
         match self.storage_backend {
             StorageBackend::Fs => Ok(Arc::new(FsStore::new(self.data_dir.clone()))),
             StorageBackend::S3 => self.build_s3_store().await,
+            StorageBackend::Gcs => self.build_gcs_store().await,
         }
     }
 
     #[cfg(feature = "s3")]
     async fn build_s3_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
-        let s3 = self.s3.as_ref().ok_or(ConfigError::MissingS3Field {
+        let s3 = self.s3.as_ref().ok_or(ConfigError::MissingStorageField {
             var: "ESCUREL_STORAGE_S3_BUCKET",
+            backend: "s3",
         })?;
         let store = escurel_storage::S3Store::new(escurel_storage::S3StoreConfig {
             bucket: s3.bucket.clone(),
@@ -1588,9 +1642,41 @@ impl EscurelConfig {
 
     #[cfg(not(feature = "s3"))]
     async fn build_s3_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
-        Err(ConfigError::EmbedderFeatureDisabled {
-            provider: "s3-storage",
+        // Was `EmbedderFeatureDisabled`, which told the operator their
+        // EMBEDDING PROVIDER was misconfigured when in fact the binary was
+        // built without the storage backend they selected.
+        Err(ConfigError::StorageFeatureDisabled {
+            backend: "s3",
             feature: "s3",
+        })
+    }
+
+    #[cfg(feature = "gcs")]
+    async fn build_gcs_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
+        let gcs = self.gcs.as_ref().ok_or(ConfigError::MissingStorageField {
+            var: "ESCUREL_STORAGE_GCS_BUCKET",
+            backend: "gcs",
+        })?;
+        let store = escurel_storage::GcsStore::new(escurel_storage::GcsStoreConfig {
+            bucket: gcs.bucket.clone(),
+            prefix: gcs.prefix.clone(),
+            credentials_path: gcs.credentials_path.clone(),
+            endpoint: gcs.endpoint.clone(),
+        })
+        .await
+        .map_err(|e| ConfigError::InvalidValue {
+            var: "ESCUREL_STORAGE_GCS_BUCKET",
+            value: e.to_string(),
+            reason: "failed to build GCS client",
+        })?;
+        Ok(Arc::new(store))
+    }
+
+    #[cfg(not(feature = "gcs"))]
+    async fn build_gcs_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
+        Err(ConfigError::StorageFeatureDisabled {
+            backend: "gcs",
+            feature: "gcs",
         })
     }
 

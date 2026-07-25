@@ -36,6 +36,8 @@ gemini = ["escurel-embed/gemini"]
 #   --features s3             → S3-backed LaneStore (Hetzner OS / MinIO)
 #   --features embeddinggemma → local candle EmbeddingGemma embedder (air-gap)
 s3 = ["escurel-storage/s3"]
+#   --features gcs            → GCS-backed LaneStore (ADC; GCP-hosted deploys)
+gcs = ["escurel-storage/gcs"]
 embeddinggemma = ["escurel-embed/candle"]
 #   --features rerank        → candle XLM-RoBERTa cross-encoder reranker
 #     (issue #215). Opt-in build (heavy candle compile + ~GB model at boot);

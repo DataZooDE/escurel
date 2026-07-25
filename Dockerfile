@@ -35,7 +35,7 @@ ENV CARGO_BUILD_JOBS=1
 # COPY stages), into non-mounted dirs that persist in the builder layer.
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo build --release -p escurel-server --features gemini \
+    cargo build --release -p escurel-server --features gemini,s3,gcs \
     && cp target/release/escurel-server /usr/local/bin/escurel-server \
     && cp "$(find target -name libduckdb.so -print -quit)" /usr/local/lib/libduckdb.so
 

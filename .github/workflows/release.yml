@@ -115,7 +115,7 @@ jobs:
           PY
 
       - name: Build release binaries
-        run: cargo build --release --bin escurel --bin escurel-server
+        run: cargo build --release --features s3,gcs --bin escurel --bin escurel-server
 
       # Stage both binaries, bundle the dynamic libduckdb next to the server,
       # and fix the rpath so the server loads libduckdb from its own dir.
