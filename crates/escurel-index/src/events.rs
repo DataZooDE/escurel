@@ -41,6 +41,13 @@ pub const EVENTS_PG_TABLE_NAME: &str = "escurel_events";
 pub enum EventsBackend {
     /// The local per-tenant `events` table.
     Local,
+    /// A read-write table in the LAKE (Parquet on the object store,
+    /// `snapshot::attach_events_lake`). Same row shape and same
+    /// every-replica-writes model as `AttachedPostgres`; the payload
+    /// follows `DATA_PATH` instead of living in the catalog's database.
+    /// NOTE: DuckLake enforces no PRIMARY KEY, so `capture_event`'s
+    /// idempotency is enforced in the INSERT statement for this variant.
+    AttachedLake { alias: String },
     /// An attached, read-write Postgres table shared by every replica.
     /// `alias` is the DuckDB `ATTACH` alias
     /// (`snapshot::EVENTS_PG_ALIAS`, duplicated here as a plain `String`
@@ -108,7 +115,7 @@ impl Indexer {
     fn events_table(&self) -> String {
         match self.events_backend() {
             EventsBackend::Local => "events".to_owned(),
-            EventsBackend::AttachedPostgres { alias } => {
+            EventsBackend::AttachedPostgres { alias } | EventsBackend::AttachedLake { alias } => {
                 format!("{alias}.{EVENTS_PG_TABLE_NAME}")
             }
         }
@@ -122,7 +129,9 @@ impl Indexer {
     fn events_tenant_scope(&self) -> Option<&str> {
         match self.events_backend() {
             EventsBackend::Local => None,
-            EventsBackend::AttachedPostgres { .. } => Some(self.tenant()),
+            EventsBackend::AttachedPostgres { .. } | EventsBackend::AttachedLake { .. } => {
+                Some(self.tenant())
+            }
         }
     }
 
@@ -159,18 +168,41 @@ impl Indexer {
 
         let conn = self.conn.lock().await;
         let table = self.events_table();
-        let sql = match self.events_tenant_scope() {
-            None => format!(
+        // DuckLake enforces no PRIMARY KEY and supports no `ON CONFLICT`,
+        // so the lake backend cannot lean on the schema for the
+        // first-writer-wins contract above. It gets the same guarantee
+        // from an anti-join in the INSERT: the row is only produced when
+        // no row with this `event_id` already exists. Same statement, same
+        // outcome, enforcement moved from the schema into the query.
+        //
+        // Note this is a weaker primitive than a PK: two *simultaneous*
+        // captures of the same id could both see an empty anti-join and
+        // both insert. The runner's own SQLite ledger
+        // (`escurel-runner-core/src/ledger.rs`) is what makes
+        // exactly-one-run-per-event a hard invariant; this keeps the
+        // stored-event side idempotent for the ordinary re-emit case,
+        // which is what the dedup contract actually needs.
+        let lake = matches!(self.events_backend(), EventsBackend::AttachedLake { .. });
+        let sql = match (self.events_tenant_scope(), lake) {
+            (None, _) => format!(
                 "INSERT INTO {table} \
                  (event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance) \
                  VALUES (?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ?::JSON) \
                  ON CONFLICT (event_id) DO NOTHING"
             ),
-            Some(_) => format!(
+            (Some(_), false) => format!(
                 "INSERT INTO {table} \
                  (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance) \
                  VALUES (?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ?) \
                  ON CONFLICT (event_id) DO NOTHING"
+            ),
+            (Some(_), true) => format!(
+                "INSERT INTO {table} \
+                 (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance) \
+                 SELECT ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ? \
+                 WHERE NOT EXISTS (\
+                     SELECT 1 FROM {table} WHERE tenant = ? AND event_id = ?\
+                 )"
             ),
         };
         match self.events_tenant_scope() {
@@ -187,6 +219,26 @@ impl Indexer {
                         input.title,
                         input.body,
                         provenance_json,
+                    ],
+                )?;
+            }
+            Some(tenant) if lake => {
+                // Two extra binds for the anti-join's WHERE NOT EXISTS.
+                conn.execute(
+                    &sql,
+                    params![
+                        tenant,
+                        event_id,
+                        input.at,
+                        input.source,
+                        input.mime,
+                        input.label_skill,
+                        input.instance_page_id,
+                        input.title,
+                        input.body,
+                        provenance_json,
+                        tenant,
+                        event_id,
                     ],
                 )?;
             }
@@ -212,10 +264,23 @@ impl Indexer {
         // Read the *stored* row back so a conflicting re-capture returns the
         // authoritative first-writer event (not the discarded second input),
         // and a fresh insert returns exactly what landed.
-        let select_sql = format!("{} WHERE event_id = ?", select_cols(&table));
-        let row = conn
-            .query_row(&select_sql, params![event_id], event_row_from_row)
-            .map_err(IndexerError::from)?;
+        // Scope the read-back by tenant on the shared backends. Without
+        // it, a caller-supplied `event_id` that collides across tenants
+        // reads back another tenant's row — the local table cannot hit
+        // this (one DuckDB file per tenant) but a shared Postgres or lake
+        // table can.
+        let row = match self.events_tenant_scope() {
+            None => {
+                let select_sql = format!("{} WHERE event_id = ?", select_cols(&table));
+                conn.query_row(&select_sql, params![event_id], event_row_from_row)
+            }
+            Some(tenant) => {
+                let select_sql =
+                    format!("{} WHERE event_id = ? AND tenant = ?", select_cols(&table));
+                conn.query_row(&select_sql, params![event_id, tenant], event_row_from_row)
+            }
+        }
+        .map_err(IndexerError::from)?;
         event_from_row(row)
     }
 

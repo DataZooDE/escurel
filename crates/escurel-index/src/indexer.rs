@@ -338,7 +338,10 @@ impl Indexer {
     /// `true`.
     #[must_use]
     pub fn has_shared_chat(&self) -> bool {
-        matches!(self.chat_backend(), ChatBackend::AttachedPostgres { .. })
+        matches!(
+            self.chat_backend(),
+            ChatBackend::AttachedPostgres { .. } | ChatBackend::AttachedLake { .. }
+        )
     }
 
     /// Attach the shared chat Postgres table onto THIS indexer's own
@@ -418,6 +421,63 @@ impl Indexer {
             alias: crate::snapshot::EVENTS_PG_ALIAS.to_owned(),
         });
         Ok(())
+    }
+
+    /// Point chat at a read-write table in the LAKE instead of the
+    /// catalog's Postgres — same surface, payload on the object store.
+    /// A SECOND attach of the lake under its own alias, so a reader's
+    /// `READ_ONLY` corpus attach is untouched (spike S3).
+    pub async fn attach_chat_lake(
+        &self,
+        cfg: &crate::snapshot::LakeConfig,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        {
+            let conn = self.conn.lock().await;
+            crate::snapshot::attach_chat_lake(&conn, cfg)?;
+        }
+        let _ = self.chat_backend.set(ChatBackend::AttachedLake {
+            alias: crate::snapshot::APPEND_LAKE_ALIAS.to_owned(),
+        });
+        Ok(())
+    }
+
+    /// As [`Self::attach_chat_lake`], for events.
+    pub async fn attach_events_lake(
+        &self,
+        cfg: &crate::snapshot::LakeConfig,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        {
+            let conn = self.conn.lock().await;
+            crate::snapshot::attach_events_lake(&conn, cfg)?;
+        }
+        let _ = self.events_backend.set(EventsBackend::AttachedLake {
+            alias: crate::snapshot::APPEND_LAKE_ALIAS.to_owned(),
+        });
+        Ok(())
+    }
+
+    /// Compact whichever append-shaped lake tables this indexer has
+    /// attached, collapsing one-Parquet-file-per-append back to one file
+    /// per table. No-op when neither surface is lake-backed.
+    ///
+    /// **This does not free anything on its own.** `CREATE OR REPLACE`
+    /// writes the consolidated file, but the superseded ones stay
+    /// referenced by older snapshots — `gc_lake_snapshots` is what removes
+    /// them from the object store. Measured end-to-end: 40 files -> 41
+    /// after compaction -> 1 after GC. Callers must run the pair; the
+    /// publish task does.
+    ///
+    /// Runs under the write lock: `CREATE OR REPLACE TABLE` republishes
+    /// the whole table, and interleaving it with an append would race.
+    pub async fn compact_append_lake(&self) -> Result<(), crate::snapshot::SnapshotError> {
+        if !matches!(self.chat_backend(), ChatBackend::AttachedLake { .. })
+            && !matches!(self.events_backend(), EventsBackend::AttachedLake { .. })
+        {
+            return Ok(());
+        }
+        let _guard = self.write_guard().await;
+        let conn = self.conn.lock().await;
+        crate::snapshot::compact_append_tables(&conn)
     }
 
     /// The CRDT-pg backend `list_snapshots`/`seed_snapshot_history`

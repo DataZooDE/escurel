@@ -23,7 +23,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use escurel_server::EscurelConfig;
-use escurel_server::config::{EmbeddingProvider, RebuildIndexOnBoot, StorageBackend};
+use escurel_server::config::{
+    AppendBackend, EmbeddingProvider, RebuildIndexOnBoot, StorageBackend,
+};
 use tempfile::TempDir;
 
 /// Build an `EnvSource` closure from a map of overrides.
@@ -842,5 +844,41 @@ fn from_env_rejects_an_unknown_storage_backend() {
     assert!(
         err.to_string().contains("gcs"),
         "the accepted-values message must list gcs: {err}"
+    );
+}
+
+#[test]
+fn append_backends_default_to_postgres() {
+    // The deployed shape. Switching to the lake must be an explicit
+    // operator decision, never something a default drifts into.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[]))).unwrap();
+    assert_eq!(cfg.chat_backend, AppendBackend::Postgres);
+    assert_eq!(cfg.events_backend, AppendBackend::Postgres);
+}
+
+#[test]
+fn append_backends_can_be_routed_to_the_lake_independently() {
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_CHAT_BACKEND", "ducklake"),
+        ("ESCUREL_EVENTS_BACKEND", "postgres"),
+    ])))
+    .unwrap();
+    assert_eq!(cfg.chat_backend, AppendBackend::DuckLake);
+    assert_eq!(
+        cfg.events_backend,
+        AppendBackend::Postgres,
+        "the two surfaces are routed independently",
+    );
+}
+
+#[test]
+fn unknown_append_backend_is_an_error() {
+    let err = EscurelConfig::from_source(&source(env_map(&[("ESCUREL_CHAT_BACKEND", "s3")])))
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("ESCUREL_CHAT_BACKEND"), "got: {msg}");
+    assert!(
+        msg.contains("ducklake"),
+        "must list the accepted values: {msg}"
     );
 }

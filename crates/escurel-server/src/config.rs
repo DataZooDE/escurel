@@ -67,6 +67,8 @@
 //! | `ESCUREL_ROLE` | `writer` | `writer` or `reader` — `reader` requires `ESCUREL_INDEX_BACKEND=ducklake`; a reader boots with NO local single-file DuckDB, adopting the lake's newest published snapshot instead |
 //! | `ESCUREL_DUCKLAKE_CATALOG_DSN` | — | DuckLake catalog DSN — a Postgres key/value DSN (contains `=`) or a DuckDB-file catalog path; required when `ESCUREL_INDEX_BACKEND=ducklake` |
 //! | `ESCUREL_DUCKLAKE_DATA_PATH` | — | DuckLake `DATA_PATH` — `gs://…`, `s3://…`, or a local directory; required when `ESCUREL_INDEX_BACKEND=ducklake` |
+//! | `ESCUREL_CHAT_BACKEND` | `postgres` | `postgres` or `ducklake` — where chat history lives when `ESCUREL_INDEX_BACKEND=ducklake` and the catalog is Postgres |
+//! | `ESCUREL_EVENTS_BACKEND` | `postgres` | as above, for the event bus |
 //! | `ESCUREL_CRDT_PG_DSN` | the catalog DSN | Postgres holding `crdt_ops`/`crdt_snapshots`. Separate knob from the catalog because it holds customer document bytes, not lake metadata |
 //! | `ESCUREL_DUCKLAKE_GCS_KEY_ID` / `ESCUREL_DUCKLAKE_GCS_SECRET` | — | GCS HMAC key pair; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `gs://` |
 //! | `ESCUREL_DUCKLAKE_S3_ENDPOINT` / `_S3_ACCESS_KEY_ID` / `_S3_SECRET_ACCESS_KEY` / `_S3_REGION` | — / — / — / `us-east-1` | S3 (or MinIO) credentials; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `s3://` |
@@ -101,6 +103,35 @@ use crate::{EmbedderFactory, ServerConfig, serve};
 
 /// Default vector dimension (EmbeddingGemma 768).
 const DEFAULT_DIM: usize = 768;
+
+/// Compaction interval used when an append surface is lake-backed and the
+/// operator set no explicit `ESCUREL_SNAPSHOT_PUBLISH_SECS`.
+///
+/// Five minutes. The documented per-tenant write quota is 120/min, so this
+/// bounds the table at roughly 600 Parquet files between compactions —
+/// small enough that a listing stays cheap, long enough that the O(rows)
+/// rewrite is not running constantly. Operators tune it with the same
+/// variable that controls corpus publishing.
+pub const DEFAULT_APPEND_COMPACTION_SECS: u64 = 300;
+
+/// Where an append-shaped surface (chat history, the event bus) lives
+/// when the index backend is DuckLake.
+///
+/// `Postgres` (the default) is the DuckLake-PR-8/9 shape: a shared table
+/// in the catalog's own database. `DuckLake` puts the same table in the
+/// lake, i.e. Parquet on the object store, so the payload follows
+/// `DATA_PATH` rather than the catalog — the difference matters when the
+/// catalog and the object store are in different jurisdictions or under
+/// different data-residency rules.
+///
+/// The default is `Postgres` because that is the shape already deployed;
+/// switching is an explicit operator decision with the trade-offs in
+/// `docs/spec/storage.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendBackend {
+    Postgres,
+    DuckLake,
+}
 
 /// Storage backend selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -559,6 +590,12 @@ pub struct EscurelConfig {
     /// change. `Some` iff `index_backend == DuckLake` and the catalog is
     /// Postgres-shaped.
     pub crdt_pg_dsn: Option<String>,
+    /// Where chat history lives under the DuckLake index backend
+    /// (`ESCUREL_CHAT_BACKEND`). Ignored for the single-file backend.
+    pub chat_backend: AppendBackend,
+    /// Where the event bus lives under the DuckLake index backend
+    /// (`ESCUREL_EVENTS_BACKEND`). Ignored for the single-file backend.
+    pub events_backend: AppendBackend,
     /// A reader's background lake-poll interval, seconds
     /// (`ESCUREL_SNAPSHOT_REFRESH_SECS`, default `30`). Unused by a
     /// writer or the single-file backend.
@@ -1034,6 +1071,23 @@ impl EscurelConfig {
         // can be relocated without a code change. Only meaningful for a
         // Postgres-shaped catalog; a DuckDB-file catalog (dev/test) has no
         // shared attach at all.
+        let append_backend = |var: &'static str| -> Result<AppendBackend, ConfigError> {
+            match env
+                .get(var)
+                .unwrap_or_else(|| "postgres".to_owned())
+                .as_str()
+            {
+                "postgres" => Ok(AppendBackend::Postgres),
+                "ducklake" => Ok(AppendBackend::DuckLake),
+                other => Err(ConfigError::InvalidValue {
+                    var,
+                    value: other.to_owned(),
+                    reason: "expected `postgres` or `ducklake`",
+                }),
+            }
+        };
+        let chat_backend = append_backend("ESCUREL_CHAT_BACKEND")?;
+        let events_backend = append_backend("ESCUREL_EVENTS_BACKEND")?;
         let crdt_pg_dsn = lake.as_ref().and_then(|l| {
             if !l.is_pg_catalog() {
                 return None;
@@ -1104,6 +1158,8 @@ impl EscurelConfig {
             role,
             lake,
             crdt_pg_dsn,
+            chat_backend,
+            events_backend,
             snapshot_refresh_secs,
             snapshot_publish_secs,
             snapshot_keep,
@@ -1376,14 +1432,31 @@ impl EscurelConfig {
                         // catalog DSN but can point elsewhere — see the
                         // field's doc on `EscurelConfig`.
                         let crdt_dsn = self.crdt_pg_dsn.as_deref().unwrap_or(&lake_cfg.catalog_dsn);
-                        adopted
-                            .indexer
-                            .attach_chat_pg(&lake_cfg.catalog_dsn)
-                            .await?;
-                        adopted
-                            .indexer
-                            .attach_events_pg(&lake_cfg.catalog_dsn)
-                            .await?;
+                        match self.chat_backend {
+                            AppendBackend::Postgres => {
+                                adopted
+                                    .indexer
+                                    .attach_chat_pg(&lake_cfg.catalog_dsn)
+                                    .await?;
+                            }
+                            // A SECOND, read-write attach of the lake under
+                            // its own alias — the corpus attach above stays
+                            // READ_ONLY (spike S3).
+                            AppendBackend::DuckLake => {
+                                adopted.indexer.attach_chat_lake(lake_cfg).await?;
+                            }
+                        }
+                        match self.events_backend {
+                            AppendBackend::Postgres => {
+                                adopted
+                                    .indexer
+                                    .attach_events_pg(&lake_cfg.catalog_dsn)
+                                    .await?;
+                            }
+                            AppendBackend::DuckLake => {
+                                adopted.indexer.attach_events_lake(lake_cfg).await?;
+                            }
+                        }
                         adopted.indexer.attach_crdt_pg(crdt_dsn).await?;
 
                         let crdt_conn = Connection::open_in_memory().map_err(|source| {
@@ -1470,8 +1543,22 @@ impl EscurelConfig {
                             // `EscurelConfig`.
                             let crdt_dsn =
                                 self.crdt_pg_dsn.as_deref().unwrap_or(&lake_cfg.catalog_dsn);
-                            indexer.attach_chat_pg(&lake_cfg.catalog_dsn).await?;
-                            indexer.attach_events_pg(&lake_cfg.catalog_dsn).await?;
+                            match self.chat_backend {
+                                AppendBackend::Postgres => {
+                                    indexer.attach_chat_pg(&lake_cfg.catalog_dsn).await?;
+                                }
+                                AppendBackend::DuckLake => {
+                                    indexer.attach_chat_lake(lake_cfg).await?;
+                                }
+                            }
+                            match self.events_backend {
+                                AppendBackend::Postgres => {
+                                    indexer.attach_events_pg(&lake_cfg.catalog_dsn).await?;
+                                }
+                                AppendBackend::DuckLake => {
+                                    indexer.attach_events_lake(lake_cfg).await?;
+                                }
+                            }
                             indexer.attach_crdt_pg(crdt_dsn).await?;
                             crdt_backend_concrete
                                 .attach_shared_pg(crdt_dsn, &self.tenant)
@@ -1481,15 +1568,32 @@ impl EscurelConfig {
 
                         // Optional periodic publish (PR 7):
                         // `ESCUREL_SNAPSHOT_PUBLISH_SECS > 0`. `0` (default)
-                        // keeps publishing manual-only via the
+                        // keeps corpus publishing manual-only via the
                         // `publish_snapshot` admin tool.
-                        if self.snapshot_publish_secs > 0 {
+                        //
+                        // A lake-backed chat/events surface CHANGES that
+                        // default: the same task also compacts the
+                        // append-shaped tables, and without it every append
+                        // leaves its own Parquet file on the object store
+                        // forever (inlining is off by necessity, and
+                        // ducklake's own compaction calls are no-ops — see
+                        // docs/notes/discovered/2026-07-25-ducklake-multiwriter-and-compaction.md).
+                        // So when either surface is on the lake and the
+                        // operator has not chosen an interval, run on a
+                        // default one rather than silently never compacting.
+                        let needs_compaction = self.chat_backend == AppendBackend::DuckLake
+                            || self.events_backend == AppendBackend::DuckLake;
+                        let publish_secs = match (self.snapshot_publish_secs, needs_compaction) {
+                            (0, true) => DEFAULT_APPEND_COMPACTION_SECS,
+                            (n, _) => n,
+                        };
+                        if publish_secs > 0 {
                             let handle = IndexerHandle::fixed(Arc::clone(&indexer));
                             publish_task_handle = Some(
                                 crate::snapshot_publish::PublishTask::new(
                                     handle,
                                     lake_cfg.clone(),
-                                    Duration::from_secs(self.snapshot_publish_secs),
+                                    Duration::from_secs(publish_secs),
                                     self.snapshot_keep,
                                     Arc::clone(&last_published_epoch),
                                 )

@@ -318,6 +318,65 @@ design note for the full per-table breakdown and the CRDT scope boundary
 (durable storage is shared across replicas; live cross-replica session
 failover is not).
 
+### Routing chat and events to the lake instead
+
+`chat_messages` and `events` can each be pointed at a table in the **lake**
+rather than the catalog's database — `ESCUREL_CHAT_BACKEND` /
+`ESCUREL_EVENTS_BACKEND` = `postgres` (default) | `ducklake`, set
+independently. The surface, row shape, ordering (`(ts, msg_id)` with ULID
+tiebreakers) and cursor format are identical; only where the payload
+physically lives changes. That matters when the catalog and the object
+store fall under different data-residency rules: on the lake, the payload
+follows `DATA_PATH`.
+
+`crdt_ops`/`crdt_snapshots` have no lake variant and stay on Postgres.
+
+Three properties the Postgres tables get from the schema, and how the lake
+variant keeps them (all measured — see
+`docs/notes/discovered/2026-07-25-ducklake-multiwriter-and-compaction.md`):
+
+- **Every replica writes.** The lake is attached a SECOND time, read-write,
+  under its own alias, alongside the corpus attach — which stays
+  `READ_ONLY` on a reader. Concurrent read-write attaches from independent
+  processes lose no writes. So readers still serve `append_message` /
+  `capture_event`, exactly as with the Postgres variant.
+- **Cross-replica read-your-writes.** Appends commit per call, so a
+  separate replica sees a row immediately — no publish/adopt cycle. This is
+  why appends are NOT batched into a flush window: batching would have cut
+  the file count but delayed visibility by the flush interval, breaking the
+  property the surface exists to provide.
+- **`capture_event` idempotency.** DuckLake enforces no PRIMARY KEY and has
+  no `ON CONFLICT`, so first-writer-wins is enforced by an anti-join in the
+  INSERT instead. Note this is weaker than a PK: two *simultaneous*
+  captures of one id could both insert. The runner's own SQLite ledger is
+  what makes exactly-one-run-per-event a hard invariant.
+
+**The cost, stated plainly.** Data inlining must stay off (inlined rows
+live in the catalog, which defeats the point), so **every append writes its
+own Parquet object**. ducklake's own compaction calls
+(`ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`, both
+overloads) are silent no-ops on this shape. What works is the pattern
+`publish_lake` already uses for the corpus — `CREATE OR REPLACE TABLE t AS
+SELECT * FROM t` — followed by snapshot expiry and cleanup, which is what
+actually frees the superseded objects. Measured: 40 files → 41 after the
+rewrite → **1** after GC.
+
+The publish task runs that pair periodically. Because it is what bounds
+object growth, a lake-backed surface makes the task non-optional: when
+`ESCUREL_SNAPSHOT_PUBLISH_SECS` is unset it defaults to **300s** instead of
+staying disabled.
+
+**Volume ceiling.** Object count between compactions is
+*(compaction interval × append rate)*; at the documented 120 writes/min
+per-tenant quota and the 300s default, that is ≤ ~600 objects. Compaction
+itself is O(rows) — it rewrites the whole table — so *retention*
+(`delete_chat_history(before_ts)`) is what bounds compaction cost, and the
+interval is the knob trading object count against rewrite volume. A
+deployment with a chat firehose, or one that never prunes history, should
+stay on the Postgres variant: the spec's answer for multi-million-row event
+volume is still an external read-only lake attached for the origin axis,
+not this operational table.
+
 ## DuckDB schema
 
 ```sql

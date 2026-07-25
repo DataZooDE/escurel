@@ -92,6 +92,7 @@ jobs:
           cargo test -p escurel-index --features live-ducklake --test ducklake_events_live
           cargo test -p escurel-index --features live-ducklake --test ducklake_crdt_live
           cargo test -p escurel-index --features live-ducklake --test ducklake_spikes_live
+          cargo test -p escurel-index --features live-ducklake --test ducklake_append_lake_live
           cargo test -p escurel-crdt --features live-ducklake --test ducklake_crdt_live
 
       - name: DuckLake — reader role (live)
