@@ -21,7 +21,7 @@ impl Indexer {
     /// read/write: `crdt_snapshots` (local) or
     /// `<alias>.escurel_crdt_snapshots` (attached Postgres, DuckLake
     /// PR 10). Mirrors `chat.rs::chat_table` / `events.rs::events_table`.
-    fn crdt_snapshots_table(&self) -> String {
+    pub(crate) fn crdt_snapshots_table(&self) -> String {
         match self.crdt_pg_backend() {
             CrdtPgBackend::Local => "crdt_snapshots".to_owned(),
             CrdtPgBackend::AttachedPostgres { alias } => {
@@ -34,7 +34,7 @@ impl Indexer {
     /// `tenant` column (the attached-Postgres table); `None` for the
     /// local table, whose tenancy is implicit. Mirrors
     /// `chat.rs::chat_tenant_scope`.
-    fn crdt_tenant_scope(&self) -> Option<&str> {
+    pub(crate) fn crdt_tenant_scope(&self) -> Option<&str> {
         match self.crdt_pg_backend() {
             CrdtPgBackend::Local => None,
             CrdtPgBackend::AttachedPostgres { .. } => Some(self.tenant()),
@@ -147,28 +147,47 @@ impl Indexer {
 /// `None` when the page has no snapshot history reaching back that far
 /// (the caller then falls through to the current-state path).
 ///
-/// Deliberately NOT re-homed by DuckLake PR 10: this always reads the
-/// LOCAL `crdt_snapshots` table, even when [`Indexer::attach_crdt_pg`] has
-/// run. `expand(as_of=T)` (its only caller) was already reader-servable
-/// pre-PR-10 (it's a read tool, never on `UNSUPPORTED_ON_REPLICA_TOOLS`);
-/// PR 10's scope is `list_snapshots` + the session tools specifically, per
-/// the approved plan. A reader's `expand(as_of=T)` against a page whose
-/// snapshot history lives only in the shared Postgres table is a known,
-/// pre-existing-shaped gap (the same "as_of/expand needs the seed history
-/// re-homed too" gap chat/events don't have an equivalent of), left for a
-/// follow-up if it's ever needed on a reader.
+/// Reads whichever `crdt_snapshots` table the indexer is configured
+/// against — the local one, or the shared attached-Postgres one once
+/// [`Indexer::attach_crdt_pg`] has run.
+///
+/// DuckLake PR 10 re-homed `list_snapshots` and the session tools but left
+/// this reading the LOCAL table unconditionally. On a reader that is
+/// always empty — a reader has no local `crdt_snapshots` rows at all — so
+/// `expand(as_of=T)` silently reported "no history" for every page and
+/// fell through to current state, which is a wrong answer rather than a
+/// missing one. `table` and `tenant` are parameters because this is a free
+/// function called with an already-locked connection; the caller resolves
+/// them from `crdt_snapshots_table()` / `crdt_tenant_scope()`.
 pub(crate) fn load_snapshot_at(
     conn: &duckdb::Connection,
+    table: &str,
+    tenant: Option<&str>,
     page_id: &str,
     as_of: &str,
 ) -> Result<Option<Vec<u8>>, IndexerError> {
-    match conn.query_row(
-        "SELECT snapshot_bytes FROM crdt_snapshots \
-         WHERE page_id = ? AND taken_at <= TRY_CAST(? AS TIMESTAMP) \
-         ORDER BY taken_at DESC, snapshot_hlc DESC LIMIT 1",
-        params![page_id, as_of],
-        |r| r.get::<_, Vec<u8>>(0),
-    ) {
+    let row = match tenant {
+        None => conn.query_row(
+            &format!(
+                "SELECT snapshot_bytes FROM {table} \
+                 WHERE page_id = ? AND taken_at <= TRY_CAST(? AS TIMESTAMP) \
+                 ORDER BY taken_at DESC, snapshot_hlc DESC LIMIT 1"
+            ),
+            params![page_id, as_of],
+            |r| r.get::<_, Vec<u8>>(0),
+        ),
+        Some(tenant) => conn.query_row(
+            &format!(
+                "SELECT snapshot_bytes FROM {table} \
+                 WHERE page_id = ? AND tenant = ? \
+                 AND taken_at <= TRY_CAST(? AS TIMESTAMP) \
+                 ORDER BY taken_at DESC, snapshot_hlc DESC LIMIT 1"
+            ),
+            params![page_id, tenant, as_of],
+            |r| r.get::<_, Vec<u8>>(0),
+        ),
+    };
+    match row {
         Ok(bytes) => Ok(Some(bytes)),
         Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),

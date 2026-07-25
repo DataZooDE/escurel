@@ -63,6 +63,7 @@
 //! | `ESCUREL_ROLE` | `writer` | `writer` or `reader` — `reader` requires `ESCUREL_INDEX_BACKEND=ducklake`; a reader boots with NO local single-file DuckDB, adopting the lake's newest published snapshot instead |
 //! | `ESCUREL_DUCKLAKE_CATALOG_DSN` | — | DuckLake catalog DSN — a Postgres key/value DSN (contains `=`) or a DuckDB-file catalog path; required when `ESCUREL_INDEX_BACKEND=ducklake` |
 //! | `ESCUREL_DUCKLAKE_DATA_PATH` | — | DuckLake `DATA_PATH` — `gs://…`, `s3://…`, or a local directory; required when `ESCUREL_INDEX_BACKEND=ducklake` |
+//! | `ESCUREL_CRDT_PG_DSN` | the catalog DSN | Postgres holding `crdt_ops`/`crdt_snapshots`. Separate knob from the catalog because it holds customer document bytes, not lake metadata |
 //! | `ESCUREL_DUCKLAKE_GCS_KEY_ID` / `ESCUREL_DUCKLAKE_GCS_SECRET` | — | GCS HMAC key pair; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `gs://` |
 //! | `ESCUREL_DUCKLAKE_S3_ENDPOINT` / `_S3_ACCESS_KEY_ID` / `_S3_SECRET_ACCESS_KEY` / `_S3_REGION` | — / — / — / `us-east-1` | S3 (or MinIO) credentials; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `s3://` |
 //! | `ESCUREL_DUCKLAKE_S3_USE_SSL` | `true` | whether the S3/MinIO endpoint above is TLS |
@@ -518,6 +519,18 @@ pub struct EscurelConfig {
     /// `index_backend == DuckLake`; validated + built from the
     /// `ESCUREL_DUCKLAKE_*` vars at [`EscurelConfig::from_env`] time.
     pub lake: Option<LakeConfig>,
+    /// DSN for the shared Postgres holding the CRDT op-log and snapshots
+    /// (`ESCUREL_CRDT_PG_DSN`). Defaults to the lake catalog DSN, which is
+    /// where DuckLake PR 10 put these tables.
+    ///
+    /// Separate from the catalog DSN because the two carry different kinds
+    /// of data: the catalog holds lake *metadata*, whereas `crdt_ops` /
+    /// `crdt_snapshots` hold customer document bytes. Co-locating them is
+    /// a deployment choice, not a structural requirement — with this knob,
+    /// relocating the payload later is configuration rather than a code
+    /// change. `Some` iff `index_backend == DuckLake` and the catalog is
+    /// Postgres-shaped.
+    pub crdt_pg_dsn: Option<String>,
     /// A reader's background lake-poll interval, seconds
     /// (`ESCUREL_SNAPSHOT_REFRESH_SECS`, default `30`). Unused by a
     /// writer or the single-file backend.
@@ -965,6 +978,21 @@ impl EscurelConfig {
             IndexBackend::DuckLake => Some(build_lake_config(env)?),
             IndexBackend::SingleFile => None,
         };
+        // Where the CRDT op-log lives. Defaults to the catalog DSN — the
+        // shape DuckLake PR 10 shipped — but is overridable so the payload
+        // can be relocated without a code change. Only meaningful for a
+        // Postgres-shaped catalog; a DuckDB-file catalog (dev/test) has no
+        // shared attach at all.
+        let crdt_pg_dsn = lake.as_ref().and_then(|l| {
+            if !l.is_pg_catalog() {
+                return None;
+            }
+            Some(
+                env.get("ESCUREL_CRDT_PG_DSN")
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| l.catalog_dsn.clone()),
+            )
+        });
         let snapshot_refresh_secs = match env.get("ESCUREL_SNAPSHOT_REFRESH_SECS") {
             Some(raw) => raw.parse::<u64>().map_err(|_| ConfigError::InvalidValue {
                 var: "ESCUREL_SNAPSHOT_REFRESH_SECS",
@@ -1023,6 +1051,7 @@ impl EscurelConfig {
             index_backend,
             role,
             lake,
+            crdt_pg_dsn,
             snapshot_refresh_secs,
             snapshot_publish_secs,
             snapshot_keep,
@@ -1291,6 +1320,10 @@ impl EscurelConfig {
                     // bare in-memory connection is sufficient).
                     let mut reader_crdt_backend: Option<Arc<dyn CrdtBackend>> = None;
                     if lake_cfg.is_pg_catalog() {
+                        // CRDT uses `crdt_pg_dsn`, which defaults to the
+                        // catalog DSN but can point elsewhere — see the
+                        // field's doc on `EscurelConfig`.
+                        let crdt_dsn = self.crdt_pg_dsn.as_deref().unwrap_or(&lake_cfg.catalog_dsn);
                         adopted
                             .indexer
                             .attach_chat_pg(&lake_cfg.catalog_dsn)
@@ -1299,10 +1332,7 @@ impl EscurelConfig {
                             .indexer
                             .attach_events_pg(&lake_cfg.catalog_dsn)
                             .await?;
-                        adopted
-                            .indexer
-                            .attach_crdt_pg(&lake_cfg.catalog_dsn)
-                            .await?;
+                        adopted.indexer.attach_crdt_pg(crdt_dsn).await?;
 
                         let crdt_conn = Connection::open_in_memory().map_err(|source| {
                             ConfigError::DuckdbOpen {
@@ -1312,7 +1342,7 @@ impl EscurelConfig {
                         })?;
                         let backend = DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn)));
                         backend
-                            .attach_shared_pg(&lake_cfg.catalog_dsn, &self.tenant)
+                            .attach_shared_pg(crdt_dsn, &self.tenant)
                             .await
                             .map_err(ConfigError::CrdtPg)?;
                         reader_crdt_backend = Some(Arc::new(backend));
@@ -1383,11 +1413,16 @@ impl EscurelConfig {
                         // `crdt_backend_concrete`'s own connection (so the
                         // live-session actor path does).
                         if lake_cfg.is_pg_catalog() {
+                            // CRDT uses `crdt_pg_dsn` (defaults to the
+                            // catalog DSN) — see the field doc on
+                            // `EscurelConfig`.
+                            let crdt_dsn =
+                                self.crdt_pg_dsn.as_deref().unwrap_or(&lake_cfg.catalog_dsn);
                             indexer.attach_chat_pg(&lake_cfg.catalog_dsn).await?;
                             indexer.attach_events_pg(&lake_cfg.catalog_dsn).await?;
-                            indexer.attach_crdt_pg(&lake_cfg.catalog_dsn).await?;
+                            indexer.attach_crdt_pg(crdt_dsn).await?;
                             crdt_backend_concrete
-                                .attach_shared_pg(&lake_cfg.catalog_dsn, &self.tenant)
+                                .attach_shared_pg(crdt_dsn, &self.tenant)
                                 .await
                                 .map_err(ConfigError::CrdtPg)?;
                         }

@@ -246,6 +246,17 @@ pub enum IndexerError {
     PackSkillMissing { skill: String },
     #[error("promotion_not_eligible: {reason}")]
     PromotionNotEligible { reason: String },
+    #[error("event `{event_id}` does not exist")]
+    EventNotFound { event_id: String },
+    #[error(
+        "event `{event_id}` is already assigned to `{existing}`; \
+         refusing to reassign it to `{requested}`"
+    )]
+    EventAlreadyAssigned {
+        event_id: String,
+        existing: String,
+        requested: String,
+    },
 }
 
 /// What a DuckDB→DuckDB merge does on a `page_id` already in the target.

@@ -261,6 +261,23 @@ impl Indexer {
 
     /// Assign an inbox event to an instance and mark it processed — the
     /// (external/simulated) agent folding the event into the instance.
+    ///
+    /// **Compare-and-set on `status`.** The `UPDATE` matches only rows
+    /// still in the inbox (`AND status = 'inbox'`), and the rows-affected
+    /// count is checked rather than discarded. Before this, two racing
+    /// agents could both "succeed" in claiming the same event and the
+    /// second silently overwrote the first's `instance_page_id` — the
+    /// at-most-once property rested entirely on the runner's separate
+    /// SQLite ledger (`escurel-runner-core/src/ledger.rs`), which does not
+    /// protect callers that don't go through the runner.
+    ///
+    /// **Retries stay safe.** A re-run that assigns the same event to the
+    /// same instance is `Ok(())`, not an error — `escurel-runner`'s
+    /// recovery path re-runs `update_page` + `assign_event` to finish a
+    /// partial success (`runner/src/main.rs:1126`), and that must keep
+    /// working. Only a *different* instance claiming an already-processed
+    /// event is a conflict, and that is exactly the case that used to be
+    /// silent data loss.
     pub async fn assign_event(
         &self,
         event_id: &str,
@@ -268,27 +285,74 @@ impl Indexer {
     ) -> Result<(), IndexerError> {
         let conn = self.conn.lock().await;
         let table = self.events_table();
-        match self.events_tenant_scope() {
-            None => {
-                conn.execute(
-                    &format!(
-                        "UPDATE {table} SET instance_page_id = ?, status = 'processed' \
-                         WHERE event_id = ?"
-                    ),
-                    params![instance_page_id, event_id],
-                )?;
-            }
-            Some(tenant) => {
-                conn.execute(
-                    &format!(
-                        "UPDATE {table} SET instance_page_id = ?, status = 'processed' \
-                         WHERE event_id = ? AND tenant = ?"
-                    ),
-                    params![instance_page_id, event_id, tenant],
-                )?;
-            }
+        let updated = match self.events_tenant_scope() {
+            None => conn.execute(
+                &format!(
+                    "UPDATE {table} SET instance_page_id = ?, status = 'processed' \
+                     WHERE event_id = ? AND status = 'inbox'"
+                ),
+                params![instance_page_id, event_id],
+            )?,
+            Some(tenant) => conn.execute(
+                &format!(
+                    "UPDATE {table} SET instance_page_id = ?, status = 'processed' \
+                     WHERE event_id = ? AND tenant = ? AND status = 'inbox'"
+                ),
+                params![instance_page_id, event_id, tenant],
+            )?,
+        };
+        if updated > 0 {
+            return Ok(());
         }
-        Ok(())
+
+        // Nothing claimed. Distinguish the reasons rather than reporting a
+        // uniform failure: the event may not exist at all, or it may
+        // already be processed — either by THIS instance (an idempotent
+        // re-run, which must succeed) or by a different one (the real
+        // conflict this CAS exists to surface).
+        //
+        // `QueryReturnedNoRows` is the house idiom for "row absent" here
+        // (see `crdt_history::load_snapshot_at`); a row that exists with a
+        // NULL `instance_page_id` is a distinct case and must not be
+        // collapsed into "missing".
+        let row = match self.events_tenant_scope() {
+            None => conn.query_row(
+                &format!("SELECT instance_page_id FROM {table} WHERE event_id = ?"),
+                params![event_id],
+                |r| r.get::<_, Option<String>>(0),
+            ),
+            Some(tenant) => conn.query_row(
+                &format!(
+                    "SELECT instance_page_id FROM {table} \
+                     WHERE event_id = ? AND tenant = ?"
+                ),
+                params![event_id, tenant],
+                |r| r.get::<_, Option<String>>(0),
+            ),
+        };
+
+        match row {
+            Err(duckdb::Error::QueryReturnedNoRows) => Err(IndexerError::EventNotFound {
+                event_id: event_id.to_owned(),
+            }),
+            Err(e) => Err(e.into()),
+            // Idempotent re-run: same event, same target instance.
+            Ok(Some(existing)) if existing == instance_page_id => Ok(()),
+            Ok(Some(existing)) => Err(IndexerError::EventAlreadyAssigned {
+                event_id: event_id.to_owned(),
+                existing,
+                requested: instance_page_id.to_owned(),
+            }),
+            // Row exists, is not in the inbox, yet carries no instance —
+            // a state no normal flow produces (assign always sets both in
+            // one statement). Refuse rather than silently binding it, so
+            // whatever produced it gets investigated.
+            Ok(None) => Err(IndexerError::EventAlreadyAssigned {
+                event_id: event_id.to_owned(),
+                existing: "<none>".to_owned(),
+                requested: instance_page_id.to_owned(),
+            }),
+        }
     }
 
     /// Run a `select_cols`-shaped query, filtered by an optional
