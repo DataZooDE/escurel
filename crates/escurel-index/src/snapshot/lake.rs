@@ -26,7 +26,7 @@ use crate::schema::Migrator;
 
 /// The fixed attach alias. Not configurable — every publish/adopt/SQL
 /// builder in this module addresses the lake as `lake.<table>`.
-const LAKE_ALIAS: &str = "lake";
+pub(crate) const LAKE_ALIAS: &str = "lake";
 
 /// The canonical tables a publish copies into the lake, in copy order.
 /// `blocks` is handled separately (its `dense_vec` needs the `FLOAT[]`

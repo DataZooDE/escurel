@@ -33,7 +33,11 @@
 //! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
 //! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
 //! | `ESCUREL_REBUILD_INDEX_ON_BOOT` | `if-missing` | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent) or `always` (drop + rebuild from the markdown LaneStore each start; the container default — HNSW-persistence-reload workaround) |
-//! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs` or `s3` |
+//! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs`, `s3` or `gcs` |
+//! | `ESCUREL_STORAGE_GCS_BUCKET` | — | GCS bucket (backend=gcs) |
+//! | `ESCUREL_STORAGE_GCS_PREFIX` | `` | GCS key prefix (backend=gcs) |
+//! | `ESCUREL_STORAGE_GCS_CREDENTIALS_PATH` | — | service-account key file (backend=gcs); unset = ADC, i.e. the metadata server on GCP |
+//! | `ESCUREL_STORAGE_GCS_ENDPOINT` | — | GCS endpoint override (backend=gcs); emulator/tests only |
 //! | `ESCUREL_STORAGE_S3_BUCKET` | — | S3 bucket (backend=s3) |
 //! | `ESCUREL_STORAGE_S3_ENDPOINT` | — | S3 endpoint URL (backend=s3) |
 //! | `ESCUREL_STORAGE_S3_PREFIX` | `` | S3 key prefix (backend=s3) |
@@ -63,6 +67,9 @@
 //! | `ESCUREL_ROLE` | `writer` | `writer` or `reader` — `reader` requires `ESCUREL_INDEX_BACKEND=ducklake`; a reader boots with NO local single-file DuckDB, adopting the lake's newest published snapshot instead |
 //! | `ESCUREL_DUCKLAKE_CATALOG_DSN` | — | DuckLake catalog DSN — a Postgres key/value DSN (contains `=`) or a DuckDB-file catalog path; required when `ESCUREL_INDEX_BACKEND=ducklake` |
 //! | `ESCUREL_DUCKLAKE_DATA_PATH` | — | DuckLake `DATA_PATH` — `gs://…`, `s3://…`, or a local directory; required when `ESCUREL_INDEX_BACKEND=ducklake` |
+//! | `ESCUREL_CHAT_BACKEND` | `postgres` | `postgres` or `ducklake` — where chat history lives when `ESCUREL_INDEX_BACKEND=ducklake` and the catalog is Postgres |
+//! | `ESCUREL_EVENTS_BACKEND` | `postgres` | as above, for the event bus |
+//! | `ESCUREL_CRDT_PG_DSN` | the catalog DSN | Postgres holding `crdt_ops`/`crdt_snapshots`. Separate knob from the catalog because it holds customer document bytes, not lake metadata |
 //! | `ESCUREL_DUCKLAKE_GCS_KEY_ID` / `ESCUREL_DUCKLAKE_GCS_SECRET` | — | GCS HMAC key pair; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `gs://` |
 //! | `ESCUREL_DUCKLAKE_S3_ENDPOINT` / `_S3_ACCESS_KEY_ID` / `_S3_SECRET_ACCESS_KEY` / `_S3_REGION` | — / — / — / `us-east-1` | S3 (or MinIO) credentials; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `s3://` |
 //! | `ESCUREL_DUCKLAKE_S3_USE_SSL` | `true` | whether the S3/MinIO endpoint above is TLS |
@@ -97,11 +104,41 @@ use crate::{EmbedderFactory, ServerConfig, serve};
 /// Default vector dimension (EmbeddingGemma 768).
 const DEFAULT_DIM: usize = 768;
 
+/// Compaction interval used when an append surface is lake-backed and the
+/// operator set no explicit `ESCUREL_SNAPSHOT_PUBLISH_SECS`.
+///
+/// Five minutes. The documented per-tenant write quota is 120/min, so this
+/// bounds the table at roughly 600 Parquet files between compactions —
+/// small enough that a listing stays cheap, long enough that the O(rows)
+/// rewrite is not running constantly. Operators tune it with the same
+/// variable that controls corpus publishing.
+pub const DEFAULT_APPEND_COMPACTION_SECS: u64 = 300;
+
+/// Where an append-shaped surface (chat history, the event bus) lives
+/// when the index backend is DuckLake.
+///
+/// `Postgres` (the default) is the DuckLake-PR-8/9 shape: a shared table
+/// in the catalog's own database. `DuckLake` puts the same table in the
+/// lake, i.e. Parquet on the object store, so the payload follows
+/// `DATA_PATH` rather than the catalog — the difference matters when the
+/// catalog and the object store are in different jurisdictions or under
+/// different data-residency rules.
+///
+/// The default is `Postgres` because that is the shape already deployed;
+/// switching is an explicit operator decision with the trade-offs in
+/// `docs/spec/storage.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendBackend {
+    Postgres,
+    DuckLake,
+}
+
 /// Storage backend selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageBackend {
     Fs,
     S3,
+    Gcs,
 }
 
 /// When to drop + rebuild the derived DuckDB index at boot
@@ -213,8 +250,19 @@ pub enum ConfigError {
         value: String,
         reason: &'static str,
     },
-    #[error("{var} is required when ESCUREL_STORAGE_BACKEND=s3")]
-    MissingS3Field { var: &'static str },
+    #[error("{var} is required when ESCUREL_STORAGE_BACKEND={backend}")]
+    MissingStorageField {
+        var: &'static str,
+        backend: &'static str,
+    },
+    #[error(
+        "ESCUREL_STORAGE_BACKEND={backend} requires the `{feature}` cargo feature; \
+         this binary was built without it"
+    )]
+    StorageFeatureDisabled {
+        backend: &'static str,
+        feature: &'static str,
+    },
     #[error("{var} is required when ESCUREL_INDEX_BACKEND=ducklake")]
     MissingLakeField { var: &'static str },
     #[error(
@@ -427,6 +475,17 @@ pub struct S3Config {
     pub secret_access_key: String,
 }
 
+/// GCS lane-store settings. No key/secret fields: credentials are
+/// Application Default Credentials, so the only credential knob is which
+/// ADC source to use (`credentials_path` for the off-GCP key-file path).
+#[derive(Debug, Clone)]
+pub struct GcsConfig {
+    pub bucket: String,
+    pub prefix: String,
+    pub credentials_path: Option<String>,
+    pub endpoint: Option<String>,
+}
+
 /// Resolved, validated configuration for the server binary.
 #[derive(Debug, Clone)]
 pub struct EscurelConfig {
@@ -437,6 +496,7 @@ pub struct EscurelConfig {
     pub tenant: String,
     pub storage_backend: StorageBackend,
     pub s3: Option<S3Config>,
+    pub gcs: Option<GcsConfig>,
     pub auth: Option<AuthConfig>,
     pub embedding_provider: EmbeddingProvider,
     pub embedding_model: Option<String>,
@@ -518,6 +578,24 @@ pub struct EscurelConfig {
     /// `index_backend == DuckLake`; validated + built from the
     /// `ESCUREL_DUCKLAKE_*` vars at [`EscurelConfig::from_env`] time.
     pub lake: Option<LakeConfig>,
+    /// DSN for the shared Postgres holding the CRDT op-log and snapshots
+    /// (`ESCUREL_CRDT_PG_DSN`). Defaults to the lake catalog DSN, which is
+    /// where DuckLake PR 10 put these tables.
+    ///
+    /// Separate from the catalog DSN because the two carry different kinds
+    /// of data: the catalog holds lake *metadata*, whereas `crdt_ops` /
+    /// `crdt_snapshots` hold customer document bytes. Co-locating them is
+    /// a deployment choice, not a structural requirement — with this knob,
+    /// relocating the payload later is configuration rather than a code
+    /// change. `Some` iff `index_backend == DuckLake` and the catalog is
+    /// Postgres-shaped.
+    pub crdt_pg_dsn: Option<String>,
+    /// Where chat history lives under the DuckLake index backend
+    /// (`ESCUREL_CHAT_BACKEND`). Ignored for the single-file backend.
+    pub chat_backend: AppendBackend,
+    /// Where the event bus lives under the DuckLake index backend
+    /// (`ESCUREL_EVENTS_BACKEND`). Ignored for the single-file backend.
+    pub events_backend: AppendBackend,
     /// A reader's background lake-poll interval, seconds
     /// (`ESCUREL_SNAPSHOT_REFRESH_SECS`, default `30`). Unused by a
     /// writer or the single-file backend.
@@ -684,11 +762,12 @@ impl EscurelConfig {
         let storage_backend = match backend_str.as_str() {
             "fs" => StorageBackend::Fs,
             "s3" => StorageBackend::S3,
+            "gcs" => StorageBackend::Gcs,
             other => {
                 return Err(ConfigError::InvalidValue {
                     var: "ESCUREL_STORAGE_BACKEND",
                     value: other.to_owned(),
-                    reason: "expected `fs` or `s3`",
+                    reason: "expected `fs`, `s3` or `gcs`",
                 });
             }
         };
@@ -710,6 +789,28 @@ impl EscurelConfig {
                     .unwrap_or_else(|| "us-east-1".to_owned()),
                 access_key_id: require_s3(env, "ESCUREL_STORAGE_S3_ACCESS_KEY_ID", None)?,
                 secret_access_key: require_s3(env, "ESCUREL_STORAGE_S3_SECRET_ACCESS_KEY", None)?,
+            })
+        } else {
+            None
+        };
+        let gcs = if storage_backend == StorageBackend::Gcs {
+            Some(GcsConfig {
+                bucket: env
+                    .get("ESCUREL_STORAGE_GCS_BUCKET")
+                    .filter(|v| !v.is_empty())
+                    .ok_or(ConfigError::MissingStorageField {
+                        var: "ESCUREL_STORAGE_GCS_BUCKET",
+                        backend: "gcs",
+                    })?,
+                prefix: env.get("ESCUREL_STORAGE_GCS_PREFIX").unwrap_or_default(),
+                // Both optional: absent means ADC (metadata server on GCP)
+                // and the real GCS endpoint.
+                credentials_path: env
+                    .get("ESCUREL_STORAGE_GCS_CREDENTIALS_PATH")
+                    .filter(|v| !v.is_empty()),
+                endpoint: env
+                    .get("ESCUREL_STORAGE_GCS_ENDPOINT")
+                    .filter(|v| !v.is_empty()),
             })
         } else {
             None
@@ -965,6 +1066,38 @@ impl EscurelConfig {
             IndexBackend::DuckLake => Some(build_lake_config(env)?),
             IndexBackend::SingleFile => None,
         };
+        // Where the CRDT op-log lives. Defaults to the catalog DSN — the
+        // shape DuckLake PR 10 shipped — but is overridable so the payload
+        // can be relocated without a code change. Only meaningful for a
+        // Postgres-shaped catalog; a DuckDB-file catalog (dev/test) has no
+        // shared attach at all.
+        let append_backend = |var: &'static str| -> Result<AppendBackend, ConfigError> {
+            match env
+                .get(var)
+                .unwrap_or_else(|| "postgres".to_owned())
+                .as_str()
+            {
+                "postgres" => Ok(AppendBackend::Postgres),
+                "ducklake" => Ok(AppendBackend::DuckLake),
+                other => Err(ConfigError::InvalidValue {
+                    var,
+                    value: other.to_owned(),
+                    reason: "expected `postgres` or `ducklake`",
+                }),
+            }
+        };
+        let chat_backend = append_backend("ESCUREL_CHAT_BACKEND")?;
+        let events_backend = append_backend("ESCUREL_EVENTS_BACKEND")?;
+        let crdt_pg_dsn = lake.as_ref().and_then(|l| {
+            if !l.is_pg_catalog() {
+                return None;
+            }
+            Some(
+                env.get("ESCUREL_CRDT_PG_DSN")
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| l.catalog_dsn.clone()),
+            )
+        });
         let snapshot_refresh_secs = match env.get("ESCUREL_SNAPSHOT_REFRESH_SECS") {
             Some(raw) => raw.parse::<u64>().map_err(|_| ConfigError::InvalidValue {
                 var: "ESCUREL_SNAPSHOT_REFRESH_SECS",
@@ -998,6 +1131,7 @@ impl EscurelConfig {
             tenant,
             storage_backend,
             s3,
+            gcs,
             auth,
             embedding_provider,
             embedding_model,
@@ -1023,6 +1157,9 @@ impl EscurelConfig {
             index_backend,
             role,
             lake,
+            crdt_pg_dsn,
+            chat_backend,
+            events_backend,
             snapshot_refresh_secs,
             snapshot_publish_secs,
             snapshot_keep,
@@ -1038,7 +1175,7 @@ fn require_s3(
     env.get(var)
         .or(toml_val)
         .filter(|v| !v.is_empty())
-        .ok_or(ConfigError::MissingS3Field { var })
+        .ok_or(ConfigError::MissingStorageField { var, backend: "s3" })
 }
 
 /// Required-when-ducklake env lookup, mirroring [`require_s3`].
@@ -1291,18 +1428,36 @@ impl EscurelConfig {
                     // bare in-memory connection is sufficient).
                     let mut reader_crdt_backend: Option<Arc<dyn CrdtBackend>> = None;
                     if lake_cfg.is_pg_catalog() {
-                        adopted
-                            .indexer
-                            .attach_chat_pg(&lake_cfg.catalog_dsn)
-                            .await?;
-                        adopted
-                            .indexer
-                            .attach_events_pg(&lake_cfg.catalog_dsn)
-                            .await?;
-                        adopted
-                            .indexer
-                            .attach_crdt_pg(&lake_cfg.catalog_dsn)
-                            .await?;
+                        // CRDT uses `crdt_pg_dsn`, which defaults to the
+                        // catalog DSN but can point elsewhere — see the
+                        // field's doc on `EscurelConfig`.
+                        let crdt_dsn = self.crdt_pg_dsn.as_deref().unwrap_or(&lake_cfg.catalog_dsn);
+                        match self.chat_backend {
+                            AppendBackend::Postgres => {
+                                adopted
+                                    .indexer
+                                    .attach_chat_pg(&lake_cfg.catalog_dsn)
+                                    .await?;
+                            }
+                            // A SECOND, read-write attach of the lake under
+                            // its own alias — the corpus attach above stays
+                            // READ_ONLY (spike S3).
+                            AppendBackend::DuckLake => {
+                                adopted.indexer.attach_chat_lake(lake_cfg).await?;
+                            }
+                        }
+                        match self.events_backend {
+                            AppendBackend::Postgres => {
+                                adopted
+                                    .indexer
+                                    .attach_events_pg(&lake_cfg.catalog_dsn)
+                                    .await?;
+                            }
+                            AppendBackend::DuckLake => {
+                                adopted.indexer.attach_events_lake(lake_cfg).await?;
+                            }
+                        }
+                        adopted.indexer.attach_crdt_pg(crdt_dsn).await?;
 
                         let crdt_conn = Connection::open_in_memory().map_err(|source| {
                             ConfigError::DuckdbOpen {
@@ -1312,7 +1467,7 @@ impl EscurelConfig {
                         })?;
                         let backend = DuckdbCrdtBackend::new(Arc::new(Mutex::new(crdt_conn)));
                         backend
-                            .attach_shared_pg(&lake_cfg.catalog_dsn, &self.tenant)
+                            .attach_shared_pg(crdt_dsn, &self.tenant)
                             .await
                             .map_err(ConfigError::CrdtPg)?;
                         reader_crdt_backend = Some(Arc::new(backend));
@@ -1383,26 +1538,62 @@ impl EscurelConfig {
                         // `crdt_backend_concrete`'s own connection (so the
                         // live-session actor path does).
                         if lake_cfg.is_pg_catalog() {
-                            indexer.attach_chat_pg(&lake_cfg.catalog_dsn).await?;
-                            indexer.attach_events_pg(&lake_cfg.catalog_dsn).await?;
-                            indexer.attach_crdt_pg(&lake_cfg.catalog_dsn).await?;
+                            // CRDT uses `crdt_pg_dsn` (defaults to the
+                            // catalog DSN) — see the field doc on
+                            // `EscurelConfig`.
+                            let crdt_dsn =
+                                self.crdt_pg_dsn.as_deref().unwrap_or(&lake_cfg.catalog_dsn);
+                            match self.chat_backend {
+                                AppendBackend::Postgres => {
+                                    indexer.attach_chat_pg(&lake_cfg.catalog_dsn).await?;
+                                }
+                                AppendBackend::DuckLake => {
+                                    indexer.attach_chat_lake(lake_cfg).await?;
+                                }
+                            }
+                            match self.events_backend {
+                                AppendBackend::Postgres => {
+                                    indexer.attach_events_pg(&lake_cfg.catalog_dsn).await?;
+                                }
+                                AppendBackend::DuckLake => {
+                                    indexer.attach_events_lake(lake_cfg).await?;
+                                }
+                            }
+                            indexer.attach_crdt_pg(crdt_dsn).await?;
                             crdt_backend_concrete
-                                .attach_shared_pg(&lake_cfg.catalog_dsn, &self.tenant)
+                                .attach_shared_pg(crdt_dsn, &self.tenant)
                                 .await
                                 .map_err(ConfigError::CrdtPg)?;
                         }
 
                         // Optional periodic publish (PR 7):
                         // `ESCUREL_SNAPSHOT_PUBLISH_SECS > 0`. `0` (default)
-                        // keeps publishing manual-only via the
+                        // keeps corpus publishing manual-only via the
                         // `publish_snapshot` admin tool.
-                        if self.snapshot_publish_secs > 0 {
+                        //
+                        // A lake-backed chat/events surface CHANGES that
+                        // default: the same task also compacts the
+                        // append-shaped tables, and without it every append
+                        // leaves its own Parquet file on the object store
+                        // forever (inlining is off by necessity, and
+                        // ducklake's own compaction calls are no-ops — see
+                        // docs/notes/discovered/2026-07-25-ducklake-multiwriter-and-compaction.md).
+                        // So when either surface is on the lake and the
+                        // operator has not chosen an interval, run on a
+                        // default one rather than silently never compacting.
+                        let needs_compaction = self.chat_backend == AppendBackend::DuckLake
+                            || self.events_backend == AppendBackend::DuckLake;
+                        let publish_secs = match (self.snapshot_publish_secs, needs_compaction) {
+                            (0, true) => DEFAULT_APPEND_COMPACTION_SECS,
+                            (n, _) => n,
+                        };
+                        if publish_secs > 0 {
                             let handle = IndexerHandle::fixed(Arc::clone(&indexer));
                             publish_task_handle = Some(
                                 crate::snapshot_publish::PublishTask::new(
                                     handle,
                                     lake_cfg.clone(),
-                                    Duration::from_secs(self.snapshot_publish_secs),
+                                    Duration::from_secs(publish_secs),
                                     self.snapshot_keep,
                                     Arc::clone(&last_published_epoch),
                                 )
@@ -1526,13 +1717,15 @@ impl EscurelConfig {
         match self.storage_backend {
             StorageBackend::Fs => Ok(Arc::new(FsStore::new(self.data_dir.clone()))),
             StorageBackend::S3 => self.build_s3_store().await,
+            StorageBackend::Gcs => self.build_gcs_store().await,
         }
     }
 
     #[cfg(feature = "s3")]
     async fn build_s3_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
-        let s3 = self.s3.as_ref().ok_or(ConfigError::MissingS3Field {
+        let s3 = self.s3.as_ref().ok_or(ConfigError::MissingStorageField {
             var: "ESCUREL_STORAGE_S3_BUCKET",
+            backend: "s3",
         })?;
         let store = escurel_storage::S3Store::new(escurel_storage::S3StoreConfig {
             bucket: s3.bucket.clone(),
@@ -1553,9 +1746,41 @@ impl EscurelConfig {
 
     #[cfg(not(feature = "s3"))]
     async fn build_s3_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
-        Err(ConfigError::EmbedderFeatureDisabled {
-            provider: "s3-storage",
+        // Was `EmbedderFeatureDisabled`, which told the operator their
+        // EMBEDDING PROVIDER was misconfigured when in fact the binary was
+        // built without the storage backend they selected.
+        Err(ConfigError::StorageFeatureDisabled {
+            backend: "s3",
             feature: "s3",
+        })
+    }
+
+    #[cfg(feature = "gcs")]
+    async fn build_gcs_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
+        let gcs = self.gcs.as_ref().ok_or(ConfigError::MissingStorageField {
+            var: "ESCUREL_STORAGE_GCS_BUCKET",
+            backend: "gcs",
+        })?;
+        let store = escurel_storage::GcsStore::new(escurel_storage::GcsStoreConfig {
+            bucket: gcs.bucket.clone(),
+            prefix: gcs.prefix.clone(),
+            credentials_path: gcs.credentials_path.clone(),
+            endpoint: gcs.endpoint.clone(),
+        })
+        .await
+        .map_err(|e| ConfigError::InvalidValue {
+            var: "ESCUREL_STORAGE_GCS_BUCKET",
+            value: e.to_string(),
+            reason: "failed to build GCS client",
+        })?;
+        Ok(Arc::new(store))
+    }
+
+    #[cfg(not(feature = "gcs"))]
+    async fn build_gcs_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
+        Err(ConfigError::StorageFeatureDisabled {
+            backend: "gcs",
+            feature: "gcs",
         })
     }
 

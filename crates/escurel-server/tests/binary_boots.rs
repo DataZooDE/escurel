@@ -23,7 +23,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use escurel_server::EscurelConfig;
-use escurel_server::config::{EmbeddingProvider, RebuildIndexOnBoot, StorageBackend};
+use escurel_server::config::{
+    AppendBackend, EmbeddingProvider, RebuildIndexOnBoot, StorageBackend,
+};
 use tempfile::TempDir;
 
 /// Build an `EnvSource` closure from a map of overrides.
@@ -780,5 +782,103 @@ async fn chat_history_survives_server_restart() {
     assert_eq!(
         n2, 2,
         "chat history must SURVIVE a restart (was 0 before the try_clone fix): {r2}"
+    );
+}
+
+#[test]
+fn from_env_selects_gcs_backend_when_configured() {
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_STORAGE_BACKEND", "gcs"),
+        ("ESCUREL_STORAGE_GCS_BUCKET", "escurel-lanes"),
+        ("ESCUREL_STORAGE_GCS_PREFIX", "escurel/prod"),
+        (
+            "ESCUREL_STORAGE_GCS_CREDENTIALS_PATH",
+            "/etc/escurel/sa.json",
+        ),
+    ])))
+    .unwrap();
+    assert_eq!(cfg.storage_backend, StorageBackend::Gcs);
+    let gcs = cfg.gcs.expect("gcs config present");
+    assert_eq!(gcs.bucket, "escurel-lanes");
+    assert_eq!(gcs.prefix, "escurel/prod");
+    assert_eq!(
+        gcs.credentials_path.as_deref(),
+        Some("/etc/escurel/sa.json")
+    );
+    assert_eq!(gcs.endpoint, None, "no endpoint override means real GCS");
+}
+
+#[test]
+fn from_env_gcs_without_credentials_path_falls_through_to_adc() {
+    // On GCP the metadata server supplies tokens and no credential file
+    // exists — absent must be valid, not a missing-field error.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_STORAGE_BACKEND", "gcs"),
+        ("ESCUREL_STORAGE_GCS_BUCKET", "escurel-lanes"),
+    ])))
+    .unwrap();
+    let gcs = cfg.gcs.expect("gcs config present");
+    assert_eq!(gcs.credentials_path, None);
+    assert_eq!(gcs.prefix, "", "prefix is optional");
+}
+
+#[test]
+fn from_env_missing_gcs_bucket_is_an_error() {
+    let err = EscurelConfig::from_source(&source(env_map(&[("ESCUREL_STORAGE_BACKEND", "gcs")])))
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ESCUREL_STORAGE_GCS_BUCKET"),
+        "error should name the missing var: {msg}"
+    );
+    assert!(
+        msg.contains("gcs"),
+        "error should name the backend that requires it, not hardcode s3: {msg}"
+    );
+}
+
+#[test]
+fn from_env_rejects_an_unknown_storage_backend() {
+    let err = EscurelConfig::from_source(&source(env_map(&[("ESCUREL_STORAGE_BACKEND", "azure")])))
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("gcs"),
+        "the accepted-values message must list gcs: {err}"
+    );
+}
+
+#[test]
+fn append_backends_default_to_postgres() {
+    // The deployed shape. Switching to the lake must be an explicit
+    // operator decision, never something a default drifts into.
+    let cfg = EscurelConfig::from_source(&source(env_map(&[]))).unwrap();
+    assert_eq!(cfg.chat_backend, AppendBackend::Postgres);
+    assert_eq!(cfg.events_backend, AppendBackend::Postgres);
+}
+
+#[test]
+fn append_backends_can_be_routed_to_the_lake_independently() {
+    let cfg = EscurelConfig::from_source(&source(env_map(&[
+        ("ESCUREL_CHAT_BACKEND", "ducklake"),
+        ("ESCUREL_EVENTS_BACKEND", "postgres"),
+    ])))
+    .unwrap();
+    assert_eq!(cfg.chat_backend, AppendBackend::DuckLake);
+    assert_eq!(
+        cfg.events_backend,
+        AppendBackend::Postgres,
+        "the two surfaces are routed independently",
+    );
+}
+
+#[test]
+fn unknown_append_backend_is_an_error() {
+    let err = EscurelConfig::from_source(&source(env_map(&[("ESCUREL_CHAT_BACKEND", "s3")])))
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("ESCUREL_CHAT_BACKEND"), "got: {msg}");
+    assert!(
+        msg.contains("ducklake"),
+        "must list the accepted values: {msg}"
     );
 }

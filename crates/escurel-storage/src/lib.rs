@@ -10,12 +10,16 @@
 
 pub mod blob;
 pub mod fs;
+#[cfg(feature = "gcs")]
+pub mod gcs;
 mod key;
 #[cfg(feature = "s3")]
 pub mod s3;
 
 pub use blob::{BLOB_PREFIX, BlobId, INBOX_PREFIX};
 pub use fs::FsStore;
+#[cfg(feature = "gcs")]
+pub use gcs::{GcsStore, GcsStoreConfig};
 pub use key::{Key, KeyError};
 #[cfg(feature = "s3")]
 pub use s3::{S3Store, S3StoreConfig};

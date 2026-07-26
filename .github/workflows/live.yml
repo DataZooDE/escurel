@@ -1,0 +1,112 @@
+name: live
+
+# The tests that exercise the PRODUCTION shape, against real containers.
+#
+# Why this is a separate workflow: `ci.yml` runs no `--features`, so the
+# `live-ducklake` and `s3`/`gcs` tests compile away to nothing on the merge
+# path. That left 13 live tests across 8 files — the DuckLake writer→lake
+# →reader cycle against a real Postgres catalog and real object storage, the
+# Phase-B chat/events/CRDT cross-replica assertions, and the whole S3
+# LaneStore — verified only by a human remembering to pass the flag locally.
+#
+# They do not belong on every PR either: each test boots its own Postgres
+# and/or MinIO container, and `ci.yml` already runs with CARGO_BUILD_JOBS=1
+# and a 90-minute budget to stay inside the runner's memory. So: nightly, on
+# demand, and opt-in per-PR via a label when a change touches the storage
+# layer.
+on:
+  schedule:
+    # 04:00 UTC daily — well clear of working hours in Europe.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+
+concurrency:
+  group: live-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  # Same link-memory caps as ci.yml — the workspace statically links
+  # libduckdb into many test binaries.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_BUILD_JOBS: "1"
+
+jobs:
+  live:
+    name: live storage + ducklake
+    # On a PR this only runs when explicitly asked for with the label;
+    # schedule and manual dispatch always run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'live-tests')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-duckdb-dl
+          cache-directories: target/duckdb-download
+          cache-on-failure: true
+
+      - name: Ensure libduckdb is present (cache-restore safety)
+        run: |
+          if ! ls target/duckdb-download/*/*/libduckdb.so >/dev/null 2>&1; then
+            echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
+            cargo clean -p libduckdb-sys || true
+          fi
+
+      # testcontainers talks to the runner's Docker daemon, which is
+      # already present on ubuntu-latest. Pull the images up front so a
+      # slow registry shows up as its own step rather than a mysterious
+      # per-test timeout.
+      - name: Pre-pull test container images
+        run: |
+          docker pull postgres:16-alpine &
+          docker pull minio/minio:latest &
+          wait
+
+      # The S3 LaneStore against real MinIO, including the shared
+      # conformance suite (blob layer, size(), delete-missing, versions).
+      - name: LaneStore — S3 conformance (MinIO)
+        run: cargo test -p escurel-storage --features s3 --test s3_roundtrip
+
+      # DuckLake against a real Postgres catalog + real object storage:
+      # publish/adopt, the reader refresh cycle, and the Phase-B
+      # chat/events/CRDT cross-replica read-your-writes assertions.
+      - name: DuckLake — live (Postgres + MinIO)
+        run: |
+          cargo test -p escurel-index --features live-ducklake --test ducklake_publish_live
+          cargo test -p escurel-index --features live-ducklake --test ducklake_adopt_live
+          cargo test -p escurel-index --features live-ducklake --test ducklake_chat_live
+          cargo test -p escurel-index --features live-ducklake --test ducklake_events_live
+          cargo test -p escurel-index --features live-ducklake --test ducklake_crdt_live
+          cargo test -p escurel-index --features live-ducklake --test ducklake_spikes_live
+          cargo test -p escurel-index --features live-ducklake --test ducklake_append_lake_live
+          cargo test -p escurel-crdt --features live-ducklake --test ducklake_crdt_live
+
+      - name: DuckLake — reader role (live)
+        run: |
+          cargo test -p escurel-server --features live-ducklake --test reader_role_chat
+          cargo test -p escurel-server --features live-ducklake --test reader_role_events
+          cargo test -p escurel-server --features live-ducklake --test reader_role_crdt
+
+      # GCS has no emulator wired up yet, so there is no live GCS job.
+      # `gcs.rs` is compiled and linted on every PR by ci.yml's
+      # shipped-features step; its integration coverage is an open gap and
+      # is deliberately NOT claimed here.
+      - name: Note the GCS coverage gap
+        run: |
+          echo "::notice title=GCS not covered live::gcs.rs is compiled and \
+          linted on every PR but has no live integration test — no GCS \
+          emulator is wired into this workflow yet."

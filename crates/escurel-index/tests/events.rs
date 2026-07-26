@@ -162,3 +162,74 @@ async fn capture_can_preflag_a_candidate_instance_but_stays_in_inbox() {
         "a pre-flag is a hint, not processing",
     );
 }
+
+// --- assign_event compare-and-set -------------------------------------
+//
+// `assign_event` used to be a blind last-writer-wins UPDATE whose
+// rows-affected count was discarded, so two agents racing to claim the
+// same inbox event both "succeeded" and the second silently overwrote the
+// first's binding. It is now a CAS on `status = 'inbox'`. These tests pin
+// the three outcomes that matters: the claim, the safe re-run, and the
+// conflict.
+
+#[tokio::test]
+async fn assign_event_is_idempotent_for_the_same_instance() {
+    let h = fresh_harness();
+    let ev = h.indexer.capture_event(gmail_event()).await.unwrap();
+
+    h.indexer
+        .assign_event(&ev.event_id, INSTANCE)
+        .await
+        .unwrap();
+    // The runner re-runs `update_page` + `assign_event` to finish a
+    // partial success, so a second identical assign MUST still succeed.
+    h.indexer
+        .assign_event(&ev.event_id, INSTANCE)
+        .await
+        .expect("re-assigning to the same instance is an idempotent re-run, not a conflict");
+
+    let history = h.indexer.list_events(INSTANCE, None).await.unwrap();
+    assert_eq!(history.len(), 1, "the re-run must not duplicate history");
+    assert_eq!(history[0].instance_page_id.as_deref(), Some(INSTANCE));
+}
+
+#[tokio::test]
+async fn assign_event_refuses_to_reassign_a_claimed_event() {
+    let h = fresh_harness();
+    let ev = h.indexer.capture_event(gmail_event()).await.unwrap();
+    const OTHER: &str = "markdown/instances/engagement/other.md";
+
+    h.indexer
+        .assign_event(&ev.event_id, INSTANCE)
+        .await
+        .unwrap();
+    let err = h
+        .indexer
+        .assign_event(&ev.event_id, OTHER)
+        .await
+        .expect_err("a second instance claiming a processed event is a conflict");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("already assigned") && msg.contains(INSTANCE),
+        "the error must name the winning instance, got: {msg}",
+    );
+    // The original binding survives — this is the data loss the CAS prevents.
+    let history = h.indexer.list_events(INSTANCE, None).await.unwrap();
+    assert_eq!(history.len(), 1);
+    assert!(
+        h.indexer.list_events(OTHER, None).await.unwrap().is_empty(),
+        "the losing claim must not have moved the event",
+    );
+}
+
+#[tokio::test]
+async fn assign_event_on_a_missing_event_is_an_error() {
+    let h = fresh_harness();
+    let err = h
+        .indexer
+        .assign_event("01ARZ3NDEKTSV4RRFFQ69G5FAV", INSTANCE)
+        .await
+        .expect_err("assigning an event that was never captured must fail");
+    assert!(err.to_string().contains("does not exist"), "got: {err}",);
+}

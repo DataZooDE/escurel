@@ -14,6 +14,11 @@ homepage.workspace = true
 # (`FsStore`) need not pull the AWS SDK + its transitive deps. The
 # substrate deployment target builds with `--features s3`.
 s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:aws-credential-types"]
+# GCS-backed LaneStore. Same rationale as `s3`: the official Google client
+# and its auth stack are a heavy dependency the fs default should not pay.
+# Credentials are Application Default Credentials — the metadata server on
+# GCP, or GOOGLE_APPLICATION_CREDENTIALS pointing at a key file off it.
+gcs = ["dep:google-cloud-storage", "dep:google-cloud-gax", "dep:google-cloud-auth", "dep:serde_json"]
 
 [dependencies]
 async-trait = "0.1"
@@ -30,6 +35,10 @@ walkdir = "2"
 aws-config = { version = "1", optional = true }
 aws-sdk-s3 = { version = "1", optional = true }
 aws-credential-types = { version = "1", optional = true }
+google-cloud-storage = { version = "1.16.0", optional = true }
+google-cloud-gax = { version = "1.12.0", optional = true }
+google-cloud-auth = { version = "1.14.0", optional = true }
+serde_json = { version = "1.0.151", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

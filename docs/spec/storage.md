@@ -115,17 +115,24 @@ pub trait LaneStore: Send + Sync + 'static {
 implementation maps it to a filesystem path or an S3 object
 key.
 
-Two implementations ship in v1:
+Three implementations ship:
 
 - **`FsStore`**. `${ESCUREL_DATA_DIR}/tenants/<tenant>/<rest>`.
   Writes go to `<rest>.tmp` and `rename(2)` to publish (atomic
   on POSIX same-filesystem). `url()` returns `file://...`.
-- **`S3Store`**. Backed by `object_store::aws`. Keys are
-  S3 paths under a configured prefix. `url()` returns `s3://...`,
-  consumed by DuckDB's `httpfs` extension when reading or by
-  DuckLake when an external catalog is attached. Writes use
-  multipart upload; on drop with no `commit()` the multipart
-  is aborted. The S3 backend assumes only basic S3 semantics
+- **`S3Store`**. Backed by the official `aws-sdk-s3` crate (not
+  `object_store`), with an explicit endpoint override, static
+  credentials and forced path-style addressing — no ambient AWS
+  credential chain is consulted. Keys are S3 paths under a
+  configured prefix. `url()` returns `s3://...`, consumed by
+  DuckDB's `httpfs` extension when reading or by DuckLake when an
+  external catalog is attached. Writes are a single atomic
+  `PutObject` (S3 is atomic at the object level, so no
+  temp-then-rename dance is needed and no multipart is used);
+  the returned `Version` is the object's version-id, falling
+  back to its etag. `delete()` HEADs first because S3
+  DeleteObject is idempotent and would otherwise not honour the
+  trait's `NotFound` contract. The S3 backend assumes only basic S3 semantics
   (GET/PUT/DELETE/list/multipart-upload, path-style addressing,
   no STS, no presigned URLs, no AWS-S3-Tables-or-Vectors
   specific APIs). Verified backends: AWS S3, MinIO, Hetzner
@@ -139,10 +146,40 @@ Two implementations ship in v1:
   acceptable workaround; configure the LaneStore against the
   object-store hostname directly.
 
+- **`GcsStore`**. Backed by the official `google-cloud-storage`
+  crate. Same object layout as `S3Store`
+  (`{prefix}/tenants/{tenant}/{path}`), so one bucket is readable
+  by either backend and a migration is a copy rather than a
+  rewrite. `url()` returns `gs://...`. Credentials are
+  **Application Default Credentials**: the metadata server /
+  workload identity on GCP, or a service-account key file
+  (`ESCUREL_STORAGE_GCS_CREDENTIALS_PATH`) off it. Writes are a
+  single atomic object write; the `Version` is the object's
+  generation. Unlike S3, `delete()` on a missing key is already a
+  404, so no HEAD-first dance is needed.
+
+  *Residency note*: the DataZoo substrate's SPEC §5 keeps
+  app/customer data on Hetzner Object Storage and only
+  recovery/integrity-critical data on GCP, so `GcsStore` is a
+  portability backend for GCP-hosted deployments — substrate
+  tenant lanes must not be pointed at it.
+
 DuckDB happily operates against an object-store URL via
 `httpfs`; we do not need to round-trip data through the
-server process. The S3 backend is gated behind the `s3` Cargo
-feature.
+server process. The S3 and GCS backends are gated behind the
+`s3` and `gcs` Cargo features respectively; the published
+container image and the release binaries build both.
+
+### Adding a backend
+
+Implement the five required `LaneStore` methods (`read`, `write`,
+`list`, `delete`, `url`) and override `backend()` and `size()`;
+the blob layer rides on the defaults. Then run the shared
+contract — `crates/escurel-storage/tests/conformance/` —
+against it. Backend-specific behaviour (URL scheme, client
+construction, atomicity mechanism) stays in the per-backend test
+file; everything the trait owes any backend belongs in the shared
+suite so the implementations cannot drift apart.
 
 ## Indexer
 
@@ -280,6 +317,65 @@ attached **read-write** from every replica including readers; see the
 design note for the full per-table breakdown and the CRDT scope boundary
 (durable storage is shared across replicas; live cross-replica session
 failover is not).
+
+### Routing chat and events to the lake instead
+
+`chat_messages` and `events` can each be pointed at a table in the **lake**
+rather than the catalog's database — `ESCUREL_CHAT_BACKEND` /
+`ESCUREL_EVENTS_BACKEND` = `postgres` (default) | `ducklake`, set
+independently. The surface, row shape, ordering (`(ts, msg_id)` with ULID
+tiebreakers) and cursor format are identical; only where the payload
+physically lives changes. That matters when the catalog and the object
+store fall under different data-residency rules: on the lake, the payload
+follows `DATA_PATH`.
+
+`crdt_ops`/`crdt_snapshots` have no lake variant and stay on Postgres.
+
+Three properties the Postgres tables get from the schema, and how the lake
+variant keeps them (all measured — see
+`docs/notes/discovered/2026-07-25-ducklake-multiwriter-and-compaction.md`):
+
+- **Every replica writes.** The lake is attached a SECOND time, read-write,
+  under its own alias, alongside the corpus attach — which stays
+  `READ_ONLY` on a reader. Concurrent read-write attaches from independent
+  processes lose no writes. So readers still serve `append_message` /
+  `capture_event`, exactly as with the Postgres variant.
+- **Cross-replica read-your-writes.** Appends commit per call, so a
+  separate replica sees a row immediately — no publish/adopt cycle. This is
+  why appends are NOT batched into a flush window: batching would have cut
+  the file count but delayed visibility by the flush interval, breaking the
+  property the surface exists to provide.
+- **`capture_event` idempotency.** DuckLake enforces no PRIMARY KEY and has
+  no `ON CONFLICT`, so first-writer-wins is enforced by an anti-join in the
+  INSERT instead. Note this is weaker than a PK: two *simultaneous*
+  captures of one id could both insert. The runner's own SQLite ledger is
+  what makes exactly-one-run-per-event a hard invariant.
+
+**The cost, stated plainly.** Data inlining must stay off (inlined rows
+live in the catalog, which defeats the point), so **every append writes its
+own Parquet object**. ducklake's own compaction calls
+(`ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`, both
+overloads) are silent no-ops on this shape. What works is the pattern
+`publish_lake` already uses for the corpus — `CREATE OR REPLACE TABLE t AS
+SELECT * FROM t` — followed by snapshot expiry and cleanup, which is what
+actually frees the superseded objects. Measured: 40 files → 41 after the
+rewrite → **1** after GC.
+
+The publish task runs that pair periodically. Because it is what bounds
+object growth, a lake-backed surface makes the task non-optional: when
+`ESCUREL_SNAPSHOT_PUBLISH_SECS` is unset it defaults to **300s** instead of
+staying disabled.
+
+**Volume ceiling.** Object count between compactions is
+*(compaction interval × append rate)*; at the documented 120 writes/min
+per-tenant quota and the 300s default, that is ≤ ~600 objects. Compaction
+itself is O(rows) — it rewrites the whole table — so *retention*
+(`delete_chat_history(before_ts)`) is what bounds compaction cost, and the
+interval is the knob trading object count against rewrite volume. A
+deployment with a chat firehose, or one that never prunes history, should
+stay on the Postgres variant: the spec's answer for multi-million-row event
+volume is still an external read-only lake attached for the origin axis,
+not this operational table.
 
 ## DuckDB schema
 

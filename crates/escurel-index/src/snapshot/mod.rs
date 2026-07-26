@@ -14,6 +14,7 @@
 //! [`IndexerHandle::swap`] a freshly opened indexer in without a
 //! restart and without tearing an in-flight request.
 
+mod append_lake;
 mod chat_pg;
 mod events_pg;
 mod lake;
@@ -28,6 +29,11 @@ use thiserror::Error;
 use crate::indexer::{Indexer, IndexerError};
 use crate::schema::MigrationError;
 
+pub use append_lake::{
+    APPEND_LAKE_ALIAS, attach_append_lake_sql, attach_chat_lake, attach_events_lake,
+    compact_append_table, compact_append_tables, create_chat_lake_table_sql,
+    create_events_lake_table_sql,
+};
 pub use chat_pg::{CHAT_PG_ALIAS, attach_chat_pg, attach_chat_pg_sql, create_chat_pg_table_sql};
 pub use events_pg::{
     EVENTS_PG_ALIAS, attach_events_pg, attach_events_pg_sql, create_events_pg_table_sql,

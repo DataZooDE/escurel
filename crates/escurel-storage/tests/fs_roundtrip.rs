@@ -7,6 +7,8 @@ use bytes::Bytes;
 use escurel_storage::{FsStore, Key, LaneStore, StoreError};
 use tempfile::TempDir;
 
+mod conformance;
+
 fn store_and_dir() -> (FsStore, TempDir) {
     let dir = TempDir::new().expect("tempdir");
     let store = FsStore::new(dir.path().to_path_buf());
@@ -228,4 +230,15 @@ async fn write_returns_distinct_versions_for_distinct_writes() {
         v1, v2,
         "two successive writes must produce different versions"
     );
+}
+
+/// The shared `LaneStore` contract (`tests/conformance/`). Everything above
+/// this line is filesystem-SPECIFIC — parent-directory creation, `.tmp`
+/// orphan cleanup, the `file://` scheme. Everything the trait owes any
+/// backend lives in the shared suite so `FsStore`, `S3Store` and `GcsStore`
+/// cannot drift apart.
+#[tokio::test]
+async fn fs_store_satisfies_the_lane_store_contract() {
+    let (store, _dir) = store_and_dir();
+    conformance::run_lane_store_conformance(&store, "fs").await;
 }

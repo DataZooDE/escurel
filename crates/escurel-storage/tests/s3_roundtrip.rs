@@ -16,6 +16,8 @@ use testcontainers_modules::minio::MinIO;
 use testcontainers_modules::testcontainers::ContainerAsync;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
+mod conformance;
+
 /// Boot a MinIO container and build an `S3Store` against it under
 /// the given prefix, creating the bucket first. The container handle
 /// is returned alongside the store so the caller keeps it alive for
@@ -218,4 +220,16 @@ async fn s3_survives_indexer_style_page_write_and_readback() {
         read_back, body,
         "indexer-style page round-trips byte-for-byte",
     );
+}
+
+/// The shared `LaneStore` contract (`tests/conformance/`), against real
+/// MinIO. This is what closes the drift the per-backend files had: the S3
+/// side was missing `delete_missing_returns_not_found` and the
+/// distinct-versions check, and the blob layer had never run against S3 at
+/// all despite riding on `list()`, whose contract differs most between
+/// backends.
+#[tokio::test]
+async fn s3_store_satisfies_the_lane_store_contract() {
+    let (store, _node) = store_and_minio("conformance").await;
+    conformance::run_lane_store_conformance(&store, "s3").await;
 }

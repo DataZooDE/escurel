@@ -110,6 +110,25 @@ async fn publish_and_gc(
     let last_epoch = *last_published_epoch
         .lock()
         .expect("last_published_epoch lock");
+    // Compact the append-shaped lake tables (chat / events) FIRST, and
+    // outside the corpus dirty-check below. They churn independently of
+    // pages/blocks: a deployment can append thousands of chat messages
+    // without the corpus changing at all, and each of those appends wrote
+    // its own Parquet file (inlining is off by necessity). If compaction
+    // sat behind `report.skipped` it would never run on exactly the
+    // workload that needs it.
+    //
+    // No-op unless a surface is actually lake-backed.
+    let mut compacted = false;
+    match indexer.compact_append_lake().await {
+        Ok(()) => compacted = true,
+        Err(e) => tracing::warn!(
+            target: "escurel",
+            error = %e,
+            "periodic publish: append-table compaction failed"
+        ),
+    }
+
     let report = match publish_lake(&indexer, lake_cfg, last_epoch).await {
         Ok(report) => report,
         Err(e) => {
@@ -123,6 +142,12 @@ async fn publish_and_gc(
     };
     if report.skipped {
         tracing::debug!(target: "escurel", "periodic publish: clean, nothing to publish");
+        // Compaction rewrote files even though the corpus was clean; the
+        // superseded ones are still referenced by old snapshots, so GC is
+        // what actually frees them on the object store.
+        if compacted {
+            gc_after_compaction(&indexer, lake_cfg, keep).await;
+        }
         return;
     }
     *last_published_epoch
@@ -149,6 +174,30 @@ async fn publish_and_gc(
                 "periodic publish: gc_lake_snapshots failed (publish itself still committed)"
             );
         }
+    }
+}
+
+/// Expire + clean up after a compaction that ran on a clean corpus.
+/// `CREATE OR REPLACE TABLE` writes a fresh consolidated Parquet file but
+/// leaves the superseded ones referenced by older snapshots — expiry and
+/// cleanup are what actually remove them from the object store (spike S4:
+/// 100 files -> 1 only after this step).
+async fn gc_after_compaction(indexer: &escurel_index::Indexer, lake_cfg: &LakeConfig, keep: u32) {
+    match gc_lake_snapshots(indexer, lake_cfg, keep).await {
+        Ok(pruned) => {
+            if pruned > 0 {
+                tracing::info!(
+                    target: "escurel",
+                    pruned,
+                    "periodic publish: pruned snapshots after append-table compaction"
+                );
+            }
+        }
+        Err(e) => tracing::warn!(
+            target: "escurel",
+            error = %e,
+            "periodic publish: gc after compaction failed"
+        ),
     }
 }
 

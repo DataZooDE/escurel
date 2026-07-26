@@ -3251,7 +3251,18 @@ async fn tool_assign_event(indexer: &Indexer, args: Value) -> Result<Value, Json
     indexer
         .assign_event(&a.event_id, &a.instance_page_id)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("assign_event: {e}")))?;
+        .map_err(|e| match e {
+            // Caller errors, not server faults: the event does not exist,
+            // or another agent already claimed it. `invalid_params` matches
+            // how `PackSkillMissing` is surfaced and — unlike `internal` —
+            // tells a retrying caller that retrying will not help.
+            // Re-assigning to the SAME instance returns Ok(()) and never
+            // reaches here, so runner recovery is unaffected.
+            IndexerError::EventNotFound { .. } | IndexerError::EventAlreadyAssigned { .. } => {
+                JsonRpcError::invalid_params(format!("assign_event: {e}"))
+            }
+            other => JsonRpcError::internal(format!("assign_event: {other}")),
+        })?;
     Ok(
         json!({ "event_id": a.event_id, "instance_page_id": a.instance_page_id, "status": "processed" }),
     )

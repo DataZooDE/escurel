@@ -51,6 +51,13 @@ pub const CHAT_PG_TABLE_NAME: &str = "escurel_chat_messages";
 pub enum ChatBackend {
     /// The local per-tenant `chat_messages` table.
     Local,
+    /// A read-write table in the LAKE, i.e. Parquet on the object store
+    /// (`snapshot::attach_chat_lake`). Same row shape and same
+    /// every-replica-writes model as `AttachedPostgres`; the difference is
+    /// where the payload physically lives — following `DATA_PATH` rather
+    /// than the catalog's database. `alias` is
+    /// `snapshot::APPEND_LAKE_ALIAS`.
+    AttachedLake { alias: String },
     /// An attached, read-write Postgres table shared by every replica.
     /// `alias` is the DuckDB `ATTACH` alias (`snapshot::CHAT_PG_ALIAS`,
     /// duplicated here as a plain `String` rather than a crate
@@ -176,7 +183,9 @@ impl Indexer {
     fn chat_table(&self) -> String {
         match self.chat_backend() {
             ChatBackend::Local => "chat_messages".to_owned(),
-            ChatBackend::AttachedPostgres { alias } => format!("{alias}.{CHAT_PG_TABLE_NAME}"),
+            ChatBackend::AttachedPostgres { alias } | ChatBackend::AttachedLake { alias } => {
+                format!("{alias}.{CHAT_PG_TABLE_NAME}")
+            }
         }
     }
 
@@ -188,7 +197,9 @@ impl Indexer {
     fn chat_tenant_scope(&self) -> Option<&str> {
         match self.chat_backend() {
             ChatBackend::Local => None,
-            ChatBackend::AttachedPostgres { .. } => Some(self.tenant()),
+            ChatBackend::AttachedPostgres { .. } | ChatBackend::AttachedLake { .. } => {
+                Some(self.tenant())
+            }
         }
     }
 
@@ -567,7 +578,11 @@ impl Indexer {
         );
         let dense_vec_expr = match self.chat_backend() {
             ChatBackend::Local => "dense_vec".to_owned(),
-            ChatBackend::AttachedPostgres { .. } => {
+            // Both shared backends store `dense_vec` as a variable-length
+            // `FLOAT[]` (DuckLake rejects the fixed-width `FLOAT[768]`, and
+            // the Postgres attach mirrors that), so both cast back before
+            // the distance operator.
+            ChatBackend::AttachedPostgres { .. } | ChatBackend::AttachedLake { .. } => {
                 format!("dense_vec::FLOAT[{BLOCKS_DENSE_VEC_DIM}]")
             }
         };

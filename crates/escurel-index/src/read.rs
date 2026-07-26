@@ -553,7 +553,13 @@ impl Indexer {
         // projection of its events up to T). Pages with no such snapshot
         // fall through to the current-state path below.
         if let Some(ts) = as_of
-            && let Some(snap) = crate::crdt_history::load_snapshot_at(&conn, page_id, ts)?
+            && let Some(snap) = crate::crdt_history::load_snapshot_at(
+                &conn,
+                &self.crdt_snapshots_table(),
+                self.crdt_tenant_scope(),
+                page_id,
+                ts,
+            )?
         {
             return Ok(Some(crate::crdt_history::materialize_snapshot(
                 page_id, &snap,
