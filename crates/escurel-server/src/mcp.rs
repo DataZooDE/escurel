@@ -2690,6 +2690,9 @@ async fn tool_update_page(
             )
             .await;
 
+            // Announce the confirmed write as an inbox event, so a consumer
+            // can be woken by a write instead of polling for it.
+            emit_page_event(indexer, state.webhook.as_ref(), &a, &new_version);
             Ok(json!({
                 "ok": true,
                 "issues": [],
@@ -3189,6 +3192,61 @@ async fn tool_capture_event(
         hook.notify(event.clone(), indexer.tenant());
     }
     Ok(event)
+}
+
+/// Announce a confirmed `update_page` write to the outbound webhook.
+///
+/// ## Notification, not work
+///
+/// This does **not** capture an inbox item. The inbox is a work queue: the
+/// runner drains it and dispatches each entry. Turning every write into an
+/// inbox entry makes a write into work, and then
+///
+///   * a write announces itself,
+///   * the runner dispatches the announcement,
+///   * processing it writes again,
+///
+/// which is unbounded — a page-write carries no cascade lineage for #157's
+/// depth and budget caps to bite on. Measured, not theorised: with writes
+/// enqueued, one demo run produced 122 announcements for a single skill and
+/// starved the real workflow behind a quota gate.
+///
+/// So a page write is delivered as a **notification only**. Consumers that
+/// want to be woken by a write subscribe to the webhook; the work queue
+/// keeps its meaning. This is also what makes workflow completion
+/// observable at all: a runner-authored write is exactly the interesting
+/// one, and any inbox-based scheme has to suppress it to avoid the loop.
+///
+/// Best-effort and fire-and-forget, like the capture webhook: a failure
+/// never touches the write, which already succeeded.
+fn emit_page_event(
+    indexer: &Indexer,
+    webhook: Option<&crate::webhook::Webhook>,
+    a: &UpdatePageArgs,
+    new_version: &str,
+) {
+    let Some(hook) = webhook else { return };
+    // Instance pages only: the skill lives in the path
+    // (`markdown/instances/<skill>/<id>.md`). A skill-page write is not an
+    // instance change and is not announced.
+    let Some(skill) = a
+        .page_id
+        .split('/')
+        .nth(2)
+        .filter(|_| a.page_id.starts_with("markdown/instances/"))
+        .map(str::to_string)
+    else {
+        return;
+    };
+    hook.notify(
+        json!({
+            "kind": "page_write",
+            "label_skill": skill,
+            "instance_page_id": a.page_id,
+            "new_version": new_version,
+        }),
+        indexer.tenant(),
+    );
 }
 
 #[derive(Deserialize)]
