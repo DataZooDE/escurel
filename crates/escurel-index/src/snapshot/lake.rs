@@ -563,6 +563,7 @@ pub async fn adopt_lake(
     Migrator::ensure_external_endpoints(&conn)?;
     Migrator::ensure_pack_subscriptions(&conn)?;
     Migrator::ensure_block_context(&conn)?;
+    Migrator::ensure_provenance_graph(&conn)?;
 
     // `contextualize` is not mirrored: it is an INGEST-side knob and the
     // adopted indexer never ingests; the default mode is correct here.

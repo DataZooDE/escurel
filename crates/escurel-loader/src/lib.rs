@@ -159,6 +159,7 @@ impl LoaderBuilder {
         // boot (idempotent), so a tenant DB provisioned before the column
         // existed gains it before `refresh_fts` indexes it.
         Migrator::ensure_block_context(&conn)?;
+        Migrator::ensure_provenance_graph(&conn)?;
         let indexer = Arc::new(Indexer::new(
             Arc::clone(&store),
             Arc::clone(&self.embedder),
@@ -393,6 +394,7 @@ pub async fn transfer(
     Migrator::ensure_group_members(&conn)?;
     Migrator::ensure_external_credentials(&conn)?;
     Migrator::ensure_external_endpoints(&conn)?;
+    Migrator::ensure_provenance_graph(&conn)?;
     let live = Indexer::new(
         Arc::clone(&live_store),
         Arc::new(ZeroEmbedder::default()),
