@@ -118,21 +118,22 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustup component add rustfmt clippy
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Own key: the release profile shares no artifacts with the
-          # dev/test profiles the `ci` job caches.
-          shared-key: workspace-duckdb-dl-release
-          cache-directories: target/duckdb-download
-          cache-on-failure: true
-
-      - name: Ensure libduckdb is present (cache-restore safety)
-        run: |
-          if ! ls target/duckdb-download/*/*/libduckdb.so >/dev/null 2>&1; then
-            echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
-            cargo clean -p libduckdb-sys || true
-          fi
-
+      # NO rust-cache here — deliberately, and NOT an oversight. libduckdb-sys
+      # (DUCKDB_DOWNLOAD_LIB, see .cargo/config.toml) downloads the shared
+      # libduckdb into target/duckdb-download and links against it.
+      # Swatinem/rust-cache PRUNES that downloaded .so when it saves the cache,
+      # so a *restored* cache link-fails with `rust-lld: unable to find library
+      # -lduckdb` — the build-script fingerprint is restored (so the script
+      # does NOT re-run and re-download) but the .so it points at is gone. The
+      # prior `cache-directories: target/duckdb-download` + conditional
+      # `cargo clean -p libduckdb-sys` safety step did NOT close this (the
+      # release job stayed red on main), so we do what release.yml already
+      # proved correct on all three platforms: no cache → the build script
+      # always runs → libduckdb is always freshly downloaded → the link always
+      # resolves. A cold release build per PR is the price of a green gate;
+      # libduckdb is a precompiled download (no C++ compile), and this job has
+      # its own 90-minute budget. See release.yml's "NOTE: deliberately NO
+      # rust-cache here" for the same reasoning on the tag-release path.
       - name: cargo build --release
         run: cargo build --workspace --release
 
