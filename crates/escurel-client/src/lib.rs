@@ -63,9 +63,10 @@ pub use error::{Error, JSONRPC_ADMIN_REQUIRED};
 // frames. These are the same names the old gRPC client re-exported
 // from `escurel_proto::v1`, now sourced from `escurel-types`.
 pub use escurel_types::{
-    AppendMessageRequest, AppendMessageResponse, AssignEventRequest, AssignEventResponse,
-    CaptureEventRequest, ChatMessage, DeletePageRequest, DeletePageResponse, Edge, Event,
-    ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, ListEventsRequest,
+    AbandonedPathsRequest, AbandonedPathsResponse, AppendMessageRequest, AppendMessageResponse,
+    AssignEventRequest, AssignEventResponse, CaptureEventRequest, ChatMessage, DeletePageRequest,
+    DeletePageResponse, Edge, Event, ExpandBlock, ExpandRequest, ExpandResponse,
+    ExpectationDriftRequest, ExpectationDriftResponse, InstanceInfo, ListEventsRequest,
     ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
     ListInstancesResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
     ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse, PageRef,
@@ -216,6 +217,30 @@ impl Client {
             args["as_of"] = json!(req.as_of);
         }
         self.transport.call_typed("provenance_ancestry", args).await
+    }
+
+    /// Decisions resting on a since-superseded expectation (ADR-0010).
+    pub async fn expectation_drift(
+        &self,
+        req: ExpectationDriftRequest,
+    ) -> Result<ExpectationDriftResponse, Error> {
+        let mut args = json!({});
+        if !req.skill.is_empty() {
+            args["skill"] = json!(req.skill);
+        }
+        self.transport.call_typed("expectation_drift", args).await
+    }
+
+    /// Nodes retired by supersession/abandonment (ADR-0010).
+    pub async fn abandoned_paths(
+        &self,
+        req: AbandonedPathsRequest,
+    ) -> Result<AbandonedPathsResponse, Error> {
+        let mut args = json!({});
+        if !req.skill.is_empty() {
+            args["skill"] = json!(req.skill);
+        }
+        self.transport.call_typed("abandoned_paths", args).await
     }
 
     /// Return the tenant's Tier-1 skill catalogue.

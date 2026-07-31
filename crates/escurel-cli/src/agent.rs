@@ -7,10 +7,11 @@ use std::io::Read as _;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use escurel_client::{
-    AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, DeletePageRequest,
-    ExpandRequest, ListEventsRequest, ListInboxRequest, ListInstancesRequest, ListMessagesRequest,
-    ListSkillsRequest, NeighboursRequest, ProvenanceAncestryRequest, QueryInstanceRequest,
-    ResolveRequest, RunStoredQueryRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
+    AbandonedPathsRequest, AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client,
+    DeletePageRequest, ExpandRequest, ExpectationDriftRequest, ListEventsRequest, ListInboxRequest,
+    ListInstancesRequest, ListMessagesRequest, ListSkillsRequest, NeighboursRequest,
+    ProvenanceAncestryRequest, QueryInstanceRequest, ResolveRequest, RunStoredQueryRequest,
+    SearchRequest, UpdatePageRequest, ValidateRequest,
 };
 use serde_json::{Value, json};
 
@@ -148,6 +149,24 @@ pub struct NeighboursArgs {
 pub enum ProvenanceCmd {
     /// Bounded multi-hop provenance ancestry (ADR-0010).
     Ancestry(AncestryArgs),
+    /// Decisions resting on a since-superseded expectation.
+    Drift(DriftArgs),
+    /// Nodes retired by supersession/abandonment.
+    Abandoned(AbandonedArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DriftArgs {
+    /// Restrict to decisions of this skill.
+    #[arg(long)]
+    pub skill: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct AbandonedArgs {
+    /// Restrict to retired nodes of this skill.
+    #[arg(long)]
+    pub skill: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -329,6 +348,8 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Page(PageCmd::Snapshots { page_id }) => list_snapshots(client, page_id).await,
         Command::Link(LinkCmd::Neighbours(a)) => neighbours(client, a).await,
         Command::Provenance(ProvenanceCmd::Ancestry(a)) => provenance_ancestry(client, a).await,
+        Command::Provenance(ProvenanceCmd::Drift(a)) => expectation_drift(client, a).await,
+        Command::Provenance(ProvenanceCmd::Abandoned(a)) => abandoned_paths(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Query(QueryCmd::Run(a)) => run_query(client, a).await,
         Command::Query(QueryCmd::Instance(a)) => query_instance(client, a).await,
@@ -643,6 +664,43 @@ async fn provenance_ancestry(client: &Client, a: AncestryArgs) -> Result<Value> 
         })
         .collect();
     Ok(json!({ "hops": hops }))
+}
+
+async fn expectation_drift(client: &Client, a: DriftArgs) -> Result<Value> {
+    let resp = client
+        .expectation_drift(ExpectationDriftRequest {
+            skill: a.skill.unwrap_or_default(),
+        })
+        .await?;
+    let rows: Vec<Value> = resp
+        .rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "decision_page_id": r.decision_page_id,
+                "decision_skill": r.decision_skill,
+                "expectation_page_id": r.expectation_page_id,
+                "superseding_page_id": r.superseding_page_id,
+                "decided_at": r.decided_at,
+                "superseded_at": r.superseded_at,
+            })
+        })
+        .collect();
+    Ok(json!({ "rows": rows }))
+}
+
+async fn abandoned_paths(client: &Client, a: AbandonedArgs) -> Result<Value> {
+    let resp = client
+        .abandoned_paths(AbandonedPathsRequest {
+            skill: a.skill.unwrap_or_default(),
+        })
+        .await?;
+    let nodes: Vec<Value> = resp
+        .nodes
+        .into_iter()
+        .map(|n| json!({ "page_id": n.page_id, "skill": n.skill, "via": n.via }))
+        .collect();
+    Ok(json!({ "nodes": nodes }))
 }
 
 async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {

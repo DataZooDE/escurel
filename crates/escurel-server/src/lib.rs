@@ -32,6 +32,11 @@
 //!   `ESCUREL_OBSERVABILITY_OTLP_ENDPOINT` (or the deprecated
 //!   `ESCUREL_OTLP_ENDPOINT`); when unset traces are a no-op.
 
+// The single `tools_list_payload` `json!` literal enumerates the whole MCP
+// tool surface; each added tool deepens the macro's recursive expansion.
+// The provenance-graph tools (ADR-0010) pushed it past the default 128.
+#![recursion_limit = "256"]
+
 mod auth_gate;
 pub mod config;
 mod config_probe;
