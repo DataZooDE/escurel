@@ -6,6 +6,10 @@ tenant into a persistent, provenance-aware memory for a long-running
 data-science / analytics project. It ratifies
 [ADR-0010](../../docs/adr/0010-project-memory-provenance-graph.md).
 
+![project-memory at a glance](../../docs/project-memory-infographic.svg)
+
+*(One-page overview: [`docs/project-memory-infographic.svg`](../../docs/project-memory-infographic.svg) · PNG: [`.png`](../../docs/project-memory-infographic.png))*
+
 It is an **optional** pack. A tenant that never subscribes to it is a
 plain escurel knowledge base; subscribing adds the fourteen entity skills
 below as a read-only base layer, and the tenant authors its own
