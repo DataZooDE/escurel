@@ -22,6 +22,8 @@ acceptance gates that apply.
 | [0006](0006-skill-packs.md) | Skill packs: the signed unit of knowledge distribution | Accepted |
 | [0007](0007-pack-subscribe-import.md) | Pack subscribe/import: the pinned base layer at the spoke | Accepted |
 | [0008](0008-promotion-scrub-gate.md) | The promotion + scrub gate (the L2→L3 harvest) | Accepted |
+| [0009](0009-ducklake-postgres-catalog.md) | DuckLake derived-index backend with a live Postgres catalog | Accepted |
+| [0010](0010-project-memory-provenance-graph.md) | Project-memory: the provenance-aware, expectation-aware graph | Accepted |
 
 New ADRs are numbered sequentially (`0002-…`, `0003-…`). An ADR
 is never edited after acceptance except to update its **Status**
