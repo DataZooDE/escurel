@@ -166,6 +166,41 @@ pub struct NeighboursResponse {
     pub edges: Vec<Edge>,
 }
 
+// ── provenance graph (ADR-0010) ───────────────────────────────────
+
+/// Bounded multi-hop ancestry over the provenance graph. `direction` is
+/// `"up"` (everything this page rests on) or `"down"` (everything derived
+/// from it); `relations` (possibly empty = all) restricts the edge kinds;
+/// `max_hops` is clamped server-side.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProvenanceAncestryRequest {
+    pub page_id: String,
+    pub direction: String,
+    pub relations: Vec<String>,
+    pub max_hops: u32,
+    pub as_of: String,
+}
+
+/// One node reached while walking the provenance graph. MCP wire keys:
+/// `page_id`, `skill`, `relation`, `depth`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProvenanceHop {
+    pub page_id: String,
+    pub skill: String,
+    // `null` for a bare/body link → "" rather than failing decode.
+    #[serde(deserialize_with = "null_as_default")]
+    pub relation: String,
+    pub depth: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProvenanceAncestryResponse {
+    pub hops: Vec<ProvenanceHop>,
+}
+
 // ── skills / instances ────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

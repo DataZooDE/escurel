@@ -69,10 +69,11 @@ pub use escurel_types::{
     ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
     ListInstancesResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
     ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse, PageRef,
-    QueryInstanceRequest, QueryInstanceResponse, ResolveRequest, ResolveResponse,
-    RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill,
-    StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest,
-    ValidateResponse, ValidationIssue, WikilinkParsed,
+    ProvenanceAncestryRequest, ProvenanceAncestryResponse, QueryInstanceRequest,
+    QueryInstanceResponse, ResolveRequest, ResolveResponse, RunStoredQueryRequest,
+    RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
+    TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
+    ValidationIssue, WikilinkParsed,
 };
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
@@ -194,6 +195,27 @@ impl Client {
             args["link_skill"] = json!(req.link_skill);
         }
         self.transport.call_typed("neighbours", args).await
+    }
+
+    /// Bounded multi-hop provenance ancestry (ADR-0010).
+    pub async fn provenance_ancestry(
+        &self,
+        req: ProvenanceAncestryRequest,
+    ) -> Result<ProvenanceAncestryResponse, Error> {
+        let mut args = json!({ "page_id": req.page_id });
+        if !req.direction.is_empty() {
+            args["direction"] = json!(req.direction);
+        }
+        if !req.relations.is_empty() {
+            args["relations"] = json!(req.relations);
+        }
+        if req.max_hops > 0 {
+            args["max_hops"] = json!(req.max_hops);
+        }
+        if !req.as_of.is_empty() {
+            args["as_of"] = json!(req.as_of);
+        }
+        self.transport.call_typed("provenance_ancestry", args).await
     }
 
     /// Return the tenant's Tier-1 skill catalogue.
