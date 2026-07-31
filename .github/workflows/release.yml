@@ -340,8 +340,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/}"
-          MSG="$(git tag -l --format='%(contents)' "$TAG")"
-          [[ -z "$MSG" ]] && MSG="Release $TAG"
+          # actions/checkout leaves refs/tags/$TAG as a LIGHTWEIGHT ref
+          # (pointing straight at the commit), so `%(contents)` would return
+          # the tip *commit* message instead of our curated annotated-tag
+          # message. Force-fetch the real annotated tag object first, then
+          # read its message. (Without this, every release's notes were the
+          # last commit's body — fixed here.)
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          MSG="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)')"
+          [[ -z "${MSG//[[:space:]]/}" ]] && MSG="Release $TAG"
           # Mark pre-releases (rc/alpha/beta tags) so they are not "Latest".
           PRE=""
           case "$TAG" in *-rc*|*-alpha*|*-beta*) PRE="--prerelease" ;; esac

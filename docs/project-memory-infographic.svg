@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="920" viewBox="0 0 1280 920" font-family="'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#6b6f76"/>
+    </marker>
+    <marker id="arwt" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#1a9988"/>
+    </marker>
+    <style>
+      .h1{font-size:34px;font-weight:700}
+      .sub{font-size:16px}
+      .sect{font-size:15px;font-weight:700;letter-spacing:.4px}
+      .node{font-size:14px;font-weight:600}
+      .rel{font-size:11px;font-style:italic}
+      .desc{font-size:12px}
+      .tool{font-size:14px;font-weight:700}
+      .foot{font-size:12.5px}
+      .tag{font-size:13px;font-weight:600}
+    </style>
+  </defs>
+
+  <rect width="1280" height="920" fill="#f0f4f7"/>
+  <rect width="1280" height="96" fill="#456481"/>
+  <text x="40" y="50" class="h1" fill="#ffffff">escurel · Project Memory</text>
+  <text x="40" y="78" class="sub" fill="#d6e0e8">A provenance-aware, expectation-aware memory for long-running data-science projects</text>
+  <text x="1240" y="58" text-anchor="end" font-size="13" fill="#cfdae3">project-memory pack · 14 skills · DuckDB · MCP + CLI</text>
+
+  <!-- ================= TWO GRAPHS ================= -->
+  <text x="40" y="135" class="sect" fill="#456481">TWO EVOLVING GRAPHS, BRIDGED BY DECISIONS</text>
+  <text x="40" y="155" class="desc" fill="#6b6f76">Most lost context comes from the expectation side — goals/expectations that quietly changed.</text>
+
+  <!-- Expectation graph panel (DataZoo orange) -->
+  <rect x="40" y="172" width="360" height="300" rx="12" fill="#fff3ea" stroke="#ff7518" stroke-width="1.5"/>
+  <text x="60" y="197" class="node" fill="#b4530f">EXPECTATION GRAPH — what stakeholders want</text>
+
+  <g>
+    <rect x="120" y="212" width="200" height="34" rx="8" fill="#ffe8d5" stroke="#ff7518"/>
+    <text x="220" y="234" text-anchor="middle" class="node" fill="#b4530f">stakeholder</text>
+    <line x1="220" y1="246" x2="220" y2="268" stroke="#6b6f76" marker-end="url(#arw)"/>
+    <text x="230" y="262" class="rel" fill="#6b6f76">held_by</text>
+
+    <rect x="120" y="270" width="200" height="34" rx="8" fill="#ffe8d5" stroke="#ff7518"/>
+    <text x="220" y="292" text-anchor="middle" class="node" fill="#b4530f">goal</text>
+    <line x1="220" y1="304" x2="220" y2="326" stroke="#6b6f76" marker-end="url(#arw)"/>
+    <text x="230" y="320" class="rel" fill="#6b6f76">refines</text>
+
+    <rect x="120" y="328" width="200" height="34" rx="8" fill="#ffd9bd" stroke="#e0620f"/>
+    <text x="220" y="350" text-anchor="middle" class="node" fill="#b4530f">expectation ⟲ supersedes</text>
+    <line x1="220" y1="362" x2="220" y2="384" stroke="#6b6f76" marker-end="url(#arw)"/>
+    <text x="230" y="378" class="rel" fill="#6b6f76">measured_by</text>
+
+    <rect x="120" y="386" width="200" height="34" rx="8" fill="#ffe8d5" stroke="#ff7518"/>
+    <text x="220" y="408" text-anchor="middle" class="node" fill="#b4530f">success_criterion</text>
+
+    <rect x="52" y="328" width="58" height="34" rx="8" fill="#fff3ea" stroke="#ff7518"/>
+    <text x="81" y="350" text-anchor="middle" font-size="11" font-weight="600" fill="#b4530f">priority</text>
+    <rect x="52" y="386" width="58" height="34" rx="8" fill="#fff3ea" stroke="#ff7518"/>
+    <text x="81" y="405" text-anchor="middle" font-size="10.5" font-weight="600" fill="#b4530f">constraint</text>
+  </g>
+
+  <!-- Knowledge graph panel (DataZoo blue) -->
+  <rect x="880" y="172" width="360" height="300" rx="12" fill="#eaf1f7" stroke="#39729e" stroke-width="1.5"/>
+  <text x="900" y="197" class="node" fill="#2b5578">KNOWLEDGE GRAPH — how understanding is built</text>
+
+  <g>
+    <rect x="960" y="212" width="200" height="34" rx="8" fill="#dfeaf3" stroke="#39729e"/>
+    <text x="1060" y="234" text-anchor="middle" class="node" fill="#2b5578">dataset</text>
+    <line x1="1060" y1="246" x2="1060" y2="268" stroke="#6b6f76" marker-end="url(#arw)"/>
+    <text x="1070" y="262" class="rel" fill="#6b6f76">uses</text>
+
+    <rect x="960" y="270" width="200" height="34" rx="8" fill="#dfeaf3" stroke="#39729e"/>
+    <text x="1060" y="292" text-anchor="middle" class="node" fill="#2b5578">analysis</text>
+    <line x1="1060" y1="304" x2="1060" y2="326" stroke="#6b6f76" marker-end="url(#arw)"/>
+    <text x="1070" y="320" class="rel" fill="#6b6f76">produced_by</text>
+
+    <rect x="960" y="328" width="200" height="34" rx="8" fill="#dfeaf3" stroke="#39729e"/>
+    <text x="1060" y="350" text-anchor="middle" class="node" fill="#2b5578">result</text>
+    <line x1="1060" y1="362" x2="1060" y2="384" stroke="#6b6f76" marker-end="url(#arw)"/>
+    <text x="1070" y="378" class="rel" fill="#6b6f76">supports / refutes</text>
+
+    <rect x="960" y="386" width="200" height="34" rx="8" fill="#c9dcec" stroke="#2b5578"/>
+    <text x="1060" y="408" text-anchor="middle" class="node" fill="#2b5578">hypothesis</text>
+  </g>
+
+  <!-- Decision bridge (DataZoo teal — the hero) -->
+  <rect x="470" y="286" width="340" height="118" rx="14" fill="#e6f4f2" stroke="#1a9988" stroke-width="2"/>
+  <text x="640" y="315" text-anchor="middle" class="tool" fill="#0f5f55">DECISION</text>
+  <text x="640" y="336" text-anchor="middle" class="desc" fill="#0f5f55">the bridge — "why we did it" + "what the data said"</text>
+  <text x="640" y="368" text-anchor="middle" class="rel" fill="#1a9988">motivated_by → expectation   ·   justified_by → result</text>
+  <text x="640" y="388" text-anchor="middle" class="rel" fill="#1a9988">status: active | reversed | orphaned</text>
+
+  <!-- bridge arrows -->
+  <line x1="320" y1="345" x2="468" y2="345" stroke="#1a9988" stroke-width="1.6" marker-end="url(#arwt)"/>
+  <text x="394" y="338" text-anchor="middle" class="rel" fill="#1a9988">motivated_by</text>
+  <line x1="960" y1="345" x2="812" y2="345" stroke="#1a9988" stroke-width="1.6" marker-end="url(#arwt)"/>
+  <text x="886" y="338" text-anchor="middle" class="rel" fill="#1a9988">justified_by</text>
+  <!-- hypothesis tests expectation (cross-graph, dashed) -->
+  <path d="M960,403 C700,470 560,470 320,403" fill="none" stroke="#39729e" stroke-width="1.3" stroke-dasharray="5,4" marker-end="url(#arw)"/>
+  <text x="640" y="462" text-anchor="middle" class="rel" fill="#2b5578">hypothesis — tests → expectation  (falsifiable claim ties data to what's expected)</text>
+
+  <!-- ================= LIFECYCLE ================= -->
+  <text x="40" y="512" class="sect" fill="#456481">PROJECTS · SUB-PROJECTS · CLOSING WITH CONCLUSIONS</text>
+  <g>
+    <rect x="40" y="528" width="150" height="56" rx="10" fill="#e9eff4" stroke="#456481"/>
+    <text x="115" y="552" text-anchor="middle" class="node" fill="#34506a">project</text>
+    <text x="115" y="571" text-anchor="middle" font-size="10.5" fill="#5b7793">status: active</text>
+
+    <line x1="190" y1="556" x2="228" y2="556" stroke="#6b6f76" marker-end="url(#arw)"/>
+    <text x="209" y="548" text-anchor="middle" class="rel" fill="#6b6f76">part_of</text>
+
+    <rect x="230" y="528" width="160" height="56" rx="10" fill="#e9eff4" stroke="#456481"/>
+    <text x="310" y="552" text-anchor="middle" class="node" fill="#34506a">sub-project</text>
+    <text x="310" y="571" text-anchor="middle" font-size="10.5" fill="#5b7793">work items scope: here</text>
+
+    <line x1="390" y1="556" x2="428" y2="556" stroke="#6b6f76" marker-end="url(#arw)"/>
+    <text x="409" y="548" text-anchor="middle" class="rel" fill="#6b6f76">close</text>
+
+    <rect x="430" y="528" width="185" height="56" rx="10" fill="#d4ece8" stroke="#1a9988"/>
+    <text x="522" y="550" text-anchor="middle" class="node" fill="#0f5f55">status: closed +</text>
+    <text x="522" y="571" text-anchor="middle" class="node" fill="#0f5f55">concluded_by</text>
+
+    <line x1="615" y1="556" x2="653" y2="556" stroke="#6b6f76" marker-end="url(#arw)"/>
+    <text x="634" y="548" text-anchor="middle" class="rel" fill="#6b6f76">concludes</text>
+
+    <rect x="655" y="528" width="175" height="56" rx="10" fill="#e9eff4" stroke="#456481"/>
+    <text x="742" y="550" text-anchor="middle" class="node" fill="#34506a">conclusion</text>
+    <text x="742" y="571" text-anchor="middle" font-size="10.5" fill="#5b7793">durable, reusable takeaway</text>
+
+    <line x1="830" y1="556" x2="868" y2="556" stroke="#6b6f76" marker-end="url(#arw)"/>
+    <text x="849" y="548" text-anchor="middle" class="rel" fill="#6b6f76">builds_on</text>
+
+    <rect x="870" y="528" width="180" height="56" rx="10" fill="#e9eff4" stroke="#456481"/>
+    <text x="960" y="550" text-anchor="middle" class="node" fill="#34506a">downstream reuse</text>
+    <text x="960" y="571" text-anchor="middle" font-size="10.5" fill="#5b7793">later work · other projects</text>
+
+    <rect x="1068" y="528" width="172" height="56" rx="10" fill="#eeeef0" stroke="#6b6f76"/>
+    <text x="1154" y="550" text-anchor="middle" class="node" fill="#55585e">superseded ⇒</text>
+    <text x="1154" y="571" text-anchor="middle" font-size="10.5" fill="#55585e">abandoned_paths</text>
+  </g>
+
+  <!-- ================= QUERY TOOLS ================= -->
+  <text x="40" y="628" class="sect" fill="#456481">READ THE MEMORY — bounded, ACL-fail-closed graph queries (MCP + `escurel provenance …`)</text>
+  <g>
+    <rect x="40" y="644" width="290" height="86" rx="10" fill="#ffffff" stroke="#dee2e6"/>
+    <text x="58" y="670" class="tool" fill="#456481">provenance_ancestry</text>
+    <text x="58" y="692" class="desc" fill="#556070">"why does this rest on X" (up) /</text>
+    <text x="58" y="710" class="desc" fill="#556070">"what derives from it" (down)</text>
+
+    <rect x="345" y="644" width="290" height="86" rx="10" fill="#ffffff" stroke="#dee2e6"/>
+    <text x="363" y="670" class="tool" fill="#456481">provenance_path</text>
+    <text x="363" y="692" class="desc" fill="#556070">shortest path / reachability</text>
+    <text x="363" y="710" class="desc" fill="#556070">between two pages</text>
+
+    <rect x="650" y="644" width="290" height="86" rx="10" fill="#ffffff" stroke="#1a9988" stroke-width="1.5"/>
+    <text x="668" y="670" class="tool" fill="#0f5f55">expectation_drift ★</text>
+    <text x="668" y="692" class="desc" fill="#556070">decisions resting on an expectation</text>
+    <text x="668" y="710" class="desc" fill="#556070">that has since been superseded</text>
+
+    <rect x="955" y="644" width="285" height="86" rx="10" fill="#ffffff" stroke="#dee2e6"/>
+    <text x="973" y="670" class="tool" fill="#456481">abandoned_paths</text>
+    <text x="973" y="692" class="desc" fill="#556070">retired / dead-ended branches</text>
+    <text x="973" y="710" class="desc" fill="#556070">(superseded or abandoned)</text>
+  </g>
+
+  <!-- ================= INGEST + FOOTER ================= -->
+  <rect x="40" y="748" width="1200" height="58" rx="10" fill="#456481"/>
+  <text x="60" y="774" font-size="13" font-weight="700" fill="#ffffff">Feed it your real inputs →</text>
+  <text x="60" y="794" font-size="12" fill="#d6e0e8">decks / PDFs / DOCX / XLSX via /ingest (auto extract + chunk + search)   ·   emails &amp; meetings as event instances   ·   everything links into the same graph</text>
+
+  <text x="640" y="848" text-anchor="middle" class="tag" fill="#1a9988">Records WHY decisions were made · WHY paths were abandoned · HOW expectations drifted — and what to reuse next.</text>
+  <text x="640" y="884" text-anchor="middle" class="foot" fill="#6b6f76">Entities are markdown skill pages · relations are typed `[[skill::id]]` links · the DuckDB graph is derived &amp; rebuildable · ship it as one self-packaged binary (`escurel-server pack`)</text>
+</svg>
