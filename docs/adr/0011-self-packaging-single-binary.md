@@ -124,5 +124,12 @@ consistent with the pack model (INV-SECRETFREE).
 2. **CLI + boot** — `pack`/`unpack`/`info` subcommands on `escurel-server`
    and the first-boot seed hook in `config`; a no-mock test that packs a
    corpus, runs the bundled server, and serves the seeded skills.
-3. **macOS notarisation + `release.yml`** — the reserved-segment variant
-   and (optionally) publishing a bundled `escurel-server-projmem` asset.
+3. **`release.yml` bundled asset (done)** — each release build folds
+   `examples/project-memory` into the staged server and publishes an
+   `escurel-<ver>-<target>-project-memory` archive (Linux + Windows),
+   smoke-tested in CI (boots + `list_skills` shows the seeded ontology).
+   So a *download* — not just a local `pack` — gives the full experience.
+3b. **macOS notarisable reserved-segment (deferred)** — the append-after-EOF
+   layout invalidates a macOS code signature, so the macOS bundled asset is
+   omitted for now; the notarisable Mach-O reserved-segment variant (a
+   macOS linker + re-`codesign` path) is the remaining follow-on.
