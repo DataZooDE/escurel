@@ -105,6 +105,17 @@ pub fn read_bundle(exe: &[u8]) -> Option<&[u8]> {
     body.len().checked_sub(len).map(|start| &body[start..])
 }
 
+/// The base executable image with any appended bundle+trailer stripped —
+/// so re-`pack`ing an already-bundled binary replaces the bundle rather
+/// than nesting one. Returns the whole image when there is no bundle.
+#[must_use]
+pub fn base_image(exe: &[u8]) -> &[u8] {
+    match read_bundle(exe) {
+        Some(bundle) => &exe[..exe.len() - TRAILER_LEN - bundle.len()],
+        None => exe,
+    }
+}
+
 /// Read the running executable and return its bundle, if any.
 pub fn bundle_in_current_exe() -> Result<Option<Vec<u8>>, SelfpackError> {
     let path = std::env::current_exe()?;

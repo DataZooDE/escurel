@@ -10,7 +10,9 @@
 //! Exit codes: `0` on clean shutdown; `1` on a fatal config / wiring
 //! error before the server is up.
 
-use escurel_server::EscurelConfig;
+use std::path::Path;
+
+use escurel_server::{EscurelConfig, selfpack};
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -28,7 +30,33 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let config = EscurelConfig::from_env()?;
+    // Self-packaging subcommands (ADR-0011). `pack` folds a markdown
+    // corpus into a copy of this binary; `info` / `unpack` introspect the
+    // bundle a bundled binary carries. Any other first arg (or none) falls
+    // through to the server.
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("pack") => return cmd_pack(&args[2..]),
+        Some("info") => return cmd_info(),
+        Some("unpack") => return cmd_unpack(&args[2..]),
+        _ => {}
+    }
+
+    let mut config = EscurelConfig::from_env()?;
+    // Self-packaging seed (ADR-0011): if this binary carries an embedded
+    // corpus and no explicit `ESCUREL_SEED_DIR` was given, extract it and
+    // seed the tenant from it at boot (the existing, idempotent seed path).
+    // Explicit seed dir wins (explicit over implicit).
+    if config.seed_dir.is_none()
+        && let Some(bundle) = selfpack::bundle_in_current_exe()?
+    {
+        let dir = config.data_dir.join(".embedded-corpus");
+        selfpack::unpack(&bundle, &dir)?;
+        let n = selfpack::list_bundle(&bundle).map(|e| e.len()).unwrap_or(0);
+        eprintln!("escurel-server: seeding tenant from embedded corpus ({n} file(s))");
+        config.seed_dir = Some(dir);
+    }
+
     // `build` installs telemetry inside `serve`, so the first
     // structured log line is emitted from there. Surface the bound
     // addresses for operator visibility once we're up.
@@ -68,6 +96,67 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     handle.shutdown().await;
     Ok(())
+}
+
+/// `--flag value` lookup in a raw argv slice.
+fn flag(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+/// `escurel-server pack --in <dir> --out <bin> [--allow-secrets]` — fold a
+/// markdown corpus into a copy of this binary (ADR-0011).
+fn cmd_pack(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let in_dir = flag(args, "--in").ok_or("pack: --in <dir> is required")?;
+    let out = flag(args, "--out").ok_or("pack: --out <file> is required")?;
+    let allow_secrets = args.iter().any(|a| a == "--allow-secrets");
+
+    let exe = std::fs::read(std::env::current_exe()?)?;
+    let base = selfpack::base_image(&exe);
+    let bundle = selfpack::build_bundle(Path::new(&in_dir), allow_secrets)?;
+    let out_bytes = selfpack::append_bundle(base, &bundle);
+    std::fs::write(&out, &out_bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let n = selfpack::list_bundle(&bundle).map(|e| e.len()).unwrap_or(0);
+    println!(
+        "packed {n} file(s) from {in_dir} into {out} ({} bytes)",
+        out_bytes.len()
+    );
+    Ok(())
+}
+
+/// `escurel-server info` — report the bundle this binary carries.
+fn cmd_info() -> Result<(), Box<dyn std::error::Error>> {
+    match selfpack::bundle_in_current_exe()? {
+        Some(bundle) => {
+            let entries = selfpack::list_bundle(&bundle)?;
+            println!("bundle: {} file(s)", entries.len());
+            for (path, size) in entries {
+                println!("  {path} ({size} bytes)");
+            }
+        }
+        None => println!("no bundle: this is an unpacked escurel-server"),
+    }
+    Ok(())
+}
+
+/// `escurel-server unpack --to <dir>` — extract this binary's bundle.
+fn cmd_unpack(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let to = flag(args, "--to").ok_or("unpack: --to <dir> is required")?;
+    match selfpack::bundle_in_current_exe()? {
+        Some(bundle) => {
+            selfpack::unpack(&bundle, Path::new(&to))?;
+            println!("unpacked bundle to {to}");
+            Ok(())
+        }
+        None => Err("no bundle to unpack (this is an unpacked escurel-server)".into()),
+    }
 }
 
 /// Block until SIGTERM (the orchestrator's graceful-stop signal) or SIGINT
