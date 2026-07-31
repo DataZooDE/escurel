@@ -95,6 +95,16 @@ pub struct AbandonedNode {
     pub via: String,
 }
 
+/// A reachable path found by `provenance_path`: the ordered page-id path
+/// from the start to the target (inclusive of both) and its hop count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvenancePath {
+    /// Ordered page ids, `from` first, `to` last.
+    pub path: Vec<String>,
+    /// Hops from start to target (`path.len() - 1`).
+    pub depth: u32,
+}
+
 /// Unit separator — joins the path list into one scalar the `duckdb`
 /// crate can read as a plain string, then split in Rust. Chosen because
 /// it cannot occur in a page id.
@@ -223,6 +233,31 @@ impl Indexer {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// Shortest provenance path from `from_page` to `to_page` within
+    /// `max_hops`, following `direction` (`Up` = the rests-on chain), or
+    /// `None` if unreachable. Reuses the bounded ancestry walk and keeps
+    /// the shallowest path that reaches the target.
+    pub async fn provenance_path(
+        &self,
+        from_page: &str,
+        to_page: &str,
+        direction: GraphDir,
+        relations: Option<&[String]>,
+        max_hops: u32,
+    ) -> Result<Option<ProvenancePath>, IndexerError> {
+        let hops = self
+            .provenance_ancestry(from_page, direction, relations, max_hops, None)
+            .await?;
+        Ok(hops
+            .into_iter()
+            .filter(|h| h.page_id == to_page)
+            .min_by_key(|h| h.depth)
+            .map(|h| ProvenancePath {
+                path: h.path,
+                depth: h.depth,
+            }))
     }
 
     /// Recursive-CTE implementation of [`Indexer::provenance_ancestry`].

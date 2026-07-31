@@ -1300,6 +1300,7 @@ async fn dispatch_tools_call(
         "provenance_ancestry" => tool_provenance_ancestry(indexer, caller, params.arguments).await,
         "expectation_drift" => tool_expectation_drift(indexer, caller, params.arguments).await,
         "abandoned_paths" => tool_abandoned_paths(indexer, caller, params.arguments).await,
+        "provenance_path" => tool_provenance_path(indexer, caller, params.arguments).await,
         "search" => tool_search(indexer, caller, params.arguments).await,
         "run_stored_query" => {
             // A stored query runs pre-declared arbitrary SQL over the whole
@@ -2213,6 +2214,62 @@ async fn tool_abandoned_paths(
         }
     }
     Ok(json!({ "nodes": out }))
+}
+
+#[derive(Deserialize)]
+struct ProvenancePathArgs {
+    from_page: String,
+    to_page: String,
+    #[serde(default)]
+    direction: Option<String>,
+    #[serde(default)]
+    relations: Option<Vec<String>>,
+    #[serde(default)]
+    max_hops: Option<u32>,
+}
+
+async fn tool_provenance_path(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: ProvenancePathArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("provenance_path: {e}")))?;
+    let dir = match a.direction.as_deref().unwrap_or("up") {
+        "up" => GraphDir::Up,
+        "down" => GraphDir::Down,
+        other => {
+            return Err(JsonRpcError::invalid_params(format!(
+                "provenance_path direction `{other}`; expected up|down"
+            )));
+        }
+    };
+    let relations = a.relations.unwrap_or_default();
+    let rel_opt = (!relations.is_empty()).then_some(relations.as_slice());
+    let found = indexer
+        .provenance_path(
+            &a.from_page,
+            &a.to_page,
+            dir,
+            rel_opt,
+            a.max_hops.unwrap_or(PROVENANCE_DEFAULT_HOPS),
+        )
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("provenance_path: {e}")))?;
+
+    // Fail-closed: a path is disclosed only if EVERY node on it is readable.
+    // A single private node on the route returns `reachable: false` with no
+    // path — never confirm a connection that runs through a hidden record.
+    let none = json!({ "reachable": false, "path": [], "depth": 0 });
+    let Some(p) = found else {
+        return Ok(none);
+    };
+    for pid in &p.path {
+        if !provenance_page_readable(indexer, &caller, pid).await? {
+            return Ok(none);
+        }
+    }
+    Ok(json!({ "reachable": true, "path": p.path, "depth": p.depth }))
 }
 
 #[derive(Deserialize)]
@@ -5840,6 +5897,26 @@ fn tools_list_payload() -> Value {
                     "type": "object",
                     "properties": {
                         "skill": { "type": "string", "description": "Restrict to retired nodes of this skill; absent/empty = all." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "provenance_path",
+                "Shortest provenance path / reachability between two pages \
+                 (ADR-0010): does `from_page` reach `to_page` following \
+                 `direction` (`up` = the rests-on chain) within `max_hops`, \
+                 optionally restricted to `relations`? Returns `{reachable, \
+                 path, depth}`; a route through an ACL-private node reports \
+                 `reachable: false` (no existence leak).",
+                json!({
+                    "type": "object",
+                    "required": ["from_page", "to_page"],
+                    "properties": {
+                        "from_page": { "type": "string" },
+                        "to_page": { "type": "string" },
+                        "direction": { "type": "string", "enum": ["up", "down"], "description": "up = follow the rests-on chain (default); down = follow derived-from." },
+                        "relations": { "type": "array", "items": { "type": "string" }, "description": "Restrict the walk to these edge kinds; absent/empty = all." },
+                        "max_hops": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Hop ceiling (default 5, capped at 12)." }
                     }
                 }),
             ),

@@ -50,7 +50,10 @@ pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
 pub use creds::{CredentialInfo, CredentialRecord};
 pub use events::{EVENTS_MAX_LIMIT, EventInfo, NewEvent};
-pub use graph::{AbandonedNode, DriftRow, GraphBackend, GraphDir, MAX_HOPS_CEILING, ProvenanceHop};
+pub use graph::{
+    AbandonedNode, DriftRow, GraphBackend, GraphDir, MAX_HOPS_CEILING, ProvenanceHop,
+    ProvenancePath,
+};
 pub use groups::GroupMember;
 pub use indexer::{
     AuditDrift, IndexChunk, Indexer, IndexerError, RebuildProgress, derive_attach_alias,
