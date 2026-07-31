@@ -201,6 +201,58 @@ pub struct ProvenanceAncestryResponse {
     pub hops: Vec<ProvenanceHop>,
 }
 
+/// `expectation_drift` arguments. `skill` (empty = all) restricts to
+/// decisions of that skill.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExpectationDriftRequest {
+    pub skill: String,
+}
+
+/// One decision resting on a since-superseded expectation. MCP wire keys:
+/// `decision_page_id`, `decision_skill`, `expectation_page_id`,
+/// `superseding_page_id`, `decided_at`, `superseded_at`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DriftRow {
+    pub decision_page_id: String,
+    pub decision_skill: String,
+    pub expectation_page_id: String,
+    pub superseding_page_id: String,
+    pub decided_at: String,
+    pub superseded_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExpectationDriftResponse {
+    pub rows: Vec<DriftRow>,
+}
+
+/// `abandoned_paths` arguments. `skill` (empty = all) restricts to retired
+/// nodes of that skill.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AbandonedPathsRequest {
+    pub skill: String,
+}
+
+/// One node retired by supersession/abandonment. MCP wire keys:
+/// `page_id`, `skill`, `via`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AbandonedNode {
+    pub page_id: String,
+    pub skill: String,
+    pub via: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AbandonedPathsResponse {
+    pub nodes: Vec<AbandonedNode>,
+}
+
 // ── skills / instances ────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

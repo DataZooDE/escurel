@@ -61,6 +61,40 @@ pub struct ProvenanceHop {
     pub path: Vec<String>,
 }
 
+/// One decision resting on a since-superseded expectation
+/// (`expectation_drift`): the decision `motivated_by`/`addresses` an
+/// expectation that a later revision `supersedes` — the cross-graph
+/// "lost context" signal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriftRow {
+    /// The decision whose motivating expectation drifted.
+    pub decision_page_id: String,
+    /// The decision's skill.
+    pub decision_skill: String,
+    /// The motivating expectation that was later superseded.
+    pub expectation_page_id: String,
+    /// The revision that superseded it.
+    pub superseding_page_id: String,
+    /// When the decision was made (`at`), as text.
+    pub decided_at: String,
+    /// When the superseding revision was authored (`at`), as text — later
+    /// than `decided_at`, which is what makes the decision stale.
+    pub superseded_at: String,
+}
+
+/// One node retired by supersession or abandonment (`abandoned_paths`):
+/// something points at it via `supersedes` or `abandons`, so it is a
+/// dead-ended branch of the project's memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbandonedNode {
+    /// The retired node.
+    pub page_id: String,
+    /// Its skill.
+    pub skill: String,
+    /// How it was retired: `supersedes` or `abandons`.
+    pub via: String,
+}
+
 /// Unit separator — joins the path list into one scalar the `duckdb`
 /// crate can read as a plain string, then split in Rust. Chosen because
 /// it cannot occur in a page id.
@@ -101,6 +135,94 @@ impl Indexer {
                     .await
             }
         }
+    }
+
+    /// The cross-graph "lost context" query: decisions resting on an
+    /// expectation that has since been superseded.
+    ///
+    /// A decision `d --motivated_by|addresses--> x` where some `y
+    /// --supersedes--> x` was authored *after* `d` (`y.at > d.at`) is
+    /// **stale**: the reason it was made no longer holds. Pure
+    /// `resolved_links` analytics — a two-join self-relation, no recursion,
+    /// no extension. Base scenario only (v1). `skill`, when set, restricts
+    /// to decisions of that skill.
+    pub async fn expectation_drift(
+        &self,
+        skill: Option<&str>,
+    ) -> Result<Vec<DriftRow>, IndexerError> {
+        let mut sql = String::from(
+            "SELECT x.src_page_id, x.src_skill, x.dst_page_id, s.src_page_id, \
+                    CAST(x.src_at_ts AS VARCHAR), CAST(s.src_at_ts AS VARCHAR) \
+             FROM resolved_links x \
+             JOIN resolved_links s ON s.dst_page_id = x.dst_page_id \
+             WHERE x.relation IN ('motivated_by', 'addresses') \
+               AND s.relation = 'supersedes' \
+               AND x.src_at_ts IS NOT NULL AND s.src_at_ts IS NOT NULL \
+               AND s.src_at_ts > x.src_at_ts \
+               AND x.src_scenario IS NULL AND s.src_scenario IS NULL",
+        );
+        let mut binds: Vec<String> = Vec::new();
+        if let Some(sk) = skill {
+            sql.push_str(" AND x.src_skill = ?");
+            binds.push(sk.to_owned());
+        }
+        sql.push_str(" ORDER BY x.src_page_id, s.src_page_id");
+
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(duckdb::params_from_iter(binds.iter()), |row| {
+            Ok(DriftRow {
+                decision_page_id: row.get(0)?,
+                decision_skill: row.get(1)?,
+                expectation_page_id: row.get(2)?,
+                superseding_page_id: row.get(3)?,
+                decided_at: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                superseded_at: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Nodes retired by supersession or abandonment — the dead-ended
+    /// branches of the memory. A node is returned when something points at
+    /// it via `supersedes` (a newer revision replaced it) or `abandons` (a
+    /// decision dropped it). Pure `resolved_links` analytics; base scenario
+    /// only. `skill`, when set, restricts to retired nodes of that skill.
+    pub async fn abandoned_paths(
+        &self,
+        skill: Option<&str>,
+    ) -> Result<Vec<AbandonedNode>, IndexerError> {
+        let mut sql = String::from(
+            "SELECT DISTINCT r.dst_page_id, r.dst_skill, r.relation \
+             FROM resolved_links r \
+             WHERE r.relation IN ('supersedes', 'abandons') \
+               AND r.src_scenario IS NULL",
+        );
+        let mut binds: Vec<String> = Vec::new();
+        if let Some(sk) = skill {
+            sql.push_str(" AND r.dst_skill = ?");
+            binds.push(sk.to_owned());
+        }
+        sql.push_str(" ORDER BY r.dst_page_id");
+
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(duckdb::params_from_iter(binds.iter()), |row| {
+            Ok(AbandonedNode {
+                page_id: row.get(0)?,
+                skill: row.get(1)?,
+                via: row.get(2)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Recursive-CTE implementation of [`Indexer::provenance_ancestry`].
