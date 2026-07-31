@@ -229,6 +229,88 @@ jobs:
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
 
+      # --- Self-packaged project-memory variant (ADR-0011 increment 3) ---
+      # A ready-bundled escurel-server carrying the project-memory ontology,
+      # so a *download* (not just a local `escurel-server pack`) gives the
+      # full experience: one archive that boots a populated tenant. Linux +
+      # Windows only — appending after EOF invalidates a macOS code signature;
+      # the notarisable reserved-segment variant stays deferred (ADR-0011 §3b).
+      - name: Bundle project-memory variant
+        id: stage_pm
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          STAGE="${{ steps.stage.outputs.stage }}"
+          STAGE_PM="escurel-${VERSION}-${{ matrix.target_name }}-project-memory"
+          EXE=""; [[ "$RUNNER_OS" == "Windows" ]] && EXE=".exe"
+          # Copy the staged tree (server + libduckdb + rpath + escurel CLI),
+          # then fold the ontology into a copy of the server. `pack` runs the
+          # staged server, which finds libduckdb via the copied rpath.
+          cp -r "$STAGE" "$STAGE_PM"
+          "./$STAGE/escurel-server${EXE}" pack \
+            --in examples/project-memory \
+            --out "$STAGE_PM/escurel-server${EXE}"
+          "./$STAGE_PM/escurel-server${EXE}" info
+          echo "stage_pm=$STAGE_PM" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test (project-memory variant seeds + serves)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          set -uo pipefail
+          STAGE_PM="${{ steps.stage_pm.outputs.stage_pm }}"
+          EXE=""; [[ "$RUNNER_OS" == "Windows" ]] && EXE=".exe"
+          mkdir -p pmdata
+          ESCUREL_SERVER_DATA_DIR="pmdata" \
+          ESCUREL_SERVER_LISTEN_HTTP="127.0.0.1:18081" \
+          ESCUREL_OBSERVABILITY_METRICS_LISTEN="127.0.0.1:0" \
+          ESCUREL_TENANT="demo" \
+            "./$STAGE_PM/escurel-server${EXE}" > pm.log 2>&1 &
+          pid=$!
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:18081/healthz" >/dev/null 2>&1; then ok=1; break; fi
+            kill -0 "$pid" 2>/dev/null || { echo "server exited early"; break; }
+            sleep 1
+          done
+          if [[ "$ok" == "1" ]]; then
+            # Prove the embedded corpus actually seeded: list_skills must
+            # include a project-memory entity (dev mode → no bearer).
+            skills="$(curl -fsS -X POST http://127.0.0.1:18081/mcp \
+              -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_skills","arguments":{}}}' || echo '')"
+            if ! printf '%s' "$skills" | grep -q '"id":"project"'; then
+              echo "seeded 'project' skill MISSING"; printf '%s' "$skills" | head -c 600; ok=0
+            fi
+          fi
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+          if [[ "$ok" != "1" ]]; then echo "=== PM SMOKE FAILED ==="; cat pm.log || true; exit 1; fi
+          echo "project-memory variant seeded + served OK"
+
+      - name: Archive project-memory variant
+        id: archive_pm
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE_PM="${{ steps.stage_pm.outputs.stage_pm }}"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            7z a -tzip "${STAGE_PM}.zip" "$STAGE_PM" >/dev/null
+            echo "asset=${STAGE_PM}.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar czf "${STAGE_PM}.tar.gz" "$STAGE_PM"
+            echo "asset=${STAGE_PM}.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os != 'macOS'
+        with:
+          name: ${{ steps.stage_pm.outputs.stage_pm }}
+          path: ${{ steps.archive_pm.outputs.asset }}
+          if-no-files-found: error
+
   # Publish the GitHub Release with all platform archives (tag pushes only;
   # a workflow_dispatch dry-run stops after `build`).
   create-release:
