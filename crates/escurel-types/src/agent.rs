@@ -253,6 +253,31 @@ pub struct AbandonedPathsResponse {
     pub nodes: Vec<AbandonedNode>,
 }
 
+/// `provenance_path` arguments. Shortest path from `from_page` to
+/// `to_page` following `direction` (`up`/`down`), optionally restricted to
+/// `relations`; `max_hops` clamped server-side.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProvenancePathRequest {
+    pub from_page: String,
+    pub to_page: String,
+    pub direction: String,
+    pub relations: Vec<String>,
+    pub max_hops: u32,
+}
+
+/// `provenance_path` result: whether the target is reachable, and (if so)
+/// the ordered page-id path and its hop count. When an interior node is
+/// ACL-private the server returns `reachable: false` with an empty path
+/// (no existence leak).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProvenancePathResponse {
+    pub reachable: bool,
+    pub path: Vec<String>,
+    pub depth: u32,
+}
+
 // ── skills / instances ────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

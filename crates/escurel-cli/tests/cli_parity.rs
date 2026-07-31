@@ -53,6 +53,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("provenance_ancestry", Agent(&["provenance", "ancestry"])),
     ("expectation_drift", Agent(&["provenance", "drift"])),
     ("abandoned_paths", Agent(&["provenance", "abandoned"])),
+    ("provenance_path", Agent(&["provenance", "path"])),
     ("search", Agent(&["search"])),
     ("run_stored_query", Agent(&["query", "run"])),
     ("query_instance", Agent(&["query", "instance"])),

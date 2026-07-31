@@ -70,11 +70,11 @@ pub use escurel_types::{
     ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
     ListInstancesResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
     ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse, PageRef,
-    ProvenanceAncestryRequest, ProvenanceAncestryResponse, QueryInstanceRequest,
-    QueryInstanceResponse, ResolveRequest, ResolveResponse, RunStoredQueryRequest,
-    RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
-    TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
-    ValidationIssue, WikilinkParsed,
+    ProvenanceAncestryRequest, ProvenanceAncestryResponse, ProvenancePathRequest,
+    ProvenancePathResponse, QueryInstanceRequest, QueryInstanceResponse, ResolveRequest,
+    ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest,
+    SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse,
+    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
 };
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
@@ -241,6 +241,24 @@ impl Client {
             args["skill"] = json!(req.skill);
         }
         self.transport.call_typed("abandoned_paths", args).await
+    }
+
+    /// Shortest provenance path / reachability between two pages (ADR-0010).
+    pub async fn provenance_path(
+        &self,
+        req: ProvenancePathRequest,
+    ) -> Result<ProvenancePathResponse, Error> {
+        let mut args = json!({ "from_page": req.from_page, "to_page": req.to_page });
+        if !req.direction.is_empty() {
+            args["direction"] = json!(req.direction);
+        }
+        if !req.relations.is_empty() {
+            args["relations"] = json!(req.relations);
+        }
+        if req.max_hops > 0 {
+            args["max_hops"] = json!(req.max_hops);
+        }
+        self.transport.call_typed("provenance_path", args).await
     }
 
     /// Return the tenant's Tier-1 skill catalogue.
