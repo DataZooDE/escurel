@@ -24,6 +24,7 @@ acceptance gates that apply.
 | [0008](0008-promotion-scrub-gate.md) | The promotion + scrub gate (the L2→L3 harvest) | Accepted |
 | [0009](0009-ducklake-postgres-catalog.md) | DuckLake derived-index backend with a live Postgres catalog | Accepted |
 | [0010](0010-project-memory-provenance-graph.md) | Project-memory: the provenance-aware, expectation-aware graph | Accepted |
+| [0011](0011-self-packaging-single-binary.md) | Self-packaging: a single-binary deploy that carries its corpus | Accepted |
 
 New ADRs are numbered sequentially (`0002-…`, `0003-…`). An ADR
 is never edited after acceptance except to update its **Status**

@@ -44,6 +44,7 @@ mod health;
 mod mcp;
 pub mod pack;
 mod remote_backend;
+pub mod selfpack;
 mod server;
 mod session;
 pub mod snapshot_publish;
