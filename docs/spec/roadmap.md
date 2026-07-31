@@ -154,6 +154,50 @@ ships with its spec/contract/ADR update):
 The reference consumer is the `escurel-explore` event/instance workspace;
 the reference processor is the `escurel-demo-agent` crate.
 
+### M8 — Project-memory: the provenance graph (post-v1)
+
+escurel evolves from a generic agent knowledge base into a persistent
+**project-memory** for data scientists/analysts, per
+[ADR-0010](../adr/0010-project-memory-provenance-graph.md). A long-running
+project holds two evolving networks — a *knowledge graph*
+(data → analysis → results → hypotheses) and an *expectation graph*
+(goals → priorities → constraints → success-criteria) — and most lost
+context comes from the expectation side. The contribution is a
+hypothesis-centric, expectation-aware memory that records *why* decisions
+were made, *why* paths were abandoned, and *how* expectations drifted.
+
+Shipped as a non-breaking, opt-in layer:
+
+- **The `project-memory` skill pack** — eleven first-class entity skills
+  (Stakeholder, Goal, Expectation, Constraint, Priority, Success-Criterion,
+  Hypothesis, Dataset, Analysis, Result, Decision) + an overview skill,
+  distributed via the existing signed base-layer pack mechanism. Entities
+  are ordinary `skill` pages (the `PageType` enum is untouched); provenance
+  relations are typed frontmatter wikilinks (`derived_from`, `motivated_by`,
+  `supersedes`, …) whose *kind* is carried by `links.src_field`.
+- **The `resolved_links` view** — one derived DuckDB VIEW that resolves the
+  slug-valued `links.dst_page` to a real `page_id` (dropping danglers) and
+  projects the relation kind. Rebuilt on every open; fully derivable from
+  markdown per ADR-0001.
+- **Four bounded read tools** — `provenance_ancestry` (multi-hop
+  "everything this rests on / derives from it"), `provenance_path`
+  (shortest path / reachability), `expectation_drift` (the cross-graph
+  "decisions resting on a since-superseded expectation" query), and
+  `abandoned_paths` (dead-ended branches). Parameterized (no agent SQL),
+  depth-bounded, cycle-guarded, and fail-closed on ACL.
+- **Automation-free (v1 contract preserved).** escurel *serves* these
+  queries; synthesising "the most promising next steps" is an external
+  agent's job, not a server-side rules engine.
+
+**Backend.** The engine runs on stock DuckDB **recursive CTEs** — zero new
+dependency, the full query surface. A DuckPGQ (`MATCH`) backend sits behind
+a reserved `GraphBackend` seam, **gated on a go/no-go spike**: DuckPGQ is a
+per-DuckDB-version community extension, and no build exists for the pinned
+DuckDB v1.5.3 (the spike 404s), so the MATCH backend is **not built** and
+the feature is complete on CTEs. The `#[ignore]` spike re-checks on each
+DuckDB bump; see
+[`../notes/discovered/2026-07-31-duckpgq-unavailable-on-1.5.3.md`](../notes/discovered/2026-07-31-duckpgq-unavailable-on-1.5.3.md).
+
 ## v1 cut-line — what is in vs. out
 
 In:
