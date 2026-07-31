@@ -7,7 +7,7 @@ data-science / analytics project. It ratifies
 [ADR-0010](../../docs/adr/0010-project-memory-provenance-graph.md).
 
 It is an **optional** pack. A tenant that never subscribes to it is a
-plain escurel knowledge base; subscribing adds the twelve entity skills
+plain escurel knowledge base; subscribing adds the fourteen entity skills
 below as a read-only base layer, and the tenant authors its own
 instances in its overlay.
 
@@ -26,9 +26,10 @@ expectation graph (why), `justified_by` into the knowledge graph
 
 ## Layout
 
-- `skills/` — the twelve type declarations shipped in the pack
+- `skills/` — the fourteen type declarations shipped in the pack
   (`project-memory` is the documentation/overview skill; the other
-  eleven are the first-class entities).
+  thirteen are the first-class entities, including `project` /
+  `conclusion` for sub-project containment + closing).
 - `instances/` — a worked example (a customer-churn project) used by the
   integration tests and as a demonstration. Real tenants author their
   own instances; these ship only as a sample.

@@ -39,6 +39,19 @@ abandoned, and **how** expectations drifted.
 | `analysis` | knowledge | yes | a unit of analytical work over datasets |
 | `result` | knowledge | yes | a measured finding produced by an analysis |
 | `decision` | **bridge** | yes | a committed choice — the primary "why" record |
+| `project` | structure | no | a bounded effort with a lifecycle; nests via `part_of` (sub-projects) |
+| `conclusion` | structure | yes | the durable, reusable takeaway a project closes on |
+
+## Projects & sub-projects
+
+Work is organised into `project` instances; a **sub-project** is a
+`project` whose `part_of` names its parent, and every work item scopes to
+its project (`scope: [[project::…]]`). A project **closes** by flipping
+`status` to `closed` and pointing `concluded_by` at a `conclusion` — a
+first-class node that later work reuses (`builds_on: [[conclusion::…]]`)
+and a parent rolls up (`synthesizes`). Closing is a status transition,
+not a delete: the record and everything under it stay queryable, and a
+superseded conclusion surfaces in `abandoned_paths`.
 
 ## Relation vocabulary (typed provenance edges)
 
@@ -54,6 +67,12 @@ write time.
 - **Bridge:** `tests` (hypothesis→expectation), and a decision's
   `motivated_by` (→ expectation side), `justified_by` (→ knowledge
   side), `addresses`, `abandons`, `decided_by`.
+- **Structure / lifecycle:** `part_of` (project→parent project), `scope`
+  (any work item→its project), `concluded_by` (project→conclusion) and
+  its inverse `concludes` (conclusion→project), `supported_by`
+  (conclusion→result), `decided` (conclusion→decision), `synthesizes`
+  (conclusion→sub-conclusions), and `builds_on` (any→conclusion, the
+  downstream-reuse edge).
 
 `decision` is the only entity with edges into **both** graphs — that is
 what makes it the bridge between "why we wanted this" and "what the data
@@ -70,5 +89,12 @@ said."
   `expectation` instances, ordered by `at`.
 - **What rests on a stale expectation?** a decision whose `motivated_by`
   expectation was later superseded — surfaced by `expectation_drift`.
+- **What's inside a project?** `neighbours(<project>, in, part_of)` for
+  its sub-projects; `neighbours(<project>, in, scope)` for its work items.
+- **What still builds on a closed sub-project?**
+  `provenance_ancestry(<conclusion>, direction=down, relations=[builds_on])`
+  — everything downstream that reuses the takeaway.
+- **Am I building on an overturned finding?** `abandoned_paths(conclusion)`
+  lists conclusions a later one superseded.
 
 This page is documentation only; it declares no instances.
