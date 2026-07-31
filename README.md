@@ -19,6 +19,29 @@ keeps a markdown overlay page, so identity, links, ACL, and search are
 unchanged — see
 [`docs/spec/protocol.md`](docs/spec/protocol.md#instance-backends).
 
+## Project memory (optional vertical)
+
+On top of the generic KB, escurel can act as a persistent
+**project-memory** for data scientists/analysts
+([ADR-0010](docs/adr/0010-project-memory-provenance-graph.md)). A
+subscribable `project-memory` skill pack adds first-class entities —
+Stakeholder, Goal, Expectation, Constraint, Hypothesis, Analysis, Result,
+Decision — connected by a **provenance-aware graph** spanning two evolving
+networks: a *knowledge graph* (data → analysis → results → hypotheses) and
+an *expectation graph* (goals → priorities → constraints → success-criteria).
+Because most lost project context comes from expectations that quietly
+changed, the memory is hypothesis-centric and expectation-aware: it records
+*why* decisions were made, *why* paths were abandoned, and *how*
+expectations drifted.
+
+Four bounded, read-only graph tools traverse it (over a derived
+`resolved_links` view, on stock DuckDB — no extension): `provenance_ancestry`
+("everything this rests on / derives from it"), `provenance_path`
+(reachability), `expectation_drift` (decisions resting on a since-superseded
+expectation), and `abandoned_paths` (dead-ended branches). The pack is
+optional and non-breaking; the tools work for any tenant. escurel *serves*
+the queries — reasoning about next steps stays with an external agent.
+
 ## Status
 
 **v1 implementation in active development.** The spec is settled and the
@@ -54,6 +77,10 @@ escurel skill list                        # Tier-1 skill catalogue
 escurel instance list --skill customer    # instances of a skill
 escurel page expand markdown/instances/customer/acme.md
 escurel link neighbours <page_id> --direction in
+escurel provenance ancestry <page_id> --direction up   # what this rests on
+escurel provenance path <from_page> <to_page>          # reachability
+escurel provenance drift                               # decisions on stale expectations
+escurel provenance abandoned                           # retired / dead-ended nodes
 escurel search "renewal" --k 5
 escurel resolve '[[customer::acme]]'
 escurel event capture --title "Renewal call" --body "…"

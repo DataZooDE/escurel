@@ -351,7 +351,8 @@ wikilink — the catalogue is itself a `note` instance).
 | `search` | natural-language → top-K hits (block or page granularity via `granularity=`) |
 | `resolve` | `[[wikilink]]` → `(page_id, skill, exists)` |
 | `expand` | page id → body + blocks + wikilinks_out |
-| `neighbours` | graph traversal, typed-filterable |
+| `neighbours` | one-hop graph traversal, typed-filterable |
+| `provenance_ancestry` / `provenance_path` / `expectation_drift` / `abandoned_paths` | bounded multi-hop provenance-graph reads ([ADR-0010](../adr/0010-project-memory-provenance-graph.md)); the `project-memory` vertical |
 | `list_skills` | the Tier 1 catalogue |
 | `list_instances` | enumerate instances of a skill, optional frontmatter filter, optional ordering (`order_by`) — typical event-log call is `list_instances('meeting', filter={at: '>= 2026-04-01'}, order_by='at desc')` |
 | `run_stored_query` | execute a `[[query::*]]` instance with typed parameters |

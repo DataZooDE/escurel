@@ -298,6 +298,65 @@ target's frontmatter), and the edge fields `anchor` /
 by the current dispatcher — a caller that sends the extra request keys
 has them silently ignored.
 
+#### Provenance graph (`provenance_ancestry` / `provenance_path` / `expectation_drift` / `abandoned_paths`)
+
+Bounded, read-only traversals over the provenance graph
+([ADR-0010](../adr/0010-project-memory-provenance-graph.md)). Where
+`neighbours` is one-hop, these walk multi-hop paths over the derived
+`resolved_links` view (which resolves each wikilink's slug to a real
+`page_id` and exposes the relation *kind* — the frontmatter field name,
+e.g. `derived_from`, `motivated_by`). They are **parameterized and
+bounded** — the agent supplies named scalars and an allow-listed
+`relations` filter, never SQL — and every returned instance is
+ACL-filtered fail-closed (a hop/row that crosses an owner-private page
+the caller can't read is dropped; a `provenance_path` through a private
+node reports `reachable: false` with no path, never leaking existence).
+`max_hops` is clamped server-side (≤ 12). The engine runs on stock
+DuckDB recursive CTEs; a DuckPGQ `MATCH` backend sits behind a reserved
+seam, gated on the extension becoming available for the pinned DuckDB
+(currently unavailable — see the discovered note).
+
+```jsonc
+// provenance_ancestry — "everything this rests on" (up) / "…derived from it" (down)
+// request
+{ "page_id": "markdown/instances/result/gbm-auc.md",
+  "direction": "up",                 // "up" (default) | "down"
+  "relations": ["produced_by","uses"], // optional allow-list; empty = all kinds
+  "max_hops": 5,                     // optional, default 5, capped at 12
+  "as_of": null }                    // optional RFC 3339 source-birth cut
+// response
+{ "hops": [ { "page_id": "…/analysis/gbm-run.md", "skill": "analysis",
+             "relation": "produced_by", "depth": 1 }, ... ] }
+
+// provenance_path — shortest path / reachability between two pages
+// request
+{ "from_page": "…/result/r.md", "to_page": "…/dataset/d.md",
+  "direction": "up", "relations": ["derived_from"], "max_hops": 5 }
+// response
+{ "reachable": true, "path": ["…/result/r.md", "…/analysis/a.md", "…/dataset/d.md"], "depth": 2 }
+
+// expectation_drift — decisions resting on a since-superseded expectation
+// request:  { "skill": null }        // optional: restrict to decisions of this skill
+// response
+{ "rows": [ { "decision_page_id": "…/decision/ship.md", "decision_skill": "decision",
+             "expectation_page_id": "…/expectation/churn-v1.md",
+             "superseding_page_id": "…/expectation/churn-v2.md",
+             "decided_at": "2026-02-06T09:00:00Z",
+             "superseded_at": "2026-03-02T10:00:00Z" }, ... ] }
+
+// abandoned_paths — nodes retired by supersession/abandonment
+// request:  { "skill": null }
+// response: { "nodes": [ { "page_id": "…/expectation/churn-v1.md",
+//                          "skill": "expectation", "via": "supersedes" }, ... ] }
+```
+
+`expectation_drift` is the cross-graph "lost context" query: a
+`decision` whose `motivated_by`/`addresses` expectation was later
+replaced by a `supersedes` revision authored *after* the decision
+(`superseded_at > decided_at`). These tools are available for any tenant;
+they read whatever provenance relations exist and are most meaningful
+with the `project-memory` skill pack subscribed.
+
 #### `list_skills`
 
 ```jsonc
