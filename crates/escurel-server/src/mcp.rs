@@ -41,8 +41,8 @@ use escurel_crdt::{
 use escurel_index::snapshot::{gc_lake_snapshots, publish_lake};
 use escurel_index::{
     AclCaller, AppendChatMessage, Capabilities, ChatMessage, Direction, EventInfo, Granularity,
-    Indexer, IndexerError, IndexerHandle, Issue, ListChatMessages, NewEvent, OrderDir, Severity,
-    Visibility, derive_attach_alias, is_safe_attach_source,
+    GraphDir, Indexer, IndexerError, IndexerHandle, Issue, ListChatMessages, NewEvent, OrderDir,
+    Severity, Visibility, derive_attach_alias, is_safe_attach_source,
 };
 use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
@@ -1297,6 +1297,10 @@ async fn dispatch_tools_call(
         "expand" => tool_expand(state, indexer, caller, params.arguments).await,
         "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,
         "neighbours" => tool_neighbours(indexer, caller, params.arguments).await,
+        "provenance_ancestry" => tool_provenance_ancestry(indexer, caller, params.arguments).await,
+        "expectation_drift" => tool_expectation_drift(indexer, caller, params.arguments).await,
+        "abandoned_paths" => tool_abandoned_paths(indexer, caller, params.arguments).await,
+        "provenance_path" => tool_provenance_path(indexer, caller, params.arguments).await,
         "search" => tool_search(indexer, caller, params.arguments).await,
         "run_stored_query" => {
             // A stored query runs pre-declared arbitrary SQL over the whole
@@ -2011,6 +2015,261 @@ async fn tool_neighbours(
         }
     }
     Ok(json!({ "edges": out }))
+}
+
+/// Default hop depth when the caller omits `max_hops`.
+const PROVENANCE_DEFAULT_HOPS: u32 = 5;
+
+#[derive(Deserialize)]
+struct ProvenanceAncestryArgs {
+    page_id: String,
+    /// `up` (everything this rests on) | `down` (everything derived from it).
+    #[serde(default)]
+    direction: Option<String>,
+    /// Restrict the walk to these edge kinds; empty/absent = all.
+    #[serde(default)]
+    relations: Option<Vec<String>>,
+    /// Hop ceiling; defaults to `PROVENANCE_DEFAULT_HOPS`, clamped server-side.
+    #[serde(default)]
+    max_hops: Option<u32>,
+    /// RFC 3339 time-travel cut; edges from sources born after it are hidden.
+    #[serde(default)]
+    as_of: Option<String>,
+}
+
+async fn tool_provenance_ancestry(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: ProvenanceAncestryArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("provenance_ancestry: {e}")))?;
+    let dir = match a.direction.as_deref().unwrap_or("up") {
+        "up" => GraphDir::Up,
+        "down" => GraphDir::Down,
+        other => {
+            return Err(JsonRpcError::invalid_params(format!(
+                "provenance_ancestry direction `{other}`; expected up|down"
+            )));
+        }
+    };
+    let relations = a.relations.unwrap_or_default();
+    let rel_opt = (!relations.is_empty()).then_some(relations.as_slice());
+    let hops = indexer
+        .provenance_ancestry(
+            &a.page_id,
+            dir,
+            rel_opt,
+            a.max_hops.unwrap_or(PROVENANCE_DEFAULT_HOPS),
+            a.as_of.as_deref(),
+        )
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("provenance_ancestry: {e}")))?;
+
+    // ACL (always on): resolve the readability of every page touched — the
+    // reached nodes AND the interior nodes of each path — then drop any hop
+    // whose path crosses an owner-private instance the caller can't read
+    // (fail-closed transitive visibility). The start page (path[0]) is the
+    // caller's own vantage point and is not gated, mirroring `neighbours`.
+    let mut readable: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    for h in &hops {
+        for pid in h.path.iter().skip(1) {
+            if !readable.contains_key(pid) {
+                let r =
+                    match indexer.expand(pid, None, None).await.map_err(|e| {
+                        JsonRpcError::internal(format!("provenance_ancestry acl: {e}"))
+                    })? {
+                        Some(ex) if ex.page.page_type == PageType::Instance => indexer
+                            .may_read_instance(&caller, &ex.page.skill, &ex.frontmatter)
+                            .await
+                            .map_err(|e| {
+                                JsonRpcError::internal(format!("provenance_ancestry acl: {e}"))
+                            })?,
+                        _ => true,
+                    };
+                readable.insert(pid.clone(), r);
+            }
+        }
+    }
+    // Emit one row per node at its shallowest depth (rows arrive ordered by
+    // depth), keeping only hops whose whole path (past the vantage) is
+    // readable.
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for h in &hops {
+        if !h
+            .path
+            .iter()
+            .skip(1)
+            .all(|p| *readable.get(p).unwrap_or(&false))
+        {
+            continue;
+        }
+        if seen.insert(h.page_id.clone()) {
+            out.push(json!({
+                "page_id": h.page_id,
+                "skill": h.skill,
+                "relation": h.relation,
+                "depth": h.depth,
+            }));
+        }
+    }
+    Ok(json!({ "hops": out }))
+}
+
+/// Whether `page_id` is readable by `caller`: a non-instance / absent page
+/// is not owner-gated (true); an instance goes through `may_read_instance`
+/// (fail-closed). Shared by the provenance analytics ACL filters.
+async fn provenance_page_readable(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    page_id: &str,
+) -> Result<bool, JsonRpcError> {
+    match indexer
+        .expand(page_id, None, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("provenance acl: {e}")))?
+    {
+        Some(ex) if ex.page.page_type == PageType::Instance => indexer
+            .may_read_instance(caller, &ex.page.skill, &ex.frontmatter)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("provenance acl: {e}"))),
+        _ => Ok(true),
+    }
+}
+
+#[derive(Deserialize)]
+struct ExpectationDriftArgs {
+    /// Restrict to decisions of this skill; absent/empty = all.
+    #[serde(default)]
+    skill: Option<String>,
+}
+
+async fn tool_expectation_drift(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: ExpectationDriftArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("expectation_drift: {e}")))?;
+    let skill = a.skill.filter(|s| !s.is_empty());
+    let rows = indexer
+        .expectation_drift(skill.as_deref())
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("expectation_drift: {e}")))?;
+
+    // Fail-closed: drop a row if ANY of the three pages it references is
+    // unreadable — never disclose a drift edge that touches a private record.
+    let mut out = Vec::new();
+    for r in &rows {
+        let mut visible = true;
+        for pid in [
+            &r.decision_page_id,
+            &r.expectation_page_id,
+            &r.superseding_page_id,
+        ] {
+            if !provenance_page_readable(indexer, &caller, pid).await? {
+                visible = false;
+                break;
+            }
+        }
+        if visible {
+            out.push(json!({
+                "decision_page_id": r.decision_page_id,
+                "decision_skill": r.decision_skill,
+                "expectation_page_id": r.expectation_page_id,
+                "superseding_page_id": r.superseding_page_id,
+                "decided_at": r.decided_at,
+                "superseded_at": r.superseded_at,
+            }));
+        }
+    }
+    Ok(json!({ "rows": out }))
+}
+
+#[derive(Deserialize)]
+struct AbandonedPathsArgs {
+    /// Restrict to retired nodes of this skill; absent/empty = all.
+    #[serde(default)]
+    skill: Option<String>,
+}
+
+async fn tool_abandoned_paths(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: AbandonedPathsArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("abandoned_paths: {e}")))?;
+    let skill = a.skill.filter(|s| !s.is_empty());
+    let nodes = indexer
+        .abandoned_paths(skill.as_deref())
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("abandoned_paths: {e}")))?;
+
+    let mut out = Vec::new();
+    for n in &nodes {
+        if provenance_page_readable(indexer, &caller, &n.page_id).await? {
+            out.push(json!({ "page_id": n.page_id, "skill": n.skill, "via": n.via }));
+        }
+    }
+    Ok(json!({ "nodes": out }))
+}
+
+#[derive(Deserialize)]
+struct ProvenancePathArgs {
+    from_page: String,
+    to_page: String,
+    #[serde(default)]
+    direction: Option<String>,
+    #[serde(default)]
+    relations: Option<Vec<String>>,
+    #[serde(default)]
+    max_hops: Option<u32>,
+}
+
+async fn tool_provenance_path(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: ProvenancePathArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("provenance_path: {e}")))?;
+    let dir = match a.direction.as_deref().unwrap_or("up") {
+        "up" => GraphDir::Up,
+        "down" => GraphDir::Down,
+        other => {
+            return Err(JsonRpcError::invalid_params(format!(
+                "provenance_path direction `{other}`; expected up|down"
+            )));
+        }
+    };
+    let relations = a.relations.unwrap_or_default();
+    let rel_opt = (!relations.is_empty()).then_some(relations.as_slice());
+    let found = indexer
+        .provenance_path(
+            &a.from_page,
+            &a.to_page,
+            dir,
+            rel_opt,
+            a.max_hops.unwrap_or(PROVENANCE_DEFAULT_HOPS),
+        )
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("provenance_path: {e}")))?;
+
+    // Fail-closed: a path is disclosed only if EVERY node on it is readable.
+    // A single private node on the route returns `reachable: false` with no
+    // path — never confirm a connection that runs through a hidden record.
+    let none = json!({ "reachable": false, "path": [], "depth": 0 });
+    let Some(p) = found else {
+        return Ok(none);
+    };
+    for pid in &p.path {
+        if !provenance_page_readable(indexer, &caller, pid).await? {
+            return Ok(none);
+        }
+    }
+    Ok(json!({ "reachable": true, "path": p.path, "depth": p.depth }))
 }
 
 #[derive(Deserialize)]
@@ -5592,6 +5851,72 @@ fn tools_list_payload() -> Value {
                         "link_skill": { "type": "string" },
                         "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; edges from sources born after it are hidden." },
                         "scenario": { "type": "string", "description": "What-if overlay; edges filtered by their source page's scenario." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "provenance_ancestry",
+                "Bounded multi-hop provenance traversal (ADR-0010). \
+                 `direction: up` returns everything the page rests on (its \
+                 causes); `down` returns everything derived from it. Optionally \
+                 restrict to `relations` (e.g. [\"derived_from\",\"motivated_by\"]); \
+                 `max_hops` is clamped server-side. Returns page-ref hops with \
+                 the reaching relation and depth.",
+                json!({
+                    "type": "object",
+                    "required": ["page_id"],
+                    "properties": {
+                        "page_id": { "type": "string" },
+                        "direction": { "type": "string", "enum": ["up", "down"], "description": "up = what this rests on; down = what derives from it. Default up." },
+                        "relations": { "type": "array", "items": { "type": "string" }, "description": "Restrict the walk to these edge kinds; absent/empty = all." },
+                        "max_hops": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Hop ceiling (default 5, capped at 12)." },
+                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; edges from sources born after it are hidden." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "expectation_drift",
+                "Cross-graph 'lost context' query (ADR-0010): decisions resting \
+                 on an expectation that has since been superseded — the \
+                 decision's `motivated_by`/`addresses` expectation was later \
+                 replaced by a `supersedes` revision authored after the \
+                 decision. Optionally scope to a decision `skill`.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "skill": { "type": "string", "description": "Restrict to decisions of this skill; absent/empty = all." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "abandoned_paths",
+                "Nodes retired by supersession or abandonment (ADR-0010): the \
+                 dead-ended branches of the memory — something points at them \
+                 via `supersedes` or `abandons`. Optionally scope to a `skill`.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "skill": { "type": "string", "description": "Restrict to retired nodes of this skill; absent/empty = all." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "provenance_path",
+                "Shortest provenance path / reachability between two pages \
+                 (ADR-0010): does `from_page` reach `to_page` following \
+                 `direction` (`up` = the rests-on chain) within `max_hops`, \
+                 optionally restricted to `relations`? Returns `{reachable, \
+                 path, depth}`; a route through an ACL-private node reports \
+                 `reachable: false` (no existence leak).",
+                json!({
+                    "type": "object",
+                    "required": ["from_page", "to_page"],
+                    "properties": {
+                        "from_page": { "type": "string" },
+                        "to_page": { "type": "string" },
+                        "direction": { "type": "string", "enum": ["up", "down"], "description": "up = follow the rests-on chain (default); down = follow derived-from." },
+                        "relations": { "type": "array", "items": { "type": "string" }, "description": "Restrict the walk to these edge kinds; absent/empty = all." },
+                        "max_hops": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Hop ceiling (default 5, capped at 12)." }
                     }
                 }),
             ),

@@ -7,9 +7,10 @@ use std::io::Read as _;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use escurel_client::{
-    AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, DeletePageRequest,
-    ExpandRequest, ListEventsRequest, ListInboxRequest, ListInstancesRequest, ListMessagesRequest,
-    ListSkillsRequest, NeighboursRequest, QueryInstanceRequest, ResolveRequest,
+    AbandonedPathsRequest, AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client,
+    DeletePageRequest, ExpandRequest, ExpectationDriftRequest, ListEventsRequest, ListInboxRequest,
+    ListInstancesRequest, ListMessagesRequest, ListSkillsRequest, NeighboursRequest,
+    ProvenanceAncestryRequest, ProvenancePathRequest, QueryInstanceRequest, ResolveRequest,
     RunStoredQueryRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
 };
 use serde_json::{Value, json};
@@ -142,6 +143,65 @@ pub struct NeighboursArgs {
     pub link_skill: Option<String>,
     #[arg(long, default_value_t = 0)]
     pub limit: u32,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProvenanceCmd {
+    /// Bounded multi-hop provenance ancestry (ADR-0010).
+    Ancestry(AncestryArgs),
+    /// Decisions resting on a since-superseded expectation.
+    Drift(DriftArgs),
+    /// Nodes retired by supersession/abandonment.
+    Abandoned(AbandonedArgs),
+    /// Shortest provenance path / reachability between two pages.
+    Path(PathArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PathArgs {
+    pub from_page: String,
+    pub to_page: String,
+    /// "up" (rests-on chain, default) | "down" (derived-from).
+    #[arg(long, default_value = "up")]
+    pub direction: String,
+    /// Restrict the walk to these edge kinds (repeatable). Empty = all.
+    #[arg(long = "relation")]
+    pub relations: Vec<String>,
+    /// Hop ceiling (default 5, capped at 12 server-side).
+    #[arg(long, default_value_t = 0)]
+    pub max_hops: u32,
+}
+
+#[derive(Args, Debug)]
+pub struct DriftArgs {
+    /// Restrict to decisions of this skill.
+    #[arg(long)]
+    pub skill: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct AbandonedArgs {
+    /// Restrict to retired nodes of this skill.
+    #[arg(long)]
+    pub skill: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct AncestryArgs {
+    pub page_id: String,
+    /// "up" (what this rests on, default) | "down" (what derives from it).
+    #[arg(long, default_value = "up")]
+    pub direction: String,
+    /// Restrict the walk to these edge kinds (repeatable, e.g.
+    /// `--relation derived_from --relation motivated_by`). Empty = all.
+    #[arg(long = "relation")]
+    pub relations: Vec<String>,
+    /// Hop ceiling (default 5, capped at 12 server-side).
+    #[arg(long, default_value_t = 0)]
+    pub max_hops: u32,
+    /// RFC 3339 time-travel cut; edges from sources born after it are hidden.
+    #[arg(long)]
+    pub as_of: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -304,6 +364,10 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Page(PageCmd::Blob { page_id }) => fetch_blob(client, page_id).await,
         Command::Page(PageCmd::Snapshots { page_id }) => list_snapshots(client, page_id).await,
         Command::Link(LinkCmd::Neighbours(a)) => neighbours(client, a).await,
+        Command::Provenance(ProvenanceCmd::Ancestry(a)) => provenance_ancestry(client, a).await,
+        Command::Provenance(ProvenanceCmd::Drift(a)) => expectation_drift(client, a).await,
+        Command::Provenance(ProvenanceCmd::Abandoned(a)) => abandoned_paths(client, a).await,
+        Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Query(QueryCmd::Run(a)) => run_query(client, a).await,
         Command::Query(QueryCmd::Instance(a)) => query_instance(client, a).await,
@@ -593,6 +657,81 @@ async fn neighbours(client: &Client, a: NeighboursArgs) -> Result<Value> {
         })
         .collect();
     Ok(json!({ "edges": edges }))
+}
+
+async fn provenance_ancestry(client: &Client, a: AncestryArgs) -> Result<Value> {
+    let resp = client
+        .provenance_ancestry(ProvenanceAncestryRequest {
+            page_id: a.page_id,
+            direction: a.direction,
+            relations: a.relations,
+            max_hops: a.max_hops,
+            as_of: a.as_of.unwrap_or_default(),
+        })
+        .await?;
+    let hops: Vec<Value> = resp
+        .hops
+        .into_iter()
+        .map(|h| {
+            json!({
+                "page_id": h.page_id,
+                "skill": h.skill,
+                "relation": opt(&h.relation),
+                "depth": h.depth,
+            })
+        })
+        .collect();
+    Ok(json!({ "hops": hops }))
+}
+
+async fn expectation_drift(client: &Client, a: DriftArgs) -> Result<Value> {
+    let resp = client
+        .expectation_drift(ExpectationDriftRequest {
+            skill: a.skill.unwrap_or_default(),
+        })
+        .await?;
+    let rows: Vec<Value> = resp
+        .rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "decision_page_id": r.decision_page_id,
+                "decision_skill": r.decision_skill,
+                "expectation_page_id": r.expectation_page_id,
+                "superseding_page_id": r.superseding_page_id,
+                "decided_at": r.decided_at,
+                "superseded_at": r.superseded_at,
+            })
+        })
+        .collect();
+    Ok(json!({ "rows": rows }))
+}
+
+async fn abandoned_paths(client: &Client, a: AbandonedArgs) -> Result<Value> {
+    let resp = client
+        .abandoned_paths(AbandonedPathsRequest {
+            skill: a.skill.unwrap_or_default(),
+        })
+        .await?;
+    let nodes: Vec<Value> = resp
+        .nodes
+        .into_iter()
+        .map(|n| json!({ "page_id": n.page_id, "skill": n.skill, "via": n.via }))
+        .collect();
+    Ok(json!({ "nodes": nodes }))
+}
+
+async fn provenance_path(client: &Client, a: PathArgs) -> Result<Value> {
+    let resp = client
+        .provenance_path(ProvenancePathRequest {
+            from_page: a.from_page,
+            to_page: a.to_page,
+            direction: a.direction,
+            relations: a.relations,
+            max_hops: a.max_hops,
+        })
+        .await?;
+    Ok(json!({ "reachable": resp.reachable, "path": resp.path, "depth": resp.depth }))
 }
 
 async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {

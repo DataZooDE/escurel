@@ -27,6 +27,7 @@ pub mod creds;
 pub mod endpoints;
 pub mod events;
 pub mod filter;
+pub mod graph;
 pub mod groups;
 pub mod indexer;
 pub mod meta_skill;
@@ -49,6 +50,10 @@ pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
 pub use creds::{CredentialInfo, CredentialRecord};
 pub use events::{EVENTS_MAX_LIMIT, EventInfo, NewEvent};
+pub use graph::{
+    AbandonedNode, DriftRow, GraphBackend, GraphDir, MAX_HOPS_CEILING, ProvenanceHop,
+    ProvenancePath,
+};
 pub use groups::GroupMember;
 pub use indexer::{
     AuditDrift, IndexChunk, Indexer, IndexerError, RebuildProgress, derive_attach_alias,

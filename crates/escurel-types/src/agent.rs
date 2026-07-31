@@ -166,6 +166,118 @@ pub struct NeighboursResponse {
     pub edges: Vec<Edge>,
 }
 
+// ── provenance graph (ADR-0010) ───────────────────────────────────
+
+/// Bounded multi-hop ancestry over the provenance graph. `direction` is
+/// `"up"` (everything this page rests on) or `"down"` (everything derived
+/// from it); `relations` (possibly empty = all) restricts the edge kinds;
+/// `max_hops` is clamped server-side.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProvenanceAncestryRequest {
+    pub page_id: String,
+    pub direction: String,
+    pub relations: Vec<String>,
+    pub max_hops: u32,
+    pub as_of: String,
+}
+
+/// One node reached while walking the provenance graph. MCP wire keys:
+/// `page_id`, `skill`, `relation`, `depth`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProvenanceHop {
+    pub page_id: String,
+    pub skill: String,
+    // `null` for a bare/body link → "" rather than failing decode.
+    #[serde(deserialize_with = "null_as_default")]
+    pub relation: String,
+    pub depth: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProvenanceAncestryResponse {
+    pub hops: Vec<ProvenanceHop>,
+}
+
+/// `expectation_drift` arguments. `skill` (empty = all) restricts to
+/// decisions of that skill.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExpectationDriftRequest {
+    pub skill: String,
+}
+
+/// One decision resting on a since-superseded expectation. MCP wire keys:
+/// `decision_page_id`, `decision_skill`, `expectation_page_id`,
+/// `superseding_page_id`, `decided_at`, `superseded_at`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DriftRow {
+    pub decision_page_id: String,
+    pub decision_skill: String,
+    pub expectation_page_id: String,
+    pub superseding_page_id: String,
+    pub decided_at: String,
+    pub superseded_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExpectationDriftResponse {
+    pub rows: Vec<DriftRow>,
+}
+
+/// `abandoned_paths` arguments. `skill` (empty = all) restricts to retired
+/// nodes of that skill.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AbandonedPathsRequest {
+    pub skill: String,
+}
+
+/// One node retired by supersession/abandonment. MCP wire keys:
+/// `page_id`, `skill`, `via`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AbandonedNode {
+    pub page_id: String,
+    pub skill: String,
+    pub via: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AbandonedPathsResponse {
+    pub nodes: Vec<AbandonedNode>,
+}
+
+/// `provenance_path` arguments. Shortest path from `from_page` to
+/// `to_page` following `direction` (`up`/`down`), optionally restricted to
+/// `relations`; `max_hops` clamped server-side.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProvenancePathRequest {
+    pub from_page: String,
+    pub to_page: String,
+    pub direction: String,
+    pub relations: Vec<String>,
+    pub max_hops: u32,
+}
+
+/// `provenance_path` result: whether the target is reachable, and (if so)
+/// the ordered page-id path and its hop count. When an interior node is
+/// ACL-private the server returns `reachable: false` with an empty path
+/// (no existence leak).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProvenancePathResponse {
+    pub reachable: bool,
+    pub path: Vec<String>,
+    pub depth: u32,
+}
+
 // ── skills / instances ────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

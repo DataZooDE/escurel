@@ -72,6 +72,9 @@ enum Command {
     /// Typed link-graph traversal.
     #[command(subcommand)]
     Link(agent::LinkCmd),
+    /// Provenance-graph traversal (multi-hop ancestry).
+    #[command(subcommand)]
+    Provenance(agent::ProvenanceCmd),
     /// Event-sourcing surface: inbox, history, capture, assign.
     #[command(subcommand)]
     Event(agent::EventCmd),

@@ -63,16 +63,18 @@ pub use error::{Error, JSONRPC_ADMIN_REQUIRED};
 // frames. These are the same names the old gRPC client re-exported
 // from `escurel_proto::v1`, now sourced from `escurel-types`.
 pub use escurel_types::{
-    AppendMessageRequest, AppendMessageResponse, AssignEventRequest, AssignEventResponse,
-    CaptureEventRequest, ChatMessage, DeletePageRequest, DeletePageResponse, Edge, Event,
-    ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, ListEventsRequest,
+    AbandonedPathsRequest, AbandonedPathsResponse, AppendMessageRequest, AppendMessageResponse,
+    AssignEventRequest, AssignEventResponse, CaptureEventRequest, ChatMessage, DeletePageRequest,
+    DeletePageResponse, Edge, Event, ExpandBlock, ExpandRequest, ExpandResponse,
+    ExpectationDriftRequest, ExpectationDriftResponse, InstanceInfo, ListEventsRequest,
     ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
     ListInstancesResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
     ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse, PageRef,
-    QueryInstanceRequest, QueryInstanceResponse, ResolveRequest, ResolveResponse,
-    RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill,
-    StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest,
-    ValidateResponse, ValidationIssue, WikilinkParsed,
+    ProvenanceAncestryRequest, ProvenanceAncestryResponse, ProvenancePathRequest,
+    ProvenancePathResponse, QueryInstanceRequest, QueryInstanceResponse, ResolveRequest,
+    ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest,
+    SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse,
+    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
 };
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
@@ -194,6 +196,69 @@ impl Client {
             args["link_skill"] = json!(req.link_skill);
         }
         self.transport.call_typed("neighbours", args).await
+    }
+
+    /// Bounded multi-hop provenance ancestry (ADR-0010).
+    pub async fn provenance_ancestry(
+        &self,
+        req: ProvenanceAncestryRequest,
+    ) -> Result<ProvenanceAncestryResponse, Error> {
+        let mut args = json!({ "page_id": req.page_id });
+        if !req.direction.is_empty() {
+            args["direction"] = json!(req.direction);
+        }
+        if !req.relations.is_empty() {
+            args["relations"] = json!(req.relations);
+        }
+        if req.max_hops > 0 {
+            args["max_hops"] = json!(req.max_hops);
+        }
+        if !req.as_of.is_empty() {
+            args["as_of"] = json!(req.as_of);
+        }
+        self.transport.call_typed("provenance_ancestry", args).await
+    }
+
+    /// Decisions resting on a since-superseded expectation (ADR-0010).
+    pub async fn expectation_drift(
+        &self,
+        req: ExpectationDriftRequest,
+    ) -> Result<ExpectationDriftResponse, Error> {
+        let mut args = json!({});
+        if !req.skill.is_empty() {
+            args["skill"] = json!(req.skill);
+        }
+        self.transport.call_typed("expectation_drift", args).await
+    }
+
+    /// Nodes retired by supersession/abandonment (ADR-0010).
+    pub async fn abandoned_paths(
+        &self,
+        req: AbandonedPathsRequest,
+    ) -> Result<AbandonedPathsResponse, Error> {
+        let mut args = json!({});
+        if !req.skill.is_empty() {
+            args["skill"] = json!(req.skill);
+        }
+        self.transport.call_typed("abandoned_paths", args).await
+    }
+
+    /// Shortest provenance path / reachability between two pages (ADR-0010).
+    pub async fn provenance_path(
+        &self,
+        req: ProvenancePathRequest,
+    ) -> Result<ProvenancePathResponse, Error> {
+        let mut args = json!({ "from_page": req.from_page, "to_page": req.to_page });
+        if !req.direction.is_empty() {
+            args["direction"] = json!(req.direction);
+        }
+        if !req.relations.is_empty() {
+            args["relations"] = json!(req.relations);
+        }
+        if req.max_hops > 0 {
+            args["max_hops"] = json!(req.max_hops);
+        }
+        self.transport.call_typed("provenance_path", args).await
     }
 
     /// Return the tenant's Tier-1 skill catalogue.

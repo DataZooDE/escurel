@@ -32,7 +32,7 @@ impl Migrator {
     /// artifact manifest and a DuckDB→DuckDB transfer refuses an artifact
     /// whose `SCHEMA_VERSION` differs from the live tenant's (the row shapes
     /// wouldn't line up).
-    pub const SCHEMA_VERSION: u32 = 7;
+    pub const SCHEMA_VERSION: u32 = 8;
 
     /// Load the per-connection extension/session state Escurel relies on:
     /// auto-install/-load plus `INSTALL`+`LOAD` of `vss`+`fts`
@@ -128,6 +128,17 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the `resolved_links` provenance-graph VIEW (ADR-0010) exists.
+    /// A VIEW, not a table — `CREATE OR REPLACE`, so it is safe (and cheap) to
+    /// run on EVERY connection like the other `ensure_*` methods, and it stays
+    /// fully derivable from `pages`/`links`. Those two tables must already
+    /// exist (they do after [`Migrator::up`], and on every reopen), so this
+    /// runs LAST in the boot chain.
+    pub fn ensure_provenance_graph(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_12_PROVENANCE_GRAPH)?;
+        Ok(())
+    }
+
     /// Apply the v1 schema. Connection should be a fresh DuckDB.
     pub fn up(conn: &Connection) -> Result<(), MigrationError> {
         // The migration is split into staged batches because the
@@ -172,6 +183,10 @@ impl Migrator {
         // Skill-pack subscription pins. Idempotent + also run on every
         // reopen via `ensure_pack_subscriptions`.
         conn.execute_batch(STAGE_11_PACK_SUBSCRIPTIONS)?;
+        // Provenance-graph VIEW (ADR-0010) over the now-existing pages/links
+        // tables. A derived read surface; `CREATE OR REPLACE` + also run on
+        // every reopen via `ensure_provenance_graph`.
+        conn.execute_batch(STAGE_12_PROVENANCE_GRAPH)?;
         Ok(())
     }
 }
@@ -187,6 +202,7 @@ const STAGE_8_EXTERNAL_CREDENTIALS: &str = include_str!("../sql/0006_external_cr
 const STAGE_9_BLOCK_CONTEXT: &str = include_str!("../sql/0007_block_context.sql");
 const STAGE_10_EXTERNAL_ENDPOINTS: &str = include_str!("../sql/0008_external_endpoints.sql");
 const STAGE_11_PACK_SUBSCRIPTIONS: &str = include_str!("../sql/0009_pack_subscriptions.sql");
+const STAGE_12_PROVENANCE_GRAPH: &str = include_str!("../sql/0010_provenance_graph.sql");
 
 #[cfg(test)]
 mod tests {
