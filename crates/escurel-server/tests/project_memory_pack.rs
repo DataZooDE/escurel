@@ -47,6 +47,11 @@ const SKILLS: &[(&str, &str, bool)] = &[
     ("decision", skill_md!("decision.md"), true),
     ("project", skill_md!("project.md"), false),
     ("conclusion", skill_md!("conclusion.md"), true),
+    (
+        "project-memory-assistant",
+        skill_md!("project-memory-assistant.md"),
+        false,
+    ),
 ];
 
 // --- the worked example, in dependency order ---------------------------
@@ -208,8 +213,8 @@ async fn project_memory_pack_imports_and_its_provenance_edges_resolve() {
     assert_eq!(im["pack"], PACK_ID);
     assert_eq!(im["version"], 1);
     assert_eq!(
-        im["pages_imported"], 14,
-        "fourteen ontology skills imported: {im}"
+        im["pages_imported"], 15,
+        "fifteen ontology skills imported: {im}"
     );
 
     // --- list_skills: all twelve, layer-pinned, event-typing correct --

@@ -11,9 +11,9 @@ data-science / analytics project. It ratifies
 *(One-page overview: [`docs/project-memory-infographic.svg`](../../docs/project-memory-infographic.svg) · PNG: [`.png`](../../docs/project-memory-infographic.png))*
 
 It is an **optional** pack. A tenant that never subscribes to it is a
-plain escurel knowledge base; subscribing adds the fourteen entity skills
-below as a read-only base layer, and the tenant authors its own
-instances in its overlay.
+plain escurel knowledge base; subscribing adds the fifteen skills below as
+a read-only base layer, and the tenant authors its own instances in its
+overlay.
 
 ## The two graphs
 
@@ -30,10 +30,12 @@ expectation graph (why), `justified_by` into the knowledge graph
 
 ## Layout
 
-- `skills/` — the fourteen type declarations shipped in the pack
-  (`project-memory` is the documentation/overview skill; the other
-  thirteen are the first-class entities, including `project` /
-  `conclusion` for sub-project containment + closing).
+- `skills/` — the fifteen type declarations shipped in the pack.
+  `project-memory` is the documentation/overview skill and
+  `project-memory-assistant` is the conversational playbook (it turns any
+  MCP chat client into a guided assistant — no app needed); the other
+  thirteen are the first-class entities, including `project` / `conclusion`
+  for sub-project containment + closing.
 - `instances/` — a worked example (a customer-churn project) used by the
   integration tests and as a demonstration. Real tenants author their
   own instances; these ship only as a sample.

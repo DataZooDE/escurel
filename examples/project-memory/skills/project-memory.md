@@ -97,4 +97,13 @@ said."
 - **Am I building on an overturned finding?** `abandoned_paths(conclusion)`
   lists conclusions a later one superseded.
 
+## Using it by chat
+
+There's no app required: [`[[skill::project-memory-assistant]]`](project-memory-assistant.md)
+is a playbook that turns **any** MCP chat client (Claude, Copilot, …) into a
+guided assistant — it classifies what you say into the right entity,
+validates before writing, surfaces `expectation_drift` proactively, and can
+render the graph as a Mermaid diagram. Point an agent at this tenant and
+load that skill.
+
 This page is documentation only; it declares no instances.
