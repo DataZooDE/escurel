@@ -1,6 +1,6 @@
 # Escurel
 
-> *Escurel* — old French for *knowledge-base*.
+> *Escurel* — old French for *squirrel*.
 
 Escurel is a multi-tenant knowledge-base service for agents. It exposes
 a broad MCP tool surface — the twelve canonical agent tools of the
