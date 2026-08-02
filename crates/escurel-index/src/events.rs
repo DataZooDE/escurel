@@ -190,10 +190,20 @@ impl Indexer {
                  VALUES (?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ?::JSON) \
                  ON CONFLICT (event_id) DO NOTHING"
             ),
+            // `created_at` is written EXPLICITLY here, unlike the local
+            // table which leans on its `DEFAULT CURRENT_TIMESTAMP`.
+            //
+            // DuckDB's postgres extension implements INSERT as a COPY: it
+            // materialises every column of the target relation and streams
+            // the row, so a column omitted from this statement arrives as an
+            // explicit NULL rather than being left for Postgres to default.
+            // Against `created_at TIMESTAMP NOT NULL DEFAULT now()` that is a
+            // not-null violation, and capture_event fails outright — the
+            // whole event bus, on the DEFAULT events backend.
             (Some(_), false) => format!(
                 "INSERT INTO {table} \
-                 (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance) \
-                 VALUES (?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ?) \
+                 (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, created_at) \
+                 VALUES (?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ?, CURRENT_TIMESTAMP::TIMESTAMP) \
                  ON CONFLICT (event_id) DO NOTHING"
             ),
             (Some(_), true) => format!(
