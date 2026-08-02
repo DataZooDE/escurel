@@ -814,25 +814,32 @@ impl FilterParser<'_> {
     }
 }
 
+/// NUL separator between hashed fields, so `a` + `bc` cannot collide with
+/// `ab` + `c`. Spelled as a byte string rather than `[0]` to match the other
+/// separators below — `clippy::byte_char_slices` rejects `[b'=']` but has
+/// nothing to say about `[0]`, and a file mixing both spellings reads worse
+/// than either. Byte-identical to `[0]`; see `hash_binding_is_byte_stable`.
+const SEP: [u8; 1] = *b"\0";
+
 fn hash_binding(b: &SqlViewBinding) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b.connector.as_str().as_bytes());
-    hasher.update([0]);
+    hasher.update(SEP);
     hasher.update(b.attach.as_deref().unwrap_or("").as_bytes());
-    hasher.update([0]);
+    hasher.update(SEP);
     hasher.update(b.relation.as_bytes());
-    hasher.update([0]);
+    hasher.update(SEP);
     hasher.update(b.filter.as_deref().unwrap_or("").as_bytes());
-    hasher.update([0]);
+    hasher.update(SEP);
     for (k, v) in &b.project {
         hasher.update(k.as_bytes());
-        hasher.update([b'=']);
+        hasher.update(*b"=");
         hasher.update(v.as_bytes());
-        hasher.update([0]);
+        hasher.update(SEP);
     }
     for s in &b.search_text {
         hasher.update(s.as_bytes());
-        hasher.update([0]);
+        hasher.update(SEP);
     }
     hex(&hasher.finalize())
 }
@@ -857,9 +864,9 @@ pub(crate) fn schema_fingerprint(
     let mut hasher = Sha256::new();
     for (name, ty) in describe(conn, view)? {
         hasher.update(name.as_bytes());
-        hasher.update([b':']);
+        hasher.update(*b":");
         hasher.update(ty.as_bytes());
-        hasher.update([b'\n']);
+        hasher.update(*b"\n");
     }
     Ok(hex(&hasher.finalize()))
 }
@@ -1056,6 +1063,60 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A binding covering every field the hash consumes, including the
+    /// `project` map and `search_text` list that drive the separator loops.
+    fn fingerprint_fixture() -> SqlViewBinding {
+        let mut project = std::collections::BTreeMap::new();
+        project.insert("cust_id".to_owned(), "id".to_owned());
+        project.insert("cust_name".to_owned(), "name".to_owned());
+        SqlViewBinding {
+            connector: SqlConnector::Postgres,
+            attach: Some("crm".to_owned()),
+            relation: "public.customers".to_owned(),
+            filter: Some("active = true".to_owned()),
+            project,
+            search_text: vec!["name".to_owned(), "notes".to_owned()],
+        }
+    }
+
+    /// `hash_binding` is a CHARACTERISATION test, pinned to an exact digest.
+    ///
+    /// This value is not arbitrary and must not be "updated to match" if it
+    /// starts failing. `hash_binding` feeds `binding_hash`, and
+    /// `schema_fingerprint` is persisted into every sql_view instance page's
+    /// `backend_ref.source_schema_fingerprint` frontmatter and compared on
+    /// read to detect upstream drift. Change the bytes fed to the hasher and
+    /// every existing page silently reports drift on the next boot, for no
+    /// real reason.
+    ///
+    /// So: a failure here means the hash INPUT changed. Either that was
+    /// intended — in which case the drift consequence is the thing to think
+    /// about, not this assertion — or a refactor was not as byte-neutral as
+    /// it looked.
+    #[test]
+    fn hash_binding_is_byte_stable() {
+        assert_eq!(
+            hash_binding(&fingerprint_fixture()),
+            "3c7a5a831531d94fc97c66409ddda3bf74620f983eea827eed970deb27015300"
+        );
+    }
+
+    /// Same contract as [`hash_binding_is_byte_stable`], for the fingerprint
+    /// that actually lands in page frontmatter (REQ-NF-06).
+    #[test]
+    fn schema_fingerprint_is_byte_stable() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE VIEW v AS SELECT 1::INTEGER AS id, 'x'::VARCHAR AS name, \
+             true::BOOLEAN AS active;",
+        )
+        .unwrap();
+        assert_eq!(
+            schema_fingerprint(&conn, "v").unwrap(),
+            "908f981351c560933838a66ca737f32da4814c45b83455055050729aa5787d14"
+        );
+    }
 
     #[test]
     fn attach_sql_is_always_read_only() {
