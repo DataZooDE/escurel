@@ -17,6 +17,11 @@
 //! live there. Without it the tests skip rather than fail — a checkout that
 //! has not built the sibling extension should not have a red suite.
 
+// Same gate as `s3_roundtrip.rs`: an integration test is its own crate and is
+// compiled by a plain `cargo test --workspace`, so without this the
+// feature-gated `DuckVfsStore` import fails to resolve on a default build.
+#![cfg(feature = "duckvfs")]
+
 use bytes::Bytes;
 use escurel_storage::{DuckVfsStore, DuckVfsStoreConfig, Key, LaneStore, StoreError};
 use tempfile::TempDir;
