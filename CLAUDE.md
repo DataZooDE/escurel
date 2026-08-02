@@ -125,6 +125,11 @@ A PR cycle:
    `docs/notes/discovered/` in the same PR.
 7. Merge with `gh pr merge --squash --delete-branch` once CI is
    green (CI is live — see principle 2).
+8. **Reclaim the disk.** If the work happened in a worktree, remove
+   it now that the branch is merged — `git worktree remove <path>`
+   — and run `scripts/reclaim-disk.sh --all`. See *Disk discipline*
+   below; this step is not optional housekeeping, it is the step
+   that keeps the repo from reaching 845 GB again.
 
 ## Locked decisions (current bootstrap)
 
@@ -152,6 +157,70 @@ A PR cycle:
   HashiCorp stack (Nomad/Consul/Vault/Fabio + Packer) is retired; its
   jobspecs/image fragments were removed from `docs/deploy/`. The per-app
   Kamal deploy contract + registry row live in the substrate repo.
+
+## Disk discipline (build artifacts + worktrees)
+
+This repo eats disk faster than any other in the fleet, and it does it
+quietly. On 2026-08-02 the working copy had reached **845 GB** — 765 GB
+of it `target/` dirs inside abandoned agent worktrees. Treat disk as a
+resource you are responsible for, the same way you treat a green test
+suite.
+
+**Why it blows up.** The workspace compiles ~287 test/bin executables
+(172 `tests/*.rs` files, each its own crate + binary — `escurel-server`
+alone has 62). Each is statically linked, so under the old default
+`debug = 2` each embedded a full copy of the dependency graph's DWARF:
+a sampled test binary was **704 MB, of which 81% was `.debug_*`**. One
+built worktree ≈ 78 GB. The agent fan-out then multiplied that by the
+number of worktrees. Nothing ever collected the garbage, and stale
+hash-suffixed binaries from superseded builds accumulated forever.
+
+**What's already done for you** (root `Cargo.toml`): `[profile.dev]`
+sets `debug = "line-tables-only"` and `[profile.dev.package."*"]` sets
+`debug = false`. Backtraces keep file:line in *our* code and keep
+symbol names everywhere; only debugger-grade variable/type DWARF is
+gone. If you genuinely need gdb/lldb, use `cargo test --profile
+dev-debug`, then `cargo clean --profile dev-debug` when you're done.
+
+**The rules.**
+
+- **Remove a worktree when its branch merges.** This is PR-cycle step
+  8. A merged worktree is pure waste — the commits are in `main`.
+- **`target/` is never precious.** It is regenerable cache. If you are
+  unsure whether to delete one, delete it. Never delete a *worktree*
+  on that same instinct — check it's merged and clean first, which is
+  exactly what the script's guards do.
+- **Run `scripts/reclaim-disk.sh` at every natural pause** — after a
+  merge, at the end of a multi-PR sequence, before starting a fan-out.
+  With no flags it only reports:
+
+  ```bash
+  scripts/reclaim-disk.sh                 # report: sizes, ages, merged/unmerged
+  scripts/reclaim-disk.sh --targets       # drop target/ untouched for 7d+
+  scripts/reclaim-disk.sh --merged        # remove merged + clean worktrees
+  scripts/reclaim-disk.sh --all --yes     # both, unattended
+  ```
+
+  `--merged` removes a worktree only when it is not the main worktree,
+  is on a named branch, is clean, and is an ancestor of `origin/main`.
+  Detached HEADs and dirty trees are reported and skipped.
+- **Before a large agent fan-out**, set `CARGO_INCREMENTAL=0` in the
+  agents' environment. Incremental state was 7.1 GB per worktree and
+  is worthless in a worktree that gets built once and abandoned.
+- **Don't** point every worktree at one shared `CARGO_TARGET_DIR`.
+  Cargo takes an exclusive lock on the target dir, so parallel agents
+  would serialise behind each other — it trades the disk problem for a
+  throughput problem. Per-worktree targets plus real cleanup is the
+  right shape; it also means `git worktree remove` frees the cache
+  atomically.
+
+If disk is still tight after all of the above, the next lever is
+structural: consolidate each crate's `tests/*.rs` into a single
+integration binary with modules. `escurel-server`'s 62 test binaries
+would become 1. That is a real refactor, not housekeeping — don't do
+it casually, but it is where the remaining order-of-magnitude lives.
+
+See [`docs/notes/discovered/2026-08-02-cargo-target-disk-blowup.md`](docs/notes/discovered/2026-08-02-cargo-target-disk-blowup.md).
 
 ## Demo app + browser verification (rodney)
 

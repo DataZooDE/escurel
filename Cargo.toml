@@ -50,3 +50,34 @@ all = { level = "warn", priority = -1 }
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Disk discipline. This workspace links ~287 test/bin executables (172
+# `tests/*.rs` files, each its own crate + binary). Under the default
+# `debug = 2`, every one of them embedded a full copy of the DWARF for the
+# whole dependency graph: a sampled test binary was 704 MB, of which 569 MB
+# (81%) was `.debug_*` sections. One built worktree cost ~78 GB, and the
+# agent fan-out multiplied that by the number of worktrees.
+#
+# `line-tables-only` keeps the file:line mapping that makes a test-failure
+# backtrace useful and drops the variable/type DWARF that only an
+# interactive debugger consumes. Dependencies get no debuginfo at all —
+# their symbol *names* survive (that's the symtab, not debuginfo), so
+# backtraces through dep frames still read fine, they just lose file:line.
+#
+# Need a real debugger? `cargo test --profile dev-debug` (below). See
+# docs/notes/discovered/2026-08-02-cargo-target-disk-blowup.md.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# Opt-in escape hatch: full debuginfo for gdb/lldb sessions. Builds into a
+# separate `target/dev-debug/` dir, so it costs disk only while you use it —
+# `cargo clean --profile dev-debug` when done.
+[profile.dev-debug]
+inherits = "dev"
+debug = 2
+
+[profile.dev-debug.package."*"]
+debug = true
