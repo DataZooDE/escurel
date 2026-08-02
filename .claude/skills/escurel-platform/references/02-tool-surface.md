@@ -51,6 +51,7 @@ Notes:
 |---|---|---|---|
 | `validate` | `content`, `as_page_id?` | `{issues[]}` | dry run — no commit |
 | `update_page` | `page_id`, `content` | `{ok, issues[], new_version}` | whole-page write (the public write path) |
+| `delete_page` | `page_id`, `base_version?` | `{ok, …}` | **soft**-delete / archive |
 | `open_session` | `page_id` | `{session, head_version, content}` | live CRDT |
 | `apply_op` | `session`, `op` | `{ok, conflicts?}` | live CRDT |
 | `close_session` | `session`, `commit=true` | `{final_version, issues}` | live CRDT |
@@ -60,6 +61,19 @@ Notes:
 `close_session`) is for co-editing with a user or another actor over
 `/ws`; most apps start with `update_page` and only reach for live mode
 when they need granular concurrent edits.
+
+`delete_page` **archives rather than destroys** (#300): the page is retracted
+from discovery — search, `list_instances`, the catalogue — while the
+canonical markdown is retained for audit. Do not reach for it expecting the
+bytes to be gone. `base_version` is an optimistic-concurrency guard (the
+version you last read); omit it to delete unconditionally.
+
+Note this list is **curated, not exhaustive** — the server exposes ~66 tools,
+most of them operator/admin surface (tenant CRUD, credential and endpoint
+registries, pack import/export, lane inspection, snapshot publishing). The
+tables here cover what an application consumes. If you need one that isn't
+here, check `tools/list` against a running gateway and then fix this
+reference — see the repo's `CLAUDE.md` §*Keeping the consumer skill in sync*.
 
 ## Event tools (the event bus)
 

@@ -206,8 +206,12 @@ The skill had drifted badly while nobody was looking:
   curation is deliberate — but a *core write op* missing is drift, not
   curation.)
 
-Nothing failed. No test covers it. It was found only because someone
-read it and compared against the running system.
+All three were corrected in the same PR that added this section. The
+point of recording them is not the corrections — it is that **nothing
+failed**. No test covers this. They were found only because someone read
+the skill and compared it against a running system, which is exactly the
+kind of check that does not happen on a schedule. Hence the obligation
+sits at write time, in step 6b.
 
 ### Checking it cheaply
 
