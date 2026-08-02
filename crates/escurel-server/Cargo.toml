@@ -38,6 +38,10 @@ gemini = ["escurel-embed/gemini"]
 s3 = ["escurel-storage/s3"]
 #   --features gcs            → GCS-backed LaneStore (ADC; GCP-hosted deploys)
 gcs = ["escurel-storage/gcs"]
+#   --features duckvfs        → LaneStore over DuckDB's virtual filesystem.
+#     One backend for every scheme DuckDB can reach; `gdrive://` (a Google
+#     Shared Drive as the markdown corpus) is what it was built for.
+duckvfs = ["escurel-storage/duckvfs"]
 embeddinggemma = ["escurel-embed/candle"]
 #   --features rerank        → candle XLM-RoBERTa cross-encoder reranker
 #     (issue #215). Opt-in build (heavy candle compile + ~GB model at boot);

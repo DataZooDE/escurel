@@ -59,6 +59,25 @@ pub enum ObjectStoreSecret {
         region: String,
         use_ssl: bool,
     },
+    /// `gdrive://` DATA_PATH — a Google Shared Drive holding the lake's
+    /// parquet. Carries no credential material: the `credential_chain`
+    /// provider resolves Application Default Credentials at use time, the
+    /// same identity the `gdrive` lane store uses.
+    ///
+    /// Performance note, because this is a genuinely unusual place to put a
+    /// lake: DuckLake writes many small parquet files and rewrites metadata
+    /// on every commit, and Drive charges a REST round trip per file with
+    /// no atomic overwrite and eventually-consistent listings. It works —
+    /// the extension tests the combination — but it is orders of magnitude
+    /// slower than object storage and should not be assumed production-grade.
+    Gdrive {
+        drive_id: String,
+        scope: String,
+        /// Path to a built `gdrive.duckdb_extension`. `None` once the
+        /// extension is installable by name from the community repository;
+        /// until then a local build has to be `LOAD`ed by path.
+        extension_path: Option<String>,
+    },
 }
 
 /// Where the lake lives: catalog + data path + object-store credentials.
@@ -86,9 +105,25 @@ impl LakeConfig {
         self.catalog_dsn.contains('=')
     }
 
-    /// Remote DATA_PATH (`gs://` / `s3://`) needs httpfs + a secret.
+    /// Remote DATA_PATH needs a secret, and (for the httpfs schemes) the
+    /// httpfs extension. `gdrive://` is remote too but is served by the
+    /// gdrive extension rather than httpfs — see [`Self::needs_httpfs`].
     fn is_remote_data_path(&self) -> bool {
-        self.data_path.starts_with("gs://") || self.data_path.starts_with("s3://")
+        self.data_path.starts_with("gs://")
+            || self.data_path.starts_with("s3://")
+            || self.is_gdrive_data_path()
+    }
+
+    /// `gdrive://` is its own filesystem: loading httpfs for it would be
+    /// useless, and NOT loading the gdrive extension would make the path
+    /// unresolvable.
+    fn is_gdrive_data_path(&self) -> bool {
+        self.data_path.starts_with("gdrive://")
+    }
+
+    /// Only the httpfs-backed remote schemes need httpfs.
+    fn needs_httpfs(&self) -> bool {
+        self.is_remote_data_path() && !self.is_gdrive_data_path()
     }
 }
 
@@ -117,7 +152,37 @@ fn validate(cfg: &LakeConfig) -> Result<(), SnapshotError> {
             }
         }
         (ObjectStoreSecret::None, true) => {
-            return bad("gs://+s3:// data_path needs an object-store secret");
+            return bad(
+                "a remote (gs:// / s3:// / gdrive://) data_path needs an object-store secret",
+            );
+        }
+        (
+            ObjectStoreSecret::Gdrive {
+                drive_id,
+                scope,
+                extension_path,
+            },
+            _,
+        ) => {
+            if !cfg.data_path.starts_with("gdrive://") {
+                return bad("a Gdrive secret requires a gdrive:// data_path");
+            }
+            if drive_id.is_empty() || scope.is_empty() {
+                return bad("gdrive secret has an empty field");
+            }
+            if !is_safe_sql_fragment(drive_id) || !is_safe_sql_fragment(scope) {
+                return bad("gdrive secret contains a splice-unsafe character");
+            }
+            // The extension path is spliced into a LOAD, so it gets the
+            // same treatment as the credential literals.
+            if let Some(path) = extension_path {
+                if path.is_empty() {
+                    return bad("gdrive extension_path is empty");
+                }
+                if !is_safe_sql_fragment(path) {
+                    return bad("gdrive extension_path contains a splice-unsafe character");
+                }
+            }
         }
         (ObjectStoreSecret::Gcs { key_id, secret }, _) => {
             if !cfg.data_path.starts_with("gs://") {
@@ -171,8 +236,21 @@ pub fn install_load_sql(cfg: &LakeConfig) -> String {
     if cfg.is_pg_catalog() {
         sql.push_str(" INSTALL postgres; LOAD postgres;");
     }
-    if cfg.is_remote_data_path() {
+    if cfg.needs_httpfs() {
         sql.push_str(" INSTALL httpfs; LOAD httpfs;");
+    }
+    if cfg.is_gdrive_data_path() {
+        // By path, not by name: the extension is not in the community
+        // repository yet, so `INSTALL gdrive` has nothing to resolve. The
+        // path form also means the loading connection must have been opened
+        // with allow_unsigned_extensions — a local build is unsigned.
+        match &cfg.object_store {
+            ObjectStoreSecret::Gdrive {
+                extension_path: Some(path),
+                ..
+            } => sql.push_str(&format!(" LOAD '{path}';")),
+            _ => sql.push_str(" INSTALL gdrive; LOAD gdrive;"),
+        }
     }
     sql
 }
@@ -199,6 +277,18 @@ pub fn secret_sql(cfg: &LakeConfig) -> Result<Option<String>, SnapshotError> {
              (TYPE s3, KEY_ID '{access_key_id}', SECRET '{secret_access_key}', \
               ENDPOINT '{endpoint}', URL_STYLE 'path', USE_SSL {use_ssl}, \
               REGION '{region}');"
+        )),
+        // DRIVE_ID, not ROOT_FOLDER_ID: a `0A…` id is a Shared Drive root,
+        // and only DRIVE_ID also sets the `corpora=drive` listing scope it
+        // needs. And DRIVE_SCOPE, not SCOPE — `SCOPE` is DuckDB's own
+        // reserved path-scoping clause, so a secret using it matches
+        // nothing at all, silently.
+        ObjectStoreSecret::Gdrive {
+            drive_id, scope, ..
+        } => Some(format!(
+            "CREATE OR REPLACE SECRET escurel_lake_store \
+             (TYPE gdrive, PROVIDER credential_chain, DRIVE_ID '{drive_id}', \
+              DRIVE_SCOPE '{scope}');"
         )),
     })
 }
@@ -450,10 +540,12 @@ fn lake_latest_snapshot(conn: &Connection) -> Result<i64, duckdb::Error> {
 /// never attached) surfaces as an `Err` — callers treat poll errors as
 /// retryable, not fatal.
 pub async fn latest_lake_snapshot_id(cfg: &LakeConfig) -> Result<Option<i64>, SnapshotError> {
-    let conn = Connection::open_in_memory().map_err(|source| SnapshotError::DuckdbOpen {
-        path: ":memory: (lake poll)".to_owned(),
-        source,
-    })?;
+    let conn = Connection::open_in_memory_with_flags(Migrator::connection_config()?).map_err(
+        |source| SnapshotError::DuckdbOpen {
+            path: ":memory: (lake poll)".to_owned(),
+            source,
+        },
+    )?;
     attach_lake(&conn, cfg, true)?;
     if !lake_table_exists(&conn, "escurel_manifest")? {
         return Ok(None);
@@ -527,10 +619,12 @@ pub async fn adopt_lake(
     tenant: &str,
     current: Option<i64>,
 ) -> Result<Option<AdoptedIndex>, SnapshotError> {
-    let conn = Connection::open_in_memory().map_err(|source| SnapshotError::DuckdbOpen {
-        path: ":memory: (lake adopt)".to_owned(),
-        source,
-    })?;
+    let conn = Connection::open_in_memory_with_flags(Migrator::connection_config()?).map_err(
+        |source| SnapshotError::DuckdbOpen {
+            path: ":memory: (lake adopt)".to_owned(),
+            source,
+        },
+    )?;
     set_spill_directory(&conn, tenant)?;
     // vss/fts before any DDL; the attach brings ducklake (+httpfs/postgres).
     Migrator::load_extensions(&conn)?;
@@ -625,6 +719,105 @@ mod tests {
                 use_ssl: false,
             },
         }
+    }
+
+    fn pg_gdrive_cfg() -> LakeConfig {
+        LakeConfig {
+            catalog_dsn: "host=127.0.0.1 port=5432 user=u password=p dbname=d".to_owned(),
+            data_path: "gdrive://escurel/lake".to_owned(),
+            object_store: ObjectStoreSecret::Gdrive {
+                drive_id: "0AA5vtjzlyjnoUk9PVA".to_owned(),
+                scope: "https://www.googleapis.com/auth/drive".to_owned(),
+                extension_path: Some("/opt/gdrive.duckdb_extension".to_owned()),
+            },
+        }
+    }
+
+    #[test]
+    fn gdrive_data_path_loads_gdrive_and_not_httpfs() {
+        let sql = install_load_sql(&pg_gdrive_cfg());
+        assert!(sql.contains("INSTALL ducklake; LOAD ducklake;"), "{sql}");
+        assert!(sql.contains("INSTALL postgres; LOAD postgres;"), "{sql}");
+        // gdrive:// is remote but is NOT served by httpfs; loading httpfs
+        // for it would be pure overhead, and the real requirement is that
+        // the gdrive extension be loaded or the path cannot resolve at all.
+        assert!(!sql.contains("httpfs"), "{sql}");
+        assert!(
+            sql.contains("LOAD '/opt/gdrive.duckdb_extension';"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn gdrive_without_an_extension_path_installs_by_name() {
+        // The shape this becomes once the extension is in the community
+        // repository and no longer needs loading from a local build.
+        let mut cfg = pg_gdrive_cfg();
+        cfg.object_store = ObjectStoreSecret::Gdrive {
+            drive_id: "0AA5vtjzlyjnoUk9PVA".to_owned(),
+            scope: "https://www.googleapis.com/auth/drive".to_owned(),
+            extension_path: None,
+        };
+        assert!(install_load_sql(&cfg).contains("INSTALL gdrive; LOAD gdrive;"));
+    }
+
+    #[test]
+    fn gdrive_secret_uses_drive_id_and_drive_scope() {
+        let sql = secret_sql(&pg_gdrive_cfg()).unwrap().unwrap();
+        assert!(sql.contains("TYPE gdrive"), "{sql}");
+        assert!(sql.contains("PROVIDER credential_chain"), "{sql}");
+        // Both of these are silent-failure traps if got wrong:
+        // ROOT_FOLDER_ID would not set the shared-drive listing scope, and
+        // a bare SCOPE clause is DuckDB's own path-scoping keyword, which
+        // makes the secret match nothing.
+        assert!(sql.contains("DRIVE_ID '0AA5vtjzlyjnoUk9PVA'"), "{sql}");
+        assert!(!sql.contains("ROOT_FOLDER_ID"), "{sql}");
+        assert!(
+            sql.contains("DRIVE_SCOPE 'https://www.googleapis.com/auth/drive'"),
+            "{sql}"
+        );
+        assert!(!sql.contains(", SCOPE '"), "{sql}");
+    }
+
+    #[test]
+    fn gdrive_secret_requires_a_gdrive_data_path() {
+        let mut cfg = pg_gdrive_cfg();
+        cfg.data_path = "s3://lake/data/".to_owned();
+        assert!(
+            secret_sql(&cfg).is_err(),
+            "secret/scheme mismatch must fail closed"
+        );
+    }
+
+    #[test]
+    fn gdrive_data_path_without_a_secret_is_rejected() {
+        // Without this branch a gdrive:// path with no secret would fall
+        // through to the local-directory arm and be rejected for the wrong
+        // reason ("not an existing directory"), which is a confusing error.
+        let mut cfg = pg_gdrive_cfg();
+        cfg.object_store = ObjectStoreSecret::None;
+        assert!(secret_sql(&cfg).is_err());
+    }
+
+    #[test]
+    fn gdrive_splice_unsafe_values_are_rejected() {
+        let mut cfg = pg_gdrive_cfg();
+        cfg.object_store = ObjectStoreSecret::Gdrive {
+            drive_id: "0AA5'; DROP TABLE x; --".to_owned(),
+            scope: "https://www.googleapis.com/auth/drive".to_owned(),
+            extension_path: None,
+        };
+        assert!(secret_sql(&cfg).is_err());
+
+        // The extension path is spliced into a LOAD, so it needs the same
+        // guard as the credential literals.
+        let mut cfg = pg_gdrive_cfg();
+        cfg.object_store = ObjectStoreSecret::Gdrive {
+            drive_id: "0AA5vtjzlyjnoUk9PVA".to_owned(),
+            scope: "https://www.googleapis.com/auth/drive".to_owned(),
+            extension_path: Some("/opt/x'; ATTACH 'evil".to_owned()),
+        };
+        assert!(secret_sql(&cfg).is_err());
     }
 
     #[test]

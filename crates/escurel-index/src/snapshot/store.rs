@@ -99,10 +99,12 @@ impl IndexStore for SingleFileStore {
             let _ = std::fs::remove_file(self.tenant_dir.join("escurel.duckdb.wal"));
         }
         let fresh = !db_path.exists();
-        let conn = Connection::open(&db_path).map_err(|source| SnapshotError::DuckdbOpen {
-            path: db_path.display().to_string(),
-            source,
-        })?;
+        let conn = Connection::open_with_flags(&db_path, Migrator::connection_config()?).map_err(
+            |source| SnapshotError::DuckdbOpen {
+                path: db_path.display().to_string(),
+                source,
+            },
+        )?;
         // `vss`/`fts` + the HNSW-persistence flag are per-connection session
         // state, so load them on EVERY boot — not only when the DB is fresh.
         // The schema DDL (`up`) is one-time, but a restart against an existing

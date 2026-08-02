@@ -9,6 +9,8 @@
 //! See `docs/spec/storage.md §The LaneStore trait` for the contract.
 
 pub mod blob;
+#[cfg(feature = "duckvfs")]
+pub mod duckvfs;
 pub mod fs;
 #[cfg(feature = "gcs")]
 pub mod gcs;
@@ -17,6 +19,8 @@ mod key;
 pub mod s3;
 
 pub use blob::{BLOB_PREFIX, BlobId, INBOX_PREFIX};
+#[cfg(feature = "duckvfs")]
+pub use duckvfs::{DuckVfsStore, DuckVfsStoreConfig};
 pub use fs::FsStore;
 #[cfg(feature = "gcs")]
 pub use gcs::{GcsStore, GcsStoreConfig};
