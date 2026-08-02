@@ -1,17 +1,16 @@
 # 09 — Local iteration: getting a gateway to develop against
 
-## The reality: no standalone `serve` binary (yet)
+## Three ways to get a gateway
 
-The workspace builds exactly **one** binary — the `escurel` CLI
-(`crates/escurel-cli`), which is a *client*, not a server. `escurel-server`
-is a **library** consumed by `escurel-test-support` (in-process) and, in
-production, by the `escurel-server` binary in the repo's container image
+`escurel-server` **is a binary** (`crates/escurel-server`, declared
+`[[bin]]`), and running it directly is the ordinary local loop. It is
+*also* still a library, consumed in-process by `escurel-test-support`; and
+in production the same binary ships in the repo's container image
 (`Dockerfile` → ghcr) that the substrate Kamal deploy launches
-(`docs/deploy/substrate.md`). There is
-**no `escurel serve` you can run locally today.** Plan your dev loop
-around that. (If this changes, this reference is the thing to update.)
+(`docs/deploy/substrate.md`).
 
-So there are two practical ways to develop against a gateway:
+Pick by what you are doing: **C** to have a gateway up and poke at it by
+hand, **A** for the automated test loop, **B** to work against real data.
 
 ### A. In-process via `EscurelProcess` (the default, Rust)
 
@@ -24,16 +23,9 @@ Red→green:
 cargo test -p <your-crate> <test_name>     # spawns escurel + your backend, asserts
 ```
 
-If you want a gateway to poke at *interactively* (e.g. to drive the CLI or
-an MCP client by hand), write a throwaway binary/test that calls
-`EscurelProcess::spawn`, prints `base_url()` / `mcp_url()` and a
-`mint_token(...)`, and parks until Ctrl-C. Then:
-
-```sh
-export ESCUREL_SERVER=<printed base url>
-export ESCUREL_TOKEN=<printed token>
-escurel skill list
-```
+To poke at a gateway *interactively*, prefer **C** below — it is a plain
+binary now, so a throwaway `EscurelProcess::spawn` harness that parks until
+Ctrl-C is no longer worth writing.
 
 ### B. Point at a deployed instance (any language)
 
@@ -45,6 +37,47 @@ export ESCUREL_SERVER="http://<host>:8080"     # CLI (HTTP MCP)
 export ESCUREL_TOKEN="<bearer from the real issuer>"   # references/08
 # or for your app's own client: ESCUREL_ENDPOINT / your app's bearer
 ```
+
+### C. Run `escurel-server` locally (any language)
+
+The simplest way to have a real gateway on `:8080`:
+
+```sh
+cargo build -p escurel-server
+ESCUREL_SERVER_DATA_DIR=/tmp/escurel-data \
+ESCUREL_SERVER_LISTEN_HTTP=127.0.0.1:8080 \
+ESCUREL_TENANT=default \
+ESCUREL_EMBEDDING_PROVIDER=zero \
+ESCUREL_SEED_DIR=examples/crm-demo \
+  ./target/debug/escurel-server
+
+# another shell
+curl -s localhost:8080/healthz     # OK
+escurel skill list                  # ESCUREL_SERVER defaults to :8080
+```
+
+Leaving `ESCUREL_AUTH_OIDC_ISSUER` unset runs the gateway **unauthenticated**
+— no bearer needed, admin tools open. That is the point for local dev; see
+`references/08` before exposing it anywhere.
+
+Three traps worth knowing up front:
+
+- **`ESCUREL_EMBEDDING_PROVIDER=zero` disables retrieval, silently.** Every
+  vector is identical, so `search` ranking is meaningless and nothing is
+  findable *by meaning* — pages still write, `list_instances` still works,
+  and only search is dead, which is the last thing you look at. Fine for a
+  keyless first boot; set `gemini` (+ `ESCUREL_GEMINI_API_KEY`) or
+  `embeddinggemma` the moment you care about search. **Changing provider
+  needs a re-embed** — one boot with `ESCUREL_REBUILD_INDEX_ON_BOOT=always`,
+  or existing pages keep their old vectors.
+- **`search` scores are reciprocal-rank fusion, not similarity.** The top
+  hit is ~0.0164 (= 1/(60+1)) for every query. Rank carries the signal; the
+  magnitude does not. Don't threshold on it.
+- **Optional storage backends are cargo features.** `--features s3` / `gcs`
+  / `duckvfs` (the DuckDB-VFS backend, e.g. a `gdrive://` corpus). A plain
+  `cargo build`/`cargo test` overwrites the binary with one that lacks them,
+  and you find out at boot: *"ESCUREL_STORAGE_BACKEND=… requires the `…`
+  cargo feature; this binary was built without it."*
 
 ## The routes (once a gateway is up)
 
@@ -65,10 +98,15 @@ Quick liveness check while iterating: `curl -s localhost:8080/healthz`.
   `http://127.0.0.1:8080`), `ESCUREL_TOKEN`.
 - **Your app's client** (your choice; the example uses):
   `ESCUREL_ENDPOINT`, `ESCUREL_TOKEN` (`examples/echo-app/src/lib.rs`).
-- **The production server** (`docs/deploy/`): `ESCUREL_SERVER_DATA_DIR`,
-  `ESCUREL_SERVER_LISTEN_HTTP`, `ESCUREL_CONFIG`,
-  `ESCUREL_AUTH_*`, `ESCUREL_STORAGE_S3_*`. Your app doesn't set these —
-  the deployment does.
+- **The server** (`docs/deploy/`, and option C above):
+  `ESCUREL_SERVER_DATA_DIR`, `ESCUREL_SERVER_LISTEN_HTTP`, `ESCUREL_CONFIG`,
+  `ESCUREL_TENANT`, `ESCUREL_SEED_DIR`, `ESCUREL_AUTH_*`,
+  `ESCUREL_EMBEDDING_*`, `ESCUREL_STORAGE_*` (`_S3_*` / `_GCS_*` /
+  `_DUCKVFS_*`), `ESCUREL_INDEX_BACKEND` + `ESCUREL_DUCKLAKE_*`. In
+  production your app doesn't set these — the deployment does; locally you
+  set them yourself. The authoritative list is the module doc comment at
+  the top of `crates/escurel-server/src/config.rs`, which is generated from
+  the same parser that reads them.
 
 ## The iterate loop
 

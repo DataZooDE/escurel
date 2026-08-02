@@ -64,6 +64,18 @@ References point at `docs/…`, `crates/…`, and `examples/…` **relative to
 the Escurel repo root** — they resolve through the symlink. The Escurel
 checkout's git ref is the version pin; check `VERSION` / `CHANGELOG.md`.
 
+> **This skill can be stale, and nothing will tell you.** It is prose in a
+> repo — no test compiles it, no CI checks it. A 2026-08-02 audit found it
+> claiming the workspace built only the `escurel` CLI and that no server
+> could be run locally, long after `escurel-server` became an ordinary
+> binary; it also missed several CLI subcommands and `delete_page`.
+>
+> So: when a detail here decides something that matters, **verify it
+> against the running system** — `escurel --help`, a `tools/list` call, or
+> the source it points at — and treat a mismatch as a bug in this skill.
+> Contributors: the sync obligation is in the repo's `CLAUDE.md` under
+> *Keeping the consumer skill in sync* (PR-cycle step 6b).
+
 ## Progressive-disclosure index
 
 Read only what the task needs. Each reference is small and self-contained;

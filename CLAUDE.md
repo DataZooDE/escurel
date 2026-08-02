@@ -123,6 +123,12 @@ A PR cycle:
    file + test function.
 6. If the PR fixed a non-obvious problem, drop a note under
    `docs/notes/discovered/` in the same PR.
+6b. **Re-sync `.claude/skills/escurel-platform` in the SAME PR** if the
+   change touched anything a consumer sees — the tool surface, the CLI
+   commands, the wire shapes, the binaries, the env vars, the data
+   model. See *Keeping the consumer skill in sync* below. The skill is
+   documentation that agents act on directly; stale entries are acted
+   on as fact, which is worse than no documentation.
 7. Merge with `gh pr merge --squash --delete-branch` once CI is
    green (CI is live — see principle 2).
 8. **Reclaim the disk.** If the work happened in a worktree, remove
@@ -157,6 +163,73 @@ A PR cycle:
   HashiCorp stack (Nomad/Consul/Vault/Fabio + Packer) is retired; its
   jobspecs/image fragments were removed from `docs/deploy/`. The per-app
   Kamal deploy contract + registry row live in the substrate repo.
+
+## Keeping the consumer skill in sync
+
+`.claude/skills/escurel-platform/` is **shipped documentation**, versioned
+in this repo and symlinked into every consumer repo. Downstream agents
+read it and act on it directly, without checking the source — so a stale
+line is not a cosmetic problem, it is an agent confidently doing the
+wrong thing. Stale docs are worse than absent docs.
+
+It drifts silently because nothing compiles it. Treat it as part of the
+public API: **if a PR changes what a consumer sees, it updates the skill
+in the same PR.** Retrofitting it later does not happen.
+
+What counts as consumer-visible:
+
+| change | reference to update |
+|---|---|
+| a tool added/renamed/removed, or its inputs change | `02-tool-surface.md` (+ the tool list in `SKILL.md`'s `description`) |
+| a CLI subcommand added/renamed | `04-consume-via-cli.md` (+ its CLI→tool map) |
+| a new binary, or a change to how you run one locally | `09-local-iteration.md` |
+| a new storage/index backend or env var a consumer sets | `09-local-iteration.md`, `07-fixtures-and-seeding.md` |
+| frontmatter rules, wikilink grammar, the axes | `01-data-model.md` |
+| auth, tenancy, token shape | `08-auth-and-tenancy.md` |
+
+### Why this rule exists (audit, 2026-08-02)
+
+The skill had drifted badly while nobody was looking:
+
+- `09-local-iteration.md` asserted *"The workspace builds exactly **one**
+  binary — the `escurel` CLI … There is **no `escurel serve` you can run
+  locally today.**"* The workspace declares **eight** `[[bin]]` targets,
+  one of which is `escurel-server`, and running it locally is now the
+  ordinary dev loop. The reference even said *"(If this changes, this
+  reference is the thing to update.)"* — it changed; it wasn't. Consumers
+  were being sent to a throwaway-test-binary workaround for a problem
+  that no longer existed.
+- `04-consume-via-cli.md` was missing the `provenance`, `workflow` and
+  `ui` subcommands, and `page delete`.
+- `02-tool-surface.md`'s write-tools table omitted `delete_page`, a core
+  write operation. (66 tools are exposed; the tables document 19. That
+  curation is deliberate — but a *core write op* missing is drift, not
+  curation.)
+
+All three were corrected in the same PR that added this section. The
+point of recording them is not the corrections — it is that **nothing
+failed**. No test covers this. They were found only because someone read
+the skill and compared it against a running system, which is exactly the
+kind of check that does not happen on a schedule. Hence the obligation
+sits at write time, in step 6b.
+
+### Checking it cheaply
+
+Not a substitute for reading it, but these catch the mechanical half:
+
+```sh
+# every docs/crates/examples path the skill cites still exists
+grep -rhoE '`(docs|crates|examples|deploy|scripts)/[A-Za-z0-9_./-]+`' \
+    .claude/skills/escurel-platform/ | tr -d '`' | sed 's/[.,)]$//' \
+  | sort -u | while read -r p; do [ -e "$p" ] || echo "MISSING: $p"; done
+
+# CLI subcommands the skill documents vs the ones that exist
+./target/debug/escurel --help
+
+# tools the server actually exposes
+curl -s -X POST localhost:8080/mcp -H 'content-type: application/json' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
 ## Disk discipline (build artifacts + worktrees)
 

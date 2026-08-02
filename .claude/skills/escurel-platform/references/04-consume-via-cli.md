@@ -41,11 +41,26 @@ escurel instance list --skill customer --order-by-at desc --limit 20
 escurel page expand    markdown/instances/customer/acme-corp.md
 escurel page validate  markdown/instances/customer/acme-corp.md   # body on stdin, commits nothing
 escurel page update    markdown/instances/customer/acme-corp.md   # body on stdin, upserts
+escurel page delete    <page_id> [--base-version <v>]             # SOFT-delete — see below
 escurel page blob      <page_id>                                  # original bytes of a document instance
 escurel page snapshots <page_id>                                  # CRDT snapshot timestamps (time-travel cuts)
 
 # link graph
 escurel link neighbours <page_id> --direction both --link-skill meeting --limit 50
+
+# provenance graph (ADR-0010)
+escurel provenance ancestry  <page_id>      # bounded multi-hop ancestry
+escurel provenance path      <src> <dst>    # shortest path / reachability
+escurel provenance drift                    # decisions resting on a since-superseded expectation
+escurel provenance abandoned                # nodes retired by supersession/abandonment
+
+# workflows (against a `kind: workflow` plan skill)
+escurel workflow run    <skill>             # create the run board + capture the run event
+escurel workflow status <run>               # per-phase progress (produced instances)
+escurel workflow stop   <run>               # mark the board `status: stopped`
+
+# interactive
+escurel ui                                  # k9s-style terminal browser
 
 # stored queries + query pages
 escurel query run      customer-churn-trend --params '{"customer_id":"acme-corp"}'
@@ -85,8 +100,11 @@ escurel admin rebuild --tenant acme
 | `search` / `resolve` | `search` / `resolve` |
 | `skill list` / `instance list` | `list_skills` / `list_instances` |
 | `page expand` / `page validate` / `page update` | `expand` / `validate` / `update_page` |
+| `page delete` | `delete_page` |
 | `page blob` / `page snapshots` | `fetch_blob` / `list_snapshots` |
 | `link neighbours` | `neighbours` |
+| `provenance ancestry\|path\|drift\|abandoned` | `provenance_ancestry` / `provenance_path` / `expectation_drift` / `abandoned_paths` |
+| `ui` | — (client-side TUI over the read tools) |
 | `query run` / `query instance` | `run_stored_query` (legacy) / `query_instance` |
 | `event capture\|inbox\|list\|assign` | `capture_event` / `list_inbox` / `list_events` / `assign_event` |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
