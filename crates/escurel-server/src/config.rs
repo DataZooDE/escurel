@@ -33,7 +33,11 @@
 //! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
 //! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
 //! | `ESCUREL_REBUILD_INDEX_ON_BOOT` | `if-missing` | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent) or `always` (drop + rebuild from the markdown LaneStore each start; the container default — HNSW-persistence-reload workaround) |
-//! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs`, `s3` or `gcs` |
+//! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs`, `s3`, `gcs` or `duckvfs` |
+//! | `ESCUREL_STORAGE_DUCKVFS_ROOT` | — | root URL, e.g. `gdrive://escurel/lanes` (backend=duckvfs); its scheme picks the filesystem |
+//! | `ESCUREL_STORAGE_DUCKVFS_EXTENSION` | — | path to a built `gdrive.duckdb_extension` (backend=duckvfs); needed for every scheme, not only `gdrive://`, until it ships via the community repo |
+//! | `ESCUREL_STORAGE_DUCKVFS_DRIVE_ID` | — | Shared Drive id `0A…`; REQUIRED for a `gdrive://` root, else the store would silently target the credential's My Drive |
+//! | `ESCUREL_STORAGE_DUCKVFS_DRIVE_SCOPE` | `…/auth/drive` | OAuth scope; the default is read/write because the extension's own `drive.readonly` default cannot serve a lane store |
 //! | `ESCUREL_STORAGE_GCS_BUCKET` | — | GCS bucket (backend=gcs) |
 //! | `ESCUREL_STORAGE_GCS_PREFIX` | `` | GCS key prefix (backend=gcs) |
 //! | `ESCUREL_STORAGE_GCS_CREDENTIALS_PATH` | — | service-account key file (backend=gcs); unset = ADC, i.e. the metadata server on GCP |
@@ -66,13 +70,17 @@
 //! | `ESCUREL_INDEX_BACKEND` | `single-file` | `single-file` or `ducklake` — selects the [`escurel_index::snapshot::IndexStore`] backend (DuckLake PR 6) |
 //! | `ESCUREL_ROLE` | `writer` | `writer` or `reader` — `reader` requires `ESCUREL_INDEX_BACKEND=ducklake`; a reader boots with NO local single-file DuckDB, adopting the lake's newest published snapshot instead |
 //! | `ESCUREL_DUCKLAKE_CATALOG_DSN` | — | DuckLake catalog DSN — a Postgres key/value DSN (contains `=`) or a DuckDB-file catalog path; required when `ESCUREL_INDEX_BACKEND=ducklake` |
-//! | `ESCUREL_DUCKLAKE_DATA_PATH` | — | DuckLake `DATA_PATH` — `gs://…`, `s3://…`, or a local directory; required when `ESCUREL_INDEX_BACKEND=ducklake` |
+//! | `ESCUREL_DUCKLAKE_DATA_PATH` | — | DuckLake `DATA_PATH` — `gs://…`, `s3://…`, `gdrive://…`, or a local directory; required when `ESCUREL_INDEX_BACKEND=ducklake` |
 //! | `ESCUREL_CHAT_BACKEND` | `postgres` | `postgres` or `ducklake` — where chat history lives when `ESCUREL_INDEX_BACKEND=ducklake` and the catalog is Postgres |
 //! | `ESCUREL_EVENTS_BACKEND` | `postgres` | as above, for the event bus |
 //! | `ESCUREL_CRDT_PG_DSN` | the catalog DSN | Postgres holding `crdt_ops`/`crdt_snapshots`. Separate knob from the catalog because it holds customer document bytes, not lake metadata |
 //! | `ESCUREL_DUCKLAKE_GCS_KEY_ID` / `ESCUREL_DUCKLAKE_GCS_SECRET` | — | GCS HMAC key pair; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `gs://` |
 //! | `ESCUREL_DUCKLAKE_S3_ENDPOINT` / `_S3_ACCESS_KEY_ID` / `_S3_SECRET_ACCESS_KEY` / `_S3_REGION` | — / — / — / `us-east-1` | S3 (or MinIO) credentials; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `s3://` |
 //! | `ESCUREL_DUCKLAKE_S3_USE_SSL` | `true` | whether the S3/MinIO endpoint above is TLS |
+//! | `ESCUREL_DUCKLAKE_GDRIVE_DRIVE_ID` | — | Shared Drive id `0A…`; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `gdrive://`. Expect this to be SLOW — DuckLake writes many small files and Drive charges a round trip per file, with no atomic overwrite |
+//! | `ESCUREL_DUCKLAKE_GDRIVE_SCOPE` | `…/auth/drive` | OAuth scope for the lake's Drive secret; credentials themselves come from ADC |
+//! | `ESCUREL_DUCKLAKE_GDRIVE_EXTENSION` | — | path to a built `gdrive.duckdb_extension`; omit once it is installable by name from the community repository |
+//! | `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS` | `false` | permit `LOAD` of a locally-built, unsigned DuckDB extension. Required for the `gdrive` paths above. Off by default: an unsigned extension is arbitrary native code in-process |
 //! | `ESCUREL_SNAPSHOT_REFRESH_SECS` | `30` | a reader's background lake-poll interval (seconds); see `escurel_server::snapshot_refresh::RefreshTask` |
 //! | `ESCUREL_SNAPSHOT_PUBLISH_SECS` | `0` | a writer's optional periodic publish interval (seconds); `0` disables it (manual-only, via the `publish_snapshot` admin tool) — see `escurel_server::snapshot_publish::PublishTask` |
 //! | `ESCUREL_SNAPSHOT_KEEP` | `5` | how many DuckLake snapshots to retain after a successful publish; the GC pass never touches the current snapshot |
@@ -139,6 +147,11 @@ pub enum StorageBackend {
     Fs,
     S3,
     Gcs,
+    /// Any filesystem DuckDB can reach, selected by the scheme of
+    /// `ESCUREL_STORAGE_DUCKVFS_ROOT` — `gdrive://` above all, but equally
+    /// `s3://`, `gs://` or a local path. One backend rather than one per
+    /// provider, because the dispatch happens inside DuckDB.
+    DuckVfs,
 }
 
 /// When to drop + rebuild the derived DuckDB index at boot
@@ -486,6 +499,28 @@ pub struct GcsConfig {
     pub endpoint: Option<String>,
 }
 
+/// DuckDB-VFS lane-store settings.
+///
+/// No credential fields for the same reason [`GcsConfig`] has almost none:
+/// the Drive secret uses Application Default Credentials, so `gcloud auth
+/// application-default login` off GCP and workload identity on it both work
+/// with no config difference.
+#[derive(Debug, Clone)]
+pub struct DuckVfsConfig {
+    /// Root URL every key hangs off, e.g. `gdrive://escurel/lanes`. Its
+    /// scheme picks the filesystem.
+    pub root: String,
+    /// Path to a built `gdrive.duckdb_extension`. Required until the
+    /// extension ships via the community repository — the write/delete/stat
+    /// SQL functions the store needs live in it, for every scheme and not
+    /// only `gdrive://`.
+    pub extension_path: Option<String>,
+    /// Shared Drive id (`0A…`) for a `gdrive://` root.
+    pub drive_id: Option<String>,
+    /// OAuth scope override; defaults to read/write `drive`.
+    pub drive_scope: Option<String>,
+}
+
 /// Resolved, validated configuration for the server binary.
 #[derive(Debug, Clone)]
 pub struct EscurelConfig {
@@ -497,6 +532,7 @@ pub struct EscurelConfig {
     pub storage_backend: StorageBackend,
     pub s3: Option<S3Config>,
     pub gcs: Option<GcsConfig>,
+    pub duckvfs: Option<DuckVfsConfig>,
     pub auth: Option<AuthConfig>,
     pub embedding_provider: EmbeddingProvider,
     pub embedding_model: Option<String>,
@@ -763,11 +799,12 @@ impl EscurelConfig {
             "fs" => StorageBackend::Fs,
             "s3" => StorageBackend::S3,
             "gcs" => StorageBackend::Gcs,
+            "duckvfs" => StorageBackend::DuckVfs,
             other => {
                 return Err(ConfigError::InvalidValue {
                     var: "ESCUREL_STORAGE_BACKEND",
                     value: other.to_owned(),
-                    reason: "expected `fs`, `s3` or `gcs`",
+                    reason: "expected `fs`, `s3`, `gcs` or `duckvfs`",
                 });
             }
         };
@@ -810,6 +847,40 @@ impl EscurelConfig {
                     .filter(|v| !v.is_empty()),
                 endpoint: env
                     .get("ESCUREL_STORAGE_GCS_ENDPOINT")
+                    .filter(|v| !v.is_empty()),
+            })
+        } else {
+            None
+        };
+        let duckvfs = if storage_backend == StorageBackend::DuckVfs {
+            let root = env
+                .get("ESCUREL_STORAGE_DUCKVFS_ROOT")
+                .filter(|v| !v.is_empty())
+                .ok_or(ConfigError::MissingStorageField {
+                    var: "ESCUREL_STORAGE_DUCKVFS_ROOT",
+                    backend: "duckvfs",
+                })?;
+            // A gdrive:// root without a DRIVE_ID would resolve against the
+            // credential's "My Drive" instead of the intended Shared Drive
+            // — a silent wrong-target rather than an error, so fail closed
+            // here instead.
+            let drive_id = env
+                .get("ESCUREL_STORAGE_DUCKVFS_DRIVE_ID")
+                .filter(|v| !v.is_empty());
+            if root.starts_with("gdrive://") && drive_id.is_none() {
+                return Err(ConfigError::MissingStorageField {
+                    var: "ESCUREL_STORAGE_DUCKVFS_DRIVE_ID",
+                    backend: "duckvfs",
+                });
+            }
+            Some(DuckVfsConfig {
+                root,
+                extension_path: env
+                    .get("ESCUREL_STORAGE_DUCKVFS_EXTENSION")
+                    .filter(|v| !v.is_empty()),
+                drive_id,
+                drive_scope: env
+                    .get("ESCUREL_STORAGE_DUCKVFS_DRIVE_SCOPE")
                     .filter(|v| !v.is_empty()),
             })
         } else {
@@ -1132,6 +1203,7 @@ impl EscurelConfig {
             storage_backend,
             s3,
             gcs,
+            duckvfs,
             auth,
             embedding_provider,
             embedding_model,
@@ -1218,6 +1290,19 @@ fn build_lake_config(env: &dyn EnvSource) -> Result<LakeConfig, ConfigError> {
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| "us-east-1".to_owned()),
             use_ssl,
+        }
+    } else if data_path.starts_with("gdrive://") {
+        ObjectStoreSecret::Gdrive {
+            drive_id: require_lake(env, "ESCUREL_DUCKLAKE_GDRIVE_DRIVE_ID")?,
+            // Read/write, unlike the extension's `drive.readonly` default:
+            // a lake that cannot be written to is not a lake.
+            scope: env
+                .get("ESCUREL_DUCKLAKE_GDRIVE_SCOPE")
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "https://www.googleapis.com/auth/drive".to_owned()),
+            extension_path: env
+                .get("ESCUREL_DUCKLAKE_GDRIVE_EXTENSION")
+                .filter(|v| !v.is_empty()),
         }
     } else {
         ObjectStoreSecret::None
@@ -1718,6 +1803,7 @@ impl EscurelConfig {
             StorageBackend::Fs => Ok(Arc::new(FsStore::new(self.data_dir.clone()))),
             StorageBackend::S3 => self.build_s3_store().await,
             StorageBackend::Gcs => self.build_gcs_store().await,
+            StorageBackend::DuckVfs => self.build_duckvfs_store(),
         }
     }
 
@@ -1781,6 +1867,40 @@ impl EscurelConfig {
         Err(ConfigError::StorageFeatureDisabled {
             backend: "gcs",
             feature: "gcs",
+        })
+    }
+
+    // Not `async`, unlike the S3/GCS builders: constructing the store opens
+    // an in-memory DuckDB and registers a secret, neither of which touches
+    // the network. A bad credential surfaces on first use.
+    #[cfg(feature = "duckvfs")]
+    fn build_duckvfs_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
+        let cfg = self
+            .duckvfs
+            .as_ref()
+            .ok_or(ConfigError::MissingStorageField {
+                var: "ESCUREL_STORAGE_DUCKVFS_ROOT",
+                backend: "duckvfs",
+            })?;
+        let store = escurel_storage::DuckVfsStore::new(&escurel_storage::DuckVfsStoreConfig {
+            root: cfg.root.clone(),
+            extension_path: cfg.extension_path.clone(),
+            drive_id: cfg.drive_id.clone(),
+            drive_scope: cfg.drive_scope.clone(),
+        })
+        .map_err(|e| ConfigError::InvalidValue {
+            var: "ESCUREL_STORAGE_DUCKVFS_ROOT",
+            value: e.to_string(),
+            reason: "failed to open the DuckDB VFS store",
+        })?;
+        Ok(Arc::new(store))
+    }
+
+    #[cfg(not(feature = "duckvfs"))]
+    fn build_duckvfs_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
+        Err(ConfigError::StorageFeatureDisabled {
+            backend: "duckvfs",
+            feature: "duckvfs",
         })
     }
 

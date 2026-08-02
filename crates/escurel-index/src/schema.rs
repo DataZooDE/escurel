@@ -55,6 +55,30 @@ impl Migrator {
         Ok(())
     }
 
+    /// The [`duckdb::Config`] every connection in this crate is opened with.
+    ///
+    /// Identical to the default except when
+    /// `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS` is set, which permits
+    /// `LOAD '<path>'` of a locally-built, unsigned `.duckdb_extension`.
+    ///
+    /// Opt-in rather than always-on, and read from the environment rather
+    /// than threaded through `LakeConfig`, for two reasons. It is a genuine
+    /// trust decision — an unsigned extension is arbitrary native code
+    /// in-process — so the default must stay closed. And it has to hold for
+    /// connections that never see a `LakeConfig` at all (the per-tenant
+    /// index file, the in-memory poll connection), which a config field
+    /// could not cover.
+    ///
+    /// Needed today by the `gdrive` extension, which is not yet in the
+    /// community repository and so cannot be installed by name.
+    pub fn connection_config() -> Result<duckdb::Config, MigrationError> {
+        let config = duckdb::Config::default();
+        if allow_unsigned_extensions() {
+            return Ok(config.allow_unsigned_extensions()?);
+        }
+        Ok(config)
+    }
+
     /// Enable experimental HNSW persistence on this connection.
     ///
     /// HNSW persistence is gated behind an "experimental" flag in the vss
@@ -189,6 +213,18 @@ impl Migrator {
         conn.execute_batch(STAGE_12_PROVENANCE_GRAPH)?;
         Ok(())
     }
+}
+
+/// Whether `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS` opts this process into
+/// loading unsigned extensions. Accepts the same truthy spellings as the
+/// server's other boolean vars.
+fn allow_unsigned_extensions() -> bool {
+    std::env::var("ESCUREL_ALLOW_UNSIGNED_EXTENSIONS").is_ok_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        )
+    })
 }
 
 const STAGE_1_AUTOLOAD: &str = include_str!("../sql/0001_a_autoload.sql");
