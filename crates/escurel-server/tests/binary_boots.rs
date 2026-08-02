@@ -516,13 +516,11 @@ async fn fresh_duckdb_rebuilds_index_from_surviving_markdown() {
 /// `ESCUREL_REBUILD_INDEX_ON_BOOT=always` must DROP an existing derived
 /// DuckDB and rebuild it from the canonical markdown LaneStore — the
 /// tested-in-Rust replacement for the old shell `rm *.duckdb` ENTRYPOINT
-/// hack (Docker's HNSW-persistence-segfault workaround). Proven by the file
-/// being recreated (new inode) while the markdown-backed skill still serves.
-#[cfg(unix)]
+/// hack (Docker's HNSW-persistence-segfault workaround). Proven by a
+/// sentinel table NOT surviving, while the markdown-backed skill still
+/// serves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rebuild_index_on_boot_always_recreates_the_derived_duckdb() {
-    use std::os::unix::fs::MetadataExt as _;
-
     let data_dir = TempDir::new().unwrap();
     // Canonical markdown in the LaneStore lane, as a surviving volume holds it.
     let md = data_dir
@@ -556,7 +554,7 @@ async fn rebuild_index_on_boot_always_recreates_the_derived_duckdb() {
         .await
         .expect("boot 1");
     booted.handle.shutdown().await;
-    let ino_before = std::fs::metadata(&db_path).unwrap().ino();
+    stamp_rebuild_sentinel(&db_path);
 
     // Boot #2 with `always`: the derived DuckDB is dropped + rebuilt.
     let mut always_env = base_env.to_vec();
@@ -567,11 +565,6 @@ async fn rebuild_index_on_boot_always_recreates_the_derived_duckdb() {
         .await
         .expect("boot 2");
     let base2 = format!("http://{}", booted2.handle.local_addr);
-    let ino_after = std::fs::metadata(&db_path).unwrap().ino();
-    assert_ne!(
-        ino_before, ino_after,
-        "`always` must drop + recreate the derived DuckDB (new inode)"
-    );
 
     // The rebuild restored the markdown-backed skill.
     let body: serde_json::Value = reqwest::Client::new()
@@ -593,17 +586,20 @@ async fn rebuild_index_on_boot_always_recreates_the_derived_duckdb() {
         skills.iter().any(|s| s["id"] == "customer"),
         "`always` rebuild must restore the skill from markdown; got: {body}"
     );
+    // DuckDB is single-writer, so the sentinel can only be read once the
+    // server has released the file.
     booted2.handle.shutdown().await;
+    assert!(
+        !rebuild_sentinel_survived(&db_path),
+        "`always` must drop the derived DuckDB, so the sentinel cannot survive"
+    );
 }
 
 /// The default (`if-missing`) REUSES an existing derived DuckDB across a
-/// restart — no drop, no re-embed. Proven by a stable inode. Guards against
-/// the boot-drop becoming the accidental default.
-#[cfg(unix)]
+/// restart — no drop, no re-embed. Proven by a sentinel table surviving.
+/// Guards against the boot-drop becoming the accidental default.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rebuild_index_on_boot_default_reuses_the_derived_duckdb() {
-    use std::os::unix::fs::MetadataExt as _;
-
     let data_dir = TempDir::new().unwrap();
     let db_path = data_dir
         .path()
@@ -622,7 +618,7 @@ async fn rebuild_index_on_boot_default_reuses_the_derived_duckdb() {
         .await
         .expect("boot 1");
     booted.handle.shutdown().await;
-    let ino_before = std::fs::metadata(&db_path).unwrap().ino();
+    stamp_rebuild_sentinel(&db_path);
 
     // Boot #2 with no knob set → default `if-missing` → reuse.
     let booted2 = EscurelConfig::from_source(&source(env_map(base_env)))
@@ -630,15 +626,58 @@ async fn rebuild_index_on_boot_default_reuses_the_derived_duckdb() {
         .build()
         .await
         .expect("boot 2");
-    let ino_after = std::fs::metadata(&db_path).unwrap().ino();
     booted2.handle.shutdown().await;
-    assert_eq!(
-        ino_before, ino_after,
-        "default (if-missing) must reuse the existing derived DuckDB"
+    assert!(
+        rebuild_sentinel_survived(&db_path),
+        "default (if-missing) must reuse the existing derived DuckDB, so the sentinel survives"
     );
 }
 
 // --- helpers ---------------------------------------------------
+
+/// Marker table used to tell "the derived DuckDB survived" from "it was
+/// dropped and rebuilt".
+///
+/// This replaces an inode comparison, which was **flaky**: deleting a file
+/// and immediately recreating it under the same name in the same directory
+/// very often gets the SAME inode number back from the allocator, so
+/// `assert_ne!(ino_before, ino_after)` was a coin toss on the CI filesystem
+/// (observed failing on `main` on 2026-08-01 and 2026-08-02) while passing
+/// 20/20 locally. Inode identity is a filesystem allocation detail, not the
+/// behaviour under test.
+///
+/// A marker table states the invariant directly: it can only survive if the
+/// DuckDB file itself survived, and a rebuild cannot restore it — it is
+/// derived state the rebuild does not reconstruct, exactly like chat/CRDT
+/// (see the boot-policy comment in `snapshot/store.rs`).
+const REBUILD_SENTINEL: &str = "zz_rebuild_sentinel";
+
+/// Stamp the sentinel into the derived DuckDB.
+///
+/// DuckDB is single-writer, so every server handle over this file must be
+/// shut down before calling this.
+fn stamp_rebuild_sentinel(db_path: &std::path::Path) {
+    let conn = duckdb::Connection::open(db_path).expect("open derived duckdb to stamp sentinel");
+    // vss/fts are per-connection session state; without them a connection
+    // cannot even bind the HNSW-indexed `blocks` table this file carries.
+    escurel_index::schema::Migrator::load_extensions(&conn).expect("load vss/fts");
+    conn.execute_batch(&format!("CREATE TABLE {REBUILD_SENTINEL} (x INTEGER);"))
+        .expect("create sentinel table");
+}
+
+/// Whether the sentinel is still present. Same single-writer caveat as
+/// [`stamp_rebuild_sentinel`].
+fn rebuild_sentinel_survived(db_path: &std::path::Path) -> bool {
+    let conn = duckdb::Connection::open(db_path).expect("open derived duckdb to read sentinel");
+    escurel_index::schema::Migrator::load_extensions(&conn).expect("load vss/fts");
+    conn.query_row(
+        "SELECT count(*) FROM duckdb_tables() WHERE table_name = ?",
+        [REBUILD_SENTINEL],
+        |row| row.get::<_, i64>(0),
+    )
+    .expect("query sentinel presence")
+        > 0
+}
 
 /// `assert_cmd`'s `cargo_bin`, wrapped so the binary-spawn test does
 /// not depend on the workspace target layout.
