@@ -30,9 +30,12 @@ against this repo**, not workarounds in your app.
 - **No raw vector / embedding access.** Call `search`; the embedding model
   is an implementation detail. There is no `embed` tool.
 
-- **No cross-tenant operations.** One server instance = one tenant.
-  Federation is a separate, future layer; don't design your app assuming a
-  single call can span tenants.
+- **No cross-tenant operations.** One server instance = one tenant; no
+  runtime call spans tenants, ever. Knowledge federation exists, but it is
+  **curated publish/subscribe of signed skill packs** — an admin/operator
+  moves a signed tarball between a hub and a spoke (`references/02` §Skill
+  packs) — not a runtime path. Don't design your app assuming a single
+  call can span tenants.
 
 - **Don't reinvent auth.** Use `AuthMode::TestIssuer` + `mint_token` in
   tests (`references/08`); get a real bearer from the deployment's issuer
@@ -48,6 +51,10 @@ These exist but are **not** part of a normal consuming app:
 - **Admin tools** (gated by `escurel:admin`): `admin_list_lanes`,
   `admin_lane_keys`, `admin_lane_blob`, `admin_index_query`. For operator
   UIs and tenant migration, not product features.
+- **Pack management** (also admin-gated): `export_pack`, `import_pack`,
+  `list_packs`, `rebase_pack`, `unsubscribe_pack`, `submit_promotion` —
+  the curated federation surface (`references/02` §Skill packs). Your app
+  *reads* imported base pages like any other page; it never manages packs.
 
 If your app thinks it needs one of these, that's a signal to step back —
 either you're modelling something that belongs in the tenant's data

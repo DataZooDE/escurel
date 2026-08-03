@@ -91,6 +91,18 @@ escurel admin health
 escurel admin tenant create --id acme --name "Acme Corp"
 escurel admin quota  --tenant acme
 escurel admin rebuild --tenant acme
+
+# skill packs (admin-role token; references/02 §Skill packs)
+escurel admin pack export --tenant hub --id logistics --version 3 \
+       --vertical logistics --publisher hub.firm --skill pallet-consolidation \
+       --out logistics.tgz                  # manifest → logistics.tgz.manifest.json (--manifest-out to override)
+escurel admin pack import --tenant acme --in logistics.tgz    # --manifest defaults to <in>.manifest.json
+escurel admin pack list   --tenant acme
+escurel admin pack rebase --tenant acme --in logistics-v4.tgz # add --acknowledge-conflicts after human review
+escurel admin pack unsubscribe --tenant acme --id logistics
+escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate \
+       --vertical logistics --skill my-refined-skill --out candidate.tgz
+       # writes a version-0 candidate tarball + manifest for hub review
 ```
 
 ### CLI command → tool map
@@ -110,6 +122,7 @@ escurel admin rebuild --tenant acme
 | `chat append` / `chat list` | `append_message` / `list_messages` |
 | `session open\|apply\|close` | `open_session` / `apply_op` / `close_session` |
 | `ingest` | `POST /ingest/upload` (HTTP endpoint) |
+| `admin pack export\|import\|list\|rebase\|unsubscribe\|submit-promotion` | `export_pack` / `import_pack` / `list_packs` / `rebase_pack` / `unsubscribe_pack` / `submit_promotion` (admin-gated) |
 | `admin …` | the EscurelAdmin surface |
 
 The mapping is enforced by a **parity guard test**

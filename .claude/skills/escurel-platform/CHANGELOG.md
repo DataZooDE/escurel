@@ -4,6 +4,53 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.5.0 — Page layers + skill packs (curated federation)
+
+- **Local iteration corrected (`09`).** The reference claimed the
+  workspace built exactly one binary (the CLI) and that no server could
+  be run locally; `escurel-server` is a `[[bin]]` and running it is the
+  ordinary dev loop. Replaced with three options + a runnable recipe,
+  and three traps: `ESCUREL_EMBEDDING_PROVIDER=zero` disables retrieval
+  silently, `search` scores are reciprocal-rank fusion (not similarity),
+  and the s3/gcs/duckvfs storage backends are cargo features a plain
+  `cargo build` silently drops.
+- `02`: `delete_page` in the write-tools table, documented as an
+  ARCHIVE (retracted from discovery, markdown retained) rather than a
+  destroy; plus a note that the tables are curated, not exhaustive.
+- `04`: `page delete`, `provenance ancestry|path|drift|abandoned`,
+  `workflow run|status|stop`, `ui`, and their CLI→tool map rows.
+- `SKILL.md`: a banner stating the skill can be stale and that
+  load-bearing details should be checked against a running system. The
+  sync obligation is now a PR-cycle step in the repo's `CLAUDE.md`.
+
+- New **Layer/stability axis** in `01`: every page is `overlay`
+  (tenant-authored, editable, the default) or `base@<pack>@v<N>`
+  (imported from a subscribed skill pack, read-only — `layer_read_only`
+  on `update_page`, `-32000 layer_read_only:` on `open_session`; the
+  `markdown/base/` page-id namespace is reserved). Overlay **shadowing**
+  of a base skill (curator-gated, `shadow_requires_curator`; `resolve`
+  prefers the overlay, `list_skills` shows one entry with
+  `layer` + `shadows`, `expand` carries a `shadow` object) and the
+  curator-set `promotable: true` marker
+  (`promotable_requires_curator`).
+- New **Skill packs (admin)** section in `02`: `export_pack` /
+  `import_pack` / `list_packs` / `rebase_pack` (`rebase_conflict` +
+  `acknowledge_conflicts`) / `unsubscribe_pack` / `submit_promotion`
+  (default-deny, scrubbed, audit-evented, version-0 candidate), the
+  shared-secret HMAC trust model, and the full refusal-code inventory.
+- `02` also documents the `execution: "deterministic" | "orchestration"`
+  label on every `tools/list` entry (orchestration is the fail-closed
+  default).
+- `04`: the `escurel admin pack
+  export|import|list|rebase|unsubscribe|submit-promotion` subcommands +
+  map rows. `06`: the hub↔spoke two-process pack-test recipe
+  (`ConfigOverrides.pack_secret`; worked version in
+  `crates/escurel-server/tests/pack_import.rs`). `09`: the
+  `escurel_writes_total{tenant,origin}` absorption metric.
+- `SKILL.md` + `10`: the cross-tenant prohibition re-scoped — runtime
+  calls never span tenants; curated pack publish/subscribe is the
+  shipped federation layer.
+
 ## 0.4.1 — CLI docs realigned to the noun-grouped command surface
 
 - `references/04` rewritten: the CLI is grouped gh/aws-style (`escurel
