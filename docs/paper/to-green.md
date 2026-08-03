@@ -46,8 +46,8 @@ re-scope but *which* cells to re-scope and which to pay for.
 
 | § | red | cells | door | cost | first? |
 |---|---|---|---|---|---|
-| 6.7 | substrate matrix (Table 7) | **20** | MEASURE | 2 d | **1st** |
-| 6.8 | ADR-0001 gate | 1 | RETIRE | 10 min | 2nd |
+| 6.7 | substrate matrix (Table 7) | ~~20~~ **done** | MEASURED | — | **1st** |
+| 6.8 | ADR-0001 gate | ~~1~~ **done** | RETIRED | — | 2nd |
 | 6.3 | retrieval vs flat (Table 4) | 1 | MEASURE | 1.5 d | 4th |
 | 6.4 | ablation (Table 5) | 1 | MEASURE | 0.5 d | 5th |
 | 6.6 | cascade throughput (Table 6) | 1 | MEASURE | 1 d | 3rd |
@@ -208,6 +208,35 @@ honoured. Specifically:
 
 The abstract must be re-scoped last, after the numbers exist. Writing it
 first is how a paper ends up claiming what it wishes it had measured.
+
+## Decisions taken (2026-08-03)
+
+1. **LLM spend: full.** 3 arms x 3 scales x 10 runs = 90 sessions for §6.2.
+2. **§6.5: RESCOPE to a limitation** (option b). No production export was
+   available, and a growth curve drawn from `examples/` fixtures would look
+   like evidence for the paper's own falsifier without being any.
+
+## What step 1 actually found (2026-08-03)
+
+The harness is `crates/escurel-server/tests/substrate_matrix.rs`, behind
+`--features live-substrates`. Real Postgres container, the repo's own
+`report.pdf` through `/ingest`, an axum CRM, a JSON-RPC MCP server.
+
+- **The corollary survived.** All fifteen navigation steps succeed. The test
+  asserts this rather than only recording it.
+- **The pre-registration earned its keep twice.**
+  - The first run reported `search_finds: true` for the live proxies -- the
+    opposite of the truth, and an artefact of the fixture's zero-vector
+    embedder, under which every vector is identical and `search` returns the
+    whole corpus. Discovery is now read from declared capabilities instead of
+    probed. Had it been reported, it would have been a fabricated result
+    arrived at honestly.
+  - The latency prediction was wrong, and the pre-registration said what to
+    do about it: **the SQL view is the slowest substrate** (9.4 ms p50) while
+    the live proxies come in at ~6.6 ms, because the proxies are loopback and
+    in-process. Their figures are a floor that excludes real network RTT. The
+    paper says so, and §7 now says that materialising a source is not
+    automatically the fast choice.
 
 ## Decisions needed
 

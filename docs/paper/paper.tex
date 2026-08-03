@@ -756,38 +756,69 @@ runs, and we will say which we got.
 \subsection{Five Substrates, One Call Shape}
 
 The experiment that turns the corollary into a result. One fixture tenant
-carries five skills describing the same logical entity, a customer,
-one per backend, against a real Postgres instance, a real uploaded PDF, a
-real REST service and a real upstream MCP server. The same task runs against
-each. Table~\ref{tab:substrates} gives the shape; the cells are measurement.
+carries five skills describing the same entity, a customer, one per backend,
+against a Postgres in a container, the repository's own PDF through
+\texttt{/ingest}, an axum CRM answering REST, and a JSON-RPC server answering
+MCP. The same fixed sequence runs against each:
+\texttt{resolve} $\rightarrow$ \texttt{expand} $\rightarrow$
+\texttt{neighbours}. Table~\ref{tab:substrates} reports it.
 
 \begin{table}[t]
-\caption{The same task against one entity on five substrates. The claim
-under test is that the first row is identical across all five columns.}
+\caption{The same entity on five substrates, one session, 50 samples per
+latency cell. Navigation is the fixed \texttt{resolve}/\texttt{expand}/
+\texttt{neighbours} sequence. Search is each skill's \emph{declared}
+capability, not a probe --- see the text.}
 \label{tab:substrates}
 \footnotesize
-\setlength{\tabcolsep}{3.5pt}
+\setlength{\tabcolsep}{3pt}
 \begin{tabular}{lccccc}
 \toprule
  & markdown & sql & doc & rest & mcp \\
 \midrule
-tool calls to answer   & \todonum{} & \todonum{} & \todonum{} & \todonum{} & \todonum{} \\
-tokens to answer       & \todonum{} & \todonum{} & \todonum{} & \todonum{} & \todonum{} \\
-\texttt{expand} p50 (ms) & \todonum{} & \todonum{} & \todonum{} & \todonum{} & \todonum{} \\
-\texttt{expand} p95 (ms) & \todonum{} & \todonum{} & \todonum{} & \todonum{} & \todonum{} \\
-indexed / searchable   & yes & yes & yes & no & no \\
+navigation steps ok    & 3/3 & 3/3 & 3/3 & 3/3 & 3/3 \\
+declared search        & hybrid & late & hybrid & none & none \\
+\texttt{expand} p50 (ms) & 3.8 & 9.4 & 5.8 & 6.7 & 6.5 \\
+\texttt{expand} p95 (ms) & 4.7 & 10.2 & 6.9 & 8.3 & 7.7 \\
+payload (bytes)        & 380 & 760 & 1572 & 436 & 427 \\
 writable via           & page & --- & --- & \multicolumn{2}{c}{instance} \\
-source down            & n/a & degr. & n/a & degr. & degr. \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Two things are being measured, and only one of them is a performance
-number. The first row is the corollary: if the agent's call sequence differs
-per substrate, the abstraction leaks and we report where. The latency rows
-are the honest cost: materialised backends answer from a local file, and
-live proxies pay a network round trip inside a read. They feed
-Section~\ref{sec:limits} directly.
+\textbf{The corollary holds for navigation.}
+All fifteen navigation steps succeed. The agent issues one sequence and the
+dispatcher routes it to a local file, a Postgres query, a chunked PDF and two
+live services without the caller knowing which. This is the claim
+Section~\ref{sec:corollary} makes, and it is the one the harness asserts
+rather than merely records: the test fails if any step on any substrate
+returns a page without a body.
+
+\textbf{Discovery divides exactly where the design says it does.}
+The declared capabilities read back \texttt{hybrid} for markdown and
+documents, \texttt{late} for the SQL view, and \texttt{none} for both live
+proxies. We report the declaration rather than a similarity probe, and the
+reason is worth stating because it nearly produced a false result: the
+fixture runs a zero-vector embedder, under which every vector is identical
+and \texttt{search} returns essentially the whole corpus. A probe in that
+configuration reports that live backends are findable, which is the opposite
+of the truth. The number that was easy to collect was the wrong one.
+
+\textbf{The latency ordering is not the one we predicted.}
+We expected the two materialised backends to answer from the local file in
+single digits and the live proxies to show a network round trip. Instead the
+\emph{SQL view is the slowest cell in the table} at 9.4\,ms p50, half again
+the cost of either live proxy, because every read crosses into Postgres
+through DuckDB's scanner while the proxies were answered by loopback services
+in the same process. Two things follow. The proxy figures are a floor: they
+exclude real network round-trip time, and a remote endpoint across the
+internet would move them by far more than the spread in this table. And
+``materialised'' does not imply ``local'' --- a SQL view is a live query
+wearing a materialised interface, which is a distinction the design
+documentation blurs and this measurement does not.
+
+Failure behaviour is not in the table because it is a guarantee, not a
+measurement: \expref{15} covers an unreachable endpoint degrading rather than
+fabricating a body.
 
 \subsection{What the Storage Collapse Cost}
 
@@ -854,11 +885,15 @@ does not suit an event firehose.
 inside a shared analytical file is not a dedicated vector service, and we
 gave up measured latency for architectural simplicity on purpose.
 
-\textbf{When your live sources are slow, or when you need to search them.}
-A read that proxies a REST call inherits that call's tail latency, and live
+\textbf{When your sources are slow, or when you need to search them.}
+A read that proxies a remote call inherits that call's tail latency, and live
 data is never indexed, so a remote instance is reachable by link and not by
-similarity. If either matters, materialise the source instead and accept the
-staleness you were trying to avoid.
+similarity. If either matters, materialise the source and accept the
+staleness you were trying to avoid --- but note from
+Table~\ref{tab:substrates} that materialising is not automatically the fast
+choice. A SQL view is a live query behind a materialised interface, and it
+was the slowest substrate we measured. Only the two backends that actually
+hold bytes locally, markdown and documents, are cheap by construction.
 
 \textbf{When you need cross-tenant federation, or hard multi-tenant
 isolation today.} See \expref{18}.
