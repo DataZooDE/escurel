@@ -797,12 +797,15 @@ a 10,120-block stress corpus, p50 vector search within 15\,ms, p95 filtered
 search within 50\,ms at 100k instances. The Lance baselines were \pn{0.975},
 \pn{0.933}, \pn{4.3}\,ms and \pn{18.71}\,ms.
 
-We cannot report the comparison, because the labelled corpus those
-thresholds were declared against is not in this repository
-(\todonum{Table 7}). The gate has been open since May. We record that as a
-finding about process rather than about DuckDB: a pre-deployment gate whose
-fixture is not versioned with the code is a gate that will still be open
-when you deploy, and ours was.
+We cannot report the comparison. The labelled corpus those thresholds were
+declared against is not in this repository, and it is not in the research
+tree either; it was never versioned with the code that depends on it. The
+gate has been open since May, and reopening it means rebuilding the corpus
+and its relevance judgements from scratch, which is a larger job than the
+measurement it was meant to gate. We record it as a finding about process
+rather than about DuckDB: a pre-deployment gate whose fixture is not
+versioned alongside the code is a gate that will still be open when you
+deploy, and ours was.
 
 \subsection{Two Negative Results}
 
