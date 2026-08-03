@@ -29,7 +29,7 @@ The full surface (`crates/escurel-test-support/src/`):
 | `AuthMode::{Disabled, TestIssuer, External{issuer_url, jwks_url}}` | `TestIssuer` runs an in-process JWKS+signer (`references/08`) |
 | `Role::{Agent, Admin}` | role for a minted token |
 | `FixtureBuilder` / `TenantFixture` | chainable seeding (`references/07`) |
-| `ConfigOverrides { … }` | optional knobs (quota, readiness probe, crdt backend, …) |
+| `ConfigOverrides { … }` | optional knobs (quota, readiness probe, crdt backend, `pack_secret` to enable the pack surface, …) |
 | `.base_url()` / `.mcp_url()` / `.ws_url()` | HTTP base / `/mcp` / `/ws` URLs (point your backend's `escurel-client` at `base_url()`) |
 | `.mint_token(tenant, role) -> String` | bearer; **`TestIssuer` only** (panics otherwise) |
 | `.client() -> Client` | sync; typed `escurel-client` (HTTP MCP) pre-tokened for the default `acme` tenant |
@@ -90,6 +90,31 @@ let hits = escurel.client().search(SearchRequest { q: "acme".into(), ..Default::
 // or over MCP-over-HTTP, identical response type:
 let hits = escurel.mcp_client().search(SearchRequest { q: "acme".into(), ..Default::default() }).await?;
 ```
+
+### Testing the pack surface (hub ↔ spoke)
+
+The pack tools (`references/02` §Skill packs) stay off unless the
+gateway has a signing secret. `ConfigOverrides.pack_secret` turns them
+on, and the canonical recipe is **two real processes sharing the
+secret** — a hub exports over `/mcp`, a spoke imports the same bytes
+over `/mcp` (the base64 tarball is the transport, so the air-gapped
+path IS the tested path):
+
+```rust
+let overrides = ConfigOverrides { pack_secret: Some("shared-secret".into()), ..Default::default() };
+let hub   = EscurelProcess::spawn(Opts { auth: AuthMode::TestIssuer, fixtures: Some(hub_fixture),
+                                         config_overrides: overrides.clone(), ..Default::default() }).await;
+let spoke = EscurelProcess::spawn(Opts { auth: AuthMode::TestIssuer,
+                                         config_overrides: overrides, ..Default::default() }).await;
+// hub: export_pack (admin token) → {manifest, tarball_b64}
+// spoke: import_pack (admin token) with the same bytes → pages land as
+// layer: base@<pack>@v<N>, read-only, pinned in list_packs.
+```
+
+Worked, assertion-complete version:
+`crates/escurel-server/tests/pack_import.rs` (import, tamper rejection,
+version pinning, vertical guard, the reserved `markdown/base/` prefix,
+and the admin gate).
 
 ## Non-Rust apps
 

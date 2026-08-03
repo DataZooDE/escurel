@@ -48,6 +48,12 @@ Frontmatter rules the indexer enforces at write time:
 - A missing required key is an **error**-severity validation issue and
   rejects the write (`references/02` §validation; `references/07`).
 
+Two frontmatter fields are **server-governed** — your app never writes
+them: `layer:` (stamped by pack import; a draft declaring `layer: base@…`
+is rejected `layer_read_only`) and `promotable:` (curator/admin-set; a
+non-admin write carrying it is rejected `promotable_requires_curator`).
+See §Layer/stability axis below.
+
 See the live shapes in `examples/echo-app/tests/fixtures/customer.skill.md`
 and `…/acme-corp.md`.
 
@@ -110,6 +116,41 @@ citation; never treat one as a link. The link's `skill` segment is its
     embedded into a page-with-chunks. Uploaded via `POST /ingest` /
     `POST /ingest/upload`; `expand` returns the overlay + top-k chunks
     (`chunks_total`), never the full text. See `references/02` §instance-backends.
+
+## Layer/stability axis
+
+Orthogonal to its backend, every page carries a stability **layer**
+(canonical: `docs/contract/agent-interface.md`, ADR-0005/0007):
+
+- **`overlay`** — tenant-authored, editable; the default (every page with
+  no `layer:` frontmatter is an overlay page).
+- **`base@<pack>@v<N>`** — imported from a subscribed **skill pack**,
+  **read-only at this node**. Base pages live under the reserved
+  `markdown/base/` page-id namespace; `update_page` against one (or any
+  id under that prefix) returns `layer_read_only`, and `open_session`
+  fails with a JSON-RPC `-32000` error prefixed `layer_read_only:`.
+  Stripping `layer:` from a draft is not an unlock — the guard keys off
+  the *stored* page — and a draft *declaring* `layer: base@…` is rejected
+  the same way.
+
+`list_skills` reports each skill's `layer`, so an agent can tell the
+stable, firm-authored substrate from the tenant's own editable pages.
+
+**Shadowing** — how a tenant specialises a base skill *without* editing
+it: author an overlay skill page declaring the **same skill id**
+(curator/admin only — a non-admin write refuses
+`shadow_requires_curator`). `resolve` then prefers the overlay;
+`list_skills` shows ONE entry for the id carrying `layer` plus a
+`shadows: base@<pack>@v<N>` pin; `expand` of the shadowing overlay
+carries a `shadow` object (`{base_page_id, pack, base: {…the base page's
+frontmatter…}}`) so the base values stay visible, never silently masked.
+The base page itself is untouched.
+
+**`promotable: true`** is the curator-set marker that makes a
+tenant-authored skill page eligible for promotion back to the hub
+(`submit_promotion`, admin-gated — `references/02` §Skill packs). A
+non-admin `update_page` whose draft carries a truthy `promotable`
+refuses (`promotable_requires_curator`).
 
 ## The mandatory `escurel` meta-skill
 

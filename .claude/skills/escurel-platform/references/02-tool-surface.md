@@ -7,7 +7,13 @@ Wire shapes per transport: `references/03` (HTTP/MCP) and
 `references/04` (CLI). Rust signatures: `references/05`.
 
 Design rule: **read OR write, never both in one call.** All read tools
-are safe to call speculatively; all writes go through validation. The
+are safe to call speculatively; all writes go through validation. Every
+`tools/list` entry also carries an `execution: "deterministic" |
+"orchestration"` label — `deterministic` = a pure function of KB state +
+arguments (reads, queries, validation); `orchestration` = the call
+advances loop state (writes, events, sessions). New tools default to
+`orchestration` (fail-closed), so a client can hand a compute step
+deterministic tools only. The
 chat-history tools (`append_message` / `list_messages`) are append-mostly
 and sit **alongside** the typed KB rather than inside it — see the Chat
 section below.
@@ -18,9 +24,9 @@ section below.
 |---|---|---|---|
 | `search` | `q`, `k=10`, `granularity='block'\|'page'`, `page_type?`, `skill?` | ranked hits `{page_id, anchor, snippet, skill, page_type, score}` | natural-language vector + FTS hybrid; the cold-start primitive |
 | `resolve` | `wikilink` | `{parsed, page (PageRef), exists}` | parse + look up a `[[wikilink]]`; reports validity without raising |
-| `expand` | `page_id`, `anchor?`, `version?` | `{page, frontmatter, body, blocks[], wikilinks_out[]}` | the body fetch — the **most expensive** primitive; use sparingly |
+| `expand` | `page_id`, `anchor?`, `version?` | `{page, frontmatter, body, blocks[], wikilinks_out[]}` (+ `shadow` on an overlay that shadows a base skill: `{base_page_id, pack, base: {…base frontmatter…}}`) | the body fetch — the **most expensive** primitive; use sparingly |
 | `neighbours` | `page_id`, `direction='in'\|'out'\|'both'`, `link_skill?` | list of `Edge {src_page, dst_page, link_skill, link_version?, dst_anchor?}` | typed link-graph traversal (backlinks + forward links) |
-| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed}` | the Tier-1 catalogue |
+| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, layer, shadows?}` | the Tier-1 catalogue; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>` |
 | `list_instances` | `skill`, `order_by_at='asc'\|'desc'?`, `limit?` | list of `{page_id, skill, frontmatter, at}` | enumerate instances of a skill (event-log scans, chain heads) |
 | `query_instance` | `ref` (a `query` page id), `params` (typed object) | `{rows, schema[], truncated}` | **the structured-data read**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side |
 | `run_stored_query` | `query_id`, `params` (typed object) | `{rows, schema[], snapshot_version?}` | legacy stored-query execution; new consumers use `query_instance` |
@@ -67,6 +73,19 @@ from discovery — search, `list_instances`, the catalogue — while the
 canonical markdown is retained for audit. Do not reach for it expecting the
 bytes to be gone. `base_version` is an optimistic-concurrency guard (the
 version you last read); omit it to delete unconditionally.
+
+Writes are layer-aware (`references/01` §Layer/stability axis):
+
+- a page whose stored `layer:` is `base@<pack>@v<N>` (anything under
+  `markdown/base/`) is **read-only** — `update_page` returns the Issue
+  `layer_read_only`; `open_session` fails with a JSON-RPC `-32000` error
+  prefixed `layer_read_only:`. A draft *declaring* `layer: base@…` is
+  rejected the same way.
+- a non-admin skill draft that declares a skill id a subscribed pack
+  already provides refuses `shadow_requires_curator` (shadowing a base
+  skill is curator work).
+- a non-admin draft carrying a truthy `promotable:` refuses
+  `promotable_requires_curator` (the promotion marker is curator-set).
 
 Note this list is **curated, not exhaustive** — the server exposes ~66 tools,
 most of them operator/admin surface (tenant CRUD, credential and endpoint
@@ -157,7 +176,12 @@ the policy.
 
 An `error`-severity issue **rejects** the write; `warning`-severity
 commits but is reported. Drive your authoring UX off the issue codes; the
-catalogue is the `[[error-catalogue]]` page in a tenant.
+catalogue is the `[[error-catalogue]]` page in a tenant. Layer/pack write
+rejections use the same shape: `layer_read_only` (write to a base-layer
+page, or a draft declaring `layer: base@…`), `shadow_requires_curator`
+(non-admin overlay declaring a pack-provided skill id),
+`promotable_requires_curator` (non-admin draft carrying `promotable:`),
+alongside the backend codes (`backend_read_only`) and `conflict`.
 
 ## Anti-patterns (carry these into your app's agent prompts too)
 
@@ -187,6 +211,38 @@ them is `escurel:admin`-gated and so not part of the normal agent surface:
 - Document uploads use the authenticated `POST /ingest` / `POST /ingest/upload`
   HTTP routes (not an MCP tool). See `references/01` §Backend axis and the
   repo's `docs/spec/protocol.md` § Instance backends.
+
+## Skill packs (admin)
+
+The curated federation surface (ADR-0006/0007/0008;
+`docs/spec/protocol.md` §Admin surface). A **pack** is a deterministic
+tar+gz of a skill subtree plus a manifest **HMAC-SHA256-signed with a
+shared secret** (`ESCUREL_PACK_SECRET` on hub and spokes — a firm-operated
+trust model, not per-publisher keys). Importing lands the pages as the
+tenant's pinned, read-only **base layer** (`references/01`
+§Layer/stability axis). All six tools are **admin-gated** — an agent-role
+token cannot call them; a consuming app reads imported base pages like
+any other page and never manages packs:
+
+| tool | what for |
+|---|---|
+| `export_pack` | build a signed pack from the named skills (+ instances opt-in). Refuses without a configured secret (`pack_secret_not_configured`) and fails closed on credential-shaped page content (`pack_secret_detected`) |
+| `import_pack` | verify signature + content hash **before** unpacking, then land the pages under `markdown/base/<pack>/` stamped `layer: base@<id>@v<N>` and record the version pin. Transport-neutral: an air-gapped tarball and a live pull are the same call |
+| `list_packs` | the subscribed packs + their pins (`{pack_id, version, vertical, publisher, content_hash}`) |
+| `rebase_pack` | the **reviewed upgrade** — the only operation that moves a pin. A field the tenant's shadow overrides AND the new version changes surfaces as a `rebase_conflict` Issue and blocks until `acknowledge_conflicts=true`; never auto-resolved |
+| `unsubscribe_pack` | drop a subscription cleanly: base pages removed, then the pin; tenant overlays survive |
+| `submit_promotion` | the harvest direction: propose a scrubbed, signed pack **candidate** (`version: 0` — deliberately not importable) from this node's `promotable: true` skill pages. Default-deny, one ineligible id refuses the whole request, and every submission emits an immutable audit event; a hub curator reviews and publishes deliberately |
+
+Refusal codes you may see in operator tooling:
+`pack_secret_not_configured`, `pack_secret_detected`,
+`pack_signature_invalid`, `pack_id_invalid`, `pack_malformed`,
+`pack_version_pinned`, `pack_content_mismatch`, `vertical_mismatch`,
+`pack_skill_collision`, `pack_not_subscribed`,
+`pack_rebase_not_an_upgrade`, `pack_candidate_not_importable`,
+`promotion_not_eligible`, `rebase_conflict`.
+
+CLI twins: `escurel admin pack export|import|list|rebase|unsubscribe|
+submit-promotion` (`references/04`).
 
 ## Not exposed (by design)
 

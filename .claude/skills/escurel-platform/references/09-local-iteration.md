@@ -92,6 +92,15 @@ Three traps worth knowing up front:
 
 Quick liveness check while iterating: `curl -s localhost:8080/healthz`.
 
+`/metrics` worth knowing while iterating:
+`escurel_writes_total{tenant,origin}` counts confirmed page writes by
+origin `human` | `runner` — a write counts as `runner` when its
+`update_page` `provenance` carries a `runner` or `workflow` key, else
+`human`. Watch it to confirm your app's writes actually land, and stamp
+provenance on your automated writers so the human/runner split stays
+honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
+`escurel_requests_total{route,status}`.
+
 ## The three env-var namespaces (don't mix them up)
 
 - **CLI** (`crates/escurel-cli`): `ESCUREL_SERVER` (HTTP MCP URL, default

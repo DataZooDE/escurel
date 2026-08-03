@@ -1,7 +1,7 @@
 ---
 name: escurel-platform
-version: 0.4.1
-description: Use when building an application that consumes the Escurel knowledge-base service as its data store — designing a tenant's skill/instance data model, calling the agent tools (search/resolve/expand/fetch_blob/neighbours/list_skills/list_instances/query_instance/validate/open_session/apply_op/close_session/list_snapshots/update_page/append_message/list_messages, plus the event bus capture_event/assign_event/list_events/list_inbox), or wiring escurel into an app backend and its integration tests. Covers the published surfaces (MCP-over-HTTP `/mcp`, the `escurel` CLI), the Rust `escurel-client` + `escurel-test-support` path, fixture seeding, auth/tenancy, per-chat-group conversation history (append_message/list_messages + admin DeleteChatHistory), external instance backends (read-only sql_view over an attached source; document/PDF/DOCX uploaded via /ingest), and the no-mock dev loop. Triggers on phrases like "use escurel from my app", "escurel MCP tool", "resolve a wikilink", "query_instance", "query page", "capture_event", "event bus", "escurel webhook", "seed an escurel tenant", "escurel-client", "EscurelProcess test", "author a skill page", "escurel CLI", "FixtureBuilder", "chat history", "append_message", "list_messages", "delete chat history", "instance backend", "sql_view instance", "document backend", "ingest a PDF", "/ingest". DO NOT use for escurel-internal work (the indexer, LaneStore, the markdown parser, the dispatcher, the embedder) — that is a PR against the escurel repo itself, not consumer-facing.
+version: 0.5.0
+description: Use when building an application that consumes the Escurel knowledge-base service as its data store — designing a tenant's skill/instance data model, calling the agent tools (search/resolve/expand/fetch_blob/neighbours/list_skills/list_instances/query_instance/validate/open_session/apply_op/close_session/list_snapshots/update_page/append_message/list_messages, plus the event bus capture_event/assign_event/list_events/list_inbox), or wiring escurel into an app backend and its integration tests. Covers the published surfaces (MCP-over-HTTP `/mcp`, the `escurel` CLI), the Rust `escurel-client` + `escurel-test-support` path, fixture seeding, auth/tenancy, per-chat-group conversation history (append_message/list_messages + admin DeleteChatHistory), external instance backends (read-only sql_view over an attached source; document/PDF/DOCX uploaded via /ingest), page layers + skill packs (read-only `base@<pack>@vN` pages, overlay shadowing, curator-gated `promotable`, admin pack export/import/rebase/unsubscribe/promotion), and the no-mock dev loop. Triggers on phrases like "use escurel from my app", "escurel MCP tool", "resolve a wikilink", "query_instance", "query page", "capture_event", "event bus", "escurel webhook", "seed an escurel tenant", "escurel-client", "EscurelProcess test", "author a skill page", "escurel CLI", "FixtureBuilder", "chat history", "append_message", "list_messages", "delete chat history", "instance backend", "sql_view instance", "document backend", "ingest a PDF", "/ingest", "skill pack", "import a pack", "base layer", "layer_read_only", "shadow a base skill", "promotable". DO NOT use for escurel-internal work (the indexer, LaneStore, the markdown parser, the dispatcher, the embedder) — that is a PR against the escurel repo itself, not consumer-facing.
 ---
 
 # escurel-platform — build apps that consume Escurel
@@ -109,7 +109,11 @@ it **navigates to** the canonical spec in `docs/` and the source in
   `update_page` write path (or `FixtureBuilder`, which uses it). What you
   seed must be what production would seed.
 - **No cross-tenant calls.** Each server instance is scoped to one tenant;
-  federation is a separate, future layer.
+  no runtime call ever spans tenants. Knowledge *does* federate — but as
+  curated publish/subscribe of signed **skill packs** (admin-gated
+  export/import; pages land as a read-only `base@<pack>@v<N>` layer), not
+  as a runtime path. → `references/01` §Layer/stability axis,
+  `references/02` §Skill packs.
 
 See `references/10-out-of-bounds.md` for the full list and the escalation
 path. Cross-references: `triton-platform` (the
