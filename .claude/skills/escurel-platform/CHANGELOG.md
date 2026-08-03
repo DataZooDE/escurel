@@ -4,6 +4,25 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.0 — Event-driven agents: the runner was entirely undocumented
+
+- New `references/11-event-driven-agents.md`. `escurel-runner` is a
+  shipped binary that turns a captured event into an autonomous agent
+  run — webhook `POST /trigger` (+ a poll backstop) → loop-control
+  ledger → context packaging → a harness adapter spawning `claude -p`
+  with the gateway as a scoped MCP server. The skill described only how
+  an app CALLS escurel; this is escurel calling an agent, and it had no
+  entry at all.
+- Documents the consequence for skill authors: an event-triggered
+  skill's **page body becomes the agent's system prompt**, so it must
+  read as a procedure for a machine, not as reference prose for a human.
+- Records the boundary honestly: the runner STARTS a run per event, but
+  nothing can push into an already-open session — `/ws` carries no
+  event-bus frame (#333), so polling `event inbox` is the only option
+  for a live assistant.
+- Names the trap that `ESCUREL_RUNNER_HARNESS` defaults to `echo`, so a
+  runner started without it runs no LLM at all.
+
 ## 0.5.0 — Page layers + skill packs (curated federation)
 
 - **Local iteration corrected (`09`).** The reference claimed the

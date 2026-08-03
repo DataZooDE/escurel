@@ -95,6 +95,7 @@ it **navigates to** the canonical spec in `docs/` and the source in
 | `references/08-auth-and-tenancy.md` | Bearer tokens, tenants, agent vs admin role, test issuer vs real OIDC. |
 | `references/09-local-iteration.md` | Getting a gateway to develop against, the routes, the env vars, the iterate loop. |
 | `references/10-out-of-bounds.md` | Before reaching for anything that belongs *inside* Escurel. Hard prohibitions + cross-refs. |
+| `references/11-event-driven-agents.md` | escurel drives an agent — `escurel-runner` turning a captured event into a `claude -p` run (harness adapters, skills-as-system-prompt, the cascade ledger), and what it does NOT do. |
 
 ## Hard prohibitions
 
