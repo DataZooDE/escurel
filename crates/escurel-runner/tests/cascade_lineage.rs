@@ -266,3 +266,121 @@ async fn confirmed_cross_skill_write_cascades_a_lineage_tagged_event() {
         .unwrap_or(false);
     assert!(processed, "the meeting event must be processed: {events}");
 }
+
+/// The same cross-skill cascade, but against a **flat** instance page id
+/// (`markdown/instances/<skill>__<id>.md`) instead of the directory form.
+///
+/// Both id forms are real: code that mints instances writes the directory
+/// form, while seeded and hand-authored corpora use the flat one — every
+/// page in `examples/crm-demo` does, and so does anything written through
+/// `update_page`. The cascade decided the produced instance's skill by
+/// parsing the page id, and parsed only the directory form, so on a flat-id
+/// corpus it silently concluded "not cross-skill" and never cascaded.
+///
+/// Silently is the operative word: no error, no dead-letter, the run just
+/// reported converged. Every pre-existing cascade test used the directory
+/// form, so nothing caught it.
+#[tokio::test]
+async fn cross_skill_write_to_a_flat_page_id_also_cascades() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(MEETING_SKILL, MEETING_SKILL_BODY)
+                .skill(DECISION_SKILL, DECISION_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // The flat form — authored through the PUBLIC write path, which is how a
+    // real corpus acquires one. FixtureBuilder only mints the directory form.
+    let flat_page_id = format!("markdown/instances/{DECISION_SKILL}__flat-q3.md");
+    let written = call_mcp(
+        &gateway,
+        Role::Agent,
+        "update_page",
+        json!({ "page_id": flat_page_id, "content": DECISION_INSTANCE_BODY }),
+    )
+    .await;
+    assert_eq!(
+        written["ok"],
+        json!(true),
+        "flat-id instance must write cleanly: {written}"
+    );
+
+    // A meeting event pre-flagged onto that decision-record instance: label
+    // `meeting`, target a `decision-record` — cross-skill, so it must cascade.
+    let captured = call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": MEETING_SKILL,
+            "instance_page_id": flat_page_id,
+            "title": "weekly sync",
+            "body": "Decided to ship Q3 roadmap"
+        }),
+    )
+    .await;
+    let meeting_event_id = captured["event_id"]
+        .as_str()
+        .expect("capture_event returns an event_id")
+        .to_owned();
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let ledger_path = ledger_dir.path().join("ledger.sqlite");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env("ESCUREL_RUNNER_LEDGER_PATH", ledger_path.to_str().unwrap())
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The assertion the bug fails: a follow-on decision-record event.
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let cascaded = loop {
+        let inbox = call_mcp(&gateway, Role::Agent, "list_inbox", json!({ "limit": 100 })).await;
+        let found = inbox["events"].as_array().and_then(|es| {
+            es.iter()
+                .find(|e| {
+                    e["event_id"] != json!(meeting_event_id)
+                        && e["label_skill"] == json!(DECISION_SKILL)
+                        && e["provenance"]["runner"].is_object()
+                })
+                .cloned()
+        });
+        if let Some(ev) = found {
+            break ev;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no cascaded {DECISION_SKILL} event appeared for the flat page id \
+             {flat_page_id} — the cross-skill write did not cascade"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+
+    assert_eq!(
+        cascaded["provenance"]["runner"]["depth"],
+        json!(1),
+        "cascaded event is one hop from the root: {cascaded}"
+    );
+    assert_eq!(
+        cascaded["provenance"]["runner"]["root_event_id"],
+        json!(meeting_event_id),
+        "root stays the originating meeting event: {cascaded}"
+    );
+}
