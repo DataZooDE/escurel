@@ -683,25 +683,58 @@ so that a gap is visible in the document rather than only in its source.
 
 \subsection{Context Cost Against Corpus Size}
 
-The headline experiment. At instance counts spanning $10^2$ to $10^6$, over
-identical corpus bytes, we compare \texttt{escurel} against flat retrieval
-and against putting the whole corpus in the window, measuring Tier-1 tokens
-at cold start, tokens and tool calls to a first correct answer, end-to-end
-tokens over a ten-task session, and success rate. Correctness is graded
-against a pre-registered answer key by exact match on a named entity or a
-numeric field, not by a model judge, over ten runs per cell.
+The claim the paper rests on: what an agent must read before it can act does
+not grow with the corpus. Table~\ref{tab:tier1} measures it over a synthetic
+tenant with 24 authored skills and instance counts spanning $10^2$ to $10^5$.
+Instances are bulk-inserted rather than written through the write path, since
+the quantity under test is a read.
 
-The prototype's real-model run reached a correct answer in \pn{1--2} tool
-calls at \pn{100\%} success and \pn{12.4$\times$} lower token cost than a
-flat baseline, and its Tier-1 cost held at \pn{189} tokens across the full
-six orders of magnitude. Reproducing that on the real system at five scales
-is measurement \todonum{Table 3}, and it is the single result on which the
-paper's central claim stands or falls.
+\begin{table}[t]
+\caption{Tier-1 cost against corpus size. Tokens are \texttt{cl100k\_base};
+the harness records characters and the tokeniser is applied in the report.
+Latency is 30 samples per row, one session.}
+\label{tab:tier1}
+\footnotesize
+\begin{tabular}{lrrrr}
+\toprule
+instances & $10^2$ & $10^3$ & $10^4$ & $10^5$ \\
+\midrule
+Tier-1 tokens        & 744 & 744 & 744 & 744 \\
+Tier-1 p50 (ms)      & 0.74 & 0.74 & 0.76 & 0.81 \\
+Tier-1 p95 (ms)      & 0.88 & 0.91 & 0.80 & 1.16 \\
+whole corpus (tokens) & 2.9k & 29k & 290k & 2.9M \\
+ratio avoided        & 3.9$\times$ & 39$\times$ & 390$\times$ & 3898$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-One scope note we insist on. The invariant is a \emph{Tier-1} invariant.
-Total context still grows with how many bodies an agent chooses to expand,
-and a paper that reports the first number without the second is selling
-something. Both belong in the table.
+\textbf{Half of this is arithmetic and we should say so.}
+The Tier-1 payload is byte-identical at every scale because the query is
+\texttt{WHERE page\_type = 'skill'}: it cannot see instances. Reporting that
+as a discovery would be dressing a schema fact as a result. What it does buy
+is a guard --- the harness asserts the equality, so if discovery ever starts
+touching instances, a test fails rather than a paragraph quietly becoming
+false.
+
+\textbf{The part that was open is the latency, and it is nearly flat.}
+Tier-1 shares the \texttt{pages} table with every instance, so the scan could
+have degraded. Across a thousand-fold increase in corpus it moves from 0.74
+to 0.81\,ms at p50, about 10\%, with p95 noisier at 1.16\,ms. Discovery stays
+sub-millisecond while the material it declines to read grows to 2.9\,M
+tokens.
+
+\textbf{What this does not measure, and it is the important half.}
+These are the KB's costs, not an agent's. Whether a language model actually
+exploits the cheap tier --- reading descriptions, choosing a skill, expanding
+two pages instead of twenty --- is a behavioural question, and the three-arm
+comparison against flat retrieval and whole-corpus-in-context that would
+answer it is specified in our plan and was not run. The predecessor's
+real-model run reached a correct answer in \pn{1--2} tool calls at
+\pn{12.4}$\times$ lower token cost than a flat baseline, on a 20-page
+prototype corpus. We are not restating that as a result for this system.
+What Table~\ref{tab:tier1} establishes is that the mechanism is available at
+scale and costs a fixed 744 tokens to offer; what it cannot establish is that
+an agent takes it.
 
 \subsection{Retrieval Against Flat Retrieval Over Identical Bytes}
 
@@ -716,25 +749,31 @@ than only the best cell. Result: \todonum{Table 4}.
 \subsection{Is It the Type, or Just a Filter?}
 
 A reviewer will ask whether the win is typing or merely metadata filtering,
-and the honest answer requires an ablation: skill filter on and off, crossed
-with typed link expansion on and off, over the same queries
-(\todonum{Table 5}).
+and we cannot answer it here. The ablation needs a corpus with more than one
+skill and queries that name a type; SciFact has neither, and escurel's own
+labelled corpus is the one Section~\ref{sec:eval}'s storage subsection
+reports as missing. Running a skill filter over a single-skill corpus
+compares a query against itself.
 
-We can already report the direction of one cost. The predecessor measured
+We can report the direction of one cost from the predecessor. It measured
 description-only indexing at \pn{83.3\%} top-1 against a full-content
 baseline of \pn{96.7\%}. Disclosure buys tokens by giving up accuracy at the
 discovery step and recovering it in a second call. That trade is the
-mechanism, not a side effect, and it is why Section~\ref{sec:limits} names
-corpora where it is a bad trade.
+mechanism rather than a side effect, and it is why
+Section~\ref{sec:limits} names corpora where it is a bad one.
 
-\subsection{Does the Skill Count Stay Bounded?}
+\subsection{The Falsifier We Could Not Run}
 
-This is the experiment that could falsify the central claim, so it is worth
-more than the ones that could confirm it. We plot skill count and instance
-count against time over the real corpus history of three tenants
-(\todonum{Figure 2}). If skills grow linearly with instances, the mechanism
-does not work and the paper says so. Ten weeks of one organisation's data is
-a regime, not a scaling law, and we will report it as such.
+The experiment that could refute the central claim is a plot of skill count
+against instance count over a real corpus's history. If skills grow with
+instances, discovery stops being cheap and the mechanism does not work.
+
+We do not have the data. The corpora that would show it live on the deployed
+instance, and what is on hand is fixtures. We considered plotting those and
+decided against it: a curve drawn from a handful of example tenants would
+look like evidence for the one claim in this paper that most needs it, and
+would be worth less than the admission. The measurement stays specified and
+unrun, and Section~\ref{sec:limits} carries it as the open question it is.
 
 \subsection{The Projection Loop}
 
