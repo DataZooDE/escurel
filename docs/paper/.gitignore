@@ -1,0 +1,9 @@
+# paper.pdf is deliberately NOT ignored: it is committed so the draft is
+# readable on GitHub without a local texlive. Rebuild with `make` and commit
+# the result alongside any paper.tex change, or the two drift apart.
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+missfont.log
