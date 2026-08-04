@@ -1,8 +1,10 @@
 # Build the paper. `make` here is independent of the workspace build.
 #
-# The acmart class is vendored under cls/ rather than assumed present:
-# texlive-publishers is not in every distribution's base install, and a paper
-# that only builds on the author's machine is a paper nobody else can check.
+# IEEEtran (and acmart, from the earlier formulation) are vendored under cls/
+# rather than assumed present: texlive-publishers is not in every
+# distribution's base install, and a paper that only builds on the author's
+# machine is a paper nobody else can check. cls/IEEEtran.cls additionally
+# carries a LOCAL font substitution -- see the note at its head.
 
 TEXINPUTS := ./cls//:
 BSTINPUTS := ./cls//:
@@ -27,11 +29,11 @@ paper.pdf: paper.tex refs.bib
 	@$(MAKE) --no-print-directory pages
 	@$(MAKE) --no-print-directory todos
 
-# The page budget is 8-10. Print it after every build so it cannot drift
-# unnoticed while sections are being written.
+# Page budget for the TAI journal formulation is 8-14. Print it after every
+# build so it cannot drift unnoticed while sections are being written.
 pages: paper.pdf
 	@n=$$(pdfinfo paper.pdf 2>/dev/null | awk '/^Pages:/ {print $$2}'); \
-	 echo "==> $$n pages (budget 8-10)"
+	 echo "==> $$n pages (budget 8-14)"
 
 # Unmeasured numbers render in red as [? ...]. Count them after every build so
 # the manuscript cannot ship with one unnoticed.
