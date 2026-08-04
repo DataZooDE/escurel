@@ -36,7 +36,7 @@ pages: paper.pdf
 # Unmeasured numbers render in red as [? ...]. Count them after every build so
 # the manuscript cannot ship with one unnoticed.
 todos:
-	@n=$$(grep -o '\\todonum{' paper.tex | wc -l); \
+	@n=$$(grep -v 'newcommand' paper.tex | grep -o '\\todonum{' | wc -l); \
 	 echo "==> $$n unmeasured cells (\\todonum) -- must be 0 to submit"
 
 clean:

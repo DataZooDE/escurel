@@ -6,8 +6,8 @@
 %%
 %% STATUS: all eight sections are drafted. Every numeral traceable to a
 %% harness, a named test, or the predecessor's verification tree is set.
-%% A number that is not yet measured is written \todonum{} and renders in
-%% red, so the gaps are visible in the PDF and not only in the source.
+%% The todonum macro renders an unmeasured number in red. It is kept as the
+%% guard for future edits; `make` counts uses of it and must report 0.
 %% Numbers inherited from the 430-line Python predecessor carry a
 %% superscript p and are never presented as results of this system.
 
@@ -87,8 +87,9 @@ duplicate-stress corpus where vector retrieval held at \pn{0.933}.
 \renewcommand{\thefootnote}{}
 \footnotetext{Numbers marked \pn{x} are prototype-era: they come from the
 430-line Python predecessor~\cite{predecessor} and its verification tree,
-not from the system described here. Numbers written \todonum{like this} are
-specified in Section~\ref{sec:eval} but not yet measured.}
+never from the system described here. Every other number in this paper was
+measured by a harness in the repository, and the experiments we could not run
+are named as such rather than estimated.}
 \renewcommand{\thefootnote}{\arabic{footnote}}
 
 %% =====================================================================
@@ -677,9 +678,10 @@ the corpus is embedded once and reused across configurations.
 Three rules govern every number below. Legs that are compared are measured
 in one session on one machine with one warm model cache, because a
 cross-session ratio is an artefact. No claim about agent behaviour is made
-without a real language-model run; counts produced by a tokeniser alone are
-labelled as such. And every unmeasured cell is printed \todonum{like this},
-so that a gap is visible in the document rather than only in its source.
+without a real language-model run, and this section makes none. And an
+experiment we specified but could not run is reported as such, with the
+reason --- four of them are, and the reasons are more interesting than some
+of the results.
 
 \subsection{Context Cost Against Corpus Size}
 
@@ -736,15 +738,60 @@ What Table~\ref{tab:tier1} establishes is that the mechanism is available at
 scale and costs a fixed 744 tokens to offer; what it cannot establish is that
 an agent takes it.
 
-\subsection{Retrieval Against Flat Retrieval Over Identical Bytes}
+\subsection{The Retrieval Ladder}
 
-Five configurations over the same corpus: flat retrieval with no types and
-no filter; single-pass typed retrieval; a two-pass variant with a truncated
-coarse dimension; a reranked variant; and both together. We report nDCG@10,
-recall@100, MRR@10, p50 and p95 latency and sustained throughput. Four of
-the five run today. The flat baseline is the new work, and it has to be a
-tuned one, so we sweep $k$ and report the sweep beside the result rather
-than only the best cell. Result: \todonum{Table 4}.
+What a public IR benchmark can tell us about escurel is narrower than we
+first specified, and the narrowing is the finding. We had planned to compare
+typed retrieval against flat retrieval over identical bytes. SciFact is a
+single-skill corpus and the harness already searches with no filters, so that
+comparison would run the same query twice. What remains measurable is the
+retrieval ladder: whether the mechanics layered on top of a single-pass
+search earn their cost. Table~\ref{tab:scifact} reports it over SciFact's
+5{,}183 documents and 300 test queries with
+\texttt{BAAI/bge-base-en-v1.5}.
+
+\begin{table}[t]
+\caption{SciFact, 5{,}183 docs, 300 queries, $k=100$, one session. Two-pass
+uses a 128-dimensional coarse pass over 500 candidates. Latency is
+end-to-end and includes CPU query embedding.}
+\label{tab:scifact}
+\footnotesize
+\begin{tabular}{lrr}
+\toprule
+ & single-pass & two-pass \\
+\midrule
+nDCG@10      & \textbf{0.723} & 0.718 \\
+nDCG@100     & \textbf{0.749} & 0.745 \\
+recall@10    & 0.859 & 0.859 \\
+recall@100   & 0.976 & 0.976 \\
+MAP          & \textbf{0.681} & 0.675 \\
+p50 (ms)     & \textbf{141} & 182 \\
+p95 (ms)     & \textbf{179} & 221 \\
+QPS, 8 workers & \textbf{11.2} & 7.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{The two-pass optimisation does not pay here, and it was supposed
+to.} Truncating the vector to 128 dimensions for a coarse pass and rescoring
+the top 500 at full width is meant to trade a little accuracy for a lot of
+speed. On this corpus it trades the wrong way: 29\% more latency at p50, a
+third off throughput, identical recall, and nDCG a hair worse. The mechanism
+needs a corpus where the coarse pass eliminates enough candidates to pay for
+the second hop, and 5{,}183 documents is not it. We had shipped the option
+before measuring the regime in which it helps.
+
+\textbf{These latencies are embedding, not search.} A query is embedded with
+a BERT encoder on CPU before anything is retrieved, and that dominates the
+141\,ms. The number is a useful end-to-end figure for an agent's round trip
+and a misleading one for the index; nothing here should be read as the cost
+of DuckDB's HNSW.
+
+\textbf{The rerank configurations are not measured.} The cross-encoder arms
+need \texttt{bge-reranker-base} over hundreds of candidates per query, which
+on this machine ran longer than the four hours we were prepared to spend
+after the corpus embedding had already taken three and a half. They are
+absent rather than estimated.
 
 \subsection{Is It the Type, or Just a Filter?}
 

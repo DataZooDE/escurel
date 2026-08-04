@@ -52,10 +52,10 @@ measured.
 
 ## Status
 
-All eight sections are drafted; the document is 8 pages. What remains is
-**data, not prose**. Every unmeasured cell renders in red as `[? …]` and
-`make` prints the count, so the gaps are visible in the PDF rather than only
-in the source.
+All eight sections are drafted; the document is 10 pages; **`make` reports 0
+unmeasured cells**. Every number in it was produced by a harness in this
+repository, and the four experiments we could not run are named in the paper
+with the reason.
 
 | Section | Prose | Data |
 |---|---|---|
@@ -63,27 +63,38 @@ in the source.
 | 2 Background | drafted | complete (prototype-era, labelled) |
 | 3 Two dualities and a corollary | drafted | complete |
 | 4 Design and implementation | drafted | complete |
-| 5 Guarantees and their verification | drafted | complete — 18/18 rows name a running test |
-| 6 Evaluation | drafted | **14 cells outstanding** |
+| 5 Guarantees | drafted | 18/18 rows name a running test |
+| 6.2 Tier-1 cost | drafted | measured (`data/tier1.json`) |
+| 6.3 Retrieval ladder | drafted | measured (`data/scifact.json`) |
+| 6.6 Projection loop + replay | drafted | measured (`data/{cascade,replay}.json`) |
+| 6.7 Five substrates | drafted | measured (`data/substrates.json`) |
 | 7 When you should not use this | drafted | complete |
 | 8 Related work and summary | drafted | complete |
 
-Outstanding measurements, in the order they should be run. Harness ids are
-[`plan.md`](plan.md)'s register:
+## What is deliberately absent
 
-1. **H-3 — context cost at five corpus scales** (§6.2). The headline, and
-   the one result the central claim stands or falls on. Needs a real-LLM
-   driver and a pre-registered answer key. ~2 days.
-2. **H-1 — flat-retrieval baseline** (§6.3, §6.4), plus its `k` sweep so the
-   baseline is tuned rather than a straw man. ~1 day.
-3. **H-9 — the five-substrate matrix** (§6.7). Real Postgres, real PDF, real
-   REST service, real upstream MCP server; no mocks at the boundary the
-   experiment exists to cover. ~1.5 days.
-4. **H-4, H-5 — cascade throughput and kill/replay convergence** (§6.6).
-   ~2 days.
-5. **H-6 — skill-vs-instance growth** (§6.5). The falsifier. ~2 hours.
-6. **H-2, H-7 — the labelled corpus and the ADR-0001 gate** (§6.8).
-   Currently reported as an open gate, which is itself a finding.
+Four experiments were specified and not run. Each is named in the paper with
+its reason, because an unrun experiment reported honestly is worth more than
+a plausible number:
+
+1. **Agent behaviour under a real model** (§6.2's second half). Whether a
+   language model actually exploits the cheap tier is the behavioural claim,
+   and the three-arm comparison that would settle it was not built. The
+   predecessor's 12.4x is prototype context, not a result for this system.
+2. **Typed-vs-flat retrieval and the type/filter ablation** (§6.4). Not
+   runnable on a public IR benchmark: SciFact is single-skill, so a skill
+   filter compares a query against itself. Needs a multi-skill labelled
+   corpus.
+3. **Skill growth against instance growth** (§6.5) — the falsifier. Needs
+   production corpus history that is not on this machine. We declined to
+   draw the curve from fixtures.
+4. **The ADR-0001 storage gate** (§6.8). Its 460-block fixture was never
+   versioned with the code and no longer exists.
+
+Reruns: the harnesses are `substrate_matrix.rs` (escurel-server,
+`--features live-substrates`), `projection_measurements.rs` (escurel-runner,
+`--features paper-measurements`), `tier1_cost.rs` (escurel-index, same
+feature), and `escurel-eval` over `datasets/scifact`.
 
 ## Rules for this manuscript
 
