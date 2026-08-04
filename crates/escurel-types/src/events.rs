@@ -68,6 +68,18 @@ pub struct ListInboxResponse {
 pub struct ListEventsRequest {
     pub instance_page_id: String,
     pub limit: u32,
+    /// Look a **single event up by id** instead of listing an instance's
+    /// history. When set, `instance_page_id` is ignored and the response
+    /// carries just that event — including the `instance_page_id` that
+    /// `assign_event` bound it to.
+    ///
+    /// This exists because there was otherwise no way to ask *where an event
+    /// went*. Reconciling a run whose trigger had no pre-flagged target — the
+    /// ordinary shape for an LLM harness, which decides for itself which
+    /// instance to fold an event into — could see the event leave the inbox
+    /// but never learn which page it landed on, so the effect could not be
+    /// confirmed and the run never cascaded.
+    pub event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

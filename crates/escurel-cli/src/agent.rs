@@ -765,6 +765,7 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
                 .list_events(ListEventsRequest {
                     instance_page_id: instance,
                     limit,
+                    ..Default::default()
                 })
                 .await?;
             Ok(json!({ "events": resp.events.into_iter().map(event).collect::<Vec<_>>() }))

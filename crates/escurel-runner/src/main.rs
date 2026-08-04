@@ -1142,7 +1142,10 @@ async fn attempt_run(
         package_error_to_reconcile(e)
     })?;
 
-    match harness.run(&task).await {
+    // Carried past the match so the read-back below can tell "the harness
+    // named a page" from "it named nothing" — the latter is only meaningful
+    // once the gateway has also been asked.
+    let harness_produced = match harness.run(&task).await {
         Ok(outcome) => {
             tracing::info!(
                 target: "escurel_runner",
@@ -1164,22 +1167,19 @@ async fn attempt_run(
                     outcome.summary
                 )));
             }
-            // Clean no-op: the harness ran fine but produced no instance AND
-            // the trigger had no pre-flagged target. This is a *converged*
-            // cascade hop (e.g. an unassigned cascaded event the echo-harness
-            // can't bind) — there is genuinely nothing to confirm. Terminate
-            // CLEANLY (#156/#157) rather than burning retries on a read-back
-            // that can never converge and recording `failed`. We only treat
-            // the genuinely-nothing-to-do case (ok + no produced instance + no
-            // pre-flagged target) as converged, so a real failure is never
-            // masked.
-            if outcome.produced_instance.is_none() && trigger.instance_page_id.is_none() {
-                return Err(ReconcileError::Converged(format!(
-                    "harness {} had nothing to do: {}",
-                    harness.name(),
-                    outcome.summary
-                )));
-            }
+            // NB: "produced no instance + no pre-flagged target" is NOT by
+            // itself a no-op, and treating it as one was a real bug. Both
+            // real LLM adapters hardcode `produced_instance: None` — their
+            // envelopes do not name the page the model wrote — so this fired
+            // on every unflagged `claude`/`codex` run, including ones that
+            // had just written a page and assigned the event. The run was
+            // recorded `processed` with no effect, and never cascaded. Only
+            // the `echo` stub reports a produced instance, which is why the
+            // suite never saw it.
+            //
+            // The gateway is the authority, so ask it first (below) and
+            // decide afterwards.
+            outcome.produced_instance
         }
         Err(e) => {
             tracing::warn!(
@@ -1191,11 +1191,31 @@ async fn attempt_run(
             );
             return Err(harness_error_to_reconcile(&e));
         }
-    }
+    };
 
     // Don't trust the harness: read back over `/mcp` to confirm the event is
-    // processed + bound and the instance's version advanced (#155).
-    confirm_effect(client, trigger).await
+    // processed + bound and the instance's version advanced (#155). For an
+    // unflagged trigger this now resolves the instance the agent chose, via
+    // the by-event lookup — `assign_event` recorded the binding.
+    match confirm_effect(client, trigger).await {
+        Ok(effect) => Ok(effect),
+        // Read-back could not confirm anything, the harness reported no
+        // produced instance, and nothing was pre-flagged: the agent ran
+        // cleanly and genuinely did nothing. Terminate CLEANLY (#156/#157)
+        // rather than burning retries on a read-back that will not converge
+        // and then recording `failed` — a converged cascade hop ends here.
+        //
+        // This is deliberately the LAST resort, not the first check: it fires
+        // only once the gateway has been asked and had no effect to report.
+        Err(ReconcileError::Transient(reason))
+            if harness_produced.is_none() && trigger.instance_page_id.is_none() =>
+        {
+            Err(ReconcileError::Converged(format!(
+                "harness ran cleanly and the gateway reports no effect ({reason})"
+            )))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Map a packaging error to a reconcile classification. A `/mcp` read failure

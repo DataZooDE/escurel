@@ -334,6 +334,37 @@ impl Indexer {
             .await
     }
 
+    /// One event by id, whatever its status — the by-event lookup the
+    /// instance-scoped surfaces cannot express.
+    ///
+    /// [`Self::list_inbox`] only sees `status = 'inbox'` and
+    /// [`Self::list_events`] needs the instance you are trying to discover,
+    /// so an event that has been assigned is reachable only if you already
+    /// know where it went. That circularity is what stopped a run with no
+    /// pre-flagged target from ever being reconciled: `assign_event` records
+    /// the binding, and nothing could read it back.
+    ///
+    /// Deliberately NOT filtered by status — the caller distinguishes "still
+    /// in the inbox" from "assigned to X", and both answers are useful.
+    pub async fn get_event(&self, event_id: &str) -> Result<Option<EventInfo>, IndexerError> {
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+        let mut where_clauses = vec!["event_id = ?".to_owned()];
+        if tenant.is_some() {
+            where_clauses.push("tenant = ?".to_owned());
+        }
+        let sql = format!(
+            "{} WHERE {} LIMIT 1",
+            select_cols(&table),
+            where_clauses.join(" AND "),
+        );
+        Ok(self
+            .hydrate_events(&sql, Some(event_id), tenant.as_deref())
+            .await?
+            .into_iter()
+            .next())
+    }
+
     /// Assign an inbox event to an instance and mark it processed — the
     /// (external/simulated) agent folding the event into the instance.
     ///
