@@ -745,8 +745,9 @@ done while a write was still in flight. The harness is the echo adapter, so
 the numbers describe the loop rather than a language model's latency.
 
 \begin{table}[t]
-\caption{Twenty events to quiescence, one session. The three arms differ only
-in what was allowed to be the bottleneck.}
+\caption{Twenty events drained to quiescence, one session. The clock starts
+after capture, so this is drain time, not ingest-to-quiescence. The arms are
+not a clean isolation: lifting the governor also changes the failure profile.}
 \label{tab:loop}
 \footnotesize
 \begin{tabular}{lccc}
@@ -772,10 +773,12 @@ that we took it for the explanation. Lifting the governor to 100{,}000 runs
 per minute moved throughput not at all (2.07). The second hypothesis was
 write contention, since all twenty events folded into one page behind a
 per-tenant write lock; giving each event its own target instance also moved
-nothing (2.03). What remains is per-run fixed cost, roughly 475\,ms of poll
-interval, subprocess spawn and a handful of round trips, dispatched serially.
-Neither of the two mechanisms we had built to control throughput was the
-thing controlling it.
+nothing (2.03). What is left is an unmeasured residual of roughly 475\,ms
+per event. We did not decompose it --- the harness times quiescence, not poll
+wait against spawn against round trips --- so the serial per-run cost we
+suspect is a hypothesis. The finding we can defend is narrower and still
+useful: neither mechanism we built to control throughput was controlling it
+here.
 
 \textbf{Lifting the governor changed the failure profile, not the rate.}
 Ten runs recorded \texttt{failed} under the default quota and none did with
@@ -786,15 +789,17 @@ one the harness asserts.
 
 \textbf{Cascade control is visible in the run count.} Twenty events produce
 25 to 35 ledger runs --- the follow-on \texttt{decision-record} events the
-cascade emits --- of which five are stopped by a loop control every time. The
-chain converges rather than running away, which is what
-\expref{9} tests and this measures.
+cascade emits --- of which five are dead-lettered by a loop control in every
+arm, and the fixture quiesces. We ran no control arm with the loop controls
+disabled, so this shows the cascade terminating here, not that the controls
+are what stopped it; \expref{9} is the test that exercises them directly.
 
 \subsection{Replay Under Kill}
 
 The sharper test. The runner is \texttt{SIGKILL}ed at a pseudo-random point
-between 80 and 1280\,ms into a live cascade, restarted against the
-\emph{same} durable ledger, and given 60 seconds to converge.
+in $[20,100]$\,ms --- one event per trial, so this is a single-event crash
+probe and not a claim about multi-event contention --- then restarted against
+the \emph{same} durable ledger and given 60 seconds to converge.
 
 One change to what we promised. The plan said final state byte-identical to
 an uninterrupted run. That comparison is not available: the echo harness keys
@@ -844,11 +849,11 @@ headline --- ``100/100 converged'' --- is true and would mislead.
 
 \subsection{Five Substrates, One Call Shape}
 
-The experiment that turns the corollary into a result. One fixture tenant
-carries five skills describing the same entity, a customer, one per backend,
-against a Postgres in a container, the repository's own PDF through
-\texttt{/ingest}, an axum CRM answering REST, and a JSON-RPC server answering
-MCP. The same fixed sequence runs against each:
+The experiment that exercises the corollary along a fixed, known navigation
+path. One fixture tenant carries five skills describing the same entity, a
+customer, one per backend, against a Postgres in a container, a fixture PDF
+through \texttt{/ingest}, an axum CRM answering REST, and a JSON-RPC server
+answering MCP. The same sequence runs against each:
 \texttt{resolve} $\rightarrow$ \texttt{expand} $\rightarrow$
 \texttt{neighbours}. Table~\ref{tab:substrates} reports it.
 
@@ -874,18 +879,23 @@ writable via           & page & --- & --- & \multicolumn{2}{c}{instance} \\
 \end{tabular}
 \end{table}
 
-\textbf{The corollary holds for navigation.}
-All fifteen navigation steps succeed. The agent issues one sequence and the
-dispatcher routes it to a local file, a Postgres query, a chunked PDF and two
-live services without the caller knowing which. This is the claim
-Section~\ref{sec:corollary} makes, and it is the one the harness asserts
-rather than merely records: the test fails if any step on any substrate
-returns a page without a body.
+\textbf{The corollary holds for navigation from a known handle.}
+All fifteen steps succeed: one set of verbs, in one order, routed to a local
+file, a Postgres query, a chunked PDF and two live services. Two limits on
+what that shows. The caller is not blind to the substrate --- the skill
+segment of \texttt{[[customer\_rest::acme]]} names it, which is the design,
+since it is the \emph{type} that declares the backend --- so what is
+identical is the call shape, not the caller's ignorance. And the harness
+addresses each instance by a handle it was given at creation, so this is
+navigation, not discovery of an arbitrary entity. Within those limits the
+harness asserts rather than records: a step that returns neither a body nor
+frontmatter fails the test.
 
-\textbf{Discovery divides exactly where the design says it does.}
-The declared capabilities read back \texttt{hybrid} for markdown and
-documents, \texttt{late} for the SQL view, and \texttt{none} for both live
-proxies. We report the declaration rather than a similarity probe, and the
+\textbf{The declared discoverability divides where the design says.}
+This is a configuration read, not a behavioural result: the capabilities come
+back \texttt{hybrid} for markdown and documents, \texttt{late} for the SQL
+view, and \texttt{none} for both live proxies. We report the declaration
+rather than a similarity probe, and the
 reason is worth stating because it nearly produced a false result: the
 fixture runs a zero-vector embedder, under which every vector is identical
 and \texttt{search} returns essentially the whole corpus. A probe in that
@@ -895,8 +905,12 @@ of the truth. The number that was easy to collect was the wrong one.
 \textbf{The latency ordering is not the one we predicted.}
 We expected the two materialised backends to answer from the local file in
 single digits and the live proxies to show a network round trip. Instead the
-\emph{SQL view is the slowest cell in the table} at 9.4\,ms p50, half again
-the cost of either live proxy, because every read crosses into Postgres
+\emph{SQL view is the slowest cell} at 9.4\,ms p50, half again the cost of
+either live proxy. The ordering is descriptive of one session --- 50 warm
+calls in one process, no independent repeats, no variance reported, and the
+gaps are single-digit milliseconds --- but the direction is the opposite of
+what we expected, and the mechanism is visible: every read crosses into
+Postgres
 through DuckDB's scanner while the proxies were answered by loopback services
 in the same process. Two things follow. The proxy figures are a floor: they
 exclude real network round-trip time, and a remote endpoint across the
@@ -905,9 +919,10 @@ internet would move them by far more than the spread in this table. And
 wearing a materialised interface, which is a distinction the design
 documentation blurs and this measurement does not.
 
-Failure behaviour is not in the table because it is a guarantee, not a
-measurement: \expref{15} covers an unreachable endpoint degrading rather than
-fabricating a body.
+Failure behaviour is deliberately absent from this table: nothing here was
+measured with a source down. \expref{15} covers exactly one case --- an
+unreachable \texttt{openapi} endpoint degrading rather than fabricating a
+body --- and nothing in Table~\ref{tab:substrates} extends to the others.
 
 \subsection{What the Storage Collapse Cost}
 
