@@ -163,14 +163,10 @@ reason over an organization's data without first importing it.
 \item A guarantee register of eighteen safety and semantic properties in
   which every row names an integration test that executes in the project's
   ordinary test run (Section~\ref{sec:guarantees}).
-\item Evidence for three claims of the model, and an explicit account of four
-  experiments we specify and do not run, with what each would settle
+\item Feasibility evidence for three properties of the arrangement, bounded
+  by an explicit account of what the measurements do not reach
   (Sections~\ref{sec:evidence}--\ref{sec:open}).
 \end{enumerate}
-
-The fourth item is stated as a contribution because the unrun experiments
-bound the claims of the first three, and a reader cannot calibrate the
-position without them.
 
 %% =====================================================================
 \section{Why Untyped Memory Does Not Scale}
@@ -513,13 +509,15 @@ implication for practice, and the least explored.
 \section{Guarantees}
 \label{sec:guarantees}
 
-A memory system is a contract, and a contract not written down is one the
-next component will violate. Table~\ref{tab:guarantees} states eighteen
-properties, each verified by an integration test executing in the project's
-ordinary test command; none is disabled, because a claim whose test does not
-run is not a claim. An untyped vector store provides none of these except a
-durable append: it has no typed reference to resolve, no schema to validate
-against, no session to converge and no binding to degrade.
+Table~\ref{tab:guarantees} states eighteen properties, each verified by an
+integration test executing in the project's ordinary test command; none is
+disabled. The register is engineering discipline rather than validation of
+the model: it establishes that the implementation does what it says, not that
+the arrangement is preferable to another. We deliberately do not tabulate a
+comparison against vector stores here. Production retrieval systems are
+routinely wrapped in schemas, access control, versioning and transaction
+logs, so a column asserting they lack these properties would compare against
+a configuration rather than against any named system.
 
 \begin{table}[!t]
 \caption{The guarantee register. Each row names a test executing in the
@@ -553,15 +551,16 @@ project's ordinary test run.}
 \end{tabular}
 \end{table}
 
-The eighteenth property illustrates what a register is for. Our specification
-describes a tenant manager holding per-tenant handles; it is not implemented,
-and the deployed isolation boundary is the process rather than a structure
-inside it. Authentication resolved a tenant from the presented token while
-the data path used the served tenant, and for some weeks the two were not
-compared, so a validly signed token for one tenant was accepted against
-another. A test had encoded the defect as intended behaviour: a foreign token
-succeeding was being used to demonstrate that quota accounting was
-per-tenant. Writing the contract down forced the comparison that exposed it.
+The eighteenth property records a limit of the present implementation rather
+than of the model: the specification describes per-tenant handles within one
+process, these are not implemented, and the deployed isolation boundary is
+therefore the process. The property was added after an isolation defect in
+which authentication resolved a tenant from the presented token while the
+data path used the served tenant, and the two were never compared. The
+general observation is that a test suite can encode a defect as intended
+behaviour---here a foreign token succeeding was read as evidence that quota
+accounting was per-tenant---and that enumerating properties independently of
+the tests is what surfaces such cases.
 
 %% =====================================================================
 \section{Evidence}
@@ -740,8 +739,10 @@ language model, which removes the component most likely to lengthen the
 failure window, so it should not be read as an exactly-once guarantee in the
 distributed-systems sense.
 
-\subsection{Retrieval Mechanics}
-For completeness we report the retrieval ladder over a public benchmark
+\subsection{Retrieval Mechanics (Not Evidence for the Position)}
+This subsection reports implementation context and bears on none of the
+claims above; a reader assessing the position may skip it. Over a public
+benchmark
 (SciFact, 5{,}183 documents, 300 queries,
 \texttt{bge-base-en-v1.5}): single-pass retrieval attains nDCG@10 of 0.723
 and recall@100 of 0.976 at a median 141\,ms, while a two-pass variant using a
@@ -876,12 +877,13 @@ largest practical effect: it lets a typed memory reason over an
 organization's data without first copying it, and makes a vocabulary and its
 integrations distributable as one versioned artifact.
 
-The behavioural question remains open, and it is the field's as much as any
-one system's. Establishing that typed memory helps agents, as distinct from
-establishing that it is cheap to offer, requires multi-type benchmark corpora
-with type-naming queries and a construction protocol agreed beyond the group
-proposing the architecture. Building such corpora is, on the evidence
-assembled here, the most useful next contribution to this line of work.
+The behavioural question remains open. Establishing that typed memory helps
+agents, as distinct from establishing that it is cheap to offer, requires
+multi-type corpora with type-naming queries, held-out tasks and ablations. A
+synthetic construction is feasible and is the next step we intend; its
+weakness is that a partitioning chosen by the authors of the system under
+test is contestable, which argues for publishing the generator and the tasks
+separately from any system that consumes them.
 
 \section*{Acknowledgment}
 The design proposed here was first sketched in an earlier
