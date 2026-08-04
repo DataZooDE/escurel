@@ -1,4 +1,19 @@
-# "Escurel: A Typed Knowledge Base for Agents" — paper source
+# "Typed Memory for Autonomous Agents" — paper source
+
+**Formulation: IEEE Transactions on Artificial Intelligence, position /
+innovation paper.** The earlier PVLDB experience-track formulation of the same
+material is in history at `1c1372f` and can be restored from it. The content
+is largely shared; what changed is the register (argument-first rather than
+project-narrative), the addition of a section delimiting what is and is not
+novel against the knowledge-representation literature, and a narrowing of
+several empirical claims.
+
+`cls/IEEEtran.cls` carries a **local modification**: upstream selects Times
+and Helvetica and calls `\normalfont\selectfont` at class-load time, which is
+fatal on a machine without `texlive-fontsrecommended`. The vendored copy
+substitutes Computer Modern; see the note at the head of the file. Restore the
+pristine class for camera-ready, and re-check the page count, since metrics
+change.
 
 A PVLDB experience-track paper on escurel: the skill–instance and
 event–callback dualities, the substrate corollary that follows from them,
