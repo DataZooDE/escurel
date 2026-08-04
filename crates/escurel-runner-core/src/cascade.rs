@@ -211,12 +211,36 @@ async fn resolve_cascade_target(client: &Client, skill: &str) -> Option<String> 
         .map(str::to_owned)
 }
 
-/// Derive an instance's skill from its page id
-/// (`markdown/instances/<skill>/<id>.md`). Returns `None` when the path does
-/// not match that shape.
+/// Derive an instance's skill from its page id.
+///
+/// **Two id shapes are in use and both are legitimate**, so both are parsed:
+///
+/// - `markdown/instances/<skill>/<id>.md` — the *directory* form, minted by
+///   code (`create_sql_instance` in `escurel-server`, the document backend,
+///   `FixtureBuilder`).
+/// - `markdown/instances/<skill>__<id>.md` — the *flat* form, used by seeded
+///   and hand-authored corpora (all of `examples/crm-demo`) and by anything
+///   written through `update_page`.
+///
+/// Parsing only the directory form returned `None` for every flat page, and
+/// [`emit_cascade`] reads `None` as "not cross-skill" — so on a flat-id
+/// corpus a cross-skill write never cascaded, with no error and no
+/// dead-letter to show for it. Both shapes now resolve.
+///
+/// The split is on the FIRST separator: an instance id may itself contain
+/// `__` or `.` (`engagement__hoffmann-spine.a.md` is a real page id), while
+/// a skill id may not contain `/` or `__`.
+///
+/// Returns `None` when neither shape matches, or when the skill segment
+/// would be empty — the caller then declines to cascade rather than guess a
+/// label. Note the page's frontmatter is the real authority on its skill;
+/// this is an inference from the id, which is why it fails closed.
 fn instance_skill(page_id: &str) -> Option<String> {
     let rest = page_id.strip_prefix("markdown/instances/")?;
-    let (skill, _) = rest.split_once('/')?;
+    let skill = match rest.split_once('/') {
+        Some((skill, _)) => skill,
+        None => rest.split_once("__")?.0,
+    };
     if skill.is_empty() {
         return None;
     }
@@ -254,6 +278,45 @@ mod tests {
         );
         assert_eq!(instance_skill("markdown/skills/note.md"), None);
         assert_eq!(instance_skill("markdown/instances//q3.md"), None);
+    }
+
+    /// The FLAT page-id form — `<skill>__<id>.md`, no directory segment.
+    ///
+    /// Both forms are real. Code that mints instances writes the directory
+    /// form (`mcp.rs` `create_sql_instance`, `document.rs`, `fixtures.rs`),
+    /// but seeded and hand-authored corpora use the flat form — every page
+    /// in `examples/crm-demo` does, and so does anything a human or an agent
+    /// writes through `update_page`.
+    ///
+    /// Parsing only the directory form made `instance_skill` return `None`
+    /// for every such page, which `emit_cascade` treats as "not cross-skill"
+    /// — so a cross-skill write on a flat-id corpus never cascaded. Silently:
+    /// no error, no log, the run just reported converged.
+    #[test]
+    fn instance_skill_parses_the_flat_form() {
+        assert_eq!(
+            instance_skill("markdown/instances/note__duckdb-cli-elides-rows.md").as_deref(),
+            Some("note")
+        );
+        assert_eq!(
+            instance_skill("markdown/instances/decision-record__q3.md").as_deref(),
+            Some("decision-record")
+        );
+        // The instance id may itself contain `__` or dots — split on the
+        // FIRST separator only (`engagement__hoffmann-spine.a.md` is a real
+        // crm-demo page id).
+        assert_eq!(
+            instance_skill("markdown/instances/engagement__hoffmann-spine.a.md").as_deref(),
+            Some("engagement")
+        );
+        assert_eq!(
+            instance_skill("markdown/instances/note__a__b.md").as_deref(),
+            Some("note")
+        );
+        // Still refuses to guess when there is no separator at all, or when
+        // the skill segment would be empty.
+        assert_eq!(instance_skill("markdown/instances/loose.md"), None);
+        assert_eq!(instance_skill("markdown/instances/__orphan.md"), None);
     }
 
     #[test]
