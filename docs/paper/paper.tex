@@ -736,22 +736,111 @@ count against time over the real corpus history of three tenants
 does not work and the paper says so. Ten weeks of one organisation's data is
 a regime, not a scaling law, and we will report it as such.
 
-\subsection{The Projection Loop, and Replay}
+\subsection{The Projection Loop}
 
-Over a seeded stream of events across several skills we measure end-to-end
-throughput, agent runs per event, cascade depth distribution,
-time-to-quiescence, and the share of cascades stopped by each loop control
-(\todonum{Table 6}). Measurement uses an echo harness so that the number
-describes the loop rather than a language model, with one real-harness run
-for the constant factor, and repeats at fan-out widths of 1, 4 and 16 to
-show that generalising the reducer costs what the width says and nothing
-structural.
+Twenty events are captured into the inbox, the runner is started, and the
+clock runs until quiescence: every event \texttt{processed} on the gateway
+\emph{and} the ledger no longer moving. Reading only the ledger would call it
+done while a write was still in flight. The harness is the echo adapter, so
+the numbers describe the loop rather than a language model's latency.
 
-Replay is the sharper test. We kill the runner at fifty pseudo-random points
-in a cascade of known shape, restart, and require the final instance state to
-be byte-identical to an uninterrupted run (\todonum{convergence rate}). We
-would rather report one divergence class found and fixed than fifty clean
-runs, and we will say which we got.
+\begin{table}[t]
+\caption{Twenty events to quiescence, one session. The three arms differ only
+in what was allowed to be the bottleneck.}
+\label{tab:loop}
+\footnotesize
+\begin{tabular}{lccc}
+\toprule
+ & governed & lifted & lifted \\
+target instances & 1 & 1 & 20 \\
+\midrule
+seconds to quiescence & 9.17 & 9.66 & 9.87 \\
+events per second     & 2.18 & 2.07 & 2.03 \\
+ledger runs per event & 1.25 & 1.75 & 1.75 \\
+stopped by a loop control & 5 & 5 & 5 \\
+runs recorded failed  & 10 & 0 & 0 \\
+max folds of one event & 1 & 1 & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{We were wrong twice about the bottleneck, and the arms are the
+record of it.}
+The shipped per-tenant governor admits 120 runs per minute, which is exactly
+two per second, and the first arm measured 2.18 --- a coincidence so clean
+that we took it for the explanation. Lifting the governor to 100{,}000 runs
+per minute moved throughput not at all (2.07). The second hypothesis was
+write contention, since all twenty events folded into one page behind a
+per-tenant write lock; giving each event its own target instance also moved
+nothing (2.03). What remains is per-run fixed cost, roughly 475\,ms of poll
+interval, subprocess spawn and a handful of round trips, dispatched serially.
+Neither of the two mechanisms we had built to control throughput was the
+thing controlling it.
+
+\textbf{Lifting the governor changed the failure profile, not the rate.}
+Ten runs recorded \texttt{failed} under the default quota and none did with
+it lifted, while events per second stayed flat. The governor was not slowing
+the system down; it was converting contention into retries. Every arm still
+folded every event exactly once, which is the property that matters and the
+one the harness asserts.
+
+\textbf{Cascade control is visible in the run count.} Twenty events produce
+25 to 35 ledger runs --- the follow-on \texttt{decision-record} events the
+cascade emits --- of which five are stopped by a loop control every time. The
+chain converges rather than running away, which is what
+\expref{9} tests and this measures.
+
+\subsection{Replay Under Kill}
+
+The sharper test. The runner is \texttt{SIGKILL}ed at a pseudo-random point
+between 80 and 1280\,ms into a live cascade, restarted against the
+\emph{same} durable ledger, and given 60 seconds to converge.
+
+One change to what we promised. The plan said final state byte-identical to
+an uninterrupted run. That comparison is not available: the echo harness keys
+its appended note on the event id, event ids are ULIDs, so two runs differ in
+their bytes for reasons that have nothing to do with replay. The invariant
+that carries the weight is effectively-once --- the event appears in the
+instance body exactly once and ends \texttt{processed} --- so that is what is
+measured.
+
+\begin{table}[t]
+\caption{Kill and replay, 100 trials, kill sampled from a deterministic
+sequence in $[20,100]$\,ms. Only the \emph{in-flight} column tests replay;
+the rest is reported so the denominator is visible.}
+\label{tab:replay}
+\footnotesize
+\begin{tabular}{lcc}
+\toprule
+kill landed & trials & converged \\
+\midrule
+before the run started   & 0  & --- \\
+\textbf{while in flight} & \textbf{35} & \textbf{35} \\
+after the run completed  & 65 & 65 \\
+\midrule
+duplicate folds          & \multicolumn{2}{c}{0} \\
+never processed          & \multicolumn{2}{c}{0} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{The first version of this experiment measured nothing, and the
+protocol caught it.}
+We wrote down in advance that fifty clean runs would be a warning rather than
+a result --- that if nothing ever broke, the kills were probably not landing
+inside the write window. They were not. The first pass sampled kills from
+$[80,1280]$\,ms, all fifty trials came back clean, and the instrumentation
+showed why: \emph{all fifty} kills landed after the run had already finished.
+A single event is folded in well under 80\,ms, so the experiment had been
+measuring that killing an idle process does no harm. Narrowing the window to
+$[20,100]$\,ms put 35 of 100 kills genuinely in flight.
+
+\textbf{What we can and cannot say.} Thirty-five in-flight kills converged,
+every one, with no duplicate fold and no event left unprocessed. That is
+evidence for \expref{8} at $n=35$, not at $n=100$, and 35 is a small number:
+it bounds the duplicate rate loosely, and a rare interleaving would not show
+up here. We report the denominator rather than the headline because the
+headline --- ``100/100 converged'' --- is true and would mislead.
 
 \subsection{Five Substrates, One Call Shape}
 

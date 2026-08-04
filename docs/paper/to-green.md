@@ -50,8 +50,8 @@ re-scope but *which* cells to re-scope and which to pay for.
 | 6.8 | ADR-0001 gate | ~~1~~ **done** | RETIRED | — | 2nd |
 | 6.3 | retrieval vs flat (Table 4) | 1 | MEASURE | 1.5 d | 4th |
 | 6.4 | ablation (Table 5) | 1 | MEASURE | 0.5 d | 5th |
-| 6.6 | cascade throughput (Table 6) | 1 | MEASURE | 1 d | 3rd |
-| 6.6 | replay convergence | 1 | MEASURE | 1 d | 3rd |
+| 6.6 | cascade throughput (Table 6) | ~~1~~ **done** | MEASURED | — | 3rd |
+| 6.6 | replay convergence | ~~1~~ **done** | MEASURED | — | 3rd |
 | 6.2 | context cost (Table 3) | 1 | MEASURE, split | 2 d | 6th |
 | 6.5 | skill growth (Figure 2) | 1 | RESCOPE | 0.5 d | 7th |
 | | | **30** | | **~8.5 d** | |
@@ -237,6 +237,29 @@ The harness is `crates/escurel-server/tests/substrate_matrix.rs`, behind
     in-process. Their figures are a floor that excludes real network RTT. The
     paper says so, and §7 now says that materialising a source is not
     automatically the fast choice.
+
+## What step 3 found (2026-08-04)
+
+`crates/escurel-runner/tests/projection_measurements.rs`, behind
+`--features paper-measurements`.
+
+- **Two wrong bottleneck hypotheses, both killed by an arm.** The shipped
+  governor admits 120 runs/min = exactly 2/s, and the first arm measured
+  2.18 — too clean not to believe. Lifting it to 100k/min moved throughput
+  not at all (2.07). Write contention on a single target page was the second
+  guess; fanning out to 20 distinct instances moved nothing either (2.03).
+  The cost is per-run and serial, ~475 ms of poll + subprocess spawn + round
+  trips. Neither mechanism built to control throughput was controlling it.
+- **The governor converts contention into retries, not into slowness.**
+  10 runs recorded `failed` under the default quota, 0 with it lifted, at the
+  same events/second.
+- **The replay pre-registration earned its keep, again.** It said fifty clean
+  runs would be a warning, not a result. The first pass came back 50/50 clean
+  — and the instrumentation showed *all fifty* kills landed after the run had
+  already completed. A single event folds in well under 80 ms; the experiment
+  had been measuring that killing an idle process is harmless. Narrowing the
+  window to [20,100] ms put 35 of 100 kills genuinely in flight, and all 35
+  converged exactly-once. The paper reports n=35, not n=100.
 
 ## Decisions needed
 
