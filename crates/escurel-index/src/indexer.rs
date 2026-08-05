@@ -217,6 +217,8 @@ pub enum IndexerError {
     Key(#[from] escurel_storage::KeyError),
     #[error("invalid utf-8 in markdown body for {page_id}")]
     NotUtf8 { page_id: String },
+    #[error("a live page already exists at {page_id}")]
+    PageExists { page_id: String },
     #[error("serde_json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("embedder error: {0}")]
@@ -967,6 +969,77 @@ impl Indexer {
             tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
             tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
             tx.execute("DELETE FROM links WHERE src_page = ?", params![page_id])?;
+            tx.commit()?;
+        }
+        self.bump_mutation_epoch();
+        Ok(true)
+    }
+
+    /// Move a page to a new `page_id`, leaving **nothing** at the old one.
+    ///
+    /// This is deliberately not `delete_page` + `update_page`. A delete is a
+    /// *retraction*: the markdown is retained, re-stamped `archived: true`,
+    /// because the point is to keep the record of knowledge that was
+    /// withdrawn. A move is a different event — the content still exists, at
+    /// a new id — so an archived husk at the old path is pure noise in the
+    /// canonical store, and it accumulates: restructuring one tenant's 59
+    /// instance ids left 59 husks sitting beside the live pages.
+    ///
+    /// Returns `false` when `from` does not exist, so re-running a migration
+    /// is free. Refuses rather than clobbers when `to` is already a *live*
+    /// page — a silent overwrite here destroys knowledge. An archived husk at
+    /// the destination may be replaced, which is exactly what a re-run after
+    /// an earlier update+delete migration meets.
+    pub async fn move_page(&self, from: &str, to: &str) -> Result<bool, IndexerError> {
+        if crate::meta_skill::is_meta_skill_page(from) || crate::meta_skill::is_meta_skill_page(to)
+        {
+            return Err(IndexerError::MetaSkillProtected {
+                reason: "the mandatory `escurel` meta-skill cannot be moved".to_owned(),
+            });
+        }
+        if from == to {
+            return Ok(false);
+        }
+
+        let from_key = Key::new(self.tenant.as_str(), from.to_owned())?;
+        let to_key = Key::new(self.tenant.as_str(), to.to_owned())?;
+
+        let content = match self.store.read(&from_key).await {
+            Ok(bytes) => bytes,
+            Err(escurel_storage::StoreError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let body = std::str::from_utf8(&content)
+            .map_err(|_| IndexerError::NotUtf8 {
+                page_id: from.to_owned(),
+            })?
+            .to_owned();
+
+        if let Ok(existing) = self.store.read(&to_key).await {
+            let is_husk = std::str::from_utf8(&existing)
+                .map(is_archived)
+                .unwrap_or(false);
+            if !is_husk {
+                return Err(IndexerError::PageExists {
+                    page_id: to.to_owned(),
+                });
+            }
+        }
+
+        // Write the destination BEFORE removing the source. A failure between
+        // the two leaves the page readable at both ids, which a re-run
+        // resolves; the reverse order could lose it outright. `update_page`
+        // takes the write lock itself, so it is called outside one.
+        self.update_page(to, &body).await?;
+
+        {
+            let _write = self.write_lock.lock().await;
+            self.store.delete(&from_key).await?;
+            let mut conn = self.conn.lock().await;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM pages WHERE page_id = ?", params![from])?;
+            tx.execute("DELETE FROM blocks WHERE page_id = ?", params![from])?;
+            tx.execute("DELETE FROM links WHERE src_page = ?", params![from])?;
             tx.commit()?;
         }
         self.bump_mutation_epoch();

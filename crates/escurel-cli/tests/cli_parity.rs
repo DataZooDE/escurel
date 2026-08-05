@@ -60,6 +60,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("validate", Agent(&["page", "validate"])),
     ("update_page", Agent(&["page", "update"])),
     ("delete_page", Agent(&["page", "delete"])),
+    ("move_page", Agent(&["page", "move"])),
     ("append_message", Agent(&["chat", "append"])),
     ("list_messages", Agent(&["chat", "list"])),
     ("capture_event", Agent(&["event", "capture"])),

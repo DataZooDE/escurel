@@ -929,8 +929,8 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         // `apply_op` is a write; `open_session` debits a session
         // slot (semaphore, not a token bucket) inside the tool
         // body; `close_session` is a cleanup and does not debit.
-        "update_page" | "delete_page" | "apply_op" | "append_message" | "capture_event"
-        | "assign_event" => Dimension::Writes,
+        "update_page" | "delete_page" | "move_page" | "apply_op" | "append_message"
+        | "capture_event" | "assign_event" => Dimension::Writes,
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -997,6 +997,7 @@ fn wrap_tool_result(payload: Value) -> Value {
 const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     "update_page",
     "delete_page",
+    "move_page",
     "rebuild",
     "compact_lanes",
     "import_pack",
@@ -1321,6 +1322,9 @@ async fn dispatch_tools_call(
         }
         "delete_page" => {
             tool_delete_page(state, indexer, caller, state.write_acl, params.arguments).await
+        }
+        "move_page" => {
+            tool_move_page(state, indexer, caller, state.write_acl, params.arguments).await
         }
         "append_message" => {
             tool_append_message(indexer, caller, state.write_acl, params.arguments).await
@@ -2981,6 +2985,141 @@ struct DeletePageArgs {
     /// version the client last read. A stale value conflicts.
     #[serde(default)]
     base_version: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct MovePageArgs {
+    from: String,
+    to: String,
+}
+
+/// `move_page`: rename a page id, leaving nothing behind.
+///
+/// Distinct from `delete_page` on purpose. A delete is a *retraction* and
+/// keeps the markdown as the audit record; a move is a *rename* and must not,
+/// or every restructure litters the canonical store with husks. Restructuring
+/// one tenant's 59 instance ids with update+delete left 59 of them.
+async fn tool_move_page(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: MovePageArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("move_page: {e}")))?;
+
+    let Some(existing) = indexer
+        .read_page_markdown(&a.from)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("move_page read: {e}")))?
+    else {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_found",
+                "location": "from",
+                "message": format!("no page `{}` to move", a.from),
+            }],
+        }));
+    };
+
+    // Same gates as delete_page, evaluated against the stored page: a move is
+    // a write to both ids, so a backend- or layer-managed page is off limits.
+    if let Some(reason) = indexer
+        .backend_read_only_rejection(&a.from, &existing)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("move_page backend guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "backend_read_only",
+                "location": "frontmatter.backend_ref",
+                "message": reason,
+            }],
+        }));
+    }
+    if let Some(reason) = indexer
+        .layer_read_only_rejection(&a.from, &existing)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("move_page layer guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "layer_read_only",
+                "location": "frontmatter",
+                "message": reason,
+            }],
+        }));
+    }
+    if write_acl != crate::server::WriteAclMode::Off {
+        let allowed = indexer
+            .may_write_page(&caller, &a.from, &existing)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("move_page acl: {e}")))?;
+        if !allowed {
+            if write_acl == crate::server::WriteAclMode::Log {
+                tracing::warn!(
+                    subject = %caller.subject,
+                    page_id = %a.from,
+                    "write-ACL would deny this move (log mode) — allowing"
+                );
+            } else {
+                return Ok(json!({
+                    "ok": false,
+                    "issues": [{
+                        "severity": "error",
+                        "code": "forbidden",
+                        "location": "frontmatter",
+                        "message": format!(
+                            "move denied: caller `{}` does not own instance `{}`",
+                            caller.subject, a.from
+                        ),
+                    }],
+                }));
+            }
+        }
+    }
+
+    match indexer.move_page(&a.from, &a.to).await {
+        Ok(true) => {
+            state.metrics.inc_write(indexer.tenant(), "human");
+            Ok(json!({ "ok": true, "issues": [], "from": a.from, "to": a.to }))
+        }
+        Ok(false) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_found",
+                "location": "from",
+                "message": format!("no page `{}` to move", a.from),
+            }],
+        })),
+        Err(IndexerError::PageExists { page_id }) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "conflict",
+                "location": "to",
+                "message": format!("a live page already exists at `{page_id}`"),
+            }],
+        })),
+        Err(IndexerError::MetaSkillProtected { reason }) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "meta_skill_protected",
+                "location": "frontmatter",
+                "message": reason,
+            }],
+        })),
+        Err(e) => Err(JsonRpcError::internal(format!("move_page: {e}"))),
+    }
 }
 
 /// #300 `delete_page`: soft-delete (archive) a markdown page/instance. Mirrors
@@ -6042,6 +6181,28 @@ fn tools_list_payload() -> Value {
                     "properties": {
                         "page_id": { "type": "string" },
                         "base_version": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "move_page",
+                "Move a page to a new `page_id`, leaving NOTHING at the old one. \
+                 Use this to restructure ids; use `delete_page` to retract \
+                 knowledge. The difference matters: a delete retains the old \
+                 markdown as an audit record, which is correct for a retraction \
+                 and pure noise for a move — the content still exists, at the new \
+                 id. Wikilinks are unaffected either way: `[[skill::id]]` \
+                 addresses a page by skill and id, never by path. Returns \
+                 `{ok:false, issues:[{code:not_found}]}` for an absent source, and \
+                 `{code:conflict}` when a LIVE page already occupies `to` (an \
+                 archived husk there is replaced). The mandatory `escurel` \
+                 meta-skill cannot be moved.",
+                json!({
+                    "type": "object",
+                    "required": ["from", "to"],
+                    "properties": {
+                        "from": { "type": "string" },
+                        "to": { "type": "string" }
                     }
                 }),
             ),

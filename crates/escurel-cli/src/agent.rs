@@ -9,9 +9,9 @@ use clap::{Args, Subcommand};
 use escurel_client::{
     AbandonedPathsRequest, AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client,
     DeletePageRequest, ExpandRequest, ExpectationDriftRequest, ListEventsRequest, ListInboxRequest,
-    ListInstancesRequest, ListMessagesRequest, ListSkillsRequest, NeighboursRequest,
-    ProvenanceAncestryRequest, ProvenancePathRequest, QueryInstanceRequest, ResolveRequest,
-    RunStoredQueryRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
+    ListInstancesRequest, ListMessagesRequest, ListSkillsRequest, MovePageRequest,
+    NeighboursRequest, ProvenanceAncestryRequest, ProvenancePathRequest, QueryInstanceRequest,
+    ResolveRequest, RunStoredQueryRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
 };
 use serde_json::{Value, json};
 
@@ -77,6 +77,9 @@ pub enum PageCmd {
         #[arg(long)]
         base_version: Option<String>,
     },
+    /// Move a page to a new id, leaving nothing at the old one. Use this to
+    /// restructure ids; use `delete` to retract knowledge.
+    Move { from: String, to: String },
     /// Fetch the original retained bytes of a document-backed instance
     /// (base64 + content type) for a faithful preview.
     Blob { page_id: String },
@@ -361,6 +364,7 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
             page_id,
             base_version,
         }) => delete_page(client, page_id, base_version).await,
+        Command::Page(PageCmd::Move { from, to }) => move_page(client, from, to).await,
         Command::Page(PageCmd::Blob { page_id }) => fetch_blob(client, page_id).await,
         Command::Page(PageCmd::Snapshots { page_id }) => list_snapshots(client, page_id).await,
         Command::Link(LinkCmd::Neighbours(a)) => neighbours(client, a).await,
@@ -568,6 +572,20 @@ async fn update_page(client: &Client, page_id: String) -> Result<Value> {
             "location": opt(&i.location),
         })).collect::<Vec<_>>(),
         "new_version": opt(&resp.new_version),
+    }))
+}
+
+async fn move_page(client: &Client, from: String, to: String) -> Result<Value> {
+    let resp = client.move_page(MovePageRequest { from, to }).await?;
+    Ok(json!({
+        "ok": resp.ok,
+        "issues": resp.issues.into_iter().map(|i| json!({
+            "code": i.code,
+            "message": i.message,
+            "location": opt(&i.location),
+        })).collect::<Vec<_>>(),
+        "from": opt(&resp.from),
+        "to": opt(&resp.to),
     }))
 }
 

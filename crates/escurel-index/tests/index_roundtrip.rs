@@ -281,6 +281,106 @@ async fn audit_flags_markdown_not_in_duckdb() {
     assert!(drift.indexed_but_no_markdown.is_empty());
 }
 
+/// Moving a page must leave nothing behind.
+///
+/// `delete_page` is a *retraction*: it keeps the markdown as the audit
+/// record, which is right when knowledge is withdrawn. A **move** is a
+/// different event — the content still exists, at a new id — so retaining
+/// the old path is pure noise in the canonical store.
+///
+/// Restructuring a real tenant's 59 instance ids with update+delete left 59
+/// archived husks sitting next to the live pages in the lane, which is what
+/// this operation exists to avoid.
+#[tokio::test]
+async fn move_page_leaves_no_husk_at_the_old_id() {
+    let h = fresh_harness();
+    write_md(&h.store, SKILL_CUSTOMER.0, SKILL_CUSTOMER.1).await;
+    write_md(&h.store, INSTANCE_ACME.0, INSTANCE_ACME.1).await;
+    for (path, body) in [SKILL_CUSTOMER, INSTANCE_ACME] {
+        h.indexer.update_page(path, body).await.expect("update");
+    }
+
+    let dst = "markdown/instances/customer/acme-moved.md";
+    assert!(
+        h.indexer
+            .move_page(INSTANCE_ACME.0, dst)
+            .await
+            .expect("move_page"),
+        "the source existed, so it moved"
+    );
+
+    // The old lane file is GONE — not archived, gone. This is the whole
+    // difference from delete_page.
+    let old_key = Key::new(TENANT, INSTANCE_ACME.0.to_owned()).expect("key");
+    assert!(
+        h.store.read(&old_key).await.is_err(),
+        "no husk may remain at the old id"
+    );
+
+    // The content is intact at the new id, and indexed there.
+    let new_key = Key::new(TENANT, dst.to_owned()).expect("key");
+    let moved = h
+        .store
+        .read(&new_key)
+        .await
+        .expect("markdown at the new id");
+    assert_eq!(
+        std::str::from_utf8(&moved).expect("utf8"),
+        INSTANCE_ACME.1,
+        "the body is carried across byte for byte"
+    );
+
+    // And the audit is clean: no orphan row, no orphan file, no husk.
+    let drift = h.indexer.audit().await.expect("audit");
+    assert!(drift.is_clean(), "a move leaves no drift: {drift:?}");
+
+    // Survives a from-scratch rebuild — the lane is the source of truth.
+    h.indexer.rebuild().await.expect("rebuild");
+    let drift = h.indexer.audit().await.expect("audit after rebuild");
+    assert!(drift.is_clean(), "still clean after rebuild: {drift:?}");
+}
+
+/// Guards against the two ways a move can destroy data.
+#[tokio::test]
+async fn move_page_refuses_to_overwrite_and_reports_a_missing_source() {
+    let h = fresh_harness();
+    write_md(&h.store, SKILL_CUSTOMER.0, SKILL_CUSTOMER.1).await;
+    write_md(&h.store, INSTANCE_ACME.0, INSTANCE_ACME.1).await;
+    write_md(&h.store, INSTANCE_GLOBEX.0, INSTANCE_GLOBEX.1).await;
+    for (path, body) in [SKILL_CUSTOMER, INSTANCE_ACME, INSTANCE_GLOBEX] {
+        h.indexer.update_page(path, body).await.expect("update");
+    }
+
+    // A missing source is not an error, it is "nothing to do" — same shape
+    // as delete_page, so a re-run of a migration is free.
+    assert!(
+        !h.indexer
+            .move_page(
+                "markdown/instances/customer/nope.md",
+                "markdown/instances/customer/x.md"
+            )
+            .await
+            .expect("missing source is Ok(false)"),
+    );
+
+    // Moving onto a live page would silently destroy it. Refuse.
+    let err = h
+        .indexer
+        .move_page(INSTANCE_ACME.0, INSTANCE_GLOBEX.0)
+        .await
+        .expect_err("must not clobber an existing page");
+    assert!(
+        format!("{err}").contains("exists"),
+        "the error names the collision: {err}"
+    );
+    // ...and the source is untouched by the refusal.
+    let src_key = Key::new(TENANT, INSTANCE_ACME.0.to_owned()).expect("key");
+    assert!(
+        h.store.read(&src_key).await.is_ok(),
+        "a refused move leaves the source in place"
+    );
+}
+
 /// A soft-deleted page must not read as drift.
 ///
 /// `page delete` (#300) retracts a page from the index but retains its
