@@ -29,11 +29,17 @@ const MCP_ENDPOINT: &str = "http://127.0.0.1:8080/mcp";
 
 /// Write an executable stub that stands in for the `claude` CLI. It:
 ///   - dumps its argv (one per line) to `$argv_out`,
+///   - drains **stdin** to `$stdin_out` (this is where the prompt arrives),
 ///   - copies the `--mcp-config` file it was handed to `$mcp_out`,
 ///   - prints a canned success result envelope on stdout, exit 0.
 ///
 /// Returns the path to the stub binary.
-fn write_claude_stub(dir: &std::path::Path, argv_out: &str, mcp_out: &str) -> std::path::PathBuf {
+fn write_claude_stub(
+    dir: &std::path::Path,
+    argv_out: &str,
+    mcp_out: &str,
+    stdin_out: &str,
+) -> std::path::PathBuf {
     let stub = dir.join("claude-stub.sh");
     // The script walks its own args, recording each and snapshotting the file
     // that follows `--mcp-config`. POSIX sh keeps it portable on the test box.
@@ -49,6 +55,9 @@ for a in "$@"; do
   fi
   prev="$a"
 done
+# Drain stdin. The adapter must close it, or this blocks until the timeout —
+# which is itself part of the contract being asserted.
+cat > "{stdin_out}"
 printf '%s' '{{"type":"result","subtype":"success","is_error":false,"result":"folded the renewal event","num_turns":3,"session_id":"stub-1"}}'
 "#
     );
@@ -65,10 +74,12 @@ async fn claude_adapter_builds_invocation_and_parses_real_stub_output() {
     let dir = tempfile::tempdir().expect("tempdir");
     let argv_out = dir.path().join("argv.txt");
     let mcp_out = dir.path().join("mcp-config.json");
+    let stdin_out = dir.path().join("stdin.txt");
     let stub = write_claude_stub(
         dir.path(),
         argv_out.to_str().unwrap(),
         mcp_out.to_str().unwrap(),
+        stdin_out.to_str().unwrap(),
     );
 
     let task = TaskContext::for_test(
@@ -102,7 +113,20 @@ async fn claude_adapter_builds_invocation_and_parses_real_stub_output() {
         args[i + 1]
     };
 
-    assert_eq!(after("-p"), "INPUT renewal request for globex");
+    // The prompt travels on stdin, not argv. Linux caps a single argv string
+    // at 32 pages, so a packaged meeting transcript (150-220 KB) made spawn
+    // fail with E2BIG and the event permanently undispatchable.
+    assert!(args.contains(&"-p"), "headless print mode: {args:?}");
+    assert!(
+        !args.iter().any(|a| a.contains("INPUT renewal")),
+        "the input must NOT be in argv: {args:?}"
+    );
+    let stdin_seen = std::fs::read_to_string(&stdin_out).expect("stub recorded its stdin");
+    assert_eq!(
+        stdin_seen, "INPUT renewal request for globex",
+        "the adapter wrote the prompt to the child's stdin and closed it"
+    );
+
     assert_eq!(
         after("--append-system-prompt"),
         "SKILLBODY fold customer events"

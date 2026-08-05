@@ -46,6 +46,7 @@ fn write_codex_stub(
     argv_out: &str,
     cfg_out: &str,
     token_out: &str,
+    stdin_out: &str,
 ) -> std::path::PathBuf {
     let stub = dir.join("codex-stub.sh");
     // The script walks its own args, recording each and snapshotting the
@@ -70,6 +71,9 @@ done
 # Snapshot the per-run MCP registration + the bearer the adapter handed us.
 cp "${{CODEX_HOME}}/config.toml" "{cfg_out}"
 printf '%s' "${{ESCUREL_MCP_BEARER:-}}" > "{token_out}"
+# Drain stdin — this is where the prompt arrives. If the adapter fails to
+# close it, this blocks until the run timeout, which is part of the contract.
+cat > "{stdin_out}"
 # The agent's final message lands in the -o file (clean to parse).
 if [ -n "$out_file" ]; then
   printf '%s' 'folded the renewal event into globex' > "$out_file"
@@ -94,11 +98,13 @@ async fn codex_adapter_builds_invocation_and_parses_real_stub_output() {
     let argv_out = dir.path().join("argv.txt");
     let cfg_out = dir.path().join("config.toml");
     let token_out = dir.path().join("token.txt");
+    let stdin_out = dir.path().join("stdin.txt");
     let stub = write_codex_stub(
         dir.path(),
         argv_out.to_str().unwrap(),
         cfg_out.to_str().unwrap(),
         token_out.to_str().unwrap(),
+        stdin_out.to_str().unwrap(),
     );
 
     let task = TaskContext::for_test(
@@ -140,8 +146,21 @@ async fn codex_adapter_builds_invocation_and_parses_real_stub_output() {
 
     // First positional is the `exec` subcommand.
     assert_eq!(args.first(), Some(&"exec"), "exec subcommand: {args:?}");
+    // The prompt travels on stdin, marked by `-` in the PROMPT position.
+    // Linux caps a single argv string at 32 pages, so a packaged meeting
+    // transcript (150-220 KB) made spawn fail with E2BIG.
+    assert_eq!(
+        args.get(1),
+        Some(&"-"),
+        "`-` stands in for the prompt: {args:?}"
+    );
+    assert!(
+        !args.iter().any(|a| a.contains("INPUT renewal")),
+        "the input must NOT be in argv: {args:?}"
+    );
     // The prompt carries BOTH the instructions framing and the input.
-    let prompt = after("exec");
+    let prompt_owned = std::fs::read_to_string(&stdin_out).expect("stub recorded its stdin");
+    let prompt = prompt_owned.as_str();
     assert!(
         prompt.contains("SKILLBODY fold customer events"),
         "prompt carries the instructions: {prompt:?}"
