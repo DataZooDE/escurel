@@ -43,10 +43,6 @@ gcs = ["escurel-storage/gcs"]
 #     Shared Drive as the markdown corpus) is what it was built for.
 duckvfs = ["escurel-storage/duckvfs"]
 embeddinggemma = ["escurel-embed/candle"]
-#   --features live-substrates → the paper's §6.7 five-substrate measurement
-#     harness (tests/substrate_matrix.rs). Needs Docker for the Postgres
-#     container, like the MinIO S3 tests.
-live-substrates = []
 #   --features rerank        → candle XLM-RoBERTa cross-encoder reranker
 #     (issue #215). Opt-in build (heavy candle compile + ~GB model at boot);
 #     when built, the runtime default is rerank=bge ("default-on where built").
@@ -119,10 +115,8 @@ wiremock = "0.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 # Live Postgres testcontainer for the `live-ducklake` chat re-homing test
-# (tests/reader_role_chat.rs, DuckLake PR 8) — mirrors escurel-index's own
-# `live-ducklake` dev-dependency.
+# (tests/reader_role_chat.rs, DuckLake PR 8).
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
-tokio-postgres = "0.7"
 
 [lints]
 workspace = true
