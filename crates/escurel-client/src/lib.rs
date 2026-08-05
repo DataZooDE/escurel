@@ -71,10 +71,11 @@ pub use escurel_types::{
     ListInstancesResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
     ListSkillsResponse, LiveAck, LiveOp, MovePageRequest, MovePageResponse, NeighboursRequest,
     NeighboursResponse, PageRef, ProvenanceAncestryRequest, ProvenanceAncestryResponse,
-    ProvenancePathRequest, ProvenancePathResponse, QueryInstanceRequest, QueryInstanceResponse,
-    ResolveRequest, ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse, SearchHit,
-    SearchRequest, SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest,
-    UpdatePageResponse, ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
+    ProvenancePathRequest, ProvenancePathResponse, PurgePageRequest, PurgePageResponse,
+    QueryInstanceRequest, QueryInstanceResponse, ResolveRequest, ResolveResponse,
+    RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill,
+    StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest,
+    ValidateResponse, ValidationIssue, WikilinkParsed,
 };
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
@@ -353,6 +354,14 @@ impl Client {
             args["base_version"] = json!(req.base_version);
         }
         self.transport.call_typed("delete_page", args).await
+    }
+
+    /// Permanently remove an already-archived page, finishing what
+    /// [`Self::delete_page`] started. Refuses a live page.
+    pub async fn purge_page(&self, req: PurgePageRequest) -> Result<PurgePageResponse, Error> {
+        self.transport
+            .call_typed("purge_page", json!({ "page_id": req.page_id }))
+            .await
     }
 
     /// Move a page to a new `page_id`, leaving nothing at the old one.

@@ -550,6 +550,22 @@ pub struct DeletePageResponse {
     pub page_id: String,
 }
 
+/// `purge_page`: permanently remove an already-archived page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PurgePageRequest {
+    pub page_id: String,
+}
+
+/// MCP wire keys: `ok`, `issues`, `page_id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PurgePageResponse {
+    pub ok: bool,
+    pub issues: Vec<ValidationIssue>,
+    pub page_id: String,
+}
+
 /// `move_page`: rename a page id, leaving nothing at the old one.
 ///
 /// Distinct from `delete_page`, which *retracts* and deliberately retains the
