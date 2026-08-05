@@ -929,8 +929,8 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         // `apply_op` is a write; `open_session` debits a session
         // slot (semaphore, not a token bucket) inside the tool
         // body; `close_session` is a cleanup and does not debit.
-        "update_page" | "delete_page" | "move_page" | "apply_op" | "append_message"
-        | "capture_event" | "assign_event" => Dimension::Writes,
+        "update_page" | "delete_page" | "move_page" | "purge_page" | "apply_op"
+        | "append_message" | "capture_event" | "assign_event" => Dimension::Writes,
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -998,6 +998,7 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     "update_page",
     "delete_page",
     "move_page",
+    "purge_page",
     "rebuild",
     "compact_lanes",
     "import_pack",
@@ -1326,6 +1327,7 @@ async fn dispatch_tools_call(
         "move_page" => {
             tool_move_page(state, indexer, caller, state.write_acl, params.arguments).await
         }
+        "purge_page" => tool_purge_page(state, indexer, params.arguments).await,
         "append_message" => {
             tool_append_message(indexer, caller, state.write_acl, params.arguments).await
         }
@@ -2985,6 +2987,60 @@ struct DeletePageArgs {
     /// version the client last read. A stale value conflicts.
     #[serde(default)]
     base_version: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct PurgePageArgs {
+    page_id: String,
+}
+
+/// `purge_page`: hard-remove an archived husk. Admin-shaped rather than
+/// agent-shaped — it destroys the audit record a soft delete kept, so it is
+/// gated on the write role and refuses anything still live.
+async fn tool_purge_page(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: PurgePageArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("purge_page: {e}")))?;
+
+    match indexer.purge_page(&a.page_id).await {
+        Ok(true) => {
+            state.metrics.inc_write(indexer.tenant(), "human");
+            Ok(json!({ "ok": true, "issues": [], "page_id": a.page_id }))
+        }
+        Ok(false) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_found",
+                "location": "page_id",
+                "message": format!("no page `{}` to purge", a.page_id),
+            }],
+        })),
+        Err(IndexerError::NotArchived { page_id }) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_archived",
+                "location": "page_id",
+                "message": format!(
+                    "`{page_id}` is live; retract it with delete_page before purging"
+                ),
+            }],
+        })),
+        Err(IndexerError::MetaSkillProtected { reason }) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "meta_skill_protected",
+                "location": "frontmatter",
+                "message": reason,
+            }],
+        })),
+        Err(e) => Err(JsonRpcError::internal(format!("purge_page: {e}"))),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -6182,6 +6238,22 @@ fn tools_list_payload() -> Value {
                         "page_id": { "type": "string" },
                         "base_version": { "type": "string" }
                     }
+                }),
+            ),
+            tool_entry(
+                "purge_page",
+                "Permanently remove an ALREADY-ARCHIVED page from the lane, \
+                 finishing what `delete_page` started. `delete_page` retracts \
+                 and retains the markdown as an audit record; this gives that \
+                 record up. Refuses a LIVE page (`{code:not_archived}`) — purging \
+                 is not a shortcut past retraction. Returns \
+                 `{ok:false, issues:[{code:not_found}]}` for an absent page, so a \
+                 sweep is re-runnable. The mandatory `escurel` meta-skill cannot \
+                 be purged.",
+                json!({
+                    "type": "object",
+                    "required": ["page_id"],
+                    "properties": { "page_id": { "type": "string" } }
                 }),
             ),
             tool_entry(

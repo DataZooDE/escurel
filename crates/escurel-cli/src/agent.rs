@@ -10,8 +10,9 @@ use escurel_client::{
     AbandonedPathsRequest, AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client,
     DeletePageRequest, ExpandRequest, ExpectationDriftRequest, ListEventsRequest, ListInboxRequest,
     ListInstancesRequest, ListMessagesRequest, ListSkillsRequest, MovePageRequest,
-    NeighboursRequest, ProvenanceAncestryRequest, ProvenancePathRequest, QueryInstanceRequest,
-    ResolveRequest, RunStoredQueryRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
+    NeighboursRequest, ProvenanceAncestryRequest, ProvenancePathRequest, PurgePageRequest,
+    QueryInstanceRequest, ResolveRequest, RunStoredQueryRequest, SearchRequest, UpdatePageRequest,
+    ValidateRequest,
 };
 use serde_json::{Value, json};
 
@@ -80,6 +81,9 @@ pub enum PageCmd {
     /// Move a page to a new id, leaving nothing at the old one. Use this to
     /// restructure ids; use `delete` to retract knowledge.
     Move { from: String, to: String },
+    /// Permanently remove an already-archived page, finishing what `delete`
+    /// started. Refuses a live page.
+    Purge { page_id: String },
     /// Fetch the original retained bytes of a document-backed instance
     /// (base64 + content type) for a faithful preview.
     Blob { page_id: String },
@@ -365,6 +369,7 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
             base_version,
         }) => delete_page(client, page_id, base_version).await,
         Command::Page(PageCmd::Move { from, to }) => move_page(client, from, to).await,
+        Command::Page(PageCmd::Purge { page_id }) => purge_page(client, page_id).await,
         Command::Page(PageCmd::Blob { page_id }) => fetch_blob(client, page_id).await,
         Command::Page(PageCmd::Snapshots { page_id }) => list_snapshots(client, page_id).await,
         Command::Link(LinkCmd::Neighbours(a)) => neighbours(client, a).await,
@@ -572,6 +577,19 @@ async fn update_page(client: &Client, page_id: String) -> Result<Value> {
             "location": opt(&i.location),
         })).collect::<Vec<_>>(),
         "new_version": opt(&resp.new_version),
+    }))
+}
+
+async fn purge_page(client: &Client, page_id: String) -> Result<Value> {
+    let resp = client.purge_page(PurgePageRequest { page_id }).await?;
+    Ok(json!({
+        "ok": resp.ok,
+        "issues": resp.issues.into_iter().map(|i| json!({
+            "code": i.code,
+            "message": i.message,
+            "location": opt(&i.location),
+        })).collect::<Vec<_>>(),
+        "page_id": opt(&resp.page_id),
     }))
 }
 

@@ -281,6 +281,73 @@ async fn audit_flags_markdown_not_in_duckdb() {
     assert!(drift.indexed_but_no_markdown.is_empty());
 }
 
+/// Purging finishes what a soft delete started.
+///
+/// `delete_page` retracts and RETAINS the markdown as an audit record. That
+/// is right for a retraction, and it is what an id restructure done as
+/// update+delete leaves behind: on a real tenant, 64 archived husks sitting
+/// beside the live pages in the canonical store, visible to anyone browsing
+/// the Drive folder.
+///
+/// `purge_page` removes an already-archived page for good. It refuses a LIVE
+/// page outright — purging is not a shortcut past retraction, and the audit
+/// record must be deliberately given up, never lost by a typo.
+#[tokio::test]
+async fn purge_page_removes_an_archived_husk_but_refuses_a_live_page() {
+    let h = fresh_harness();
+    write_md(&h.store, SKILL_CUSTOMER.0, SKILL_CUSTOMER.1).await;
+    write_md(&h.store, INSTANCE_ACME.0, INSTANCE_ACME.1).await;
+    for (path, body) in [SKILL_CUSTOMER, INSTANCE_ACME] {
+        h.indexer.update_page(path, body).await.expect("update");
+    }
+
+    // A live page may not be purged — retract it first, on purpose.
+    let err = h
+        .indexer
+        .purge_page(INSTANCE_ACME.0)
+        .await
+        .expect_err("a live page must not be purgeable");
+    assert!(
+        format!("{err}").contains("not archived"),
+        "the error says why: {err}"
+    );
+    let key = Key::new(TENANT, INSTANCE_ACME.0.to_owned()).expect("key");
+    assert!(
+        h.store.read(&key).await.is_ok(),
+        "a refused purge leaves the page in place"
+    );
+
+    // Retract, then purge.
+    h.indexer
+        .delete_page(INSTANCE_ACME.0)
+        .await
+        .expect("delete");
+    assert!(
+        h.store.read(&key).await.is_ok(),
+        "soft delete retains the husk"
+    );
+    assert!(
+        h.indexer.purge_page(INSTANCE_ACME.0).await.expect("purge"),
+        "the husk existed, so it was purged"
+    );
+    assert!(
+        h.store.read(&key).await.is_err(),
+        "the husk is gone from the lane"
+    );
+
+    // Absent page: nothing to do, not an error — so a sweep is re-runnable.
+    assert!(
+        !h.indexer
+            .purge_page(INSTANCE_ACME.0)
+            .await
+            .expect("second purge"),
+        "purging an absent page is Ok(false)"
+    );
+
+    let drift = h.indexer.audit().await.expect("audit");
+    assert!(drift.is_clean(), "a purge leaves no drift: {drift:?}");
+}
+
 /// Moving a page must leave nothing behind.
 ///
 /// `delete_page` is a *retraction*: it keeps the markdown as the audit
