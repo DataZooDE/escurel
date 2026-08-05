@@ -477,6 +477,19 @@ fn require_admin(role: Option<Role>) -> Result<(), JsonRpcError> {
 /// Serialize an `escurel_types` response struct to a JSON-RPC result
 /// value. The escurel-types structs are the wire contract; a
 /// serialization failure here is a server bug, surfaced as internal.
+/// Deserialize a tool's arguments, reporting a parse failure as
+/// `invalid_params` tagged with the tool name.
+///
+/// Every tool handler opened with the same two-line incantation; naming it
+/// once means a handler's first line is about the tool rather than about
+/// serde. See `docs/notes/complexity-reduction-plan.md` R4.
+fn parse_args<T: serde::de::DeserializeOwned>(
+    args: Value,
+    tool: &str,
+) -> Result<T, JsonRpcError> {
+    serde_json::from_value(args).map_err(|e| JsonRpcError::invalid_params(format!("{tool}: {e}")))
+}
+
 fn to_value<T: serde::Serialize>(resp: T) -> Result<Value, JsonRpcError> {
     serde_json::to_value(resp)
         .map_err(|e| JsonRpcError::internal(format!("serialize response: {e}")))
@@ -1037,8 +1050,7 @@ async fn tool_list_instances(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: ListInstancesArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("list_instances: {e}")))?;
+    let a: ListInstancesArgs = parse_args(args, "list_instances")?;
     let order = match a.order_by.as_deref() {
         Some(s) => match s.to_ascii_lowercase().as_str() {
             "at asc" | "at_asc" => Some(OrderDir::Asc),
@@ -1099,8 +1111,7 @@ async fn tool_resolve(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: ResolveArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("resolve: {e}")))?;
+    let a: ResolveArgs = parse_args(args, "resolve")?;
     let mut resolved = indexer
         .resolve(&a.wikilink, a.scenario.as_deref())
         .await
@@ -1168,8 +1179,7 @@ async fn tool_expand(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: ExpandArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("expand: {e}")))?;
+    let a: ExpandArgs = parse_args(args, "expand")?;
     let out = indexer
         .expand(&a.page_id, a.as_of.as_deref(), a.scenario.as_deref())
         .await
@@ -1317,8 +1327,7 @@ async fn tool_fetch_blob(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: FetchBlobArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("fetch_blob: {e}")))?;
+    let a: FetchBlobArgs = parse_args(args, "fetch_blob")?;
     let out = indexer
         .expand(&a.page_id, None, None)
         .await
@@ -1486,8 +1495,7 @@ async fn tool_neighbours(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: NeighboursArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("neighbours: {e}")))?;
+    let a: NeighboursArgs = parse_args(args, "neighbours")?;
     let dir = match a.direction.as_deref().unwrap_or("both") {
         "in" => Direction::In,
         "out" => Direction::Out,
@@ -1567,8 +1575,7 @@ async fn tool_provenance_ancestry(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: ProvenanceAncestryArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("provenance_ancestry: {e}")))?;
+    let a: ProvenanceAncestryArgs = parse_args(args, "provenance_ancestry")?;
     let dir = match a.direction.as_deref().unwrap_or("up") {
         "up" => GraphDir::Up,
         "down" => GraphDir::Down,
@@ -1675,8 +1682,7 @@ async fn tool_expectation_drift(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: ExpectationDriftArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("expectation_drift: {e}")))?;
+    let a: ExpectationDriftArgs = parse_args(args, "expectation_drift")?;
     let skill = a.skill.filter(|s| !s.is_empty());
     let rows = indexer
         .expectation_drift(skill.as_deref())
@@ -1724,8 +1730,7 @@ async fn tool_abandoned_paths(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: AbandonedPathsArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("abandoned_paths: {e}")))?;
+    let a: AbandonedPathsArgs = parse_args(args, "abandoned_paths")?;
     let skill = a.skill.filter(|s| !s.is_empty());
     let nodes = indexer
         .abandoned_paths(skill.as_deref())
@@ -1758,8 +1763,7 @@ async fn tool_provenance_path(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: ProvenancePathArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("provenance_path: {e}")))?;
+    let a: ProvenancePathArgs = parse_args(args, "provenance_path")?;
     let dir = match a.direction.as_deref().unwrap_or("up") {
         "up" => GraphDir::Up,
         "down" => GraphDir::Down,
@@ -1875,8 +1879,7 @@ async fn tool_search(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: SearchArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("search: {e}")))?;
+    let a: SearchArgs = parse_args(args, "search")?;
     let pt = match a.page_type.as_deref() {
         None | Some("any") => None,
         Some("skill") => Some(PageType::Skill),
@@ -2064,8 +2067,7 @@ struct RunStoredQueryArgs {
 }
 
 async fn tool_run_stored_query(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
-    let a: RunStoredQueryArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("run_stored_query: {e}")))?;
+    let a: RunStoredQueryArgs = parse_args(args, "run_stored_query")?;
     let out = indexer
         .run_stored_query(&a.query_id, &a.params)
         .await
@@ -2104,8 +2106,7 @@ async fn tool_query_instance(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: QueryInstanceArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("query_instance: {e}")))?;
+    let a: QueryInstanceArgs = parse_args(args, "query_instance")?;
     let query_id = normalize_query_ref(&a.query_ref);
     let out = indexer
         .query_instance(&query_id, &a.params, &caller)
@@ -2129,8 +2130,7 @@ struct ValidateArgs {
 }
 
 async fn tool_validate(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
-    let a: ValidateArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("validate: {e}")))?;
+    let a: ValidateArgs = parse_args(args, "validate")?;
     let issues = indexer
         .validate(a.as_page_id.as_deref(), &a.content)
         .await
@@ -2183,8 +2183,7 @@ async fn tool_update_page(
     write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: UpdatePageArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("update_page: {e}")))?;
+    let a: UpdatePageArgs = parse_args(args, "update_page")?;
 
     // Read-only-backend guard (REQ-BK-03): reject an attempt to write backend
     // data for a non-writable backend (creating a sql_view/document instance
@@ -2527,8 +2526,7 @@ async fn tool_move_page(
     write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: MovePageArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("move_page: {e}")))?;
+    let a: MovePageArgs = parse_args(args, "move_page")?;
 
     let Some(existing) = indexer
         .read_page_markdown(&a.from)
@@ -2655,8 +2653,7 @@ async fn tool_delete_page(
     write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: DeletePageArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("delete_page: {e}")))?;
+    let a: DeletePageArgs = parse_args(args, "delete_page")?;
 
     // Fetch the stored markdown; a missing page is a typed `not_found`, not a
     // 500. Idempotent: a second delete (page already retracted) also
@@ -2911,8 +2908,7 @@ async fn tool_append_message(
     write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: AppendMessageArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("append_message: {e}")))?;
+    let a: AppendMessageArgs = parse_args(args, "append_message")?;
 
     // Chat-surface ACL: only the chat group's owner (or admin) may append.
     if write_acl != crate::server::WriteAclMode::Off {
@@ -2979,8 +2975,7 @@ async fn tool_list_messages(
     write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: ListMessagesArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("list_messages: {e}")))?;
+    let a: ListMessagesArgs = parse_args(args, "list_messages")?;
 
     // Chat-surface ACL: only the chat group's owner (or admin) may read its
     // history. A denial returns an EMPTY page (non-leaking, like expand→null),
@@ -3086,8 +3081,7 @@ async fn tool_capture_event(
     webhook: Option<&crate::webhook::Webhook>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: CaptureEventArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("capture_event: {e}")))?;
+    let a: CaptureEventArgs = parse_args(args, "capture_event")?;
     let stored = indexer
         .capture_event(NewEvent {
             event_id: a.event_id,
@@ -3175,8 +3169,7 @@ struct ListInboxArgs {
 }
 
 async fn tool_list_inbox(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
-    let a: ListInboxArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("list_inbox: {e}")))?;
+    let a: ListInboxArgs = parse_args(args, "list_inbox")?;
     let events = indexer
         .list_inbox(a.limit)
         .await
@@ -3197,8 +3190,7 @@ struct ListEventsArgs {
 }
 
 async fn tool_list_events(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
-    let a: ListEventsArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("list_events: {e}")))?;
+    let a: ListEventsArgs = parse_args(args, "list_events")?;
 
     // `event_id` answers "where did this event go?" — the question an
     // instance-scoped listing cannot ask, because you would need the answer
@@ -3232,8 +3224,7 @@ struct ListSnapshotsArgs {
 }
 
 async fn tool_list_snapshots(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
-    let a: ListSnapshotsArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("list_snapshots: {e}")))?;
+    let a: ListSnapshotsArgs = parse_args(args, "list_snapshots")?;
     let snapshots = indexer
         .list_snapshots(&a.page_id)
         .await
@@ -3248,8 +3239,7 @@ struct AssignEventArgs {
 }
 
 async fn tool_assign_event(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
-    let a: AssignEventArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("assign_event: {e}")))?;
+    let a: AssignEventArgs = parse_args(args, "assign_event")?;
     indexer
         .assign_event(&a.event_id, &a.instance_page_id)
         .await
@@ -3300,8 +3290,7 @@ async fn tool_open_session(
     tenant_id: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: OpenSessionArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("open_session: {e}")))?;
+    let a: OpenSessionArgs = parse_args(args, "open_session")?;
     let backend = backend
         .ok_or_else(|| JsonRpcError::internal("live CRDT mode not enabled on this server"))?;
 
@@ -3388,8 +3377,7 @@ async fn tool_apply_op(
     sessions: Arc<SessionManager>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: ApplyOpArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("apply_op: {e}")))?;
+    let a: ApplyOpArgs = parse_args(args, "apply_op")?;
     if backend.is_none() {
         return Err(JsonRpcError::internal(
             "live CRDT mode not enabled on this server",
@@ -3425,8 +3413,7 @@ async fn tool_close_session(
     sessions: Arc<SessionManager>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: CloseSessionArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("close_session: {e}")))?;
+    let a: CloseSessionArgs = parse_args(args, "close_session")?;
     if backend.is_none() {
         return Err(JsonRpcError::internal(
             "live CRDT mode not enabled on this server",

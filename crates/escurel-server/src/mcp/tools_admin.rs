@@ -22,8 +22,7 @@ pub(super) fn tool_admin_quota(
     // Honour the requested tenant: reject a `tenant_id` arg that names
     // a different tenant than this gateway serves, rather than silently
     // returning the caller's own snapshot.
-    let req: TenantIdArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("admin_quota: {e}")))?;
+    let req: TenantIdArgs = parse_args(args, "admin_quota")?;
     if let Some(handle) = state.indexer.as_ref() {
         ensure_tenant_matches(&handle.current(), &req.tenant_id)?;
     }
@@ -53,8 +52,7 @@ pub(super) fn tool_admin_webhook_deliveries(
     state: &crate::server::AppState,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: WebhookDeliveriesArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("admin_webhook_deliveries: {e}")))?;
+    let a: WebhookDeliveriesArgs = parse_args(args, "admin_webhook_deliveries")?;
     let limit = a.limit.unwrap_or(100).min(200);
     let (configured, records) = match state.webhook.as_ref() {
         Some(w) => (true, w.recent(limit)),
@@ -79,8 +77,7 @@ pub(super) async fn tool_admin_audit(
     indexer: &Indexer,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let req: TenantIdArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("admin_audit: {e}")))?;
+    let req: TenantIdArgs = parse_args(args, "admin_audit")?;
     ensure_tenant_matches(indexer, &req.tenant_id)?;
     let drift = indexer
         .audit()
@@ -107,8 +104,7 @@ pub(super) async fn tool_admin_index_query(
     indexer: &Indexer,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: AdminIndexQueryArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("admin_index_query: {e}")))?;
+    let a: AdminIndexQueryArgs = parse_args(args, "admin_index_query")?;
     let res = indexer
         .inspect_table(&a.table, a.limit)
         .await
@@ -175,8 +171,7 @@ pub(super) async fn tool_admin_lane_keys(
     indexer: &Indexer,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: AdminLaneKeysArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("admin_lane_keys: {e}")))?;
+    let a: AdminLaneKeysArgs = parse_args(args, "admin_lane_keys")?;
     lane_name_ok(&a.lane)?;
     let store = indexer.lane_store();
     let prefix = Key::new(indexer.tenant(), a.prefix)
@@ -209,8 +204,7 @@ pub(super) async fn tool_admin_lane_blob(
     indexer: &Indexer,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: AdminLaneBlobArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("admin_lane_blob: {e}")))?;
+    let a: AdminLaneBlobArgs = parse_args(args, "admin_lane_blob")?;
     lane_name_ok(&a.lane)?;
     let store = indexer.lane_store();
     let key = Key::new(indexer.tenant(), a.key.clone())
@@ -249,8 +243,7 @@ pub(super) async fn tool_admin_delete_chat_history(
     indexer: &Indexer,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: AdminDeleteChatHistoryArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("admin_delete_chat_history: {e}")))?;
+    let a: AdminDeleteChatHistoryArgs = parse_args(args, "admin_delete_chat_history")?;
     let deleted = indexer
         .delete_chat_history(
             a.chat_group_id.as_deref(),
@@ -278,8 +271,7 @@ pub(super) async fn tool_add_group_member(
     added_by: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: GroupMemberArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("add_group_member: {e}")))?;
+    let a: GroupMemberArgs = parse_args(args, "add_group_member")?;
     indexer
         .add_group_member(&a.group_id, &a.subject, Some(added_by))
         .await
@@ -291,8 +283,7 @@ pub(super) async fn tool_remove_group_member(
     indexer: &Indexer,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: GroupMemberArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("remove_group_member: {e}")))?;
+    let a: GroupMemberArgs = parse_args(args, "remove_group_member")?;
     indexer
         .remove_group_member(&a.group_id, &a.subject)
         .await
@@ -304,8 +295,7 @@ pub(super) async fn tool_list_group_members(
     indexer: &Indexer,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: ListGroupMembersArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("list_group_members: {e}")))?;
+    let a: ListGroupMembersArgs = parse_args(args, "list_group_members")?;
     let members = indexer
         .list_group_members(&a.group_id)
         .await
@@ -344,8 +334,7 @@ pub(super) async fn tool_register_credential(
     created_by: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: RegisterCredentialArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("register_credential: {e}")))?;
+    let a: RegisterCredentialArgs = parse_args(args, "register_credential")?;
     if a.name.is_empty() || a.connector.is_empty() || a.secret.is_empty() {
         return Err(JsonRpcError::invalid_params(
             "name, connector, and secret are all required".to_owned(),
@@ -383,8 +372,7 @@ pub(super) async fn tool_delete_credential(
     indexer: &Indexer,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: CredentialNameArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("delete_credential: {e}")))?;
+    let a: CredentialNameArgs = parse_args(args, "delete_credential")?;
     indexer
         .delete_credential(&a.name)
         .await
@@ -427,8 +415,7 @@ pub(super) async fn tool_create_sql_instance(
     indexer: &std::sync::Arc<Indexer>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: CreateSqlInstanceArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("create_sql_instance: {e}")))?;
+    let a: CreateSqlInstanceArgs = parse_args(args, "create_sql_instance")?;
     let binding = indexer
         .skill_backend(&a.skill)
         .await
@@ -477,8 +464,7 @@ pub(super) async fn tool_register_endpoint(
     created_by: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: RegisterEndpointArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("register_endpoint: {e}")))?;
+    let a: RegisterEndpointArgs = parse_args(args, "register_endpoint")?;
     if a.name.is_empty() || a.base_url.is_empty() {
         return Err(JsonRpcError::invalid_params(
             "name and base_url are required".to_owned(),
@@ -556,8 +542,7 @@ pub(super) async fn tool_delete_endpoint(
     struct A {
         name: String,
     }
-    let a: A = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("delete_endpoint: {e}")))?;
+    let a: A = parse_args(args, "delete_endpoint")?;
     indexer
         .delete_endpoint(&a.name)
         .await
@@ -611,8 +596,7 @@ pub(super) async fn tool_create_remote_instance(
     indexer: &Indexer,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: CreateRemoteInstanceArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("create_remote_instance: {e}")))?;
+    let a: CreateRemoteInstanceArgs = parse_args(args, "create_remote_instance")?;
     let binding = indexer
         .skill_backend(&a.skill)
         .await
@@ -682,8 +666,7 @@ pub(super) async fn tool_write_instance(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: WriteInstanceArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("write_instance: {e}")))?;
+    let a: WriteInstanceArgs = parse_args(args, "write_instance")?;
     let link = if a.reference.starts_with("[[") {
         a.reference.clone()
     } else {
@@ -821,8 +804,7 @@ pub(super) async fn tool_tenant_create(
     state: &AppState,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: TenantSpecArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_create: {e}")))?;
+    let a: TenantSpecArgs = parse_args(args, "tenant_create")?;
     let store = tenant_store(state)?.clone();
     let spec = AdminTenantSpec {
         tenant_id: a.tenant_id,
@@ -846,8 +828,7 @@ pub(super) async fn tool_tenant_list(state: &AppState) -> Result<Value, JsonRpcE
 }
 
 pub(super) async fn tool_tenant_get(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
-    let a: TenantIdArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_get: {e}")))?;
+    let a: TenantIdArgs = parse_args(args, "tenant_get")?;
     let store = tenant_store(state)?.clone();
     match store.get(&a.tenant_id).await.map_err(map_admin_err)? {
         None => Err(JsonRpcError::invalid_params(format!(
@@ -864,8 +845,7 @@ pub(super) async fn tool_tenant_update(
     state: &AppState,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: TenantSpecArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_update: {e}")))?;
+    let a: TenantSpecArgs = parse_args(args, "tenant_update")?;
     let store = tenant_store(state)?.clone();
     // Partial update (#247): read the current spec, overlay the provided
     // fields, write it back.
@@ -929,8 +909,7 @@ pub(super) async fn tool_tenant_delete(
     state: &AppState,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: TenantDeleteArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_delete: {e}")))?;
+    let a: TenantDeleteArgs = parse_args(args, "tenant_delete")?;
     // Fail closed on the destructive wipe unless the caller echoes the tenant
     // id back as `confirm` — guards against a fat-fingered tenant_id.
     if a.confirm.as_deref() != Some(a.tenant_id.as_str()) {
@@ -962,8 +941,7 @@ pub(super) struct ExportPackArgs {
 /// signed, always) and when any selected page trips the deterministic
 /// secret scrub (INV-SECRETFREE).
 pub(super) async fn tool_export_pack(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
-    let a: ExportPackArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("export_pack: {e}")))?;
+    let a: ExportPackArgs = parse_args(args, "export_pack")?;
     let Some(secret) = state.pack_secret.clone() else {
         return Err(JsonRpcError::internal(
             "pack_secret_not_configured: export_pack refuses to build an unsigned \
@@ -1054,8 +1032,7 @@ pub(super) struct ImportPackArgs {
 /// caller supplies the bytes, so an air-gapped tarball import and a
 /// live pull are the same call (INV-AIRGAP).
 pub(super) async fn tool_import_pack(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
-    let a: ImportPackArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("import_pack: {e}")))?;
+    let a: ImportPackArgs = parse_args(args, "import_pack")?;
     let Some(secret) = state.pack_secret.clone() else {
         return Err(JsonRpcError::internal(
             "pack_secret_not_configured: import_pack cannot verify a pack without \
@@ -1276,8 +1253,7 @@ pub(super) async fn tool_submit_promotion(
     subject: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: SubmitPromotionArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("submit_promotion: {e}")))?;
+    let a: SubmitPromotionArgs = parse_args(args, "submit_promotion")?;
     let Some(secret) = state.pack_secret.clone() else {
         return Err(JsonRpcError::internal(
             "pack_secret_not_configured: submit_promotion signs its candidate; set \
@@ -1401,8 +1377,7 @@ pub(super) struct RebasePackArgs {
 /// pack validates before the first write); orphaned base pages the new
 /// version no longer ships are removed; the pin moves LAST.
 pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
-    let a: RebasePackArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("rebase_pack: {e}")))?;
+    let a: RebasePackArgs = parse_args(args, "rebase_pack")?;
     let Some(secret) = state.pack_secret.clone() else {
         return Err(JsonRpcError::internal(
             "pack_secret_not_configured: rebase_pack cannot verify a pack without \
@@ -1713,8 +1688,7 @@ pub(super) async fn tool_unsubscribe_pack(
     state: &AppState,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: UnsubscribePackArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("unsubscribe_pack: {e}")))?;
+    let a: UnsubscribePackArgs = parse_args(args, "unsubscribe_pack")?;
     if !crate::pack::is_safe_pack_token(&a.pack_id) {
         return Err(JsonRpcError::internal(
             "pack_id_invalid: not a safe pack id",
@@ -1787,8 +1761,7 @@ pub(super) async fn tool_tenant_export(
     state: &AppState,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: TenantIdArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_export: {e}")))?;
+    let a: TenantIdArgs = parse_args(args, "tenant_export")?;
     let store = tenant_store(state)?.clone();
     // Validate before constructing on-disk paths — `tenant_dir` is
     // filesystem-direct and would happily resolve `../other`.
@@ -1858,8 +1831,7 @@ pub(super) async fn tool_tenant_import(
     state: &AppState,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: TenantImportArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("tenant_import: {e}")))?;
+    let a: TenantImportArgs = parse_args(args, "tenant_import")?;
     let store = tenant_store(state)?.clone();
     validate_tenant_id(&a.tenant_id).map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
     // The target tenant must exist before import (mirrors gRPC).
@@ -1901,8 +1873,7 @@ pub(super) async fn tool_attach_external(
     state: &AppState,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: AttachExternalArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("attach_external: {e}")))?;
+    let a: AttachExternalArgs = parse_args(args, "attach_external")?;
     let indexer = admin_indexer(state)?;
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
     // Reject an unsafe source before it reaches the ATTACH SQL.
@@ -1945,8 +1916,7 @@ pub(super) async fn tool_embedding_reload(state: &AppState) -> Result<Value, Jso
 }
 
 pub(super) async fn tool_rebuild(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
-    let a: TenantIdArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("rebuild: {e}")))?;
+    let a: TenantIdArgs = parse_args(args, "rebuild")?;
     if !a.tenant_id.is_empty() {
         validate_tenant_id(&a.tenant_id)
             .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
@@ -2037,8 +2007,7 @@ pub(super) async fn tool_compact_lanes(
     state: &AppState,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: TenantIdArgs = serde_json::from_value(args)
-        .map_err(|e| JsonRpcError::invalid_params(format!("compact_lanes: {e}")))?;
+    let a: TenantIdArgs = parse_args(args, "compact_lanes")?;
     validate_tenant_id(&a.tenant_id).map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
     let backend = state
         .crdt_backend
