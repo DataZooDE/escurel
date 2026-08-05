@@ -69,12 +69,12 @@ pub use escurel_types::{
     ExpectationDriftRequest, ExpectationDriftResponse, InstanceInfo, ListEventsRequest,
     ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
     ListInstancesResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
-    ListSkillsResponse, LiveAck, LiveOp, NeighboursRequest, NeighboursResponse, PageRef,
-    ProvenanceAncestryRequest, ProvenanceAncestryResponse, ProvenancePathRequest,
-    ProvenancePathResponse, QueryInstanceRequest, QueryInstanceResponse, ResolveRequest,
-    ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest,
-    SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse,
-    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
+    ListSkillsResponse, LiveAck, LiveOp, MovePageRequest, MovePageResponse, NeighboursRequest,
+    NeighboursResponse, PageRef, ProvenanceAncestryRequest, ProvenanceAncestryResponse,
+    ProvenancePathRequest, ProvenancePathResponse, QueryInstanceRequest, QueryInstanceResponse,
+    ResolveRequest, ResolveResponse, RunStoredQueryRequest, RunStoredQueryResponse, SearchHit,
+    SearchRequest, SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest,
+    UpdatePageResponse, ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
 };
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
@@ -353,6 +353,17 @@ impl Client {
             args["base_version"] = json!(req.base_version);
         }
         self.transport.call_typed("delete_page", args).await
+    }
+
+    /// Move a page to a new `page_id`, leaving nothing at the old one.
+    ///
+    /// Use this to restructure ids; use [`Self::delete_page`] to retract
+    /// knowledge. A delete retains the old markdown as an audit record, which
+    /// is right for a retraction and pure noise for a move.
+    pub async fn move_page(&self, req: MovePageRequest) -> Result<MovePageResponse, Error> {
+        self.transport
+            .call_typed("move_page", json!({ "from": req.from, "to": req.to }))
+            .await
     }
 
     /// Append a message to a chat-group's conversation history

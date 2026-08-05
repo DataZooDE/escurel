@@ -550,6 +550,28 @@ pub struct DeletePageResponse {
     pub page_id: String,
 }
 
+/// `move_page`: rename a page id, leaving nothing at the old one.
+///
+/// Distinct from `delete_page`, which *retracts* and deliberately retains the
+/// old markdown as an audit record. A move is not a retraction — the content
+/// still exists, at the new id — so keeping a husk is noise.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MovePageRequest {
+    pub from: String,
+    pub to: String,
+}
+
+/// MCP wire keys: `ok`, `issues`, `from`, `to`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MovePageResponse {
+    pub ok: bool,
+    pub issues: Vec<ValidationIssue>,
+    pub from: String,
+    pub to: String,
+}
+
 // ── outbound webhook delivery log ─────────────────────────────────
 
 /// One outbound-webhook delivery outcome (group ACL-independent
