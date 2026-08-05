@@ -10,8 +10,6 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
-# The paper's §6.2 Tier-1 cost measurement (tests/tier1_cost.rs).
-paper-measurements = []
 # In-process PDF/DOCX/PPTX extraction via the kreuzberg crate (ELv2-licensed;
 # `bundled-pdfium` vendors pdfium so the PDF path is self-contained). Gated
 # OFF by default — the default build stays light + offline (born-digital text

@@ -18,9 +18,6 @@ name = "escurel-echo-harness"
 path = "src/bin/echo_harness.rs"
 
 [features]
-# The paper's §6.6 projection-loop measurements (tests/projection_measurements.rs).
-# Off by default: one gateway + runner per replay trial makes it slow.
-paper-measurements = []
 
 [dependencies]
 anyhow = "1"
