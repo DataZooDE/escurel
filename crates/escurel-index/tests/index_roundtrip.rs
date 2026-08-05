@@ -281,6 +281,66 @@ async fn audit_flags_markdown_not_in_duckdb() {
     assert!(drift.indexed_but_no_markdown.is_empty());
 }
 
+/// A soft-deleted page must not read as drift.
+///
+/// `page delete` (#300) retracts a page from the index but retains its
+/// markdown in the lane, re-stamped `archived: true`. `rebuild` already
+/// honours that and skips archived pages — so the index legitimately has no
+/// row for them. `audit` did not, and reported every soft-deleted page under
+/// `markdown_not_in_duckdb` for ever.
+///
+/// The cost was concrete: retiring six pages moved a real tenant from a clean
+/// audit to six permanent entries, and "the audit is clean" stopped being a
+/// usable health check after any storage-layer change.
+#[tokio::test]
+async fn audit_ignores_soft_deleted_pages() {
+    let h = fresh_harness();
+    write_md(&h.store, SKILL_CUSTOMER.0, SKILL_CUSTOMER.1).await;
+    write_md(&h.store, INSTANCE_ACME.0, INSTANCE_ACME.1).await;
+    for (path, body) in [SKILL_CUSTOMER, INSTANCE_ACME] {
+        h.indexer.update_page(path, body).await.expect("update");
+    }
+    assert!(h.indexer.audit().await.expect("audit").is_clean());
+
+    // Soft-delete the instance: index row goes, markdown stays as the
+    // retained audit record.
+    assert!(
+        h.indexer
+            .delete_page(INSTANCE_ACME.0)
+            .await
+            .expect("delete_page"),
+        "the page existed, so it was archived"
+    );
+
+    let drift = h.indexer.audit().await.expect("audit after soft delete");
+    assert!(
+        drift.is_clean(),
+        "a retained, archived page is not drift: {drift:?}"
+    );
+
+    // The retraction must still survive a from-scratch rebuild, and still
+    // not read as drift afterwards.
+    h.indexer.rebuild().await.expect("rebuild");
+    let drift = h.indexer.audit().await.expect("audit after rebuild");
+    assert!(drift.is_clean(), "still clean after rebuild: {drift:?}");
+}
+
+/// The guard against over-correcting: a markdown file that is genuinely
+/// missing from the index — not archived — must still be reported.
+#[tokio::test]
+async fn audit_still_flags_unindexed_markdown_that_is_not_archived() {
+    let h = fresh_harness();
+    write_md(&h.store, SKILL_CUSTOMER.0, SKILL_CUSTOMER.1).await;
+    // Deliberately do NOT call update_page.
+
+    let drift = h.indexer.audit().await.expect("audit");
+    assert_eq!(
+        drift.markdown_not_in_duckdb,
+        vec![SKILL_CUSTOMER.0.to_owned()],
+        "an unindexed, unarchived page is real drift"
+    );
+}
+
 #[tokio::test]
 async fn rebuild_clears_stale_rows_for_deleted_markdown() {
     // Regression: codex review found rebuild() only upserted current

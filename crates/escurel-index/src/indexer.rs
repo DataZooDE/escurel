@@ -1397,13 +1397,41 @@ impl Indexer {
         let on_disk = self.list_markdown_paths().await?;
         let in_db = self.list_indexed_page_ids().await?;
 
+        // #300: a soft-deleted page keeps its markdown in the lane, re-stamped
+        // `archived: true`, and `rebuild` deliberately skips it — so the index
+        // legitimately has no row for it. Counting that as drift made every
+        // retired page a permanent audit entry, which is how "the audit is
+        // clean" stopped being a usable health check on a real tenant.
+        //
+        // Only the difference is re-read, not the whole corpus: on a clean
+        // tenant that is zero reads, and the lane store may be remote.
+        let mut missing = Vec::new();
+        for path in on_disk.difference(&in_db) {
+            if !self.is_archived_on_disk(path).await? {
+                missing.push(path.clone());
+            }
+        }
+
         let mut drift = AuditDrift {
-            markdown_not_in_duckdb: on_disk.difference(&in_db).cloned().collect(),
+            markdown_not_in_duckdb: missing,
             indexed_but_no_markdown: in_db.difference(&on_disk).cloned().collect(),
         };
         drift.markdown_not_in_duckdb.sort();
         drift.indexed_but_no_markdown.sort();
         Ok(drift)
+    }
+
+    /// Whether the lane copy of `page_id` carries `archived: true`.
+    ///
+    /// An unreadable or non-UTF-8 lane file is reported as *not* archived, so
+    /// a genuinely broken page still surfaces as drift rather than being
+    /// silently excused by a read failure.
+    async fn is_archived_on_disk(&self, page_id: &str) -> Result<bool, IndexerError> {
+        let key = Key::new(self.tenant.as_str(), page_id.to_owned())?;
+        match self.store.read(&key).await {
+            Ok(body) => Ok(std::str::from_utf8(&body).map(is_archived).unwrap_or(false)),
+            Err(_) => Ok(false),
+        }
     }
 
     /// Re-run [`Self::update_page`] for every markdown file the
