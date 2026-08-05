@@ -143,13 +143,26 @@ async fn packages_skill_body_as_instructions_with_event_and_instance() {
         ctx.instructions
     );
     assert!(
-        ctx.instructions.contains("EVENT_TITLE_MARKER")
-            && ctx.instructions.contains("EVENT_BODY_MARKER"),
-        "instructions must include the event title + body: {}",
+        ctx.instructions.contains("EVENT_TITLE_MARKER"),
+        "instructions name the event by title — a cheap, bounded reference: {}",
+        ctx.instructions
+    );
+    // The event BODY must NOT be here. The instructions become
+    // `claude --append-system-prompt <string>`, and Linux caps a single argv
+    // string at 32 pages; a 220 KB meeting transcript here made `spawn` fail
+    // with E2BIG and the event permanently undispatchable.
+    assert!(
+        !ctx.instructions.contains("EVENT_BODY_MARKER"),
+        "the event body must NOT ride in the instructions: {}",
         ctx.instructions
     );
 
-    // 5b. Input carries the real instance content.
+    // 5b. Input carries the data: the event payload and the instance state.
+    assert!(
+        ctx.input.contains("EVENT_BODY_MARKER"),
+        "input must carry the event body: {}",
+        ctx.input
+    );
     assert!(
         ctx.input.contains("UNIQUE_INSTANCE_MARKER"),
         "input must contain the expanded instance state: {}",
