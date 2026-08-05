@@ -42,7 +42,7 @@
 
 use std::time::Duration;
 
-use escurel_client::{Client, ExpandRequest, ListEventsRequest, ListInboxRequest};
+use escurel_client::{Client, ExpandRequest, ListEventsRequest};
 
 use crate::{RunnerConfig, Trigger};
 
@@ -123,6 +123,7 @@ pub async fn confirm_effect(
                 .list_events(ListEventsRequest {
                     instance_page_id: id.clone(),
                     limit: 100,
+                    ..Default::default()
                 })
                 .await
                 .map_err(|e| classify_client_error(&e))?;
@@ -139,27 +140,45 @@ pub async fn confirm_effect(
             id.clone()
         }
         None => {
-            // No pre-flagged target: the harness chose one. Confirm the event
-            // left the inbox and is now bound to an instance.
-            let inbox = client
-                .list_inbox(ListInboxRequest { limit: 100 })
+            // No pre-flagged target: the harness chose one — the ordinary
+            // shape for an LLM harness, whose whole job is deciding which
+            // instance an event belongs to. Ask the gateway where the event
+            // went: `assign_event` recorded the binding.
+            //
+            // This is a by-event lookup (`list_events` with `event_id`), not
+            // a listing. Before it existed, reconcile could confirm only that
+            // the event had LEFT the inbox and had no way to learn which page
+            // it landed on, so a completed run was indistinguishable from a
+            // no-op and could never cascade.
+            let found = client
+                .list_events(ListEventsRequest {
+                    event_id: Some(trigger.event_id.clone()),
+                    limit: 1,
+                    ..Default::default()
+                })
                 .await
                 .map_err(|e| classify_client_error(&e))?;
-            if inbox.events.iter().any(|e| e.event_id == trigger.event_id) {
-                return Err(ReconcileError::Transient(format!(
-                    "event {} still in inbox (not yet bound)",
+            let Some(event) = found.events.into_iter().next() else {
+                // The gateway does not know this event. Retrying cannot
+                // conjure it, so this is permanent rather than a convergence
+                // problem.
+                return Err(ReconcileError::Permanent(format!(
+                    "event {} not found on the gateway",
                     trigger.event_id
                 )));
+            };
+            // Bound AND folded in is the only confirmation. An empty binding
+            // or a non-`processed` status is the not-yet-converged case the
+            // idempotent re-run can finish, so it stays transient — and it is
+            // what keeps "the agent genuinely did nothing" a reachable
+            // outcome rather than every run reporting success.
+            if event.instance_page_id.is_empty() || event.status != "processed" {
+                return Err(ReconcileError::Transient(format!(
+                    "event {} not yet processed+bound (status {})",
+                    trigger.event_id, event.status
+                )));
             }
-            // The event is bound; recover which instance it landed on. We
-            // don't have a by-event lookup, so an unbound-target run can only
-            // confirm "left the inbox"; without a concrete instance we cannot
-            // read a version, so we treat that as not-yet-converged here. The
-            // common path (and the #155 DoD) pre-flags the instance.
-            return Err(ReconcileError::Transient(format!(
-                "event {} bound but instance not resolvable from inbox read-back",
-                trigger.event_id
-            )));
+            event.instance_page_id
         }
     };
 

@@ -451,9 +451,16 @@ impl Client {
         self.transport.call_typed("list_inbox", args).await
     }
 
-    /// List an instance's processed event history, oldest first.
+    /// List an instance's processed event history, oldest first — or, with
+    /// [`ListEventsRequest::event_id`] set, look one event up by id.
     pub async fn list_events(&self, req: ListEventsRequest) -> Result<ListEventsResponse, Error> {
-        let mut args = json!({ "instance_page_id": req.instance_page_id });
+        // Send one shape or the other, never both: `event_id` asks WHERE an
+        // event went, which makes `instance_page_id` meaningless, and the
+        // server should not have to guess which the caller meant.
+        let mut args = match &req.event_id {
+            Some(event_id) => json!({ "event_id": event_id }),
+            None => json!({ "instance_page_id": req.instance_page_id }),
+        };
         if req.limit > 0 {
             args["limit"] = json!(req.limit);
         }

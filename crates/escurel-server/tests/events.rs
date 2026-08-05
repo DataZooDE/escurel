@@ -66,6 +66,7 @@ async fn capture_inbox_assign_events_round_trip() {
         .list_events(ListEventsRequest {
             instance_page_id: SPINE.to_owned(),
             limit: 0,
+            ..Default::default()
         })
         .await
         .expect("list_events before");
@@ -93,6 +94,7 @@ async fn capture_inbox_assign_events_round_trip() {
         .list_events(ListEventsRequest {
             instance_page_id: SPINE.to_owned(),
             limit: 0,
+            ..Default::default()
         })
         .await
         .expect("list_events after");

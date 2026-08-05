@@ -3526,18 +3526,43 @@ async fn tool_list_inbox(indexer: &Indexer, args: Value) -> Result<Value, JsonRp
 
 #[derive(Deserialize)]
 struct ListEventsArgs {
+    #[serde(default)]
     instance_page_id: String,
     #[serde(default)]
     limit: Option<usize>,
+    /// By-event lookup. When present, returns just that event (whatever its
+    /// status) and `instance_page_id` is ignored.
+    #[serde(default)]
+    event_id: Option<String>,
 }
 
 async fn tool_list_events(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
     let a: ListEventsArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("list_events: {e}")))?;
-    let events = indexer
-        .list_events(&a.instance_page_id, a.limit)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("list_events: {e}")))?;
+
+    // `event_id` answers "where did this event go?" — the question an
+    // instance-scoped listing cannot ask, because you would need the answer
+    // to form the query. An event with no match is an empty list, not an
+    // error: "not found" is a legitimate answer here, and the caller
+    // distinguishes it from "found, still in the inbox".
+    let events = if let Some(event_id) = a.event_id.as_deref() {
+        indexer
+            .get_event(event_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_events: {e}")))?
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        if a.instance_page_id.is_empty() {
+            return Err(JsonRpcError::invalid_params(
+                "list_events: one of `instance_page_id` or `event_id` is required".to_owned(),
+            ));
+        }
+        indexer
+            .list_events(&a.instance_page_id, a.limit)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_events: {e}")))?
+    };
     Ok(json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() }))
 }
 
@@ -6113,12 +6138,15 @@ fn tools_list_payload() -> Value {
             tool_entry(
                 "list_events",
                 "List an instance's processed event history (the event sequence \
-                 whose projection is its state), oldest first.",
+                 whose projection is its state), oldest first. Pass `event_id` \
+                 instead to look ONE event up by id — whatever its status — \
+                 which is how you discover the instance an event was assigned \
+                 to. Exactly one of `instance_page_id` or `event_id`.",
                 json!({
                     "type": "object",
-                    "required": ["instance_page_id"],
                     "properties": {
                         "instance_page_id": { "type": "string" },
+                        "event_id": { "type": "string" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
                     }
                 }),

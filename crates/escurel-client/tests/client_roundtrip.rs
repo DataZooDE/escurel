@@ -381,6 +381,7 @@ async fn capture_inbox_assign_list_events_round_trip() {
         .list_events(ListEventsRequest {
             instance_page_id: acme.clone(),
             limit: 0,
+            ..Default::default()
         })
         .await
         .unwrap();

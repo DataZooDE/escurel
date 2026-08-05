@@ -255,6 +255,7 @@ pub async fn package(
                 .list_events(ListEventsRequest {
                     instance_page_id: instance_page_id.clone(),
                     limit: EVENT_HISTORY_LIMIT,
+                    ..Default::default()
                 })
                 .await
                 .map_err(|source| PackageError::Client {
