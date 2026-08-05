@@ -110,8 +110,12 @@ impl ClaudeHarness {
     /// invocation shape without spawning.
     fn build_args(&self, task: &TaskContext, mcp_config_path: &str) -> Vec<String> {
         let mut args: Vec<String> = vec![
+            // `-p` with no inline value: the prompt is written to the child's
+            // stdin instead. Linux caps a SINGLE argv string at 32 pages
+            // (MAX_ARG_STRLEN), independently of the 2 MB total ARG_MAX, so a
+            // packaged transcript over ~128 KB made spawn fail with E2BIG and
+            // the event permanently undispatchable. stdin has no such limit.
             "-p".to_owned(),
-            task.input.clone(),
             "--append-system-prompt".to_owned(),
             task.instructions.clone(),
             "--mcp-config".to_owned(),
@@ -169,11 +173,11 @@ impl Harness for ClaudeHarness {
 
         // kill_on_drop ties the child's lifetime to this future: a dropped
         // adapter (panic, cancellation, timeout) reaps the subprocess.
-        let child = tokio::process::Command::new(&self.bin_path)
+        let mut child = tokio::process::Command::new(&self.bin_path)
             .args(&args)
-            // Headless: nothing on stdin. Capture stdout (the JSON envelope)
-            // and stderr (diagnostics on failure).
-            .stdin(Stdio::null())
+            // The prompt goes on stdin (see `build_args`). Capture stdout
+            // (the JSON envelope) and stderr (diagnostics on failure).
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -183,6 +187,28 @@ impl Harness for ClaudeHarness {
                 path: self.bin_path.clone(),
                 source,
             })?;
+
+        // Write the prompt, then drop the handle to send EOF — `claude -p`
+        // reads until the stream closes, so a held-open stdin would hang
+        // until the run timeout.
+        {
+            let mut stdin = child.stdin.take().ok_or_else(|| HarnessError::Io {
+                harness: NAME,
+                source: std::io::Error::other("stdin was not piped"),
+            })?;
+            tokio::io::AsyncWriteExt::write_all(&mut stdin, task.input.as_bytes())
+                .await
+                .map_err(|source| HarnessError::Io {
+                    harness: NAME,
+                    source,
+                })?;
+            tokio::io::AsyncWriteExt::shutdown(&mut stdin)
+                .await
+                .map_err(|source| HarnessError::Io {
+                    harness: NAME,
+                    source,
+                })?;
+        }
 
         let output = match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
             Ok(result) => result.map_err(|source| HarnessError::Io {
@@ -324,14 +350,53 @@ mod tests {
         );
     }
 
+    /// A `TaskContext` whose packaged input is larger than a single argv
+    /// string may be on Linux. A two-hour meeting transcript is 150-220 KB.
+    fn big_task(input_bytes: usize) -> TaskContext {
+        TaskContext::for_test(
+            "INSTRUCTMARK skill body".to_owned(),
+            "x".repeat(input_bytes),
+            "http://127.0.0.1:8080/mcp".to_owned(),
+            vec!["update_page".to_owned()],
+            SecretString::from("scoped-bearer-XYZ".to_owned()),
+        )
+    }
+
+    /// Linux caps a SINGLE argv string at 32 pages, independently of the 2 MB
+    /// total `ARG_MAX`. Passing the packaged input as an argument therefore
+    /// made every event with a body over ~128 KB permanently undispatchable:
+    /// `spawn` failed with E2BIG, all three attempts, straight to the DLQ.
+    /// Observed against a real 220 KB meeting transcript.
+    const MAX_ARG_STRLEN: usize = 32 * 4096;
+
+    #[test]
+    fn a_prompt_too_large_for_argv_is_not_placed_in_argv() {
+        let h = ClaudeHarness::new("claude");
+        let big = big_task(220 * 1024);
+        let args = h.build_args(&big, "/tmp/mcp.json");
+
+        for (i, a) in args.iter().enumerate() {
+            assert!(
+                a.len() < MAX_ARG_STRLEN,
+                "argv[{i}] is {} bytes, over the {MAX_ARG_STRLEN}-byte per-argument \
+                 limit; spawn would fail with E2BIG",
+                a.len()
+            );
+        }
+    }
+
     #[test]
     fn argv_carries_print_prompt_system_prompt_and_json_output() {
         let h = ClaudeHarness::new("claude").with_model(Some("opus".to_owned()));
         let args = h.build_args(&task(), "/tmp/mcp.json");
 
-        // headless print mode with the input as the prompt
-        let p = args.iter().position(|a| a == "-p").expect("-p present");
-        assert_eq!(args[p + 1], "INPUTMARK fold this");
+        // Headless print mode. The prompt itself goes on stdin, not argv —
+        // see `a_prompt_too_large_for_argv_is_not_placed_in_argv`.
+        assert!(args.iter().any(|a| a == "-p"), "-p present");
+        assert!(
+            !args.iter().any(|a| a == "INPUTMARK fold this"),
+            "the input must NOT be an argv element"
+        );
 
         // skill body in the appended system prompt
         let sp = args

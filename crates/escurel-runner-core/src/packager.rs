@@ -269,6 +269,7 @@ pub async fn package(
                 .cloned();
             let input = build_input_for_instance(
                 trigger,
+                trigger_event.as_ref(),
                 instance_page_id,
                 &instance.body,
                 &history.events,
@@ -290,7 +291,10 @@ pub async fn package(
                 .iter()
                 .find(|e| e.event_id == trigger.event_id)
                 .cloned();
-            (build_input_for_new_instance(trigger), trigger_event)
+            (
+                build_input_for_new_instance(trigger, trigger_event.as_ref()),
+                trigger_event,
+            )
         }
     };
 
@@ -329,18 +333,31 @@ fn render_event_payload(trigger: &Trigger, event: Option<&Event>) -> String {
     }
 }
 
-/// Build the instructions: a short task framing, the skill body, and the
-/// triggering event payload appended at the end.
+/// Build the instructions: a short task framing plus the skill body.
+///
+/// Deliberately WITHOUT the event payload. The instructions become
+/// `claude --append-system-prompt <string>` and codex's prompt framing —
+/// both argv, and Linux caps a single argv string at 32 pages. A 220 KB
+/// meeting transcript here made `spawn` fail with E2BIG and the event
+/// permanently undispatchable.
+///
+/// It is the right split independently of that limit: the system prompt
+/// carries the PROCEDURE, the input carries the DATA.
 fn build_instructions(trigger: &Trigger, skill_body: &str, event: Option<&Event>) -> String {
+    let title = event.map(|e| e.title.as_str()).unwrap_or("");
     format!(
-        "A new event of type `{skill}` arrived (event `{event_id}`). Fold it into the \
-         appropriate `{skill}` instance per the skill below.\n\n\
-         ## Skill: {skill}\n\n{skill_body}\n\n\
-         ## Triggering event\n\n{payload}",
+        "A new event of type `{skill}` arrived (event `{event_id}`{title}). Fold it into \
+         the appropriate `{skill}` instance per the skill below. The event itself is in \
+         the task input.\n\n\
+         ## Skill: {skill}\n\n{skill_body}",
         skill = trigger.label_skill,
         event_id = trigger.event_id,
+        title = if title.is_empty() {
+            String::new()
+        } else {
+            format!(", {title:?}")
+        },
         skill_body = skill_body.trim_end(),
-        payload = render_event_payload(trigger, event),
     )
 }
 
@@ -349,14 +366,15 @@ fn build_instructions(trigger: &Trigger, skill_body: &str, event: Option<&Event>
 /// history.
 fn build_input_for_instance(
     trigger: &Trigger,
+    event: Option<&Event>,
     instance_page_id: &str,
     instance_body: &str,
     history: &[Event],
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "## Triggering event\n\nevent_id: {}\nlabel_skill: {}\n\n",
-        trigger.event_id, trigger.label_skill
+        "## Triggering event\n\n{}\n",
+        render_event_payload(trigger, event)
     ));
     out.push_str(&format!(
         "## Target instance ({instance_page_id})\n\n{}\n\n",
@@ -381,13 +399,15 @@ fn build_input_for_instance(
 
 /// Build the input for a trigger with no instance yet: note that the agent
 /// must create one, and carry the event reference.
-fn build_input_for_new_instance(trigger: &Trigger) -> String {
+fn build_input_for_new_instance(trigger: &Trigger, event: Option<&Event>) -> String {
     format!(
-        "## Triggering event\n\nevent_id: {}\nlabel_skill: {}\n\n\
+        "## Triggering event\n\n{payload}\n\
          ## Target instance\n\n\
          No instance is assigned to this event yet. Per the skill, create a new \
-         `{}` instance for it (and `assign_event` the event to the page you create).\n",
-        trigger.event_id, trigger.label_skill, trigger.label_skill
+         `{skill}` instance for it (and `assign_event` the event to the page you \
+         create).\n",
+        payload = render_event_payload(trigger, event),
+        skill = trigger.label_skill,
     )
 }
 
@@ -437,6 +457,50 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// The event BODY must not ride in the instructions.
+    ///
+    /// The instructions become `claude --append-system-prompt <string>` and
+    /// `codex`'s prompt framing — both argv. Linux caps a single argv string
+    /// at 32 pages, so a 220 KB meeting transcript in the instructions made
+    /// `spawn` fail with E2BIG and the event permanently undispatchable.
+    ///
+    /// It is also the right split on its own terms: the system prompt should
+    /// carry the PROCEDURE (the skill body), and the user prompt the DATA
+    /// (the event payload).
+    #[test]
+    fn a_large_event_body_does_not_ride_in_the_instructions() {
+        const MAX_ARG_STRLEN: usize = 32 * 4096;
+        let trigger = Trigger {
+            tenant: "acme".into(),
+            event_id: "EVT1".into(),
+            label_skill: "meeting".into(),
+            instance_page_id: None,
+            lineage: crate::Lineage::root("EVT1"),
+            workflow: None,
+        };
+        let event = Event {
+            event_id: "EVT1".into(),
+            label_skill: "meeting".into(),
+            source: "rekorder".into(),
+            title: "a workshop".into(),
+            body: "x".repeat(220 * 1024),
+            ..Event::default()
+        };
+        let instr = build_instructions(&trigger, "SKILLBODY", Some(&event));
+        assert!(
+            instr.len() < MAX_ARG_STRLEN,
+            "instructions are {} bytes, over the {MAX_ARG_STRLEN}-byte per-argument \
+             limit; spawn would fail with E2BIG",
+            instr.len()
+        );
+        // The payload has to reach the agent somewhere — the input.
+        let input = build_input_for_new_instance(&trigger, Some(&event));
+        assert!(
+            input.contains(&"x".repeat(1024)),
+            "the event body must travel in the input instead"
+        );
+    }
+
     #[test]
     fn instructions_carry_framing_skill_body_and_event() {
         let trigger = Trigger {
@@ -461,9 +525,19 @@ mod tests {
         assert!(instr.contains("EVT1"));
         assert!(
             instr.contains("TITLEMARK"),
-            "event title folded in: {instr}"
+            "the event title is a cheap, bounded reference: {instr}"
         );
-        assert!(instr.contains("BODYMARK"), "event body folded in: {instr}");
+        // The BODY belongs in the input, not the instructions — see
+        // `a_large_event_body_does_not_ride_in_the_instructions`.
+        assert!(
+            !instr.contains("BODYMARK"),
+            "the event body must NOT be in the instructions: {instr}"
+        );
+        let input = build_input_for_new_instance(&trigger, Some(&event));
+        assert!(
+            input.contains("BODYMARK"),
+            "event body in the input: {input}"
+        );
 
         // No event record recovered → fall back to the trigger ids.
         let fallback = build_instructions(&trigger, "SKILLBODY", None);
@@ -480,7 +554,7 @@ mod tests {
             lineage: crate::Lineage::root("EVT1"),
             workflow: None,
         };
-        let input = build_input_for_new_instance(&trigger);
+        let input = build_input_for_new_instance(&trigger, None);
         assert!(input.contains("create a new"));
         assert!(input.contains("EVT1"));
     }

@@ -123,13 +123,20 @@ impl CodexHarness {
         )
     }
 
-    /// Assemble the full `codex` argv (excluding the binary itself) for the
-    /// packaged task. Split out so the deterministic test can assert the
-    /// invocation shape without spawning.
-    fn build_args(&self, task: &TaskContext, output_last_message_path: &str) -> Vec<String> {
+    /// Assemble the full `codex` argv (excluding the binary itself). Split
+    /// out so the deterministic test can assert the invocation shape without
+    /// spawning. The task itself no longer appears here — the prompt travels
+    /// on stdin — but the parameter is kept so the signature stays parallel
+    /// to the other adapters and the argv-size test can pass a big task.
+    fn build_args(&self, _task: &TaskContext, output_last_message_path: &str) -> Vec<String> {
         let mut args: Vec<String> = vec![
             "exec".to_owned(),
-            Self::build_prompt(task),
+            // `-` in the PROMPT position means "read the prompt from stdin".
+            // Linux caps a SINGLE argv string at 32 pages (MAX_ARG_STRLEN),
+            // independently of the 2 MB total ARG_MAX, so a packaged
+            // transcript over ~128 KB made spawn fail with E2BIG and left the
+            // event permanently undispatchable.
+            "-".to_owned(),
             // Emit JSONL events so we can count tool calls / detect errors.
             "--json".to_owned(),
             // Write the agent's final message to a file (clean to parse).
@@ -191,15 +198,15 @@ impl Harness for CodexHarness {
 
         // kill_on_drop ties the child's lifetime to this future: a dropped
         // adapter (panic, cancellation, timeout) reaps the subprocess.
-        let child = tokio::process::Command::new(&self.bin_path)
+        let mut child = tokio::process::Command::new(&self.bin_path)
             .args(&args)
             // Point codex at the per-run config and hand it the bearer through
             // the env var its config names (out of argv / on-disk config).
             .env("CODEX_HOME", codex_home.path())
             .env(BEARER_ENV_VAR, task.token_str())
-            // Headless: nothing on stdin. Capture stdout (the JSONL events)
-            // and stderr (diagnostics on failure).
-            .stdin(Stdio::null())
+            // The prompt goes on stdin (see `build_args`). Capture stdout
+            // (the JSONL events) and stderr (diagnostics on failure).
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -209,6 +216,28 @@ impl Harness for CodexHarness {
                 path: self.bin_path.clone(),
                 source,
             })?;
+
+        // Write the prompt, then drop the handle to send EOF — codex reads
+        // until the stream closes, so a held-open stdin would hang until the
+        // run timeout.
+        {
+            let mut stdin = child.stdin.take().ok_or_else(|| HarnessError::Io {
+                harness: NAME,
+                source: std::io::Error::other("stdin was not piped"),
+            })?;
+            tokio::io::AsyncWriteExt::write_all(&mut stdin, Self::build_prompt(task).as_bytes())
+                .await
+                .map_err(|source| HarnessError::Io {
+                    harness: NAME,
+                    source,
+                })?;
+            tokio::io::AsyncWriteExt::shutdown(&mut stdin)
+                .await
+                .map_err(|source| HarnessError::Io {
+                    harness: NAME,
+                    source,
+                })?;
+        }
 
         let output = match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
             Ok(result) => result.map_err(|source| HarnessError::Io {
@@ -379,13 +408,48 @@ mod tests {
         );
     }
 
+    /// Same per-argument ceiling as the Claude adapter. `codex exec` reads
+    /// the prompt from stdin when `-` is given in its place, so the packaged
+    /// input never has to fit in an argv string.
+    #[test]
+    fn a_prompt_too_large_for_argv_is_not_placed_in_argv() {
+        const MAX_ARG_STRLEN: usize = 32 * 4096;
+        let h = CodexHarness::new("codex");
+        let big = TaskContext::for_test(
+            "INSTRUCTMARK skill body".to_owned(),
+            "x".repeat(220 * 1024),
+            "http://127.0.0.1:8080/mcp".to_owned(),
+            vec!["update_page".to_owned()],
+            SecretString::from("scoped-bearer-XYZ".to_owned()),
+        );
+        let args = h.build_args(&big, "/tmp/msg.txt");
+        for (i, a) in args.iter().enumerate() {
+            assert!(
+                a.len() < MAX_ARG_STRLEN,
+                "argv[{i}] is {} bytes, over the per-argument limit; spawn \
+                 would fail with E2BIG",
+                a.len()
+            );
+        }
+        assert!(
+            args.iter().any(|a| a == "-"),
+            "`-` marks the prompt as coming from stdin: {args:?}"
+        );
+    }
+
     #[test]
     fn argv_carries_exec_json_output_skip_git_and_bypass() {
         let h = CodexHarness::new("codex").with_model(Some("o3".to_owned()));
         let args = h.build_args(&task(), "/tmp/msg.txt");
 
         assert_eq!(args.first().map(String::as_str), Some("exec"));
-        assert_eq!(args.get(1).map(|s| s.contains("INPUTMARK")), Some(true));
+        // The prompt is read from stdin, so `-` stands in its place and the
+        // input must not appear in argv at all.
+        assert_eq!(args.get(1).map(String::as_str), Some("-"));
+        assert!(
+            !args.iter().any(|a| a.contains("INPUTMARK")),
+            "the input must NOT be an argv element: {args:?}"
+        );
         assert!(args.iter().any(|a| a == "--json"));
         assert!(args.iter().any(|a| a == "--skip-git-repo-check"));
         assert!(
