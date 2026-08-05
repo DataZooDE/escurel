@@ -4,6 +4,7 @@
 //! `docs/notes/complexity-reduction-plan.md`). These are the tools that never mutate state, so they share no write
 //! lock, no event emission and no ACL-on-write path with the group below.
 
+use super::backend_view::BackendView;
 use super::*;
 
 // --- per-tool handlers -----------------------------------------
@@ -283,18 +284,18 @@ pub(super) async fn tool_expand(
             // namespaced `source` object so overlay↔source drift is visible
             // without the overlay value being masked (REQ-OV-02). The overlay
             // (shown first) always wins for display.
-            if let Some(proj) = sql_view_projection(indexer, &e).await {
+            // Classify once; each enrichment below asks the same question of
+            // the same answer instead of re-probing `backend_ref`.
+            let view = BackendView::of(&e.frontmatter);
+            if view == BackendView::SqlView
+                && let Some(proj) = sql_view_projection(indexer, &e).await
+            {
                 page["backend_projection"] = proj;
             }
             // Document overlay: bound the chunks returned (REQ-DOC-05) — never
             // the full document text. With no query in `expand`, return the
             // lead (first K chunks) and flag truncation.
-            if e.frontmatter
-                .get("backend_ref")
-                .and_then(|b| b.get("kind"))
-                .and_then(Value::as_str)
-                == Some("document")
-            {
+            if view == BackendView::Document {
                 // The skill's `lead_chunks` caps the lead returned (REQ-DOC-05);
                 // fall back to the server default. The full text lives in the blob.
                 const DEFAULT_CHUNK_LEAD: usize = 8;
@@ -320,12 +321,7 @@ pub(super) async fn tool_expand(
             // upstream openapi/mcp endpoint (nothing is materialised in
             // DuckDB). A failure resolves to `{ issue }` — the overlay page is
             // still returned, never a partial/fabricated body.
-            if e.frontmatter
-                .get("backend_ref")
-                .and_then(|b| b.get("kind"))
-                .and_then(Value::as_str)
-                .is_some_and(|k| k == "openapi" || k == "mcp")
-            {
+            if view == BackendView::RemoteProxy {
                 page["backend_projection"] = crate::remote_backend::fetch_projection(
                     indexer,
                     &e.page.skill,
@@ -375,15 +371,12 @@ pub(super) async fn tool_fetch_blob(
     {
         return Ok(json!({ "blob": Value::Null }));
     }
-    let backend_ref = e.frontmatter.get("backend_ref");
-    let is_doc = backend_ref
-        .and_then(|b| b.get("kind"))
-        .and_then(Value::as_str)
-        == Some("document");
-    let blob_id_str = backend_ref
+    let blob_id_str = e
+        .frontmatter
+        .get("backend_ref")
         .and_then(|b| b.get("blob_id"))
         .and_then(Value::as_str);
-    if !is_doc || blob_id_str.is_none() {
+    if !BackendView::of(&e.frontmatter).has_fetchable_blob() || blob_id_str.is_none() {
         return Ok(json!({ "blob": Value::Null }));
     }
     let blob_id = escurel_storage::BlobId::parse(blob_id_str.unwrap())

@@ -59,6 +59,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::Instrument;
 
+mod backend_view;
 mod ingest;
 mod schema;
 mod tools_admin;
