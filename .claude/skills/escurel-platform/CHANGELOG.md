@@ -4,6 +4,19 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.1 — A committed live session is now readable
+
+- `references/02-tool-surface.md`: `close_session(commit: true)` writes the
+  merged body through to the store, so the committed text is immediately
+  visible to `expand`, `search` and the link graph, and `final_version` is
+  the head a subsequent write should pass as `base_version`.
+- Records the failure mode for anyone pinned to an older node: a commit used
+  to persist only CRDT history, so `final_version` advanced while the
+  readable body did not, and a client writing back with the version it had
+  just been handed silently overwrote its own session. The skill said
+  nothing about what a commit did to the readable page, which is how a
+  consumer could reasonably have assumed the safe behaviour.
+
 ## 0.6.0 — Event-driven agents: the runner was entirely undocumented
 
 - New `references/11-event-driven-agents.md`. `escurel-runner` is a

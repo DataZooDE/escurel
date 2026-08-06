@@ -68,6 +68,22 @@ Notes:
 `/ws`; most apps start with `update_page` and only reach for live mode
 when they need granular concurrent edits.
 
+`close_session(commit: true)` **writes the merged body through to the
+store**, exactly as `update_page` would: the page is re-indexed, so the
+committed text is immediately visible to `expand`, to `search`, and to the
+link graph (`neighbours` / backlinks). `final_version` is the head that a
+subsequent write should pass as `base_version`. `commit: false` discards the
+session and writes nothing.
+
+If the write fails, the session is left **open** and the call errors —
+retry `close_session` rather than assuming the edit landed.
+
+Earlier servers persisted only CRDT history on commit, so `final_version`
+advanced while the readable body did not — a client that then wrote back
+with the version it had just been handed silently overwrote its own session.
+If your node predates this change, do not treat a committed session as
+readable; check against the git ref your deployment pins.
+
 `delete_page` **archives rather than destroys** (#300): the page is retracted
 from discovery — search, `list_instances`, the catalogue — while the
 canonical markdown is retained for audit. Do not reach for it expecting the

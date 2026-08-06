@@ -169,20 +169,62 @@ also stops the next reader designing against a checkpoint that isn't there.
 
 ## Sequencing
 
-| # | item | risk | note |
+| # | item | risk | status |
 |---|---|---|---|
-| 1 | F3.3 doc correction | none | minutes; stop the lie today |
-| 2 | F2.1 + F2.2 + F2.3 | low | self-contained, no design decision |
-| 3 | F3.1 + F3.2 | none | test-only; validates the core property |
-| 4 | F1.1 decomposition | low | enables F1.2 |
-| 5 | F1.4 tests | none | must be red before step 6 |
-| 6 | **F1.2 session commit write-through** | **high** | the real fix |
-| 7 | F1.3 version-space unification | medium | needs the hlc-authority decision |
-| 8 | F2.4, F2.5, decompose rebase | low | legibility + resumability proof |
+| 1 | F3.3 doc correction | none | **done** — `backend.rs` now records that the periodic checkpoint does not exist |
+| 2 | F2.1 + F2.2 + F2.3 | low | **done** — `rebase_orphaned_shadow` issue; `orphaned_base_pages` extracted from its two verbatim copies |
+| 3 | F3.1 + F3.2 | none | **done** — `crates/escurel-crdt/tests/convergence.rs` (4, incl. the property test over random interleavings) |
+| 4 | F1.1 decomposition | low | **done** — `resolve_base_version` → `Cas { Clean, Merged, Conflict }` |
+| 5 | F1.4 tests | none | **done** — verified red first; see the note below, they were nearly not |
+| 6 | F1.2 session commit write-through | **high** | **done** — Option A, indexer first, CRDT snapshot last |
+| 7 | F1.3 version-space unification | medium | **done** — the backend allocates; `append_op_next` / `snapshot_next` |
+| 8 | F2.4, F2.5, decompose rebase | low | **done** — 297 → 73 lines in six named steps; resumability proven |
 
-Steps 1–3 need no decision from anyone and can start immediately. Step 6 is
-the one that needs agreement on Option A and on the deferred-commit ordering,
-and it should not begin until step 5 is red and passing review.
+### Deviations from the plan as written
+
+- **F1.3 did not become a per-page gate.** The plan (and the decision taken
+  on it) assumed a new lock keyed by page id. It turned out no new lock was
+  needed: the DuckDB backend's connection mutex is already the serialization
+  point, and the reason the old code raced is that it took that lock *twice*
+  — `max_hlc`, then `append_op` — not that it lacked one. Allocating inside
+  the single critical section is strictly stronger than a per-page gate
+  around two, and adds nothing to hold.
+- **The close-time snapshot deliberately does not allocate.** First
+  implemented as `snapshot_next` for symmetry, which broke
+  `snapshot_then_close_then_reopen_replays_content` (v2 → v3). Correctly so:
+  a snapshot records "the state as of op N" rather than being a new event, so
+  allocating there advances the head with no content change and turns the
+  version a client just received from `apply_op` into a stale
+  `base_version`.
+- **F1.2 did not reuse a `persist_and_bump_version` helper.** The write tail
+  of `tool_update_page` is entangled with `UpdatePageArgs` — provenance,
+  edit-event suppression, absorption metrics — none of which a session commit
+  has. Extracting it would have meant inventing a parameter object to carry
+  fields the caller does not have; `close_session` takes the gate and writes
+  directly instead.
+
+### On step 5, which is the part worth remembering
+
+The first F1 test harness seeded content with `update_page` and all three
+tests **passed**, having exercised none of the path — `update_page` writes
+the indexer itself, so the two stores never diverged. Driving the page
+through `apply_op` with a real Loro op made two of them red immediately; the
+third was still green on an assertion that accepted the page id, which is
+present either way. A test written to be red and found green is evidence
+about the test until you have checked which. See
+`docs/notes/discovered/2026-08-06-two-stores-one-version.md`.
+
+### Still open
+
+- **The periodic CRDT checkpoint (F3.3, implementation half).** The doc lie
+  is fixed; the missing feature is not. A long-lived session still
+  accumulates an unbounded op tail that crash recovery replays in full.
+  Argue it on its own merits.
+- **`close_session` does not re-run `update_page`'s write guards.** The
+  layer/backend read-only guards and validation run on the `update_page`
+  path; a session commit writes through without them. `open_session` already
+  refuses a `layer_read_only` page, so the main hole is closed, but this is
+  narrower than "the same guards" and should not be described as equivalent.
 
 ## What could still be wrong with this plan
 
