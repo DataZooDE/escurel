@@ -29,8 +29,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use escurel_md::wikilink::parse_wikilinks;
-use escurel_md::{PageType, YamlValue, parse};
+use escurel_md::wikilink::{WikilinkParsed, parse_wikilinks};
+use escurel_md::{PageType, YamlMapping, YamlValue, parse};
 
 use crate::{Indexer, IndexerError};
 
@@ -142,12 +142,19 @@ impl Indexer {
         // existence + required_frontmatter resolve in ONE locked pass
         // instead of 2N queries / 2N lock acquisitions across the
         // loops below.
-        let wikilinks = parse_wikilinks(parsed.body);
+        // Body links AND frontmatter links. Only the body was parsed
+        // before, so `about: "[[nosuchskill::x]]"` sailed through while the
+        // identical link one line lower was rejected — and `about:`,
+        // `customer:` and `continues:` are where the load-bearing links
+        // actually live.
+        let body_links = parse_wikilinks(parsed.body);
+        let fm_links = Self::frontmatter_wikilinks(fields);
+
         let mut wanted: HashSet<&str> = HashSet::new();
         if let Some(skill) = declared_skill {
             wanted.insert(skill);
         }
-        for wl in &wikilinks {
+        for wl in body_links.iter().chain(fm_links.iter().map(|(_, wl)| wl)) {
             if let (Some(skill), Some(_)) = (&wl.skill, &wl.id) {
                 wanted.insert(skill.as_str());
             }
@@ -155,6 +162,23 @@ impl Indexer {
         // `skills[slug]` present  => skill exists, value is its
         // required_frontmatter list; absent => not an indexed skill.
         let skills = self.resolve_skills(&wanted).await?;
+
+        // Every instance needs an `id:`. Without one the page indexes and
+        // lists, but `expand` fails with `invalid type: null, expected a
+        // string` and `resolve` cannot find it — a page that exists and is
+        // unreachable. Observed on a real tenant.
+        if parsed.frontmatter.page_type == PageType::Instance
+            && fields
+                .get("id")
+                .and_then(YamlValue::as_str)
+                .is_none_or(str::is_empty)
+        {
+            issues.push(Issue::error(
+                "frontmatter_required_key_missing",
+                "frontmatter.id",
+                "an instance page requires a non-empty `id`",
+            ));
+        }
 
         // required_frontmatter — only when the draft's declared
         // skill resolves to a skill page that declares required keys.
@@ -184,8 +208,9 @@ impl Indexer {
             }
         }
 
-        // Wikilink syntax + referenced-skill existence.
-        for wl in &wikilinks {
+        // Wikilink syntax + referenced-skill existence, over body and
+        // frontmatter alike.
+        for wl in body_links.iter().chain(fm_links.iter().map(|(_, wl)| wl)) {
             match (&wl.skill, &wl.id) {
                 (Some(skill), Some(_)) => {
                     if !skills.contains_key(skill.as_str()) {
@@ -209,7 +234,126 @@ impl Indexer {
             }
         }
 
+        // Dangling targets, graded by where the link sits.
+        //
+        // A link in a REQUIRED frontmatter field is part of the contract:
+        // an `offer` whose `customer:` names nothing is the hallucinated-
+        // customer case, and the one nobody re-checks. That is an error.
+        //
+        // Everywhere else it is a warning. Forward references are
+        // legitimate in a second brain and the tenant depends on them — a
+        // meeting's `continues:` is written pointing at the earlier session
+        // before that page exists, and seed scripts cite targets they are
+        // about to create. Blocking those would break real workflows to
+        // catch a mistake the required-field rule already catches.
+        let required_keys: &[String] = declared_skill
+            .and_then(|s| skills.get(s))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+
+        let mut targets: HashSet<(&str, &str)> = HashSet::new();
+        for wl in body_links.iter().chain(fm_links.iter().map(|(_, wl)| wl)) {
+            if let (Some(skill), Some(id)) = (&wl.skill, &wl.id)
+                && skills.contains_key(skill.as_str())
+            {
+                targets.insert((skill.as_str(), id.as_str()));
+            }
+        }
+        let live = self.resolve_instance_targets(&targets).await?;
+
+        for (key, wl) in &fm_links {
+            let (Some(skill), Some(id)) = (&wl.skill, &wl.id) else {
+                continue;
+            };
+            if !skills.contains_key(skill.as_str()) || live.contains(&(skill.clone(), id.clone())) {
+                continue;
+            }
+            let msg = format!("wikilink `[[{skill}::{id}]]` resolves to no page");
+            let loc = format!("frontmatter.{key}");
+            if required_keys.iter().any(|k| k == key) {
+                issues.push(Issue::error("dangling_wikilink", loc, msg));
+            } else {
+                issues.push(Issue::warning("dangling_wikilink", loc, msg));
+            }
+        }
+        for wl in &body_links {
+            let (Some(skill), Some(id)) = (&wl.skill, &wl.id) else {
+                continue;
+            };
+            if !skills.contains_key(skill.as_str()) || live.contains(&(skill.clone(), id.clone())) {
+                continue;
+            }
+            issues.push(Issue::warning(
+                "dangling_wikilink",
+                format!("wikilink `[[{skill}::{id}]]`"),
+                format!("wikilink `[[{skill}::{id}]]` resolves to no page"),
+            ));
+        }
+
         Ok(issues)
+    }
+
+    /// Which of `targets` exist as indexed instance pages, in one locked
+    /// pass. Keyed `(skill, id)`; absent means dangling.
+    async fn resolve_instance_targets(
+        &self,
+        targets: &HashSet<(&str, &str)>,
+    ) -> Result<HashSet<(String, String)>, IndexerError> {
+        let mut out = HashSet::new();
+        if targets.is_empty() {
+            return Ok(out);
+        }
+        let placeholders = std::iter::repeat_n("?", targets.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Match on slug and carry the skill back so two skills sharing a
+        // slug cannot vouch for one another.
+        let sql = format!(
+            "SELECT skill, slug FROM pages \
+             WHERE page_type = 'instance' AND slug IN ({placeholders})"
+        );
+        let bindings: Vec<String> = targets.iter().map(|(_, id)| (*id).to_owned()).collect();
+
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let param_refs: Vec<&dyn duckdb::ToSql> =
+            bindings.iter().map(|b| b as &dyn duckdb::ToSql).collect();
+        let mut rows = stmt.query(param_refs.as_slice())?;
+        while let Some(row) = rows.next()? {
+            let skill: Option<String> = row.get(0)?;
+            let slug: String = row.get(1)?;
+            if let Some(skill) = skill {
+                out.insert((skill, slug));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Typed wikilinks appearing in frontmatter *values*, paired with the
+    /// key they sit under so a required-field link can be graded.
+    fn frontmatter_wikilinks(fields: &YamlMapping) -> Vec<(String, WikilinkParsed)> {
+        let mut out = Vec::new();
+        for (key, value) in fields.iter() {
+            let Some(key) = key.as_str() else { continue };
+            let mut texts: Vec<&str> = Vec::new();
+            match value {
+                YamlValue::String(s) => texts.push(s),
+                YamlValue::Sequence(items) => {
+                    for item in items {
+                        if let YamlValue::String(s) = item {
+                            texts.push(s);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for text in texts {
+                for wl in parse_wikilinks(text) {
+                    out.push((key.to_owned(), wl));
+                }
+            }
+        }
+        out
     }
 
     /// Resolve a set of skill slugs in a single locked DuckDB pass.
