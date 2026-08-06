@@ -191,14 +191,14 @@ async fn handle_apply(
     op: Op,
 ) -> Result<Version, Error> {
     doc.import(op.as_bytes())?;
-    *op_count += 1;
-    let hlc = i64::try_from(*op_count).unwrap_or(i64::MAX);
-    // op_id derived from page_id+count keeps the (page_id, op_id)
-    // primary key collision-free without a UUID dependency. M4.6
-    // will replace this with the real Loro op id from the imported
-    // change set.
-    let op_id = format!("{page_id}:{op_count}");
-    backend.append_op(page_id, &op_id, hlc, &op).await?;
+    // The backend allocates the hlc from the persisted maximum and inserts
+    // under one lock. The actor no longer numbers its own ops: `op_count` was
+    // seeded from `max_hlc` once at open, so a whole-page `update_page`
+    // landing mid-session made it stale, and both writers then stamped
+    // different content with the same version (F1.3). `op_count` survives
+    // only as a "did this session change anything" marker for close.
+    let hlc = backend.append_op_next(page_id, &op).await?;
+    *op_count = u64::try_from(hlc).unwrap_or(*op_count + 1);
     Ok(Version::from_op_count(*op_count))
 }
 
@@ -217,6 +217,16 @@ async fn handle_close(
     // PR M4.5b).
     if commit && op_count > initial_op_count {
         let bytes = doc.export(ExportMode::Snapshot)?;
+        // Snapshot AT the last op's hlc, not above it. The snapshot records
+        // "the state as of op N" — it is not itself a new event, so
+        // allocating a fresh hlc here would advance the head without any
+        // content change and turn the version a client just received from
+        // `apply_op` into a stale `base_version`.
+        //
+        // Safe against the `(page_id, snapshot_hlc)` primary key now that ops
+        // allocate from the shared maximum: a snapshot already sitting at N
+        // implies the maximum was at least N, so this session's op would have
+        // been given N+1 rather than N.
         let hlc = i64::try_from(op_count).unwrap_or(i64::MAX);
         backend
             .snapshot(page_id, hlc, &Snapshot::new(bytes))
