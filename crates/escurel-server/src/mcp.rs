@@ -2909,6 +2909,69 @@ async fn tool_update_page(
         }
     }
 
+    // Refuse a write the dry run would have rejected. `update_page` did not
+    // validate at all, so `page validate` and `page update` disagreed — and
+    // agents call `update`. That is how an instance with no `id:` and links
+    // to non-existent customers got into a real tenant.
+    //
+    // Error severity only: warnings (a forward reference to a page not
+    // written yet) stay writable, which is what makes seeding and multi-part
+    // `continues:` chains work.
+    let issues = indexer
+        .validate(Some(&a.page_id), &content_to_write)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page validate: {e}")))?;
+    // Enforce LINK INTEGRITY and PAGE IDENTITY only — the checks that decide
+    // whether a page is reachable and whether its graph edges are real.
+    //
+    // Deliberately NOT `required_frontmatter` completeness. Enforcing that
+    // here immediately broke escurel's own `distill` workflow: the echo
+    // harness writes a `distill-claim` with no `target_page`, which its skill
+    // requires. That violation is real and predates this change — it was
+    // invisible because `update_page` never validated at all — but fixing it
+    // is a separate migration with its own blast radius, and it must not
+    // gate closing the link-integrity hole. `page validate` still reports it,
+    // as it always has.
+    let blocking: Vec<_> = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .filter(|i| match i.code.as_str() {
+            // A link that names a type or a page that does not exist. This is
+            // the hole being closed: an agent could cite
+            // `[[customer::invented-gmbh]]` and the graph would carry it.
+            "dangling_wikilink" => true,
+            // ...but only for a WIKILINK. The same code also fires at
+            // `frontmatter.skill` when a page declares a skill that is not
+            // seeded yet, which is ordering-sensitive: a bulk seed may write
+            // instances before their skill page, and escurel's own snapshot
+            // tests do exactly that. Pre-existing, not this change's business.
+            "unknown_skill" => i.location.starts_with("wikilink"),
+            // A page with no `id` indexes but can neither be expanded nor
+            // resolved — an identity failure, not a completeness one.
+            "frontmatter_required_key_missing" => i.location == "frontmatter.id",
+            _ => false,
+        })
+        .collect();
+
+    if !blocking.is_empty() {
+        // Log it: a refused write is otherwise invisible to the operator —
+        // the tool call succeeds and only the `ok:false` payload carries the
+        // reason, which an agent may swallow.
+        tracing::warn!(
+            page_id = %a.page_id,
+            issues = %blocking
+                .iter()
+                .map(|i| format!("{}@{}: {}", i.code, i.location, i.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+            "update_page rejected by validation"
+        );
+        return Ok(json!({
+            "ok": false,
+            "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
+        }));
+    }
+
     match indexer.update_page(&a.page_id, &content_to_write).await {
         Ok(()) => {
             // Advance the monotonic version: snapshot the new whole-page content
@@ -2958,9 +3021,13 @@ async fn tool_update_page(
             // Announce the confirmed write as an inbox event, so a consumer
             // can be woken by a write instead of polling for it.
             emit_page_event(indexer, state.webhook.as_ref(), &a, &new_version);
+            // Carry the non-blocking issues through. A dangling forward
+            // reference is written on purpose, but the writer still needs to
+            // be told — silently discarding the warning here is how a link to
+            // a page nobody ever creates becomes permanent.
             Ok(json!({
                 "ok": true,
-                "issues": [],
+                "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
                 "new_version": new_version,
                 "auto_merged": auto_merged,
             }))

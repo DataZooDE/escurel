@@ -143,8 +143,21 @@ async fn validate_batches_mixed_wikilink_skills_with_identical_issue_set() {
     assert_eq!(parse_warns.len(), 1, "{issues:?}");
     assert_eq!(parse_warns[0].severity, Severity::Warning);
 
-    // Total issue count is exactly these four.
-    assert_eq!(issues.len(), 4, "unexpected extra issues: {issues:?}");
+    // Dangling-target warnings: this fixture seeds skills but no
+    // instances, so every resolvable-skill link points at nothing.
+    // Warnings, not errors — none of them sits in a required field.
+    let dangling: Vec<_> = issues
+        .iter()
+        .filter(|i| i.code == "dangling_wikilink")
+        .collect();
+    assert_eq!(dangling.len(), 3, "{issues:?}");
+    assert!(
+        dangling.iter().all(|i| i.severity == Severity::Warning),
+        "{issues:?}"
+    );
+
+    // Total issue count is exactly these seven.
+    assert_eq!(issues.len(), 7, "unexpected extra issues: {issues:?}");
 }
 
 #[tokio::test]
@@ -161,4 +174,222 @@ async fn validate_instance_with_unknown_declared_skill_errors() {
     assert_eq!(issues.len(), 1, "{issues:?}");
     assert_eq!(issues[0].code, "unknown_skill");
     assert_eq!(issues[0].location, "frontmatter.skill");
+}
+
+// ── write-path validation gaps found by testing a live tenant ──────
+//
+// Three writes that should have been refused were accepted, each
+// surfacing as damage somewhere else later:
+//
+//   * a frontmatter wikilink was never examined at all — only body
+//     links were — so `about: "[[nosuchskill::x]]"` passed while the
+//     same link in the body was rejected;
+//   * no wikilink target was ever resolved, so an agent could name a
+//     customer that does not exist and the graph would carry the
+//     dangling edge;
+//   * an instance with no `id:` was accepted, producing a page that
+//     lists but cannot be expanded or resolved.
+
+const SKILL_OFFER: (&str, &str) = (
+    "markdown/skills/offer.md",
+    "---\n\
+     type: skill\n\
+     id: offer\n\
+     description: A quote.\n\
+     required_frontmatter:\n\
+       - customer\n\
+     ---\n\
+     # offer\n",
+);
+
+const INSTANCE_ACME: (&str, &str) = (
+    "markdown/instances/customer/acme.md",
+    "---\n\
+     type: instance\n\
+     skill: customer\n\
+     id: acme\n\
+     tier: enterprise\n\
+     status: active\n\
+     ---\n\
+     # Acme\n",
+);
+
+fn codes(issues: &[escurel_index::Issue]) -> Vec<&str> {
+    issues.iter().map(|i| i.code.as_str()).collect()
+}
+
+/// A wikilink in FRONTMATTER must be checked like one in the body.
+#[tokio::test]
+async fn unknown_skill_in_frontmatter_is_rejected_like_one_in_the_body() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER]).await;
+
+    let draft = "---\n\
+                 type: instance\n\
+                 skill: customer\n\
+                 id: acme\n\
+                 tier: enterprise\n\
+                 status: active\n\
+                 about: \"[[nosuchskill::x]]\"\n\
+                 ---\n\
+                 # Acme\n";
+    let issues = h.indexer.validate(None, draft).await.unwrap();
+    assert!(
+        codes(&issues).contains(&"unknown_skill"),
+        "a frontmatter wikilink must be validated too: {issues:?}"
+    );
+}
+
+/// A dangling target in a REQUIRED field is an error: that is the
+/// hallucinated-customer case, and the one nobody re-checks.
+#[tokio::test]
+async fn dangling_target_in_a_required_field_is_an_error() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER, SKILL_OFFER, INSTANCE_ACME]).await;
+
+    let draft = "---\n\
+                 type: instance\n\
+                 skill: offer\n\
+                 id: an26-9999\n\
+                 customer: \"[[customer::totally-made-up-gmbh]]\"\n\
+                 ---\n\
+                 # Offer\n";
+    let issues = h.indexer.validate(None, draft).await.unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.code == "dangling_wikilink" && i.severity == Severity::Error),
+        "a required-field link that resolves to nothing must be an error: {issues:?}"
+    );
+
+    // ...and the same field pointing at a real page is clean.
+    let good = "---\n\
+                type: instance\n\
+                skill: offer\n\
+                id: an26-9999\n\
+                customer: \"[[customer::acme]]\"\n\
+                ---\n\
+                # Offer\n";
+    let issues = h.indexer.validate(None, good).await.unwrap();
+    assert!(issues.is_empty(), "a resolvable link is clean: {issues:?}");
+}
+
+/// Everywhere else a dangling target is a WARNING, not an error.
+///
+/// Forward references are legitimate in a second brain and the tenant
+/// depends on them: a meeting's `continues:` was written pointing at
+/// the earlier session before that page existed. Hard-rejecting would
+/// have broken it.
+#[tokio::test]
+async fn dangling_target_outside_a_required_field_only_warns() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER, SKILL_MEETING]).await;
+
+    let draft = "---\n\
+                 type: instance\n\
+                 skill: customer\n\
+                 id: acme\n\
+                 tier: enterprise\n\
+                 status: active\n\
+                 continues: \"[[meeting::not-yet-written]]\"\n\
+                 ---\n\
+                 # Acme\n\n\
+                 Body also cites [[customer::future-prospect]].\n";
+    let issues = h.indexer.validate(None, draft).await.unwrap();
+
+    let dangling: Vec<_> = issues
+        .iter()
+        .filter(|i| i.code == "dangling_wikilink")
+        .collect();
+    assert_eq!(dangling.len(), 2, "both links reported: {issues:?}");
+    assert!(
+        dangling.iter().all(|i| i.severity == Severity::Warning),
+        "forward references warn, they do not block: {issues:?}"
+    );
+    assert!(
+        !issues.iter().any(|i| i.severity == Severity::Error),
+        "the draft is still writable: {issues:?}"
+    );
+}
+
+/// An instance with no `id:` produced a page that listed but could not
+/// be expanded (`invalid type: null, expected a string`) or resolved.
+#[tokio::test]
+async fn an_instance_without_an_id_is_rejected() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER]).await;
+
+    let draft = "---\n\
+                 type: instance\n\
+                 skill: customer\n\
+                 tier: enterprise\n\
+                 status: active\n\
+                 ---\n\
+                 # No id\n";
+    let issues = h.indexer.validate(None, draft).await.unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.code == "frontmatter_required_key_missing"
+                && i.location.contains("id")
+                && i.severity == Severity::Error),
+        "an instance needs an id: {issues:?}"
+    );
+}
+
+/// **The boundary this design rests on.**
+///
+/// Validation lives in the *authoring* path (`validate`, and the
+/// `update_page` MCP tool that calls it), never in
+/// `Indexer::update_page` — because `rebuild` re-indexes every page in
+/// the lane through that method, in arbitrary order. A page citing a
+/// page not yet reindexed is normal there, so hard-failing on a
+/// dangling link would break crash recovery: the corpus would refuse
+/// to rebuild itself.
+///
+/// If someone later "tightens" validation by moving it into
+/// `update_page`, this test is what fails.
+#[tokio::test]
+async fn rebuild_tolerates_dangling_links_that_authoring_would_flag() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER, SKILL_MEETING]).await;
+
+    // A page whose frontmatter cites a sibling that does not exist yet —
+    // exactly the `continues:` forward reference a multi-session workshop
+    // produces.
+    let forward = "---\n\
+                   type: instance\n\
+                   skill: customer\n\
+                   id: acme\n\
+                   tier: enterprise\n\
+                   status: active\n\
+                   continues: \"[[meeting::written-later]]\"\n\
+                   ---\n\
+                   # Acme\n";
+    let key = Key::new(TENANT, "markdown/instances/customer/acme.md".to_owned()).unwrap();
+    h.store
+        .write(&key, Bytes::from_static(forward.as_bytes()))
+        .await
+        .unwrap();
+    h.indexer
+        .update_page("markdown/instances/customer/acme.md", forward)
+        .await
+        .expect("the indexer write path must not enforce link targets");
+
+    // Authoring flags it — as a warning, so it is still writable.
+    let issues = h.indexer.validate(None, forward).await.unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.code == "dangling_wikilink" && i.severity == Severity::Warning),
+        "authoring surfaces the forward reference: {issues:?}"
+    );
+
+    // And a from-scratch rebuild succeeds regardless.
+    h.indexer
+        .rebuild()
+        .await
+        .expect("rebuild must not validate");
+    let drift = h.indexer.audit().await.expect("audit");
+    assert!(drift.is_clean(), "rebuild reconciles cleanly: {drift:?}");
 }
