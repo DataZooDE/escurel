@@ -257,6 +257,22 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
+                "purge_page",
+                "Permanently remove an ALREADY-ARCHIVED page from the lane, \
+                 finishing what `delete_page` started. `delete_page` retracts \
+                 and retains the markdown as an audit record; this gives that \
+                 record up. Refuses a LIVE page (`{code:not_archived}`) — purging \
+                 is not a shortcut past retraction. Returns \
+                 `{ok:false, issues:[{code:not_found}]}` for an absent page, so a \
+                 sweep is re-runnable. The mandatory `escurel` meta-skill cannot \
+                 be purged.",
+                json!({
+                    "type": "object",
+                    "required": ["page_id"],
+                    "properties": { "page_id": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
                 "move_page",
                 "Move a page to a new `page_id`, leaving NOTHING at the old one. \
                  Use this to restructure ids; use `delete_page` to retract \

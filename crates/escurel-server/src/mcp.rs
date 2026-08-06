@@ -455,8 +455,8 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         // `apply_op` is a write; `open_session` debits a session
         // slot (semaphore, not a token bucket) inside the tool
         // body; `close_session` is a cleanup and does not debit.
-        "update_page" | "delete_page" | "move_page" | "apply_op" | "append_message"
-        | "capture_event" | "assign_event" => Dimension::Writes,
+        "update_page" | "delete_page" | "move_page" | "purge_page" | "apply_op"
+        | "append_message" | "capture_event" | "assign_event" => Dimension::Writes,
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -534,6 +534,7 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     "update_page",
     "delete_page",
     "move_page",
+    "purge_page",
     "rebuild",
     "compact_lanes",
     "import_pack",
@@ -862,6 +863,7 @@ async fn dispatch_tools_call(
         "move_page" => {
             tool_move_page(state, indexer, caller, state.write_acl, params.arguments).await
         }
+        "purge_page" => tool_purge_page(state, indexer, params.arguments).await,
         "append_message" => {
             tool_append_message(indexer, caller, state.write_acl, params.arguments).await
         }

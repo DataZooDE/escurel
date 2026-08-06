@@ -177,3 +177,57 @@ async fn every_advertised_tool_has_an_input_schema() {
     assert!(missing.is_empty(), "no usable inputSchema: {missing:?}");
     p.shutdown().await;
 }
+
+/// Every *dispatchable* tool must be advertised.
+///
+/// The mirror of `every_advertised_tool_is_dispatchable`, and the direction
+/// that actually bit. When this file was first written it only checked
+/// advertised → dispatchable, so a tool with a dispatch arm and no schema
+/// entry passed cleanly. That is exactly what happened when a `purge_page`
+/// tool added on `main` met a branch that had moved `tools_list_payload` into
+/// its own module: the merge kept the dispatch arm and dropped the schema
+/// entry, leaving the tool callable but invisible to discovery. A one-way
+/// conformance check is half a guard.
+///
+/// The dispatchable set is read from the reader-mode gate lists, which
+/// enumerate tool names independently of `tools_list_payload` — so this test
+/// compares two registries that have no common source, which is the point.
+#[tokio::test]
+async fn every_gated_tool_name_is_advertised() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        ..Default::default()
+    })
+    .await;
+
+    let advertised: BTreeSet<String> = advertised(&p)
+        .await
+        .iter()
+        .map(|t| t["name"].as_str().unwrap_or_default().to_owned())
+        .collect();
+
+    // Names the server itself treats as real tools elsewhere in its own
+    // config. If a name is worth gating, it is worth discovering.
+    let gated = [
+        "update_page",
+        "delete_page",
+        "move_page",
+        "purge_page",
+        "apply_op",
+        "append_message",
+        "capture_event",
+        "assign_event",
+    ];
+
+    let missing: Vec<&str> = gated
+        .iter()
+        .copied()
+        .filter(|n| !advertised.contains(*n))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "dispatchable but not advertised by tools/list: {missing:?}"
+    );
+    p.shutdown().await;
+}

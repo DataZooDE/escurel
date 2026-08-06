@@ -219,6 +219,8 @@ pub enum IndexerError {
     NotUtf8 { page_id: String },
     #[error("a live page already exists at {page_id}")]
     PageExists { page_id: String },
+    #[error("{page_id} is not archived; retract it with delete_page before purging")]
+    NotArchived { page_id: String },
     #[error("serde_json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("embedder error: {0}")]
@@ -963,6 +965,59 @@ impl Indexer {
         self.store.write(&key, Bytes::from(archived)).await?;
 
         // Drop the derived-index rows in one transaction.
+        {
+            let mut conn = self.conn.lock().await;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
+            tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
+            tx.execute("DELETE FROM links WHERE src_page = ?", params![page_id])?;
+            tx.commit()?;
+        }
+        self.bump_mutation_epoch();
+        Ok(true)
+    }
+
+    /// Permanently remove an **already-archived** page from the lane.
+    ///
+    /// `delete_page` retracts and retains: the markdown stays, stamped
+    /// `archived: true`, as the audit record. That is right for a retraction,
+    /// and it is also what an id restructure done as update+delete leaves
+    /// behind — on one real tenant, 64 husks beside the live pages in the
+    /// canonical store, visible to anyone browsing the folder.
+    ///
+    /// This finishes that job. It refuses a LIVE page: purging is not a
+    /// shortcut past retraction, and giving up the audit record has to be a
+    /// deliberate second act rather than a typo. Returns `false` for an
+    /// absent page so a sweep is re-runnable.
+    pub async fn purge_page(&self, page_id: &str) -> Result<bool, IndexerError> {
+        let _write = self.write_lock.lock().await;
+
+        if crate::meta_skill::is_meta_skill_page(page_id) {
+            return Err(IndexerError::MetaSkillProtected {
+                reason: "the mandatory `escurel` meta-skill cannot be purged".to_owned(),
+            });
+        }
+
+        let key = Key::new(self.tenant.as_str(), page_id.to_owned())?;
+        let existing = match self.store.read(&key).await {
+            Ok(bytes) => bytes,
+            Err(escurel_storage::StoreError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+
+        let archived = std::str::from_utf8(&existing)
+            .map(is_archived)
+            .unwrap_or(false);
+        if !archived {
+            return Err(IndexerError::NotArchived {
+                page_id: page_id.to_owned(),
+            });
+        }
+
+        self.store.delete(&key).await?;
+
+        // The index rows went at delete time; drop them again defensively so a
+        // purge is also a repair for a half-retracted page.
         {
             let mut conn = self.conn.lock().await;
             let tx = conn.transaction()?;

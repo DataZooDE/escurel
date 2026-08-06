@@ -273,6 +273,68 @@ pub(super) async fn tool_update_page(
         }
     }
 
+    // Refuse a write the dry run would have rejected. `update_page` did not
+    // validate at all, so `page validate` and `page update` disagreed — and
+    // agents call `update`. That is how an instance with no `id:` and links
+    // to non-existent customers got into a real tenant.
+    //
+    // Error severity only: warnings (a forward reference to a page not
+    // written yet) stay writable, which is what makes seeding and multi-part
+    // `continues:` chains work.
+    let issues = indexer
+        .validate(Some(&a.page_id), &content_to_write)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page validate: {e}")))?;
+    // Enforce LINK INTEGRITY and PAGE IDENTITY only — the checks that decide
+    // whether a page is reachable and whether its graph edges are real.
+    //
+    // Deliberately NOT `required_frontmatter` completeness. Enforcing that
+    // here immediately broke escurel's own `distill` workflow: the echo
+    // harness writes a `distill-claim` with no `target_page`, which its skill
+    // requires. That violation is real and predates this change — it was
+    // invisible because `update_page` never validated at all — but fixing it
+    // is a separate migration with its own blast radius, and it must not
+    // gate closing the link-integrity hole. `page validate` still reports it,
+    // as it always has.
+    let blocking: Vec<_> = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .filter(|i| match i.code.as_str() {
+            // A link that names a type or a page that does not exist. This is
+            // the hole being closed: an agent could cite
+            // `[[customer::invented-gmbh]]` and the graph would carry it.
+            "dangling_wikilink" => true,
+            // ...but only for a WIKILINK. The same code also fires at
+            // `frontmatter.skill` when a page declares a skill that is not
+            // seeded yet, which is ordering-sensitive: a bulk seed may write
+            // instances before their skill page, and escurel's own snapshot
+            // tests do exactly that. Pre-existing, not this change's business.
+            "unknown_skill" => i.location.starts_with("wikilink"),
+            // A page with no `id` indexes but can neither be expanded nor
+            // resolved — an identity failure, not a completeness one.
+            "frontmatter_required_key_missing" => i.location == "frontmatter.id",
+            _ => false,
+        })
+        .collect();
+
+    if !blocking.is_empty() {
+        // Log it: a refused write is otherwise invisible to the operator —
+        // the tool call succeeds and only the `ok:false` payload carries the
+        // reason, which an agent may swallow.
+        tracing::warn!(
+            page_id = %a.page_id,
+            issues = %blocking
+                .iter()
+                .map(|i| format!("{}@{}: {}", i.code, i.location, i.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+            "update_page rejected by validation"
+        );
+        return Ok(json!({
+            "ok": false,
+            "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
+        }));
+    }
     match indexer.update_page(&a.page_id, &content_to_write).await {
         Ok(()) => {
             // Advance the monotonic version: snapshot the new whole-page content
@@ -1128,4 +1190,58 @@ pub(super) fn event_to_json(e: &EventInfo) -> Value {
         "body": e.body,
         "provenance": e.provenance,
     })
+}
+
+#[derive(Deserialize)]
+pub(super) struct PurgePageArgs {
+    page_id: String,
+}
+
+/// `purge_page`: hard-remove an archived husk. Admin-shaped rather than
+/// agent-shaped — it destroys the audit record a soft delete kept, so it is
+/// gated on the write role and refuses anything still live.
+pub(super) async fn tool_purge_page(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: PurgePageArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("purge_page: {e}")))?;
+
+    match indexer.purge_page(&a.page_id).await {
+        Ok(true) => {
+            state.metrics.inc_write(indexer.tenant(), "human");
+            Ok(json!({ "ok": true, "issues": [], "page_id": a.page_id }))
+        }
+        Ok(false) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_found",
+                "location": "page_id",
+                "message": format!("no page `{}` to purge", a.page_id),
+            }],
+        })),
+        Err(IndexerError::NotArchived { page_id }) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_archived",
+                "location": "page_id",
+                "message": format!(
+                    "`{page_id}` is live; retract it with delete_page before purging"
+                ),
+            }],
+        })),
+        Err(IndexerError::MetaSkillProtected { reason }) => Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "meta_skill_protected",
+                "location": "frontmatter",
+                "message": reason,
+            }],
+        })),
+        Err(e) => Err(JsonRpcError::internal(format!("purge_page: {e}"))),
+    }
 }
