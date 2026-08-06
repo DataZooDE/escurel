@@ -1376,6 +1376,29 @@ pub(super) struct RebasePackArgs {
 /// Trust/validation mirrors `import_pack` (verify before unpack, whole
 /// pack validates before the first write); orphaned base pages the new
 /// version no longer ships are removed; the pin moves LAST.
+/// Base pages the incoming pack version no longer carries.
+///
+/// Computed identically by the dry-run and the apply paths; it lived twice,
+/// verbatim, and two copies that must agree with nothing making them agree is
+/// how a plan and its execution drift apart. See
+/// `docs/notes/concurrency-fix-plan.md` F2.3.
+pub(super) async fn orphaned_base_pages(
+    indexer: &Indexer,
+    pack_id: &str,
+    incoming: &[(String, String)],
+) -> Result<Vec<String>, JsonRpcError> {
+    let old_page_ids = indexer
+        .base_page_ids(pack_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("rebase_pack orphan scan: {e}")))?;
+    let new_ids: std::collections::HashSet<&str> =
+        incoming.iter().map(|(id, _)| id.as_str()).collect();
+    Ok(old_page_ids
+        .into_iter()
+        .filter(|id| !new_ids.contains(id.as_str()))
+        .collect())
+}
+
 pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
     let a: RebasePackArgs = parse_args(args, "rebase_pack")?;
     let Some(secret) = state.pack_secret.clone() else {
@@ -1585,22 +1608,76 @@ pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Va
             }
         }
     }
+
+    // Upstream DELETIONS of shadowed skills (F2.2).
+    //
+    // The scan above iterates the incoming version, so a skill present in vN
+    // and dropped in vN+1 never enters it and was never checked against an
+    // existing overlay. The apply phase then removed the base page as an
+    // ordinary orphan and raised nothing: `ok: true`, zero issues, and every
+    // base-inherited field the overlay did not itself override silently
+    // vanished from what an agent reads. No bytes were lost -- removal is
+    // scoped to the reserved base prefix -- which is exactly what made it
+    // hard to notice.
+    //
+    // Orphans are therefore re-examined here for a live shadow. This is the
+    // one place the scan must look at the OLD version rather than the new.
+    for orphan_id in orphaned_base_pages(&indexer, &a.manifest.id, &stamped_pages).await? {
+        let Some(content) = indexer
+            .page_content(&orphan_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack orphan read: {e}")))?
+        else {
+            continue;
+        };
+        let Ok(orphan) = escurel_md::parse(&content) else {
+            continue;
+        };
+        if orphan.frontmatter.page_type != PageType::Skill {
+            continue;
+        }
+        let skill_id = orphan
+            .frontmatter
+            .fields
+            .get("id")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if skill_id.is_empty() {
+            continue;
+        }
+        let Some(overlay_id) = indexer
+            .overlay_skill_page_id(&skill_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack orphan shadow: {e}")))?
+        else {
+            // No overlay depends on it; removing it is an ordinary orphan
+            // cleanup and already reported through `pages_removed`.
+            continue;
+        };
+        issues.push(json!({
+            "severity": "error",
+            "code": "rebase_orphaned_shadow",
+            "page_id": overlay_id,
+            "location": format!("skill {skill_id}"),
+            "message": format!(
+                "`{}` v{} no longer ships skill `{skill_id}`, but a tenant overlay \
+                 shadows it — the overlay will keep its own fields and lose every \
+                 field it inherited from the base. Review the overlay, then re-run \
+                 with acknowledge_conflicts=true",
+                a.manifest.id, a.manifest.version
+            ),
+        }));
+    }
     // Plan only: everything above (verify, unpack, stamp, collision +
     // conflict scans) ran exactly as a real rebase would; report the
     // would-import / would-remove counts and apply NOTHING. `ok` means
     // "a real run with these SAME arguments would apply" — clean, or
     // conflicted-but-acknowledged; the issues stay listed either way.
     if a.dry_run {
-        let old_page_ids = indexer
-            .base_page_ids(&a.manifest.id)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("rebase_pack orphan scan: {e}")))?;
-        let new_ids: std::collections::HashSet<&str> =
-            stamped_pages.iter().map(|(id, _)| id.as_str()).collect();
-        let would_remove = old_page_ids
-            .iter()
-            .filter(|id| !new_ids.contains(id.as_str()))
-            .count();
+        let would_remove = orphaned_base_pages(&indexer, &a.manifest.id, &stamped_pages)
+            .await?
+            .len();
         return Ok(json!({
             "ok": issues.is_empty() || a.acknowledge_conflicts,
             "dry_run": true,
@@ -1623,12 +1700,7 @@ pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Va
     // block leaves v{N+1} pages with the old pin — recovery is re-running
     // the same rebase (page upsert + orphan removal are idempotent), and
     // the pin never claims a version whose pages didn't fully land.
-    let old_page_ids = indexer
-        .base_page_ids(&a.manifest.id)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("rebase_pack orphan scan: {e}")))?;
-    let new_ids: std::collections::HashSet<&str> =
-        stamped_pages.iter().map(|(id, _)| id.as_str()).collect();
+    let orphans = orphaned_base_pages(&indexer, &a.manifest.id, &stamped_pages).await?;
     let mut pages_imported = 0u32;
     for (page_id, stamped) in &stamped_pages {
         indexer
@@ -1638,13 +1710,12 @@ pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Va
         pages_imported += 1;
     }
     let mut pages_removed = 0u32;
-    for old_id in &old_page_ids {
-        if !new_ids.contains(old_id.as_str()) {
-            indexer.remove_page(old_id).await.map_err(|e| {
-                JsonRpcError::internal(format!("rebase_pack remove `{old_id}`: {e}"))
-            })?;
-            pages_removed += 1;
-        }
+    for old_id in &orphans {
+        indexer
+            .remove_page(old_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack remove `{old_id}`: {e}")))?;
+        pages_removed += 1;
     }
     indexer
         .refresh_fts()
