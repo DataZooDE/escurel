@@ -22,6 +22,62 @@ pub(super) struct UpdatePageArgs {
     provenance: Option<Value>,
 }
 
+/// What the compare-and-swap decided, named.
+///
+/// The staleness check used to be sixty lines of nested `if let` inline in
+/// `tool_update_page`, which is why it took three readings to answer "what
+/// does the gate actually decide". There are exactly three answers.
+pub(super) enum Cas {
+    /// The caller's base matched head, or sent none: persist the draft.
+    Clean,
+    /// The base was stale but the edits merged cleanly; persist the merge.
+    Merged(String),
+    /// Stale and unmergeable. Carries the ready-to-return issue, including
+    /// `head_content` so the caller can re-draft against it.
+    Conflict(Value),
+}
+
+/// Decide the compare-and-swap for one `update_page`.
+///
+/// MUST be called with `state.update_page_gate` held: the staleness decision
+/// and the write that follows it are one atomic step, and separating them is
+/// precisely the race the gate exists to prevent.
+pub(super) async fn resolve_base_version(
+    state: &crate::server::AppState,
+    page_id: &str,
+    base_version: Option<&str>,
+    draft: &str,
+    head_hlc: u64,
+) -> Cas {
+    let (Some(backend), Some(base)) = (state.crdt_backend.as_ref(), base_version) else {
+        return Cas::Clean;
+    };
+    let head = Version::from_op_count(head_hlc);
+    if base == head.as_str() {
+        return Cas::Clean;
+    }
+    match try_auto_merge(backend, page_id, base, draft).await {
+        Some(merged) => Cas::Merged(merged),
+        None => {
+            let head_content = hydrate_content(backend, page_id).await.ok().flatten();
+            Cas::Conflict(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "conflict",
+                    "location": "base_version",
+                    "message": format!(
+                        "base_version {base} is stale (head is {}) and the edits could \
+                         not be auto-merged; re-draft against head_content",
+                        head.as_str()
+                    ),
+                }],
+                "head_content": head_content,
+            }))
+        }
+    }
+}
+
 pub(super) async fn tool_update_page(
     state: &crate::server::AppState,
     indexer: &Indexer,
@@ -197,36 +253,19 @@ pub(super) async fn tool_update_page(
     };
     // The content we ultimately persist — an auto-merge may replace the raw
     // incoming draft with the merged result.
-    let mut content_to_write = a.content.clone();
-    let mut auto_merged = false;
-    if let (Some(backend), Some(base)) = (state.crdt_backend.as_ref(), a.base_version.as_deref()) {
-        let head = Version::from_op_count(head_hlc);
-        if base != head.as_str() {
-            match try_auto_merge(backend, &a.page_id, base, &a.content).await {
-                Some(merged) => {
-                    content_to_write = merged;
-                    auto_merged = true;
-                }
-                None => {
-                    let head_content = hydrate_content(backend, &a.page_id).await.ok().flatten();
-                    return Ok(json!({
-                        "ok": false,
-                        "issues": [{
-                            "severity": "error",
-                            "code": "conflict",
-                            "location": "base_version",
-                            "message": format!(
-                                "base_version {base} is stale (head is {}) and the edits could \
-                                 not be auto-merged; re-draft against head_content",
-                                head.as_str()
-                            ),
-                        }],
-                        "head_content": head_content,
-                    }));
-                }
-            }
-        }
-    }
+    let (content_to_write, auto_merged) = match resolve_base_version(
+        state,
+        &a.page_id,
+        a.base_version.as_deref(),
+        &a.content,
+        head_hlc,
+    )
+    .await
+    {
+        Cas::Conflict(issue) => return Ok(issue),
+        Cas::Clean => (a.content.clone(), false),
+        Cas::Merged(merged) => (merged, true),
+    };
 
     // Re-run the write guards on the MERGED artifact (agy review): the
     // draft-side checks above saw `a.content`, but a clean auto-merge
