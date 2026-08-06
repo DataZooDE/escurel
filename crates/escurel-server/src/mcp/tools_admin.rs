@@ -1399,51 +1399,40 @@ pub(super) async fn orphaned_base_pages(
         .collect())
 }
 
-pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
-    let a: RebasePackArgs = parse_args(args, "rebase_pack")?;
-    let Some(secret) = state.pack_secret.clone() else {
-        return Err(JsonRpcError::internal(
-            "pack_secret_not_configured: rebase_pack cannot verify a pack without \
-             ESCUREL_PACK_SECRET",
-        ));
-    };
-    if !crate::pack::is_safe_pack_token(&a.manifest.id)
-        || !crate::pack::is_safe_pack_token(&a.manifest.vertical)
-    {
-        return Err(JsonRpcError::internal(
-            "pack_id_invalid: id and vertical must be safe tokens",
-        ));
-    }
-    if a.manifest.version == 0 {
-        return Err(JsonRpcError::internal(
-            "pack_candidate_not_importable: version 0 is the promotion-candidate \
-             sentinel; a rebase target is a published version",
-        ));
-    }
-    let indexer = admin_indexer(state)?;
-    ensure_tenant_matches(&indexer, &a.tenant_id)?;
-
+/// Verify the incoming tarball, confirm it is a real upgrade of a live
+/// subscription, and stamp every page with the new base layer.
+///
+/// Nothing here writes. The whole version validates and stamps before the
+/// first write, which is the same discipline `import_pack` follows: a pack
+/// that fails halfway must leave the node on its old version, not on half of
+/// two.
+async fn verify_and_stamp_incoming(
+    indexer: &Indexer,
+    manifest: &escurel_types::PackManifest,
+    tarball_b64: &str,
+    secret: &str,
+) -> Result<(Vec<(String, String)>, u32, String), JsonRpcError> {
     let tarball = B64
-        .decode(a.tarball_b64.as_bytes())
+        .decode(tarball_b64.as_bytes())
         .map_err(|e| JsonRpcError::invalid_params(format!("tarball_b64 is not base64: {e}")))?;
-    crate::pack::verify_pack(&a.manifest, &tarball, &secret).map_err(JsonRpcError::internal)?;
+    crate::pack::verify_pack(manifest, &tarball, secret).map_err(JsonRpcError::internal)?;
 
     let subs = indexer
         .list_pack_subscriptions()
         .await
         .map_err(|e| JsonRpcError::internal(format!("rebase_pack subscriptions: {e}")))?;
-    let Some(existing) = subs.iter().find(|s| s.pack_id == a.manifest.id) else {
+    let Some(existing) = subs.iter().find(|s| s.pack_id == manifest.id) else {
         return Err(JsonRpcError::internal(format!(
             "pack_not_subscribed: `{}` has no subscription on this node — use \
              import_pack for a first subscription",
-            a.manifest.id
+            manifest.id
         )));
     };
-    if a.manifest.version <= existing.version {
+    if manifest.version <= existing.version {
         return Err(JsonRpcError::internal(format!(
             "pack_rebase_not_an_upgrade: `{}` is pinned at v{}; a rebase target must \
              be a later version (same-version refreshes are import_pack's job)",
-            a.manifest.id, existing.version
+            manifest.id, existing.version
         )));
     }
     let from_version = existing.version;
@@ -1451,19 +1440,30 @@ pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Va
     // Validate + stamp the WHOLE incoming version before any write —
     // the same discipline as import.
     let entries = crate::pack::unpack_entries(&tarball).map_err(JsonRpcError::internal)?;
-    let layer = format!("base@{}@v{}", a.manifest.id, a.manifest.version);
+    let layer = format!("base@{}@v{}", manifest.id, manifest.version);
     let prefix = format!(
         "{}{}/",
         escurel_index::pack::RESERVED_BASE_PREFIX,
-        a.manifest.id
+        manifest.id
     );
     let mut stamped_pages: Vec<(String, String)> = Vec::with_capacity(entries.len());
     for (rel, content) in &entries {
         let stamped = crate::pack::stamp_layer(content, &layer).map_err(JsonRpcError::internal)?;
         stamped_pages.push((format!("{prefix}{rel}"), stamped));
     }
+    Ok((stamped_pages, from_version, prefix))
+}
+
+/// Reject a pack that ships a skill twice, or one another pack already
+/// provides. Runs before any write, so a collision cannot land half a pack.
+async fn check_skill_collisions(
+    indexer: &Indexer,
+    manifest: &escurel_types::PackManifest,
+    stamped_pages: &[(String, String)],
+    prefix: &str,
+) -> Result<(), JsonRpcError> {
     let mut skill_ids_in_pack: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (page_id, stamped) in &stamped_pages {
+    for (page_id, stamped) in stamped_pages {
         let Ok(parsed) = escurel_md::parse(stamped) else {
             continue;
         };
@@ -1483,30 +1483,41 @@ pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Va
         if !skill_ids_in_pack.insert(skill_id.clone()) {
             return Err(JsonRpcError::internal(format!(
                 "pack_skill_collision: `{}` v{} ships skill `{skill_id}` more than once",
-                a.manifest.id, a.manifest.version
+                manifest.id, manifest.version
             )));
         }
         if let Some(other) = indexer
             .skill_page_conflict(&skill_id, page_id)
             .await
             .map_err(|e| JsonRpcError::internal(format!("rebase_pack conflict check: {e}")))?
-            && !other.starts_with(&prefix)
+            && !other.starts_with(prefix)
         {
             return Err(JsonRpcError::internal(format!(
                 "pack_skill_collision: `{}` v{} ships skill `{skill_id}` but another \
                  pack provides it at `{other}`",
-                a.manifest.id, a.manifest.version
+                manifest.id, manifest.version
             )));
         }
     }
+    Ok(())
+}
 
-    // Conflict detection (REQ-REBASE-01): for every incoming page whose
-    // OLD base a tenant overlay shadows, a field the upstream changed
-    // AND the overlay overrides is a conflict the operator must see.
-    // "Field" includes the body. Deterministic set intersection — no
-    // merge, no heuristics.
+/// REQ-REBASE-01: a field the upstream changed AND a tenant overlay overrides
+/// is a conflict the operator must see. Deterministic set intersection — no
+/// merge, no heuristics.
+///
+/// This scan iterates the INCOMING version, which is why it cannot see an
+/// upstream deletion; that case belongs to
+/// [`detect_orphaned_shadows`]. Keeping the two apart is the point of the
+/// split: one function reading `stamped_pages` looked complete, and the
+/// missing case was invisible for exactly as long as they were one function.
+async fn detect_shadow_conflicts(
+    indexer: &Indexer,
+    manifest: &escurel_types::PackManifest,
+    stamped_pages: &[(String, String)],
+) -> Result<Vec<Value>, JsonRpcError> {
     let mut issues: Vec<Value> = Vec::new();
-    for (_page_id, stamped) in &stamped_pages {
+    for (_page_id, stamped) in stamped_pages {
         let Ok(new_page) = escurel_md::parse(stamped) else {
             continue;
         };
@@ -1544,7 +1555,7 @@ pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Va
         // pack's namespace, so an upstream file move cannot dodge the
         // diff (codex review). Absent for skills new in vN+1.
         let Some(old_base_id) = indexer
-            .pack_base_skill_page_id(&skill_id, &a.manifest.id)
+            .pack_base_skill_page_id(&skill_id, &manifest.id)
             .await
             .map_err(|e| JsonRpcError::internal(format!("rebase_pack base lookup: {e}")))?
         else {
@@ -1602,27 +1613,35 @@ pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Va
                         "the tenant overlay overrides `{key}` of skill `{skill_id}` and \
                          `{}` v{} also changes it — review the shadow, then re-run with \
                          acknowledge_conflicts=true",
-                        a.manifest.id, a.manifest.version
+                        manifest.id, manifest.version
                     ),
                 }));
             }
         }
     }
+    Ok(issues)
+}
 
-    // Upstream DELETIONS of shadowed skills (F2.2).
-    //
-    // The scan above iterates the incoming version, so a skill present in vN
-    // and dropped in vN+1 never enters it and was never checked against an
-    // existing overlay. The apply phase then removed the base page as an
-    // ordinary orphan and raised nothing: `ok: true`, zero issues, and every
-    // base-inherited field the overlay did not itself override silently
-    // vanished from what an agent reads. No bytes were lost -- removal is
-    // scoped to the reserved base prefix -- which is exactly what made it
-    // hard to notice.
-    //
-    // Orphans are therefore re-examined here for a live shadow. This is the
-    // one place the scan must look at the OLD version rather than the new.
-    for orphan_id in orphaned_base_pages(&indexer, &a.manifest.id, &stamped_pages).await? {
+/// F2.2: the mirror of [`detect_shadow_conflicts`] — a skill present in vN,
+/// dropped in vN+1, and shadowed by a tenant overlay.
+///
+/// The conflict scan iterates the incoming version, so a dropped skill never
+/// enters it and was never checked against an existing overlay. The apply
+/// phase then removed the base page as an ordinary orphan and raised nothing:
+/// `ok: true`, zero issues, and every base-inherited field the overlay did
+/// not itself override silently vanished from what an agent reads. No bytes
+/// were lost — removal is scoped to the reserved base prefix — which is
+/// exactly what made it hard to notice.
+///
+/// Orphans are therefore re-examined here for a live shadow. This is the one
+/// scan that must look at the OLD version rather than the new.
+async fn detect_orphaned_shadows(
+    indexer: &Indexer,
+    manifest: &escurel_types::PackManifest,
+    stamped_pages: &[(String, String)],
+) -> Result<Vec<Value>, JsonRpcError> {
+    let mut issues: Vec<Value> = Vec::new();
+    for orphan_id in orphaned_base_pages(indexer, &manifest.id, stamped_pages).await? {
         let Some(content) = indexer
             .page_content(&orphan_id)
             .await
@@ -1665,10 +1684,116 @@ pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Va
                  shadows it — the overlay will keep its own fields and lose every \
                  field it inherited from the base. Review the overlay, then re-run \
                  with acknowledge_conflicts=true",
-                a.manifest.id, a.manifest.version
+                manifest.id, manifest.version
             ),
         }));
     }
+    Ok(issues)
+}
+
+/// Land the new version and remove the pages it dropped.
+///
+/// Idempotent by construction — page upsert and orphan removal both are —
+/// which is what makes re-running the same rebase the recovery procedure for
+/// a crash inside this phase.
+async fn apply_rebase_pages(
+    indexer: &Indexer,
+    manifest: &escurel_types::PackManifest,
+    stamped_pages: &[(String, String)],
+) -> Result<(u32, u32), JsonRpcError> {
+    let orphans = orphaned_base_pages(indexer, &manifest.id, stamped_pages).await?;
+    let mut pages_imported = 0u32;
+    for (page_id, stamped) in stamped_pages {
+        indexer
+            .update_page(page_id, stamped)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack `{page_id}`: {e}")))?;
+        pages_imported += 1;
+    }
+    let mut pages_removed = 0u32;
+    for old_id in &orphans {
+        indexer
+            .remove_page(old_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("rebase_pack remove `{old_id}`: {e}")))?;
+        pages_removed += 1;
+    }
+    indexer
+        .refresh_fts()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("rebase_pack refresh_fts: {e}")))?;
+    indexer
+        .record_pack_subscription(&escurel_index::pack::PackSubscription {
+            pack_id: manifest.id.clone(),
+            version: manifest.version,
+            vertical: manifest.vertical.clone(),
+            publisher: manifest.publisher.clone(),
+            content_hash: manifest.content_hash.clone(),
+            signature: manifest.signature.clone(),
+        })
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("rebase_pack subscription: {e}")))?;
+    Ok((pages_imported, pages_removed))
+}
+
+/// Move the version pin — LAST, and only once every page has landed.
+///
+/// The ordering is the crash-safety property: the pin never claims a version
+/// whose pages did not fully land, so a crash mid-apply leaves vN+1 pages
+/// under the old pin and re-running the same rebase completes it.
+async fn commit_rebase_pin(
+    indexer: &Indexer,
+    manifest: &escurel_types::PackManifest,
+) -> Result<(), JsonRpcError> {
+    indexer
+        .refresh_fts()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("rebase_pack refresh_fts: {e}")))?;
+    indexer
+        .record_pack_subscription(&escurel_index::pack::PackSubscription {
+            pack_id: manifest.id.clone(),
+            version: manifest.version,
+            vertical: manifest.vertical.clone(),
+            publisher: manifest.publisher.clone(),
+            content_hash: manifest.content_hash.clone(),
+            signature: manifest.signature.clone(),
+        })
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("rebase_pack subscription: {e}")))?;
+    Ok(())
+}
+
+pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Value, JsonRpcError> {
+    let a: RebasePackArgs = parse_args(args, "rebase_pack")?;
+    let Some(secret) = state.pack_secret.clone() else {
+        return Err(JsonRpcError::internal(
+            "pack_secret_not_configured: rebase_pack cannot verify a pack without \
+             ESCUREL_PACK_SECRET",
+        ));
+    };
+    if !crate::pack::is_safe_pack_token(&a.manifest.id)
+        || !crate::pack::is_safe_pack_token(&a.manifest.vertical)
+    {
+        return Err(JsonRpcError::internal(
+            "pack_id_invalid: id and vertical must be safe tokens",
+        ));
+    }
+    if a.manifest.version == 0 {
+        return Err(JsonRpcError::internal(
+            "pack_candidate_not_importable: version 0 is the promotion-candidate \
+             sentinel; a rebase target is a published version",
+        ));
+    }
+    let indexer = admin_indexer(state)?;
+    ensure_tenant_matches(&indexer, &a.tenant_id)?;
+
+    let (stamped_pages, from_version, prefix) =
+        verify_and_stamp_incoming(&indexer, &a.manifest, &a.tarball_b64, &secret).await?;
+    check_skill_collisions(&indexer, &a.manifest, &stamped_pages, &prefix).await?;
+
+    let mut issues = detect_shadow_conflicts(&indexer, &a.manifest, &stamped_pages).await?;
+    issues.extend(detect_orphaned_shadows(&indexer, &a.manifest, &stamped_pages).await?);
+
     // Plan only: everything above (verify, unpack, stamp, collision +
     // conflict scans) ran exactly as a real rebase would; report the
     // would-import / would-remove counts and apply NOTHING. `ok` means
@@ -1694,44 +1819,11 @@ pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Va
     }
     let conflicts_acknowledged = issues.len() as u32;
 
-    // Apply: land the new version, remove orphans, move the pin LAST.
-    // Crash-recovery note (agy review): conflicts block BEFORE any write,
-    // so human review always happened by this point; a crash inside this
-    // block leaves v{N+1} pages with the old pin — recovery is re-running
-    // the same rebase (page upsert + orphan removal are idempotent), and
-    // the pin never claims a version whose pages didn't fully land.
-    let orphans = orphaned_base_pages(&indexer, &a.manifest.id, &stamped_pages).await?;
-    let mut pages_imported = 0u32;
-    for (page_id, stamped) in &stamped_pages {
-        indexer
-            .update_page(page_id, stamped)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("rebase_pack `{page_id}`: {e}")))?;
-        pages_imported += 1;
-    }
-    let mut pages_removed = 0u32;
-    for old_id in &orphans {
-        indexer
-            .remove_page(old_id)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("rebase_pack remove `{old_id}`: {e}")))?;
-        pages_removed += 1;
-    }
-    indexer
-        .refresh_fts()
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("rebase_pack refresh_fts: {e}")))?;
-    indexer
-        .record_pack_subscription(&escurel_index::pack::PackSubscription {
-            pack_id: a.manifest.id.clone(),
-            version: a.manifest.version,
-            vertical: a.manifest.vertical.clone(),
-            publisher: a.manifest.publisher.clone(),
-            content_hash: a.manifest.content_hash.clone(),
-            signature: a.manifest.signature.clone(),
-        })
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("rebase_pack subscription: {e}")))?;
+    // Conflicts block BEFORE any write, so human review always happened by
+    // this point. Then: land the pages, and move the pin LAST.
+    let (pages_imported, pages_removed) =
+        apply_rebase_pages(&indexer, &a.manifest, &stamped_pages).await?;
+    commit_rebase_pin(&indexer, &a.manifest).await?;
 
     Ok(json!({
         "ok": true,
