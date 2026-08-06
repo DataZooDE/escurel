@@ -721,7 +721,8 @@ async fn dispatch_tools_call(
         }
         "close_session" => {
             return tool_close_session(
-                state.crdt_backend.as_ref(),
+                state,
+                current_indexer.as_deref(),
                 Arc::clone(&state.sessions),
                 params.arguments,
             )
@@ -1111,17 +1112,79 @@ fn default_commit() -> bool {
     true
 }
 
+/// `close_session`: end a live editing session and, on commit, **write the
+/// merged body through to the indexer**.
+///
+/// ## Why the commit writes through (F1, Option A)
+///
+/// This used to call `sessions.close` and nothing else, which wrote only a
+/// CRDT snapshot. `expand` composes its reply from two stores — `body` from
+/// the indexer, `version` from `backend.max_hlc` — so a committed session
+/// advanced the version a client reads while leaving the body it reads
+/// stale. A well-behaved client that read that pair, edited, and wrote back
+/// with the `base_version` it was handed took the `base == head` path, no
+/// merge was attempted, and the committed session edits were overwritten.
+/// That is silent data loss, and no client error could avoid it.
+///
+/// Hydrating `expand` from the snapshot instead would have fixed the symptom
+/// and left the disease: the indexer also owns `blocks` (which feed BM25 and
+/// the vector index) and `links` (which feed `neighbours` and backlinks), so
+/// search still could not have found a committed edit. See
+/// `docs/notes/concurrency-fix-plan.md` F1.
+///
+/// ## Ordering under failure
+///
+/// The indexer write happens **first** and the CRDT snapshot **last**:
+///
+/// 1. read the merged body out of the still-open session,
+/// 2. take `update_page_gate` and write the indexer,
+/// 3. only then `sessions.close(commit)`, which snapshots.
+///
+/// A failing indexer write therefore leaves the session **open and
+/// retryable** rather than half-applied. The reverse order would strand a
+/// committed snapshot that nothing reconciles — `escurel-crdt`'s reconciler
+/// solves the opposite direction and is not wired into the server at all.
+///
+/// `commit = false` is a discard and still writes nothing.
 async fn tool_close_session(
-    backend: Option<&Arc<dyn CrdtBackend>>,
+    state: &crate::server::AppState,
+    indexer: Option<&Indexer>,
     sessions: Arc<SessionManager>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: CloseSessionArgs = parse_args(args, "close_session")?;
-    if backend.is_none() {
+    if state.crdt_backend.is_none() {
         return Err(JsonRpcError::internal(
             "live CRDT mode not enabled on this server",
         ));
     }
+
+    // Read the merged body BEFORE closing — `close` removes the entry, after
+    // which neither the content nor the page id is reachable.
+    let write_through = if a.commit {
+        match (sessions.page_id_of(&a.session), indexer) {
+            (Some(page_id), Some(ix)) => sessions
+                .current_content(&a.session)
+                .await
+                .map(|body| (page_id, ix, body)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    if let Some((page_id, ix, body)) = write_through {
+        // Empty is what a just-opened session that never received an op
+        // reports. Writing it would blank the page, so a no-op session stays
+        // a no-op.
+        if !body.trim().is_empty() {
+            let _gate = state.update_page_gate.lock().await;
+            ix.update_page(&page_id, &body)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("close_session write-through: {e}")))?;
+        }
+    }
+
     let final_v = sessions
         .close(&a.session, a.commit)
         .await
