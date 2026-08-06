@@ -438,3 +438,69 @@ async fn rebase_requires_admin_role() {
     assert!(body.get("error").is_some(), "{body}");
     p.shutdown().await;
 }
+
+/// A tenant overlay shadows `beta`; the upstream pack then DROPS `beta`.
+///
+/// The rebase must not silently remove the base page the overlay depends on.
+/// An overlay overrides only the fields it declares (`shadowed_base`), so
+/// when its base disappears every inherited field vanishes from what an agent
+/// reads — with no diagnostic and no byte deleted, which is precisely the
+/// failure that is hard to notice.
+///
+/// This is the case the conflict scan is structurally blind to: it iterates
+/// the INCOMING version only, so a skill dropped in vN+1 never enters the
+/// loop and is never checked against an existing overlay. See
+/// `docs/notes/concurrency-fix-plan.md` F2.
+#[tokio::test]
+async fn rebase_flags_upstream_deleted_page_that_a_shadow_overrides() {
+    let p = start().await;
+    import_v1(&p).await;
+
+    // The tenant shadows `beta` with a local overlay that overrides only the
+    // description — everything else it inherits from the base page.
+    let overlay_id = "markdown/skills/beta.md";
+    let w = call(
+        &p,
+        Role::Admin,
+        "update_page",
+        json!({
+            "page_id": overlay_id,
+            "content": skill("beta", "our local take on beta.", ""),
+        }),
+    )
+    .await;
+    assert_eq!(
+        w["result"]["structuredContent"]["ok"], true,
+        "overlay must be writable: {w}"
+    );
+
+    // v2 drops `beta` entirely.
+    let (m2, t2) = signed(&v2_pages(), 2);
+    let r = rebase(&p, &m2, &t2, false).await;
+    assert!(r.get("error").is_none(), "{r}");
+    let sc = &r["result"]["structuredContent"];
+
+    // The rebase must refuse to proceed silently: removing a base page that a
+    // local overlay shadows is exactly the case an operator has to see.
+    let issues = sc["issues"].as_array().cloned().unwrap_or_default();
+    let flagged = issues.iter().any(|i| {
+        i["code"] == "rebase_orphaned_shadow" && i["page_id"].as_str() == Some(overlay_id)
+    });
+    assert!(
+        flagged,
+        "removing the base of a live overlay must raise rebase_orphaned_shadow; \
+         got ok={} issues={issues:?}",
+        sc["ok"]
+    );
+    assert_eq!(
+        sc["ok"], false,
+        "an unacknowledged orphaned shadow must block the rebase: {r}"
+    );
+
+    // And the overlay's own bytes are never touched, acknowledged or not.
+    let ex = call(&p, Role::Agent, "expand", json!({ "page_id": overlay_id })).await;
+    assert_eq!(
+        ex["result"]["structuredContent"]["frontmatter"]["description"], "our local take on beta.",
+        "overlay content must survive regardless: {ex}"
+    );
+}

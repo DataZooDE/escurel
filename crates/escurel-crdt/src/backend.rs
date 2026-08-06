@@ -59,8 +59,16 @@ pub trait CrdtBackend: Send + Sync + 'static {
     /// to a real HLC.
     async fn append_op(&self, page_id: &str, op_id: &str, hlc: i64, op: &Op) -> Result<(), Error>;
 
-    /// Insert a snapshot row. Called on session close
-    /// (`commit=true`) and on periodic checkpoints.
+    /// Insert a snapshot row.
+    ///
+    /// Called on session close (`commit=true`) — and only there. An earlier
+    /// version of this comment also claimed "and on periodic checkpoints";
+    /// no such call site exists (`LiveDoc::handle_close` is the sole caller),
+    /// so a long-lived session accumulates an unbounded op tail that crash
+    /// recovery must replay in full. That is a real gap, tracked in
+    /// `docs/notes/concurrency-fix-plan.md` F3.3, but it is a missing feature
+    /// rather than something this trait promises. Documentation asserting
+    /// behaviour the code does not have is the more damaging of the two.
     async fn snapshot(&self, page_id: &str, hlc: i64, snap: &Snapshot) -> Result<(), Error>;
 
     /// Replay state for a page: the most recent snapshot (if any)
