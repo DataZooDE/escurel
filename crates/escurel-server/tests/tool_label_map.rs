@@ -12,9 +12,15 @@
 //! filters on ("the LLM never does critical arithmetic"), so a tool silently
 //! changing sides is a security-relevant regression that no other test sees.
 //!
-//! Updating this list is expected when the surface changes — but it should be
-//! a deliberate line in a diff, reviewed as a decision, which is the whole
-//! point.
+//! **This list is a golden expectation, not a source of truth.** The labels
+//! live at the tool definitions in `mcp/schema.rs`; this file only remembers
+//! what they were. Updating it when the surface changes is expected — but it
+//! should be a deliberate line in a diff, reviewed as a decision, which is the
+//! whole point. If you find yourself editing this file to make a build pass
+//! without knowing which tool moved, stop: that is the regression it exists
+//! to show you. (codex review flagged the risk that a second complete list
+//! reads as re-introducing the duplication R2 removed — it does not, because
+//! nothing consumes it.)
 //!
 //! Real gateway, real `/mcp` `tools/list`. No mocks.
 

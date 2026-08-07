@@ -1438,7 +1438,27 @@ mod registry_conformance {
             .find("async fn dispatch_tools_call")
             .expect("dispatch_tools_call exists");
         let body = &src[start..];
-        let end = body.find("\n}\n").map_or(body.len(), |e| e + 2);
+        // Brace-depth scan from the function's opening `{` rather than
+        // searching for a column-0 `}`. The shortcut works under rustfmt but
+        // is formatting-sensitive: a raw string or a macro body containing an
+        // unindented `}` would truncate the window early and quietly shrink
+        // what this test covers (codex review).
+        let open = body.find('{').expect("function body");
+        let mut depth = 0usize;
+        let mut end = body.len();
+        for (i, c) in body.char_indices().skip(open) {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
 
         body[..end]
             .lines()
