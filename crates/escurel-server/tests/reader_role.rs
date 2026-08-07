@@ -232,6 +232,69 @@ async fn reader_rejects_chat_tools_unsupported_on_replica() {
     booted.handle.shutdown().await;
 }
 
+/// Every dynamic shared-surface gate rejects when its backend is absent.
+///
+/// A plain reader (file-backed lake, no Postgres catalog) has no shared chat,
+/// events or CRDT backend, so all three surfaces must refuse. Only chat was
+/// covered before: the events and CRDT gates were exercised solely by the
+/// `live-ducklake` suites, which need Docker and do not run in the default
+/// gate or in CI — so the refusal path of two of the three had no coverage
+/// that ever executed.
+///
+/// This matters more since the three gates became one table
+/// (`SHARED_SURFACE_GATES`): a wrong probe in a row would fail the whole
+/// surface open, and one test naming all three is what makes that visible.
+#[tokio::test]
+async fn a_reader_rejects_every_shared_surface_whose_backend_is_absent() {
+    let h = fresh_harness();
+    seed_and_publish(&h).await;
+    let booted = reader_cfg(&h, "30").build().await.expect("reader boots");
+    let base = format!("http://{}", booted.handle.local_addr);
+
+    // (tool, arguments) — one per gated surface, chat included so the three
+    // are asserted together rather than one here and two in a suite that
+    // does not run.
+    let cases = [
+        (
+            "append_message",
+            serde_json::json!({ "chat_group_id": "agent:dev-user", "role": "user",
+                                "content": "hi", "embed": false }),
+        ),
+        (
+            "capture_event",
+            serde_json::json!({ "kind": "page-edited", "subject": "markdown/skills/x.md" }),
+        ),
+        ("list_inbox", serde_json::json!({})),
+        (
+            "open_session",
+            serde_json::json!({ "page_id": "markdown/skills/customer.md" }),
+        ),
+        (
+            "list_snapshots",
+            serde_json::json!({ "page_id": "markdown/skills/customer.md" }),
+        ),
+    ];
+
+    for (tool, args) in cases {
+        let resp = call(&base, tool, args).await;
+        let err = &resp["error"];
+        assert_eq!(
+            err["code"], -32005,
+            "`{tool}` must be refused as unsupported-on-replica, got: {resp}"
+        );
+        assert!(
+            err["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("unsupported"),
+            "`{tool}`'s error must name the reason: {resp}"
+        );
+    }
+
+    booted.refresh_handle.unwrap().shutdown().await;
+    booted.handle.shutdown().await;
+}
+
 /// Given this PR's design (a reader `adopt_lake`s SYNCHRONOUSLY before
 /// the HTTP listener even binds — see `EscurelConfig::build`), the
 /// `index_snapshot` readiness field is true for every reader that can

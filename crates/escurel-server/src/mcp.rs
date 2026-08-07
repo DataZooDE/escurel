@@ -625,6 +625,24 @@ const CRDT_TOOLS: &[&str] = &[
     "list_snapshots",
 ];
 
+/// Tool surfaces a Ducklake reader may serve only when the current indexer
+/// has the matching shared backend attached, paired with the probe that
+/// answers "is it attached?".
+///
+/// One row per surface. Adding a fifth is a line here, not a fourth copy of
+/// an `if state.reader_mode && ...` block — see the loop in
+/// [`dispatch_tools_call`].
+///
+/// The pair is named rather than written inline so the constant reads as
+/// "a list of gates" instead of a nested tuple type.
+type SharedSurfaceGate = (&'static [&'static str], fn(&Indexer) -> bool);
+
+const SHARED_SURFACE_GATES: &[SharedSurfaceGate] = &[
+    (CHAT_TOOLS, Indexer::has_shared_chat),
+    (EVENTS_TOOLS, Indexer::has_shared_events),
+    (CRDT_TOOLS, Indexer::has_shared_crdt),
+];
+
 async fn dispatch_tools_call(
     state: &crate::server::AppState,
     tenant_id: &str,
@@ -654,47 +672,25 @@ async fn dispatch_tools_call(
     // consistent indexer even if a snapshot adoption swaps mid-flight.
     let current_indexer: Option<Arc<Indexer>> = state.indexer.as_ref().map(IndexerHandle::current);
 
-    // Dynamic chat gate (DuckLake PR 8): a reader rejects
-    // `append_message`/`list_messages` UNLESS the current indexer has a
-    // shared chat backend attached (`ESCUREL_INDEX_BACKEND=ducklake` with
-    // a Postgres catalog — see `EscurelConfig::build`). Checked against
-    // the SAME captured indexer the rest of this call runs against, so a
-    // hot-swap mid-flight can't disagree with itself. Every non-reader
-    // deployment (single-file, or a ducklake writer) is completely
-    // unaffected — this block is inert there.
-    if state.reader_mode
-        && CHAT_TOOLS.contains(&params.name.as_str())
-        && !current_indexer
-            .as_deref()
-            .is_some_and(Indexer::has_shared_chat)
-    {
-        return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
-    }
-
-    // Dynamic events gate (DuckLake PR 9): mirrors the chat gate above
-    // exactly — a reader rejects `capture_event`/`assign_event`/
-    // `list_events`/`list_inbox` UNLESS the current indexer has a shared
-    // events backend attached.
-    if state.reader_mode
-        && EVENTS_TOOLS.contains(&params.name.as_str())
-        && !current_indexer
-            .as_deref()
-            .is_some_and(Indexer::has_shared_events)
-    {
-        return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
-    }
-
-    // Dynamic CRDT gate (DuckLake PR 10): mirrors the chat/events gates
-    // above exactly — a reader rejects `open_session`/`apply_op`/
-    // `close_session`/`list_snapshots` UNLESS the current indexer has a
-    // shared CRDT backend attached.
-    if state.reader_mode
-        && CRDT_TOOLS.contains(&params.name.as_str())
-        && !current_indexer
-            .as_deref()
-            .is_some_and(Indexer::has_shared_crdt)
-    {
-        return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
+    // Dynamic shared-surface gates (DuckLake PRs 8-10): a reader rejects
+    // chat, events and CRDT tools UNLESS the current indexer has the matching
+    // shared backend attached. Checked against the SAME captured indexer the
+    // rest of this call runs against, so a hot-swap mid-flight cannot
+    // disagree with itself. Every non-reader deployment (single-file, or a
+    // ducklake writer) is completely unaffected — this loop is inert there.
+    //
+    // These were three copied blocks whose comments each said they "mirror
+    // the chat gate above exactly". They did, which is why they are a table:
+    // a fourth shared surface is now one row rather than a fourth copy, and
+    // the three cannot drift apart while claiming not to.
+    if state.reader_mode {
+        for (tools, has_shared) in SHARED_SURFACE_GATES {
+            if tools.contains(&params.name.as_str())
+                && !current_indexer.as_deref().is_some_and(has_shared)
+            {
+                return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
+            }
+        }
     }
 
     // Session tools depend on `crdt_backend` + `sessions`, not on
