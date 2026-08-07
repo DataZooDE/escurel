@@ -303,16 +303,39 @@ async fn demo_stock_quote_live_projection_from_yahoo_shaped_upstream() {
     process.shutdown().await;
 }
 
+/// A loopback address that refuses connections, chosen from BELOW the
+/// ephemeral range.
+///
+/// This used to bind `127.0.0.1:0`, read the address and drop the listener.
+/// That yields a port from the kernel's ephemeral range
+/// (`/proc/sys/net/ipv4/ip_local_port_range`, 32768-60999 on Linux), which
+/// the kernel is then free to hand to *any* socket that asks for one — so a
+/// concurrently-running test could bind that exact port between the drop and
+/// the probe, and the "dead" endpoint would answer. That is not hypothetical:
+/// it failed in CI, where the probe reported `status: "ok"` for an endpoint
+/// this test had just killed, while passing on every less-parallel machine.
+///
+/// Picking below 32768 keeps the port out of the pool the kernel assigns
+/// from, so nothing acquires it by accident. Binding first still confirms it
+/// is genuinely free right now, which turns a collision into a retry instead
+/// of a false result.
+async fn a_port_nothing_listens_on() -> SocketAddr {
+    for port in 21000u16..21100 {
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        if let Ok(l) = tokio::net::TcpListener::bind(addr).await {
+            drop(l);
+            return addr;
+        }
+    }
+    panic!("no free non-ephemeral loopback port in 21000..21100");
+}
+
 #[tokio::test]
 async fn demo_stock_quote_offline_expand_degrades_to_issue_not_a_crash() {
-    // Bind then drop, so the port is closed — the documented offline
-    // behaviour of the demo (no internet ⇒ degraded Issue, never a crash
-    // or a fabricated body). NOT Yahoo: an unreachable local address.
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .unwrap();
-    let dead = format!("http://{}", listener.local_addr().unwrap());
-    drop(listener);
+    // An address on loopback that refuses connections — the documented
+    // offline behaviour of the demo (no internet ⇒ degraded Issue, never a
+    // crash or a fabricated body). NOT Yahoo: an unreachable local address.
+    let dead = format!("http://{}", a_port_nothing_listens_on().await);
 
     let (process, _dirs) = spawn_demo_gateway().await;
     let p = &process;
