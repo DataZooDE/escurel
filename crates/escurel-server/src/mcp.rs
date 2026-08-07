@@ -1400,3 +1400,117 @@ mod search_fusion_tests {
         assert_eq!(fused.len(), 5);
     }
 }
+
+#[cfg(test)]
+mod registry_conformance {
+    //! Dispatch arms and the discovery payload must name the same tools.
+    //!
+    //! R2 of `docs/notes/complexity-reduction-plan.md` folded the execution
+    //! labels into the tool definitions, which removed one of the three
+    //! registries outright. The third — the `match params.name.as_str()` arms
+    //! in [`dispatch_tools_call`] — cannot be folded the same way: each handler
+    //! takes a different dependency set (indexer, sessions, CRDT backend, ACL
+    //! caller, role), and forcing them behind one signature would add more code
+    //! than it removed and obscure exactly the wiring a reader needs to see.
+    //!
+    //! So the arms stay a `match`, and this test makes the drift mechanical
+    //! instead of hoped-for. It reads this file's own source, which sounds
+    //! grubby but is the only way to enumerate match arms without introducing a
+    //! *fourth* hand-maintained list — the very thing R2 is about.
+    //!
+    //! `tests/tool_registry_conformance.rs` covers the same invariant from
+    //! outside, over the wire, but against a hand-written list of 8 names. This
+    //! covers all of them and needs no maintenance. Both are worth having: that
+    //! one proves the tools really answer, this one proves none was forgotten.
+
+    use std::collections::BTreeSet;
+
+    /// JSON-RPC methods that are dispatched by name but are not tools, so they
+    /// are correctly absent from `tools/list`.
+    const NON_TOOL_METHODS: &[&str] = &["initialize", "ping"];
+
+    /// Tool names appearing as `"name" =>` arms inside `dispatch_tools_call`.
+    fn dispatch_arm_names() -> BTreeSet<String> {
+        let src = include_str!("mcp.rs");
+        // Scope to the dispatch function so an unrelated string match elsewhere
+        // in this file cannot masquerade as a tool.
+        let start = src
+            .find("async fn dispatch_tools_call")
+            .expect("dispatch_tools_call exists");
+        let body = &src[start..];
+        let end = body.find("\n}\n").map_or(body.len(), |e| e + 2);
+
+        body[..end]
+            .lines()
+            .filter_map(|line| {
+                let t = line.trim();
+                let rest = t.strip_prefix('"')?;
+                let (name, tail) = rest.split_once('"')?;
+                tail.trim_start().starts_with("=>").then(|| name.to_owned())
+            })
+            .filter(|n| {
+                !n.is_empty()
+                    && n.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            })
+            .collect()
+    }
+
+    fn advertised_names() -> BTreeSet<String> {
+        super::tools_list_payload()["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|t| t["name"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn the_parser_finds_the_arms_it_claims_to() {
+        // Guards the test itself: a refactor that renames the function or
+        // reshapes the arms would otherwise silently reduce this to a
+        // comparison of two empty sets, which passes and proves nothing.
+        let arms = dispatch_arm_names();
+        assert!(
+            arms.len() > 50,
+            "expected the dispatch match to yield most of the tool surface, \
+             found {}: the source parser has stopped working, not the registry",
+            arms.len()
+        );
+        for m in NON_TOOL_METHODS {
+            assert!(
+                !arms.contains(*m),
+                "`{m}` is dispatched outside dispatch_tools_call and must not \
+                 appear here; the scoping window is wrong"
+            );
+        }
+    }
+
+    #[test]
+    fn every_dispatchable_tool_is_advertised() {
+        let missing: Vec<String> = dispatch_arm_names()
+            .difference(&advertised_names())
+            .filter(|n| !NON_TOOL_METHODS.contains(&n.as_str()))
+            .cloned()
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "callable but invisible to `tools/list`: {missing:?}\n\
+             A client that has not read the source cannot discover these. This \
+             is the direction that actually bit once, when a merge kept a \
+             `purge_page` dispatch arm and dropped its schema entry."
+        );
+    }
+
+    #[test]
+    fn every_advertised_tool_has_a_dispatch_arm() {
+        let unroutable: Vec<String> = advertised_names()
+            .difference(&dispatch_arm_names())
+            .cloned()
+            .collect();
+        assert!(
+            unroutable.is_empty(),
+            "advertised by `tools/list` with no dispatch arm: {unroutable:?}"
+        );
+    }
+}
