@@ -226,10 +226,13 @@ way they are, so it belongs next to them.
 | item | status |
 |---|---|
 | R1 — split `mcp.rs` | **done** (#346). 7,247 → ~1,339 lines plus six modules: `schema`, `ingest`, `tools_admin`, `tools_read`, `tools_write`, `backend_view` |
-| R2 — one tool registry | **not done.** Guarded, not fixed — `tool_registry_conformance.rs` (5 tests) now pins the three registries against each other in both directions |
+| R2 — one tool registry | **done** (see below) |
 | R3 — route backends through a trait | **done differently** — see below |
 | R4 — collapse parse/call/wrap | **done** (#346), and the estimate was wrong: projected 1,000–1,500 lines, actual **57** |
-| R5–R8 | **not done**, as intended — they ride along with feature work in those files |
+| R5 — shared request context | **done** — `auth_gate::authenticate` + `rbac_groups` |
+| R6 — page-materialisation helper | **done** — `escurel-index/src/materialise.rs` |
+| R7 — append-surface routing | **half done** — the reader gate is a table; the `OnceLock` accessors were measured and left (see below) |
+| R8 — object-store layout | **done** — `escurel-storage/src/layout.rs` |
 
 ### R3 did not happen as written, and should not have
 
@@ -265,3 +268,77 @@ total as what it was labelled — the analyses' projection, not a measurement �
 and note that the document's own conclusion still held: the line count was
 never the point, and the codebase is not large for its functionality outside
 `mcp.rs`'s glue.
+
+## Second pass (2026-08-07): R2 and R5–R8
+
+### R2, as actually done
+
+The item said "one source of truth for the tool registry". There were three:
+the discovery payload, `DETERMINISTIC_TOOLS`, and the dispatch arms. Two of
+them are now one — the execution label is a required `Execution` argument at
+each tool's definition site, so a tool cannot exist without a label and there
+is no name left behind by a rename.
+
+**The dispatch arms were deliberately NOT folded in.** Each handler takes a
+different dependency set (indexer, sessions, CRDT backend, ACL caller, role);
+one signature would have added more code than it removed and hidden the
+wiring a reader most needs to see. Instead a unit test reads `mcp.rs`'s own
+source and compares its match arms against the discovery payload. Parsing own
+source is grubby, and codex flagged that it counts braces inside strings and
+comments — a real limitation, accepted because the alternative (a `syn`
+dependency to guard a registry) is a larger commitment than the risk, and the
+test's self-check fails loudly if the parse stops finding arms.
+
+Verified behaviour-preserving rather than believed to be: `tool_label_map.rs`
+pins all 68 name→label pairs, was passing before the refactor, and passes
+unchanged after. The new guard was verified to *fail* by removing
+`fetch_blob` from the payload.
+
+### R7 is half done, on purpose
+
+The reader-gate half paid: three copied blocks, each commented "mirrors the
+chat gate above exactly", became one table.
+
+The other half — the `OnceLock` + `*_backend()` + `has_shared_*` shape — was
+measured and left alone. The three accessors are five lines each over three
+*different* enum types; a generic wrapper replaces ~15 lines with ~12 plus a
+generic indirection. That is not a saving, it is a rearrangement. The
+estimate of 150–250 lines for R7 counted these as if they were one shape.
+
+### What the estimates were worth, again
+
+R4 projected 1,000–1,500 lines and removed 57. R7 projected 150–250 and the
+part worth doing removed ~25. The pattern is consistent: the analyses counted
+*textual* similarity, and textual similarity overestimates removable code
+whenever the similar things have different types.
+
+This does not make the work valueless — but the value was never the line
+count, and the plan said so. It was: a tool can no longer drift from its own
+label; the two object stores can no longer disagree about where a tenant's
+bytes live; the two materialisation paths can no longer disagree about a
+column; and the admin-role-stripping security check is no longer maintained
+by mirroring in two files.
+
+### Tests added along the way
+
+Each of these covered something that had no coverage, found by touching the
+code rather than by looking for gaps:
+
+- the complete 68-entry tool→label map (only 8 were spot-checked)
+- dispatch/discovery conformance in both directions, mechanically
+- the object-key layout (empty-prefix, list/object agreement) — none before
+- `context IS NULL` for markdown blocks vs preserved for document chunks
+- `admin_role_value` stripping: exact-match, repeated values, no-config
+- the reader's events and CRDT refusal paths, which were exercised only by
+  `live-ducklake` suites that need Docker and run in neither the default gate
+  nor CI
+
+### A bug found on the way
+
+`demo_stock_quote_offline_expand_degrades_to_issue_not_a_crash` got its
+"dead" endpoint by binding `127.0.0.1:0` and dropping the listener. That
+returns an *ephemeral* port, which the kernel then hands to any socket that
+asks — so under CI's parallelism another test bound it and the dead endpoint
+answered `status: "ok"`. It failed a docs-only PR and passed every local
+`--workspace` run. Now uses port 0 directly: nothing can ever listen on it,
+so the race is gone by construction rather than narrowed.
