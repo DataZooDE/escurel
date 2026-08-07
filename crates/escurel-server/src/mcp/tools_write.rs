@@ -381,12 +381,18 @@ pub(super) async fn tool_update_page(
             // reflects this write. The apply_op session path reads the same
             // space, so co-authoring and whole-page writes share versions.
             let new_version = if let Some(backend) = state.crdt_backend.as_ref() {
-                let next = head_hlc + 1;
                 let bytes = snapshot_bytes_from_markdown(&content_to_write)
                     .map_err(|e| JsonRpcError::internal(format!("update_page crdt: {e}")))?;
-                let _ = backend
-                    .snapshot(&a.page_id, next as i64, &Snapshot::new(bytes))
-                    .await;
+                // Allocate through the backend rather than stamping
+                // `head_hlc + 1` read earlier under the gate: a live session
+                // on this page allocates from the same space and does not
+                // take that gate, so `head_hlc + 1` could already be spoken
+                // for. The backend is the single authority (F1.3).
+                let next = backend
+                    .snapshot_next(&a.page_id, &Snapshot::new(bytes))
+                    .await
+                    .map(|h| u64::try_from(h).unwrap_or(head_hlc + 1))
+                    .unwrap_or(head_hlc + 1);
                 Version::from_op_count(next).as_str().to_owned()
             } else {
                 "v1".to_owned()

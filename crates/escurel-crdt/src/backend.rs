@@ -93,6 +93,26 @@ pub trait CrdtBackend: Send + Sync + 'static {
     /// existing `(page_id, op_id)` primary key.
     async fn max_hlc(&self, page_id: &str) -> Result<i64, Error>;
 
+    /// Append an op, **allocating its hlc from the persisted maximum** in the
+    /// same critical section as the insert. Returns the hlc used.
+    ///
+    /// This exists because `max_hlc` + `append_op` as two calls is not one
+    /// allocation. `LiveDoc` used to seed a counter from `max_hlc` once at
+    /// open and increment it locally, so a whole-page `update_page` landing
+    /// during an open session took the next slot without the session ever
+    /// hearing about it — and both writers then stamped *different content*
+    /// with the *same version*. `expand.version` could no longer identify a
+    /// head, which makes every `base_version` comparison built on it unsound.
+    /// See `docs/notes/concurrency-fix-plan.md` F1.3.
+    ///
+    /// The implementation is the single hlc authority for a page: read the
+    /// maximum and insert without releasing the store lock in between.
+    async fn append_op_next(&self, page_id: &str, op: &Op) -> Result<i64, Error>;
+
+    /// Insert a snapshot, allocating its hlc the same way as
+    /// [`CrdtBackend::append_op_next`]. Returns the hlc used.
+    async fn snapshot_next(&self, page_id: &str, snap: &Snapshot) -> Result<i64, Error>;
+
     /// Every `page_id` that has at least one row in
     /// `crdt_snapshots`. Used by the admin `compact_lanes` sweep
     /// to enumerate compaction-eligible pages — pages with no
@@ -238,56 +258,31 @@ fn tenant_clause(tenant_scope: &Option<String>) -> &'static str {
 impl CrdtBackend for DuckdbCrdtBackend {
     async fn append_op(&self, page_id: &str, op_id: &str, hlc: i64, op: &Op) -> Result<(), Error> {
         let guard = self.conn.lock().await;
-        let table = self.ops_table();
-        match self.tenant_scope() {
-            None => {
-                guard.execute(
-                    &format!(
-                        "INSERT INTO {table} (page_id, op_id, hlc, parent_op_id, op_bytes) \
-                         VALUES (?, ?, ?, NULL, ?)"
-                    ),
-                    params![page_id, op_id, hlc, op.as_bytes()],
-                )?;
-            }
-            Some(tenant) => {
-                guard.execute(
-                    &format!(
-                        "INSERT INTO {table} \
-                         (tenant, page_id, op_id, hlc, parent_op_id, op_bytes) \
-                         VALUES (?, ?, ?, ?, NULL, ?)"
-                    ),
-                    params![tenant, page_id, op_id, hlc, op.as_bytes()],
-                )?;
-            }
-        }
-        Ok(())
+        self.insert_op_locked(&guard, page_id, op_id, hlc, op)
+    }
+
+    async fn append_op_next(&self, page_id: &str, op: &Op) -> Result<i64, Error> {
+        // One lock spans the read and the insert; that is what makes this an
+        // allocation rather than a guess.
+        let guard = self.conn.lock().await;
+        let hlc = self.max_hlc_locked(&guard, page_id)? + 1;
+        // The op id stays derived from the allocated hlc, so it inherits the
+        // uniqueness the `(page_id, op_id)` primary key needs.
+        let op_id = format!("{page_id}:{hlc}");
+        self.insert_op_locked(&guard, page_id, &op_id, hlc, op)?;
+        Ok(hlc)
+    }
+
+    async fn snapshot_next(&self, page_id: &str, snap: &Snapshot) -> Result<i64, Error> {
+        let guard = self.conn.lock().await;
+        let hlc = self.max_hlc_locked(&guard, page_id)? + 1;
+        self.insert_snapshot_locked(&guard, page_id, hlc, snap)?;
+        Ok(hlc)
     }
 
     async fn snapshot(&self, page_id: &str, hlc: i64, snap: &Snapshot) -> Result<(), Error> {
         let guard = self.conn.lock().await;
-        let table = self.snapshots_table();
-        match self.tenant_scope() {
-            None => {
-                guard.execute(
-                    &format!(
-                        "INSERT INTO {table} (page_id, snapshot_hlc, snapshot_bytes) \
-                         VALUES (?, ?, ?)"
-                    ),
-                    params![page_id, hlc, snap.as_bytes()],
-                )?;
-            }
-            Some(tenant) => {
-                guard.execute(
-                    &format!(
-                        "INSERT INTO {table} \
-                         (tenant, page_id, snapshot_hlc, snapshot_bytes) \
-                         VALUES (?, ?, ?, ?)"
-                    ),
-                    params![tenant, page_id, hlc, snap.as_bytes()],
-                )?;
-            }
-        }
-        Ok(())
+        self.insert_snapshot_locked(&guard, page_id, hlc, snap)
     }
 
     async fn load(&self, page_id: &str) -> Result<Option<LoadedState>, Error> {
@@ -399,50 +394,7 @@ impl CrdtBackend for DuckdbCrdtBackend {
 
     async fn max_hlc(&self, page_id: &str) -> Result<i64, Error> {
         let guard = self.conn.lock().await;
-        let ops_table = self.ops_table();
-        let snapshots_table = self.snapshots_table();
-        let tenant_scope = self.tenant_scope();
-        let tc = tenant_clause(&tenant_scope);
-
-        // GREATEST over the two tables' max(hlc); both default to 0
-        // when empty via COALESCE so a never-seen page returns 0.
-        let max_op: Option<i64> = match &tenant_scope {
-            None => guard
-                .query_row(
-                    &format!("SELECT max(hlc) FROM {ops_table} WHERE page_id = ? {tc}"),
-                    params![page_id],
-                    |row| row.get(0),
-                )
-                .ok(),
-            Some(tenant) => guard
-                .query_row(
-                    &format!("SELECT max(hlc) FROM {ops_table} WHERE page_id = ? {tc}"),
-                    params![page_id, tenant],
-                    |row| row.get(0),
-                )
-                .ok(),
-        };
-        let max_snap: Option<i64> = match &tenant_scope {
-            None => guard
-                .query_row(
-                    &format!(
-                        "SELECT max(snapshot_hlc) FROM {snapshots_table} WHERE page_id = ? {tc}"
-                    ),
-                    params![page_id],
-                    |row| row.get(0),
-                )
-                .ok(),
-            Some(tenant) => guard
-                .query_row(
-                    &format!(
-                        "SELECT max(snapshot_hlc) FROM {snapshots_table} WHERE page_id = ? {tc}"
-                    ),
-                    params![page_id, tenant],
-                    |row| row.get(0),
-                )
-                .ok(),
-        };
-        Ok(max_op.unwrap_or(0).max(max_snap.unwrap_or(0)))
+        self.max_hlc_locked(&guard, page_id)
     }
 
     async fn pages_with_snapshots(&self) -> Result<Vec<String>, Error> {
@@ -561,5 +513,130 @@ impl CrdtBackend for DuckdbCrdtBackend {
         let bytes_u64 = u64::try_from(bytes).unwrap_or(0);
         let deleted_u64 = u64::try_from(deleted).unwrap_or(0);
         Ok((deleted_u64, bytes_u64))
+    }
+}
+
+/// Helpers shared by the plain and the allocating write paths.
+///
+/// Each takes an already-held connection guard, so a caller that must read
+/// and write atomically (`append_op_next`, `snapshot_next`) can do both
+/// inside one critical section instead of taking the lock twice.
+impl DuckdbCrdtBackend {
+    /// `append_op`'s insert, callable with the connection guard already held.
+    fn insert_op_locked(
+        &self,
+        guard: &Connection,
+        page_id: &str,
+        op_id: &str,
+        hlc: i64,
+        op: &Op,
+    ) -> Result<(), Error> {
+        let table = self.ops_table();
+        match self.tenant_scope() {
+            None => {
+                guard.execute(
+                    &format!(
+                        "INSERT INTO {table} (page_id, op_id, hlc, parent_op_id, op_bytes) \
+                         VALUES (?, ?, ?, NULL, ?)"
+                    ),
+                    params![page_id, op_id, hlc, op.as_bytes()],
+                )?;
+            }
+            Some(tenant) => {
+                guard.execute(
+                    &format!(
+                        "INSERT INTO {table} \
+                         (tenant, page_id, op_id, hlc, parent_op_id, op_bytes) \
+                         VALUES (?, ?, ?, ?, NULL, ?)"
+                    ),
+                    params![tenant, page_id, op_id, hlc, op.as_bytes()],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `snapshot`'s insert, callable with the connection guard already held.
+    fn insert_snapshot_locked(
+        &self,
+        guard: &Connection,
+        page_id: &str,
+        hlc: i64,
+        snap: &Snapshot,
+    ) -> Result<(), Error> {
+        let table = self.snapshots_table();
+        match self.tenant_scope() {
+            None => {
+                guard.execute(
+                    &format!(
+                        "INSERT INTO {table} (page_id, snapshot_hlc, snapshot_bytes) \
+                         VALUES (?, ?, ?)"
+                    ),
+                    params![page_id, hlc, snap.as_bytes()],
+                )?;
+            }
+            Some(tenant) => {
+                guard.execute(
+                    &format!(
+                        "INSERT INTO {table} \
+                         (tenant, page_id, snapshot_hlc, snapshot_bytes) \
+                         VALUES (?, ?, ?, ?)"
+                    ),
+                    params![tenant, page_id, hlc, snap.as_bytes()],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `max_hlc`'s query, callable with the connection guard already held.
+    ///
+    /// Sharing it is what lets `append_op_next` allocate and insert without
+    /// releasing the lock in between.
+    fn max_hlc_locked(&self, guard: &Connection, page_id: &str) -> Result<i64, Error> {
+        let ops_table = self.ops_table();
+        let snapshots_table = self.snapshots_table();
+        let tenant_scope = self.tenant_scope();
+        let tc = tenant_clause(&tenant_scope);
+
+        // GREATEST over the two tables' max(hlc); both default to 0
+        // when empty via COALESCE so a never-seen page returns 0.
+        let max_op: Option<i64> = match &tenant_scope {
+            None => guard
+                .query_row(
+                    &format!("SELECT max(hlc) FROM {ops_table} WHERE page_id = ? {tc}"),
+                    params![page_id],
+                    |row| row.get(0),
+                )
+                .ok(),
+            Some(tenant) => guard
+                .query_row(
+                    &format!("SELECT max(hlc) FROM {ops_table} WHERE page_id = ? {tc}"),
+                    params![page_id, tenant],
+                    |row| row.get(0),
+                )
+                .ok(),
+        };
+        let max_snap: Option<i64> = match &tenant_scope {
+            None => guard
+                .query_row(
+                    &format!(
+                        "SELECT max(snapshot_hlc) FROM {snapshots_table} WHERE page_id = ? {tc}"
+                    ),
+                    params![page_id],
+                    |row| row.get(0),
+                )
+                .ok(),
+            Some(tenant) => guard
+                .query_row(
+                    &format!(
+                        "SELECT max(snapshot_hlc) FROM {snapshots_table} WHERE page_id = ? {tc}"
+                    ),
+                    params![page_id, tenant],
+                    |row| row.get(0),
+                )
+                .ok(),
+        };
+        Ok(max_op.unwrap_or(0).max(max_snap.unwrap_or(0)))
     }
 }
