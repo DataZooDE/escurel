@@ -231,6 +231,17 @@ curl -s -X POST localhost:8080/mcp -H 'content-type: application/json' \
      -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
+The same drift happens in the other direction — **code comments citing notes
+that do not exist**. Both known cases were found only by sweeping for it: a
+plan cited by eight files that had never left its branch, and a DuckDB
+gotcha whose note `schema.rs` had pointed at since the migration was written.
+
+```sh
+# every docs/notes/ path cited from Rust source still exists
+grep -rhoE '`?docs/notes/[A-Za-z0-9_./-]+\.md' --include=*.rs crates/ \
+  | tr -d '`' | sort -u | while read -r p; do [ -e "$p" ] || echo "MISSING: $p"; done
+```
+
 ## Disk discipline (build artifacts + worktrees)
 
 This repo eats disk faster than any other in the fleet, and it does it
