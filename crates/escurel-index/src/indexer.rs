@@ -792,7 +792,6 @@ impl Indexer {
                 got: dense_vec.len(),
             });
         }
-        let dense_vec_sql = format_vector_literal(&dense_vec);
 
         // Take the connection mutex only for the transaction.
         let mut conn = self.conn.lock().await;
@@ -871,7 +870,7 @@ impl Indexer {
                 ordinal: 0,
                 body: &body_text,
                 context: None,
-                dense_vec_sql,
+                dense_vec: crate::materialise::DenseVecLiteral::from_embedding(&dense_vec),
             }],
         )?;
 
@@ -1217,7 +1216,7 @@ impl Indexer {
                 ordinal: i as i64,
                 body: &chunk.body,
                 context: chunk.context.as_deref(),
-                dense_vec_sql: format_vector_literal(emb),
+                dense_vec: crate::materialise::DenseVecLiteral::from_embedding(emb),
             })
             .collect();
         crate::materialise::replace_blocks(
