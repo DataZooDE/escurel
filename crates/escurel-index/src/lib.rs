@@ -30,6 +30,7 @@ pub mod filter;
 pub mod graph;
 pub mod groups;
 pub mod indexer;
+mod materialise;
 pub mod meta_skill;
 pub mod pack;
 pub mod query;
