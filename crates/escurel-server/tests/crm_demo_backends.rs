@@ -8,7 +8,7 @@
 //! function `ESCUREL_SEED_DIR` boot-seeding calls), and the same tool
 //! sequence `scripts/demo-setup.sh` drives. No mocks at any boundary.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -303,16 +303,31 @@ async fn demo_stock_quote_live_projection_from_yahoo_shaped_upstream() {
     process.shutdown().await;
 }
 
+/// A loopback address that can never accept a connection: port 0.
+///
+/// Two earlier attempts were both racy. The original bound `127.0.0.1:0`,
+/// read the assigned address and dropped the listener — but that yields a
+/// port from the kernel's ephemeral range, which the kernel then hands to any
+/// socket that asks, so a concurrent test could bind it between the drop and
+/// the probe and the "dead" endpoint would answer. That is not hypothetical:
+/// it failed CI on a docs-only PR, reporting `status: "ok"` for an endpoint
+/// the test had just killed. Moving to a fixed port below the ephemeral range
+/// narrowed the window but did not close it — the range is configurable and
+/// any process may bind a specific port deliberately (codex review).
+///
+/// Port 0 closes it by construction. `bind(…:0)` means "assign me an
+/// ephemeral port"; it never listens on 0 itself, so no process can hold it,
+/// at any privilege level. `connect()` fails immediately with
+/// `ECONNREFUSED` — measured, not assumed — which is the fast, deterministic
+/// refusal this test needs.
+const UNREACHABLE_ADDR: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+
 #[tokio::test]
 async fn demo_stock_quote_offline_expand_degrades_to_issue_not_a_crash() {
-    // Bind then drop, so the port is closed — the documented offline
-    // behaviour of the demo (no internet ⇒ degraded Issue, never a crash
-    // or a fabricated body). NOT Yahoo: an unreachable local address.
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .unwrap();
-    let dead = format!("http://{}", listener.local_addr().unwrap());
-    drop(listener);
+    // An address on loopback that refuses connections — the documented
+    // offline behaviour of the demo (no internet ⇒ degraded Issue, never a
+    // crash or a fabricated body). NOT Yahoo: an unreachable local address.
+    let dead = format!("http://{UNREACHABLE_ADDR}");
 
     let (process, _dirs) = spawn_demo_gateway().await;
     let p = &process;

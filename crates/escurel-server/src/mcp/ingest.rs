@@ -42,36 +42,14 @@ async fn ingest_gate(
     state: &crate::server::AppState,
     headers: &HeaderMap,
 ) -> Result<(std::sync::Arc<Indexer>, IngestCaller), axum::response::Response> {
-    let auth_ctx = match state.verifier.as_ref() {
-        Some(v) => {
-            let served = state.served_tenant.as_deref();
-            match crate::auth_gate::enforce_auth(v, headers, served).await {
-                Ok(c) => Some(c),
-                Err(resp) => return Err(resp),
-            }
-        }
-        None => None,
-    };
+    let auth_ctx = crate::auth_gate::authenticate(state, headers).await?;
     let subject = auth_ctx
         .as_ref()
         .map(|c| c.subject.clone())
         .unwrap_or_default();
-    // RBAC groups (strip the admin role value so it can't act as a group),
-    // mirroring `mcp_inner`. No verifier (dev / on-host mode) → admin bypass.
-    let admin_value = state
-        .verifier
-        .as_ref()
-        .map(|v| v.config().admin_role_value.clone());
-    let groups: Vec<String> = auth_ctx
-        .as_ref()
-        .map(|c| {
-            c.groups
-                .iter()
-                .filter(|g| Some(g.as_str()) != admin_value.as_deref())
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+    // RBAC groups: the admin role value is stripped so it cannot act as a
+    // group. No verifier (dev / on-host mode) → admin bypass below.
+    let groups = crate::auth_gate::rbac_groups(state, auth_ctx.as_ref());
     let is_admin = match &auth_ctx {
         Some(c) => matches!(c.role, Role::Admin),
         None => true,

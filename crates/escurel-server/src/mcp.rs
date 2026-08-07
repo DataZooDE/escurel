@@ -173,15 +173,9 @@ async fn mcp_inner(
     }
 
     // Auth gate — only enforced when a verifier is configured.
-    let auth_ctx = match state.verifier.as_ref() {
-        Some(verifier) => {
-            let served = state.served_tenant.as_deref();
-            match crate::auth_gate::enforce_auth(verifier, &headers, served).await {
-                Ok(ctx) => Some(ctx),
-                Err(resp) => return resp,
-            }
-        }
-        None => None,
+    let auth_ctx = match crate::auth_gate::authenticate(&state, &headers).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
     };
 
     // Quota gate — only enforced when a quota manager is
@@ -248,20 +242,7 @@ async fn mcp_inner(
     // group name — admin authority comes only from the verified role, never
     // a header grant. Reserved names (public/owner/admin) are stripped
     // again inside escurel-index as defence in depth.
-    let admin_value = state
-        .verifier
-        .as_ref()
-        .map(|v| v.config().admin_role_value.clone());
-    let token_groups: Vec<String> = auth_ctx
-        .as_ref()
-        .map(|c| {
-            c.groups
-                .iter()
-                .filter(|g| Some(g.as_str()) != admin_value.as_deref())
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+    let token_groups = crate::auth_gate::rbac_groups(&state, auth_ctx.as_ref());
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
@@ -625,6 +606,24 @@ const CRDT_TOOLS: &[&str] = &[
     "list_snapshots",
 ];
 
+/// Tool surfaces a Ducklake reader may serve only when the current indexer
+/// has the matching shared backend attached, paired with the probe that
+/// answers "is it attached?".
+///
+/// One row per surface. Adding a fifth is a line here, not a fourth copy of
+/// an `if state.reader_mode && ...` block — see the loop in
+/// [`dispatch_tools_call`].
+///
+/// The pair is named rather than written inline so the constant reads as
+/// "a list of gates" instead of a nested tuple type.
+type SharedSurfaceGate = (&'static [&'static str], fn(&Indexer) -> bool);
+
+const SHARED_SURFACE_GATES: &[SharedSurfaceGate] = &[
+    (CHAT_TOOLS, Indexer::has_shared_chat),
+    (EVENTS_TOOLS, Indexer::has_shared_events),
+    (CRDT_TOOLS, Indexer::has_shared_crdt),
+];
+
 async fn dispatch_tools_call(
     state: &crate::server::AppState,
     tenant_id: &str,
@@ -654,47 +653,25 @@ async fn dispatch_tools_call(
     // consistent indexer even if a snapshot adoption swaps mid-flight.
     let current_indexer: Option<Arc<Indexer>> = state.indexer.as_ref().map(IndexerHandle::current);
 
-    // Dynamic chat gate (DuckLake PR 8): a reader rejects
-    // `append_message`/`list_messages` UNLESS the current indexer has a
-    // shared chat backend attached (`ESCUREL_INDEX_BACKEND=ducklake` with
-    // a Postgres catalog — see `EscurelConfig::build`). Checked against
-    // the SAME captured indexer the rest of this call runs against, so a
-    // hot-swap mid-flight can't disagree with itself. Every non-reader
-    // deployment (single-file, or a ducklake writer) is completely
-    // unaffected — this block is inert there.
-    if state.reader_mode
-        && CHAT_TOOLS.contains(&params.name.as_str())
-        && !current_indexer
-            .as_deref()
-            .is_some_and(Indexer::has_shared_chat)
-    {
-        return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
-    }
-
-    // Dynamic events gate (DuckLake PR 9): mirrors the chat gate above
-    // exactly — a reader rejects `capture_event`/`assign_event`/
-    // `list_events`/`list_inbox` UNLESS the current indexer has a shared
-    // events backend attached.
-    if state.reader_mode
-        && EVENTS_TOOLS.contains(&params.name.as_str())
-        && !current_indexer
-            .as_deref()
-            .is_some_and(Indexer::has_shared_events)
-    {
-        return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
-    }
-
-    // Dynamic CRDT gate (DuckLake PR 10): mirrors the chat/events gates
-    // above exactly — a reader rejects `open_session`/`apply_op`/
-    // `close_session`/`list_snapshots` UNLESS the current indexer has a
-    // shared CRDT backend attached.
-    if state.reader_mode
-        && CRDT_TOOLS.contains(&params.name.as_str())
-        && !current_indexer
-            .as_deref()
-            .is_some_and(Indexer::has_shared_crdt)
-    {
-        return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
+    // Dynamic shared-surface gates (DuckLake PRs 8-10): a reader rejects
+    // chat, events and CRDT tools UNLESS the current indexer has the matching
+    // shared backend attached. Checked against the SAME captured indexer the
+    // rest of this call runs against, so a hot-swap mid-flight cannot
+    // disagree with itself. Every non-reader deployment (single-file, or a
+    // ducklake writer) is completely unaffected — this loop is inert there.
+    //
+    // These were three copied blocks whose comments each said they "mirror
+    // the chat gate above exactly". They did, which is why they are a table:
+    // a fourth shared surface is now one row rather than a fourth copy, and
+    // the three cannot drift apart while claiming not to.
+    if state.reader_mode {
+        for (tools, has_shared) in SHARED_SURFACE_GATES {
+            if tools.contains(&params.name.as_str())
+                && !current_indexer.as_deref().is_some_and(has_shared)
+            {
+                return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
+            }
+        }
     }
 
     // Session tools depend on `crdt_backend` + `sessions`, not on
@@ -1398,5 +1375,139 @@ mod search_fusion_tests {
         let lane: Vec<_> = (0..20).map(|i| hit(&format!("p{i}"))).collect();
         let fused = rrf_fuse_many(vec![lane], 5);
         assert_eq!(fused.len(), 5);
+    }
+}
+
+#[cfg(test)]
+mod registry_conformance {
+    //! Dispatch arms and the discovery payload must name the same tools.
+    //!
+    //! R2 of `docs/notes/complexity-reduction-plan.md` folded the execution
+    //! labels into the tool definitions, which removed one of the three
+    //! registries outright. The third — the `match params.name.as_str()` arms
+    //! in [`dispatch_tools_call`] — cannot be folded the same way: each handler
+    //! takes a different dependency set (indexer, sessions, CRDT backend, ACL
+    //! caller, role), and forcing them behind one signature would add more code
+    //! than it removed and obscure exactly the wiring a reader needs to see.
+    //!
+    //! So the arms stay a `match`, and this test makes the drift mechanical
+    //! instead of hoped-for. It reads this file's own source, which sounds
+    //! grubby but is the only way to enumerate match arms without introducing a
+    //! *fourth* hand-maintained list — the very thing R2 is about.
+    //!
+    //! `tests/tool_registry_conformance.rs` covers the same invariant from
+    //! outside, over the wire, but against a hand-written list of 8 names. This
+    //! covers all of them and needs no maintenance. Both are worth having: that
+    //! one proves the tools really answer, this one proves none was forgotten.
+
+    use std::collections::BTreeSet;
+
+    /// JSON-RPC methods that are dispatched by name but are not tools, so they
+    /// are correctly absent from `tools/list`.
+    const NON_TOOL_METHODS: &[&str] = &["initialize", "ping"];
+
+    /// Tool names appearing as `"name" =>` arms inside `dispatch_tools_call`.
+    fn dispatch_arm_names() -> BTreeSet<String> {
+        let src = include_str!("mcp.rs");
+        // Scope to the dispatch function so an unrelated string match elsewhere
+        // in this file cannot masquerade as a tool.
+        let start = src
+            .find("async fn dispatch_tools_call")
+            .expect("dispatch_tools_call exists");
+        let body = &src[start..];
+        // Brace-depth scan from the function's opening `{` rather than
+        // searching for a column-0 `}`. The shortcut works under rustfmt but
+        // is formatting-sensitive: a raw string or a macro body containing an
+        // unindented `}` would truncate the window early and quietly shrink
+        // what this test covers (codex review).
+        let open = body.find('{').expect("function body");
+        let mut depth = 0usize;
+        let mut end = body.len();
+        for (i, c) in body.char_indices().skip(open) {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        body[..end]
+            .lines()
+            .filter_map(|line| {
+                let t = line.trim();
+                let rest = t.strip_prefix('"')?;
+                let (name, tail) = rest.split_once('"')?;
+                tail.trim_start().starts_with("=>").then(|| name.to_owned())
+            })
+            .filter(|n| {
+                !n.is_empty()
+                    && n.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            })
+            .collect()
+    }
+
+    fn advertised_names() -> BTreeSet<String> {
+        super::tools_list_payload()["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|t| t["name"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn the_parser_finds_the_arms_it_claims_to() {
+        // Guards the test itself: a refactor that renames the function or
+        // reshapes the arms would otherwise silently reduce this to a
+        // comparison of two empty sets, which passes and proves nothing.
+        let arms = dispatch_arm_names();
+        assert!(
+            arms.len() > 50,
+            "expected the dispatch match to yield most of the tool surface, \
+             found {}: the source parser has stopped working, not the registry",
+            arms.len()
+        );
+        for m in NON_TOOL_METHODS {
+            assert!(
+                !arms.contains(*m),
+                "`{m}` is dispatched outside dispatch_tools_call and must not \
+                 appear here; the scoping window is wrong"
+            );
+        }
+    }
+
+    #[test]
+    fn every_dispatchable_tool_is_advertised() {
+        let missing: Vec<String> = dispatch_arm_names()
+            .difference(&advertised_names())
+            .filter(|n| !NON_TOOL_METHODS.contains(&n.as_str()))
+            .cloned()
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "callable but invisible to `tools/list`: {missing:?}\n\
+             A client that has not read the source cannot discover these. This \
+             is the direction that actually bit once, when a merge kept a \
+             `purge_page` dispatch arm and dropped its schema entry."
+        );
+    }
+
+    #[test]
+    fn every_advertised_tool_has_a_dispatch_arm() {
+        let unroutable: Vec<String> = advertised_names()
+            .difference(&dispatch_arm_names())
+            .cloned()
+            .collect();
+        assert!(
+            unroutable.is_empty(),
+            "advertised by `tools/list` with no dispatch arm: {unroutable:?}"
+        );
     }
 }

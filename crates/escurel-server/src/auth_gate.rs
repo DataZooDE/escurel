@@ -85,3 +85,124 @@ fn auth_failure(message: impl Into<String>) -> axum::response::Response {
     )
         .into_response()
 }
+
+/// Run the auth gate when a verifier is configured.
+///
+/// `Ok(None)` means no verifier is wired — dev / on-host mode, where the
+/// gateway is open. `Err` is a ready-to-return error response.
+///
+/// `/mcp` and `/ingest` each open with this exact block. They diverge
+/// immediately afterwards (JSON-RPC error envelopes vs plain HTTP JSON, and
+/// different quota dimensions), which is why only the block itself is shared
+/// — folding the divergent halves together would mean inventing a common
+/// error shape neither route wants. R5 of
+/// `docs/notes/complexity-reduction-plan.md`.
+pub(crate) async fn authenticate(
+    state: &crate::server::AppState,
+    headers: &HeaderMap,
+) -> Result<Option<AuthContext>, axum::response::Response> {
+    match state.verifier.as_ref() {
+        Some(verifier) => {
+            let served = state.served_tenant.as_deref();
+            enforce_auth(verifier, headers, served).await.map(Some)
+        }
+        None => Ok(None),
+    }
+}
+
+/// RBAC group names from a verified token, with the configured admin role
+/// value removed.
+///
+/// The stripping is a security boundary, not tidying: `admin_role_value`
+/// (e.g. `escurel:admin`) arrives in the same `groups` claim as ordinary
+/// group names, so leaving it in would let a token grant itself admin
+/// authority through a group ACL. Admin authority comes only from the
+/// verified [`Role`](escurel_auth::Role) — never from a group name.
+/// `escurel-index` strips reserved names (public/owner/admin) again as
+/// defence in depth.
+///
+/// `/mcp` and `/ingest` computed this identically, the second with a comment
+/// reading "mirroring `mcp_inner`". A security check maintained by mirroring
+/// is one edit away from being two different checks.
+pub(crate) fn rbac_groups(
+    state: &crate::server::AppState,
+    auth_ctx: Option<&AuthContext>,
+) -> Vec<String> {
+    let admin_value = state
+        .verifier
+        .as_ref()
+        .map(|v| v.config().admin_role_value.clone());
+    strip_admin_value(
+        auth_ctx.map(|c| c.groups.as_slice()).unwrap_or(&[]),
+        admin_value.as_deref(),
+    )
+}
+
+/// The stripping itself, separated so the security boundary is testable
+/// without standing up an `AppState` and a verifier.
+fn strip_admin_value(groups: &[String], admin_value: Option<&str>) -> Vec<String> {
+    groups
+        .iter()
+        .filter(|g| Some(g.as_str()) != admin_value)
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_admin_value;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_admin_role_value_never_survives_as_a_group() {
+        // The whole point: `escurel:admin` arrives in the same claim as
+        // ordinary group names, so leaving it in would let a token grant
+        // itself admin authority through a group ACL.
+        let groups = v(&["eng", "escurel:admin", "ops"]);
+        assert_eq!(
+            strip_admin_value(&groups, Some("escurel:admin")),
+            v(&["eng", "ops"])
+        );
+    }
+
+    #[test]
+    fn ordinary_groups_pass_through_in_order() {
+        let groups = v(&["eng", "ops"]);
+        assert_eq!(strip_admin_value(&groups, Some("escurel:admin")), groups);
+    }
+
+    #[test]
+    fn stripping_is_exact_not_prefix_or_substring() {
+        // `escurel:admins` is a different group and must survive; a
+        // `starts_with`/`contains` implementation would eat it.
+        let groups = v(&["escurel:admins", "not-escurel:admin", "escurel:admin"]);
+        assert_eq!(
+            strip_admin_value(&groups, Some("escurel:admin")),
+            v(&["escurel:admins", "not-escurel:admin"])
+        );
+    }
+
+    #[test]
+    fn every_occurrence_is_removed() {
+        // A claim carrying the value twice must not leave one behind.
+        let groups = v(&["escurel:admin", "eng", "escurel:admin"]);
+        assert_eq!(
+            strip_admin_value(&groups, Some("escurel:admin")),
+            v(&["eng"])
+        );
+    }
+
+    #[test]
+    fn no_configured_admin_value_strips_nothing() {
+        let groups = v(&["eng", "escurel:admin"]);
+        assert_eq!(strip_admin_value(&groups, None), groups);
+    }
+
+    #[test]
+    fn an_absent_auth_context_yields_no_groups() {
+        assert!(strip_admin_value(&[], Some("escurel:admin")).is_empty());
+    }
+}

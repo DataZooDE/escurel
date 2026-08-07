@@ -792,31 +792,21 @@ impl Indexer {
                 got: dense_vec.len(),
             });
         }
-        let dense_vec_sql = format_vector_literal(&dense_vec);
 
         // Take the connection mutex only for the transaction.
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction()?;
 
-        // pages: upsert via DELETE + INSERT to keep semantics
-        // straightforward without depending on an ON CONFLICT clause
-        // that varies by DuckDB version.
-        tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
-        tx.execute(
-            "INSERT INTO pages \
-             (page_id, slug, skill, page_type, frontmatter, body_hash, at_ts, scenario, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?::JSON, ?, \
-                     TRY_CAST(? AS TIMESTAMP), ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-            params![
-                page_id,
-                slug,
-                skill,
-                page_type_str,
-                frontmatter_json,
-                body_hash,
-                at_ts,
-                scenario,
-            ],
+        crate::materialise::upsert_page_row(
+            &tx,
+            page_id,
+            slug.as_deref(),
+            &skill,
+            page_type_str,
+            &frontmatter_json,
+            &body_hash,
+            at_ts.as_deref(),
+            scenario.as_deref(),
         )?;
 
         // links: full refresh for this src page.
@@ -868,25 +858,20 @@ impl Indexer {
 
         // blocks: single block per page for now (whole body).
         // Block-anchor splitting lands in a later M2 PR.
-        tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
-        let block_id = format!("{page_id}:blk-0");
-        let dense_vec_literal = format!("{dense_vec_sql}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]");
-        let block_insert_sql = format!(
-            "INSERT INTO blocks \
-             (block_id, page_id, anchor, ordinal, body, dense_vec, skill, page_type, at_ts, scenario) \
-             VALUES (?, ?, 'blk-0', 0, ?, {dense_vec_literal}, ?, ?, TRY_CAST(? AS TIMESTAMP), ?)",
-        );
-        tx.execute(
-            &block_insert_sql,
-            params![
-                block_id,
-                page_id,
-                body_text,
-                skill,
-                page_type_str,
-                at_ts,
-                scenario
-            ],
+        crate::materialise::replace_blocks(
+            &tx,
+            page_id,
+            &skill,
+            page_type_str,
+            at_ts.as_deref(),
+            scenario.as_deref(),
+            &[crate::materialise::BlockRow {
+                anchor: "blk-0".to_owned(),
+                ordinal: 0,
+                body: &body_text,
+                context: None,
+                dense_vec: crate::materialise::DenseVecLiteral::from_embedding(&dense_vec),
+            }],
         )?;
 
         tx.commit()?;
@@ -1207,45 +1192,42 @@ impl Indexer {
 
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
         tx.execute("DELETE FROM links WHERE src_page = ?", params![page_id])?;
-        tx.execute(
-            "INSERT INTO pages \
-             (page_id, slug, skill, page_type, frontmatter, body_hash, at_ts, scenario, created_at, updated_at) \
-             VALUES (?, ?, ?, 'instance', ?::JSON, ?, TRY_CAST(? AS TIMESTAMP), ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-            params![page_id, slug, skill, frontmatter_json, body_hash, at_ts, scenario],
+        crate::materialise::upsert_page_row(
+            &tx,
+            page_id,
+            slug.as_deref(),
+            &skill,
+            "instance",
+            &frontmatter_json,
+            &body_hash,
+            at_ts.as_deref(),
+            scenario.as_deref(),
         )?;
         // Chunks become the page's blocks (one row per chunk). `body` is the
         // verbatim chunk text; `context` holds the structural situating
         // prefix (GH #216) — concatenated only at embed/FTS/rerank time.
-        tx.execute("DELETE FROM blocks WHERE page_id = ?", params![page_id])?;
-        for (i, (chunk, emb)) in chunks.iter().zip(vectors.iter()).enumerate() {
-            let anchor = format!("chunk-{i}");
-            let block_id = format!("{page_id}:{anchor}");
-            let dense_vec_literal = format!(
-                "{}::FLOAT[{BLOCKS_DENSE_VEC_DIM}]",
-                format_vector_literal(emb)
-            );
-            let sql = format!(
-                "INSERT INTO blocks \
-                 (block_id, page_id, anchor, ordinal, body, context, dense_vec, skill, page_type, at_ts, scenario) \
-                 VALUES (?, ?, ?, ?, ?, ?, {dense_vec_literal}, ?, 'instance', TRY_CAST(? AS TIMESTAMP), ?)",
-            );
-            tx.execute(
-                &sql,
-                params![
-                    block_id,
-                    page_id,
-                    anchor,
-                    i as i64,
-                    chunk.body,
-                    chunk.context,
-                    skill,
-                    at_ts,
-                    scenario
-                ],
-            )?;
-        }
+        let rows: Vec<crate::materialise::BlockRow<'_>> = chunks
+            .iter()
+            .zip(vectors.iter())
+            .enumerate()
+            .map(|(i, (chunk, emb))| crate::materialise::BlockRow {
+                anchor: format!("chunk-{i}"),
+                ordinal: i as i64,
+                body: &chunk.body,
+                context: chunk.context.as_deref(),
+                dense_vec: crate::materialise::DenseVecLiteral::from_embedding(emb),
+            })
+            .collect();
+        crate::materialise::replace_blocks(
+            &tx,
+            page_id,
+            &skill,
+            "instance",
+            at_ts.as_deref(),
+            scenario.as_deref(),
+            &rows,
+        )?;
         tx.commit()?;
         self.bump_mutation_epoch();
         Ok(())
