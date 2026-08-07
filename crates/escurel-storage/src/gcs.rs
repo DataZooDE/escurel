@@ -67,9 +67,7 @@ fn bucket_resource(bucket: &str) -> String {
     format!("projects/_/buckets/{bucket}")
 }
 
-fn normalise_prefix(raw: &str) -> String {
-    raw.trim_matches('/').to_owned()
-}
+use crate::layout::normalise_prefix;
 
 fn gcs_io_error(op: &str, e: impl std::fmt::Display) -> StoreError {
     StoreError::Io(std::io::Error::other(format!("gcs {op}: {e}")))
@@ -125,30 +123,14 @@ impl GcsStore {
     /// `{prefix}/tenants/{tenant}/{path}` — identical to the S3 backend, so
     /// the same bucket layout is readable by either.
     fn object_key(&self, key: &Key) -> String {
-        let tenant_path = format!("tenants/{}/{}", key.tenant(), key.path());
-        if self.prefix.is_empty() {
-            tenant_path
-        } else {
-            format!("{}/{}", self.prefix, tenant_path)
-        }
+        crate::layout::object_key(&self.prefix, key)
     }
 
     /// `(full object prefix, tenant-relative base)` — the second is stripped
-    /// off listing results so callers get tenant-relative paths, which is
-    /// what the `LaneStore` contract (and the blob layer) requires.
+    /// off listing results so callers get tenant-relative paths, which is what
+    /// the `LaneStore` contract (and the blob layer) requires.
     fn list_prefix(&self, prefix: &Key) -> (String, String) {
-        let tenant_base = format!("tenants/{}/", prefix.tenant());
-        let full = if self.prefix.is_empty() {
-            format!("{tenant_base}{}", prefix.path())
-        } else {
-            format!("{}/{tenant_base}{}", self.prefix, prefix.path())
-        };
-        let base = if self.prefix.is_empty() {
-            tenant_base
-        } else {
-            format!("{}/{tenant_base}", self.prefix)
-        };
-        (full, base)
+        crate::layout::list_prefix(&self.prefix, prefix)
     }
 
     /// Distinguish "no such object" from a transport failure. The GAPIC error

@@ -137,26 +137,13 @@ impl S3Store {
     /// operator-supplied config, normalised to drop stray slashes so
     /// it can never inject an empty segment or a leading `/`.
     fn object_key(&self, key: &Key) -> String {
-        let tenant_path = format!("tenants/{}/{}", key.tenant(), key.path());
-        if self.prefix.is_empty() {
-            tenant_path
-        } else {
-            format!("{}/{}", self.prefix, tenant_path)
-        }
+        crate::layout::object_key(&self.prefix, key)
     }
 
-    /// The `<prefix>/tenants/<tenant>/` portion for a list prefix,
-    /// plus the per-tenant base used to strip results back to keys.
+    /// The `<prefix>/tenants/<tenant>/` portion for a list prefix, plus the
+    /// per-tenant base used to strip results back to keys.
     fn list_prefix(&self, prefix: &Key) -> (String, String) {
-        // Base under which a tenant's objects live, *with* trailing
-        // slash so we can strip it off listed object keys.
-        let tenant_base = if self.prefix.is_empty() {
-            format!("tenants/{}/", prefix.tenant())
-        } else {
-            format!("{}/tenants/{}/", self.prefix, prefix.tenant())
-        };
-        let full = format!("{tenant_base}{}", prefix.path());
-        (full, tenant_base)
+        crate::layout::list_prefix(&self.prefix, prefix)
     }
 }
 
@@ -335,9 +322,7 @@ impl LaneStore for S3Store {
 
 /// Drop leading/trailing slashes from an operator-supplied prefix so
 /// it can never inject an empty path segment or an absolute key.
-fn normalise_prefix(prefix: &str) -> String {
-    prefix.trim_matches('/').to_owned()
-}
+use crate::layout::normalise_prefix;
 
 /// True if a `get_object` error is a missing-key (404 / NoSuchKey).
 fn is_get_not_found(e: &SdkError<GetObjectError>) -> bool {

@@ -15,6 +15,7 @@ pub mod fs;
 #[cfg(feature = "gcs")]
 pub mod gcs;
 mod key;
+pub mod layout;
 #[cfg(feature = "s3")]
 pub mod s3;
 
