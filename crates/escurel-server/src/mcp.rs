@@ -173,15 +173,9 @@ async fn mcp_inner(
     }
 
     // Auth gate — only enforced when a verifier is configured.
-    let auth_ctx = match state.verifier.as_ref() {
-        Some(verifier) => {
-            let served = state.served_tenant.as_deref();
-            match crate::auth_gate::enforce_auth(verifier, &headers, served).await {
-                Ok(ctx) => Some(ctx),
-                Err(resp) => return resp,
-            }
-        }
-        None => None,
+    let auth_ctx = match crate::auth_gate::authenticate(&state, &headers).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
     };
 
     // Quota gate — only enforced when a quota manager is
@@ -248,20 +242,7 @@ async fn mcp_inner(
     // group name — admin authority comes only from the verified role, never
     // a header grant. Reserved names (public/owner/admin) are stripped
     // again inside escurel-index as defence in depth.
-    let admin_value = state
-        .verifier
-        .as_ref()
-        .map(|v| v.config().admin_role_value.clone());
-    let token_groups: Vec<String> = auth_ctx
-        .as_ref()
-        .map(|c| {
-            c.groups
-                .iter()
-                .filter(|g| Some(g.as_str()) != admin_value.as_deref())
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+    let token_groups = crate::auth_gate::rbac_groups(&state, auth_ctx.as_ref());
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
