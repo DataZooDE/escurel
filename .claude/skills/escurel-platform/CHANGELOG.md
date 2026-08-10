@@ -4,6 +4,21 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.2 — Live sessions are multi-peer, and attaching is ACL-gated
+
+- `references/02-tool-surface.md`: an `op` from one attached client now
+  reaches the others as `peer_op`, and `presence` reaches other peers (live
+  cursors). Previously a session was single-peer — a second device learned of
+  edits only by asking again — so consumers were being pushed toward building
+  their own relay.
+- Records the two properties a client must design for: ACL is evaluated at
+  attach (a mid-session revocation bites at the next attach), and there is no
+  replay of missed frames (`resync_required` → re-`expand` and re-attach).
+- **Security**: attaching to a session is now refused for a principal who may
+  not read the page. It previously was not checked at all, so any
+  authenticated tenant member who knew a session id could watch another
+  principal's live editing on a page the ACL denies them.
+
 ## 0.6.1 — A committed live session is now readable
 
 - `references/02-tool-surface.md`: `close_session(commit: true)` writes the

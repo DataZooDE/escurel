@@ -41,6 +41,7 @@ mod auth_gate;
 pub mod config;
 mod config_probe;
 mod health;
+mod live_dispatch;
 mod mcp;
 pub mod pack;
 mod remote_backend;

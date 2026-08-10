@@ -68,6 +68,21 @@ Notes:
 `/ws`; most apps start with `update_page` and only reach for live mode
 when they need granular concurrent edits.
 
+A session **fans out to every attached client**: an `op` from one peer is
+delivered to the others as a `peer_op` frame (carrying the merged
+`merged_version` + `content` as well as the raw op), and `presence` reaches
+the other peers, which is what makes live cursors work. The originator gets
+`op_ack` and not `peer_op` — it already knows its write landed.
+
+Two properties to design for. **Attaching is ACL-gated and evaluated at
+attach time**: a principal who may not read the page is refused with
+`{"type":"error","code":"forbidden"}`, and an ACL revoked mid-session bites
+when that peer next attaches rather than immediately (disconnect the peer if
+you need it sooner). **There is no replay**: a peer that reconnects, or that
+receives `resync_required` after falling behind the broadcast buffer, must
+`expand` the page and re-attach. The CRDT state is lossless; the *delivery*
+history is not retained.
+
 `close_session(commit: true)` **writes the merged body through to the
 store**, exactly as `update_page` would: the page is re-indexed, so the
 committed text is immediately visible to `expand`, to `search`, and to the

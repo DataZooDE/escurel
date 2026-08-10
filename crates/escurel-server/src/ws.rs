@@ -55,6 +55,7 @@ use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, SessionGuard};
 use serde_json::{Value, json};
 
+use crate::live_dispatch::PeerRecv;
 use crate::server::AppState;
 use crate::session::SessionError;
 
@@ -170,7 +171,7 @@ async fn handle_socket(
     match classify_hello(&hello) {
         Hello::PresenceOnly => {}
         Hello::Session(session_id) => {
-            session_loop(&mut socket, &state, &caller, session_id).await;
+            session_loop(socket, &state, &caller, session_id).await;
             return;
         }
         Hello::Malformed(reason) => {
@@ -295,11 +296,12 @@ async fn may_attach(state: &AppState, caller: &WsCaller, page_id: &str) -> bool 
 /// longer knows the session id (e.g. another transport closed
 /// it concurrently).
 async fn session_loop(
-    socket: &mut WebSocket,
+    mut socket: WebSocket,
     state: &AppState,
     caller: &WsCaller,
     session_id: String,
 ) {
+    let socket = &mut socket;
     let tenant_id = caller.tenant_id.as_str();
     // Reject the attach if the session id is unknown. The
     // registry's `page_id_of` is the cheapest membership probe;
@@ -349,8 +351,55 @@ async fn session_loop(
         return;
     }
 
+    // Split so incoming frames and peer broadcasts can be awaited together;
+    // a single `&mut WebSocket` cannot be borrowed by both arms of a
+    // `select!`. The sink half is what every reply and every delivered peer
+    // frame is written to.
+    let (mut sink, mut stream) = {
+        use futures_util::StreamExt as _;
+        socket.split()
+    };
+    let me = state.dispatcher.next_peer_id();
+    let mut peers = state.dispatcher.subscribe(&session_id);
+    let socket = &mut sink;
+
     loop {
-        let frame = match next_json(socket).await {
+        let frame = tokio::select! {
+            incoming = next_json(&mut stream) => incoming,
+            peer = peers.recv(me) => {
+                match peer {
+                    PeerRecv::Frame(f) => {
+                        if send_json(socket, (*f).clone()).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    // This peer fell behind the channel. Tell it rather than
+                    // silently dropping frames: a client showing stale
+                    // content confidently is worse than one told to re-read.
+                    PeerRecv::Lagged { skipped } => {
+                        let notice = json!({
+                            "type": "resync_required",
+                            "session": session_id,
+                            "skipped": skipped,
+                            "message": "fell behind the session broadcast; \
+                                        re-read the page and re-attach",
+                        });
+                        if send_json(socket, notice).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    // No senders remain; nothing further can arrive on this
+                    // channel, but the client's own frames still work.
+                    PeerRecv::Closed => {
+                        std::future::pending::<()>().await;
+                        continue;
+                    }
+                }
+            }
+        };
+        let frame = match frame {
             Ok(v) => v,
             // Transport disconnect (with or without a close
             // frame from the client) leaves the session open —
@@ -358,7 +407,7 @@ async fn session_loop(
             // WS transport. Only an explicit `close` frame or
             // an HTTP `close_session` tool call closes the
             // session.
-            Err(NextStop::ClientClosed | NextStop::StreamEnded) => return,
+            Err(NextStop::ClientClosed | NextStop::StreamEnded) => break,
             Err(NextStop::ProtocolError(msg)) => {
                 let _ = send_json(
                     socket,
@@ -369,28 +418,27 @@ async fn session_loop(
                     }),
                 )
                 .await;
-                return;
+                break;
             }
         };
 
         let frame_type = frame.get("type").and_then(Value::as_str).unwrap_or("");
         match frame_type {
             "op" => {
-                if handle_op(socket, state, tenant_id, &session_id, &frame)
+                if handle_op(socket, state, tenant_id, &session_id, &frame, me)
                     .await
                     .is_err()
                 {
-                    return;
+                    break;
                 }
             }
             "presence" => {
-                // Single-peer echo for now. Multi-peer broadcast
-                // is M4-stretch / v1-deferred ("Live cursors" in
-                // the spec); echoing back lets the client
-                // confirm round-trip and exercise the loop end
-                // to end.
+                // Broadcast to the other peers — this is what makes live
+                // cursors possible (#352) — and still echo to the sender,
+                // which clients rely on to confirm round-trip.
+                state.dispatcher.publish(&session_id, me, frame.clone());
                 if send_json(socket, frame).await.is_err() {
-                    return;
+                    break;
                 }
             }
             "close" => {
@@ -412,7 +460,7 @@ async fn session_loop(
                     }
                 }
                 close(socket).await;
-                return;
+                break;
             }
             other => {
                 let _ = send_json(
@@ -429,6 +477,10 @@ async fn session_loop(
             }
         }
     }
+
+    // Release the broadcast channel once this was the last peer watching.
+    drop(peers);
+    state.dispatcher.release(&session_id);
 }
 
 /// Handle one `op` frame in session mode. Debits the per-tenant
@@ -438,13 +490,17 @@ async fn session_loop(
 /// and returns `Ok(())` so the connection stays open — the
 /// client can retry. `Err` signals a transport write failure
 /// (the socket is dead).
-async fn handle_op(
-    socket: &mut WebSocket,
+async fn handle_op<S>(
+    socket: &mut S,
     state: &AppState,
     tenant_id: &str,
     session_id: &str,
     frame: &Value,
-) -> Result<(), axum::Error> {
+    me: crate::live_dispatch::PeerId,
+) -> Result<(), axum::Error>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
     // Quota first — mirrors the HTTP `apply_op` ordering in
     // `mcp.rs`: refuse before doing any work.
     if let Some(q) = state.quota.as_ref()
@@ -503,6 +559,26 @@ async fn handle_op(
         .await
         .unwrap_or_default();
 
+    // Fan out to the other peers on this session (#352). They receive
+    // `peer_op` rather than `op_ack`: an ack answers "your write landed",
+    // which is only true for the originator. The merged content rides along
+    // so a peer can render without a round trip — the same courtesy the
+    // sender's `op_ack` already extends.
+    //
+    // Published before the sender's ack so a peer is never behind the
+    // originator's own view of the document.
+    state.dispatcher.publish(
+        session_id,
+        me,
+        json!({
+            "type": "peer_op",
+            "session": session_id,
+            "merged_version": merged.as_str(),
+            "content": content,
+            "op": op_b64,
+        }),
+    );
+
     send_json(
         socket,
         json!({
@@ -554,9 +630,19 @@ enum NextStop {
     ProtocolError(String),
 }
 
-async fn next_json(socket: &mut WebSocket) -> Result<Value, NextStop> {
+/// Read the next JSON frame.
+///
+/// Generic over the stream so the presence-only loop (which owns the whole
+/// `WebSocket`) and the session loop (which owns a `SplitStream` half, so it
+/// can await broadcasts concurrently) share one implementation instead of
+/// two that must agree about framing.
+async fn next_json<S>(socket: &mut S) -> Result<Value, NextStop>
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    use futures_util::StreamExt as _;
     loop {
-        let msg = match socket.recv().await {
+        let msg = match socket.next().await {
             Some(Ok(m)) => m,
             Some(Err(e)) => return Err(NextStop::ProtocolError(format!("ws read failed: {e}"))),
             None => return Err(NextStop::StreamEnded),
@@ -580,15 +666,26 @@ async fn next_json(socket: &mut WebSocket) -> Result<Value, NextStop> {
     }
 }
 
-async fn send_json(socket: &mut WebSocket, value: Value) -> Result<(), axum::Error> {
+async fn send_json<S>(socket: &mut S, value: Value) -> Result<(), axum::Error>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    use futures_util::SinkExt as _;
     socket.send(Message::Text(value.to_string().into())).await
 }
 
-async fn close(socket: &mut WebSocket) {
+async fn close<S>(socket: &mut S)
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    use futures_util::SinkExt as _;
     let _ = socket.send(Message::Close(None)).await;
 }
 
-async fn close_with(socket: &mut WebSocket, _stop: NextStop) {
+async fn close_with<S>(socket: &mut S, _stop: NextStop)
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
     close(socket).await;
 }
 

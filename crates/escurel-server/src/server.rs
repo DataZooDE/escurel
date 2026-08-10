@@ -349,6 +349,10 @@ pub(crate) struct AppState {
     /// Always present. Operations no-op (return a JSON-RPC error)
     /// when `crdt_backend` is `None`.
     pub(crate) sessions: Arc<SessionManager>,
+    /// Fan-out of session frames to the other sockets attached to a session
+    /// (#352). Empty until a socket attaches; holds nothing for sessions
+    /// nobody is watching.
+    pub(crate) dispatcher: Arc<crate::live_dispatch::LiveSessionDispatcher>,
     /// Per-process metrics registry. Handlers debit it on the
     /// `(route, status)` axis; `/metrics` renders it as the
     /// Prometheus text exposition body.
@@ -415,6 +419,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         embedder_reload: config.embedder_reload.clone(),
         embedder_factory: config.embedder_factory.clone(),
         sessions: Arc::new(SessionManager::new()),
+        dispatcher: Arc::new(crate::live_dispatch::LiveSessionDispatcher::new()),
         metrics: metrics_registry,
         webhook: config
             .webhook_url
