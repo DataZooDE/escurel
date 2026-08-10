@@ -1138,6 +1138,10 @@ Two properties a client must design for:
   that an ACL revoked mid-session takes effect when that peer next attaches,
   not immediately. Disconnect a peer explicitly if you need revocation to
   bite at once.
+- **Presence fields are server-rebuilt.** The server emits the `session` it
+  knows the sender is attached to and copies through only `cursor`, `anchor`
+  and `user`. A peer cannot make another peer see a frame that claims a
+  different session, and unrecognised keys are dropped rather than relayed.
 - **There is no replay of missed frames.** A peer that disconnects, or that
   falls far enough behind the per-session broadcast buffer to receive
   `resync_required`, must re-read the page (`expand`) and re-attach. The

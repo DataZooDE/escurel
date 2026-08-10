@@ -142,11 +142,15 @@ async fn send_json(sock: &mut Sock, v: Value) {
 }
 
 async fn open_session(h: &Harness, bearer: &str) -> String {
+    open_session_for(h, bearer, PAGE).await
+}
+
+async fn open_session_for(h: &Harness, bearer: &str, page_id: &str) -> String {
     let resp: Value = reqwest::Client::new()
         .post(h.process.mcp_url())
         .bearer_auth(bearer)
         .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "open_session", "arguments": { "page_id": PAGE } } }))
+            "params": { "name": "open_session", "arguments": { "page_id": page_id } } }))
         .send()
         .await
         .expect("post")
@@ -287,5 +291,89 @@ async fn a_single_peer_session_behaves_as_before() {
     assert!(
         ack["content"].as_str().unwrap_or_default().contains("SOLO"),
         "content still returned to the sole peer: {ack}"
+    );
+}
+
+/// A peer cannot forge the fields other peers receive.
+///
+/// `presence` used to be relayed verbatim, so an attached peer could set
+/// `session` to any value it liked (and attach arbitrary extra keys) and the
+/// recipient would render it. Delivery stayed on the correct channel, but the
+/// payload lied about where it came from. The server now rebuilds the frame
+/// and copies through only the fields a peer legitimately reports
+/// (codex review).
+#[tokio::test]
+async fn a_peer_cannot_spoof_the_session_in_a_presence_frame() {
+    let h = start().await;
+    let token = h.process.mint_token(TENANT, Role::Agent);
+    let session = open_session(&h, &token).await;
+
+    let mut a = attach(&h, &token, &session).await;
+    let mut b = attach(&h, &token, &session).await;
+
+    send_json(
+        &mut a,
+        json!({
+            "type": "presence",
+            "session": "sess_SOMEONE_ELSES",
+            "cursor": 7,
+            "injected": "attacker-controlled",
+        }),
+    )
+    .await;
+
+    let frame = recv_until(&mut b, |v| v["type"] == "presence")
+        .await
+        .expect("B must still receive a presence frame");
+    assert_eq!(
+        frame["session"],
+        session.as_str(),
+        "the session must be the one the sender is actually attached to, \
+         not the one it claimed: {frame}"
+    );
+    assert!(
+        frame.get("injected").is_none(),
+        "arbitrary client keys must not be relayed to other peers: {frame}"
+    );
+    assert_eq!(frame["cursor"], 7, "the real cursor still travels: {frame}");
+}
+
+/// Two sessions on one gateway do not hear each other.
+///
+/// The dispatcher's unit tests cover the keying; this covers the whole path —
+/// two real sockets, two real sessions, real tokens.
+#[tokio::test]
+async fn a_frame_on_one_session_never_reaches_another_session() {
+    let h = start().await;
+    let token = h.process.mint_token(TENANT, Role::Agent);
+    let s1 = open_session(&h, &token).await;
+    let s2 = open_session_for(&h, &token, "markdown/instances/note/n2.md").await;
+    assert_ne!(s1, s2, "two distinct sessions");
+
+    let mut a = attach(&h, &token, &s1).await;
+    let mut outsider = attach(&h, &token, &s2).await;
+
+    let mut peer = Client::new();
+    let op = B64.encode(peer.insert(0, "SESSION-ONE-ONLY"));
+    send_json(&mut a, json!({ "type": "op", "session": s1, "op": op })).await;
+
+    // A's ack proves the op was processed, so the outsider's silence is
+    // meaningful rather than a race.
+    assert!(
+        recv_until(&mut a, |v| v["type"] == "op_ack")
+            .await
+            .is_some(),
+        "control: the op must be processed"
+    );
+
+    let leaked = recv_until(&mut outsider, |v| {
+        serde_json::to_string(v)
+            .unwrap_or_default()
+            .contains("SESSION-ONE-ONLY")
+    })
+    .await;
+    assert!(
+        leaked.is_none(),
+        "a frame on one session must never reach a peer on another: {leaked:?}"
     );
 }

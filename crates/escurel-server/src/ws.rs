@@ -259,18 +259,26 @@ async fn handle_socket(
 /// ACL, and `may_read_instance` is the same predicate `expand` applies to the
 /// same bytes.
 ///
-/// Fails OPEN in exactly two cases, both of which mean "there is nothing to
-/// enforce against", not "enforcement is optional":
+/// Fails OPEN in exactly two cases, both of which mean "there is no ACL to
+/// enforce", not "enforcement is optional":
 ///
 /// * **No indexer.** A session-only gateway (`indexer = None`) has no page
 ///   corpus, so no ACL exists. `tool_open_session`'s layer guard reasons the
 ///   same way about the same deployment.
-/// * **The page is not in the corpus**, or is not an instance. There is no
-///   ACL attached to it, and a session on an unknown page holds no stored
-///   content to disclose.
+/// * **The page is not an instance.** Only `type: instance` pages carry an
+///   instance ACL; skill pages are readable by any tenant member on the HTTP
+///   path too, so refusing here would be stricter than `expand`, not safer.
 ///
-/// Any error reading the page fails CLOSED — an ACL decision that cannot be
-/// made is not a decision to allow.
+/// Everything else fails CLOSED, including a page the indexer cannot find.
+/// An earlier version allowed that case on the reasoning that an unknown page
+/// has no stored content to disclose — which contradicted this function's own
+/// rule and left a real window: a page that HAD an owner-private ACL and was
+/// then deleted expands to `None`, so a session still open on it would have
+/// become attachable by anyone (codex review).
+///
+/// The cost is that a session opened on a page that does not exist yet is not
+/// attachable over `/ws`. Write the page first (`update_page`, then
+/// `open_session`), which is the ordinary order anyway.
 async fn may_attach(state: &AppState, caller: &WsCaller, page_id: &str) -> bool {
     let Some(indexer) = state.indexer.as_ref().map(IndexerHandle::current) else {
         return true;
@@ -280,8 +288,8 @@ async fn may_attach(state: &AppState, caller: &WsCaller, page_id: &str) -> bool 
             .may_read_instance(&caller.acl(), &e.page.skill, &e.frontmatter)
             .await
             .unwrap_or(false),
-        Ok(_) => true,
-        Err(_) => false,
+        Ok(Some(_)) => true,
+        Ok(None) | Err(_) => false,
     }
 }
 
@@ -361,12 +369,15 @@ async fn session_loop(
     };
     let me = state.dispatcher.next_peer_id();
     let mut peers = state.dispatcher.subscribe(&session_id);
+    // Disables the broadcast arm once the channel is gone. Without the guard
+    // the arm would complete instantly forever and starve the socket read.
+    let mut peers_open = true;
     let socket = &mut sink;
 
     loop {
         let frame = tokio::select! {
             incoming = next_json(&mut stream) => incoming,
-            peer = peers.recv(me) => {
+            peer = peers.recv(me), if peers_open => {
                 match peer {
                     PeerRecv::Frame(f) => {
                         if send_json(socket, (*f).clone()).await.is_err() {
@@ -391,9 +402,11 @@ async fn session_loop(
                         continue;
                     }
                     // No senders remain; nothing further can arrive on this
-                    // channel, but the client's own frames still work.
+                    // channel. Stop polling it — the client's own frames must
+                    // keep working, and an always-ready arm would starve the
+                    // socket read and wedge the connection.
                     PeerRecv::Closed => {
-                        std::future::pending::<()>().await;
+                        peers_open = false;
                         continue;
                     }
                 }
@@ -436,8 +449,25 @@ async fn session_loop(
                 // Broadcast to the other peers — this is what makes live
                 // cursors possible (#352) — and still echo to the sender,
                 // which clients rely on to confirm round-trip.
-                state.dispatcher.publish(&session_id, me, frame.clone());
-                if send_json(socket, frame).await.is_err() {
+                //
+                // The outbound frame is REBUILT server-side rather than
+                // relayed. Forwarding the client's object verbatim let an
+                // attached peer choose the `session` other peers saw, and
+                // attach any keys it liked: delivery stayed on the right
+                // channel while the payload lied about its origin (codex
+                // review). Only the fields a peer legitimately reports are
+                // copied through.
+                let mut out = json!({
+                    "type": "presence",
+                    "session": session_id,
+                });
+                for key in ["cursor", "anchor", "user"] {
+                    if let Some(v) = frame.get(key) {
+                        out[key] = v.clone();
+                    }
+                }
+                state.dispatcher.publish(&session_id, me, out.clone());
+                if send_json(socket, out).await.is_err() {
                     break;
                 }
             }
@@ -565,8 +595,13 @@ where
     // so a peer can render without a round trip — the same courtesy the
     // sender's `op_ack` already extends.
     //
-    // Published before the sender's ack so a peer is never behind the
-    // originator's own view of the document.
+    // Published BEFORE the sender's ack, deliberately. By this point
+    // `sessions.apply` has succeeded, so the edit is already part of the
+    // document — suppressing the fan-out because the originator's socket
+    // died would hide a committed edit from the peers who are still
+    // connected, which is the worse failure. A sender that never receives
+    // its `op_ack` has lost its transport and reconciles by re-reading, the
+    // same path `resync_required` uses.
     state.dispatcher.publish(
         session_id,
         me,
