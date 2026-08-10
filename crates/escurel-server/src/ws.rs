@@ -48,7 +48,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use escurel_auth::Role;
 use escurel_crdt::Op;
+use escurel_index::{AclCaller, IndexerHandle};
+use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, SessionGuard};
 use serde_json::{Value, json};
 
@@ -66,15 +69,9 @@ pub async fn ws_upgrade(
     // Auth gate — only enforced when a verifier is configured.
     // Unconfigured (dev) gateways skip auth and quota entirely;
     // production deployments always wire both.
-    let auth_ctx = match state.verifier.as_ref() {
-        Some(verifier) => {
-            let served = state.served_tenant.as_deref();
-            match crate::auth_gate::enforce_auth(verifier, &headers, served).await {
-                Ok(ctx) => Some(ctx),
-                Err(resp) => return resp,
-            }
-        }
-        None => None,
+    let auth_ctx = match crate::auth_gate::authenticate(&state, &headers).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
     };
 
     // Quota gate — debit a session slot. The guard is moved into
@@ -95,7 +92,43 @@ pub async fn ws_upgrade(
         .map(|c| c.tenant_id.clone())
         .unwrap_or_else(|| "default".to_owned());
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, session_guard, tenant_id))
+    // The verified principal, carried into the socket task so the session
+    // attach can be ACL-gated (#352). Previously only `tenant_id` survived
+    // the upgrade, which is why `ws.rs` had no way to make an ACL decision
+    // even in principle.
+    let caller = WsCaller {
+        subject: auth_ctx
+            .as_ref()
+            .map(|c| c.subject.clone())
+            .unwrap_or_default(),
+        groups: crate::auth_gate::rbac_groups(&state, auth_ctx.as_ref()),
+        // No verifier (dev / on-host mode) → admin bypass, matching the
+        // HTTP and ingest gates exactly.
+        is_admin: auth_ctx
+            .as_ref()
+            .is_none_or(|c| matches!(c.role, Role::Admin)),
+        tenant_id,
+    };
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state, session_guard, caller))
+}
+
+/// The verified principal behind a WebSocket connection.
+pub(crate) struct WsCaller {
+    pub tenant_id: String,
+    subject: String,
+    groups: Vec<String>,
+    is_admin: bool,
+}
+
+impl WsCaller {
+    fn acl(&self) -> AclCaller<'_> {
+        AclCaller {
+            subject: &self.subject,
+            is_admin: self.is_admin,
+            token_groups: &self.groups,
+        }
+    }
 }
 
 fn session_cap_response() -> axum::response::Response {
@@ -120,7 +153,7 @@ async fn handle_socket(
     mut socket: WebSocket,
     state: AppState,
     _session_guard: Option<SessionGuard>,
-    tenant_id: String,
+    caller: WsCaller,
 ) {
     // Wait for the client's hello. Spec: the very first frame
     // after upgrade is `{ "type": "hello", ... }`. We tolerate
@@ -137,7 +170,7 @@ async fn handle_socket(
     match classify_hello(&hello) {
         Hello::PresenceOnly => {}
         Hello::Session(session_id) => {
-            session_loop(&mut socket, &state, &tenant_id, session_id).await;
+            session_loop(&mut socket, &state, &caller, session_id).await;
             return;
         }
         Hello::Malformed(reason) => {
@@ -219,6 +252,38 @@ async fn handle_socket(
     }
 }
 
+/// Whether `caller` may attach to a session on `page_id`.
+///
+/// Mirrors the HTTP read path: only `type: instance` pages carry an instance
+/// ACL, and `may_read_instance` is the same predicate `expand` applies to the
+/// same bytes.
+///
+/// Fails OPEN in exactly two cases, both of which mean "there is nothing to
+/// enforce against", not "enforcement is optional":
+///
+/// * **No indexer.** A session-only gateway (`indexer = None`) has no page
+///   corpus, so no ACL exists. `tool_open_session`'s layer guard reasons the
+///   same way about the same deployment.
+/// * **The page is not in the corpus**, or is not an instance. There is no
+///   ACL attached to it, and a session on an unknown page holds no stored
+///   content to disclose.
+///
+/// Any error reading the page fails CLOSED — an ACL decision that cannot be
+/// made is not a decision to allow.
+async fn may_attach(state: &AppState, caller: &WsCaller, page_id: &str) -> bool {
+    let Some(indexer) = state.indexer.as_ref().map(IndexerHandle::current) else {
+        return true;
+    };
+    match indexer.expand(page_id, None, None).await {
+        Ok(Some(e)) if e.page.page_type == PageType::Instance => indexer
+            .may_read_instance(&caller.acl(), &e.page.skill, &e.frontmatter)
+            .await
+            .unwrap_or(false),
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
 /// Session-mode per-frame loop. Entered after a `hello` with a
 /// `session` field that resolves to an open entry in the
 /// [`SessionManager`]. Dispatches `op` / `presence` / `close`
@@ -232,21 +297,51 @@ async fn handle_socket(
 async fn session_loop(
     socket: &mut WebSocket,
     state: &AppState,
-    tenant_id: &str,
+    caller: &WsCaller,
     session_id: String,
 ) {
+    let tenant_id = caller.tenant_id.as_str();
     // Reject the attach if the session id is unknown. The
     // registry's `page_id_of` is the cheapest membership probe;
     // any subsequent `apply` / `close` re-checks the same map,
     // so the rare race where the session is closed mid-attach
     // surfaces as an `unknown_session` from the apply path.
-    if state.sessions.page_id_of(&session_id).is_none() {
+    let Some(page_id) = state.sessions.page_id_of(&session_id) else {
         let _ = send_json(
             socket,
             json!({
                 "type": "error",
                 "code": "unknown_session",
                 "message": format!("session `{session_id}` is not open on this gateway"),
+            }),
+        )
+        .await;
+        close(socket).await;
+        return;
+    };
+
+    // ACL gate (#352). Attaching is a READ: `op_ack` carries the session's
+    // current content, so a principal who may not read the page must not
+    // join a session on it. Without this the session was a side channel
+    // around the instance ACL — verified by
+    // `tests/ws_attach_acl.rs`, where a non-owner received the owner's live
+    // draft text verbatim from a page HTTP `expand` denies them.
+    //
+    // Enforced at attach rather than per frame. Per-frame evaluation would
+    // put a DuckDB round trip in front of every keystroke; the cost of
+    // attach-time enforcement is that an ACL revoked mid-session takes
+    // effect when the peer next attaches, which is documented in
+    // `docs/spec/protocol.md`.
+    if !may_attach(state, caller, &page_id).await {
+        let _ = send_json(
+            socket,
+            json!({
+                "type": "error",
+                "code": "forbidden",
+                "message": format!(
+                    "not permitted to attach to a session on page `{page_id}`"
+                ),
+                "session": session_id,
             }),
         )
         .await;
