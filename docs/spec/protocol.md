@@ -1104,12 +1104,50 @@ Message types:
 | `type` | direction | payload |
 |---|---|---|
 | `op` | C→S | `{ session, op: <Loro op> }` |
-| `op_ack` | S→C | `{ session, merged_version, content, conflicts, issues }` |
+| `op_ack` | S→C | `{ session, merged_version, content, conflicts, issues }` — to the **originator** |
+| `peer_op` | S→C | `{ session, merged_version, content, op }` — to the **other** attached peers |
 | `presence` | bidi | `{ session, user, anchor }` (heartbeat every 10 s) |
+| `resync_required` | S→C | `{ session, skipped, message }` — this peer fell behind |
 | `search_subscribe` | C→S | `{ subscription_id, q, k, filter? }` — live-updated search |
 | `search_event` | S→C | `{ subscription_id, hits: [...] }` |
 | `close` | C→S | `{ session, commit: bool }` |
 | `error` | S→C | `{ code, message }` |
+
+### Multi-peer sessions
+
+A session fans out. An `op` applied by one attached client is delivered to
+every other client attached to the same session as a `peer_op`, and a
+`presence` frame reaches the other peers (this is what makes live cursors
+possible). The originator receives `op_ack` and **not** `peer_op` — it has
+already been told its write landed, and applying its own edit twice is the
+bug a naive echo introduces.
+
+`peer_op` carries the merged `content` as well as the raw `op`, so a peer can
+either apply the op to its local replica or render the merged text directly.
+
+**Attaching is a read, and is ACL-gated.** A principal who may not read the
+page — the same `may_read_instance` decision `expand` applies — is refused
+the attach with `{ "type": "error", "code": "forbidden" }`. Without this a
+session would be a side channel around the instance ACL, since a session's
+live content is exactly the material being edited.
+
+Two properties a client must design for:
+
+- **ACL is evaluated at attach, not per frame.** Evaluating per frame would
+  put a database round trip in front of every keystroke. The consequence is
+  that an ACL revoked mid-session takes effect when that peer next attaches,
+  not immediately. Disconnect a peer explicitly if you need revocation to
+  bite at once.
+- **Presence fields are server-rebuilt.** The server emits the `session` it
+  knows the sender is attached to and copies through only `cursor`, `anchor`
+  and `user`. A peer cannot make another peer see a frame that claims a
+  different session, and unrecognised keys are dropped rather than relayed.
+- **There is no replay of missed frames.** A peer that disconnects, or that
+  falls far enough behind the per-session broadcast buffer to receive
+  `resync_required`, must re-read the page (`expand`) and re-attach. The
+  session's CRDT state is authoritative and lossless — what is not retained
+  is the *delivery* history, so reconciliation is a re-read rather than a
+  catch-up stream.
 
 Live search subscriptions are the WS-only feature where the
 server pushes new hits as new pages are indexed (useful for

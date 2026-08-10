@@ -141,7 +141,9 @@ escurel event inbox --limit 50
 ```
 
 `GET /ws` exists (frames: `hello`, `presence`, `search_subscribe`, `op`,
-`close`) but carries **no event-bus frame** — tracked as issue #333.
+`peer_op`, `resync_required`, `close`) but carries **no event-bus frame** —
+tracked as issue #333. Session ops *do* now fan out to every attached peer
+(#352); that is document co-editing, not the event bus.
 `search_subscribe` is not a substitute: it ACKs with `hits: []` and live
 push is v1-deferred.
 

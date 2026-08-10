@@ -63,6 +63,11 @@ axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"
 dashmap = "6"
+# `sink` + `std` are the features `ws.rs` actually uses (Sink/SinkExt/
+# StreamExt on the split socket halves). They are enabled anyway by axum
+# through feature unification — which is precisely why they are named here:
+# an upstream dropping them would otherwise break this crate's build.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 duckdb = { version = "1", default-features = false }
 escurel-admin = { path = "../escurel-admin" }
 escurel-auth = { path = "../escurel-auth" }

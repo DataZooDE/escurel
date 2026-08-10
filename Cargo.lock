@@ -2851,6 +2851,7 @@ dependencies = [
  "escurel-types",
  "flate2",
  "futures",
+ "futures-util",
  "hmac 0.12.1",
  "loro",
  "reqwest 0.12.28",

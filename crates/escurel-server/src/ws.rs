@@ -48,10 +48,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use escurel_auth::Role;
 use escurel_crdt::Op;
+use escurel_index::{AclCaller, IndexerHandle};
+use escurel_md::PageType;
 use escurel_quota::{Dimension, QuotaError, SessionGuard};
 use serde_json::{Value, json};
 
+use crate::live_dispatch::PeerRecv;
 use crate::server::AppState;
 use crate::session::SessionError;
 
@@ -66,15 +70,9 @@ pub async fn ws_upgrade(
     // Auth gate — only enforced when a verifier is configured.
     // Unconfigured (dev) gateways skip auth and quota entirely;
     // production deployments always wire both.
-    let auth_ctx = match state.verifier.as_ref() {
-        Some(verifier) => {
-            let served = state.served_tenant.as_deref();
-            match crate::auth_gate::enforce_auth(verifier, &headers, served).await {
-                Ok(ctx) => Some(ctx),
-                Err(resp) => return resp,
-            }
-        }
-        None => None,
+    let auth_ctx = match crate::auth_gate::authenticate(&state, &headers).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
     };
 
     // Quota gate — debit a session slot. The guard is moved into
@@ -95,7 +93,43 @@ pub async fn ws_upgrade(
         .map(|c| c.tenant_id.clone())
         .unwrap_or_else(|| "default".to_owned());
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, session_guard, tenant_id))
+    // The verified principal, carried into the socket task so the session
+    // attach can be ACL-gated (#352). Previously only `tenant_id` survived
+    // the upgrade, which is why `ws.rs` had no way to make an ACL decision
+    // even in principle.
+    let caller = WsCaller {
+        subject: auth_ctx
+            .as_ref()
+            .map(|c| c.subject.clone())
+            .unwrap_or_default(),
+        groups: crate::auth_gate::rbac_groups(&state, auth_ctx.as_ref()),
+        // No verifier (dev / on-host mode) → admin bypass, matching the
+        // HTTP and ingest gates exactly.
+        is_admin: auth_ctx
+            .as_ref()
+            .is_none_or(|c| matches!(c.role, Role::Admin)),
+        tenant_id,
+    };
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state, session_guard, caller))
+}
+
+/// The verified principal behind a WebSocket connection.
+pub(crate) struct WsCaller {
+    pub tenant_id: String,
+    subject: String,
+    groups: Vec<String>,
+    is_admin: bool,
+}
+
+impl WsCaller {
+    fn acl(&self) -> AclCaller<'_> {
+        AclCaller {
+            subject: &self.subject,
+            is_admin: self.is_admin,
+            token_groups: &self.groups,
+        }
+    }
 }
 
 fn session_cap_response() -> axum::response::Response {
@@ -120,7 +154,7 @@ async fn handle_socket(
     mut socket: WebSocket,
     state: AppState,
     _session_guard: Option<SessionGuard>,
-    tenant_id: String,
+    caller: WsCaller,
 ) {
     // Wait for the client's hello. Spec: the very first frame
     // after upgrade is `{ "type": "hello", ... }`. We tolerate
@@ -137,7 +171,7 @@ async fn handle_socket(
     match classify_hello(&hello) {
         Hello::PresenceOnly => {}
         Hello::Session(session_id) => {
-            session_loop(&mut socket, &state, &tenant_id, session_id).await;
+            session_loop(socket, &state, &caller, session_id).await;
             return;
         }
         Hello::Malformed(reason) => {
@@ -219,6 +253,46 @@ async fn handle_socket(
     }
 }
 
+/// Whether `caller` may attach to a session on `page_id`.
+///
+/// Mirrors the HTTP read path: only `type: instance` pages carry an instance
+/// ACL, and `may_read_instance` is the same predicate `expand` applies to the
+/// same bytes.
+///
+/// Fails OPEN in exactly two cases, both of which mean "there is no ACL to
+/// enforce", not "enforcement is optional":
+///
+/// * **No indexer.** A session-only gateway (`indexer = None`) has no page
+///   corpus, so no ACL exists. `tool_open_session`'s layer guard reasons the
+///   same way about the same deployment.
+/// * **The page is not an instance.** Only `type: instance` pages carry an
+///   instance ACL; skill pages are readable by any tenant member on the HTTP
+///   path too, so refusing here would be stricter than `expand`, not safer.
+///
+/// Everything else fails CLOSED, including a page the indexer cannot find.
+/// An earlier version allowed that case on the reasoning that an unknown page
+/// has no stored content to disclose — which contradicted this function's own
+/// rule and left a real window: a page that HAD an owner-private ACL and was
+/// then deleted expands to `None`, so a session still open on it would have
+/// become attachable by anyone (codex review).
+///
+/// The cost is that a session opened on a page that does not exist yet is not
+/// attachable over `/ws`. Write the page first (`update_page`, then
+/// `open_session`), which is the ordinary order anyway.
+async fn may_attach(state: &AppState, caller: &WsCaller, page_id: &str) -> bool {
+    let Some(indexer) = state.indexer.as_ref().map(IndexerHandle::current) else {
+        return true;
+    };
+    match indexer.expand(page_id, None, None).await {
+        Ok(Some(e)) if e.page.page_type == PageType::Instance => indexer
+            .may_read_instance(&caller.acl(), &e.page.skill, &e.frontmatter)
+            .await
+            .unwrap_or(false),
+        Ok(Some(_)) => true,
+        Ok(None) | Err(_) => false,
+    }
+}
+
 /// Session-mode per-frame loop. Entered after a `hello` with a
 /// `session` field that resolves to an open entry in the
 /// [`SessionManager`]. Dispatches `op` / `presence` / `close`
@@ -230,17 +304,19 @@ async fn handle_socket(
 /// longer knows the session id (e.g. another transport closed
 /// it concurrently).
 async fn session_loop(
-    socket: &mut WebSocket,
+    mut socket: WebSocket,
     state: &AppState,
-    tenant_id: &str,
+    caller: &WsCaller,
     session_id: String,
 ) {
+    let socket = &mut socket;
+    let tenant_id = caller.tenant_id.as_str();
     // Reject the attach if the session id is unknown. The
     // registry's `page_id_of` is the cheapest membership probe;
     // any subsequent `apply` / `close` re-checks the same map,
     // so the rare race where the session is closed mid-attach
     // surfaces as an `unknown_session` from the apply path.
-    if state.sessions.page_id_of(&session_id).is_none() {
+    let Some(page_id) = state.sessions.page_id_of(&session_id) else {
         let _ = send_json(
             socket,
             json!({
@@ -252,10 +328,91 @@ async fn session_loop(
         .await;
         close(socket).await;
         return;
+    };
+
+    // ACL gate (#352). Attaching is a READ: `op_ack` carries the session's
+    // current content, so a principal who may not read the page must not
+    // join a session on it. Without this the session was a side channel
+    // around the instance ACL — verified by
+    // `tests/ws_attach_acl.rs`, where a non-owner received the owner's live
+    // draft text verbatim from a page HTTP `expand` denies them.
+    //
+    // Enforced at attach rather than per frame. Per-frame evaluation would
+    // put a DuckDB round trip in front of every keystroke; the cost of
+    // attach-time enforcement is that an ACL revoked mid-session takes
+    // effect when the peer next attaches, which is documented in
+    // `docs/spec/protocol.md`.
+    if !may_attach(state, caller, &page_id).await {
+        let _ = send_json(
+            socket,
+            json!({
+                "type": "error",
+                "code": "forbidden",
+                "message": format!(
+                    "not permitted to attach to a session on page `{page_id}`"
+                ),
+                "session": session_id,
+            }),
+        )
+        .await;
+        close(socket).await;
+        return;
     }
 
+    // Split so incoming frames and peer broadcasts can be awaited together;
+    // a single `&mut WebSocket` cannot be borrowed by both arms of a
+    // `select!`. The sink half is what every reply and every delivered peer
+    // frame is written to.
+    let (mut sink, mut stream) = {
+        use futures_util::StreamExt as _;
+        socket.split()
+    };
+    let me = state.dispatcher.next_peer_id();
+    let mut peers = state.dispatcher.subscribe(&session_id);
+    // Disables the broadcast arm once the channel is gone. Without the guard
+    // the arm would complete instantly forever and starve the socket read.
+    let mut peers_open = true;
+    let socket = &mut sink;
+
     loop {
-        let frame = match next_json(socket).await {
+        let frame = tokio::select! {
+            incoming = next_json(&mut stream) => incoming,
+            peer = peers.recv(me), if peers_open => {
+                match peer {
+                    PeerRecv::Frame(f) => {
+                        if send_json(socket, (*f).clone()).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    // This peer fell behind the channel. Tell it rather than
+                    // silently dropping frames: a client showing stale
+                    // content confidently is worse than one told to re-read.
+                    PeerRecv::Lagged { skipped } => {
+                        let notice = json!({
+                            "type": "resync_required",
+                            "session": session_id,
+                            "skipped": skipped,
+                            "message": "fell behind the session broadcast; \
+                                        re-read the page and re-attach",
+                        });
+                        if send_json(socket, notice).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    // No senders remain; nothing further can arrive on this
+                    // channel. Stop polling it — the client's own frames must
+                    // keep working, and an always-ready arm would starve the
+                    // socket read and wedge the connection.
+                    PeerRecv::Closed => {
+                        peers_open = false;
+                        continue;
+                    }
+                }
+            }
+        };
+        let frame = match frame {
             Ok(v) => v,
             // Transport disconnect (with or without a close
             // frame from the client) leaves the session open —
@@ -263,7 +420,7 @@ async fn session_loop(
             // WS transport. Only an explicit `close` frame or
             // an HTTP `close_session` tool call closes the
             // session.
-            Err(NextStop::ClientClosed | NextStop::StreamEnded) => return,
+            Err(NextStop::ClientClosed | NextStop::StreamEnded) => break,
             Err(NextStop::ProtocolError(msg)) => {
                 let _ = send_json(
                     socket,
@@ -274,28 +431,44 @@ async fn session_loop(
                     }),
                 )
                 .await;
-                return;
+                break;
             }
         };
 
         let frame_type = frame.get("type").and_then(Value::as_str).unwrap_or("");
         match frame_type {
             "op" => {
-                if handle_op(socket, state, tenant_id, &session_id, &frame)
+                if handle_op(socket, state, tenant_id, &session_id, &frame, me)
                     .await
                     .is_err()
                 {
-                    return;
+                    break;
                 }
             }
             "presence" => {
-                // Single-peer echo for now. Multi-peer broadcast
-                // is M4-stretch / v1-deferred ("Live cursors" in
-                // the spec); echoing back lets the client
-                // confirm round-trip and exercise the loop end
-                // to end.
-                if send_json(socket, frame).await.is_err() {
-                    return;
+                // Broadcast to the other peers — this is what makes live
+                // cursors possible (#352) — and still echo to the sender,
+                // which clients rely on to confirm round-trip.
+                //
+                // The outbound frame is REBUILT server-side rather than
+                // relayed. Forwarding the client's object verbatim let an
+                // attached peer choose the `session` other peers saw, and
+                // attach any keys it liked: delivery stayed on the right
+                // channel while the payload lied about its origin (codex
+                // review). Only the fields a peer legitimately reports are
+                // copied through.
+                let mut out = json!({
+                    "type": "presence",
+                    "session": session_id,
+                });
+                for key in ["cursor", "anchor", "user"] {
+                    if let Some(v) = frame.get(key) {
+                        out[key] = v.clone();
+                    }
+                }
+                state.dispatcher.publish(&session_id, me, out.clone());
+                if send_json(socket, out).await.is_err() {
+                    break;
                 }
             }
             "close" => {
@@ -317,7 +490,7 @@ async fn session_loop(
                     }
                 }
                 close(socket).await;
-                return;
+                break;
             }
             other => {
                 let _ = send_json(
@@ -334,6 +507,10 @@ async fn session_loop(
             }
         }
     }
+
+    // Release the broadcast channel once this was the last peer watching.
+    drop(peers);
+    state.dispatcher.release(&session_id);
 }
 
 /// Handle one `op` frame in session mode. Debits the per-tenant
@@ -343,13 +520,17 @@ async fn session_loop(
 /// and returns `Ok(())` so the connection stays open — the
 /// client can retry. `Err` signals a transport write failure
 /// (the socket is dead).
-async fn handle_op(
-    socket: &mut WebSocket,
+async fn handle_op<S>(
+    socket: &mut S,
     state: &AppState,
     tenant_id: &str,
     session_id: &str,
     frame: &Value,
-) -> Result<(), axum::Error> {
+    me: crate::live_dispatch::PeerId,
+) -> Result<(), axum::Error>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
     // Quota first — mirrors the HTTP `apply_op` ordering in
     // `mcp.rs`: refuse before doing any work.
     if let Some(q) = state.quota.as_ref()
@@ -408,6 +589,31 @@ async fn handle_op(
         .await
         .unwrap_or_default();
 
+    // Fan out to the other peers on this session (#352). They receive
+    // `peer_op` rather than `op_ack`: an ack answers "your write landed",
+    // which is only true for the originator. The merged content rides along
+    // so a peer can render without a round trip — the same courtesy the
+    // sender's `op_ack` already extends.
+    //
+    // Published BEFORE the sender's ack, deliberately. By this point
+    // `sessions.apply` has succeeded, so the edit is already part of the
+    // document — suppressing the fan-out because the originator's socket
+    // died would hide a committed edit from the peers who are still
+    // connected, which is the worse failure. A sender that never receives
+    // its `op_ack` has lost its transport and reconciles by re-reading, the
+    // same path `resync_required` uses.
+    state.dispatcher.publish(
+        session_id,
+        me,
+        json!({
+            "type": "peer_op",
+            "session": session_id,
+            "merged_version": merged.as_str(),
+            "content": content,
+            "op": op_b64,
+        }),
+    );
+
     send_json(
         socket,
         json!({
@@ -459,9 +665,19 @@ enum NextStop {
     ProtocolError(String),
 }
 
-async fn next_json(socket: &mut WebSocket) -> Result<Value, NextStop> {
+/// Read the next JSON frame.
+///
+/// Generic over the stream so the presence-only loop (which owns the whole
+/// `WebSocket`) and the session loop (which owns a `SplitStream` half, so it
+/// can await broadcasts concurrently) share one implementation instead of
+/// two that must agree about framing.
+async fn next_json<S>(socket: &mut S) -> Result<Value, NextStop>
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    use futures_util::StreamExt as _;
     loop {
-        let msg = match socket.recv().await {
+        let msg = match socket.next().await {
             Some(Ok(m)) => m,
             Some(Err(e)) => return Err(NextStop::ProtocolError(format!("ws read failed: {e}"))),
             None => return Err(NextStop::StreamEnded),
@@ -485,15 +701,26 @@ async fn next_json(socket: &mut WebSocket) -> Result<Value, NextStop> {
     }
 }
 
-async fn send_json(socket: &mut WebSocket, value: Value) -> Result<(), axum::Error> {
+async fn send_json<S>(socket: &mut S, value: Value) -> Result<(), axum::Error>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    use futures_util::SinkExt as _;
     socket.send(Message::Text(value.to_string().into())).await
 }
 
-async fn close(socket: &mut WebSocket) {
+async fn close<S>(socket: &mut S)
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    use futures_util::SinkExt as _;
     let _ = socket.send(Message::Close(None)).await;
 }
 
-async fn close_with(socket: &mut WebSocket, _stop: NextStop) {
+async fn close_with<S>(socket: &mut S, _stop: NextStop)
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
     close(socket).await;
 }
 
