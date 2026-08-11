@@ -12,8 +12,31 @@ pub(super) struct UpdatePageArgs {
     content: String,
     /// Optimistic-concurrency guard (#246): the version the client last read.
     /// When the head has advanced past it, the write conflicts.
+    ///
+    /// The value to send is a page's **`version`**, as published by `expand`
+    /// (and, immediately after a write, by this tool's own `new_version` —
+    /// they are the same monotonic `v<hlc>` from the single CRDT authority).
+    /// `open_session`'s `head_version` is NOT it: that is a live session's head
+    /// at open time, and a session does not observe whole-page writes.
     #[serde(default)]
     base_version: Option<String>,
+    /// Ask for a **strict** compare-and-swap: on a stale `base_version`,
+    /// conflict outright instead of attempting the three-way auto-merge.
+    ///
+    /// Default `false` — the auto-merge is the right default for a
+    /// read-modify-write agent, which wants its edit to land alongside a
+    /// concurrent one.
+    ///
+    /// It is exactly wrong for a **human-in-the-loop approval**, and that is
+    /// what this flag is for. A reviewer approved one specific diff against
+    /// one specific base; a merge persists a *third* document that neither the
+    /// reviewer nor the concurrent author ever saw. `auto_merged: true` tells
+    /// the caller after the fact, but the merge has already been written — so
+    /// a caller who treats it as a refusal is wrong about the store's state.
+    /// With this set, nothing is merged and nothing is persisted: the caller
+    /// gets `code: conflict` plus `head_content` and re-drafts.
+    #[serde(default)]
+    require_exact_base: bool,
     /// Optional provenance passthrough (#246): a runner-orchestrated write
     /// carries its `provenance.workflow`/`runner` block. Its presence suppresses
     /// the opt-in `page-edited` event (the cascade already handles those writes),
@@ -37,6 +60,35 @@ pub(super) enum Cas {
     Conflict(Value),
 }
 
+/// The typed refusal for "you asked for a concurrency guard this deployment
+/// cannot provide".
+///
+/// A `base_version` on a gateway with no CRDT backend used to be **silently
+/// ignored** — the write went through, unguarded, reporting `ok: true`. That
+/// is the worst possible answer to a request for a safety check: the caller
+/// believes it is protected and is not, so a stale approval clobbers a
+/// concurrent edit and nothing anywhere says so. (Observed downstream in
+/// Heron, which shipped `base_version` on every approval and had it discarded
+/// by the server for months.)
+///
+/// Refusing is the fail-closed reading, and it costs no correct caller
+/// anything: a caller that does not want the guard simply omits the field, and
+/// that path is untouched.
+fn versioning_unavailable(location: &str) -> Value {
+    json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "versioning_unavailable",
+            "location": location,
+            "message": "this gateway has no CRDT backend, so page versions are not \
+                        tracked and an optimistic-concurrency guard cannot be honoured; \
+                        the write was NOT applied — omit the guard to write unguarded, \
+                        or point the caller at a gateway with live versioning",
+        }],
+    })
+}
+
 /// Decide the compare-and-swap for one `update_page`.
 ///
 /// MUST be called with `state.update_page_gate` held: the staleness decision
@@ -46,17 +98,29 @@ pub(super) async fn resolve_base_version(
     state: &crate::server::AppState,
     page_id: &str,
     base_version: Option<&str>,
+    require_exact: bool,
     draft: &str,
     head_hlc: u64,
 ) -> Cas {
-    let (Some(backend), Some(base)) = (state.crdt_backend.as_ref(), base_version) else {
+    let Some(base) = base_version else {
         return Cas::Clean;
+    };
+    let Some(backend) = state.crdt_backend.as_ref() else {
+        // Asked to guard, unable to guard. See `versioning_unavailable`.
+        return Cas::Conflict(versioning_unavailable("base_version"));
     };
     let head = Version::from_op_count(head_hlc);
     if base == head.as_str() {
         return Cas::Clean;
     }
-    match try_auto_merge(backend, page_id, base, draft).await {
+    // Strict callers never reach the merge: for them a stale base is the
+    // answer, and a merged document is not an outcome they can accept.
+    let merged = if require_exact {
+        None
+    } else {
+        try_auto_merge(backend, page_id, base, draft).await
+    };
+    match merged {
         Some(merged) => Cas::Merged(merged),
         None => {
             let head_content = hydrate_content(backend, page_id).await.ok().flatten();
@@ -86,6 +150,17 @@ pub(super) async fn tool_update_page(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: UpdatePageArgs = parse_args(args, "update_page")?;
+
+    // `require_exact_base` without a base is a caller bug, and the harmless
+    // reading of it — ignore the flag — is the one that loses data: the caller
+    // asked for a strict CAS and would get an unguarded write. Rejected as
+    // invalid params so a retry cannot help and the mistake is loud.
+    if a.require_exact_base && a.base_version.is_none() {
+        return Err(JsonRpcError::invalid_params(
+            "update_page: `require_exact_base` needs a `base_version` to be exact about"
+                .to_owned(),
+        ));
+    }
 
     // Read-only-backend guard (REQ-BK-03): reject an attempt to write backend
     // data for a non-writable backend (creating a sql_view/document instance
@@ -257,6 +332,7 @@ pub(super) async fn tool_update_page(
         state,
         &a.page_id,
         a.base_version.as_deref(),
+        a.require_exact_base,
         &a.content,
         head_hlc,
     )
@@ -727,6 +803,11 @@ pub(super) async fn tool_delete_page(
     // rather than retract a page they have not seen. Held under the same CAS
     // gate so the check-then-delete cannot interleave with an update_page.
     let _cas_gate = state.update_page_gate.lock().await;
+    if a.base_version.is_some() && state.crdt_backend.is_none() {
+        // Symmetric with update_page: a guard this gateway cannot honour is
+        // refused, never silently dropped. See `versioning_unavailable`.
+        return Ok(versioning_unavailable("base_version"));
+    }
     if let (Some(backend), Some(base)) = (state.crdt_backend.as_ref(), a.base_version.as_deref()) {
         let head_hlc = u64::try_from(backend.max_hlc(&a.page_id).await.unwrap_or(0)).unwrap_or(0);
         let head = Version::from_op_count(head_hlc);

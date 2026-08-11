@@ -64,6 +64,23 @@ pub struct ConfigOverrides {
     /// session tools (`open_session`/`apply_op`/`close_session`)
     /// and the WS attach paths.
     pub crdt_backend: Option<Arc<dyn CrdtBackend>>,
+    /// Boot a real `DuckdbCrdtBackend` on a per-spawn tempdir, the way the
+    /// **binary always does** for the single-file store.
+    ///
+    /// This exists because the harness default (`false`, no backend) is not a
+    /// smaller version of production — it is a *different contract*. With no
+    /// backend the whole monotonic-version subsystem is absent: `expand` omits
+    /// `version`, `update_page` reports a constant `new_version: "v1"`, and
+    /// `base_version` is not compared at all. A consumer that harnesses against
+    /// the default therefore exercises an optimistic-concurrency guard that
+    /// cannot fire, and its suite goes green over a live data-loss path (found
+    /// downstream in Heron: approving a proposal against a page that had moved
+    /// clobbered the concurrent change, with every assertion passing).
+    ///
+    /// Prefer this to hand-rolling `crdt_backend`: it runs the migrations and
+    /// keeps the tempdir alive for the process's lifetime, which is the part
+    /// consumers get wrong. Ignored when `crdt_backend` is already `Some`.
+    pub live_crdt: bool,
     /// #246: enable the opt-in `page-edited` event on out-of-band writes.
     pub emit_edit_events: bool,
     /// Replace the auto-built default indexer with a test-owned
@@ -135,6 +152,7 @@ impl std::fmt::Debug for ConfigOverrides {
             .field("quota_overridden", &self.quota.is_some())
             .field("tenant_store_overridden", &self.tenant_store.is_some())
             .field("crdt_backend_overridden", &self.crdt_backend.is_some())
+            .field("live_crdt", &self.live_crdt)
             .field("indexer_overridden", &self.indexer.is_some())
             .field("disable_indexer", &self.disable_indexer)
             .field(
@@ -211,6 +229,9 @@ pub struct EscurelProcess {
     // in those cases.
     _store_dir: Option<TempDir>,
     _db_dir: Option<TempDir>,
+    /// Home of the `live_crdt` backend's DuckDB file. `None` unless
+    /// [`ConfigOverrides::live_crdt`] built one.
+    _crdt_dir: Option<TempDir>,
 }
 
 impl std::fmt::Debug for EscurelProcess {
@@ -280,6 +301,26 @@ impl EscurelProcess {
                     .expect("escurel-test-support: ensure meta-skill");
                 (Some(store_dir), Some(db_dir), Some(indexer), Some(store))
             };
+
+        // 1b. The live-CRDT backend, when asked for. Its own DuckDB file
+        //     rather than the indexer's: the binary shares one instance via a
+        //     second connection cloned inside `SingleFileStore::open`, which
+        //     is not reachable from here, and a second `Connection::open` on
+        //     the SAME file would be a separate instance that clobbers the
+        //     indexer's writes on checkpoint. A separate file is what every
+        //     in-repo CRDT test already does.
+        let (crdt_dir, live_backend) = if overrides.crdt_backend.is_some() || !overrides.live_crdt {
+            (None, None)
+        } else {
+            let dir = TempDir::new().expect("tempdir for the live CRDT backend");
+            let conn =
+                Connection::open(dir.path().join("crdt.duckdb")).expect("open per-spawn crdt db");
+            Migrator::up(&conn).expect("crdt duckdb migrations");
+            let backend: Arc<dyn CrdtBackend> = Arc::new(escurel_crdt::DuckdbCrdtBackend::new(
+                Arc::new(tokio::sync::Mutex::new(conn)),
+            ));
+            (Some(dir), Some(backend))
+        };
 
         // 2. Resolve the auth mode. TestIssuer brings up wiremock
         //    + an RSA keypair and threads them into an
@@ -360,7 +401,7 @@ impl EscurelProcess {
             tenant_suspended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             emit_edit_events: overrides.emit_edit_events,
             tenant_store: overrides.tenant_store.clone(),
-            crdt_backend: overrides.crdt_backend.clone(),
+            crdt_backend: overrides.crdt_backend.clone().or(live_backend),
             embedder_reload: overrides.embedder_reload.clone(),
             embedder_factory: overrides.embedder_factory.clone(),
             demo_dir: overrides.demo_dir.clone(),
@@ -411,6 +452,7 @@ impl EscurelProcess {
             default_tenant: served_tenant,
             _store_dir: store_dir,
             _db_dir: db_dir,
+            _crdt_dir: crdt_dir,
         };
 
         // 5. Replay fixtures through the public write path. Per

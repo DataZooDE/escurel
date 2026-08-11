@@ -239,7 +239,13 @@ pub(super) fn tools_list_payload() -> Value {
                  optimistic concurrency with CRDT auto-merge: a stale write is \
                  three-way-merged against concurrent head edits (`ok:true, \
                  auto_merged:true`); an unmergeable one returns \
-                 `{ok:false, issues:[{code:conflict}], head_content}`.",
+                 `{ok:false, issues:[{code:conflict}], head_content}`. Set \
+                 `require_exact_base` to skip the merge and conflict on ANY \
+                 stale base — what a human-in-the-loop approval needs, because a \
+                 merged page is not the diff that was reviewed. Asking for either \
+                 guard on a gateway that does not track versions returns \
+                 `{ok:false, issues:[{code:versioning_unavailable}]}` rather than \
+                 writing unguarded.",
                 json!({
                     "type": "object",
                     "required": ["page_id", "content"],
@@ -247,6 +253,7 @@ pub(super) fn tools_list_payload() -> Value {
                         "page_id": { "type": "string" },
                         "content": { "type": "string" },
                         "base_version": { "type": "string" },
+                        "require_exact_base": { "type": "boolean" },
                         "provenance": { "type": "object" }
                     }
                 }),
