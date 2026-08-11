@@ -64,6 +64,11 @@ pub struct SkillInfo {
     /// skill id — the overlay — carrying this pin; the base row is folded
     /// away, never listed twice.
     pub shadows: Option<String>,
+    /// The human-in-the-loop policy this skill declares (the `autonomy:`
+    /// field). `None` when the key is absent **or** carries an unrecognised
+    /// value — see [`Autonomy`] for why those two collapse rather than the
+    /// unrecognised one resolving to a policy.
+    pub autonomy: Option<Autonomy>,
 }
 
 /// A skill's per-CRUD group grants. Each verb is a list of group names
@@ -168,6 +173,74 @@ pub enum Visibility {
     Owner,
 }
 
+/// The human-in-the-loop policy a skill page declares via `autonomy:`
+/// (heron#5 / CR-1): whether a change DERIVED from this skill may commit
+/// directly, or must be held for a person.
+///
+/// Escurel does not act on the policy — the gateway stays automation-free.
+/// It recognises the key so an author's typo is caught at authoring time
+/// rather than silently reinterpreted by whichever consumer reads the page.
+///
+/// **There is deliberately no `Default`, and [`parse`](Autonomy::parse)
+/// returns `Option`.** An unrecognised value must never resolve to
+/// [`Autonomy::Auto`]: `autonomy: atuo` reading as "commit without a gate"
+/// is a data-governance incident, not a bug. `None` — absent *or*
+/// unrecognised — is the fail-closed answer, and consumers treat it as
+/// "needs review" (cf. `heron_core::Autonomy::parse`, which folds exactly
+/// these cases onto `Review`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Autonomy {
+    /// A write derived from this skill commits directly.
+    Auto,
+    /// The write is held for human approval before it lands.
+    Review,
+    /// As `Review`, plus an out-of-band notification.
+    Confirm,
+}
+
+impl Autonomy {
+    /// Wire string, as it appears in frontmatter and on `list_skills`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Autonomy::Auto => "auto",
+            Autonomy::Review => "review",
+            Autonomy::Confirm => "confirm",
+        }
+    }
+
+    /// The three recognised values, in declaration order. Used to build the
+    /// validator's suggestion so the message cannot drift from the enum.
+    #[must_use]
+    pub fn recognised() -> [Autonomy; 3] {
+        [Autonomy::Auto, Autonomy::Review, Autonomy::Confirm]
+    }
+
+    /// Parse a declared value. Whitespace and case are normalised — an
+    /// author who wrote `Auto` meant `auto`. Anything else is `None`; see
+    /// the type's doc comment for why that is not `Auto`.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Autonomy::Auto),
+            "review" => Some(Autonomy::Review),
+            "confirm" => Some(Autonomy::Confirm),
+            _ => None,
+        }
+    }
+}
+
+/// Project `autonomy:` from a skill page's indexed frontmatter.
+///
+/// `None` covers three cases a consumer must treat identically: the key is
+/// absent, the key holds something that is not a string (`autonomy: [auto]`),
+/// or the string is not one of the three. All of them mean "no policy was
+/// successfully declared" — which fails closed, because only an explicit,
+/// well-formed `auto` may switch a gate off.
+fn parse_autonomy(fm: &serde_json::Value) -> Option<Autonomy> {
+    Autonomy::parse(fm.get("autonomy")?.as_str()?)
+}
+
 /// One instance page, projected for [`Indexer::list_instances`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceInfo {
@@ -237,6 +310,7 @@ impl Indexer {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
                 shadows: None,
+                autonomy: parse_autonomy(&fm),
             });
         }
 

@@ -87,12 +87,58 @@ impl WriteAclMode {
     }
 }
 
+/// Enforcement mode for the skill-page `autonomy:` lint
+/// (`ESCUREL_AUTONOMY_LINT`).
+///
+/// `validate` ALWAYS reports an unrecognised `autonomy:` value — that surface
+/// is advisory and reporting a real mistake there costs a tenant nothing. This
+/// mode governs only whether `update_page` REFUSES such a write.
+///
+/// It is gated because refusing is a **breaking change for an existing
+/// tenant**: `autonomy:` has been unvalidated free-form frontmatter, so a page
+/// already carrying junk in that field would suddenly become unwritable — and
+/// not only on an edit to the field, but on any edit to the page at all.
+/// Off → Log → Enforce lets an operator find those pages before the refusal
+/// starts, the same rollout [`WriteAclMode`] gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutonomyLintMode {
+    /// `validate` reports; `update_page` writes anyway (legacy behaviour,
+    /// and the safe rollout default).
+    #[default]
+    Off,
+    /// Log a warning on an unrecognised value but ALLOW the write.
+    Log,
+    /// REJECT the write with the `frontmatter_autonomy_unknown` issue.
+    Enforce,
+}
+
+impl AutonomyLintMode {
+    /// Parse `ESCUREL_AUTONOMY_LINT` (`off` | `log` | `enforce`); unknown or
+    /// unset → [`AutonomyLintMode::Off`].
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var("ESCUREL_AUTONOMY_LINT")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "enforce" => Self::Enforce,
+            "log" => Self::Log,
+            _ => Self::Off,
+        }
+    }
+}
+
 /// Gateway configuration. Built by the operator (or the test
 /// harness) and consumed by [`serve`].
 #[derive(Clone)]
 pub struct ServerConfig {
     /// Per-instance write-ACL enforcement mode (`ESCUREL_WRITE_ACL`).
     pub write_acl: WriteAclMode,
+    /// Write-time enforcement mode for the `autonomy:` lint
+    /// (`ESCUREL_AUTONOMY_LINT`).
+    pub autonomy_lint: AutonomyLintMode,
     /// HTTP listener — `0.0.0.0:8080` in production; tests pass
     /// `127.0.0.1:0` to let the OS pick a free port.
     pub listen: String,
@@ -308,6 +354,7 @@ impl ServerHandle {
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) write_acl: WriteAclMode,
+    pub(crate) autonomy_lint: AutonomyLintMode,
     pub(crate) version: String,
     pub(crate) readiness: Arc<dyn ReadinessProbe>,
     /// The single tenant this instance serves. The auth gate compares
@@ -405,6 +452,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
     });
     let state = AppState {
         write_acl: config.write_acl,
+        autonomy_lint: config.autonomy_lint,
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
         served_tenant,

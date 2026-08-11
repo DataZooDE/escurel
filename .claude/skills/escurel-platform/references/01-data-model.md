@@ -23,6 +23,13 @@ optional_frontmatter: [primary_contact, tier]
 The `customer` skill represents a buying organisation. …
 ```
 
+A skill page may also declare `autonomy: auto | review | confirm` — the
+human-in-the-loop policy for writes derived from it. Escurel validates the
+value and reports it on `list_skills`; it does not enforce it, and a skill
+that omits the key is not making a mistake. Consumers must treat an omitted
+`autonomy` as "hold for review": an unrecognised value is reported as
+omitted, never as `auto` (see `02-tool-surface.md`).
+
 An **instance** page is a memory of that type:
 
 ```markdown

@@ -352,9 +352,35 @@ pub(super) async fn tool_update_page(
             // A page with no `id` indexes but can neither be expanded nor
             // resolved — an identity failure, not a completeness one.
             "frontmatter_required_key_missing" => i.location == "frontmatter.id",
+            // A skill page declaring an unrecognised `autonomy:` policy
+            // (heron#5 / CR-1). GATED, unlike every other arm above, because
+            // `autonomy:` has been unvalidated free-form frontmatter: a tenant
+            // whose page already carries junk there would find the page
+            // unwritable — for any edit, not just an edit to that field —
+            // the moment the server upgraded. Off (default) → Log → Enforce
+            // lets an operator find those pages first, the same rollout the
+            // write ACL gets. `validate` reports it in every mode.
+            "frontmatter_autonomy_unknown" => {
+                state.autonomy_lint == crate::server::AutonomyLintMode::Enforce
+            }
             _ => false,
         })
         .collect();
+
+    // Log mode: tell the operator, allow the write, and leave the response
+    // identical to an unlinted server's — the point of the middle rung is to
+    // measure the blast radius without any client observing a change.
+    if state.autonomy_lint == crate::server::AutonomyLintMode::Log
+        && let Some(i) = issues
+            .iter()
+            .find(|i| i.code == "frontmatter_autonomy_unknown")
+    {
+        tracing::warn!(
+            page_id = %a.page_id,
+            message = %i.message,
+            "autonomy lint (log mode): unrecognised `autonomy:` value written",
+        );
+    }
 
     if !blocking.is_empty() {
         // Log it: a refused write is otherwise invisible to the operator —

@@ -66,7 +66,7 @@ pub use query::{
     StoredQueryResult,
 };
 pub use read::{
-    AclPolicy, BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef,
+    AclPolicy, Autonomy, BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef,
     ResolvedWikilink, SkillInfo, Visibility,
 };
 pub use retrieval::RetrievalConfig;
