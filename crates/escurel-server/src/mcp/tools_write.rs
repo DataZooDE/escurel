@@ -157,8 +157,7 @@ pub(super) async fn tool_update_page(
     // invalid params so a retry cannot help and the mistake is loud.
     if a.require_exact_base && a.base_version.is_none() {
         return Err(JsonRpcError::invalid_params(
-            "update_page: `require_exact_base` needs a `base_version` to be exact about"
-                .to_owned(),
+            "update_page: `require_exact_base` needs a `base_version` to be exact about".to_owned(),
         ));
     }
 

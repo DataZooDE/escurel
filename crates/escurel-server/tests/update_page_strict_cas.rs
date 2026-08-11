@@ -79,7 +79,12 @@ async fn live_crdt_publishes_a_readable_head_version() {
         "a seeded page's head must be readable from expand: {before}"
     );
 
-    let write = call(&p, "update_page", json!({ "page_id": PAGE, "content": page("one") })).await;
+    let write = call(
+        &p,
+        "update_page",
+        json!({ "page_id": PAGE, "content": page("one") }),
+    )
+    .await;
     assert_eq!(write["ok"], true, "{write}");
     let after = call(&p, "expand", json!({ "page_id": PAGE })).await;
     assert_eq!(
@@ -136,7 +141,10 @@ async fn require_exact_base_conflicts_instead_of_merging() {
         }),
     )
     .await;
-    assert_eq!(lenient["ok"], true, "control: this stale write merges: {lenient}");
+    assert_eq!(
+        lenient["ok"], true,
+        "control: this stale write merges: {lenient}"
+    );
     assert_eq!(
         lenient["auto_merged"], true,
         "control: and it merged rather than took the clean path: {lenient}"
@@ -158,7 +166,10 @@ async fn require_exact_base_conflicts_instead_of_merging() {
         }),
     )
     .await;
-    assert_eq!(strict["ok"], false, "a strict stale write must refuse: {strict}");
+    assert_eq!(
+        strict["ok"], false,
+        "a strict stale write must refuse: {strict}"
+    );
     assert_eq!(issue_codes(&strict), vec!["conflict"], "{strict}");
     assert!(
         strict["head_content"].is_string(),
@@ -257,7 +268,11 @@ async fn asking_for_a_guard_a_gateway_cannot_honour_is_refused() {
     )
     .await;
     assert_eq!(guarded["ok"], false, "{guarded}");
-    assert_eq!(issue_codes(&guarded), vec!["versioning_unavailable"], "{guarded}");
+    assert_eq!(
+        issue_codes(&guarded),
+        vec!["versioning_unavailable"],
+        "{guarded}"
+    );
 
     let after = call(&p, "expand", json!({ "page_id": PAGE })).await;
     assert!(
@@ -287,7 +302,10 @@ async fn asking_for_a_guard_a_gateway_cannot_honour_is_refused() {
         json!({ "page_id": PAGE, "content": page("unguarded") }),
     )
     .await;
-    assert_eq!(plain["ok"], true, "control: an unguarded write must still land: {plain}");
+    assert_eq!(
+        plain["ok"], true,
+        "control: an unguarded write must still land: {plain}"
+    );
     assert!(
         call(&p, "expand", json!({ "page_id": PAGE })).await["body"]
             .as_str()
