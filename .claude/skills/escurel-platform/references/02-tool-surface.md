@@ -26,12 +26,26 @@ section below.
 | `resolve` | `wikilink` | `{parsed, page (PageRef), exists}` | parse + look up a `[[wikilink]]`; reports validity without raising |
 | `expand` | `page_id`, `anchor?`, `version?` | `{page, frontmatter, body, blocks[], wikilinks_out[]}` (+ `shadow` on an overlay that shadows a base skill: `{base_page_id, pack, base: {…base frontmatter…}}`) | the body fetch — the **most expensive** primitive; use sparingly |
 | `neighbours` | `page_id`, `direction='in'\|'out'\|'both'`, `link_skill?` | list of `Edge {src_page, dst_page, link_skill, link_version?, dst_anchor?}` | typed link-graph traversal (backlinks + forward links) |
-| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, layer, shadows?}` | the Tier-1 catalogue; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>` |
+| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, autonomy?, layer, shadows?}` | the Tier-1 catalogue; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>`; `autonomy` is the declared human-in-the-loop policy — see the note below |
 | `list_instances` | `skill`, `order_by_at='asc'\|'desc'?`, `limit?` | list of `{page_id, skill, frontmatter, at}` | enumerate instances of a skill (event-log scans, chain heads) |
 | `query_instance` | `ref` (a `query` page id), `params` (typed object) | `{rows, schema[], truncated}` | **the structured-data read**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side |
 | `run_stored_query` | `query_id`, `params` (typed object) | `{rows, schema[], snapshot_version?}` | legacy stored-query execution; new consumers use `query_instance` |
 
 Notes:
+- **`autonomy` on `list_skills`** is the human-in-the-loop policy a skill
+  page declares in frontmatter: `auto` (a write derived from this skill
+  commits directly), `review` (held for human approval), `confirm` (as
+  review, plus an out-of-band notification). Escurel reports it; it never
+  enforces it — the gate lives in your app.
+  **The field is absent when the key is absent AND when its value is
+  unrecognised.** Treat absence as "hold for review". Never write
+  `autonomy == "auto" ? ungated : gated` against a default you supply — an
+  unrecognised value must not become `auto`, or a typo (`autonmy: review`)
+  turns into an ungated write. `validate` returns
+  `frontmatter_autonomy_unknown` (error) for the unrecognised case, which is
+  how you tell it apart from an honest absence. `update_page` refuses such a
+  write only when the operator has set `ESCUREL_AUTONOMY_LINT=enforce`
+  (default `off`, middle rung `log`).
 - `search` granularity is `block` by default (pinpoints a block within a
   page); `page` collapses to one row per page. The choice is echoed in the
   response so a cache can tell them apart.

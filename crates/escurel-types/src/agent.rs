@@ -371,6 +371,24 @@ pub struct Skill {
     /// tenant specialisation of pack content".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadows: Option<String>,
+    /// The human-in-the-loop policy this skill declares (`autonomy:`):
+    /// `"auto"` — a write derived from this skill commits directly;
+    /// `"review"` — it is held for human approval; `"confirm"` — as review,
+    /// plus an out-of-band notification. Escurel does not enforce the policy;
+    /// it reports what the page declares, so a client can render the gate
+    /// without expanding every skill.
+    ///
+    /// **Absent when the key is absent OR carries an unrecognised value.**
+    /// Those two collapse deliberately: an unrecognised value must never
+    /// arrive here as `"auto"`, because a consumer reading `auto` switches a
+    /// human gate off. A client treats absence as "hold for review", and
+    /// calls `validate` to learn which of the two cases it is.
+    ///
+    /// Typed as a string, not an enum, so a value added by a newer server
+    /// still deserialises on an older client instead of failing the whole
+    /// response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomy: Option<String>,
 }
 
 /// The default page layer: tenant-authored, editable.

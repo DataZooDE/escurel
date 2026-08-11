@@ -20,7 +20,8 @@ use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::{Indexer, IndexerHandle, Migrator};
 use escurel_quota::QuotaManager;
 use escurel_server::{
-    AlwaysReady, EmbedderFactory, ReadinessProbe, ServerConfig, ServerHandle, WriteAclMode, serve,
+    AlwaysReady, AutonomyLintMode, EmbedderFactory, ReadinessProbe, ServerConfig, ServerHandle,
+    WriteAclMode, serve,
 };
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
@@ -41,6 +42,10 @@ pub struct ConfigOverrides {
     /// Per-instance write-ACL enforcement mode. `None` → `Off` (the
     /// production default); write-ACL tests set `Enforce`.
     pub write_acl: Option<WriteAclMode>,
+    /// Write-time enforcement mode for the skill-page `autonomy:` lint.
+    /// `None` → `Off` (the production default): `validate` still reports an
+    /// unrecognised value, `update_page` still writes it.
+    pub autonomy_lint: Option<AutonomyLintMode>,
     /// Value returned by `GET /version`. Defaults to
     /// `"0.0.0-test"`.
     pub gateway_version: Option<String>,
@@ -340,6 +345,7 @@ impl EscurelProcess {
             .unwrap_or_else(|| Arc::new(AlwaysReady) as Arc<dyn ReadinessProbe>);
         let cfg = ServerConfig {
             write_acl: overrides.write_acl.unwrap_or_default(),
+            autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),
             listen: "127.0.0.1:0".to_owned(),
             version,
             readiness,

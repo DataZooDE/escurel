@@ -101,6 +101,20 @@ These are referenced from every tool, expressed as JSON Schema.
 }
 ```
 
+`validate` reports every finding it has. `update_page` refuses a write only
+for a deliberately narrow subset — link integrity and page identity — so
+that seeding and forward references keep working; see the filter in
+`tool_update_page`.
+
+`frontmatter_autonomy_unknown` (error, `frontmatter.autonomy`, skill pages
+only) is the one code whose *blocking* is operator-controlled, via
+`ESCUREL_AUTONOMY_LINT` = `off` (default) | `log` | `enforce`. `autonomy:`
+was unvalidated free-form frontmatter before it was recognised, so blocking
+on it by default would make a page that already carries a junk value
+unwritable — for *any* edit, not only an edit to that field. `validate`
+reports it in all three modes; `log` additionally warns to the operator log
+while writing, and leaves the response identical to `off`.
+
 ### `FilterClause` (used by `search`)
 
 ```ts
@@ -370,6 +384,7 @@ with the `project-memory` skill pack subscribed.
       "required_frontmatter": ["tier", "opened", "status"],
       "optional_frontmatter": ["mrr_band", "owner", ...],
       "is_event_typed": false,      // true iff `at` is in required_frontmatter
+      "autonomy": "review",         // omitted when undeclared OR unrecognised
       "backend": { "kind": "markdown" },
       "capabilities": { "writable": true, "granularity": "block",
                         "search": "hybrid", "supports_crdt": true }
@@ -392,6 +407,23 @@ with the `project-memory` skill pack subscribed.
 `is_event_typed` is a derived convenience flag (true iff `at` is
 in `required_frontmatter`); the agent does not need to compute
 it from the field list.
+
+`autonomy` reports the human-in-the-loop policy the skill page declares via
+its `autonomy:` frontmatter key — `auto` (a write derived from this skill
+commits directly), `review` (held for human approval), or `confirm` (as
+review, plus an out-of-band notification). Escurel does not enforce the
+policy; the gateway stays automation-free. It recognises the key so a
+consumer has one declared place to read it from, and so `validate` can
+object to a typo at authoring time.
+
+**The field is omitted when the key is absent *and* when its value is not
+one of the three.** Those two cases collapse on purpose: an unrecognised
+value must never be reported as `auto`, because a consumer reading `auto`
+switches a human gate off — `autonmy: review` silently meaning "commit
+ungated" is a data-governance incident rather than a bug. A client treats
+an omitted `autonomy` as "hold for review" and calls `validate` to learn
+which of the two cases it is. Case and surrounding whitespace are
+normalised, so `Auto` and `"  auto "` are both `auto`.
 
 `backend.kind` (`markdown` | `sql_view` | `document`) and the
 `capabilities` object tell the agent *where* a skill's instances live and

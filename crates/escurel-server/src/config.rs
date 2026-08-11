@@ -1730,6 +1730,11 @@ impl EscurelConfig {
             // log | enforce. Read straight from env so it can be flipped at
             // deploy without a config-file change (safe dark→log→enforce rollout).
             write_acl: crate::WriteAclMode::from_env(),
+            // Skill-page `autonomy:` lint (`ESCUREL_AUTONOMY_LINT`): off
+            // (default) | log | enforce. Same env-only rollout, for the same
+            // reason — refusing writes over a field that has been free-form
+            // until now needs a dark rung and an observed rung first.
+            autonomy_lint: crate::AutonomyLintMode::from_env(),
             listen: self.listen_http.clone(),
             version: self.version.clone(),
             readiness,

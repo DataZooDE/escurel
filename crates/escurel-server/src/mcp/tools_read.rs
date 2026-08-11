@@ -48,6 +48,10 @@ pub(super) async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpc
                 },
                 layer: s.layer.unwrap_or_else(|| "overlay".to_owned()),
                 shadows: s.shadows,
+                // `None` — absent or unrecognised — stays absent on the wire.
+                // It must not be defaulted to a policy here: the only value a
+                // consumer may act on permissively is an explicit `auto`.
+                autonomy: s.autonomy.map(|a| a.as_str().to_owned()),
             })
             .collect(),
     };

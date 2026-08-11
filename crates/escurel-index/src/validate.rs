@@ -89,6 +89,67 @@ impl Issue {
             suggestion: None,
         }
     }
+
+    /// Attach the `suggestion` field. Worth doing where the fix is a closed
+    /// set the author can be handed verbatim.
+    #[must_use]
+    fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
+        self.suggestion = Some(suggestion.into());
+        self
+    }
+}
+
+/// The `autonomy:` check (heron#5 / CR-1), on SKILL pages only.
+///
+/// Scoped to skill pages because that is where the key is declared: the
+/// policy belongs to the skill, and every write derived from it inherits it.
+/// On an instance page `autonomy:` remains ordinary free-form frontmatter;
+/// narrowing it there would be a behaviour change for pages that predate the
+/// key rather than a check.
+///
+/// Silence on ABSENCE is load-bearing: a skill that declares no policy is not
+/// making a mistake, it is declining to declare — and the consumer's own
+/// fail-closed default (review) already covers that. The finding fires only
+/// when an author reached for the key and missed, which is the one case
+/// nothing else in the system can see.
+fn check_autonomy(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
+    if page_type != PageType::Skill {
+        return None;
+    }
+    let raw = fields.get("autonomy")?;
+    let recognised: Vec<&str> = crate::Autonomy::recognised()
+        .iter()
+        .map(|a| a.as_str())
+        .collect();
+    let suggestion = format!("use one of: {}", recognised.join(" | "));
+
+    // A non-string value (`autonomy: [auto]`, `autonomy: true`, or a bare
+    // `autonomy:` with nothing after it) is as much a mis-declaration as a
+    // misspelt one, and lands on the same finding rather than being ignored.
+    let Some(value) = raw.as_str() else {
+        return Some(
+            Issue::error(
+                "frontmatter_autonomy_unknown",
+                "frontmatter.autonomy",
+                "`autonomy:` must be a string naming the human-in-the-loop policy",
+            )
+            .with_suggestion(suggestion),
+        );
+    };
+    if crate::Autonomy::parse(value).is_some() {
+        return None;
+    }
+    Some(
+        Issue::error(
+            "frontmatter_autonomy_unknown",
+            "frontmatter.autonomy",
+            format!(
+                "`autonomy: {value}` is not a recognised human-in-the-loop policy; \
+                 a consumer treats it as undeclared and holds writes for review"
+            ),
+        )
+        .with_suggestion(suggestion),
+    )
 }
 
 impl Indexer {
@@ -129,6 +190,10 @@ impl Indexer {
 
         let mut issues = Vec::new();
         let fields = &parsed.frontmatter.fields;
+
+        // The human-in-the-loop policy a skill declares (heron#5 / CR-1).
+        // Cheap, local, and independent of every skill lookup below.
+        issues.extend(check_autonomy(parsed.frontmatter.page_type, fields));
 
         // Skill pages declare themselves via `id:`; instance pages
         // via `skill:`.
