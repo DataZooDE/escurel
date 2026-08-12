@@ -57,5 +57,6 @@ mod ws;
 pub use config::{BootedServer, ConfigError, EscurelConfig};
 pub use health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 pub use server::{
-    AutonomyLintMode, EmbedderFactory, ServerConfig, ServerError, ServerHandle, WriteAclMode, serve,
+    AutonomyLintMode, EmbedderFactory, EventAclMode, ServerConfig, ServerError, ServerHandle,
+    WriteAclMode, serve,
 };

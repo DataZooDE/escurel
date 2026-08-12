@@ -1335,11 +1335,18 @@ pub(super) async fn tool_submit_promotion(
                 a.candidate_id, page_count
             ),
             body: body_summary,
-            provenance: Some(json!({
-                "submitted_by": subject,
-                "content_hash": manifest.content_hash,
-                "vertical": a.vertical,
-            })),
+            // Stamped like every other capture. This audit record is
+            // un-triaged (no instance), so without the stamp the per-event
+            // ACL would leave it ungated — visible to every agent-role
+            // caller, which is not what an operator audit trail is for.
+            provenance: super::tools_write::stamp_captured_by(
+                Some(json!({
+                    "submitted_by": subject,
+                    "content_hash": manifest.content_hash,
+                    "vertical": a.vertical,
+                })),
+                subject,
+            ),
         })
         .await
         .map_err(|e| JsonRpcError::internal(format!("submit_promotion audit event: {e}")))?;

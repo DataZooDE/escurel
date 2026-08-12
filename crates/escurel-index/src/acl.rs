@@ -44,6 +44,23 @@ const OWNER_CREDENTIAL_FIELD: &str = "credential";
 /// way as an instance owner.
 const CHAT_OWNER_SKILL: &str = "community_member";
 
+/// The `provenance` key naming the subject that captured an event.
+///
+/// **Server-owned.** `capture_event` overwrites whatever the caller put
+/// there with the verified token subject, so it is a claim the gateway
+/// makes and not one the client can forge. It lives inside the existing
+/// free-form `provenance` JSON rather than in a new `events` column so the
+/// change is purely additive across all three event backends (local table,
+/// attached Postgres, lake) with no migration and no DDL to keep in step.
+pub const CAPTURED_BY_FIELD: &str = "captured_by";
+
+/// The subject recorded in an event's `provenance.captured_by`, or `None`
+/// when the event carries no (string) stamp — a pre-stamp legacy row.
+#[must_use]
+pub fn captured_by(provenance: &Value) -> Option<&str> {
+    provenance.get(CAPTURED_BY_FIELD).and_then(Value::as_str)
+}
+
 /// Group names that may be granted only *structurally* — never via a
 /// token claim or a DuckDB membership row. `public` is always present for
 /// an authenticated caller; `owner` only when the caller's `sub` resolves
@@ -245,6 +262,61 @@ impl Indexer {
         {
             Some(owner) => Ok(owner == caller.subject),
             None => Ok(true), // owner unresolvable → ungated (compat)
+        }
+    }
+
+    /// Whether `caller` may see event `event`.
+    ///
+    /// **An event's visibility follows the record it belongs to; until it
+    /// belongs to one, it follows the person who captured it.** Concretely:
+    ///
+    /// 1. admin bypasses, as everywhere;
+    /// 2. an event that names an `instance_page_id` is exactly as visible
+    ///    as that instance ([`Self::may_read_instance`]) — a processed
+    ///    event IS that instance's history, and `list_events(instance)`
+    ///    would otherwise be a second, ungated read path onto a private
+    ///    record. No new ACL model: the instance ACL already decides this;
+    /// 3. an event that names no instance — an un-triaged inbox item, the
+    ///    case with no record to inherit from — is visible only to the
+    ///    subject that captured it, recorded by the server at capture time
+    ///    in [`CAPTURED_BY_FIELD`]. That is the same structural `owner`
+    ///    relation instances use, resolved from the event row rather than
+    ///    from frontmatter, because an event has no frontmatter;
+    /// 4. an event with NO recorded capturer (captured before this stamp
+    ///    existed, or by an unauthenticated dev gateway) stays ungated —
+    ///    the compat fallback [`Self::may_access_chat`] already takes for
+    ///    an unresolvable owner. Fail-open is deliberate and confined to
+    ///    rows that predate the stamp; every event captured through this
+    ///    build carries one.
+    ///
+    /// Limb 2 governs even when the caller captured the event: once an event
+    /// is filed into someone's record it is that record's to disclose. It can
+    /// only ever narrow a claim, never widen one — you cannot gain access to
+    /// an event by assigning it somewhere, because you must be able to read
+    /// it before you may assign it at all.
+    pub async fn may_read_event(
+        &self,
+        caller: &AclCaller<'_>,
+        event: &crate::EventInfo,
+    ) -> Result<bool, IndexerError> {
+        if caller.is_admin {
+            return Ok(true);
+        }
+        // (2) Filed into an instance → that instance's ACL decides. A named
+        // page that does not exist falls through rather than deciding on a
+        // dangling pointer.
+        if let Some(page_id) = event.instance_page_id.as_deref()
+            && let Some(expanded) = self.expand(page_id, None, None).await?
+        {
+            return self
+                .may_read_instance(caller, &expanded.page.skill, &expanded.frontmatter)
+                .await;
+        }
+        // (3)/(4) Un-triaged → the capturing subject, or ungated when none
+        // was recorded.
+        match captured_by(&event.provenance) {
+            Some(subject) => Ok(subject == caller.subject),
+            None => Ok(true),
         }
     }
 

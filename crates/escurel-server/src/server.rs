@@ -87,6 +87,51 @@ impl WriteAclMode {
     }
 }
 
+/// Enforcement mode for the per-event ACL on the event-bus surface
+/// (`ESCUREL_EVENT_ACL`) — `capture_event` / `list_inbox` / `list_events`
+/// / `assign_event`.
+///
+/// Its own knob rather than a fold into [`WriteAclMode`], because the two
+/// have different blast radii and a deployment that has already turned the
+/// write ACL on must not silently acquire this one on an upgrade. The
+/// inbox is a *work queue*: a drain loop running under a non-admin agent
+/// token legitimately reads events it did not capture, and folding this
+/// into an already-enabled flag would blind that loop with no warning.
+/// Off → Log → Enforce lets an operator find those callers first.
+///
+/// `capture_event` stamps the capturing subject (`provenance.captured_by`)
+/// in EVERY mode, including `Off` — the stamp is what makes a later switch
+/// to `Enforce` meaningful, and it is additive data, not a decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EventAclMode {
+    /// No per-event check (legacy open event bus; safe rollout default).
+    #[default]
+    Off,
+    /// Run the check; on a denial log a warning but SHOW the event.
+    Log,
+    /// Run the check; on a denial HIDE the event (and refuse a claim of
+    /// it as *not found*).
+    Enforce,
+}
+
+impl EventAclMode {
+    /// Parse `ESCUREL_EVENT_ACL` (`off` | `log` | `enforce`); unknown or
+    /// unset → [`EventAclMode::Off`].
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var("ESCUREL_EVENT_ACL")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "enforce" => Self::Enforce,
+            "log" => Self::Log,
+            _ => Self::Off,
+        }
+    }
+}
+
 /// Enforcement mode for the skill-page `autonomy:` lint
 /// (`ESCUREL_AUTONOMY_LINT`).
 ///
@@ -136,6 +181,9 @@ impl AutonomyLintMode {
 pub struct ServerConfig {
     /// Per-instance write-ACL enforcement mode (`ESCUREL_WRITE_ACL`).
     pub write_acl: WriteAclMode,
+    /// Per-event ACL enforcement mode for the event bus
+    /// (`ESCUREL_EVENT_ACL`).
+    pub event_acl: EventAclMode,
     /// Write-time enforcement mode for the `autonomy:` lint
     /// (`ESCUREL_AUTONOMY_LINT`).
     pub autonomy_lint: AutonomyLintMode,
@@ -354,6 +402,7 @@ impl ServerHandle {
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) write_acl: WriteAclMode,
+    pub(crate) event_acl: EventAclMode,
     pub(crate) autonomy_lint: AutonomyLintMode,
     pub(crate) version: String,
     pub(crate) readiness: Arc<dyn ReadinessProbe>,
@@ -452,6 +501,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
     });
     let state = AppState {
         write_acl: config.write_acl,
+        event_acl: config.event_acl,
         autonomy_lint: config.autonomy_lint,
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),

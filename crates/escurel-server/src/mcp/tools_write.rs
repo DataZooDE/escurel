@@ -1135,35 +1135,115 @@ pub(super) struct CaptureEventArgs {
     provenance: Option<Value>,
 }
 
+/// Stamp the verified caller subject into an event's `provenance` as the
+/// server-owned `captured_by` claim, replacing anything the client sent
+/// under that key (a forged stamp would be an ACL bypass).
+///
+/// Done in EVERY [`crate::server::EventAclMode`], including `Off`: the
+/// stamp is data, not a decision, and without it flipping the mode on
+/// later would find a history of events with no recorded owner.
+///
+/// A non-object `provenance` (a bare string/number a caller supplied) is
+/// promoted to `{"provenance": <old>, "captured_by": …}` rather than
+/// dropped, so no caller data is lost to the stamp.
+pub(super) fn stamp_captured_by(provenance: Option<Value>, subject: &str) -> Option<Value> {
+    let mut obj = match provenance {
+        Some(Value::Object(m)) => Value::Object(m),
+        None | Some(Value::Null) => json!({}),
+        Some(other) => json!({ "provenance": other }),
+    };
+    obj[escurel_index::CAPTURED_BY_FIELD] = json!(subject);
+    Some(obj)
+}
+
 pub(super) async fn tool_capture_event(
     indexer: &Indexer,
+    caller: AclCaller<'_>,
+    event_acl: crate::server::EventAclMode,
     webhook: Option<&crate::webhook::Webhook>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: CaptureEventArgs = parse_args(args, "capture_event")?;
+    let requested = NewEvent {
+        event_id: a.event_id,
+        at: a.at,
+        source: a.source,
+        mime: a.mime,
+        label_skill: a.label_skill,
+        instance_page_id: a.instance_page_id,
+        title: a.title,
+        body: a.body,
+        provenance: stamp_captured_by(a.provenance, caller.subject),
+    };
     let stored = indexer
-        .capture_event(NewEvent {
-            event_id: a.event_id,
-            at: a.at,
-            source: a.source,
-            mime: a.mime,
-            label_skill: a.label_skill,
-            instance_page_id: a.instance_page_id,
-            title: a.title,
-            body: a.body,
-            provenance: a.provenance,
-        })
+        .capture_event(requested.clone())
         .await
         .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?;
-    let event = event_to_json(&stored);
+
+    // `capture_event` is idempotent on `event_id` and returns the STORED
+    // (first-writer) row — which quietly makes it a READ, and so a way
+    // around every filter below if the id can be guessed. It can be:
+    // `event_id` IS the caller's idempotency key, chosen client-side.
+    //
+    // A caller who may not see the stored row gets its OWN submission back
+    // instead, wearing the stored id — indistinguishable from a first
+    // capture, disclosing neither the other caller's content nor the fact
+    // that the id was taken. The owner's retry is untouched: it can read
+    // the stored row, so it still gets the authoritative first-writer event
+    // that makes a retry converge instead of forking.
+    let visible = event_acl == crate::server::EventAclMode::Off
+        || indexer
+            .may_read_event(&caller, &stored)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("capture_event acl: {e}")))?;
+    if !visible && event_acl == crate::server::EventAclMode::Log {
+        tracing::warn!(
+            subject = %caller.subject, event_id = %stored.event_id,
+            "event-ACL would hide this idempotent read-back (log mode) — showing"
+        );
+    }
+    let event = if visible || event_acl == crate::server::EventAclMode::Log {
+        event_to_json(&stored)
+    } else {
+        event_to_json(&echoed_event(&stored, &requested))
+    };
     // Notify any external processor of the new inbox item (opt-in,
     // fire-and-forget; never fails the capture). The gateway is
     // single-tenant per indexer, so `indexer.tenant()` is the
     // authoritative tenant we stamp into the delivered payload (#147).
+    //
+    // Always the STORED event, never the echo above: the webhook is a
+    // server-to-server announcement of what is in the store, and a
+    // subscriber that received the echo would process a row that does not
+    // exist. The echo exists to withhold data from a caller, not to lie to
+    // the pipeline.
     if let Some(hook) = webhook {
-        hook.notify(event.clone(), indexer.tenant());
+        hook.notify(event_to_json(&stored), indexer.tenant());
     }
     Ok(event)
+}
+
+/// The response for an idempotent re-capture the caller may NOT read: its
+/// own submission, wearing the stored `event_id` and `status`.
+///
+/// Everything else — title, body, provenance, source, the first writer's
+/// timestamp — comes from what THIS caller sent, so the response carries no
+/// bit of the stored row and reads exactly like a first capture. Only
+/// `event_id` (which the caller supplied anyway) and `status` (always
+/// `inbox` for a fresh capture) come from the store.
+fn echoed_event(stored: &EventInfo, requested: &NewEvent) -> EventInfo {
+    EventInfo {
+        event_id: stored.event_id.clone(),
+        at: requested.at.clone(),
+        source: requested.source.clone(),
+        mime: requested.mime.clone(),
+        label_skill: requested.label_skill.clone(),
+        instance_page_id: requested.instance_page_id.clone(),
+        status: "inbox".to_owned(),
+        title: requested.title.clone(),
+        body: requested.body.clone(),
+        provenance: requested.provenance.clone().unwrap_or(Value::Null),
+    }
 }
 
 /// Announce a confirmed `update_page` write to the outbound webhook.
@@ -1227,12 +1307,58 @@ pub(super) struct ListInboxArgs {
     limit: Option<usize>,
 }
 
-pub(super) async fn tool_list_inbox(indexer: &Indexer, args: Value) -> Result<Value, JsonRpcError> {
+/// Drop the events `caller` may not see (`Indexer::may_read_event`),
+/// preserving order — the same post-filter `list_instances` applies to
+/// instance rows. Enumeration must not leak what a direct read would deny.
+///
+/// In [`crate::server::EventAclMode::Off`] this is the identity function;
+/// in `Log` it warns and keeps the row, so an operator can find the
+/// callers a switch to `Enforce` would blind before it blinds them.
+///
+/// `limit` is applied by the query, before this filter, exactly as it is
+/// for `list_instances`: a page may come back short, and a caller that
+/// needs N rows pages until it has them.
+async fn acl_filter_events(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    mode: crate::server::EventAclMode,
+    tool: &str,
+    events: Vec<EventInfo>,
+) -> Result<Vec<EventInfo>, JsonRpcError> {
+    if mode == crate::server::EventAclMode::Off {
+        return Ok(events);
+    }
+    let mut out = Vec::with_capacity(events.len());
+    for e in events {
+        let allowed = indexer
+            .may_read_event(caller, &e)
+            .await
+            .map_err(|err| JsonRpcError::internal(format!("{tool} acl: {err}")))?;
+        if allowed {
+            out.push(e);
+        } else if mode == crate::server::EventAclMode::Log {
+            tracing::warn!(
+                subject = %caller.subject, event_id = %e.event_id, tool,
+                "event-ACL would hide this event (log mode) — showing"
+            );
+            out.push(e);
+        }
+    }
+    Ok(out)
+}
+
+pub(super) async fn tool_list_inbox(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    event_acl: crate::server::EventAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: ListInboxArgs = parse_args(args, "list_inbox")?;
     let events = indexer
         .list_inbox(a.limit)
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_inbox: {e}")))?;
+    let events = acl_filter_events(indexer, &caller, event_acl, "list_inbox", events).await?;
     Ok(json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() }))
 }
 
@@ -1250,6 +1376,8 @@ pub(super) struct ListEventsArgs {
 
 pub(super) async fn tool_list_events(
     indexer: &Indexer,
+    caller: AclCaller<'_>,
+    event_acl: crate::server::EventAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListEventsArgs = parse_args(args, "list_events")?;
@@ -1277,6 +1405,12 @@ pub(super) async fn tool_list_events(
             .await
             .map_err(|e| JsonRpcError::internal(format!("list_events: {e}")))?
     };
+    // Both branches are filtered: the by-event lookup is a direct read of
+    // one row and must not be a way around the instance-scoped listing.
+    // A hidden event comes back as an empty list — the same answer as an
+    // event that does not exist, which is what this surface already
+    // returns for a miss, so no existence is disclosed here either.
+    let events = acl_filter_events(indexer, &caller, event_acl, "list_events", events).await?;
     Ok(json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() }))
 }
 
@@ -1305,9 +1439,53 @@ pub(super) struct AssignEventArgs {
 
 pub(super) async fn tool_assign_event(
     indexer: &Indexer,
+    caller: AclCaller<'_>,
+    event_acl: crate::server::EventAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: AssignEventArgs = parse_args(args, "assign_event")?;
+
+    // Claiming an event you may not read is refused as NOT FOUND, using the
+    // indexer's own `EventNotFound` so the code and the message are
+    // byte-identical to a claim of an event that genuinely does not exist.
+    // An error that distinguished the two would be an existence oracle:
+    // "forbidden" tells you the event is there and whose it is, which is
+    // most of what the listing refuses to tell you.
+    //
+    // This is a pre-check, NOT a replacement for the compare-and-set below:
+    // the CAS is what makes a claim at-most-once under a race, and it still
+    // runs unchanged. This check only decides whether the caller is allowed
+    // to attempt it at all.
+    if event_acl != crate::server::EventAclMode::Off {
+        let event = indexer
+            .get_event(&a.event_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("assign_event acl: {e}")))?;
+        // Absent here is left to the CAS below, which reports it (and its
+        // already-claimed sibling) with the precision the runner relies on.
+        if let Some(event) = event {
+            let allowed = indexer
+                .may_read_event(&caller, &event)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("assign_event acl: {e}")))?;
+            if !allowed {
+                if event_acl == crate::server::EventAclMode::Log {
+                    tracing::warn!(
+                        subject = %caller.subject, event_id = %a.event_id,
+                        "event-ACL would refuse this claim (log mode) — allowing"
+                    );
+                } else {
+                    return Err(JsonRpcError::invalid_params(format!(
+                        "assign_event: {}",
+                        IndexerError::EventNotFound {
+                            event_id: a.event_id.clone(),
+                        }
+                    )));
+                }
+            }
+        }
+    }
+
     indexer
         .assign_event(&a.event_id, &a.instance_page_id)
         .await

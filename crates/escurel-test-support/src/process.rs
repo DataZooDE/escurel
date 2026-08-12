@@ -19,6 +19,7 @@ use escurel_embed::ReloadableEmbedder;
 use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::{Indexer, IndexerHandle, Migrator};
 use escurel_quota::QuotaManager;
+use escurel_server::EventAclMode;
 use escurel_server::{
     AlwaysReady, AutonomyLintMode, EmbedderFactory, ReadinessProbe, ServerConfig, ServerHandle,
     WriteAclMode, serve,
@@ -42,6 +43,9 @@ pub struct ConfigOverrides {
     /// Per-instance write-ACL enforcement mode. `None` → `Off` (the
     /// production default); write-ACL tests set `Enforce`.
     pub write_acl: Option<WriteAclMode>,
+    /// Per-event ACL enforcement mode for the event bus. `None` → `Off`
+    /// (the production default); event-ACL tests set `Enforce`.
+    pub event_acl: Option<EventAclMode>,
     /// Write-time enforcement mode for the skill-page `autonomy:` lint.
     /// `None` → `Off` (the production default): `validate` still reports an
     /// unrecognised value, `update_page` still writes it.
@@ -147,6 +151,7 @@ impl std::fmt::Debug for ConfigOverrides {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConfigOverrides")
             .field("write_acl", &self.write_acl)
+            .field("event_acl", &self.event_acl)
             .field("gateway_version", &self.gateway_version)
             .field("readiness_overridden", &self.readiness.is_some())
             .field("quota_overridden", &self.quota.is_some())
@@ -386,6 +391,7 @@ impl EscurelProcess {
             .unwrap_or_else(|| Arc::new(AlwaysReady) as Arc<dyn ReadinessProbe>);
         let cfg = ServerConfig {
             write_acl: overrides.write_acl.unwrap_or_default(),
+            event_acl: overrides.event_acl.unwrap_or_default(),
             autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),
             listen: "127.0.0.1:0".to_owned(),
             version,

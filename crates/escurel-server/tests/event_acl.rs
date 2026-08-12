@@ -12,7 +12,9 @@
 //!
 //! Gated by `ESCUREL_EVENT_ACL` (off = legacy open event bus).
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
+use escurel_test_support::{
+    AuthMode, ConfigOverrides, EscurelProcess, EventAclMode, FixtureBuilder, Opts, Role,
+};
 use serde_json::{Value, json};
 
 const TENANT: &str = "stuttgart-ai";
@@ -29,8 +31,16 @@ const BOB_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: bob\
 const ALICE_PAGE: &str = "markdown/instances/community_member/alice.md";
 
 async fn start() -> EscurelProcess {
+    start_with(EventAclMode::Enforce).await
+}
+
+async fn start_with(mode: EventAclMode) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            event_acl: Some(mode),
+            ..Default::default()
+        },
         fixtures: Some(
             FixtureBuilder::new()
                 .tenant(TENANT)
@@ -39,7 +49,6 @@ async fn start() -> EscurelProcess {
                 .instance("community_member", "bob", BOB_MEMBER)
                 .done(),
         ),
-        ..Default::default()
     })
     .await
 }
@@ -135,14 +144,26 @@ async fn get_event_by_id_does_not_leak_another_callers_capture() {
     )
     .await;
 
-    let mine = call(&p, &alice, "list_events", json!({ "event_id": "EVT-ALICE-2" })).await;
+    let mine = call(
+        &p,
+        &alice,
+        "list_events",
+        json!({ "event_id": "EVT-ALICE-2" }),
+    )
+    .await;
     assert_eq!(
         inbox_ids(&mine),
         vec!["EVT-ALICE-2".to_owned()],
         "alice reads back her own event: {mine}"
     );
 
-    let theirs = call(&p, &bob, "list_events", json!({ "event_id": "EVT-ALICE-2" })).await;
+    let theirs = call(
+        &p,
+        &bob,
+        "list_events",
+        json!({ "event_id": "EVT-ALICE-2" }),
+    )
+    .await;
     assert_eq!(
         inbox_ids(&theirs),
         Vec::<String>::new(),
@@ -213,4 +234,245 @@ async fn assign_event_refuses_unreadable_event_as_not_found() {
     )
     .await;
     assert!(ok.get("error").is_none(), "alice claims her own: {ok}");
+}
+
+/// The compare-and-set the ACL pre-check must not have replaced: an event
+/// already claimed by another instance is still an `already assigned`
+/// conflict for a caller who CAN read it, and re-claiming to the same
+/// instance is still the idempotent `Ok` the runner's recovery path needs.
+#[tokio::test]
+async fn cas_outcomes_survive_the_acl_precheck() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+
+    call(
+        &p,
+        &alice,
+        "capture_event",
+        capture_args("EVT-ALICE-4", "private"),
+    )
+    .await;
+    let first = call(
+        &p,
+        &alice,
+        "assign_event",
+        json!({ "event_id": "EVT-ALICE-4", "instance_page_id": ALICE_PAGE }),
+    )
+    .await;
+    assert!(first.get("error").is_none(), "first claim wins: {first}");
+
+    // Idempotent re-run: same event, same instance → still Ok.
+    let again = call(
+        &p,
+        &alice,
+        "assign_event",
+        json!({ "event_id": "EVT-ALICE-4", "instance_page_id": ALICE_PAGE }),
+    )
+    .await;
+    assert!(
+        again.get("error").is_none(),
+        "re-run is idempotent: {again}"
+    );
+
+    // A different target for an already-processed event is still the
+    // typed conflict, reported as such and NOT collapsed into not-found.
+    let conflict = call(
+        &p,
+        &alice,
+        "assign_event",
+        json!({ "event_id": "EVT-ALICE-4", "instance_page_id": "markdown/instances/community_member/bob.md" }),
+    )
+    .await;
+    let msg = conflict["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("already"),
+        "the already-claimed outcome is preserved, got: {conflict}"
+    );
+}
+
+/// Limb 2 of the rule: once an event is FILED into an instance, it is as
+/// visible as that instance — no more (alice's private member page hides
+/// it from bob) and no less (alice still reads her own history).
+#[tokio::test]
+async fn a_filed_event_follows_its_instances_acl() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+    call(
+        &p,
+        &alice,
+        "capture_event",
+        capture_args("EVT-ALICE-5", "private"),
+    )
+    .await;
+    call(
+        &p,
+        &alice,
+        "assign_event",
+        json!({ "event_id": "EVT-ALICE-5", "instance_page_id": ALICE_PAGE }),
+    )
+    .await;
+
+    let mine = call(
+        &p,
+        &alice,
+        "list_events",
+        json!({ "instance_page_id": ALICE_PAGE }),
+    )
+    .await;
+    assert_eq!(
+        inbox_ids(&mine),
+        vec!["EVT-ALICE-5".to_owned()],
+        "alice reads her own instance's event history: {mine}"
+    );
+
+    let theirs = call(
+        &p,
+        &bob,
+        "list_events",
+        json!({ "instance_page_id": ALICE_PAGE }),
+    )
+    .await;
+    assert_eq!(
+        inbox_ids(&theirs),
+        Vec::<String>::new(),
+        "bob must not read the history of alice's private instance: {theirs}"
+    );
+}
+
+/// Admin bypasses — which is what keeps an operator dashboard, and a
+/// worker draining the shared inbox under a service token, working.
+#[tokio::test]
+async fn admin_sees_every_event() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+    let admin = p.mint_token(TENANT, Role::Admin);
+
+    call(&p, &alice, "capture_event", capture_args("EVT-A", "a")).await;
+    call(&p, &bob, "capture_event", capture_args("EVT-B", "b")).await;
+
+    let all = call(&p, &admin, "list_inbox", json!({ "limit": 100 })).await;
+    let mut ids = inbox_ids(&all);
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec!["EVT-A".to_owned(), "EVT-B".to_owned()],
+        "admin drains the whole inbox: {all}"
+    );
+}
+
+/// The rollout gate's off position is the shipped default and keeps the
+/// legacy open event bus — so the fix cannot break an existing deployment
+/// until its operator opts in.
+#[tokio::test]
+async fn off_mode_leaves_the_event_bus_open() {
+    let p = start_with(EventAclMode::Off).await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+    call(
+        &p,
+        &alice,
+        "capture_event",
+        capture_args("EVT-ALICE-6", "private"),
+    )
+    .await;
+    let theirs = call(&p, &bob, "list_inbox", json!({ "limit": 100 })).await;
+    assert_eq!(
+        inbox_ids(&theirs),
+        vec!["EVT-ALICE-6".to_owned()],
+        "off mode keeps the event bus open: {theirs}"
+    );
+}
+
+/// `capture_event` is idempotent on `event_id` and returns the STORED
+/// (first-writer) event — which makes a guessed id a read. Heron's
+/// idempotency key is client-chosen, so this is a guess a client can make.
+/// A caller who may not see the stored event must get its own submission
+/// back, indistinguishable from a first capture, and never the other
+/// caller's title/body.
+#[tokio::test]
+async fn idempotent_recapture_does_not_read_back_another_callers_event() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+    call(
+        &p,
+        &alice,
+        "capture_event",
+        capture_args("EVT-COLLIDE", "alice's customer said something private"),
+    )
+    .await;
+
+    // Bob guesses the id. He must not learn what alice stored under it.
+    let guess = call(
+        &p,
+        &bob,
+        "capture_event",
+        capture_args("EVT-COLLIDE", "bob's own text"),
+    )
+    .await;
+    let ev = &guess["result"]["structuredContent"];
+    assert_eq!(ev["event_id"], json!("EVT-COLLIDE"), "id echoes: {guess}");
+    assert_eq!(ev["body"], json!("bob's own text"), "bob's own: {guess}");
+    assert!(
+        !guess.to_string().contains("something private"),
+        "alice's stored text must not come back to bob: {guess}"
+    );
+
+    // Positive control: alice's OWN idempotent re-capture still reads back
+    // the authoritative first-writer row, which is what makes a retry
+    // converge instead of forking.
+    let retry = call(
+        &p,
+        &alice,
+        "capture_event",
+        capture_args("EVT-COLLIDE", "a retry with drifted text"),
+    )
+    .await;
+    assert_eq!(
+        retry["result"]["structuredContent"]["body"],
+        json!("alice's customer said something private"),
+        "first-writer-wins is preserved for the owner: {retry}"
+    );
+
+    // And the collision did not plant anything in bob's inbox.
+    let theirs = call(&p, &bob, "list_inbox", json!({ "limit": 100 })).await;
+    assert_eq!(
+        inbox_ids(&theirs),
+        Vec::<String>::new(),
+        "bob's inbox stays empty: {theirs}"
+    );
+}
+
+/// The stamp is server-owned: a caller who supplies its own `captured_by`
+/// in `provenance` does not get to name someone else as the capturer (and
+/// so cannot plant an event in another consultant's inbox), and the rest
+/// of its provenance survives the stamp.
+#[tokio::test]
+async fn caller_supplied_captured_by_is_overwritten() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+    let mut args = capture_args("EVT-FORGED", "planted");
+    args["provenance"] = json!({ "captured_by": BOB, "runner": { "depth": 0 } });
+    let cap = call(&p, &alice, "capture_event", args).await;
+    let prov = &cap["result"]["structuredContent"]["provenance"];
+    assert_eq!(prov["captured_by"], json!(ALICE), "stamp wins: {cap}");
+    assert_eq!(
+        prov["runner"]["depth"],
+        json!(0),
+        "the caller's own provenance survives: {cap}"
+    );
+
+    let theirs = call(&p, &bob, "list_inbox", json!({ "limit": 100 })).await;
+    assert_eq!(
+        inbox_ids(&theirs),
+        Vec::<String>::new(),
+        "bob cannot be made the owner of alice's capture: {theirs}"
+    );
 }

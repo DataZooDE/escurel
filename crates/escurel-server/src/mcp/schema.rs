@@ -386,7 +386,13 @@ pub(super) fn tools_list_payload() -> Value {
                  to the skill that knows how to process this event type; \
                  `instance_page_id` may pre-flag a candidate instance but the \
                  event stays in the inbox until `assign_event`. Returns the \
-                 stored event with its id + timestamp.",
+                 stored event with its id + timestamp. The gateway stamps the \
+                 verified caller as `provenance.captured_by`, overwriting any \
+                 value you send under that key: it is what scopes the event to \
+                 you while it sits un-triaged in the inbox. Idempotent on \
+                 `event_id`: a re-capture returns the stored first-writer \
+                 event — or, if that event is not yours to see, your own \
+                 submission back under the same id.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -405,7 +411,11 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_inbox",
                 Execution::Deterministic,
-                "List unprocessed events (the inbox), newest first.",
+                "List unprocessed events (the inbox), newest first. Filtered to the \
+                 events you may see: an event filed into an instance follows \
+                 that instance's ACL, an un-triaged one is yours only if you \
+                 captured it, and admin sees all (`ESCUREL_EVENT_ACL`). A page \
+                 may therefore come back shorter than `limit`.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -420,7 +430,9 @@ pub(super) fn tools_list_payload() -> Value {
                  whose projection is its state), oldest first. Pass `event_id` \
                  instead to look ONE event up by id — whatever its status — \
                  which is how you discover the instance an event was assigned \
-                 to. Exactly one of `instance_page_id` or `event_id`.",
+                 to. Exactly one of `instance_page_id` or `event_id`. \
+                 Filtered by the same per-event ACL as `list_inbox`; an event \
+                 you may not see is absent, not an error.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -448,7 +460,11 @@ pub(super) fn tools_list_payload() -> Value {
                 "assign_event",
                 Execution::Orchestration,
                 "Assign an inbox event to an instance and mark it processed — the \
-                 (external) agent folding the event into the instance.",
+                 (external) agent folding the event into the instance. A \
+                 compare-and-set: re-assigning to the SAME instance is a no-op \
+                 success, a different instance for an already-processed event \
+                 conflicts, and an event you may not see is refused as NOT \
+                 FOUND — indistinguishable from one that does not exist.",
                 json!({
                     "type": "object",
                     "required": ["event_id", "instance_page_id"],
