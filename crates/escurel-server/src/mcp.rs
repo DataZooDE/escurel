@@ -848,13 +848,29 @@ async fn dispatch_tools_call(
         "list_messages" => {
             tool_list_messages(indexer, caller, state.write_acl, params.arguments).await
         }
+        // Event-bus surface. Agent-shaped, so not admin-gated — but it
+        // carries the `AclCaller` for the same reason the instance reads
+        // do: an inbox event is unreviewed third-party text, and a shared
+        // tenant must not let one caller read or claim another's captures.
+        // `capture_event` uses the caller to STAMP the event's owner; the
+        // other three use it to FILTER per row (`may_read_event`), under
+        // `ESCUREL_EVENT_ACL`.
         "capture_event" => {
-            tool_capture_event(indexer, state.webhook.as_ref(), params.arguments).await
+            tool_capture_event(
+                indexer,
+                caller,
+                state.event_acl,
+                state.webhook.as_ref(),
+                params.arguments,
+            )
+            .await
         }
-        "list_inbox" => tool_list_inbox(indexer, params.arguments).await,
-        "list_events" => tool_list_events(indexer, params.arguments).await,
+        "list_inbox" => tool_list_inbox(indexer, caller, state.event_acl, params.arguments).await,
+        "list_events" => tool_list_events(indexer, caller, state.event_acl, params.arguments).await,
         "list_snapshots" => tool_list_snapshots(indexer, params.arguments).await,
-        "assign_event" => tool_assign_event(indexer, params.arguments).await,
+        "assign_event" => {
+            tool_assign_event(indexer, caller, state.event_acl, params.arguments).await
+        }
         // Admin-gated ops tools (mirror the documented MCP admin
         // surface; delegate to the same logic as EscurelAdmin gRPC).
         "admin_quota" => {

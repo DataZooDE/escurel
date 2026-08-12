@@ -745,6 +745,45 @@ Queries).
 An `Event` is `{event_id, at, source, mime, label_skill,
 instance_page_id, status, title, body, provenance}`.
 
+**Per-event ACL (`ESCUREL_EVENT_ACL`: `off` | `log` | `enforce`,
+default `off`).** An inbox event is unreviewed third-party text, so on a
+shared tenant the event surface is scoped per caller, not just per
+tenant. The rule: *an event's visibility follows the record it belongs
+to; until it belongs to one, it follows the person who captured it.*
+
+- `capture_event` stamps the verified caller subject into the stored
+  event as `provenance.captured_by`, overwriting any caller-supplied
+  value under that key. This happens in **every** mode, `off` included —
+  the stamp is data, not a decision, and it is what makes a later switch
+  to `enforce` meaningful.
+- An event whose `instance_page_id` is set is exactly as visible as that
+  instance (the same per-instance read ACL `expand`/`list_instances`
+  apply). An un-triaged event is visible only to the subject that
+  captured it. Admin bypasses. An event captured before the stamp
+  existed carries none and stays ungated, the same compat fallback the
+  chat ACL takes for an unresolvable owner.
+- `capture_event` is idempotent on `event_id` and returns the STORED
+  first-writer row, which makes a guessed id a read. When the caller may
+  not see that row it gets its OWN submission back instead, wearing the
+  stored `event_id` — indistinguishable from a first capture, disclosing
+  neither the stored content nor that the id was taken. The rightful
+  owner's retry still reads back the authoritative stored event, so
+  retry convergence is unchanged. The capture webhook always carries the
+  stored event, never the echo.
+- `list_inbox` / `list_events` drop the events the caller may not see,
+  post-query, so a page may be shorter than `limit`. `assign_event`
+  refuses a claim of an event the caller may not see as **not found**,
+  byte-identical to a claim of an event that does not exist — an error
+  that distinguished them would be an existence oracle. The
+  compare-and-set is unchanged behind it.
+
+The knob is separate from `ESCUREL_WRITE_ACL` on purpose. The inbox is a
+*work queue*: a drain loop under a non-admin agent token legitimately
+reads events it did not capture, and enabling this would blind it. Run
+`log` first to find those callers (they are warned, not denied), then
+`enforce`. On a gateway with no verifier wired every caller is admin and
+this gate is inert, exactly like the instance ACL.
+
 **Capture webhook (opt-in).** When `ESCUREL_WEBHOOK_URL` is set, each
 `capture_event` fires a **fire-and-forget** HTTP `POST` of the stored
 event's JSON to that URL — the notification an external processing agent

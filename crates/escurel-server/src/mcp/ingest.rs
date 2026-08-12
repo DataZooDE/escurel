@@ -292,12 +292,18 @@ async fn record_and_dispatch_ingest(
             instance_page_id: None,
             title: title.unwrap_or_else(|| blob_id.to_owned()),
             body: String::new(),
-            provenance: Some(json!({
-                "blob_id": blob_id,
-                "content_type": content_type,
-                "handler_skill": handler,
-                "by": subject,
-            })),
+            // Stamped like every other capture: an uploaded document is
+            // un-triaged third-party content too, and without the stamp it
+            // would be the one inbox entry the per-event ACL cannot scope.
+            provenance: super::tools_write::stamp_captured_by(
+                Some(json!({
+                    "blob_id": blob_id,
+                    "content_type": content_type,
+                    "handler_skill": handler,
+                    "by": subject,
+                })),
+                subject,
+            ),
         })
         .await;
     let event = match event {
