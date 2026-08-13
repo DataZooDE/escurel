@@ -229,3 +229,88 @@ async fn mcp_streamable_http_lifecycle_round_trips() {
 
     p.shutdown().await;
 }
+
+/// A write the server REFUSES must say so at the MCP layer (#373).
+///
+/// `update_page` rejected by validation keeps its `ok:false` payload
+/// contract, but the surrounding `CallToolResult` must carry
+/// `isError:true` — MCP's own signal for "the call did not do what was
+/// asked". Without it every conventional client check reads the refusal
+/// as success. `validate` reporting the same issues stays
+/// `isError:false`: reporting issues IS that tool doing its job.
+#[tokio::test]
+async fn rejected_write_sets_is_error() {
+    let p = start().await;
+
+    // An instance page missing its required `id` — rejected by validation.
+    let bad_content = "---\n\
+         type: instance\n\
+         skill: customer\n\
+         ---\n\
+         # No id\n";
+
+    let (status, body) = post_raw(
+        &p,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "update_page",
+                "arguments": {
+                    "page_id": "customer/acme-corp",
+                    "content": bad_content
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "rejected write is not a transport error");
+    let resp: Value = serde_json::from_str(&body).expect("update_page json");
+    assert!(
+        resp.get("error").is_none(),
+        "a validation refusal is not a JSON-RPC error: {resp}"
+    );
+    let result = &resp["result"];
+    assert_eq!(
+        result["structuredContent"]["ok"], false,
+        "payload contract unchanged — ok:false with issues: {resp}"
+    );
+    assert_eq!(
+        result["isError"], true,
+        "a rejected write must set CallToolResult.isError: {resp}"
+    );
+    // The text block still carries the payload for text-only clients.
+    let text = result["content"][0]["text"].as_str().expect("content text");
+    let parsed: Value = serde_json::from_str(text).expect("text parses");
+    assert_eq!(parsed["ok"], false);
+
+    // Same issues through `validate` remain a SUCCESSFUL call: the tool
+    // was asked to report, and it reported.
+    let (status, body) = post_raw(
+        &p,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "validate",
+                "arguments": { "content": bad_content }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "validate http status");
+    let resp: Value = serde_json::from_str(&body).expect("validate json");
+    let result = &resp["result"];
+    assert_eq!(
+        result["structuredContent"]["ok"], false,
+        "validate reports the issues: {resp}"
+    );
+    assert_eq!(
+        result["isError"], false,
+        "validate reporting issues is not a tool error: {resp}"
+    );
+
+    p.shutdown().await;
+}

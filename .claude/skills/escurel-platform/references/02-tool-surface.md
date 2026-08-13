@@ -231,7 +231,12 @@ the policy.
 ```
 
 An `error`-severity issue **rejects** the write; `warning`-severity
-commits but is reported. Drive your authoring UX off the issue codes; the
+commits but is reported. A rejection also sets `isError: true` on the
+MCP `CallToolResult` envelope (any `ok:false` refusal does — the
+exceptions are `validate` and `dry_run:true` results, which report
+rather than refuse), so a client checking only the MCP error flag still
+sees it; the `ok:false` + `issues[]` payload is unchanged.
+Drive your authoring UX off the issue codes; the
 catalogue is the `[[error-catalogue]]` page in a tenant. Layer/pack write
 rejections use the same shape: `layer_read_only` (write to a base-layer
 page, or a draft declaring `layer: base@…`), `shadow_requires_curator`

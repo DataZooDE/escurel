@@ -285,9 +285,16 @@ async fn mcp_inner(
                 &token_groups,
                 req.params,
             )
-            .await
-            .map(wrap_tool_result);
-            let status = if r.is_ok() { "ok" } else { "error" };
+            .await;
+            let rejected = matches!(&r, Ok(payload) if is_rejected_payload(&tool, payload));
+            let r = r.map(|payload| wrap_tool_result(payload, rejected));
+            let status = if r.is_err() {
+                "error"
+            } else if rejected {
+                "rejected"
+            } else {
+                "ok"
+            };
             let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
             state
                 .metrics
@@ -488,23 +495,41 @@ fn to_value<T: serde::Serialize>(resp: T) -> Result<Value, JsonRpcError> {
 /// {
 ///   "content": [ { "type": "text", "text": "<payload as JSON string>" } ],
 ///   "structuredContent": <the raw payload object>,
-///   "isError": false
+///   "isError": <rejected>
 /// }
 /// ```
 ///
 /// `content[0].text` is the payload serialised to a JSON string — that
 /// is what a text-only MCP client (Claude Code) reads. `structuredContent`
 /// carries the raw payload object for programmatic clients (escurel-client
-/// decodes this). Applied to the SUCCESS value of `tools/call` ONLY; tool
-/// errors keep the JSON-RPC error envelope, and `initialize` / `ping` /
-/// `tools/list` are returned raw (they are not `CallToolResult`s).
-fn wrap_tool_result(payload: Value) -> Value {
+/// decodes this). `isError` is true when the payload is a refusal (see
+/// [`is_rejected_payload`]). Applied to the SUCCESS value of `tools/call`
+/// ONLY; tool errors keep the JSON-RPC error envelope, and `initialize` /
+/// `ping` / `tools/list` are returned raw (they are not `CallToolResult`s).
+fn wrap_tool_result(payload: Value, rejected: bool) -> Value {
     let text = serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string());
     json!({
         "content": [ { "type": "text", "text": text } ],
         "structuredContent": payload,
-        "isError": false,
+        "isError": rejected,
     })
+}
+
+/// Whether a tool's `Ok` payload is a REFUSAL — the call ran, nothing was
+/// applied, and only `ok:false` says so (#373). These get
+/// `CallToolResult.isError: true` (MCP's signal for "the call did not do
+/// what was asked") and `status: "rejected"` in the `tool.completed`
+/// record, while the payload contract stays byte-identical.
+///
+/// Two `ok:false` shapes are NOT refusals and stay `isError:false`:
+/// - `validate`, whose entire job is reporting issues — an issue list IS
+///   that tool succeeding;
+/// - any `dry_run:true` payload (`rebase_pack`), where `ok` answers
+///   "would a real run apply?" — a plan, not a failed action.
+fn is_rejected_payload(tool: &str, payload: &Value) -> bool {
+    payload.get("ok") == Some(&Value::Bool(false))
+        && tool != "validate"
+        && payload.get("dry_run") != Some(&Value::Bool(true))
 }
 
 /// Mutating tool surface a ducklake reader must reject (DuckLake PR 6):
