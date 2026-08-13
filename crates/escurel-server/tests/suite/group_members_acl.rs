@@ -131,7 +131,9 @@ async fn list_skills_withholds_the_acl_block_from_an_agent() {
     assert_eq!(deal["description"], json!("A shared deal note."));
     assert!(deal["acl"].is_null(), "no grant list for an agent: {deal}");
     assert!(
-        !serde_json::to_string(&skills).unwrap().contains("team-acme"),
+        !serde_json::to_string(&skills)
+            .unwrap()
+            .contains("team-acme"),
         "no group name anywhere in the catalogue: {skills}"
     );
 }
