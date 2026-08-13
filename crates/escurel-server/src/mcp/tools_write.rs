@@ -1511,6 +1511,48 @@ pub(super) async fn tool_assign_event(
                     )));
                 }
             }
+            // The TARGET check (#363): assignment is the operation that
+            // decides which record an event belongs to — its body follows
+            // the target's read audience from here on — so an unchecked
+            // target is a visibility-laundering primitive, not just a
+            // missing write check. Gated on the WRITE ACL of the target
+            // (`may_assign_event_target`), refused in the same
+            // `EventNotFound` shape as everything above so neither the
+            // target's existence nor its ownership leaks.
+            //
+            // Only an UNASSIGNED event's claim is checked: a claim on an
+            // already-assigned event never re-files it — the CAS below
+            // reports `already assigned` (different target) or idempotent
+            // `Ok` (same target), both without moving the event — and
+            // collapsing those outcomes into not-found would break the
+            // runner recovery path the CAS comment documents.
+            let unassigned = event
+                .instance_page_id
+                .as_deref()
+                .is_none_or(|cur| cur.is_empty());
+            if unassigned {
+                let target_ok = indexer
+                    .may_assign_event_target(&caller, &a.instance_page_id)
+                    .await
+                    .map_err(|e| JsonRpcError::internal(format!("assign_event acl: {e}")))?;
+                if !target_ok {
+                    if event_acl == crate::server::EventAclMode::Log {
+                        tracing::warn!(
+                            subject = %caller.subject,
+                            event_id = %a.event_id,
+                            target = %a.instance_page_id,
+                            "event-ACL would refuse this target (log mode) — allowing"
+                        );
+                    } else {
+                        return Err(JsonRpcError::invalid_params(format!(
+                            "assign_event: {}",
+                            IndexerError::EventNotFound {
+                                event_id: a.event_id.clone(),
+                            }
+                        )));
+                    }
+                }
+            }
         }
     }
 

@@ -172,6 +172,12 @@ Notes:
   AND `assign_event`.
 - `event_id` is idempotency: pass a stable id (e.g. the upstream message
   id) so redelivery upserts instead of duplicating.
+- Under `ESCUREL_EVENT_ACL=enforce`, `assign_event` gates BOTH sides: the
+  event must be readable by the caller AND the target instance writable
+  by them (`acl.update`) — assignment moves the event into the target's
+  visibility domain. Either refusal comes back as the same
+  `event not found` shape (no existence oracle); `log` mode warns and
+  allows. A nonexistent target refuses identically under enforce.
 - The webhook payload is HMAC-signed with the tenant's secret; receivers
   verify before acting (see the follow-up-worker in the agent template
   for the canonical consumer).
