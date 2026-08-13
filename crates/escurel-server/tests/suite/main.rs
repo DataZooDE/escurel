@@ -48,6 +48,7 @@ mod ingest_webhook;
 mod instance_acl;
 mod instance_scoped_acl;
 mod layer_read_only;
+mod list_skills_acl;
 mod mcp;
 mod mcp_admin_tools;
 mod mcp_lifecycle;

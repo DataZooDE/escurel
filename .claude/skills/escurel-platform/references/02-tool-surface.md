@@ -26,12 +26,23 @@ section below.
 | `resolve` | `wikilink` | `{parsed, page (PageRef), exists}` | parse + look up a `[[wikilink]]`; reports validity without raising |
 | `expand` | `page_id`, `anchor?`, `version?` | `{page, frontmatter, body, blocks[], wikilinks_out[]}` (+ `shadow` on an overlay that shadows a base skill: `{base_page_id, pack, base: {…base frontmatter…}}`) | the body fetch — the **most expensive** primitive; use sparingly |
 | `neighbours` | `page_id`, `direction='in'\|'out'\|'both'`, `link_skill?` | list of `Edge {src_page, dst_page, link_skill, link_version?, dst_anchor?}` | typed link-graph traversal (backlinks + forward links) |
-| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, autonomy?, layer, shadows?}` | the Tier-1 catalogue; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>`; `autonomy` is the declared human-in-the-loop policy — see the note below |
+| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, visibility, owner_field?, autonomy?, layer, shadows?}` | the Tier-1 catalogue, **scoped to the caller**; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>`; `autonomy` is the declared human-in-the-loop policy — see the note below |
 | `list_instances` | `skill`, `order_by_at='asc'\|'desc'?`, `limit?` | list of `{page_id, skill, frontmatter, at}` | enumerate instances of a skill (event-log scans, chain heads) |
 | `query_instance` | `ref` (a `query` page id), `params` (typed object) | `{rows, schema[], truncated}` | **the structured-data read**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side |
 | `run_stored_query` | `query_id`, `params` (typed object) | `{rows, schema[], snapshot_version?}` | legacy stored-query execution; new consumers use `query_instance` |
 
 Notes:
+- **`list_skills` is caller-scoped, and never carries group names.** A
+  skill whose declared `acl.read` does not intersect your effective groups
+  is **absent** from the catalogue — denial as absence, exactly like
+  `expand`/`search`/`list_instances`, so you must not re-filter it client
+  side. A skill with no `acl:` block stays visible to everyone, and a
+  skill whose instances are owner-private (`visibility: owner`, or
+  `acl.read: [owner]`) is still a discoverable *type*. The per-CRUD `acl`
+  object itself is projected to an **admin** caller only: group names are
+  the tenant's authorisation topology (they are named per engagement in a
+  shared tenant), and a client cannot act on a grant it does not hold.
+  `visibility` / `owner_field` are reported to every caller.
 - **`autonomy` on `list_skills`** is the human-in-the-loop policy a skill
   page declares in frontmatter: `auto` (a write derived from this skill
   commits directly), `review` (held for human approval), `confirm` (as
