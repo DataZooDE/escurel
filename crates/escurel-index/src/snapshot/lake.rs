@@ -337,6 +337,42 @@ pub fn attach_lake(
     Ok(())
 }
 
+/// UPDATEs that blank customer-derived bytes out of the catalog's
+/// column-statistics tables (#309 / substrate SPEC §5).
+///
+/// DuckLake stores each column's `min_value` / `max_value` as VARCHAR in
+/// `ducklake_table_column_stats` / `ducklake_file_column_stats` — for a
+/// text column that is a literal (possibly complete) customer value in
+/// the catalog database, which SPEC §5 reserves for metadata. The
+/// extension offers no option to disable stats (probed: no
+/// `ducklake_set_option` name covers them; `ENCRYPTED` encrypts parquet
+/// but still writes plaintext stats — see
+/// docs/notes/discovered/2026-08-13-ducklake-column-stats-leak.md), so
+/// escurel blanks them after every commit it makes. NULL bounds are
+/// spec-legal "unknown": DuckLake's own pruning query treats
+/// `min_value IS NULL` as un-prunable, and escurel's readers adopt whole
+/// tables rather than prune, so the only cost is lost file-skipping the
+/// deployment never used.
+///
+/// The metadata catalog rides along under `__ducklake_metadata_<alias>`
+/// whichever alias attached it; both the corpus (`lake`) and append
+/// (`append_lake`) attaches reach the SAME physical tables, so one
+/// scrub through either covers every row. Between an append and the
+/// next publish/compaction the freshly written stats persist — the
+/// residency window is one publish interval, not forever.
+pub(crate) fn scrub_column_stats_sql(alias: &str) -> String {
+    format!(
+        "UPDATE __ducklake_metadata_{alias}.ducklake_table_column_stats \
+           SET min_value = NULL, max_value = NULL, extra_stats = NULL \
+         WHERE min_value IS NOT NULL OR max_value IS NOT NULL \
+            OR extra_stats IS NOT NULL; \
+         UPDATE __ducklake_metadata_{alias}.ducklake_file_column_stats \
+           SET min_value = NULL, max_value = NULL, extra_stats = NULL \
+         WHERE min_value IS NOT NULL OR max_value IS NOT NULL \
+            OR extra_stats IS NOT NULL;"
+    )
+}
+
 /// Publish the indexer's canonical tables into the lake as ONE DuckLake
 /// snapshot (one transaction = one snapshot, spike-verified — readers
 /// see all-or-nothing).
@@ -424,6 +460,9 @@ pub async fn publish_lake(
         [],
         |r| r.get(0),
     )?;
+    // Residency (#309): blank the column stats this publish just wrote
+    // into the catalog — see `scrub_column_stats_sql`.
+    conn.execute_batch(&scrub_column_stats_sql(LAKE_ALIAS))?;
     Ok(PublishReport {
         snapshot_id,
         epoch,
