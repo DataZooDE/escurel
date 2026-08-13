@@ -120,6 +120,48 @@ pub struct DocumentBinding {
     pub lead_chunks: Option<usize>,
 }
 
+/// How strongly an `accepts:` list claims a MIME. The order is the
+/// preference order: a skill naming the MIME exactly always beats one that
+/// claimed the whole type with a wildcard, so adding a wildcard skill can
+/// never divert an upload away from the skill that asked for it by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MimeClaim {
+    Exact,
+    Wildcard,
+}
+
+/// Whether (and how strongly) a `document` skill's `accepts:` list claims
+/// `mime` (REQ-DOC-06).
+///
+/// Two forms are recognised:
+///
+/// * an **exact** MIME — `application/pdf`, `text/plain`. This is the only
+///   form v1 had, and its behaviour is unchanged.
+/// * a **type wildcard** — `audio/*`, claiming every subtype of one type
+///   (GH #356). `audio/` in particular has a long tail (`audio/mpeg`,
+///   `audio/mp4`, `audio/aac`, `audio/ogg`, `audio/webm`, `audio/x-m4a`, …)
+///   and whichever one an operator forgets is the recording that silently
+///   parks with `no_handler`. Matching is on the type part, so a MIME
+///   carrying parameters (`audio/mp4; codecs=mp4a.40.2`) is still claimed.
+///
+/// `*/*` is deliberately NOT a wildcard: a catch-all skill would swallow
+/// every future content type, including ones it cannot handle, which is the
+/// opposite of the fail-closed `no_handler` park.
+#[must_use]
+pub fn mime_claim(accepts: &[String], mime: &str) -> Option<MimeClaim> {
+    accepts
+        .iter()
+        .filter_map(|pattern| {
+            if pattern == mime {
+                return Some(MimeClaim::Exact);
+            }
+            let ty = pattern.strip_suffix("/*")?;
+            (!ty.is_empty() && ty != "*" && mime.split('/').next() == Some(ty))
+                .then_some(MimeClaim::Wildcard)
+        })
+        .min()
+}
+
 /// Which external source a `sql_view` skill materialises a read-only view
 /// over (REQ-SQL-02).
 #[non_exhaustive]
@@ -663,5 +705,63 @@ mod tests {
             assert_eq!(c.search, super::super::SearchMode::None);
             assert!(kind.is_remote());
         }
+    }
+
+    /// The exact form v1 had, unchanged — every shipped fixture uses it.
+    #[test]
+    fn an_exact_accepts_entry_claims_only_that_mime() {
+        let accepts = vec!["application/pdf".to_owned(), "text/plain".to_owned()];
+        assert_eq!(
+            mime_claim(&accepts, "application/pdf"),
+            Some(MimeClaim::Exact)
+        );
+        assert_eq!(mime_claim(&accepts, "text/plain"), Some(MimeClaim::Exact));
+        assert_eq!(mime_claim(&accepts, "text/markdown"), None);
+        assert_eq!(mime_claim(&accepts, "audio/mpeg"), None);
+    }
+
+    /// A type wildcard claims the whole type — including subtypes nobody
+    /// thought to enumerate, and MIMEs carrying parameters.
+    #[test]
+    fn a_type_wildcard_claims_every_subtype_of_that_type() {
+        let accepts = vec!["audio/*".to_owned()];
+        for mime in [
+            "audio/mpeg",
+            "audio/mp4",
+            "audio/aac",
+            "audio/ogg",
+            "audio/x-m4a",
+            "audio/mp4; codecs=mp4a.40.2",
+        ] {
+            assert_eq!(
+                mime_claim(&accepts, mime),
+                Some(MimeClaim::Wildcard),
+                "`audio/*` must claim `{mime}`"
+            );
+        }
+        // …and nothing outside its type. Without this the wildcard would be
+        // a catch-all, and uploads would land in skills that never asked.
+        for mime in ["video/mp4", "application/pdf", "text/plain"] {
+            assert_eq!(mime_claim(&accepts, mime), None, "must not claim `{mime}`");
+        }
+    }
+
+    /// `*/*` is not a wildcard: a skill cannot opt into every content type
+    /// that will ever exist, so an unhandled MIME still parks `no_handler`.
+    #[test]
+    fn a_bare_catch_all_is_not_a_wildcard() {
+        assert_eq!(mime_claim(&["*/*".to_owned()], "audio/mpeg"), None);
+        assert_eq!(mime_claim(&["/*".to_owned()], "audio/mpeg"), None);
+    }
+
+    /// The preference order routing relies on: exact beats wildcard, so a
+    /// broad collection can never divert an upload from a skill that named
+    /// the MIME.
+    #[test]
+    fn exact_outranks_wildcard() {
+        assert!(MimeClaim::Exact < MimeClaim::Wildcard);
+        let both = vec!["audio/*".to_owned(), "audio/mpeg".to_owned()];
+        assert_eq!(mime_claim(&both, "audio/mpeg"), Some(MimeClaim::Exact));
+        assert_eq!(mime_claim(&both, "audio/ogg"), Some(MimeClaim::Wildcard));
     }
 }

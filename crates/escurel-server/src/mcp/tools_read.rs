@@ -395,10 +395,22 @@ pub(super) async fn tool_fetch_blob(
             bytes.len()
         )));
     }
+    // Prefer the MIME the upload DECLARED (recorded on the overlay since
+    // GH #356) over sniffing the bytes: the sniff knows PDF/OOXML/text and
+    // answers `application/octet-stream` for everything else — which is
+    // exactly the answer a client cannot play a recording from. Overlays
+    // written before that field existed fall back to the sniff, so no
+    // already-ingested document changes its answer.
+    let declared = e
+        .frontmatter
+        .get("backend_ref")
+        .and_then(|b| b.get("content_type"))
+        .and_then(Value::as_str)
+        .filter(|ct| !ct.is_empty());
     Ok(json!({
         "blob": {
             "page_id": e.page.page_id,
-            "content_type": sniff_content_type(&bytes),
+            "content_type": declared.unwrap_or_else(|| sniff_content_type(&bytes)),
             "size": bytes.len(),
             "bytes_base64": B64.encode(&bytes),
         }

@@ -208,9 +208,9 @@ async fn record_and_dispatch_ingest(
             let accepts = match indexer.skill_backend(sk).await {
                 Ok(b) => {
                     b.kind == escurel_index::backend::BackendKind::Document
-                        && b.document
-                            .as_ref()
-                            .is_some_and(|d| d.accepts.iter().any(|m| m == content_type))
+                        && b.document.as_ref().is_some_and(|d| {
+                            escurel_index::backend::mime_claim(&d.accepts, content_type).is_some()
+                        })
                 }
                 Err(e) => {
                     return (
@@ -352,7 +352,7 @@ async fn run_document_ingest(
 ) -> axum::response::Response {
     use escurel_index::backend::{
         ChunkConfig, DeterministicProcessor, DocumentIngestWorker, ExtractConfig, Extractor,
-        IngestOutcome, OcrPolicy, PlainTextExtractor,
+        IngestOutcome, OcrPolicy, PlainTextExtractor, RetainedMediaExtractor,
     };
     use escurel_storage::BlobId;
 
@@ -391,6 +391,14 @@ async fn run_document_ingest(
     let instance_id = format!("doc-{}", &blob_id.hex()[..12.min(blob_id.hex().len())]);
     let extractor: std::sync::Arc<dyn Extractor> = if content_type.starts_with("text/") {
         std::sync::Arc::new(PlainTextExtractor)
+    } else if content_type.starts_with("audio/") {
+        // CR-4 (GH #356): audio is RETAINED, not extracted. Escurel does not
+        // transcribe — the consumer files the transcript as its own content —
+        // so the recording materialises as a zero-chunk instance whose value
+        // is its identity, its links and its retained bytes. Routing it to a
+        // text/kreuzberg extractor instead would mark perfectly good evidence
+        // `extraction_failed`.
+        std::sync::Arc::new(RetainedMediaExtractor)
     } else {
         #[cfg(feature = "kreuzberg")]
         {
