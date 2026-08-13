@@ -95,6 +95,7 @@ pub(crate) async fn ingest(
     };
     record_and_dispatch_ingest(
         &indexer,
+        &state.events_tx,
         &req.blob_id,
         &req.content_type,
         req.title,
@@ -178,6 +179,7 @@ pub(crate) async fn ingest_upload(
     };
     record_and_dispatch_ingest(
         &indexer,
+        &state.events_tx,
         blob.as_str(),
         &req.content_type,
         req.title,
@@ -191,6 +193,7 @@ pub(crate) async fn ingest_upload(
 /// Event (auditable), then dispatch the worker or park `no_handler_skill`.
 async fn record_and_dispatch_ingest(
     indexer: &std::sync::Arc<Indexer>,
+    events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<escurel_index::EventInfo>>,
     blob_id: &str,
     content_type: &str,
     title: Option<String>,
@@ -325,6 +328,9 @@ async fn record_and_dispatch_ingest(
                 .into_response();
         }
     };
+    // Announce to in-process WS subscribers (#333), same as the MCP
+    // capture path; subscriber-side ACL filtering applies.
+    let _ = events_tx.send(std::sync::Arc::new(event.clone()));
     match handler {
         Some(skill) => {
             run_document_ingest(

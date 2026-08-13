@@ -468,6 +468,14 @@ pub(crate) struct AppState {
     pub(crate) snapshot_keep: u32,
     /// See [`ServerConfig::last_published_epoch`].
     pub(crate) last_published_epoch: Arc<std::sync::Mutex<Option<u64>>>,
+    /// In-process fan-out of freshly captured events to WS
+    /// `event_subscribe` subscribers (#333). Every path that lands an
+    /// event in the store sends the STORED row here (same rule as the
+    /// outbound webhook: announce what is in the store, never an echo).
+    /// Delivery is per-subscriber ACL-filtered at the WS side, so
+    /// sending here is unconditional. A `send` with no subscribers is
+    /// the cheap common case, not an error.
+    pub(crate) events_tx: tokio::sync::broadcast::Sender<Arc<escurel_index::EventInfo>>,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -528,6 +536,9 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         lake: config.lake.clone(),
         snapshot_keep: config.snapshot_keep,
         last_published_epoch: Arc::clone(&config.last_published_epoch),
+        // 256 in-flight events per lagging subscriber before it is told
+        // to resync — same order as the session dispatcher's buffer.
+        events_tx: tokio::sync::broadcast::channel(256).0,
     };
 
     let mut app = Router::new()

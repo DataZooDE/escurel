@@ -181,6 +181,9 @@ Notes:
 - The webhook payload is HMAC-signed with the tenant's secret; receivers
   verify before acting (see the follow-up-worker in the agent template
   for the canonical consumer).
+- A consumer that cannot host the webhook subscribes over the WebSocket
+  instead: `event_subscribe` on `/ws` pushes captured events live
+  (ACL-filtered) — see `11-event-driven-agents.md`.
 
 ## Admin materialisation (external backends)
 

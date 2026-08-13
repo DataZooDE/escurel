@@ -532,6 +532,7 @@ pub(super) async fn tool_update_page(
             maybe_emit_page_edited(
                 state.emit_edit_events,
                 indexer,
+                &state.events_tx,
                 &a.page_id,
                 a.provenance.as_ref(),
             )
@@ -922,6 +923,7 @@ pub(super) async fn try_auto_merge(
 pub(super) async fn maybe_emit_page_edited(
     enabled: bool,
     indexer: &Indexer,
+    events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<EventInfo>>,
     page_id: &str,
     provenance: Option<&Value>,
 ) {
@@ -930,7 +932,7 @@ pub(super) async fn maybe_emit_page_edited(
     if !enabled || runner_write {
         return;
     }
-    if let Err(e) = indexer
+    match indexer
         .capture_event(escurel_index::events::NewEvent {
             event_id: None,
             at: None,
@@ -944,7 +946,12 @@ pub(super) async fn maybe_emit_page_edited(
         })
         .await
     {
-        tracing::warn!(page_id, error = %e, "page-edited event capture failed");
+        Ok(stored) => {
+            let _ = events_tx.send(std::sync::Arc::new(stored));
+        }
+        Err(e) => {
+            tracing::warn!(page_id, error = %e, "page-edited event capture failed");
+        }
     }
 }
 
@@ -1189,6 +1196,7 @@ pub(super) async fn tool_capture_event(
     caller: AclCaller<'_>,
     event_acl: crate::server::EventAclMode,
     webhook: Option<&crate::webhook::Webhook>,
+    events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<EventInfo>>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: CaptureEventArgs = parse_args(args, "capture_event")?;
@@ -1248,6 +1256,10 @@ pub(super) async fn tool_capture_event(
     if let Some(hook) = webhook {
         hook.notify(event_to_json(&stored), indexer.tenant());
     }
+    // Same announcement to in-process WS subscribers (#333) — the STORED
+    // row for the same reason as the webhook above; each subscriber's
+    // ACL filter runs at delivery, not here.
+    let _ = events_tx.send(std::sync::Arc::new(stored));
     Ok(event)
 }
 
@@ -1576,7 +1588,7 @@ pub(super) async fn tool_assign_event(
     )
 }
 
-pub(super) fn event_to_json(e: &EventInfo) -> Value {
+pub(crate) fn event_to_json(e: &EventInfo) -> Value {
     json!({
         "event_id": e.event_id,
         "at": e.at,

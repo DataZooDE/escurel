@@ -129,23 +129,26 @@ an `event_id` already terminal, drops an in-flight or identical
 or closing a cycle. That is what makes cascades safe — a run emits a
 `capture_event` for the next hop, which re-enters at the same gate.
 
-## What this does NOT give you
+## Watching the bus from an open session: `event_subscribe`
 
-**An event cannot be pushed into an agent session that is already open.**
-The runner *starts* a process per event; it has no channel into a
-long-lived conversation. A locally-running assistant that wants to observe
-the bus while working must poll:
+An agent that cannot host the HTTP webhook (a locally-running assistant,
+an IDE process behind NAT) subscribes over the WebSocket instead of
+polling (#333, shipped):
 
-```sh
-escurel event inbox --limit 50
-```
+1. `GET /ws` with the bearer, hello `{ "type": "hello", "presence_only": true }`;
+2. send `{ "type": "event_subscribe", "subscription_id": "<yours>" }`,
+   await `{ "type": "event_subscribe_ack", ... }`;
+3. every event captured from then on that THIS caller may read arrives as
+   `{ "type": "event", "subscription_id": ..., "event": { ...same shape
+   as list_inbox rows... } }`. Filtering follows `ESCUREL_EVENT_ACL`
+   exactly like the polling surfaces (`off` = open bus, `enforce` = only
+   events `may_read_event` allows you).
+4. on `{ "type": "event_lagged", "skipped": n }` the push stream has
+   gaps — poll `list_inbox` once to catch up, keep the subscription.
 
-`GET /ws` exists (frames: `hello`, `presence`, `search_subscribe`, `op`,
-`peer_op`, `resync_required`, `close`) but carries **no event-bus frame** —
-tracked as issue #333. Session ops *do* now fan out to every attached peer
-(#352); that is document co-editing, not the event bus.
-`search_subscribe` is not a substitute: it ACKs with `hits: []` and live
-push is v1-deferred.
-
-So: **runner = event starts a new agent run** (works, shipped);
-**polling = an open session watching the bus** (the only option today).
+The subscription starts at NOW (no replay): pair it with one initial
+`escurel event inbox --limit 50` poll for anything captured before the
+ack. The runner path is unchanged — **runner = event starts a new agent
+run**; **event_subscribe = an open session watching the bus live**.
+`search_subscribe` remains a stub (ACKs `hits: []`; live search push is
+still v1-deferred, issue #355).

@@ -98,4 +98,5 @@ mod write_origin_metrics;
 mod ws;
 mod ws_attach_acl;
 mod ws_broadcast;
+mod ws_event_subscribe;
 mod ws_session;
