@@ -235,5 +235,8 @@ pub(crate) fn materialize_snapshot(
         body,
         blocks,
         wikilinks_out,
+        // A snapshot stores document bytes, not a principal. See
+        // `ExpandedPage::last_written_by`.
+        last_written_by: None,
     })
 }

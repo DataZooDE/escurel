@@ -6,7 +6,7 @@
 //! mid-write SIGKILL leaves the pages / links / blocks tables
 //! atomically rolled back, matching the spec README's failure model.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -664,7 +664,30 @@ impl Indexer {
     /// during bootstrap we use the markdown file's relative path
     /// within the tenant (e.g. `markdown/skills/customer.md`).
     /// ULID + slug semantics arrive in a later PR.
+    ///
+    /// Records no principal. Use [`Self::update_page_as`] from any path that
+    /// knows the verified caller — every gateway write does.
     pub async fn update_page(&self, page_id: &str, content: &str) -> Result<(), IndexerError> {
+        self.update_page_as(page_id, content, None).await
+    }
+
+    /// [`Self::update_page`], recording `last_written_by` as the page's most
+    /// recent writer (escurel#357 / CR-6).
+    ///
+    /// `principal` is the subject the **gateway verified**, never a value the
+    /// caller supplied — that is the entire point of the column, and the
+    /// reason this is a separate parameter rather than a frontmatter key: a
+    /// key inside `content` would be the caller's to write.
+    ///
+    /// `None` means "this path does not know the writer" and preserves
+    /// whatever is already recorded (see `materialise::upsert_page_row`); it
+    /// does not clear the column.
+    pub async fn update_page_as(
+        &self,
+        page_id: &str,
+        content: &str,
+        principal: Option<&str>,
+    ) -> Result<(), IndexerError> {
         // Serialise the whole embed → write sequence through the
         // dedicated write lock (NOT the connection mutex) so two
         // concurrent writers can't commit out of order. Held for the
@@ -807,6 +830,7 @@ impl Indexer {
             &body_hash,
             at_ts.as_deref(),
             scenario.as_deref(),
+            principal,
         )?;
 
         // links: full refresh for this src page.
@@ -1203,6 +1227,10 @@ impl Indexer {
             &body_hash,
             at_ts.as_deref(),
             scenario.as_deref(),
+            // The document re-materialise is a derived write, not a user
+            // write: `None` carries the page's recorded writer over rather
+            // than blanking it.
+            None,
         )?;
         // Chunks become the page's blocks (one row per chunk). `body` is the
         // verbatim chunk text; `context` holds the structural situating
@@ -1572,14 +1600,31 @@ impl Indexer {
         sorted.sort();
         let total = sorted.len() as u64;
 
-        {
+        // Attribution (escurel#357) is the one thing in `pages` that a
+        // rebuild cannot re-derive: the markdown lane is the source of
+        // truth for CONTENT, and it stores no principal. Carrying the map
+        // across the truncate is what keeps "drop the index, recreate from
+        // markdown" from also meaning "forget who wrote everything" —
+        // which would be worst precisely when `rebuild` is reached for.
+        let attribution = {
             let mut conn = self.conn.lock().await;
+            let carried: Vec<(String, String)> = {
+                let mut stmt = conn.prepare(
+                    "SELECT page_id, last_written_by FROM pages \
+                     WHERE last_written_by IS NOT NULL",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
             let tx = conn.transaction()?;
             tx.execute("DELETE FROM blocks", [])?;
             tx.execute("DELETE FROM links", [])?;
             tx.execute("DELETE FROM pages", [])?;
             tx.commit()?;
-        }
+            carried.into_iter().collect::<HashMap<_, _>>()
+        };
 
         for (idx, path) in sorted.into_iter().enumerate() {
             let key = Key::new(self.tenant.as_str(), path.clone())?;
@@ -1592,7 +1637,8 @@ impl Indexer {
             // from-scratch rebuild. Progress still advances so `done` reaches
             // `total`.
             if !is_archived(content) {
-                self.update_page(&path, content).await?;
+                self.update_page_as(&path, content, attribution.get(&path).map(String::as_str))
+                    .await?;
             }
             on_progress(RebuildProgress {
                 done: (idx as u64) + 1,

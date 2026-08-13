@@ -90,6 +90,9 @@ pub enum PageCmd {
     /// List the CRDT snapshot timestamps of a page — the discrete
     /// state-over-time cuts `page expand --as-of` can replay.
     Snapshots { page_id: String },
+    /// Who wrote each live-editing op on a page, oldest first: the
+    /// server-verified principal per op, not the Loro peer id.
+    OpAuthors { page_id: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -372,6 +375,7 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Page(PageCmd::Purge { page_id }) => purge_page(client, page_id).await,
         Command::Page(PageCmd::Blob { page_id }) => fetch_blob(client, page_id).await,
         Command::Page(PageCmd::Snapshots { page_id }) => list_snapshots(client, page_id).await,
+        Command::Page(PageCmd::OpAuthors { page_id }) => list_op_authors(client, page_id).await,
         Command::Link(LinkCmd::Neighbours(a)) => neighbours(client, a).await,
         Command::Provenance(ProvenanceCmd::Ancestry(a)) => provenance_ancestry(client, a).await,
         Command::Provenance(ProvenanceCmd::Drift(a)) => expectation_drift(client, a).await,
@@ -638,6 +642,12 @@ async fn fetch_blob(client: &Client, page_id: String) -> Result<Value> {
 async fn list_snapshots(client: &Client, page_id: String) -> Result<Value> {
     Ok(client
         .call_raw("list_snapshots", json!({ "page_id": page_id }))
+        .await?)
+}
+
+async fn list_op_authors(client: &Client, page_id: String) -> Result<Value> {
+    Ok(client
+        .call_raw("list_op_authors", json!({ "page_id": page_id }))
         .await?)
 }
 

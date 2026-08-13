@@ -71,6 +71,7 @@ pub(crate) use schema::openapi_document;
 use schema::{page_type_str, tools_list_payload};
 use tools_admin::*;
 use tools_read::*;
+pub(crate) use tools_write::stamped_principal;
 use tools_write::*;
 
 use crate::server::AppState;
@@ -581,7 +582,7 @@ const EVENTS_TOOLS: &[&str] = &["capture_event", "assign_event", "list_events", 
 /// indexer has no shared CRDT backend attached (see
 /// [`escurel_index::Indexer::has_shared_crdt`]).
 ///
-/// Gated on the INDEXER's `has_shared_crdt` for all four tools, including
+/// Gated on the INDEXER's `has_shared_crdt` for all of them, including
 /// the three session ones (`open_session`/`apply_op`/`close_session`,
 /// which route through `state.crdt_backend`, not the indexer) — both
 /// seams are attached from the SAME `catalog_dsn` at the SAME boot step
@@ -605,6 +606,7 @@ const CRDT_TOOLS: &[&str] = &[
     "apply_op",
     "close_session",
     "list_snapshots",
+    "list_op_authors",
 ];
 
 /// Tool surfaces a Ducklake reader may serve only when the current indexer
@@ -693,15 +695,20 @@ async fn dispatch_tools_call(
             return tool_apply_op(
                 state.crdt_backend.as_ref(),
                 Arc::clone(&state.sessions),
+                subject,
                 params.arguments,
             )
             .await;
+        }
+        "list_op_authors" => {
+            return tool_list_op_authors(state.crdt_backend.as_ref(), params.arguments).await;
         }
         "close_session" => {
             return tool_close_session(
                 state,
                 current_indexer.as_deref(),
                 Arc::clone(&state.sessions),
+                subject,
                 params.arguments,
             )
             .await;
@@ -1064,6 +1071,10 @@ async fn tool_open_session(
     }))
 }
 
+/// `apply_op`'s arguments. Note what is NOT here: there is no way for a
+/// caller to name the op's author. The principal is taken from the verified
+/// token below, and an unknown field in `arguments` is ignored rather than
+/// read (#357) — the only forgery-proof shape.
 #[derive(Deserialize)]
 struct ApplyOpArgs {
     session: String,
@@ -1073,6 +1084,7 @@ struct ApplyOpArgs {
 async fn tool_apply_op(
     backend: Option<&Arc<dyn CrdtBackend>>,
     sessions: Arc<SessionManager>,
+    subject: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ApplyOpArgs = parse_args(args, "apply_op")?;
@@ -1085,13 +1097,62 @@ async fn tool_apply_op(
     let op_bytes = B64
         .decode(a.op.as_bytes())
         .map_err(|e| JsonRpcError::invalid_params(format!("apply_op `op` is not base64: {e}")))?;
+    // The op author is the verified subject, not the Loro peer id inside
+    // `op_bytes` — that identifies a device, and two people sharing one
+    // browser tab are two authors (#357 / CR-6).
+    let mut op = Op::new(op_bytes);
+    if let Some(p) = tools_write::stamped_principal(subject) {
+        op = op.by(p);
+    }
     let merged = sessions
-        .apply(&a.session, Op::new(op_bytes))
+        .apply(&a.session, op)
         .await
         .map_err(|e| session_error_to_jsonrpc(&e, "apply_op"))?;
     Ok(json!({
         "ok": true,
         "merged_version": merged.as_str(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct ListOpAuthorsArgs {
+    page_id: String,
+}
+
+/// `list_op_authors`: who wrote each CRDT op on a page, oldest first.
+///
+/// The read path for `crdt_ops.principal` (#357 / CR-6). Deliberately not
+/// part of `expand`: op history is unbounded, and a page read should not
+/// carry it. Deliberately not the op BYTES either — this answers "who edited
+/// this, and when", which is the audit question, without republishing the
+/// document's edit payloads to anyone who can name the page.
+///
+/// Routed with the session tools rather than the indexer tools because the
+/// ops live wherever the CRDT backend points (the local `crdt_ops` table, or
+/// the shared attached-Postgres one), which is exactly what the backend
+/// knows and the indexer does not.
+async fn tool_list_op_authors(
+    backend: Option<&Arc<dyn CrdtBackend>>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: ListOpAuthorsArgs = parse_args(args, "list_op_authors")?;
+    let Some(backend) = backend else {
+        return Err(JsonRpcError::internal(
+            "live CRDT mode not enabled on this server",
+        ));
+    };
+    let authors = backend
+        .op_authors(&a.page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_op_authors: {e}")))?;
+    Ok(json!({
+        "page_id": a.page_id,
+        "ops": authors.iter().map(|o| json!({
+            "op_id": o.op_id,
+            "hlc": o.hlc,
+            "applied_at": o.applied_at,
+            "principal": o.principal,
+        })).collect::<Vec<_>>(),
     }))
 }
 
@@ -1144,6 +1205,7 @@ async fn tool_close_session(
     state: &crate::server::AppState,
     indexer: Option<&Indexer>,
     sessions: Arc<SessionManager>,
+    subject: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: CloseSessionArgs = parse_args(args, "close_session")?;
@@ -1173,7 +1235,12 @@ async fn tool_close_session(
         // a no-op.
         if !body.trim().is_empty() {
             let _gate = state.update_page_gate.lock().await;
-            ix.update_page(&page_id, &body)
+            // The commit is a page write, so it carries the same stamp an
+            // `update_page` would (#357): the caller that closed the
+            // session is the page's last writer. Per-op authorship stays in
+            // `crdt_ops.principal`, which is what tells you the other
+            // people whose edits are in this body.
+            ix.update_page_as(&page_id, &body, tools_write::stamped_principal(subject))
                 .await
                 .map_err(|e| JsonRpcError::internal(format!("close_session write-through: {e}")))?;
         }

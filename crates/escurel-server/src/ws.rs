@@ -123,6 +123,12 @@ pub(crate) struct WsCaller {
 }
 
 impl WsCaller {
+    /// The verified subject behind this connection; empty on a gateway with
+    /// no verifier wired (dev / on-host mode).
+    pub(crate) fn subject(&self) -> &str {
+        &self.subject
+    }
+
     fn acl(&self) -> AclCaller<'_> {
         AclCaller {
             subject: &self.subject,
@@ -310,7 +316,6 @@ async fn session_loop(
     session_id: String,
 ) {
     let socket = &mut socket;
-    let tenant_id = caller.tenant_id.as_str();
     // Reject the attach if the session id is unknown. The
     // registry's `page_id_of` is the cheapest membership probe;
     // any subsequent `apply` / `close` re-checks the same map,
@@ -438,7 +443,7 @@ async fn session_loop(
         let frame_type = frame.get("type").and_then(Value::as_str).unwrap_or("");
         match frame_type {
             "op" => {
-                if handle_op(socket, state, tenant_id, &session_id, &frame, me)
+                if handle_op(socket, state, caller, &session_id, &frame, me)
                     .await
                     .is_err()
                 {
@@ -523,7 +528,7 @@ async fn session_loop(
 async fn handle_op<S>(
     socket: &mut S,
     state: &AppState,
-    tenant_id: &str,
+    caller: &WsCaller,
     session_id: &str,
     frame: &Value,
     me: crate::live_dispatch::PeerId,
@@ -531,6 +536,7 @@ async fn handle_op<S>(
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
+    let tenant_id = caller.tenant_id.as_str();
     // Quota first — mirrors the HTTP `apply_op` ordering in
     // `mcp.rs`: refuse before doing any work.
     if let Some(q) = state.quota.as_ref()
@@ -570,7 +576,15 @@ where
         }
     };
 
-    let merged = match state.sessions.apply(session_id, Op::new(op_bytes)).await {
+    // Attribute the op to the connection's verified principal (#357 /
+    // CR-6). The WS path is where in-room co-editing actually happens, so
+    // leaving it unattributed would hollow out the whole feature: the Loro
+    // peer id in the payload names the tab, not the person at it.
+    let mut op = Op::new(op_bytes);
+    if let Some(p) = crate::mcp::stamped_principal(caller.subject()) {
+        op = op.by(p);
+    }
+    let merged = match state.sessions.apply(session_id, op).await {
         Ok(v) => v,
         Err(e) => {
             return send_json(socket, session_error_frame(session_id, &e)).await;

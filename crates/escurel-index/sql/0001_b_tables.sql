@@ -11,6 +11,11 @@ CREATE TABLE pages (
     frontmatter JSON NOT NULL,
     body_hash   VARCHAR NOT NULL,
     at_ts       TIMESTAMP,                  -- mirrored from frontmatter.at
+    -- Server-stamped principal of the LAST write (#357/CR-6). NULLable;
+    -- `sql/0011_write_attribution.sql` adds it to databases created before
+    -- it existed and explains why NULL is the only honest default. Keep the
+    -- two in step.
+    last_written_by VARCHAR,
     created_at  TIMESTAMP NOT NULL,
     updated_at  TIMESTAMP NOT NULL
 );
@@ -65,6 +70,13 @@ CREATE TABLE crdt_ops (
     parent_op_id VARCHAR,
     op_bytes     BLOB    NOT NULL,
     applied_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Server-stamped author of THIS op (#357/CR-6) — the verified caller,
+    -- NOT the Loro peer id inside `op_bytes` (that names a device). Declared
+    -- here as well as in `sql/0011_write_attribution.sql` so a FRESH database
+    -- needs no ALTER at all: `applied_at`'s function-valued DEFAULT makes an
+    -- ALTER on this table unreplayable from the WAL until a CHECKPOINT (see
+    -- `Migrator::ensure_write_attribution`).
+    principal    VARCHAR,
     PRIMARY KEY (page_id, op_id)
 );
 CREATE INDEX crdt_ops_page_hlc ON crdt_ops (page_id, hlc);

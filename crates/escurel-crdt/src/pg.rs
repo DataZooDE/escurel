@@ -105,8 +105,24 @@ pub fn create_crdt_ops_pg_table_sql() -> String {
             parent_op_id  VARCHAR, \
             op_bytes      BLOB      NOT NULL, \
             applied_at    TIMESTAMP DEFAULT now(), \
+            principal     VARCHAR, \
             PRIMARY KEY (tenant, page_id, op_id)\
         );"
+    )
+}
+
+/// `ALTER TABLE … ADD COLUMN IF NOT EXISTS principal` for the shared op-log
+/// table (escurel#357 / CR-6).
+///
+/// Separate from [`create_crdt_ops_pg_table_sql`] because `CREATE TABLE IF
+/// NOT EXISTS` does nothing to a table that already exists — every
+/// deployment that attached before this column was added would keep the old
+/// shape and fail every insert. The local DuckDB tables get the same
+/// treatment through `escurel-index`'s `sql/0011_write_attribution.sql`.
+pub fn add_crdt_ops_pg_principal_sql() -> String {
+    format!(
+        "ALTER TABLE {CRDT_PG_ALIAS}.{CRDT_OPS_PG_TABLE} \
+         ADD COLUMN IF NOT EXISTS principal VARCHAR;"
     )
 }
 
@@ -134,6 +150,8 @@ pub fn attach_crdt_pg(conn: &Connection, catalog_dsn: &str) -> Result<(), Error>
     conn.execute_batch("INSTALL postgres; LOAD postgres;")?;
     conn.execute_batch(&attach_crdt_pg_sql(catalog_dsn)?)?;
     conn.execute_batch(&create_crdt_ops_pg_table_sql())?;
+    // …and bring an already-created op-log table up to the current shape.
+    conn.execute_batch(&add_crdt_ops_pg_principal_sql())?;
     conn.execute_batch(&create_crdt_snapshots_pg_table_sql())?;
     Ok(())
 }

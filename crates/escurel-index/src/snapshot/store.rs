@@ -135,6 +135,10 @@ impl IndexStore for SingleFileStore {
         // boot (idempotent), so a tenant DB provisioned before the column
         // existed gains it before `refresh_fts` indexes it.
         Migrator::ensure_block_context(&conn)?;
+        // Server-stamped write attribution (#357): ensure on EVERY boot
+        // (idempotent), so a tenant DB provisioned before the columns
+        // existed gains them.
+        Migrator::ensure_write_attribution(&conn)?;
         // Provenance-graph VIEW (ADR-0010): ensure on EVERY boot (CREATE OR
         // REPLACE), after pages/links exist. A derived read surface.
         Migrator::ensure_provenance_graph(&conn)?;

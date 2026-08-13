@@ -32,7 +32,7 @@ impl Migrator {
     /// artifact manifest and a DuckDB→DuckDB transfer refuses an artifact
     /// whose `SCHEMA_VERSION` differs from the live tenant's (the row shapes
     /// wouldn't line up).
-    pub const SCHEMA_VERSION: u32 = 8;
+    pub const SCHEMA_VERSION: u32 = 9;
 
     /// Load the per-connection extension/session state Escurel relies on:
     /// auto-install/-load plus `INSTALL`+`LOAD` of `vss`+`fts`
@@ -152,6 +152,60 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the write-attribution columns (`pages.last_written_by`,
+    /// `crdt_ops.principal`; escurel#357 / CR-6) exist. Idempotent
+    /// (`ADD COLUMN IF NOT EXISTS`) and run on EVERY connection like
+    /// [`Migrator::ensure_block_context`], so a tenant DB provisioned before
+    /// the columns existed gains them on the next boot.
+    ///
+    /// Both columns are NULLable — see `sql/0011_write_attribution.sql` for
+    /// why that is the only honest option on a populated table.
+    ///
+    /// # Why this checkpoints, unlike every other `ensure_*`
+    ///
+    /// DuckDB cannot replay an `ALTER TABLE … ADD COLUMN` from the WAL when
+    /// the altered table has a **function-valued column DEFAULT**. Replay
+    /// re-binds every column default of the table, and `CURRENT_TIMESTAMP`
+    /// resolves through a catalog lookup that the replay context does not
+    /// have:
+    ///
+    /// ```text
+    /// INTERNAL Error: Failure while replaying WAL file "…":
+    /// Calling DatabaseManager::GetDefaultDatabase with no default database set
+    /// ```
+    ///
+    /// `crdt_ops.applied_at` is `DEFAULT CURRENT_TIMESTAMP`, so the ALTER
+    /// below sits in the WAL as a live grenade: the process that ran it keeps
+    /// working, and the **next** process to open the file fails to start.
+    /// That is the worst possible shape for a migration bug — it does not
+    /// show up until a restart.
+    ///
+    /// Checkpointing folds the ALTER into the database file and truncates the
+    /// WAL, so there is nothing left to replay. It runs ONLY on the boot that
+    /// actually adds a column: a no-op `ADD COLUMN IF NOT EXISTS` writes
+    /// nothing to the WAL, so every subsequent boot skips both the ALTER and
+    /// the checkpoint and this method costs one catalog query.
+    ///
+    /// (`blocks.context` in 0007 never hit this because `blocks` declares no
+    /// defaults. Any future `ALTER` on `crdt_ops` / `crdt_snapshots` will,
+    /// and needs the same treatment.)
+    pub fn ensure_write_attribution(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' \
+               AND ((table_name = 'pages'    AND column_name = 'last_written_by') \
+                 OR (table_name = 'crdt_ops' AND column_name = 'principal'))",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 2 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_13_WRITE_ATTRIBUTION)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
     /// Ensure the `resolved_links` provenance-graph VIEW (ADR-0010) exists.
     /// A VIEW, not a table — `CREATE OR REPLACE`, so it is safe (and cheap) to
     /// run on EVERY connection like the other `ensure_*` methods, and it stays
@@ -207,6 +261,12 @@ impl Migrator {
         // Skill-pack subscription pins. Idempotent + also run on every
         // reopen via `ensure_pack_subscriptions`.
         conn.execute_batch(STAGE_11_PACK_SUBSCRIPTIONS)?;
+        // Server-stamped write attribution (#357). A no-op on this path —
+        // `sql/0001_b_tables.sql` already declares both columns — and that is
+        // deliberate: it keeps the ALTER (and the CHECKPOINT it forces, see
+        // the method) off the fresh-database path entirely. Called anyway so
+        // `up` and the reopen chain cannot disagree about the schema.
+        Self::ensure_write_attribution(conn)?;
         // Provenance-graph VIEW (ADR-0010) over the now-existing pages/links
         // tables. A derived read surface; `CREATE OR REPLACE` + also run on
         // every reopen via `ensure_provenance_graph`.
@@ -239,6 +299,7 @@ const STAGE_9_BLOCK_CONTEXT: &str = include_str!("../sql/0007_block_context.sql"
 const STAGE_10_EXTERNAL_ENDPOINTS: &str = include_str!("../sql/0008_external_endpoints.sql");
 const STAGE_11_PACK_SUBSCRIPTIONS: &str = include_str!("../sql/0009_pack_subscriptions.sql");
 const STAGE_12_PROVENANCE_GRAPH: &str = include_str!("../sql/0010_provenance_graph.sql");
+const STAGE_13_WRITE_ATTRIBUTION: &str = include_str!("../sql/0011_write_attribution.sql");
 
 #[cfg(test)]
 mod tests {

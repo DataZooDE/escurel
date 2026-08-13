@@ -657,6 +657,7 @@ pub async fn adopt_lake(
     Migrator::ensure_external_endpoints(&conn)?;
     Migrator::ensure_pack_subscriptions(&conn)?;
     Migrator::ensure_block_context(&conn)?;
+    Migrator::ensure_write_attribution(&conn)?;
     Migrator::ensure_provenance_graph(&conn)?;
 
     // `contextualize` is not mirrored: it is an INGEST-side knob and the

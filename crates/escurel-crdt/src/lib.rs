@@ -32,46 +32,80 @@ pub mod livedoc;
 pub mod pg;
 pub mod reconciler;
 
-pub use backend::{CrdtBackend, DuckdbCrdtBackend};
+pub use backend::{CrdtBackend, DuckdbCrdtBackend, OpAuthor};
 pub use codec::{body_from_snapshot, snapshot_bytes_from_markdown, three_way_merge};
 pub use error::Error;
 pub use livedoc::{LiveDoc, hydrate_content};
 pub use pg::{
-    CRDT_OPS_PG_TABLE, CRDT_PG_ALIAS, CRDT_SNAPSHOTS_PG_TABLE, attach_crdt_pg, attach_crdt_pg_sql,
-    create_crdt_ops_pg_table_sql, create_crdt_snapshots_pg_table_sql,
+    CRDT_OPS_PG_TABLE, CRDT_PG_ALIAS, CRDT_SNAPSHOTS_PG_TABLE, add_crdt_ops_pg_principal_sql,
+    attach_crdt_pg, attach_crdt_pg_sql, create_crdt_ops_pg_table_sql,
+    create_crdt_snapshots_pg_table_sql,
 };
 pub use reconciler::{CitationLookup, Decision, ExternalEditReconciler};
 
-/// Raw Loro op bytes — the wire payload that
-/// `apply_op` / `open_session` shuttle around. Opaque from this
-/// crate's perspective: we forward it to
+/// Raw Loro op bytes — the wire payload that `apply_op` / `open_session`
+/// shuttle around — together with the principal that submitted them.
+///
+/// The bytes are opaque from this crate's perspective: we forward them to
 /// [`loro::LoroDoc::import`].
+///
+/// # Why the principal rides here rather than being read out of the bytes
+///
+/// Loro op bytes embed a **peer id**, and a peer id identifies a *device*:
+/// one browser tab, one CLI process. Two ops emitted by the same tab under
+/// two different tokens carry the same peer id and have two different
+/// authors, so no amount of decoding the payload answers "who edited this"
+/// (escurel#357 / CR-6). The answer is only available at the gateway, from
+/// the verified token — so it is attached to the op there and travels with
+/// it to the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Op(pub Vec<u8>);
+pub struct Op {
+    bytes: Vec<u8>,
+    principal: Option<String>,
+}
 
 impl Op {
-    /// Construct a new `Op` from raw bytes.
+    /// Construct a new `Op` from raw bytes, with no recorded author.
+    ///
+    /// Callers that know the verified principal — every gateway write path —
+    /// chain [`Op::by`].
     #[must_use]
     pub fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        Self {
+            bytes,
+            principal: None,
+        }
+    }
+
+    /// Attribute this op to `principal`, the subject the gateway verified.
+    #[must_use]
+    pub fn by(mut self, principal: impl Into<String>) -> Self {
+        self.principal = Some(principal.into());
+        self
+    }
+
+    /// The principal that submitted this op, if the submitting path knew one.
+    #[must_use]
+    pub fn principal(&self) -> Option<&str> {
+        self.principal.as_deref()
     }
 
     /// Borrow the underlying bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.0
+        &self.bytes
     }
 
     /// Consume into the underlying byte buffer.
     #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
-        self.0
+        self.bytes
     }
 }
 
 impl From<Vec<u8>> for Op {
     fn from(v: Vec<u8>) -> Self {
-        Self(v)
+        Self::new(v)
     }
 }
 

@@ -27,6 +27,20 @@ use crate::indexer::BLOCKS_DENSE_VEC_DIM;
 ///
 /// DELETE + INSERT rather than `ON CONFLICT`: the upsert clause's behaviour
 /// varies by DuckDB version, and this keeps the semantics obvious.
+///
+/// `last_written_by` (escurel#357) is the verified principal behind the
+/// write, and `None` means **"this code path does not know who wrote it"**
+/// — not "nobody did. In that case the value already recorded is carried
+/// over rather than cleared.
+///
+/// That distinction is load-bearing, because DELETE + INSERT would otherwise
+/// erase attribution on every write that is not a user write: `rebuild`
+/// re-derives every page from the markdown lane (which stores no principal),
+/// and the document backend re-materialises a page's chunks after ingest.
+/// Both would silently blank the audit trail — `rebuild` in particular being
+/// what an operator reaches for when something has already gone wrong. A
+/// caller that genuinely means "unattributed" is writing a row that has no
+/// attribution to preserve.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn upsert_page_row(
     tx: &Transaction<'_>,
@@ -38,13 +52,26 @@ pub(crate) fn upsert_page_row(
     body_hash: &str,
     at_ts: Option<&str>,
     scenario: Option<&str>,
+    last_written_by: Option<&str>,
 ) -> Result<(), duckdb::Error> {
+    let carried: Option<String> = match last_written_by {
+        Some(_) => None,
+        None => tx
+            .query_row(
+                "SELECT last_written_by FROM pages WHERE page_id = ?",
+                params![page_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap_or(None),
+    };
+    let writer: Option<&str> = last_written_by.or(carried.as_deref());
     tx.execute("DELETE FROM pages WHERE page_id = ?", params![page_id])?;
     tx.execute(
         "INSERT INTO pages \
-         (page_id, slug, skill, page_type, frontmatter, body_hash, at_ts, scenario, created_at, updated_at) \
+         (page_id, slug, skill, page_type, frontmatter, body_hash, at_ts, scenario, \
+          last_written_by, created_at, updated_at) \
          VALUES (?, ?, ?, ?, ?::JSON, ?, \
-                 TRY_CAST(? AS TIMESTAMP), ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                 TRY_CAST(? AS TIMESTAMP), ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         params![
             page_id,
             slug,
@@ -54,6 +81,7 @@ pub(crate) fn upsert_page_row(
             body_hash,
             at_ts,
             scenario,
+            writer,
         ],
     )?;
     Ok(())

@@ -387,8 +387,12 @@ CREATE TABLE pages (
   skill          VARCHAR NOT NULL,
   page_type      VARCHAR NOT NULL,       -- 'skill' | 'instance'
   frontmatter    JSON NOT NULL,
-  body_hash      VARCHAR NOT NULL,       -- for audit
+  body_hash      VARCHAR NOT NULL,       -- WHAT changed (audit); see last_written_by for WHO
   at_ts          TIMESTAMP,              -- mirrored from frontmatter.at (NULL for non-events)
+  last_written_by VARCHAR,               -- server-stamped principal of the LAST write (#357/CR-6);
+                                         -- the verified token subject, never a caller-supplied
+                                         -- field. NULL for pages last written before the column
+                                         -- existed. Read back via `expand.page.last_written_by`.
   created_at     TIMESTAMP NOT NULL,
   updated_at     TIMESTAMP NOT NULL
 );
@@ -447,6 +451,27 @@ Beyond the tables above, later migrations add a few additive tables
 this section does not detail: `chat_messages`, `group_members`,
 `external_credentials`, and `external_endpoints`.
 
+### Write attribution
+
+`pages.last_written_by` and `crdt_ops.principal` (escurel#357 / CR-6) are
+**server-owned**: the gateway writes the subject it verified on the call and
+ignores every caller-supplied field of any name, exactly as `capture_event`
+does for `events.provenance.captured_by`. A caller cannot assert its own
+authorship on any of the three.
+
+Both columns are **NULLable**, deliberately. They are added to already-
+populated tables via `ADD COLUMN IF NOT EXISTS`, which `NOT NULL` forbids;
+and a `NOT NULL DEFAULT '<sentinel>'` would attribute every historical row
+to a principal that did not write it. NULL means "written before the gateway
+recorded who", which is the truth.
+
+`last_written_by` is last-writer-wins, like `updated_at` — it is not a
+history. It survives `rebuild`, which re-derives `pages` from the markdown
+lane: the lane stores content and no principal, so the rebuild carries the
+recorded writer across the truncate rather than blanking every page. A
+per-write history (the issue's "fuller" shape — a separate write-audit
+table) is not built.
+
 The `at_ts` column on `pages` plus the `pages_skill_at`
 composite index is the event-log scan support:
 `list_instances('meeting', filter={at: {">=": "2026-04-01"}},
@@ -484,6 +509,10 @@ CREATE TABLE crdt_ops (
   parent_op_id  VARCHAR,                 -- chain parent (NULL for genesis)
   op_bytes      BLOB NOT NULL,           -- raw Loro op
   applied_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  principal     VARCHAR,                 -- server-stamped author of THIS op (#357/CR-6).
+                                         -- NOT the Loro peer id inside op_bytes: a peer id
+                                         -- identifies a device, so two people editing from one
+                                         -- browser tab share it. Read back via `list_op_authors`.
   PRIMARY KEY (page_id, op_id)
 );
 CREATE INDEX crdt_ops_page_hlc ON crdt_ops(page_id, hlc);

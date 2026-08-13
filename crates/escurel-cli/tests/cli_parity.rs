@@ -68,6 +68,8 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("list_inbox", Agent(&["event", "inbox"])),
     ("list_events", Agent(&["event", "list"])),
     ("list_snapshots", Agent(&["page", "snapshots"])),
+    ("list_op_authors", Agent(&["page", "op-authors"])),
+    ("list_op_authors", Agent(&["page", "op-authors"])),
     ("assign_event", Agent(&["event", "assign"])),
     ("open_session", Agent(&["session", "open"])),
     ("apply_op", Agent(&["session", "apply"])),

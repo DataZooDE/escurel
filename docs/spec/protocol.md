@@ -249,6 +249,22 @@ seeded snapshot history now honour the time cut.
   oldest first. These are the discrete points `expand(as_of=T)` can
   replay — the "state over time" version markers in the instance view.
 
+- **`list_op_authors`** *(read)* — `{page_id}` → `{page_id, ops:
+  [{op_id, hlc, applied_at, principal}, …]}`, oldest first: who wrote
+  each live-editing op on the page (escurel#357 / CR-6). `principal` is
+  the subject the gateway verified for the `apply_op` (or WS `op` frame)
+  that carried it — **not** the Loro peer id in the op payload, which
+  identifies a device rather than a person. `null` for ops applied before
+  the gateway recorded a principal. Ops already subsumed by a snapshot
+  and swept by `compact_lanes` are gone, so this is the retained tail of
+  the history. Returns no op bytes.
+
+  The page-level counterpart is `expand`'s `page.last_written_by`: the
+  verified principal behind the page's most recent whole-page write.
+  `null` on an `as_of` read — a CRDT snapshot stores document bytes, not
+  an author, and reporting the current writer against a past state would
+  be a plausible-looking lie.
+
 For events: `expand` returns the full body of an event instance
 including any narrative text and follow-up links. Anchor support
 is the same as any other instance.
