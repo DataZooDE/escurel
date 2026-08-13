@@ -425,6 +425,39 @@ impl Indexer {
             .map(|s| (s.acl, s.owner_field)))
     }
 
+    /// Whether `caller` may file an event INTO `target_page_id` (#363).
+    ///
+    /// `assign_event` is the operation that decides which record an event
+    /// belongs to — the event's visibility follows the target from that
+    /// moment on — so the target is gated by the instance WRITE ACL
+    /// ([`Self::may_write_instance`]): assignment mutates what the record
+    /// contains, and readability of a page is not permission to add to it.
+    ///
+    /// A target that does not exist returns `false`, indistinguishable
+    /// from "you may not write it" — the same no-existence-oracle rule
+    /// [`Self::may_read_event`] records for the event side.
+    pub async fn may_assign_event_target(
+        &self,
+        caller: &AclCaller<'_>,
+        target_page_id: &str,
+    ) -> Result<bool, IndexerError> {
+        if caller.is_admin {
+            return Ok(true);
+        }
+        match self.expand(target_page_id, None, None).await? {
+            Some(expanded) => {
+                self.may_write_instance(
+                    caller,
+                    &expanded.page.skill,
+                    Some(&expanded.frontmatter),
+                    &expanded.frontmatter,
+                )
+                .await
+            }
+            None => Ok(false),
+        }
+    }
+
     /// The caller's effective non-structural group set: `public` (always,
     /// for an authenticated caller) plus the token groups, minus any
     /// reserved name. The structural `owner` group is added by the calling

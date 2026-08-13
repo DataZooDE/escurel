@@ -476,3 +476,126 @@ async fn caller_supplied_captured_by_is_overwritten() {
         "bob cannot be made the owner of alice's capture: {theirs}"
     );
 }
+
+/// The laundering edge #362 left open (#363): `assign_event` is the
+/// operation that DECIDES which record an event belongs to, so the
+/// TARGET must be write-gated, not just the event read-gated. Alice can
+/// read her own capture — but assigning it into Bob's owner-private
+/// record would make its body readable by Bob's audience and plant
+/// content in Bob's history. The refusal is byte-identical to a claim
+/// of a missing event, for the same existence-oracle reason as the
+/// read-side check; a target that does not exist refuses the same way.
+#[tokio::test]
+async fn assign_event_refuses_unwritable_target_as_not_found() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+
+    call(
+        &p,
+        &alice,
+        "capture_event",
+        capture_args("EVT-ALICE-6", "laundered?"),
+    )
+    .await;
+
+    // Alice may READ her own event — the read-side gate passes — but she
+    // may not WRITE bob's record, so the claim must refuse.
+    let laundered = call(
+        &p,
+        &alice,
+        "assign_event",
+        json!({ "event_id": "EVT-ALICE-6", "instance_page_id": "markdown/instances/community_member/bob.md" }),
+    )
+    .await;
+    // A target that does not exist at all refuses identically.
+    let dangling = call(
+        &p,
+        &alice,
+        "assign_event",
+        json!({ "event_id": "EVT-ALICE-6", "instance_page_id": "markdown/instances/community_member/nobody.md" }),
+    )
+    .await;
+    assert!(
+        laundered.get("error").is_some(),
+        "assigning into another owner's record must fail: {laundered}"
+    );
+    assert!(
+        dangling.get("error").is_some(),
+        "assigning to a missing target must fail under enforce: {dangling}"
+    );
+    assert_eq!(
+        laundered["error"]["message"]
+            .as_str()
+            .unwrap()
+            .replace("EVT-ALICE-6", "X"),
+        dangling["error"]["message"]
+            .as_str()
+            .unwrap()
+            .replace("EVT-ALICE-6", "X"),
+        "unwritable and absent targets must be indistinguishable: {laundered} vs {dangling}"
+    );
+
+    // The refusal names the EVENT, not the target — same shape as a
+    // genuinely-missing event, so nothing about the target leaks.
+    let ghost = call(
+        &p,
+        &alice,
+        "assign_event",
+        json!({ "event_id": "EVT-NO-SUCH", "instance_page_id": ALICE_PAGE }),
+    )
+    .await;
+    assert_eq!(
+        laundered["error"]["code"], ghost["error"]["code"],
+        "same code as a missing event: {laundered} vs {ghost}"
+    );
+    assert_eq!(
+        laundered["error"]["message"]
+            .as_str()
+            .unwrap()
+            .replace("EVT-ALICE-6", "X"),
+        ghost["error"]["message"]
+            .as_str()
+            .unwrap()
+            .replace("EVT-NO-SUCH", "X"),
+        "refused target and missing event are indistinguishable: {laundered} vs {ghost}"
+    );
+
+    // Positive control: the same claim into alice's OWN record commits —
+    // the event was never consumed by the refusals above.
+    let ok = call(
+        &p,
+        &alice,
+        "assign_event",
+        json!({ "event_id": "EVT-ALICE-6", "instance_page_id": ALICE_PAGE }),
+    )
+    .await;
+    assert!(ok.get("error").is_none(), "alice files into her own: {ok}");
+}
+
+/// `log` mode is the migration rung: an unwritable target is WARNED
+/// about but allowed, so a worker fleet can be measured before the
+/// flip to enforce (#363).
+#[tokio::test]
+async fn log_mode_allows_unwritable_target() {
+    let p = start_with(EventAclMode::Log).await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+
+    call(
+        &p,
+        &alice,
+        "capture_event",
+        capture_args("EVT-ALICE-7", "measured"),
+    )
+    .await;
+    let resp = call(
+        &p,
+        &alice,
+        "assign_event",
+        json!({ "event_id": "EVT-ALICE-7", "instance_page_id": "markdown/instances/community_member/bob.md" }),
+    )
+    .await;
+    assert!(
+        resp.get("error").is_none(),
+        "log mode allows and only warns: {resp}"
+    );
+}

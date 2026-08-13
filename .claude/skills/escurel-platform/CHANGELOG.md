@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.5 — `assign_event` write-gates its target instance
+
+- `references/02-tool-surface.md`: under `ESCUREL_EVENT_ACL=enforce`,
+  `assign_event` now also requires the caller to be allowed to WRITE the
+  target instance (`acl.update`), closing the visibility-laundering edge
+  escurel#363 — previously only the event side was checked, so a caller
+  could file their own capture into someone else's record and re-scope
+  its audience. Refusals are `event not found`-shaped (no existence
+  oracle); `log` mode warns and allows; a nonexistent target refuses the
+  same way. `off` (the default) is unchanged.
+
 ## 0.6.4 — a rejected write is flagged via MCP `isError`
 
 - `references/02-tool-surface.md`: a write refused with `ok:false` (a
