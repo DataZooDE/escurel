@@ -93,6 +93,24 @@ fn policy_verb(p: &AclPolicy, verb: Verb) -> Option<&Vec<String>> {
     }
 }
 
+/// The pure half of [`Indexer::resolve_policy`]: walk `chain` most-specific
+/// first and take the first block that declares `verb`, else the tenant
+/// `defaults`, else an empty list (fail-closed). Split out so a caller that
+/// resolves MANY policies — the skill catalogue — reads the tenant defaults
+/// once instead of once per row.
+fn resolve_policy_with(
+    chain: &[Option<AclPolicy>],
+    verb: Verb,
+    defaults: &AclPolicy,
+) -> Vec<String> {
+    for acl in chain {
+        if let Some(groups) = acl.as_ref().and_then(|p| policy_verb(p, verb)) {
+            return groups.clone();
+        }
+    }
+    policy_verb(defaults, verb).cloned().unwrap_or_default()
+}
+
 /// The shipped tenant default — reproduces today's behaviour (open read,
 /// admin-only writes) for any tenant that has not configured
 /// `acl_defaults` on its `escurel` meta-skill page.
@@ -106,6 +124,58 @@ fn shipped_tenant_default() -> AclPolicy {
 }
 
 impl Indexer {
+    /// Filter a skill CATALOGUE down to the rows `caller` may read (#374).
+    ///
+    /// `list_skills` was the one read verb that took no caller, so every
+    /// authenticated principal enumerated every type in the tenant. This
+    /// brings it in line with its siblings: a skill whose declared
+    /// `acl.read` does not intersect the caller's effective groups is
+    /// **absent** from the returned catalogue, never a distinguishable
+    /// refusal.
+    ///
+    /// Two deliberate narrowings keep this from turning skills back into
+    /// the access-control containers #351 removed:
+    ///
+    /// * a skill that declares **no** `acl:` block falls through to the
+    ///   tenant default (`read: [public]` as shipped) and stays visible to
+    ///   everyone — which is every skill in every tenant that has not opted
+    ///   in;
+    /// * the structural `owner` group is treated as **satisfied** here. A
+    ///   skill page has no owner — `owner` is instance-grained — and the
+    ///   legacy `visibility: owner` field maps to `acl.read: [owner]`
+    ///   ([`crate::read::AclPolicy`]). Reading it as a catalogue
+    ///   restriction would make every owner-visibility *type* vanish for
+    ///   every non-admin caller, which is precisely backwards: a type whose
+    ///   *instances* are private is still a discoverable type. Only an
+    ///   explicit custom-group grant hides a skill.
+    ///
+    /// Admin bypasses, as everywhere.
+    pub async fn filter_readable_skills(
+        &self,
+        caller: &AclCaller<'_>,
+        skills: Vec<crate::read::SkillInfo>,
+    ) -> Result<Vec<crate::read::SkillInfo>, IndexerError> {
+        if caller.is_admin {
+            return Ok(skills);
+        }
+        let mut effective = self.caller_groups(caller).await?;
+        effective.insert("owner".to_owned());
+        // Hoisted out of the loop: `resolve_policy` would re-read the
+        // meta-skill page per row, turning a Tier-1 catalogue read into an
+        // N+1 of indexed lookups.
+        let defaults = self.tenant_acl_defaults().await?;
+        let mut out = Vec::with_capacity(skills.len());
+        for s in &skills {
+            if intersects(
+                &resolve_policy_with(std::slice::from_ref(&s.acl), Verb::Read, &defaults),
+                &effective,
+            ) {
+                out.push(s.clone());
+            }
+        }
+        Ok(out)
+    }
+
     /// Whether `caller` may read an instance of `skill` with frontmatter
     /// `fm`. Deterministic: admin and public always pass; an owner-private
     /// instance passes only for its resolved owning subject; an
@@ -413,13 +483,8 @@ impl Indexer {
         chain: &[Option<AclPolicy>],
         verb: Verb,
     ) -> Result<Vec<String>, IndexerError> {
-        for acl in chain {
-            if let Some(groups) = acl.as_ref().and_then(|p| policy_verb(p, verb)) {
-                return Ok(groups.clone());
-            }
-        }
         let defaults = self.tenant_acl_defaults().await?;
-        Ok(policy_verb(&defaults, verb).cloned().unwrap_or_default())
+        Ok(resolve_policy_with(chain, verb, &defaults))
     }
 
     /// The tenant-wide default policy — the `acl_defaults:` block on the

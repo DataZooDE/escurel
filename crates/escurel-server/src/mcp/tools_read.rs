@@ -9,9 +9,33 @@ use super::*;
 
 // --- per-tool handlers -----------------------------------------
 
-pub(super) async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpcError> {
-    let skills = indexer
+/// The Tier-1 catalogue, **scoped to the caller** (#374).
+///
+/// Two things change for a non-admin caller:
+///
+/// 1. a skill whose declared `acl.read` excludes them is filtered out
+///    entirely — denial as absence, like every sibling read verb, and what
+///    lets a downstream client trust the catalogue rather than re-filter it
+///    (the D27/D28 failure server-side scoping exists to prevent);
+/// 2. the `acl` block is **not projected**. Group names are authorisation
+///    metadata, not schema: in a shared tenant they are named per
+///    engagement (`engagement-hoffmann`), so shipping the grant list to
+///    every token holder discloses the customer roster and the
+///    authorisation topology. A client cannot act on a grant it does not
+///    hold, so nothing in the documented flow needs it. `visibility` /
+///    `owner_field` stay — they describe how instances behave and name no
+///    group.
+pub(super) async fn tool_list_skills(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+) -> Result<Value, JsonRpcError> {
+    let all = indexer
         .list_skills()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_skills: {e}")))?;
+    let is_admin = caller.is_admin;
+    let skills = indexer
+        .filter_readable_skills(&caller, all)
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_skills: {e}")))?;
     let resp = ListSkillsResponse {
@@ -28,7 +52,11 @@ pub(super) async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpc
                     Visibility::Owner => "owner".to_string(),
                 },
                 owner_field: s.owner_field,
-                acl: s.acl.map(|a| TypesSkillAcl {
+                // Admin-only. `None` is omitted from the wire, so a
+                // non-admin row is byte-identical to one for a skill that
+                // declares no block at all — the redaction is not an
+                // existence oracle either.
+                acl: s.acl.filter(|_| is_admin).map(|a| TypesSkillAcl {
                     read: a.read,
                     create: a.create,
                     update: a.update,

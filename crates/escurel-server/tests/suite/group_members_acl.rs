@@ -89,11 +89,15 @@ async fn admin_adds_member_then_agent_gains_group_read() {
     );
 }
 
+/// `list_skills` still reports the resolved block — **to an admin caller**.
+/// It stopped reporting it to an agent in #374: `team-acme` is a group
+/// name, and a grant list is the tenant's authorisation topology rather
+/// than the skill's schema.
 #[tokio::test]
-async fn list_skills_reports_resolved_acl_block() {
+async fn list_skills_reports_resolved_acl_block_to_an_admin() {
     let p = start().await;
-    let agent = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
-    let skills = call_ok(&p, &agent, "list_skills", json!({})).await;
+    let admin = p.mint_token_with_groups(TENANT, "operator", &[], true);
+    let skills = call_ok(&p, &admin, "list_skills", json!({})).await;
     let deal = skills["skills"]
         .as_array()
         .unwrap()
@@ -105,6 +109,33 @@ async fn list_skills_reports_resolved_acl_block() {
     assert_eq!(deal["acl"]["update"], json!(["owner"]));
     assert_eq!(deal["acl"]["delete"], json!(["owner"]));
     assert_eq!(deal["owner_field"], json!("author"));
+}
+
+/// The agent's view of the same row (#374): the skill is **still listed** —
+/// its `acl.read` names the structural `owner` group, which never hides a
+/// *type* — and it still carries the schema an agent needs, but the group
+/// names are gone.
+#[tokio::test]
+async fn list_skills_withholds_the_acl_block_from_an_agent() {
+    let p = start().await;
+    let agent = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let skills = call_ok(&p, &agent, "list_skills", json!({})).await;
+    let deal = skills["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "deal_note")
+        .expect("deal_note is still discoverable");
+    // Positive control: the schema half of the row survives.
+    assert_eq!(deal["owner_field"], json!("author"));
+    assert_eq!(deal["description"], json!("A shared deal note."));
+    assert!(deal["acl"].is_null(), "no grant list for an agent: {deal}");
+    assert!(
+        !serde_json::to_string(&skills)
+            .unwrap()
+            .contains("team-acme"),
+        "no group name anywhere in the catalogue: {skills}"
+    );
 }
 
 #[tokio::test]

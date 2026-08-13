@@ -437,6 +437,26 @@ with the `project-memory` skill pack subscribed.
 in `required_frontmatter`); the agent does not need to compute
 it from the field list.
 
+**The catalogue is caller-scoped, and the `acl` block is admin-only**
+(#374). Like every other read verb, `list_skills` filters: a skill whose
+declared `acl.read` does not intersect the caller's effective groups is
+**absent** from the response — denial as absence, never an error, so a
+client can trust the catalogue instead of re-filtering it. Two narrowings
+keep this from making skills into access-control containers: a skill with
+no `acl:` block falls through to the tenant default (`read: [public]` as
+shipped) and stays visible to everyone, and the structural `owner` group is
+treated as satisfied, so the legacy `visibility: owner` mapping
+(`acl.read: [owner]`) never hides a *type* whose *instances* are private.
+The admin role bypasses, as everywhere.
+
+The `acl` object itself is projected **only to an admin caller**. Group
+names are authorisation metadata, not schema: in a shared tenant they are
+named per engagement, so handing every token holder the grant list would
+disclose the customer roster and the authorisation topology. A non-admin
+row omits `acl` entirely — indistinguishable from a skill that declares no
+block. `visibility` and `owner_field` are retained for every caller: they
+describe how instances behave and name no group.
+
 `autonomy` reports the human-in-the-loop policy the skill page declares via
 its `autonomy:` frontmatter key — `auto` (a write derived from this skill
 commits directly), `review` (held for human approval), or `confirm` (as
@@ -583,8 +603,10 @@ owner-all), so existing pages are unchanged. **`delete` is enforced as
 `update` in v1** (there is no distinct delete operation at the write
 boundary). Membership is mutated by the admin-only `add_group_member` /
 `remove_group_member` / `list_group_members` tools. `list_skills` reports
-the resolved block as `"acl"` (additive; `visibility`/`owner_field`
-retained). *(Capability-tool RBAC is phase 2.)*
+the resolved block as `"acl"` **to an admin caller only**, and filters the
+catalogue by the skill's `acl.read` for everyone else (#374 — see
+[`list_skills`](#list_skills)); `visibility`/`owner_field` are retained for
+every caller. *(Capability-tool RBAC is phase 2.)*
 
 ###### Instance-level `acl:` overrides
 

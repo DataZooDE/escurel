@@ -4,6 +4,24 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.3 — `list_skills` is caller-scoped and no longer discloses group names
+
+- `references/02-tool-surface.md`: the Tier-1 catalogue now filters. A skill
+  whose declared `acl.read` does not intersect the caller's effective groups
+  is **absent** from `list_skills`, so a consumer asserting "a skill I may
+  not read is not in the palette" can now hold that against the server
+  instead of re-filtering client side.
+- Backward compatible for every tenant that has not opted in: a skill with
+  no `acl:` block falls through to the tenant default (`read: [public]`) and
+  stays visible, and a skill whose *instances* are owner-private
+  (`visibility: owner`, or `acl.read: [owner]`) remains a discoverable
+  *type* — `owner` is instance-grained and never hides a skill.
+- **Security**: the per-CRUD `acl` object is now projected to an **admin**
+  caller only. It previously went to every authenticated caller, which in a
+  shared tenant handed out the group names — i.e. the customer roster and
+  the authorisation topology — to anyone holding a valid token. `visibility`
+  and `owner_field` are unchanged and still reported to everyone.
+
 ## 0.6.2 — Live sessions are multi-peer, and attaching is ACL-gated
 
 - `references/02-tool-surface.md`: an `op` from one attached client now
