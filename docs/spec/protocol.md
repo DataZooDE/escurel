@@ -1353,6 +1353,10 @@ Message types:
 | `resync_required` | S→C | `{ session, skipped, message }` — this peer fell behind |
 | `search_subscribe` | C→S | `{ subscription_id, q, k, filter? }` — live-updated search |
 | `search_event` | S→C | `{ subscription_id, hits: [...] }` |
+| `event_subscribe` | C→S | `{ subscription_id }` — push freshly captured bus events (#333); presence-only connections |
+| `event_subscribe_ack` | S→C | `{ subscription_id }` — subscription is live |
+| `event` | S→C | `{ subscription_id, event: <Event> }` — one captured event this caller may read (`ESCUREL_EVENT_ACL` filtered, same rule as `list_inbox`) |
+| `event_lagged` | S→C | `{ subscription_id, skipped, message }` — push stream has gaps; poll `list_inbox` to catch up |
 | `close` | C→S | `{ session, commit: bool }` |
 | `error` | S→C | `{ code, message }` |
 

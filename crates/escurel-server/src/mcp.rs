@@ -71,6 +71,7 @@ pub(crate) use schema::openapi_document;
 use schema::{page_type_str, tools_list_payload};
 use tools_admin::*;
 use tools_read::*;
+pub(crate) use tools_write::event_to_json;
 pub(crate) use tools_write::stamped_principal;
 use tools_write::*;
 
@@ -891,6 +892,7 @@ async fn dispatch_tools_call(
                 caller,
                 state.event_acl,
                 state.webhook.as_ref(),
+                &state.events_tx,
                 params.arguments,
             )
             .await

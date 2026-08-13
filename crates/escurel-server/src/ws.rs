@@ -195,14 +195,74 @@ async fn handle_socket(
         }
     }
 
-    // presence-only main loop
+    // presence-only main loop. Split so incoming frames and the event
+    // bus (#333) can be awaited together, same shape as `session_loop`.
+    let (mut sink, mut stream) = {
+        use futures_util::StreamExt as _;
+        socket.split()
+    };
+    let socket = &mut sink;
+    // The event-bus subscription (#333). `None` until the client sends
+    // `event_subscribe`; the select arm below is gated on it.
+    let mut events_rx: Option<
+        tokio::sync::broadcast::Receiver<std::sync::Arc<escurel_index::EventInfo>>,
+    > = None;
+    let mut event_sub_id = Value::Null;
+
     loop {
-        let frame = match next_json(&mut socket).await {
+        let frame = tokio::select! {
+            incoming = next_json(&mut stream) => incoming,
+            pushed = async {
+                events_rx
+                    .as_mut()
+                    .expect("arm gated on events_rx.is_some()")
+                    .recv()
+                    .await
+            }, if events_rx.is_some() => {
+                use tokio::sync::broadcast::error::RecvError;
+                match pushed {
+                    Ok(event) => {
+                        if event_push_allowed(&state, &caller, &event).await {
+                            let frame = json!({
+                                "type": "event",
+                                "subscription_id": event_sub_id,
+                                "event": crate::mcp::event_to_json(&event),
+                            });
+                            if send_json(socket, frame).await.is_err() {
+                                break;
+                            }
+                        }
+                        continue;
+                    }
+                    // Fell behind the bus. Say so instead of silently
+                    // dropping events — a consumer polling as fallback
+                    // needs to know its push stream has gaps.
+                    Err(RecvError::Lagged(skipped)) => {
+                        let notice = json!({
+                            "type": "event_lagged",
+                            "subscription_id": event_sub_id,
+                            "skipped": skipped,
+                            "message": "fell behind the event stream; \
+                                        poll list_inbox to catch up",
+                        });
+                        if send_json(socket, notice).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(RecvError::Closed) => {
+                        events_rx = None;
+                        continue;
+                    }
+                }
+            }
+        };
+        let frame = match frame {
             Ok(v) => v,
             Err(NextStop::ClientClosed | NextStop::StreamEnded) => break,
             Err(NextStop::ProtocolError(msg)) => {
                 let _ = send_json(
-                    &mut socket,
+                    socket,
                     json!({
                         "type": "error",
                         "code": "protocol_error",
@@ -220,7 +280,23 @@ async fn handle_socket(
                 // Placeholder: echo back the presence frame as
                 // confirmation. M4 broadcasts to other connected
                 // peers via the LiveSessionDispatcher.
-                if send_json(&mut socket, frame).await.is_err() {
+                if send_json(socket, frame).await.is_err() {
+                    break;
+                }
+            }
+            // Event-bus subscription (#333): from here on, freshly
+            // captured events this caller may read are PUSHED as
+            // `{type: "event", …}` frames — the consumer for an agent
+            // that cannot host the HTTP webhook. Idempotent: a second
+            // subscribe replaces the first (fresh cursor, new id).
+            "event_subscribe" => {
+                event_sub_id = frame.get("subscription_id").cloned().unwrap_or(Value::Null);
+                events_rx = Some(state.events_tx.subscribe());
+                let ack = json!({
+                    "type": "event_subscribe_ack",
+                    "subscription_id": event_sub_id,
+                });
+                if send_json(socket, ack).await.is_err() {
                     break;
                 }
             }
@@ -234,17 +310,17 @@ async fn handle_socket(
                     "subscription_id": sub_id,
                     "hits": [],
                 });
-                if send_json(&mut socket, event).await.is_err() {
+                if send_json(socket, event).await.is_err() {
                     break;
                 }
             }
             "close" => {
-                close(&mut socket).await;
+                close(socket).await;
                 break;
             }
             other => {
                 let _ = send_json(
-                    &mut socket,
+                    socket,
                     json!({
                         "type": "error",
                         "code": "unknown_frame",
@@ -257,6 +333,37 @@ async fn handle_socket(
             }
         }
     }
+}
+
+/// Whether a captured event is pushed to THIS subscriber (#333):
+/// exactly the `may_read_event` rule the polling surfaces enforce, under
+/// the same `ESCUREL_EVENT_ACL` ladder — `off` is the legacy open bus,
+/// `log` warns-and-delivers (the migration rung), `enforce` filters. A
+/// gateway with no indexer (session-only dev shape) delivers everything,
+/// mirroring `may_attach`'s fallback.
+async fn event_push_allowed(
+    state: &AppState,
+    caller: &WsCaller,
+    event: &escurel_index::EventInfo,
+) -> bool {
+    if state.event_acl == crate::server::EventAclMode::Off {
+        return true;
+    }
+    let Some(indexer) = state.indexer.as_ref().map(IndexerHandle::current) else {
+        return true;
+    };
+    let allowed = indexer
+        .may_read_event(&caller.acl(), event)
+        .await
+        .unwrap_or(false);
+    if !allowed && state.event_acl == crate::server::EventAclMode::Log {
+        tracing::warn!(
+            subject = %caller.subject(), event_id = %event.event_id,
+            "event-ACL would withhold this push (log mode) — delivering"
+        );
+        return true;
+    }
+    allowed
 }
 
 /// Whether `caller` may attach to a session on `page_id`.

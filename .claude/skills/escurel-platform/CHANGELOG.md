@@ -15,6 +15,15 @@ pin (see `SKILL.md` → "How this skill is installed").
   contract is byte-identical. `validate` results and `dry_run:true`
   results keep `isError: false` — they report, they don't refuse.
 
+## 0.6.6 — WS `event_subscribe`: the bus pushes to open sessions
+
+- `references/11-event-driven-agents.md`: a consumer that cannot host the
+  HTTP webhook subscribes over `GET /ws` — `event_subscribe` frame →
+  `event_subscribe_ack` → `{type:"event", event:{…}}` pushes for every
+  captured event the caller may read (`ESCUREL_EVENT_ACL`-filtered, same
+  rule as `list_inbox`); `event_lagged` marks gaps (poll once to catch
+  up). Subscription starts at now — no replay. Closes escurel#333.
+
 ## 0.6.3 — `list_skills` is caller-scoped and no longer discloses group names
 
 - `references/02-tool-surface.md`: the Tier-1 catalogue now filters. A skill
