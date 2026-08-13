@@ -82,7 +82,7 @@
 //! | `ESCUREL_DUCKLAKE_GDRIVE_EXTENSION` | — | path to a built `gdrive.duckdb_extension`; omit once it is installable by name from the community repository |
 //! | `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS` | `false` | permit `LOAD` of a locally-built, unsigned DuckDB extension. Required for the `gdrive` paths above. Off by default: an unsigned extension is arbitrary native code in-process |
 //! | `ESCUREL_SNAPSHOT_REFRESH_SECS` | `30` | a reader's background lake-poll interval (seconds); see `escurel_server::snapshot_refresh::RefreshTask` |
-//! | `ESCUREL_SNAPSHOT_PUBLISH_SECS` | `0` | a writer's optional periodic publish interval (seconds); `0` disables it (manual-only, via the `publish_snapshot` admin tool) — see `escurel_server::snapshot_publish::PublishTask` |
+//! | `ESCUREL_SNAPSHOT_PUBLISH_SECS` | unset | a writer's optional periodic publish interval (seconds); an explicit `0` disables it (manual-only, via the `publish_snapshot` admin tool). Unset: disabled, UNLESS chat/events are lake-backed (`ESCUREL_CHAT_BACKEND` / `ESCUREL_EVENTS_BACKEND` = `ducklake`), where the task doubles as append-table compaction and unset defaults to `300` — see `resolve_publish_secs` / `escurel_server::snapshot_publish::PublishTask` |
 //! | `ESCUREL_SNAPSHOT_KEEP` | `5` | how many DuckLake snapshots to retain after a successful publish; the GC pass never touches the current snapshot |
 
 use std::path::PathBuf;
@@ -121,6 +121,26 @@ const DEFAULT_DIM: usize = 768;
 /// rewrite is not running constantly. Operators tune it with the same
 /// variable that controls corpus publishing.
 pub const DEFAULT_APPEND_COMPACTION_SECS: u64 = 300;
+
+/// Effective periodic-publish interval from the operator's explicit
+/// choice and whether a lake-backed append surface needs the same task
+/// for compaction. `0` means "no task".
+///
+/// The contract (#372): an EXPLICIT `ESCUREL_SNAPSHOT_PUBLISH_SECS=0`
+/// disables the task unconditionally — the docs promise "0 disables it",
+/// and publish cadence is one of the two factors in lake parquet
+/// retention (`ESCUREL_SNAPSHOT_KEEP × interval`), so a silent override
+/// here quietly rewrites an operator's retention math. Only when the
+/// variable is UNSET may a lake-backed append surface fall back to
+/// [`DEFAULT_APPEND_COMPACTION_SECS`] rather than silently never
+/// compacting.
+fn resolve_publish_secs(explicit: Option<u64>, needs_compaction: bool) -> u64 {
+    match explicit {
+        Some(n) => n,
+        None if needs_compaction => DEFAULT_APPEND_COMPACTION_SECS,
+        None => 0,
+    }
+}
 
 /// Where an append-shaped surface (chat history, the event bus) lives
 /// when the index backend is DuckLake.
@@ -637,10 +657,14 @@ pub struct EscurelConfig {
     /// writer or the single-file backend.
     pub snapshot_refresh_secs: u64,
     /// A writer's optional periodic publish interval, seconds
-    /// (`ESCUREL_SNAPSHOT_PUBLISH_SECS`, default `0` = disabled,
-    /// manual-only via the `publish_snapshot` admin tool). Unused by a
-    /// reader or the single-file backend.
-    pub snapshot_publish_secs: u64,
+    /// (`ESCUREL_SNAPSHOT_PUBLISH_SECS`). `Some(0)` = explicitly
+    /// disabled, manual-only via the `publish_snapshot` admin tool.
+    /// `None` (unset) = disabled UNLESS a lake-backed append surface
+    /// needs the task for compaction, in which case
+    /// [`DEFAULT_APPEND_COMPACTION_SECS`] applies — see
+    /// [`resolve_publish_secs`] (#372). Unused by a reader or the
+    /// single-file backend.
+    pub snapshot_publish_secs: Option<u64>,
     /// DuckLake snapshot retention count (`ESCUREL_SNAPSHOT_KEEP`,
     /// default `5`). `0` disables the GC pass a successful publish runs
     /// afterwards.
@@ -1177,13 +1201,17 @@ impl EscurelConfig {
             })?,
             None => 30,
         };
+        // `Some(0)` (explicit) and `None` (unset) are deliberately kept
+        // apart: explicit 0 always disables the task, unset lets a
+        // lake-backed append surface fall back to the compaction default
+        // (`resolve_publish_secs`, #372).
         let snapshot_publish_secs = match env.get("ESCUREL_SNAPSHOT_PUBLISH_SECS") {
-            Some(raw) => raw.parse::<u64>().map_err(|_| ConfigError::InvalidValue {
+            Some(raw) => Some(raw.parse::<u64>().map_err(|_| ConfigError::InvalidValue {
                 var: "ESCUREL_SNAPSHOT_PUBLISH_SECS",
                 value: raw,
                 reason: "expected a non-negative integer (seconds); 0 disables the periodic publish task",
-            })?,
-            None => 0,
+            })?),
+            None => None,
         };
         let snapshot_keep = match env.get("ESCUREL_SNAPSHOT_KEEP") {
             Some(raw) => raw.parse::<u32>().map_err(|_| ConfigError::InvalidValue {
@@ -1651,27 +1679,36 @@ impl EscurelConfig {
                                 .map_err(ConfigError::CrdtPg)?;
                         }
 
-                        // Optional periodic publish (PR 7):
-                        // `ESCUREL_SNAPSHOT_PUBLISH_SECS > 0`. `0` (default)
+                        // Optional periodic publish (PR 7): explicit `0`
+                        // (or unset with no lake-backed append surface)
                         // keeps corpus publishing manual-only via the
                         // `publish_snapshot` admin tool.
                         //
-                        // A lake-backed chat/events surface CHANGES that
-                        // default: the same task also compacts the
-                        // append-shaped tables, and without it every append
-                        // leaves its own Parquet file on the object store
-                        // forever (inlining is off by necessity, and
+                        // A lake-backed chat/events surface changes the
+                        // UNSET default only: the same task also compacts
+                        // the append-shaped tables, and without it every
+                        // append leaves its own Parquet file on the object
+                        // store forever (inlining is off by necessity, and
                         // ducklake's own compaction calls are no-ops — see
                         // docs/notes/discovered/2026-07-25-ducklake-multiwriter-and-compaction.md).
-                        // So when either surface is on the lake and the
-                        // operator has not chosen an interval, run on a
-                        // default one rather than silently never compacting.
+                        // An operator's explicit `0` still wins (#372):
+                        // publish cadence times `ESCUREL_SNAPSHOT_KEEP` is
+                        // the lake's parquet retention window, so it must
+                        // never be overridden silently — warn instead.
                         let needs_compaction = self.chat_backend == AppendBackend::DuckLake
                             || self.events_backend == AppendBackend::DuckLake;
-                        let publish_secs = match (self.snapshot_publish_secs, needs_compaction) {
-                            (0, true) => DEFAULT_APPEND_COMPACTION_SECS,
-                            (n, _) => n,
-                        };
+                        let publish_secs =
+                            resolve_publish_secs(self.snapshot_publish_secs, needs_compaction);
+                        if publish_secs == 0 && needs_compaction {
+                            tracing::warn!(
+                                msg = "snapshot publish disabled by explicit \
+                                       ESCUREL_SNAPSHOT_PUBLISH_SECS=0; lake-backed \
+                                       append tables will NOT be compacted — every \
+                                       append keeps its own parquet file until a \
+                                       manual publish_snapshot",
+                                "periodic publish disabled with lake-backed appends"
+                            );
+                        }
                         if publish_secs > 0 {
                             let handle = IndexerHandle::fixed(Arc::clone(&indexer));
                             publish_task_handle = Some(
@@ -2209,6 +2246,40 @@ mod tests {
     fn ingest_contextualize_env_override_off() {
         let cfg = cfg_from(&[("ESCUREL_INGEST_CONTEXTUALIZE", "off")]);
         assert_eq!(cfg.ingest_contextualize, ContextualizeMode::Off);
+    }
+
+    // `ESCUREL_SNAPSHOT_PUBLISH_SECS` (#372): an EXPLICIT `0` must mean
+    // what the docs say — the periodic publish task is off, full stop —
+    // even when a lake-backed append surface would otherwise want the
+    // compaction default. Only the UNSET case may fall back to
+    // `DEFAULT_APPEND_COMPACTION_SECS`.
+    #[test]
+    fn publish_secs_unset_is_distinguishable_from_explicit_zero() {
+        let unset = cfg_from(&[]);
+        assert_eq!(unset.snapshot_publish_secs, None, "unset stays None");
+        let zero = cfg_from(&[("ESCUREL_SNAPSHOT_PUBLISH_SECS", "0")]);
+        assert_eq!(zero.snapshot_publish_secs, Some(0), "explicit 0 is Some(0)");
+    }
+
+    #[test]
+    fn publish_secs_explicit_zero_disables_even_with_lake_appends() {
+        assert_eq!(resolve_publish_secs(Some(0), true), 0);
+        assert_eq!(resolve_publish_secs(Some(0), false), 0);
+    }
+
+    #[test]
+    fn publish_secs_unset_defaults_to_compaction_interval_only_on_lake() {
+        assert_eq!(
+            resolve_publish_secs(None, true),
+            DEFAULT_APPEND_COMPACTION_SECS
+        );
+        assert_eq!(resolve_publish_secs(None, false), 0);
+    }
+
+    #[test]
+    fn publish_secs_explicit_interval_is_used_verbatim() {
+        assert_eq!(resolve_publish_secs(Some(60), true), 60);
+        assert_eq!(resolve_publish_secs(Some(60), false), 60);
     }
 }
 

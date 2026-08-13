@@ -364,7 +364,9 @@ rewrite → **1** after GC.
 The publish task runs that pair periodically. Because it is what bounds
 object growth, a lake-backed surface makes the task non-optional: when
 `ESCUREL_SNAPSHOT_PUBLISH_SECS` is unset it defaults to **300s** instead of
-staying disabled.
+staying disabled. An **explicit `0` still disables it** — the operator's
+retention math (`ESCUREL_SNAPSHOT_KEEP × interval`) is never overridden
+silently; the server logs a warning that appends will not be compacted.
 
 **Volume ceiling.** Object count between compactions is
 *(compaction interval × append rate)*; at the documented 120 writes/min
