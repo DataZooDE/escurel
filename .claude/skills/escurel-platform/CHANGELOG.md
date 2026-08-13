@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.4 — a rejected write is flagged via MCP `isError`
+
+- `references/02-tool-surface.md`: a write refused with `ok:false` (a
+  validation rejection, a stale `base_version`, a layer/ACL refusal, …)
+  now also sets `isError: true` on the MCP `CallToolResult` envelope and
+  logs `status: "rejected"` server-side. Previously the envelope said
+  `isError: false` and only the nested payload carried the refusal, so a
+  client following MCP conventions read it as success. The payload
+  contract is byte-identical. `validate` results and `dry_run:true`
+  results keep `isError: false` — they report, they don't refuse.
+
 ## 0.6.3 — `list_skills` is caller-scoped and no longer discloses group names
 
 - `references/02-tool-surface.md`: the Tier-1 catalogue now filters. A skill
