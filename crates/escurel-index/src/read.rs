@@ -69,6 +69,159 @@ pub struct SkillInfo {
     /// value — see [`Autonomy`] for why those two collapse rather than the
     /// unrecognised one resolving to a policy.
     pub autonomy: Option<Autonomy>,
+    /// The parameters ONE RUN of this skill takes (the `params:` block,
+    /// heron#11 / CR-7), in declaration order. Empty for every skill that
+    /// declares none — which is every skill that predates the key.
+    ///
+    /// Distinct from [`required_frontmatter`](Self::required_frontmatter),
+    /// which is the shape of the INSTANCES this skill produces. The two
+    /// nearly coincide for an instance-creating skill and have nothing to do
+    /// with each other for a report skill parameterised by window and
+    /// grouping.
+    pub params: Vec<SkillParam>,
+}
+
+/// One invocation parameter a skill page declares via `params:`
+/// (heron#11 / CR-7).
+///
+/// Escurel does not execute skills and never binds these values — it reports
+/// what the page declares, so a client can build an input form from
+/// `list_skills` alone. The field set is exactly what an A2UI `form` field
+/// needs (`name`, `label`, `kind`, `required`) so the surface renders with no
+/// mapping layer in between.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillParam {
+    /// The parameter name, as the caller passes it.
+    pub name: String,
+    /// What the parameter holds, normalised to the renderable set.
+    pub kind: ParamKind,
+    /// Whether a run must supply it. Omitted `required:` ⇒ `false`:
+    /// declaring a parameter is not the same as demanding it.
+    pub required: bool,
+    /// A human caption. `None` ⇒ the client falls back to `name`.
+    pub label: Option<String>,
+    /// Prose for the author of the run (`"e.g. 30d"`).
+    pub description: Option<String>,
+}
+
+/// The type of a declared invocation parameter.
+///
+/// Deliberately the three A2UI `form` kinds and no more: a client renders
+/// one of these directly, and a wider vocabulary would need a mapping layer
+/// at every consumer. Query pages declare a richer `type:` set (`date`,
+/// `number`) because their values are BOUND to SQL; these are only rendered.
+///
+/// **Unlike [`Autonomy`] this type has a `Default`, and the fallback
+/// direction is opposite.** An unreadable `autonomy:` is dropped, because
+/// only an explicit `auto` may switch a human gate off. An unreadable
+/// `kind:` degrades to [`ParamKind::String`] and the parameter is still
+/// reported, because dropping it would delete a possibly-REQUIRED field from
+/// a generated form: the run would then be invoked without it and fail with
+/// nothing on the page to explain why. An over-permissive text box
+/// under-validates; a missing box loses data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParamKind {
+    #[default]
+    String,
+    Integer,
+    Boolean,
+}
+
+impl ParamKind {
+    /// Wire string, as it appears on `list_skills`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ParamKind::String => "string",
+            ParamKind::Integer => "integer",
+            ParamKind::Boolean => "boolean",
+        }
+    }
+
+    /// The three renderable kinds, in declaration order. Used to build the
+    /// validator's suggestion so the message cannot drift from the enum.
+    #[must_use]
+    pub fn recognised() -> [ParamKind; 3] {
+        [ParamKind::String, ParamKind::Integer, ParamKind::Boolean]
+    }
+
+    /// Parse a declared kind. Whitespace and case are normalised, and the
+    /// short spellings an author arrives with from the query-page `params:`
+    /// idiom (`text`, `int`, `bool`) are accepted as synonyms. Anything else
+    /// is `None` — see the type's doc comment for what the projection then
+    /// does with it, and note that `None` is what lets `validate` tell the
+    /// author while the catalogue still degrades gracefully.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "string" | "text" | "str" => Some(ParamKind::String),
+            "integer" | "int" => Some(ParamKind::Integer),
+            "boolean" | "bool" => Some(ParamKind::Boolean),
+            _ => None,
+        }
+    }
+}
+
+/// Project one `params:` entry, given its name and its attribute object.
+fn param_from(name: &str, attrs: &serde_json::Value) -> SkillParam {
+    let text = |key: &str| {
+        attrs
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    SkillParam {
+        name: name.to_owned(),
+        // `type:` is accepted as a synonym for `kind:` because that is the
+        // spelling the query-page `params:` idiom uses; `kind:` wins when
+        // both are present, being the key this block actually documents.
+        kind: text("kind")
+            .or_else(|| text("type"))
+            .and_then(|k| ParamKind::parse(&k))
+            .unwrap_or_default(),
+        required: attrs
+            .get("required")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        label: text("label"),
+        description: text("description"),
+    }
+}
+
+/// Project the `params:` block from a skill page's indexed frontmatter.
+///
+/// Two shapes are read, because two are in the wild:
+///
+/// - a **sequence** of `{name: …, kind: …}` entries — the idiom escurel
+///   already uses for `params:` on query pages, and the only shape that
+///   preserves the author's field order for a generated form;
+/// - a **mapping** of `name: {kind: …}` — the shape CR-7 proposed. Its order
+///   is the indexed frontmatter's key order, which is deterministic but not
+///   the author's; an author who cares about form layout wants the sequence.
+///
+/// Anything else — and any sequence entry without a `name` — yields nothing
+/// here and an error-severity finding from `validate`: there is no field to
+/// degrade to when the parameter has no name to pass it under.
+fn parse_params(fm: &serde_json::Value) -> Vec<SkillParam> {
+    let Some(raw) = fm.get("params") else {
+        return Vec::new();
+    };
+    if let Some(arr) = raw.as_array() {
+        return arr
+            .iter()
+            .filter_map(|item| {
+                let name = item.get("name").and_then(serde_json::Value::as_str)?;
+                Some(param_from(name, item))
+            })
+            .collect();
+    }
+    if let Some(obj) = raw.as_object() {
+        return obj
+            .iter()
+            .map(|(name, attrs)| param_from(name, attrs))
+            .collect();
+    }
+    Vec::new()
 }
 
 /// A skill's per-CRUD group grants. Each verb is a list of group names
@@ -311,6 +464,7 @@ impl Indexer {
                     .map(str::to_owned),
                 shadows: None,
                 autonomy: parse_autonomy(&fm),
+                params: parse_params(&fm),
             });
         }
 
