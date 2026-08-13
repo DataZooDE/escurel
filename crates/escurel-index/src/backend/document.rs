@@ -42,6 +42,30 @@ pub struct DocMetadata {
     pub page_count: Option<u32>,
     /// RFC 3339 creation timestamp, when the format carries one.
     pub created: Option<String>,
+    /// Container facts about a retained **media** blob (GH #356). `Some`
+    /// only for the retain-only path; a text/PDF/DOCX document leaves it
+    /// `None` and the overlay grows no media keys.
+    pub media: Option<MediaMetadata>,
+}
+
+/// What can be read off an audio container without decoding it, and
+/// without a transcription runtime (GH #356).
+///
+/// Escurel deliberately does not transcribe — the consumer supplies the
+/// text — so this is everything the knowledge base itself can say about a
+/// recording. It is all deterministic: no inference, no network.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MediaMetadata {
+    /// Size of the retained blob in bytes.
+    pub bytes: u64,
+    /// Container/codec label derived from the declared MIME subtype
+    /// (`audio/x-wav` → `wav`), so a client can label the file without
+    /// re-sniffing it.
+    pub codec: Option<String>,
+    /// Playing time, when the container states it plainly enough to be read
+    /// exactly. `None` is honest: a wrong duration is worse than none, so
+    /// nothing here is estimated. See [`RetainedMediaExtractor`].
+    pub duration_ms: Option<u64>,
 }
 
 /// One chunk of an extracted document, with provenance back into the
@@ -299,6 +323,123 @@ impl Extractor for PlainTextExtractor {
     }
 }
 
+/// Retain-only extractor for audio blobs (GH #356, CR-4).
+///
+/// The ask from Heron was explicitly **not** to transcribe: speech-to-text
+/// happens in the consumer, which files the transcript as its own content.
+/// What was missing was the recording's place in the knowledge base — an
+/// instance with identity, links, ACL and history, so provenance from a
+/// derived record reaches back to the evidence instead of stopping at the
+/// text.
+///
+/// So this extractor produces no text and no chunks. That is a *success*,
+/// not a failure: the blob is promoted to the canonical area and the
+/// overlay is `status: ok` with `chunk_count: 0`. Routing an audio upload
+/// through the text or kreuzberg extractor instead would mark it
+/// `extraction_failed` — the upload would survive (the inbox blob is
+/// retained) but the instance would advertise itself as broken, and a
+/// rebuild would keep trying to re-chunk bytes that have no text in them.
+///
+/// Duration is read only where a container states it exactly — WAV, whose
+/// header carries the byte rate and the data-chunk size. Compressed
+/// containers (MP3 frame walking, MP4/`mvhd`, Ogg granule positions) are
+/// left `None` rather than estimated: a plausible-but-wrong duration on a
+/// piece of evidence is worse than an absent one, and the consumer that
+/// recorded the file already knows the real figure.
+#[derive(Debug, Default)]
+pub struct RetainedMediaExtractor;
+
+#[async_trait]
+impl Extractor for RetainedMediaExtractor {
+    fn name(&self) -> &str {
+        "retained-media@1"
+    }
+
+    fn accepts(&self, mime: &str) -> bool {
+        mime.starts_with("audio/")
+    }
+
+    async fn extract(
+        &self,
+        bytes: &[u8],
+        mime: &str,
+        _cfg: &ExtractConfig,
+    ) -> Result<ExtractionResult, ExtractError> {
+        Ok(ExtractionResult {
+            content: String::new(),
+            metadata: DocMetadata {
+                media: Some(MediaMetadata {
+                    bytes: bytes.len() as u64,
+                    codec: codec_label(mime),
+                    duration_ms: wav_duration_ms(bytes),
+                }),
+                ..DocMetadata::default()
+            },
+            chunks: Vec::new(),
+        })
+    }
+}
+
+/// A short codec/container label from a declared MIME: the subtype, minus
+/// any parameters and the `x-` / `vnd.` vendor prefixes, with the `wave`
+/// spelling normalised to `wav`. `None` when the MIME has no subtype.
+#[must_use]
+pub fn codec_label(mime: &str) -> Option<String> {
+    let subtype = mime.split(';').next()?.split('/').nth(1)?.trim();
+    let subtype = subtype
+        .strip_prefix("x-")
+        .or_else(|| subtype.strip_prefix("vnd."))
+        .unwrap_or(subtype)
+        .to_ascii_lowercase();
+    if subtype.is_empty() {
+        return None;
+    }
+    Some(if subtype == "wave" {
+        "wav".to_owned()
+    } else {
+        subtype
+    })
+}
+
+/// Exact playing time of a RIFF/WAVE blob, in milliseconds, or `None` when
+/// the bytes are not a WAV or the header is not self-consistent.
+///
+/// `data_size / byte_rate` is exact for the PCM and ADPCM shapes a recorder
+/// produces; the chunk walk is bounded by the buffer, so a truncated or
+/// hostile file returns `None` rather than looping or panicking.
+#[must_use]
+fn wav_duration_ms(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let u32_at = |o: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(bytes.get(o..o + 4)?.try_into().ok()?))
+    };
+    let mut byte_rate: Option<u32> = None;
+    let mut data_size: Option<u32> = None;
+    let mut pos = 12usize;
+    while pos + 8 <= bytes.len() {
+        let id = &bytes[pos..pos + 4];
+        let size = u32_at(pos + 4)? as usize;
+        let body = pos + 8;
+        match id {
+            // `fmt `: audio_format u16, channels u16, sample_rate u32,
+            // byte_rate u32 — byte_rate sits at +8 into the chunk body.
+            b"fmt " if size >= 16 => byte_rate = u32_at(body + 8),
+            // Only believe a `data` size the buffer actually backs. A header
+            // claiming more audio than it carries is truncated or hostile;
+            // either way the duration is unknown, and reporting the claim
+            // would put a fabricated figure on a piece of evidence.
+            b"data" if body + size <= bytes.len() => data_size = Some(size as u32),
+            _ => {}
+        }
+        // Chunks are word-aligned: an odd size carries one pad byte.
+        pos = body.checked_add(size + (size & 1))?;
+    }
+    let rate = byte_rate.filter(|r| *r > 0)?;
+    Some(u64::from(data_size?) * 1000 / u64::from(rate))
+}
+
 /// No-op extractor for pipeline tests that don't care about content.
 #[derive(Debug, Default)]
 pub struct NullExtractor;
@@ -389,6 +530,7 @@ impl Extractor for KreuzbergExtractor {
             authors: r.metadata.authors.clone().unwrap_or_default(),
             page_count: r.metadata.pages.as_ref().map(|p| p.total_count as u32),
             created: None,
+            media: None,
         };
 
         // Prefer kreuzberg's chunks (they carry page provenance); fall back to
@@ -579,6 +721,7 @@ impl DocumentIngestWorker {
                     skill,
                     instance_id,
                     blob_id,
+                    mime,
                     chunks.len(),
                     &self.processor.engine(),
                     "ok",
@@ -604,6 +747,7 @@ impl DocumentIngestWorker {
                     skill,
                     instance_id,
                     blob_id,
+                    mime,
                     0,
                     &self.processor.engine(),
                     "extraction_failed",
@@ -641,6 +785,25 @@ pub(crate) async fn rebuild_documents(indexer: &Indexer) -> Result<(), IndexerEr
         let Some(blob_id) = BlobId::parse(&ov.blob_id) else {
             continue;
         };
+        // A retained recording (GH #356) has no text by construction. The
+        // main rebuild loop has just re-indexed its overlay markdown as an
+        // ordinary one-block page; re-materialise with zero chunks so a
+        // from-scratch rebuild reproduces exactly what live ingest stored.
+        if ov.content_type.starts_with("audio/") {
+            let Ok(key) = Key::new(indexer.tenant(), ov.page_id.clone()) else {
+                continue;
+            };
+            let Ok(overlay_bytes) = store.read(&key).await else {
+                continue;
+            };
+            let Ok(overlay_md) = String::from_utf8(overlay_bytes.to_vec()) else {
+                continue;
+            };
+            indexer
+                .materialize_document(&ov.page_id, &overlay_md, &[])
+                .await?;
+            continue;
+        }
         let Ok(bytes) = indexer.read_blob(&blob_id).await else {
             continue; // orphan blob — reported by audit_documents
         };
@@ -768,6 +931,10 @@ struct DocOverlay {
     page_id: String,
     skill: String,
     blob_id: String,
+    /// The MIME the upload declared. Absent on overlays written before
+    /// GH #356 — they are all text/PDF/DOCX, which the UTF-8 probe below
+    /// classifies correctly anyway.
+    content_type: String,
     status: String,
 }
 
@@ -776,6 +943,7 @@ async fn enumerate_document_overlays(indexer: &Indexer) -> Result<Vec<DocOverlay
     let mut stmt = conn.prepare(
         "SELECT page_id, skill, \
          json_extract_string(frontmatter, '$.backend_ref.blob_id'), \
+         json_extract_string(frontmatter, '$.backend_ref.content_type'), \
          json_extract_string(frontmatter, '$.backend_ref.status') \
          FROM pages \
          WHERE page_type = 'instance' \
@@ -787,7 +955,8 @@ async fn enumerate_document_overlays(indexer: &Indexer) -> Result<Vec<DocOverlay
                 page_id: r.get(0)?,
                 skill: r.get(1)?,
                 blob_id: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                status: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                content_type: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                status: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
             })
         })?
         .collect::<Result<_, _>>()?;
@@ -800,6 +969,7 @@ fn document_overlay(
     skill: &str,
     id: &str,
     blob_id: &BlobId,
+    content_type: &str,
     chunk_count: usize,
     engine: &str,
     status: &str,
@@ -832,6 +1002,17 @@ fn document_overlay(
     if !meta.authors.is_empty() {
         extracted.push_str(&format!("    authors: [{}]\n", meta.authors.join(", ")));
     }
+    // Retained-media facts (GH #356). Only present for the retain-only path,
+    // so no existing document overlay grows a key.
+    if let Some(m) = &meta.media {
+        extracted.push_str(&format!("    bytes: {}\n", m.bytes));
+        if let Some(codec) = &m.codec {
+            extracted.push_str(&format!("    codec: {codec}\n"));
+        }
+        if let Some(ms) = m.duration_ms {
+            extracted.push_str(&format!("    duration_ms: {ms}\n"));
+        }
+    }
     let extracted_block = if extracted.is_empty() {
         String::new()
     } else {
@@ -845,6 +1026,7 @@ fn document_overlay(
          backend_ref:\n\
         \x20 kind: document\n\
         \x20 blob_id: {blob}\n\
+        \x20 content_type: {content_type}\n\
         \x20 chunk_count: {chunk_count}\n\
         \x20 extract_engine: {engine}\n\
         \x20 status: {status}\n\
@@ -1141,5 +1323,94 @@ mod tests {
         );
         let no_heading = "---\ntype: instance\nid: x\n---\njust body\n";
         assert_eq!(overlay_heading_title(no_heading), None);
+    }
+
+    /// A real 44-byte RIFF/WAVE header over `data_len` PCM bytes at 16 kHz
+    /// mono 16-bit — byte_rate 32000, so 32000 data bytes is exactly 1 s.
+    fn wav_header(data_len: usize) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+        b.extend_from_slice(b"WAVE");
+        b.extend_from_slice(b"fmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&16_000u32.to_le_bytes());
+        b.extend_from_slice(&32_000u32.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&(data_len as u32).to_le_bytes());
+        b.resize(44 + data_len, 0);
+        b
+    }
+
+    #[test]
+    fn wav_duration_is_read_exactly_from_the_header() {
+        assert_eq!(wav_duration_ms(&wav_header(32_000)), Some(1_000));
+        assert_eq!(wav_duration_ms(&wav_header(16_000)), Some(500));
+        assert_eq!(wav_duration_ms(&wav_header(0)), Some(0));
+    }
+
+    /// Nothing is guessed, and nothing panics on hostile input: a truncated
+    /// or non-WAV blob yields `None`, and the instance still materialises.
+    #[test]
+    fn a_non_wav_or_truncated_blob_reports_no_duration() {
+        assert_eq!(wav_duration_ms(b""), None);
+        assert_eq!(wav_duration_ms(b"RIFF"), None);
+        assert_eq!(wav_duration_ms(b"ID3\x04\x00\x00"), None);
+        // A RIFF/WAVE whose chunk table is cut off mid-header.
+        let truncated = &wav_header(32_000)[..20];
+        assert_eq!(wav_duration_ms(truncated), None);
+        // A declared data size far beyond the buffer must not be believed
+        // (the walk runs off the end and the `data` chunk is never read).
+        let mut lying = wav_header(0);
+        let n = lying.len();
+        lying[n - 4..].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(wav_duration_ms(&lying), None);
+    }
+
+    #[test]
+    fn codec_label_normalises_the_mime_subtype() {
+        assert_eq!(codec_label("audio/wav").as_deref(), Some("wav"));
+        assert_eq!(codec_label("audio/x-wav").as_deref(), Some("wav"));
+        assert_eq!(codec_label("audio/vnd.wave").as_deref(), Some("wav"));
+        assert_eq!(codec_label("audio/mpeg").as_deref(), Some("mpeg"));
+        assert_eq!(
+            codec_label("audio/mp4; codecs=mp4a.40.2").as_deref(),
+            Some("mp4")
+        );
+        assert_eq!(codec_label("audio").as_deref(), None);
+    }
+
+    /// The retain-only contract: audio succeeds with no text and no chunks,
+    /// and the extractor claims audio and nothing else.
+    #[tokio::test]
+    async fn retained_media_succeeds_with_no_text_and_no_chunks() {
+        let ex = RetainedMediaExtractor;
+        assert!(ex.accepts("audio/mpeg"));
+        assert!(ex.accepts("audio/anything-new"));
+        assert!(!ex.accepts("video/mp4"), "video is not claimed");
+        assert!(
+            !ex.accepts("application/pdf"),
+            "pdf keeps its own extractor"
+        );
+
+        let bytes = wav_header(32_000);
+        let r = ex
+            .extract(&bytes, "audio/wav", &ExtractConfig::default())
+            .await
+            .expect("retain-only never fails");
+        assert!(r.content.is_empty(), "escurel does not transcribe");
+        assert!(r.chunks.is_empty());
+        assert_eq!(
+            r.metadata.media,
+            Some(MediaMetadata {
+                bytes: bytes.len() as u64,
+                codec: Some("wav".to_owned()),
+                duration_ms: Some(1_000),
+            })
+        );
     }
 }

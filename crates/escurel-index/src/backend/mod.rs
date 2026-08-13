@@ -53,16 +53,17 @@ use crate::validate::Issue;
 use crate::{Indexer, IndexerError};
 
 pub use binding::{
-    BackendBinding, DocumentBinding, RemoteBinding, RemoteKind, RemoteOp, SqlConnector,
-    SqlViewBinding,
+    BackendBinding, DocumentBinding, MimeClaim, RemoteBinding, RemoteKind, RemoteOp, SqlConnector,
+    SqlViewBinding, mime_claim,
 };
 #[cfg(feature = "kreuzberg")]
 pub use document::KreuzbergExtractor;
 pub use document::{
     Chunk, ChunkConfig, ContextualizeMode, DeterministicProcessor, DocMetadata,
     DocumentIngestWorker, DocumentProcessor, ExtractConfig, ExtractError, ExtractionResult,
-    Extractor, IngestOutcome, NullExtractor, OcrPolicy, PlainTextExtractor, chunk_text,
-    contextualized_chunks, heading_path_at, structural_context_prefix,
+    Extractor, IngestOutcome, MediaMetadata, NullExtractor, OcrPolicy, PlainTextExtractor,
+    RetainedMediaExtractor, chunk_text, contextualized_chunks, heading_path_at,
+    structural_context_prefix,
 };
 pub use markdown::MarkdownBackend;
 pub use remote::{RemoteError, fill_template, json_path_get, resolve_projection};
@@ -414,24 +415,31 @@ impl Indexer {
     }
 
     /// The document skill whose `accepts:` list handles `mime` (REQ-DOC-06).
-    /// Deterministic: an exact MIME match wins; returns the first such skill
-    /// by id order. `None` ⇒ no handler (the caller parks with
-    /// `no_handler_skill` and retains the inbox blob).
+    ///
+    /// Deterministic and two-tier: a skill claiming the MIME **exactly**
+    /// always beats one claiming it through a type wildcard (`audio/*`,
+    /// GH #356); within a tier the first skill by id order wins. That
+    /// ordering is what lets an operator add a broad catch-all collection
+    /// without diverting uploads away from the narrow skills that named
+    /// their MIME.
+    ///
+    /// `None` ⇒ no handler (the caller parks with `no_handler_skill` and
+    /// retains the inbox blob).
     pub async fn document_skill_for_mime(
         &self,
         mime: &str,
     ) -> Result<Option<String>, IndexerError> {
-        let mut matches: Vec<String> = Vec::new();
+        let mut matches: Vec<(binding::MimeClaim, String)> = Vec::new();
         for skill in self.list_skills().await? {
             if skill.backend.kind == BackendKind::Document
                 && let Some(doc) = &skill.backend.document
-                && doc.accepts.iter().any(|m| m == mime)
+                && let Some(claim) = binding::mime_claim(&doc.accepts, mime)
             {
-                matches.push(skill.id);
+                matches.push((claim, skill.id));
             }
         }
         matches.sort();
-        Ok(matches.into_iter().next())
+        Ok(matches.into_iter().next().map(|(_, id)| id))
     }
 
     /// The backend a skill declares, parsed from its `backend:` block

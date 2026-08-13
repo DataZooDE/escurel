@@ -118,7 +118,7 @@ Over a long-lived live-editing session the `crdt_ops` table grows.
 Safe to run any time; it never touches ops newer than the last
 snapshot.
 
-### Document ingestion (PDF/DOCX/text)
+### Document ingestion (PDF/DOCX/text/audio)
 
 Document-backed instances are created by uploading a file to the
 authenticated `POST /ingest/upload` (`{content_type, bytes_b64, title?}`) or
@@ -128,9 +128,14 @@ default server build ships the in-process **kreuzberg** extractor
 (PDF/DOCX/PPTX/XLSX); `text/*` needs no native deps. Build
 `--no-default-features` for a born-digital-text-only server (kreuzberg is the
 `kreuzberg` Cargo feature, on by default; it requires rustc ≥ 1.91 and bundles
-pdfium). A MIME no document skill `accepts:` parks the upload with
-`no_handler_skill` (the inbox blob is retained, not lost); an extractor failure
-marks the instance `extraction_failed` and likewise retains the blob. Blobs are
+pdfium). A skill's `accepts:` list takes exact MIMEs and type wildcards (`audio/*`);
+an exact claim outranks a wildcard one. A MIME no document skill `accepts:`
+parks the upload with `no_handler_skill` (the inbox blob is retained, not
+lost); an extractor failure marks the instance `extraction_failed` and
+likewise retains the blob. `audio/*` is **retained, not extracted** — escurel
+does not transcribe, so a recording materialises `ok` with zero chunks and
+`backend_ref.extracted.{bytes,codec,duration_ms}`; the transcript is filed
+separately by the caller as its own instance, linked to the recording. Blobs are
 content-addressed and counted against the tenant's blob quota; re-ingesting
 identical bytes is idempotent. To re-derive chunks after an extractor upgrade,
 `Rebuild` re-extracts from the retained blob.

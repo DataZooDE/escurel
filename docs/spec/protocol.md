@@ -1001,6 +1001,12 @@ backend:
   lead_chunks: 8                           # optional; chunk lead expand returns (default 8)
 ```
 
+An `accepts:` entry is an exact MIME or a **type wildcard** (`audio/*`),
+claiming every subtype of that type. `*/*` is not a wildcard — an unhandled
+MIME must still park rather than be swallowed. An exact claim always beats a
+wildcard one, so a broad collection cannot divert an upload from a skill that
+named the MIME; within a tier the first skill by id order wins.
+
 Ingestion is **event-driven**, deposited-before-processed (an upload is never
 lost), and runs the extractor off the per-tenant write lock:
 
@@ -1017,9 +1023,20 @@ lost), and runs the extractor off the per-tenant write lock:
    blob is canonical (content-addressed, retained); chunks are derivable
    (`rebuild` re-extracts).
 
+`audio/*` takes the **retain-only** path (CR-4): escurel does not transcribe,
+so the recording materialises as `status: ok` with `chunk_count: 0` — an
+instance with ordinary identity, links, ACL and history whose value is its
+retained bytes, with the transcript supplied separately by the caller as its
+own content. `backend_ref.extracted` then carries `bytes`, `codec` and (where
+the container states it exactly, i.e. WAV) `duration_ms`. Like every other
+document instance, a recording is managed by the ingest pipeline: `update_page`
+against it is refused with `backend_read_only`.
+
 `expand` returns the overlay + the **top-k relevant chunks** (`chunks_total`,
 `chunks_truncated`), never the full text. `backend_ref` carries
-`{ kind: "document", blob_id, extract_engine, chunk_count, status }`. Document
+`{ kind: "document", blob_id, content_type, extract_engine, chunk_count,
+status }` (`content_type` is the MIME the upload declared; `fetch_blob`
+prefers it over sniffing the bytes). Document
 chunks are ordinary `blocks`, so search rides the same ACL-before-fusion path as
 markdown.
 
