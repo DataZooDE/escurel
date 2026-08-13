@@ -8,6 +8,11 @@
 //! or the admin role, fail closed otherwise. **No LLM, no agent, no
 //! probabilistic classifier is ever in the authorisation decision.**
 //!
+//! A skill may instead declare a per-CRUD group `acl:` block, and an
+//! individual **instance** may declare one too ([`instance_acl`], #351).
+//! The instance's block wins per verb, falling through to the skill's and
+//! then to the tenant default — so an absent block changes nothing.
+//!
 //! Owner resolution handles one level of indirection: a direct field value
 //! (e.g. `community_member.credential` → the platform `sub`) is the owner;
 //! a `[[skill::id]]` wikilink (e.g. `event_profile.member`) is resolved to
@@ -115,7 +120,9 @@ impl Indexer {
             return Ok(true);
         }
         let (acl, owner_field) = self.skill_acl(skill).await?.unwrap_or((None, None));
-        let policy = self.resolve_policy(acl, Verb::Read).await?;
+        let policy = self
+            .resolve_policy(&[instance_acl(fm), acl], Verb::Read)
+            .await?;
         let mut effective = self.caller_groups(caller).await?;
         if self.owns(caller, owner_field.as_deref(), fm).await? {
             effective.insert("owner".to_owned());
@@ -175,6 +182,11 @@ impl Indexer {
     /// who owns the incoming content, so the rightful owner can re-create
     /// their own erased instance. Public / no-`owner_field` instances are
     /// never reclaimable and stay admin-write-only.
+    ///
+    /// On the overwrite path the STORED page's own `acl:` block (#351) is
+    /// consulted ahead of the skill's, so a write grant can be scoped to
+    /// one instance — see [`instance_acl`] and the inline note below for
+    /// why the incoming block is deliberately not read.
     pub async fn may_write_instance(
         &self,
         caller: &AclCaller<'_>,
@@ -229,7 +241,14 @@ impl Indexer {
             }
         };
 
-        let policy = self.resolve_policy(acl, verb).await?;
+        // The instance's OWN block scopes the write, but only on the
+        // overwrite path and only from the STORED page: taking it from the
+        // incoming content would let a caller authorise its own write by
+        // shipping a block that grants itself. A CREATE has no stored page
+        // to be scoped by, so it stays skill-grained (the create grant is
+        // "may add instances of this type", which is a skill-level claim).
+        let instance = existing_fm.and_then(instance_acl);
+        let policy = self.resolve_policy(&[instance, acl], verb).await?;
         Ok(intersects(&policy, &effective))
     }
 
@@ -377,17 +396,27 @@ impl Indexer {
             == Some(caller.subject))
     }
 
-    /// The group list that authorises `verb` for a skill, per the §4.5
-    /// resolution order: the skill's declared verb (incl. legacy mapping
-    /// folded in by [`crate::read::SkillInfo`]) → tenant default → an
-    /// empty list (fail-closed; admin still bypasses upstream).
+    /// The group list that authorises `verb`, resolved down `chain` in
+    /// priority order — most specific block first — per the §4.5
+    /// resolution order extended by #351: the INSTANCE's own `acl:` block
+    /// → the skill's declared verb (incl. legacy mapping folded in by
+    /// [`crate::read::SkillInfo`]) → tenant default → an empty list
+    /// (fail-closed; admin still bypasses upstream).
+    ///
+    /// Resolution is **per verb**, exactly as it already is between skill
+    /// and tenant default: an instance block that declares only `read:`
+    /// narrows reads and leaves `update`/`create` falling through to the
+    /// skill. That is what makes an absent block a no-op and keeps every
+    /// pre-#351 page behaving identically.
     async fn resolve_policy(
         &self,
-        acl: Option<AclPolicy>,
+        chain: &[Option<AclPolicy>],
         verb: Verb,
     ) -> Result<Vec<String>, IndexerError> {
-        if let Some(groups) = acl.as_ref().and_then(|p| policy_verb(p, verb)) {
-            return Ok(groups.clone());
+        for acl in chain {
+            if let Some(groups) = acl.as_ref().and_then(|p| policy_verb(p, verb)) {
+                return Ok(groups.clone());
+            }
         }
         let defaults = self.tenant_acl_defaults().await?;
         Ok(policy_verb(&defaults, verb).cloned().unwrap_or_default())
@@ -452,6 +481,20 @@ impl Indexer {
         // Direct value (e.g. community_member.credential) is the owner sub.
         Ok(Some(raw.to_owned()))
     }
+}
+
+/// The `acl:` block an INSTANCE declares in its own frontmatter (#351),
+/// or `None` when it declares none — which is every page authored before
+/// this existed, and the reason the change is a no-op for them.
+///
+/// Group ACL v1 put the block on the *skill*, so a group grant covered
+/// every instance of that skill and only `owner` was instance-grained.
+/// An instance-level block is what lets two records of one shared type be
+/// readable by two different teams — the consultancy/account shape, where
+/// the unit of access is the engagement and not the author. The frontmatter
+/// already round-tripped this key; it was simply never consulted.
+fn instance_acl(fm: &Value) -> Option<AclPolicy> {
+    crate::read::parse_named_acl(fm, "acl")
 }
 
 /// Pure allow-list union check: does the caller's effective group set

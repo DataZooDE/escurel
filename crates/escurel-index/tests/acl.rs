@@ -196,24 +196,96 @@ async fn neither_acl_nor_visibility_leaves_policy_unset() {
 }
 
 #[tokio::test]
-async fn instance_level_acl_block_is_ignored() {
-    // R5: an `acl:` block on a `type: instance` page is reserved for
-    // phase 2 — parsed-but-not-honoured in v1. A public talk instance
-    // carrying a deny-all `acl:` stays readable per its SKILL policy.
+async fn instance_level_acl_block_overrides_the_skill() {
+    // #351 (was R5, "parsed-but-not-honoured in v1"): an `acl:` block on a
+    // `type: instance` page is now HONOURED and wins over the skill's. A
+    // public talk carrying a deny-all `acl:` is no longer readable.
+    //
+    // Positive controls in the same test: a sibling talk with NO block
+    // stays public (so this is an override, not a blanket lockout), and
+    // admin still bypasses.
     let h = fresh_harness();
     const INST_TALK_WITH_ACL: (&str, &str) = (
         "markdown/instances/talk/locked.md",
         "---\ntype: instance\nskill: talk\nid: locked\nevent: ki-gipfel\n\
          acl:\n  read: []\n---\n# Locked talk\n",
     );
-    seed(&h, &[SKILL_TALK, INST_TALK_WITH_ACL]).await;
-    let talk = fm(&h, "talk", "locked").await;
+    seed(&h, &[SKILL_TALK, INST_TALK, INST_TALK_WITH_ACL]).await;
+    let locked = fm(&h, "talk", "locked").await;
     assert!(
-        h.indexer
-            .may_read_instance(&member(BOB), "talk", &talk)
+        !h.indexer
+            .may_read_instance(&member(BOB), "talk", &locked)
             .await
             .unwrap(),
-        "instance-level acl: must be ignored in v1 — skill policy (public) wins"
+        "an instance's own deny-all acl: must beat the skill's public read"
+    );
+
+    let open = fm(&h, "talk", "keynote").await;
+    assert!(
+        h.indexer
+            .may_read_instance(&member(BOB), "talk", &open)
+            .await
+            .unwrap(),
+        "a sibling instance with no acl: block is untouched (fall-through)"
+    );
+
+    let admin = AclCaller {
+        subject: BOB,
+        is_admin: true,
+        token_groups: &[],
+    };
+    assert!(
+        h.indexer
+            .may_read_instance(&admin, "talk", &locked)
+            .await
+            .unwrap(),
+        "admin still bypasses an instance-level block"
+    );
+}
+
+#[tokio::test]
+async fn instance_level_acl_resolves_per_verb() {
+    // The block is consulted verb by verb, exactly as skill → tenant
+    // default already is: a block declaring only `read:` narrows reads and
+    // leaves every other verb falling through to the skill. That per-verb
+    // fall-through is what makes an absent verb — and an absent block — a
+    // no-op for every page authored before #351.
+    let h = fresh_harness();
+    const SKILL_NOTE: (&str, &str) = (
+        "markdown/skills/note.md",
+        "---\ntype: skill\nid: note\ndescription: A note.\n\
+         acl:\n  read: [team-a, team-b]\n  update: [team-a, team-b]\n---\n# note\n",
+    );
+    const INST_NOTE: (&str, &str) = (
+        "markdown/instances/note/n1.md",
+        "---\ntype: instance\nskill: note\nid: n1\n\
+         acl:\n  read: [team-a]\n---\n# n1\n",
+    );
+    seed(&h, &[SKILL_NOTE, INST_NOTE]).await;
+    let note = fm(&h, "note", "n1").await;
+    let a = ["team-a".to_owned()];
+    let b = ["team-b".to_owned()];
+
+    assert!(
+        h.indexer
+            .may_read_instance(&member_with_groups(ALICE, &a), "note", &note)
+            .await
+            .unwrap(),
+        "the instance's read grant admits team-a"
+    );
+    assert!(
+        !h.indexer
+            .may_read_instance(&member_with_groups(BOB, &b), "note", &note)
+            .await
+            .unwrap(),
+        "…and narrows the skill's read away from team-b"
+    );
+    assert!(
+        h.indexer
+            .may_write_instance(&member_with_groups(BOB, &b), "note", Some(&note), &note)
+            .await
+            .unwrap(),
+        "update is NOT declared on the instance, so it falls through to the skill"
     );
 }
 
