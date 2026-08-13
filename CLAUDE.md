@@ -250,9 +250,10 @@ of it `target/` dirs inside abandoned agent worktrees. Treat disk as a
 resource you are responsible for, the same way you treat a green test
 suite.
 
-**Why it blows up.** The workspace compiles ~287 test/bin executables
+**Why it blows up.** The workspace compiled ~287 test/bin executables
 (172 `tests/*.rs` files, each its own crate + binary — `escurel-server`
-alone has 62). Each is statically linked, so under the old default
+alone had 62; see the consolidation note at the end of this section for
+where that stands now). Each is statically linked, so under the old default
 `debug = 2` each embedded a full copy of the dependency graph's DWARF:
 a sampled test binary was **704 MB, of which 81% was `.debug_*`**. One
 built worktree ≈ 78 GB. The agent fan-out then multiplied that by the
@@ -298,11 +299,28 @@ dev-debug`, then `cargo clean --profile dev-debug` when you're done.
   right shape; it also means `git worktree remove` frees the cache
   atomically.
 
-If disk is still tight after all of the above, the next lever is
-structural: consolidate each crate's `tests/*.rs` into a single
-integration binary with modules. `escurel-server`'s 62 test binaries
-would become 1. That is a real refactor, not housekeeping — don't do
-it casually, but it is where the remaining order-of-magnitude lives.
+**The two big crates are already consolidated.** `escurel-server` and
+`escurel-index` no longer build one binary per test file: their tests
+live in `tests/suite/` and are declared as modules from
+`tests/suite/main.rs`, which Cargo builds as a single target named
+`suite`. 120 linked executables became 4. **If you add a test file to
+either crate, put it in `tests/suite/` and add its `mod` line** — a
+file that is not listed there is silently never compiled, and nothing
+warns you.
+
+The layout matters: it must be `tests/suite/main.rs`, not
+`tests/suite.rs`. A test target's root file resolves `mod x;` against
+its *own* directory, so `tests/suite.rs` would look for `tests/x.rs`.
+
+Two `escurel-server` files stay standalone on purpose —
+`tests/logs_json.rs` and `tests/telemetry_filter.rs` both assert on the
+process-global `tracing` subscriber and are mutually exclusive inside
+one process. See the header of
+`crates/escurel-server/tests/suite/main.rs`.
+
+The remaining crates are deliberately untouched: the largest is
+`escurel-runner` at 18 files, and below that the churn plus the lost
+process isolation is not worth the link time saved.
 
 See [`docs/notes/discovered/2026-08-02-cargo-target-disk-blowup.md`](docs/notes/discovered/2026-08-02-cargo-target-disk-blowup.md).
 
