@@ -84,6 +84,7 @@
 //! | `ESCUREL_SNAPSHOT_REFRESH_SECS` | `30` | a reader's background lake-poll interval (seconds); see `escurel_server::snapshot_refresh::RefreshTask` |
 //! | `ESCUREL_SNAPSHOT_PUBLISH_SECS` | unset | a writer's optional periodic publish interval (seconds); an explicit `0` disables it (manual-only, via the `publish_snapshot` admin tool). Unset: disabled, UNLESS chat/events are lake-backed (`ESCUREL_CHAT_BACKEND` / `ESCUREL_EVENTS_BACKEND` = `ducklake`), where the task doubles as append-table compaction and unset defaults to `300` — see `resolve_publish_secs` / `escurel_server::snapshot_publish::PublishTask` |
 //! | `ESCUREL_SNAPSHOT_KEEP` | `5` | how many DuckLake snapshots to retain after a successful publish; the GC pass never touches the current snapshot |
+//! | `ESCUREL_WRITER_LEASE` | `on` | ducklake-writer single-writer boot guard (#371): a catalog advisory lock refused when another live writer holds it; `off` disables — only if you guarantee a single writer yourself |
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -97,7 +98,7 @@ use escurel_embed::{Embedder, ReloadableEmbedder, ZeroEmbedder};
 use escurel_index::backend::ContextualizeMode;
 use escurel_index::snapshot::{
     AttachRetrievalFn, IndexStore, LakeConfig, ObjectStoreSecret, SingleFileStore, SnapshotError,
-    adopt_lake,
+    WriterLease, adopt_lake,
 };
 use escurel_index::{Indexer, IndexerHandle};
 use escurel_quota::{QuotaConfig, QuotaManager};
@@ -298,6 +299,22 @@ pub enum ConfigError {
     },
     #[error("{var} is required when ESCUREL_INDEX_BACKEND=ducklake")]
     MissingLakeField { var: &'static str },
+    #[error(
+        "another live escurel writer already holds the single-writer lease on this \
+         DuckLake catalog — ESCUREL_ROLE=writer is single-instance: two concurrent \
+         writers each publish their own snapshot of the whole lake and prune parquet \
+         the other just committed, silently losing acknowledged writes (#371). Run \
+         one writer + N readers. If the holder is a stale session, end it; to bypass \
+         the guard at your own risk, set ESCUREL_WRITER_LEASE=off"
+    )]
+    WriterLeaseHeld,
+    #[error(
+        "acquiring the single-writer lease on the DuckLake catalog failed: {reason}. \
+         The lease client speaks plain TCP (no TLS); if this catalog requires TLS, \
+         set ESCUREL_WRITER_LEASE=off to skip the guard — and guarantee a single \
+         writer yourself (#371)"
+    )]
+    WriterLeaseAcquire { reason: String },
     #[error(
         "ESCUREL_EMBEDDING_PROVIDER={provider} requires the `{feature}` cargo feature; \
          this binary was built without it"
@@ -669,6 +686,13 @@ pub struct EscurelConfig {
     /// default `5`). `0` disables the GC pass a successful publish runs
     /// afterwards.
     pub snapshot_keep: u32,
+    /// The single-writer boot guard (`ESCUREL_WRITER_LEASE`, default on;
+    /// `off` disables). A ducklake WRITER against a Postgres catalog
+    /// takes a catalog advisory lock at boot and refuses to start when
+    /// another live writer holds it — two writers silently lose
+    /// acknowledged writes (#371). Ignored by readers, the single-file
+    /// backend, and non-Postgres (dev/test) catalogs.
+    pub writer_lease: bool,
 }
 
 /// Source of an environment lookup — abstracted so `from_env` is
@@ -1221,6 +1245,15 @@ impl EscurelConfig {
             })?,
             None => 5,
         };
+        // Default ON: the guarded topology (two writers, one catalog) is
+        // silent data loss (#371). Only an explicit opt-out disables.
+        let writer_lease = match env.get("ESCUREL_WRITER_LEASE") {
+            Some(raw) => !matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "off" | "false" | "0" | "no"
+            ),
+            None => true,
+        };
 
         Ok(Self {
             version,
@@ -1263,6 +1296,7 @@ impl EscurelConfig {
             snapshot_refresh_secs,
             snapshot_publish_secs,
             snapshot_keep,
+            writer_lease,
         })
     }
 }
@@ -1361,6 +1395,13 @@ pub struct BootedServer {
     /// caller must shut it down alongside `handle` on SIGTERM, same as
     /// `refresh_handle`.
     pub publish_handle: Option<crate::snapshot_publish::PublishHandle>,
+    /// The held single-writer lease on the DuckLake catalog (#371).
+    /// `Some` only for `ESCUREL_INDEX_BACKEND=ducklake` +
+    /// `ESCUREL_ROLE=writer` + a Postgres catalog + the guard enabled
+    /// (`ESCUREL_WRITER_LEASE`, default on). Keep it alive for the
+    /// process lifetime: dropping it ends the catalog session and
+    /// releases the advisory lock for a successor.
+    pub writer_lease: Option<WriterLease>,
 }
 
 /// The five backend handles `EscurelConfig::build`'s (index_backend,
@@ -1490,6 +1531,11 @@ impl EscurelConfig {
         // unconditionally — inert (never read) on every non-ducklake-
         // writer boot shape.
         let last_published_epoch = Arc::new(std::sync::Mutex::new(None));
+        // Held single-writer lease (#371); assigned only on the
+        // ducklake-writer + Postgres-catalog boot shape below, carried
+        // out on `BootedServer` so it lives exactly as long as the
+        // process serves writes.
+        let mut writer_lease_guard: Option<WriterLease> = None;
         let (indexer_handle, crdt_backend, reader_mode, refresh_handle, publish_handle): BootIndex =
             match (self.index_backend, self.role) {
                 (IndexBackend::DuckLake, ServerRole::Reader) => {
@@ -1630,6 +1676,29 @@ impl EscurelConfig {
                             "ESCUREL_INDEX_BACKEND=ducklake always carries a LakeConfig \
                          (EscurelConfig::from_env validated this)",
                         );
+
+                        // Single-writer lease (#371): taken BEFORE the
+                        // lake attach, so the losing replica of a
+                        // two-writer misconfiguration never touches the
+                        // catalog as a writer at all. Advisory lock on
+                        // the catalog database, held for the process
+                        // lifetime (`BootedServer::writer_lease`),
+                        // released with the session on stop/crash — the
+                        // Kamal STOP-FIRST redeploy hands over cleanly.
+                        // Postgres catalogs only: a DuckDB-file catalog
+                        // is the single-process dev/test shape and has
+                        // no server to hold a lock on.
+                        if self.writer_lease && lake_cfg.is_pg_catalog() {
+                            match WriterLease::acquire(&lake_cfg.catalog_dsn).await {
+                                Ok(Some(lease)) => writer_lease_guard = Some(lease),
+                                Ok(None) => return Err(ConfigError::WriterLeaseHeld),
+                                Err(e) => {
+                                    return Err(ConfigError::WriterLeaseAcquire {
+                                        reason: e.to_string(),
+                                    });
+                                }
+                            }
+                        }
                         indexer.attach_lake(lake_cfg).await?;
 
                         // Phase B (DuckLake PR 8): the writer ALSO moves
@@ -1838,6 +1907,7 @@ impl EscurelConfig {
             embedder,
             refresh_handle,
             publish_handle,
+            writer_lease: writer_lease_guard,
         })
     }
 
@@ -2280,6 +2350,22 @@ mod tests {
     fn publish_secs_explicit_interval_is_used_verbatim() {
         assert_eq!(resolve_publish_secs(Some(60), true), 60);
         assert_eq!(resolve_publish_secs(Some(60), false), 60);
+    }
+
+    // The single-writer boot guard (#371) defaults ON — the topology it
+    // refuses is silent data loss — and only an explicit opt-out
+    // disables it.
+    #[test]
+    fn writer_lease_defaults_on_and_only_explicit_opt_out_disables() {
+        assert!(cfg_from(&[]).writer_lease, "default is on");
+        assert!(
+            !cfg_from(&[("ESCUREL_WRITER_LEASE", "off")]).writer_lease,
+            "off disables"
+        );
+        assert!(
+            cfg_from(&[("ESCUREL_WRITER_LEASE", "on")]).writer_lease,
+            "explicit on stays on"
+        );
     }
 }
 

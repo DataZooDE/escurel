@@ -64,6 +64,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let handle = booted.handle;
     let refresh_handle = booted.refresh_handle;
     let publish_handle = booted.publish_handle;
+    // The single-writer lease (#371) must outlive every write this
+    // process serves; it drops (releasing the catalog advisory lock for
+    // a successor) only after the drain below.
+    let _writer_lease = booted.writer_lease;
 
     tracing::info!(
         http = %handle.local_addr,

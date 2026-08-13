@@ -307,6 +307,19 @@ latest published snapshot into an in-memory DuckDB at boot and polls for
 new ones every `ESCUREL_SNAPSHOT_REFRESH_SECS` (default 30s), hot-swapping
 the serving `Indexer` with no restart and no torn in-flight requests.
 
+**`ESCUREL_ROLE=writer` is single-instance, and enforced.** Two writers
+against one catalog each publish their own snapshot of the whole lake and
+prune parquet the other just committed — acknowledged writes silently
+disappear over the following minutes (#371). A writer therefore takes a
+**single-writer lease** at boot: a Postgres advisory lock on the catalog
+database, held on a dedicated session for the process lifetime. A second
+writer finding it held fails its boot loudly; the lock releases with the
+holder's session (clean stop or crash alike), so the Kamal STOP-FIRST
+redeploy hands over without operator action. `ESCUREL_WRITER_LEASE=off`
+disables the guard for operators who guarantee a single writer some other
+way (the lease client speaks plain TCP, so a TLS-only catalog needs
+this). HA is one writer + N readers, never N writers.
+
 `pages`/`links`/`blocks` (+ the `group_members`/`external_endpoints`/
 `pack_subscriptions` registries) are the shared corpus mirrored into the
 lake; `external_credentials` never leaves the writer. Three per-user data

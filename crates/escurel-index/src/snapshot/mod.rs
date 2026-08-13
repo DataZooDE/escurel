@@ -18,6 +18,7 @@ mod append_lake;
 mod chat_pg;
 mod events_pg;
 mod lake;
+mod lease;
 mod store;
 
 use std::sync::Arc;
@@ -42,6 +43,7 @@ pub use lake::{
     LakeConfig, ObjectStoreSecret, adopt_lake, attach_lake, attach_sql, gc_lake_snapshots,
     install_load_sql, latest_lake_snapshot_id, publish_lake, secret_sql,
 };
+pub use lease::WriterLease;
 pub use store::{AttachRetrievalFn, SingleFileStore};
 
 /// Errors surfaced by an [`IndexStore`] backend.

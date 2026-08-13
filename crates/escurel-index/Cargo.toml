@@ -71,6 +71,10 @@ serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync"] }
+# The single-writer lease (#371): a Postgres advisory lock held on a
+# dedicated session against the DuckLake catalog. Plain TCP client —
+# the catalog DSN escurel already attaches with.
+tokio-postgres = "0.7"
 # ULID for server-generated chat_messages.msg_id when the caller
 # omits it. Crockford base32, 26 chars, lexicographically sortable
 # by encoded timestamp.
