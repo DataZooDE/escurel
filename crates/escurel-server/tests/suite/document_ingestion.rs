@@ -93,6 +93,147 @@ async fn post_ingest(p: &EscurelProcess, token: &str, blob_id: &str, ct: &str) -
         .unwrap()
 }
 
+async fn post_ingest_titled(
+    p: &EscurelProcess,
+    token: &str,
+    blob_id: &str,
+    ct: &str,
+    title: &str,
+) -> Value {
+    reqwest::Client::new()
+        .post(format!("{}/ingest", p.base_url()))
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "blob_id": blob_id, "content_type": ct, "title": title }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn ingest_title_names_the_materialised_instance() {
+    // GH #369: `/ingest` accepts a `title`, records it on the ingest Event and
+    // must also forward it to the materialised instance — as the overlay's
+    // `# <title>` heading AND as a projected `title` frontmatter field, since
+    // frontmatter is what `list_instances` and `search` surface to a person.
+    let s = setup().await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let body = "Quarterly logistics notes for the northern corridor.";
+    let blob = s
+        .store
+        .put_inbox_blob(TENANT, Bytes::from_static(body.as_bytes()), None)
+        .await
+        .unwrap();
+
+    let resp = post_ingest_titled(
+        &s.process,
+        &token,
+        blob.as_str(),
+        "text/plain",
+        "Northern Corridor Review",
+    )
+    .await;
+    assert_eq!(resp["status"], "materialised", "resp: {resp}");
+    let page_id = resp["page_id"].as_str().expect("page_id").to_owned();
+
+    // The overlay heading is the caller's title, not the blob digest.
+    let md = s
+        .indexer
+        .read_page_markdown(&page_id)
+        .await
+        .unwrap()
+        .expect("overlay markdown");
+    assert!(
+        md.contains("\n# Northern Corridor Review\n"),
+        "heading must be the caller's title: {md}"
+    );
+
+    // …and it is projected as frontmatter, so it is visible to the read tools.
+    let ex = call(&s.process, &token, "expand", json!({ "page_id": page_id })).await;
+    assert_eq!(
+        ex["result"]["structuredContent"]["frontmatter"]["title"], "Northern Corridor Review",
+        "title must be a projected frontmatter field: {ex}"
+    );
+
+    // list_instances is the surface a person browses; it projects frontmatter.
+    let li = call(
+        &s.process,
+        &token,
+        "list_instances",
+        json!({ "skill_id": "memo" }),
+    )
+    .await;
+    let inst = li["result"]["structuredContent"]["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["page_id"] == page_id.as_str())
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        inst["frontmatter"]["title"], "Northern Corridor Review",
+        "list_instances must surface the title: {li}"
+    );
+
+    // Additive, not a move: the immutable ingest Event still records it.
+    let inbox = call(&s.process, &token, "list_inbox", json!({})).await;
+    let events = inbox["result"]["structuredContent"]["events"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        events
+            .iter()
+            .any(|e| e["title"] == "Northern Corridor Review"),
+        "ingest event must keep recording the title: {inbox}"
+    );
+
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
+async fn ingest_without_title_still_names_the_instance_from_the_digest() {
+    // Positive control for GH #369: backward compatibility is the load-bearing
+    // property. No title → the heading stays `doc-<hex12>` and no `title`
+    // frontmatter key appears.
+    let s = setup().await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let body = "An untitled memo body, ingested exactly as it was before.";
+    let blob = s
+        .store
+        .put_inbox_blob(TENANT, Bytes::from_static(body.as_bytes()), None)
+        .await
+        .unwrap();
+
+    let resp = post_ingest(&s.process, &token, blob.as_str(), "text/plain").await;
+    assert_eq!(resp["status"], "materialised", "resp: {resp}");
+    let page_id = resp["page_id"].as_str().expect("page_id").to_owned();
+
+    let instance_id = format!("doc-{}", &blob.hex()[..12]);
+    let md = s
+        .indexer
+        .read_page_markdown(&page_id)
+        .await
+        .unwrap()
+        .expect("overlay markdown");
+    assert!(
+        md.contains(&format!("\n# {instance_id}\n")),
+        "untitled upload must keep the digest heading `{instance_id}`: {md}"
+    );
+
+    let ex = call(&s.process, &token, "expand", json!({ "page_id": page_id })).await;
+    let fm = &ex["result"]["structuredContent"]["frontmatter"];
+    assert_eq!(fm["id"], instance_id.as_str(), "{ex}");
+    assert!(
+        fm.get("title").is_none_or(Value::is_null),
+        "no title supplied → no title frontmatter key: {ex}"
+    );
+
+    s.process.shutdown().await;
+}
+
 #[tokio::test]
 async fn ingest_text_end_to_end_materialises_searchable_instance() {
     let s = setup().await;
