@@ -259,6 +259,14 @@ seeded snapshot history now honour the time cut.
   and swept by `compact_lanes` are gone, so this is the retained tail of
   the history. Returns no op bytes.
 
+  Gated on the page's own read ACL (`may_read_instance`, the predicate
+  `expand`/`search`/`list_instances` share): authorship is metadata about
+  the page, and in a shared tenant "who touched this instance" is exactly
+  what an instance `acl:` block exists to keep inside its engagement.
+  Denial is **absence, not error** — a denied caller gets the empty
+  history a page with no ops returns, so the refusal is not an existence
+  oracle.
+
   The page-level counterpart is `expand`'s `page.last_written_by`: the
   verified principal behind the page's most recent whole-page write.
   `null` on an `as_of` read — a CRDT snapshot stores document bytes, not

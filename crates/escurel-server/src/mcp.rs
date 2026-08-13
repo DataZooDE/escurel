@@ -700,9 +700,6 @@ async fn dispatch_tools_call(
             )
             .await;
         }
-        "list_op_authors" => {
-            return tool_list_op_authors(state.crdt_backend.as_ref(), params.arguments).await;
-        }
         "close_session" => {
             return tool_close_session(
                 state,
@@ -876,6 +873,15 @@ async fn dispatch_tools_call(
         "list_inbox" => tool_list_inbox(indexer, caller, state.event_acl, params.arguments).await,
         "list_events" => tool_list_events(indexer, caller, state.event_acl, params.arguments).await,
         "list_snapshots" => tool_list_snapshots(indexer, params.arguments).await,
+        "list_op_authors" => {
+            tool_list_op_authors(
+                state.crdt_backend.as_ref(),
+                indexer,
+                caller,
+                params.arguments,
+            )
+            .await
+        }
         "assign_event" => {
             tool_assign_event(indexer, caller, state.event_acl, params.arguments).await
         }
@@ -1127,12 +1133,36 @@ struct ListOpAuthorsArgs {
 /// this, and when", which is the audit question, without republishing the
 /// document's edit payloads to anyone who can name the page.
 ///
-/// Routed with the session tools rather than the indexer tools because the
-/// ops live wherever the CRDT backend points (the local `crdt_ops` table, or
-/// the shared attached-Postgres one), which is exactly what the backend
-/// knows and the indexer does not.
+/// The ops themselves live wherever the CRDT backend points (the local
+/// `crdt_ops` table, or the shared attached-Postgres one) — which the backend
+/// knows and the indexer does not. But the ACL decision needs the indexed
+/// page, so this routes with the indexer tools and takes both. On a gateway
+/// with no indexer the tool is unavailable rather than ungated: there is
+/// nothing to make the decision against, and failing closed is the only
+/// answer that cannot leak.
+///
+/// ## The gate
+///
+/// Authorship is metadata ABOUT the page, so it follows the page's own read
+/// ACL — `may_read_instance`, the same predicate `expand` / `search` /
+/// `list_instances` consult, rather than a second notion of "may read" that
+/// could drift from them. Skill pages are the public catalogue and are never
+/// gated, exactly as in `tool_expand`.
+///
+/// Denial is **absence, not error**: a refusal that said "this page exists
+/// and you may not see it" would be an existence oracle, so a denied caller
+/// gets the empty history a page with no ops returns. The refusal is
+/// therefore byte-identical to the truthful answer for a page that is not
+/// there — which is the property `list_op_authors_denial_reads_as_absence…`
+/// pins.
+///
+/// (`open_session` on an arbitrary page is NOT gated today. That is
+/// pre-existing and belongs to a deliberate pass over the whole session-tool
+/// surface; an existing hole is not a licence to add another.)
 async fn tool_list_op_authors(
     backend: Option<&Arc<dyn CrdtBackend>>,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListOpAuthorsArgs = parse_args(args, "list_op_authors")?;
@@ -1141,10 +1171,28 @@ async fn tool_list_op_authors(
             "live CRDT mode not enabled on this server",
         ));
     };
-    let authors = backend
-        .op_authors(&a.page_id)
+    // A page_id with no indexed page has no ACL to consult and nothing to
+    // protect — a bare CRDT page id, or a page that genuinely does not
+    // exist. Both fall through to the empty history below.
+    let readable = match indexer
+        .expand(&a.page_id, None, None)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("list_op_authors: {e}")))?;
+        .map_err(|e| JsonRpcError::internal(format!("list_op_authors acl: {e}")))?
+    {
+        Some(e) if e.page.page_type == PageType::Instance => indexer
+            .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_op_authors acl: {e}")))?,
+        _ => true,
+    };
+    let authors = if readable {
+        backend
+            .op_authors(&a.page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_op_authors: {e}")))?
+    } else {
+        Vec::new()
+    };
     Ok(json!({
         "page_id": a.page_id,
         "ops": authors.iter().map(|o| json!({

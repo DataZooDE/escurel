@@ -51,6 +51,84 @@ async fn start() -> EscurelProcess {
     .await
 }
 
+// --- fixtures for the `list_op_authors` read ACL -------------------------
+//
+// Two consultants on two engagements, sharing one note type whose instances
+// carry their own `acl:` block — the #351 shape, reused so the gate on the
+// new tool is the same decision the read verbs already make rather than a
+// second, parallel notion of "may read".
+
+const CAROL: &str = "consultant:carol";
+const DAVE: &str = "consultant:dave";
+const HOFFMANN_GROUP: &str = "engagement-hoffmann";
+const ALPINA_GROUP: &str = "engagement-alpina";
+
+const ACL_NOTE_SKILL: &str = r#"---
+type: skill
+id: customer_note
+description: A note filed against an engagement.
+acl:
+  read: [engagement-hoffmann, engagement-alpina]
+  update: [engagement-hoffmann, engagement-alpina]
+---
+# customer_note
+"#;
+
+const ALPINA_NOTE: &str = r#"---
+type: instance
+skill: customer_note
+id: alpina-1
+acl:
+  read: [engagement-alpina]
+  update: [engagement-alpina]
+---
+# Alpina
+Zwischenbericht: die Verlaengerung ist gefaehrdet.
+"#;
+
+const ALPINA_NOTE_PAGE: &str = "markdown/instances/customer_note/alpina-1.md";
+const NO_SUCH_PAGE: &str = "markdown/instances/customer_note/no-such-note.md";
+
+async fn start_acl() -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            live_crdt: true,
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("customer_note", ACL_NOTE_SKILL)
+                .instance("customer_note", "alpina-1", ALPINA_NOTE)
+                .done(),
+        ),
+    })
+    .await
+}
+
+/// Apply one op to `page` as `token`, so the page has an authorship history
+/// to leak.
+async fn seed_one_op(p: &EscurelProcess, token: &str, page: &str) {
+    let opened = call(p, token, "open_session", json!({ "page_id": page })).await;
+    let session = opened["result"]["structuredContent"]["session"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let mut peer = Peer::new();
+    let applied = call(
+        p,
+        token,
+        "apply_op",
+        json!({ "session": session, "op": peer.insert("in-room edit") }),
+    )
+    .await;
+    assert!(
+        applied.get("error").is_none(),
+        "seed op must apply: {applied}"
+    );
+}
+
 async fn call(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value {
     let resp = reqwest::Client::new()
         .post(p.mcp_url())
@@ -330,6 +408,105 @@ async fn caller_supplied_op_principal_is_ignored() {
         principals,
         vec![ALICE, BOB],
         "a forged `principal` must be overwritten by the verified subject: {authors}"
+    );
+
+    p.shutdown().await;
+}
+
+// ------------------------------------------------- list_op_authors ACL ---
+
+/// `list_op_authors` must not enumerate who edited a page the caller may not
+/// read. Authorship is metadata about the page, and in a shared tenant
+/// (heron HLD C7) "which consultant touched the Alpina note" is exactly the
+/// kind of fact the instance `acl:` block exists to keep inside the
+/// engagement — the same leak class as #362 / #363.
+///
+/// The positive control is in the same test on purpose: Alpina's own
+/// consultant MUST still get the authorship back, or a gate that returns
+/// nothing to everybody would pass.
+#[tokio::test]
+async fn list_op_authors_does_not_leak_authorship_of_an_unreadable_page() {
+    let p = start_acl().await;
+    let dave_t = p.mint_token_with_groups(TENANT, DAVE, &[ALPINA_GROUP], false);
+    let carol_t = p.mint_token_with_groups(TENANT, CAROL, &[HOFFMANN_GROUP], false);
+
+    seed_one_op(&p, &dave_t, ALPINA_NOTE_PAGE).await;
+
+    // Positive control: the engagement's own consultant reads the history.
+    let mine = call_ok(
+        &p,
+        &dave_t,
+        "list_op_authors",
+        json!({ "page_id": ALPINA_NOTE_PAGE }),
+    )
+    .await;
+    let principals: Vec<&str> = mine["ops"]
+        .as_array()
+        .expect("ops array")
+        .iter()
+        .map(|o| o["principal"].as_str().unwrap_or("<null>"))
+        .collect();
+    assert_eq!(
+        principals,
+        vec![DAVE],
+        "alpina's consultant must see her own engagement's authorship: {mine}"
+    );
+
+    // The leak: a consultant on the OTHER engagement must not.
+    let theirs = call_ok(
+        &p,
+        &carol_t,
+        "list_op_authors",
+        json!({ "page_id": ALPINA_NOTE_PAGE }),
+    )
+    .await;
+    assert_eq!(
+        theirs["ops"].as_array().map(Vec::len),
+        Some(0),
+        "carol must not learn who edited alpina's note: {theirs}"
+    );
+
+    p.shutdown().await;
+}
+
+/// Denial is **absence, not error**: refusing loudly would turn the tool into
+/// an existence oracle — "this page exists and you may not see it" is itself
+/// the disclosure. The denied answer must be byte-identical to the answer for
+/// a page that is not there at all.
+#[tokio::test]
+async fn list_op_authors_denial_reads_as_absence_not_as_an_error() {
+    let p = start_acl().await;
+    let dave_t = p.mint_token_with_groups(TENANT, DAVE, &[ALPINA_GROUP], false);
+    let carol_t = p.mint_token_with_groups(TENANT, CAROL, &[HOFFMANN_GROUP], false);
+
+    seed_one_op(&p, &dave_t, ALPINA_NOTE_PAGE).await;
+
+    let hidden = call(
+        &p,
+        &carol_t,
+        "list_op_authors",
+        json!({ "page_id": ALPINA_NOTE_PAGE }),
+    )
+    .await;
+    let ghost = call(
+        &p,
+        &carol_t,
+        "list_op_authors",
+        json!({ "page_id": NO_SUCH_PAGE }),
+    )
+    .await;
+
+    assert!(
+        hidden.get("error").is_none(),
+        "a denied listing must not fault: {hidden}"
+    );
+    // Compare with the page_id echo removed — it is the caller's own input
+    // and necessarily differs; everything the SERVER says must match.
+    let strip = |v: &Value| v["result"]["structuredContent"]["ops"].clone();
+    assert_eq!(
+        strip(&hidden),
+        strip(&ghost),
+        "hidden must be indistinguishable from absent: {hidden} vs {ghost}"
     );
 
     p.shutdown().await;

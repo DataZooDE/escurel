@@ -466,7 +466,9 @@ pub(super) fn tools_list_payload() -> Value {
                  the op payload, which identifies a device rather than a person. \
                  `principal` is null for ops applied before the gateway recorded \
                  one. Ops already subsumed by a snapshot and compacted away are \
-                 not listed. Returns no op bytes.",
+                 not listed. Returns no op bytes. Follows the page's own read \
+                 ACL: a page you may not read reports an empty history, \
+                 indistinguishable from one that has none.",
                 json!({
                     "type": "object",
                     "required": ["page_id"],
