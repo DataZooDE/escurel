@@ -282,6 +282,15 @@ async fn record_and_dispatch_ingest(
         },
     };
     let label_skill = handler.clone().unwrap_or_else(|| "ingest".to_owned());
+    // GH #369: the Event consumes `title` (falling back to the blob id), but the
+    // materialised instance needs it too — keep the caller's *own* title, so an
+    // upload without one still falls back to the `doc-<hex12>` instance name
+    // rather than being renamed after the digest string.
+    let doc_title = title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned);
     let event = indexer
         .capture_event(NewEvent {
             event_id: None,
@@ -318,8 +327,16 @@ async fn record_and_dispatch_ingest(
     };
     match handler {
         Some(skill) => {
-            run_document_ingest(indexer, &skill, blob_id, content_type, &event.event_id, subject)
-                .await
+            run_document_ingest(
+                indexer,
+                &skill,
+                blob_id,
+                content_type,
+                &event.event_id,
+                subject,
+                doc_title.as_deref(),
+            )
+            .await
         }
         None => (
             StatusCode::ACCEPTED,
@@ -342,6 +359,7 @@ async fn record_and_dispatch_ingest(
 /// Run the deterministic ingest worker inline: extract+chunk off the write
 /// lock, materialise under a brief lock. v1 uses the born-digital text
 /// processor (kreuzberg PDF/DOCX is gated on the MSRV decision).
+#[allow(clippy::too_many_arguments)]
 async fn run_document_ingest(
     indexer: &std::sync::Arc<Indexer>,
     skill: &str,
@@ -349,6 +367,7 @@ async fn run_document_ingest(
     content_type: &str,
     event_id: &str,
     subject: &str,
+    title: Option<&str>,
 ) -> axum::response::Response {
     use escurel_index::backend::{
         ChunkConfig, DeterministicProcessor, DocumentIngestWorker, ExtractConfig, Extractor,
@@ -437,15 +456,33 @@ async fn run_document_ingest(
     // uploader, and a group-shared skill (`read: [owner, <group>]`) is owned by
     // the uploader but readable by the group. Resolved from the skill's
     // `owner_field`; skipped for skills without one (or an anonymous caller).
-    let extra = match indexer.list_skills().await {
+    //
+    // The caller's `title` (GH #369) rides in the same map: `document_overlay`
+    // uses a `title`/`titel` key for the `# <title>` heading AND writes every
+    // extra key as instance frontmatter, so one insert makes the upload both
+    // readable and findable — `search` and `list_instances` project
+    // frontmatter, and a heading-only title would not reach them.
+    let mut extra_map = serde_json::Map::new();
+    if let Some(t) = title {
+        extra_map.insert("title".to_owned(), json!(t));
+    }
+    let owner_field = match indexer.list_skills().await {
         Ok(skills) => skills
             .into_iter()
             .find(|s| s.id == skill)
             .and_then(|s| s.owner_field)
-            .filter(|_| !subject.is_empty())
-            .map(|field| json!({ field: subject }))
-            .unwrap_or(serde_json::Value::Null),
-        Err(_) => serde_json::Value::Null,
+            .filter(|_| !subject.is_empty()),
+        Err(_) => None,
+    };
+    // Inserted last so the owner stamp wins: it is an authorization fact and a
+    // caller-supplied title must never be able to displace it.
+    if let Some(field) = owner_field {
+        extra_map.insert(field, json!(subject));
+    }
+    let extra = if extra_map.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Object(extra_map)
     };
 
     match worker
