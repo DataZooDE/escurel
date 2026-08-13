@@ -5,8 +5,9 @@
 introduced for per-instance access control (it becomes a special case of
 this model). Backward-compatible — existing pages are unchanged.
 **Scope:** the **data-level** ACL (read/write/chat over skill instances).
-Capability/operator-tool RBAC and instance-level overrides are **phase 2**
-(designed, not implemented).
+Capability/operator-tool RBAC is **phase 2** (designed, not
+implemented). Instance-level `acl:` overrides were phase 2 here and
+shipped in #351 — see the amendment below.
 
 ## Context
 
@@ -105,9 +106,37 @@ These four refine the change request against the real codebase:
   behaviour (R4): a chat group with no owning member instance, or an
   unresolvable owner, stays open.
 - **Phase 2** (not implemented): capability/operator-tool RBAC
-  (`require_capability`), role hierarchy, and instance-level `acl:`
-  overrides (the instance-frontmatter `acl:` key is reserved and ignored
-  in v1, R5).
+  (`require_capability`) and role hierarchy.
+- ~~Instance-level `acl:` overrides (R5: the instance-frontmatter `acl:`
+  key is reserved and ignored in v1).~~ **Amended 2026-08-13 (#351).**
+
+## Amendment — instance-level `acl:` overrides (#351)
+
+R5 made the instance-frontmatter `acl:` key reserved-and-ignored. That
+left the model **skill-grained**: a group grant necessarily covered every
+instance of a skill, and only `owner` was instance-grained. The
+consultancy/account shape — one shared record type, access scoped per
+engagement rather than per author — could get isolation or team read, not
+both. A consumer (Heron) was blocked on exactly that.
+
+The key is now honoured. Resolution runs down a chain, **per verb**, most
+specific first: the instance's `acl:` → the skill's `acl:`/legacy
+`visibility:` → the tenant `acl_defaults:` → deny. Only
+`Indexer::resolve_policy` changed shape; every enforcement point already
+funnelled through `may_read_instance` / `may_write_instance`, so no call
+site moved and no verb was left behind.
+
+Two constraints kept from the v1 threat model:
+
+- On a **write**, the deciding block is the one on the **stored** page,
+  never the incoming content — otherwise a caller could authorise its own
+  write by shipping a block granting itself. `create` has no stored page
+  and stays skill-grained.
+- An instance with no block, or with a verb unset, falls through
+  unchanged. That is what makes this backward compatible without a
+  rollout flag: no page in the shipped fixtures carried an inert block,
+  so nothing silently starts being enforced. (The write path remains
+  behind `ESCUREL_WRITE_ACL`, still defaulting to `Off`.)
 
 ## Code map
 

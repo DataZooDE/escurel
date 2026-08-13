@@ -493,8 +493,50 @@ owner-all), so existing pages are unchanged. **`delete` is enforced as
 boundary). Membership is mutated by the admin-only `add_group_member` /
 `remove_group_member` / `list_group_members` tools. `list_skills` reports
 the resolved block as `"acl"` (additive; `visibility`/`owner_field`
-retained). *(Instance-level `acl:` overrides and capability-tool RBAC are
-phase 2.)*
+retained). *(Capability-tool RBAC is phase 2.)*
+
+###### Instance-level `acl:` overrides
+
+An **instance** page MAY carry its own `acl:` block, in exactly the same
+shape. It is resolved **per verb, most specific first**: the instance's
+block → the skill's block → the tenant default → deny.
+
+```yaml
+# markdown/instances/customer_note/hoffmann-1.md
+type: instance
+skill: customer_note
+id: hoffmann-1
+acl:
+  read:   [engagement-hoffmann]
+  update: [engagement-hoffmann]
+```
+
+This is what lets two instances of one shared skill be readable by two
+different groups — the account/engagement shape, where the unit of access
+is the record and not its author (which is all `owner_field` could
+express). Enforcement is the same fail-closed predicate on the same
+paths: `expand`, `search`, `list_instances`, `resolve`, `neighbours`,
+`query_instance`, the WebSocket attach, and the event bus (a filed event
+is exactly as visible as its instance). Denial is **absence**, never a
+distinguishable error.
+
+Two deliberate limits:
+
+- An instance block is consulted **per verb**. Declaring only `read:`
+  narrows reads and leaves `update`/`create` falling through to the
+  skill. Narrowing a write means declaring the write verb too.
+- On a **write**, the block that decides is the one on the **stored**
+  page, not the one in the incoming content — otherwise a caller could
+  authorise its own write by shipping a block that grants itself. A
+  `create` has no stored page and therefore stays skill-grained: the
+  `create` grant is "may add instances of this type", a skill-level
+  claim. (A caller who may `update` a page may, as everywhere, rewrite
+  its `acl:` block.)
+
+An instance with **no** `acl:` block resolves exactly as before, so every
+page authored before this existed is unaffected and the change needs no
+rollout flag of its own. The write half remains gated by
+`ESCUREL_WRITE_ACL`.
 
 #### `list_instances`
 
