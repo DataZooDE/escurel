@@ -86,20 +86,20 @@ jobs:
       # chat/events/CRDT cross-replica read-your-writes assertions.
       - name: DuckLake — live (Postgres + MinIO)
         run: |
-          cargo test -p escurel-index --features live-ducklake --test ducklake_publish_live
-          cargo test -p escurel-index --features live-ducklake --test ducklake_adopt_live
-          cargo test -p escurel-index --features live-ducklake --test ducklake_chat_live
-          cargo test -p escurel-index --features live-ducklake --test ducklake_events_live
-          cargo test -p escurel-index --features live-ducklake --test ducklake_crdt_live
-          cargo test -p escurel-index --features live-ducklake --test ducklake_spikes_live
-          cargo test -p escurel-index --features live-ducklake --test ducklake_append_lake_live
+          cargo test -p escurel-index --features live-ducklake --test suite ducklake_publish_live::
+          cargo test -p escurel-index --features live-ducklake --test suite ducklake_adopt_live::
+          cargo test -p escurel-index --features live-ducklake --test suite ducklake_chat_live::
+          cargo test -p escurel-index --features live-ducklake --test suite ducklake_events_live::
+          cargo test -p escurel-index --features live-ducklake --test suite ducklake_crdt_live::
+          cargo test -p escurel-index --features live-ducklake --test suite ducklake_spikes_live::
+          cargo test -p escurel-index --features live-ducklake --test suite ducklake_append_lake_live::
           cargo test -p escurel-crdt --features live-ducklake --test ducklake_crdt_live
 
       - name: DuckLake — reader role (live)
         run: |
-          cargo test -p escurel-server --features live-ducklake --test reader_role_chat
-          cargo test -p escurel-server --features live-ducklake --test reader_role_events
-          cargo test -p escurel-server --features live-ducklake --test reader_role_crdt
+          cargo test -p escurel-server --features live-ducklake --test suite reader_role_chat::
+          cargo test -p escurel-server --features live-ducklake --test suite reader_role_events::
+          cargo test -p escurel-server --features live-ducklake --test suite reader_role_crdt::
 
       # GCS has no emulator wired up yet, so there is no live GCS job.
       # `gcs.rs` is compiled and linted on every PR by ci.yml's

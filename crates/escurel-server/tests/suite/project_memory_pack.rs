@@ -24,7 +24,7 @@ const VERTICAL: &str = "data-science";
 // --- the twelve pack skills, straight from examples/ -------------------
 macro_rules! skill_md {
     ($f:literal) => {
-        include_str!(concat!("../../../examples/project-memory/skills/", $f))
+        include_str!(concat!("../../../../examples/project-memory/skills/", $f))
     };
 }
 /// (skill id, markdown, is_event_typed) — the pinned contract.
@@ -57,7 +57,10 @@ const SKILLS: &[(&str, &str, bool)] = &[
 // --- the worked example, in dependency order ---------------------------
 macro_rules! inst_md {
     ($f:literal) => {
-        include_str!(concat!("../../../examples/project-memory/instances/", $f))
+        include_str!(concat!(
+            "../../../../examples/project-memory/instances/",
+            $f
+        ))
     };
 }
 /// (skill, id, markdown) authored on the spoke via `update_page`.

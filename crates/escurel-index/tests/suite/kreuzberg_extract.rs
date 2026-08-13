@@ -24,7 +24,7 @@ fn cfg() -> ExtractConfig {
 async fn extracts_born_digital_pdf_with_chunks_and_metadata() {
     let ex = KreuzbergExtractor;
     assert!(ex.accepts(PDF_MIME));
-    let bytes = include_bytes!("fixtures/report.pdf");
+    let bytes = include_bytes!("../fixtures/report.pdf");
     let r = ex
         .extract(bytes, PDF_MIME, &cfg())
         .await
@@ -52,7 +52,7 @@ async fn extracts_born_digital_pdf_with_chunks_and_metadata() {
 async fn extracts_docx_content() {
     let ex = KreuzbergExtractor;
     assert!(ex.accepts(DOCX_MIME));
-    let bytes = include_bytes!("fixtures/memo.docx");
+    let bytes = include_bytes!("../fixtures/memo.docx");
     let r = ex
         .extract(bytes, DOCX_MIME, &cfg())
         .await
@@ -66,7 +66,7 @@ async fn extracts_docx_content() {
 
 #[tokio::test]
 async fn corrupt_pdf_is_graceful_not_a_panic() {
-    let bytes = include_bytes!("fixtures/corrupt.pdf");
+    let bytes = include_bytes!("../fixtures/corrupt.pdf");
     match KreuzbergExtractor.extract(bytes, PDF_MIME, &cfg()).await {
         // Typed catchable error → the extraction_failed / blob-retention path.
         Err(ExtractError::ExtractionFailed(_)) => {}
@@ -81,7 +81,7 @@ async fn corrupt_pdf_is_graceful_not_a_panic() {
 
 #[tokio::test]
 async fn force_ocr_without_runtime_reports_ocr_unavailable() {
-    let bytes = include_bytes!("fixtures/report.pdf");
+    let bytes = include_bytes!("../fixtures/report.pdf");
     let force = ExtractConfig {
         ocr: OcrPolicy::Force,
         ..cfg()
