@@ -40,6 +40,7 @@ mod live_inspect;
 mod merge_from_attached;
 mod migrate;
 mod neighbours;
+mod no_payload_in_catalog_live;
 mod query_instance;
 mod read_tools;
 mod rerank;

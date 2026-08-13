@@ -162,6 +162,10 @@ pub fn compact_append_table(conn: &Connection, table: &str) -> Result<(), Snapsh
         "CREATE OR REPLACE TABLE {APPEND_LAKE_ALIAS}.{table} AS \
          SELECT * FROM {APPEND_LAKE_ALIAS}.{table};"
     ))?;
+    // Residency (#309): the rewrite (and every append before it) wrote
+    // customer-derived min/max strings into the catalog's stats tables —
+    // blank them, same as the corpus publish does.
+    conn.execute_batch(&super::lake::scrub_column_stats_sql(APPEND_LAKE_ALIAS))?;
     Ok(())
 }
 
@@ -232,6 +236,21 @@ mod tests {
             "payload must land as Parquet on DATA_PATH, never inlined into \
              the catalog: {sql}",
         );
+    }
+
+    /// The stats scrub must target the metadata side-catalog of the
+    /// SAME alias the compaction ran under, and blank all three
+    /// value-carrying columns (#309).
+    #[test]
+    fn stats_scrub_targets_metadata_catalog_of_the_append_alias() {
+        let sql = crate::snapshot::lake::scrub_column_stats_sql(APPEND_LAKE_ALIAS);
+        assert!(sql.contains(&format!("__ducklake_metadata_{APPEND_LAKE_ALIAS}.")));
+        for table in ["ducklake_table_column_stats", "ducklake_file_column_stats"] {
+            assert!(sql.contains(table), "scrubs {table}: {sql}");
+        }
+        for col in ["min_value = NULL", "max_value = NULL", "extra_stats = NULL"] {
+            assert!(sql.contains(col), "blanks {col}: {sql}");
+        }
     }
 
     #[test]
