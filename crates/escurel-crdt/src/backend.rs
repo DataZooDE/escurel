@@ -133,6 +133,31 @@ pub trait CrdtBackend: Send + Sync + 'static {
     /// (otherwise the reported bytes wouldn't match the rows that
     /// actually went away).
     async fn compact_subsumed_ops(&self, page_id: &str) -> Result<(u64, u64), Error>;
+
+    /// Who wrote each op on `page_id`, oldest first (escurel#357 / CR-6).
+    ///
+    /// The read side of the [`Op::principal`] stamp, and deliberately NOT a
+    /// read of `op_bytes`: it answers "who edited this page, in what order"
+    /// without handing out the document's edit payloads. Compaction is
+    /// visible here as it is everywhere else — an op subsumed by a snapshot
+    /// and swept by `compact_subsumed_ops` is gone, so this is the tail of
+    /// the history, not all of it.
+    async fn op_authors(&self, page_id: &str) -> Result<Vec<OpAuthor>, Error>;
+}
+
+/// One row of [`CrdtBackend::op_authors`]: an op and the principal that
+/// submitted it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpAuthor {
+    pub op_id: String,
+    pub hlc: i64,
+    /// RFC-3339-ish `applied_at`, formatted at the SQL layer.
+    pub applied_at: Option<String>,
+    /// The verified principal that applied the op, or `None` for an op
+    /// written before the gateway recorded one (or by a gateway with no
+    /// verifier). Never derived from the Loro peer id in `op_bytes` — see
+    /// [`Op`].
+    pub principal: Option<String>,
 }
 
 /// DuckDB-backed [`CrdtBackend`] over a shared
@@ -514,6 +539,38 @@ impl CrdtBackend for DuckdbCrdtBackend {
         let deleted_u64 = u64::try_from(deleted).unwrap_or(0);
         Ok((deleted_u64, bytes_u64))
     }
+
+    async fn op_authors(&self, page_id: &str) -> Result<Vec<OpAuthor>, Error> {
+        let guard = self.conn.lock().await;
+        let table = self.ops_table();
+        let tenant_scope = self.tenant_scope();
+        let tc = tenant_clause(&tenant_scope);
+        // `hlc` is the allocation order, so ordering by it puts the ops in
+        // the order they were accepted — which is what an authorship
+        // timeline means. `applied_at` is a wall clock and can tie.
+        let sql = format!(
+            "SELECT op_id, hlc, strftime(applied_at, '%Y-%m-%dT%H:%M:%SZ'), principal \
+             FROM {table} WHERE page_id = ? {tc} ORDER BY hlc ASC, op_id ASC"
+        );
+        let row_to_author = |row: &duckdb::Row<'_>| {
+            Ok(OpAuthor {
+                op_id: row.get::<_, String>(0)?,
+                hlc: row.get::<_, i64>(1)?,
+                applied_at: row.get::<_, Option<String>>(2)?,
+                principal: row.get::<_, Option<String>>(3)?,
+            })
+        };
+        let mut stmt = guard.prepare(&sql)?;
+        let rows = match &tenant_scope {
+            None => stmt.query_map(params![page_id], row_to_author)?,
+            Some(tenant) => stmt.query_map(params![page_id, tenant], row_to_author)?,
+        };
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
 }
 
 /// Helpers shared by the plain and the allocating write paths.
@@ -536,20 +593,21 @@ impl DuckdbCrdtBackend {
             None => {
                 guard.execute(
                     &format!(
-                        "INSERT INTO {table} (page_id, op_id, hlc, parent_op_id, op_bytes) \
-                         VALUES (?, ?, ?, NULL, ?)"
+                        "INSERT INTO {table} \
+                         (page_id, op_id, hlc, parent_op_id, op_bytes, principal) \
+                         VALUES (?, ?, ?, NULL, ?, ?)"
                     ),
-                    params![page_id, op_id, hlc, op.as_bytes()],
+                    params![page_id, op_id, hlc, op.as_bytes(), op.principal()],
                 )?;
             }
             Some(tenant) => {
                 guard.execute(
                     &format!(
                         "INSERT INTO {table} \
-                         (tenant, page_id, op_id, hlc, parent_op_id, op_bytes) \
-                         VALUES (?, ?, ?, ?, NULL, ?)"
+                         (tenant, page_id, op_id, hlc, parent_op_id, op_bytes, principal) \
+                         VALUES (?, ?, ?, ?, NULL, ?, ?)"
                     ),
-                    params![tenant, page_id, op_id, hlc, op.as_bytes()],
+                    params![tenant, page_id, op_id, hlc, op.as_bytes(), op.principal()],
                 )?;
             }
         }

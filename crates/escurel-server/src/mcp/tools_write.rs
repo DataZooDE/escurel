@@ -475,7 +475,17 @@ pub(super) async fn tool_update_page(
             "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
         }));
     }
-    match indexer.update_page(&a.page_id, &content_to_write).await {
+    // The write, attributed. `stamped_principal` reads ONLY the verified
+    // token subject — nothing from `a`, so no argument, frontmatter key or
+    // `provenance` block the caller sent can reach the column (#357).
+    match indexer
+        .update_page_as(
+            &a.page_id,
+            &content_to_write,
+            stamped_principal(caller.subject),
+        )
+        .await
+    {
         Ok(()) => {
             // Advance the monotonic version: snapshot the new whole-page content
             // at the next hlc so `max_hlc` (and any later `base_version` read)
@@ -1133,6 +1143,24 @@ pub(super) struct CaptureEventArgs {
     body: String,
     #[serde(default)]
     provenance: Option<Value>,
+}
+
+/// The principal to persist for a write by `subject` (escurel#357 / CR-6):
+/// `pages.last_written_by`, `crdt_ops.principal`.
+///
+/// The value is the verified token subject and nothing else — no tool
+/// argument, frontmatter key or `provenance` block is an input here, which
+/// is what makes the stamp unforgeable. Same discipline as
+/// [`stamp_captured_by`], one layer down.
+///
+/// An empty subject becomes `None`. That only arises on a gateway with no
+/// verifier wired (the WS dev path), where there is no principal to record
+/// and `""` would read as an attributed write by a zero-length name. The
+/// HTTP path never produces it: `mcp.rs` substitutes `"anonymous"`, which is
+/// itself an honest answer — an open gateway really was written to by
+/// someone unidentified, and recording that is more useful than NULL.
+pub(crate) fn stamped_principal(subject: &str) -> Option<&str> {
+    (!subject.is_empty()).then_some(subject)
 }
 
 /// Stamp the verified caller subject into an event's `provenance` as the

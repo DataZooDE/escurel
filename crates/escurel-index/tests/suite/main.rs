@@ -55,4 +55,5 @@ mod sql_view_postgres;
 mod two_pass;
 mod validate;
 mod write_acl;
+mod write_attribution;
 mod write_document_blocks;

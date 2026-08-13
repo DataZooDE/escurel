@@ -92,6 +92,7 @@ mod update_page_strict_cas;
 mod validate_tool;
 mod webhook;
 mod write_acl;
+mod write_attribution;
 mod write_origin_metrics;
 mod ws;
 mod ws_attach_acl;

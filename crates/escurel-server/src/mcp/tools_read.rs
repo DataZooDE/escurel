@@ -257,6 +257,12 @@ pub(super) async fn tool_expand(
                     "slug": e.page.slug,
                     "skill": e.page.skill,
                     "page_type": page_type_str(e.page.page_type),
+                    // #357 (CR-6): the verified principal behind the page's
+                    // most recent write. `null` for a page last written
+                    // before the gateway recorded one, and on an `as_of`
+                    // read (a CRDT snapshot carries bytes, not an author) —
+                    // never a guess.
+                    "last_written_by": e.last_written_by,
                 },
                 "frontmatter": e.frontmatter,
                 "body": e.body,

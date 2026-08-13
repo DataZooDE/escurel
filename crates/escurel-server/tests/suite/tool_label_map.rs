@@ -66,6 +66,7 @@ const EXPECTED: &[&str] = &[
     "list_inbox:deterministic",
     "list_instances:deterministic",
     "list_messages:deterministic",
+    "list_op_authors:deterministic",
     "list_packs:deterministic",
     "list_skills:deterministic",
     "list_snapshots:deterministic",

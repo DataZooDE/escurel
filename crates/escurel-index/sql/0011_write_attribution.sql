@@ -1,0 +1,28 @@
+-- Server-stamped principal attribution (escurel#357, CR-6).
+--
+-- `pages.last_written_by` is the LAST writer (last-writer-wins, like
+-- `updated_at`); `crdt_ops.principal` is the immutable author of one op.
+-- Both are written from the token subject the gateway already verified —
+-- never from anything the caller sent — mirroring `provenance.captured_by`
+-- on `events` (#362).
+--
+-- `crdt_ops.principal` is deliberately NOT derived from the Loro peer id
+-- embedded in `op_bytes`: a peer id identifies a DEVICE. Two ops from one
+-- browser tab applied under two different tokens are two different authors,
+-- and no amount of decoding the op bytes can tell you that.
+--
+-- Both columns are NULLable, and that is a decision rather than an
+-- oversight. A `NOT NULL` column cannot be added to an already-populated
+-- table, and every deployed tenant has populated tables. A `NOT NULL
+-- DEFAULT '<sentinel>'` would be worse than nullable: it backfills every
+-- historical row with a principal that demonstrably did not write it, which
+-- is exactly the fabricated-attribution failure this issue exists to
+-- prevent. NULL reads as "written before the gateway recorded who", which
+-- is true.
+--
+-- Idempotent (ADD COLUMN IF NOT EXISTS) and run on EVERY connection via
+-- `Migrator::ensure_write_attribution`, like `blocks.context` (0007), so a
+-- tenant DB provisioned before these columns existed gains them on the next
+-- boot without a migration step an operator has to remember.
+ALTER TABLE pages    ADD COLUMN IF NOT EXISTS last_written_by VARCHAR;
+ALTER TABLE crdt_ops ADD COLUMN IF NOT EXISTS principal       VARCHAR;

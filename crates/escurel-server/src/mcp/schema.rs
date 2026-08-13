@@ -457,6 +457,27 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
+                "list_op_authors",
+                Execution::Deterministic,
+                "Who wrote each live-editing (CRDT) op on a page, oldest first: \
+                 op_id, hlc, applied_at and the server-verified `principal` that \
+                 submitted it. The read side of write attribution — the principal \
+                 is the caller the gateway authenticated, NOT the Loro peer id in \
+                 the op payload, which identifies a device rather than a person. \
+                 `principal` is null for ops applied before the gateway recorded \
+                 one. Ops already subsumed by a snapshot and compacted away are \
+                 not listed. Returns no op bytes. Follows the page's own read \
+                 ACL: a page you may not read reports an empty history, \
+                 indistinguishable from one that has none.",
+                json!({
+                    "type": "object",
+                    "required": ["page_id"],
+                    "properties": {
+                        "page_id": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
                 "assign_event",
                 Execution::Orchestration,
                 "Assign an inbox event to an instance and mark it processed — the \

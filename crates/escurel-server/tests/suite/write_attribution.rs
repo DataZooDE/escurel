@@ -1,0 +1,513 @@
+//! Server-stamped principal attribution on page writes and CRDT ops
+//! (DataZooDE/escurel#357, CR-6).
+//!
+//! `capture_event` already stamps `provenance.captured_by` (#362). This file
+//! covers the two halves that did not: `pages` (last writer) and `crdt_ops`
+//! (op author), plus the read path for both.
+//!
+//! The property under test is not "a field is populated" — it is that the
+//! value is the **gateway's** claim rather than the caller's. So every
+//! positive assertion is paired with an attempt to forge, and every negative
+//! assertion has a positive control: a second, differently-subjected token
+//! writing through the same path must produce a *different* stamp, or an
+//! implementation that hard-codes one principal would pass.
+//!
+//! Real gateway, real Indexer, real DuckDB, real JWKS (`AuthMode::TestIssuer`).
+//! No mocks.
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
+use loro::{ExportMode, LoroDoc};
+use serde_json::{Value, json};
+
+const TENANT: &str = "stuttgart-ai";
+const ALICE: &str = "consultant:alice";
+const BOB: &str = "consultant:bob";
+
+const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n---\n# note\n";
+const NOTE_PAGE: &str = "markdown/instances/note/n1.md";
+
+fn note_markdown(body: &str) -> String {
+    format!("---\ntype: instance\nskill: note\nid: n1\n---\n# n1\n\n{body}\n")
+}
+
+async fn start() -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            // The CRDT half needs a real backend; the page half needs a real
+            // indexer. Production wires both, so the test does too.
+            live_crdt: true,
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", NOTE_SKILL)
+                .done(),
+        ),
+    })
+    .await
+}
+
+// --- fixtures for the `list_op_authors` read ACL -------------------------
+//
+// Two consultants on two engagements, sharing one note type whose instances
+// carry their own `acl:` block — the #351 shape, reused so the gate on the
+// new tool is the same decision the read verbs already make rather than a
+// second, parallel notion of "may read".
+
+const CAROL: &str = "consultant:carol";
+const DAVE: &str = "consultant:dave";
+const HOFFMANN_GROUP: &str = "engagement-hoffmann";
+const ALPINA_GROUP: &str = "engagement-alpina";
+
+const ACL_NOTE_SKILL: &str = r#"---
+type: skill
+id: customer_note
+description: A note filed against an engagement.
+acl:
+  read: [engagement-hoffmann, engagement-alpina]
+  update: [engagement-hoffmann, engagement-alpina]
+---
+# customer_note
+"#;
+
+const ALPINA_NOTE: &str = r#"---
+type: instance
+skill: customer_note
+id: alpina-1
+acl:
+  read: [engagement-alpina]
+  update: [engagement-alpina]
+---
+# Alpina
+Zwischenbericht: die Verlaengerung ist gefaehrdet.
+"#;
+
+const ALPINA_NOTE_PAGE: &str = "markdown/instances/customer_note/alpina-1.md";
+const NO_SUCH_PAGE: &str = "markdown/instances/customer_note/no-such-note.md";
+
+async fn start_acl() -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            live_crdt: true,
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("customer_note", ACL_NOTE_SKILL)
+                .instance("customer_note", "alpina-1", ALPINA_NOTE)
+                .done(),
+        ),
+    })
+    .await
+}
+
+/// Apply one op to `page` as `token`, so the page has an authorship history
+/// to leak.
+async fn seed_one_op(p: &EscurelProcess, token: &str, page: &str) {
+    let opened = call(p, token, "open_session", json!({ "page_id": page })).await;
+    let session = opened["result"]["structuredContent"]["session"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let mut peer = Peer::new();
+    let applied = call(
+        p,
+        token,
+        "apply_op",
+        json!({ "session": session, "op": peer.insert("in-room edit") }),
+    )
+    .await;
+    assert!(
+        applied.get("error").is_none(),
+        "seed op must apply: {applied}"
+    );
+}
+
+async fn call(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value {
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": args },
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), 200, "http status");
+    resp.json().await.unwrap()
+}
+
+async fn call_ok(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value {
+    let body = call(p, token, name, args).await;
+    assert!(body.get("error").is_none(), "{name} errored: {body}");
+    body["result"]["structuredContent"].clone()
+}
+
+/// The `last_written_by` `expand` reports for a page, or `None`.
+async fn last_written_by(p: &EscurelProcess, token: &str, page_id: &str) -> Option<String> {
+    let out = call_ok(p, token, "expand", json!({ "page_id": page_id })).await;
+    out["page"]["last_written_by"].as_str().map(str::to_owned)
+}
+
+/// A persistent Loro peer, so successive ops are incremental updates
+/// anchored to the last exported frontier. Mirrors `Client` in
+/// `mcp_session_tools.rs`.
+struct Peer {
+    doc: LoroDoc,
+    vv: loro::VersionVector,
+}
+
+impl Peer {
+    fn new() -> Self {
+        let doc = LoroDoc::new();
+        let vv = doc.oplog_vv();
+        Self { doc, vv }
+    }
+
+    fn insert(&mut self, text: &str) -> String {
+        let pos = self.doc.get_text("body").len_unicode();
+        self.doc.get_text("body").insert(pos, text).unwrap();
+        self.doc.commit();
+        let update = self.doc.export(ExportMode::updates(&self.vv)).unwrap();
+        self.vv = self.doc.oplog_vv();
+        B64.encode(update)
+    }
+
+    /// The Loro peer id — a *device*, not a person. The whole point of the
+    /// crdt_ops half is that this is not an answer to "who edited".
+    fn peer_id(&self) -> String {
+        self.doc.peer_id().to_string()
+    }
+}
+
+// ---------------------------------------------------------------- pages ---
+
+/// An ordinary `update_page` persists the verified principal, and the caller
+/// supplies nothing.
+///
+/// The positive control is Bob writing the same page through the same tool:
+/// a stamp that is always "alice" (or always the first writer) is not
+/// attribution, and would pass a single-subject assertion.
+#[tokio::test]
+async fn update_page_stamps_the_verified_caller_without_the_caller_supplying_it() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+    let r = call_ok(
+        &p,
+        &alice,
+        "update_page",
+        json!({ "page_id": NOTE_PAGE, "content": note_markdown("alice wrote this") }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "alice's write must succeed: {r}");
+    assert_eq!(
+        last_written_by(&p, &alice, NOTE_PAGE).await.as_deref(),
+        Some(ALICE),
+        "update_page must stamp the verified caller"
+    );
+
+    // Positive control: the LAST writer wins, so Bob's write moves it.
+    let r = call_ok(
+        &p,
+        &bob,
+        "update_page",
+        json!({ "page_id": NOTE_PAGE, "content": note_markdown("bob wrote this") }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "bob's write must succeed: {r}");
+    assert_eq!(
+        last_written_by(&p, &alice, NOTE_PAGE).await.as_deref(),
+        Some(BOB),
+        "the stamp must follow the actual last writer, not the first"
+    );
+
+    p.shutdown().await;
+}
+
+/// The stamp cannot be overridden by anything the caller sends: not a
+/// frontmatter key of the same name, not a `provenance` block, not a
+/// top-level tool argument.
+///
+/// Positive control: the same forged content written by Bob stamps Bob — so
+/// the assertion is testing the *source* of the value, not a constant.
+#[tokio::test]
+async fn caller_supplied_attribution_cannot_override_the_stamp() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+    let forged = "---\ntype: instance\nskill: note\nid: n1\n\
+        last_written_by: \"consultant:mallory\"\nprincipal: \"consultant:mallory\"\n\
+        ---\n# n1\n\nforged\n";
+
+    let r = call_ok(
+        &p,
+        &alice,
+        "update_page",
+        json!({
+            "page_id": NOTE_PAGE,
+            "content": forged,
+            // Every caller-controlled channel that could plausibly be read
+            // as attribution, all naming someone else.
+            "last_written_by": "consultant:mallory",
+            "principal": "consultant:mallory",
+            "provenance": { "last_written_by": "consultant:mallory",
+                            "principal": "consultant:mallory" },
+        }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "the write itself must still succeed: {r}");
+    assert_eq!(
+        last_written_by(&p, &alice, NOTE_PAGE).await.as_deref(),
+        Some(ALICE),
+        "a caller-supplied principal must be overwritten by the verified one"
+    );
+
+    // Positive control: the identical forged payload from Bob stamps BOB.
+    let r = call_ok(
+        &p,
+        &bob,
+        "update_page",
+        json!({
+            "page_id": NOTE_PAGE,
+            "content": forged,
+            "last_written_by": "consultant:mallory",
+            "provenance": { "last_written_by": "consultant:mallory" },
+        }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "bob's write must succeed: {r}");
+    assert_eq!(
+        last_written_by(&p, &alice, NOTE_PAGE).await.as_deref(),
+        Some(BOB),
+        "positive control: the stamp tracks the token, not the payload"
+    );
+
+    p.shutdown().await;
+}
+
+// ------------------------------------------------------------- crdt_ops ---
+
+/// An op applied through `apply_op` is attributable to a **principal**, and
+/// the two are not the same thing as the Loro peer id.
+///
+/// The construction is the point: ONE Loro peer (one device, one peer id)
+/// produces both ops, and two DIFFERENT tokens apply them. Anything derived
+/// from the op bytes would give the same answer twice. The recorded
+/// principals differ, so the attribution comes from the gateway.
+#[tokio::test]
+async fn apply_op_attributes_the_op_to_a_principal_not_a_loro_peer_id() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+    let page = "markdown/instances/note/live.md";
+    let opened = call_ok(&p, &alice, "open_session", json!({ "page_id": page })).await;
+    let session = opened["session"].as_str().expect("session id").to_owned();
+
+    let mut peer = Peer::new();
+    let peer_id = peer.peer_id();
+
+    let r = call_ok(
+        &p,
+        &alice,
+        "apply_op",
+        json!({ "session": session, "op": peer.insert("alice typed") }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "alice's op must apply: {r}");
+
+    let r = call_ok(
+        &p,
+        &bob,
+        "apply_op",
+        json!({ "session": session, "op": peer.insert(" and bob typed") }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "bob's op must apply: {r}");
+
+    let authors = call_ok(&p, &alice, "list_op_authors", json!({ "page_id": page })).await;
+    let ops = authors["ops"].as_array().expect("ops array").clone();
+    assert_eq!(ops.len(), 2, "one row per applied op: {authors}");
+
+    let principals: Vec<&str> = ops
+        .iter()
+        .map(|o| o["principal"].as_str().unwrap_or("<null>"))
+        .collect();
+    assert_eq!(
+        principals,
+        vec![ALICE, BOB],
+        "each op must carry the principal that applied it, in hlc order: {authors}"
+    );
+    assert!(
+        !principals.iter().any(|s| *s == peer_id),
+        "the principal must not be the Loro peer id ({peer_id}): {authors}"
+    );
+
+    p.shutdown().await;
+}
+
+/// A caller-supplied `principal` on `apply_op` is ignored; the gateway's
+/// verified subject wins. Positive control in the same test: Bob's op,
+/// forging Alice, still records Bob.
+#[tokio::test]
+async fn caller_supplied_op_principal_is_ignored() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+    let page = "markdown/instances/note/forge.md";
+    let opened = call_ok(&p, &alice, "open_session", json!({ "page_id": page })).await;
+    let session = opened["session"].as_str().expect("session id").to_owned();
+
+    let mut peer = Peer::new();
+    let r = call_ok(
+        &p,
+        &alice,
+        "apply_op",
+        json!({
+            "session": session,
+            "op": peer.insert("x"),
+            "principal": "consultant:mallory",
+            "author": "consultant:mallory",
+        }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "the op must still apply: {r}");
+
+    let r = call_ok(
+        &p,
+        &bob,
+        "apply_op",
+        json!({
+            "session": session,
+            "op": peer.insert("y"),
+            "principal": ALICE,
+        }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "bob's op must apply: {r}");
+
+    let authors = call_ok(&p, &alice, "list_op_authors", json!({ "page_id": page })).await;
+    let principals: Vec<&str> = authors["ops"]
+        .as_array()
+        .expect("ops array")
+        .iter()
+        .map(|o| o["principal"].as_str().unwrap_or("<null>"))
+        .collect();
+    assert_eq!(
+        principals,
+        vec![ALICE, BOB],
+        "a forged `principal` must be overwritten by the verified subject: {authors}"
+    );
+
+    p.shutdown().await;
+}
+
+// ------------------------------------------------- list_op_authors ACL ---
+
+/// `list_op_authors` must not enumerate who edited a page the caller may not
+/// read. Authorship is metadata about the page, and in a shared tenant
+/// (heron HLD C7) "which consultant touched the Alpina note" is exactly the
+/// kind of fact the instance `acl:` block exists to keep inside the
+/// engagement — the same leak class as #362 / #363.
+///
+/// The positive control is in the same test on purpose: Alpina's own
+/// consultant MUST still get the authorship back, or a gate that returns
+/// nothing to everybody would pass.
+#[tokio::test]
+async fn list_op_authors_does_not_leak_authorship_of_an_unreadable_page() {
+    let p = start_acl().await;
+    let dave_t = p.mint_token_with_groups(TENANT, DAVE, &[ALPINA_GROUP], false);
+    let carol_t = p.mint_token_with_groups(TENANT, CAROL, &[HOFFMANN_GROUP], false);
+
+    seed_one_op(&p, &dave_t, ALPINA_NOTE_PAGE).await;
+
+    // Positive control: the engagement's own consultant reads the history.
+    let mine = call_ok(
+        &p,
+        &dave_t,
+        "list_op_authors",
+        json!({ "page_id": ALPINA_NOTE_PAGE }),
+    )
+    .await;
+    let principals: Vec<&str> = mine["ops"]
+        .as_array()
+        .expect("ops array")
+        .iter()
+        .map(|o| o["principal"].as_str().unwrap_or("<null>"))
+        .collect();
+    assert_eq!(
+        principals,
+        vec![DAVE],
+        "alpina's consultant must see her own engagement's authorship: {mine}"
+    );
+
+    // The leak: a consultant on the OTHER engagement must not.
+    let theirs = call_ok(
+        &p,
+        &carol_t,
+        "list_op_authors",
+        json!({ "page_id": ALPINA_NOTE_PAGE }),
+    )
+    .await;
+    assert_eq!(
+        theirs["ops"].as_array().map(Vec::len),
+        Some(0),
+        "carol must not learn who edited alpina's note: {theirs}"
+    );
+
+    p.shutdown().await;
+}
+
+/// Denial is **absence, not error**: refusing loudly would turn the tool into
+/// an existence oracle — "this page exists and you may not see it" is itself
+/// the disclosure. The denied answer must be byte-identical to the answer for
+/// a page that is not there at all.
+#[tokio::test]
+async fn list_op_authors_denial_reads_as_absence_not_as_an_error() {
+    let p = start_acl().await;
+    let dave_t = p.mint_token_with_groups(TENANT, DAVE, &[ALPINA_GROUP], false);
+    let carol_t = p.mint_token_with_groups(TENANT, CAROL, &[HOFFMANN_GROUP], false);
+
+    seed_one_op(&p, &dave_t, ALPINA_NOTE_PAGE).await;
+
+    let hidden = call(
+        &p,
+        &carol_t,
+        "list_op_authors",
+        json!({ "page_id": ALPINA_NOTE_PAGE }),
+    )
+    .await;
+    let ghost = call(
+        &p,
+        &carol_t,
+        "list_op_authors",
+        json!({ "page_id": NO_SUCH_PAGE }),
+    )
+    .await;
+
+    assert!(
+        hidden.get("error").is_none(),
+        "a denied listing must not fault: {hidden}"
+    );
+    // Compare with the page_id echo removed — it is the caller's own input
+    // and necessarily differs; everything the SERVER says must match.
+    let strip = |v: &Value| v["result"]["structuredContent"]["ops"].clone();
+    assert_eq!(
+        strip(&hidden),
+        strip(&ghost),
+        "hidden must be indistinguishable from absent: {hidden} vs {ghost}"
+    );
+
+    p.shutdown().await;
+}

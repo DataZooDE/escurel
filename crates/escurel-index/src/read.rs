@@ -660,6 +660,16 @@ pub struct ExpandedPage {
     pub body: String,
     pub blocks: Vec<BlockInfo>,
     pub wikilinks_out: Vec<WikilinkParsed>,
+    /// The verified principal behind the page's most recent write
+    /// (escurel#357 / CR-6), or `None` for a page last written before the
+    /// gateway recorded one. Server-owned: it is the token subject the
+    /// gateway verified, never anything the writer put in `content`.
+    ///
+    /// Always `None` on a historical (`as_of`) read — that projection is
+    /// materialised from a CRDT snapshot, which stores document bytes and
+    /// no principal. Reporting the CURRENT writer against a past state
+    /// would be a plausible-looking lie, so it reports nothing.
+    pub last_written_by: Option<String>,
 }
 
 /// One block inside a page (anchor + content).
@@ -810,7 +820,7 @@ impl Indexer {
             " AND scenario IS NULL"
         };
         let page_sql = format!(
-            "SELECT page_id, slug, skill, page_type, frontmatter::VARCHAR \
+            "SELECT page_id, slug, skill, page_type, frontmatter::VARCHAR, last_written_by \
              FROM pages WHERE page_id = ?{as_of_sql}{scenario_sql}"
         );
         let mut page_binds: Vec<String> = vec![page_id.to_owned()];
@@ -831,11 +841,13 @@ impl Indexer {
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 },
             )
             .ok();
-        let Some((page_id, slug, skill, page_type_str, fm_json)) = page_with_fm else {
+        let Some((page_id, slug, skill, page_type_str, fm_json, last_written_by)) = page_with_fm
+        else {
             return Ok(None);
         };
         let page_type = match page_type_str.as_str() {
@@ -878,6 +890,7 @@ impl Indexer {
             body,
             blocks,
             wikilinks_out,
+            last_written_by,
         }))
     }
 }
