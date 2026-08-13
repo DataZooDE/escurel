@@ -385,6 +385,11 @@ with the `project-memory` skill pack subscribed.
       "optional_frontmatter": ["mrr_band", "owner", ...],
       "is_event_typed": false,      // true iff `at` is in required_frontmatter
       "autonomy": "review",         // omitted when undeclared OR unrecognised
+      "params": [                   // omitted entirely when none are declared
+        { "name": "window", "kind": "string", "required": true,
+          "label": "Window", "description": "e.g. 30d" },
+        { "name": "depth",  "kind": "integer", "required": false }
+      ],
       "backend": { "kind": "markdown" },
       "capabilities": { "writable": true, "granularity": "block",
                         "search": "hybrid", "supports_crdt": true }
@@ -424,6 +429,68 @@ ungated" is a data-governance incident rather than a bug. A client treats
 an omitted `autonomy` as "hold for review" and calls `validate` to learn
 which of the two cases it is. Case and surrounding whitespace are
 normalised, so `Auto` and `"  auto "` are both `auto`.
+
+##### Invocation parameters (`params`)
+
+`required_frontmatter` is the shape of the instances a skill **produces**.
+`params` is the shape of what one **run** of the skill takes. For an
+instance-creating skill the two nearly coincide, which is why the
+distinction went unremarked for so long; they part company as soon as the
+skill's job is not "make one instance shaped like this" — a report skill
+parameterised by window and grouping, a workflow skill taking a target and a
+depth budget, an analysis skill taking two instances to compare.
+
+Escurel does not execute skills and never binds these values. It reports
+what the page declares, so a client can build an input form from the
+catalogue alone without expanding every page.
+
+A skill page declares them either as a **sequence** (the `params:` idiom
+query pages already use, and the only form that preserves the author's field
+order):
+
+```yaml
+params:
+  - {name: window,   kind: string,  required: true, label: Window,
+     description: 'e.g. 30d'}
+  - {name: grouping, kind: string}
+  - {name: depth,    kind: integer}
+```
+
+or as a **mapping** of name to attributes, whose order is the frontmatter's
+key order rather than the author's:
+
+```yaml
+params:
+  window: {kind: string, required: true, description: 'e.g. 30d'}
+```
+
+`kind` is reported as one of `string` | `integer` | `boolean` — deliberately
+exactly the A2UI `form` field kinds, so the catalogue renders with no mapping
+layer at the consumer. `text` / `int` / `bool` are accepted as synonyms in
+frontmatter (that is the spelling authors arrive with from the query-page
+`params:` block, where `type:` names a richer, SQL-bound vocabulary), as is
+`type:` in place of `kind:`. Case and surrounding whitespace are normalised.
+`required:` defaults to `false`; `label` and `description` are omitted rather
+than emptied when undeclared, so a client falls back to `name`.
+
+**A `kind:` the server cannot read degrades to `string`; the parameter is
+still reported.** This is the opposite of the `autonomy:` rule above, and
+deliberately so. There, dropping the value is the safe direction — only an
+explicit `auto` may switch a human gate off. Here, dropping the parameter
+would delete a possibly-*required* field from a generated form; the run would
+then be invoked without it and fail with nothing on the page to explain why.
+An over-permissive text box under-validates, a missing box loses data.
+`validate` reports the mis-declaration as a **warning**
+(`frontmatter_param_kind_unknown`) so the author still learns, without
+failing a write for a key that has never been validated. A `params:` block
+that is neither shape, or an entry with no `name:`, is an
+**error** (`frontmatter_params_malformed`) — there is nothing to degrade to
+when a parameter has no name to be passed under.
+
+`params` is **omitted from the response entirely** when a skill declares
+none, so every skill page written before this key existed has a
+byte-identical row. The key is read on SKILL pages only: on an instance page
+`params:` is already taken by `[[query::*]]` pages and is untouched.
 
 `backend.kind` (`markdown` | `sql_view` | `document`) and the
 `capabilities` object tell the agent *where* a skill's instances live and

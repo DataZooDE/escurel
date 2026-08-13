@@ -330,7 +330,7 @@ pub struct SkillCapabilities {
 
 /// A Tier-1 skill. MCP wire keys: `id`, `description`,
 /// `required_frontmatter`, `optional_frontmatter`, `is_event_typed`,
-/// `visibility`, `owner_field`, `acl`, `backend`, `capabilities`.
+/// `visibility`, `owner_field`, `acl`, `backend`, `capabilities`, `params`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Skill {
@@ -389,6 +389,42 @@ pub struct Skill {
     /// response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomy: Option<String>,
+    /// The parameters ONE RUN of this skill takes (`params:`, heron#11 /
+    /// CR-7), in declaration order — enough for a client to build an input
+    /// form from the catalogue alone, without expanding every page.
+    ///
+    /// Distinct from `required_frontmatter`, which is the shape of the
+    /// INSTANCES this skill produces. The two nearly coincide for an
+    /// instance-creating skill and diverge completely for a report skill
+    /// parameterised by window and grouping.
+    ///
+    /// **Omitted from the wire when empty**, so a skill declaring no
+    /// parameters — every skill that predates the key — has a byte-identical
+    /// row, and an old client round-tripping one is never handed a field it
+    /// did not send.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<SkillParam>,
+}
+
+/// One invocation parameter a skill declares. MCP wire keys: `name`,
+/// `kind`, `required`, and the optional `label` / `description`.
+///
+/// The field set is exactly what an A2UI `form` field needs, and `kind` is
+/// exactly its renderable set (`string` | `integer` | `boolean`), so the
+/// surface renders with no mapping layer. Typed as a string, not an enum, so
+/// a kind added by a newer server still deserialises on an older client
+/// instead of failing the whole response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SkillParam {
+    pub name: String,
+    pub kind: String,
+    pub required: bool,
+    /// Human caption. `null`/absent ⇒ the client falls back to `name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// The default page layer: tenant-authored, editable.

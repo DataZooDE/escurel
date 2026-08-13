@@ -52,6 +52,20 @@ pub(super) async fn tool_list_skills(indexer: &Indexer) -> Result<Value, JsonRpc
                 // It must not be defaulted to a policy here: the only value a
                 // consumer may act on permissively is an explicit `auto`.
                 autonomy: s.autonomy.map(|a| a.as_str().to_owned()),
+                // Empty for every skill that declares no `params:`, and an
+                // empty vec is omitted from the wire — so those rows stay
+                // byte-identical to what they were before CR-7.
+                params: s
+                    .params
+                    .into_iter()
+                    .map(|p| TypesSkillParam {
+                        name: p.name,
+                        kind: p.kind.as_str().to_owned(),
+                        required: p.required,
+                        label: p.label,
+                        description: p.description,
+                    })
+                    .collect(),
             })
             .collect(),
     };

@@ -51,9 +51,10 @@ use escurel_types::{
     AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
     ListSkillsResponse, PublishSnapshotResponse, QuotaGetResponse, RebuildProgress,
     Skill as TypesSkill, SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
-    SkillCapabilities as TypesSkillCapabilities, TenantCreateResponse, TenantDeleteResponse,
-    TenantGetResponse, TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec,
-    TenantUpdateResponse, WebhookDeliveriesResponse, WebhookDelivery,
+    SkillCapabilities as TypesSkillCapabilities, SkillParam as TypesSkillParam,
+    TenantCreateResponse, TenantDeleteResponse, TenantGetResponse, TenantImportResponse,
+    TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
+    WebhookDeliveriesResponse, WebhookDelivery,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};

@@ -67,7 +67,7 @@ pub use query::{
 };
 pub use read::{
     AclPolicy, Autonomy, BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef,
-    ResolvedWikilink, SkillInfo, Visibility,
+    ParamKind, ResolvedWikilink, SkillInfo, SkillParam, Visibility,
 };
 pub use retrieval::RetrievalConfig;
 pub use schema::Migrator;

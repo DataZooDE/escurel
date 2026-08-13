@@ -26,6 +26,11 @@
 //! - **referenced skills exist.** Every typed outbound wikilink
 //!   `[[<skill>::...]]` whose `<skill>` is not an indexed skill
 //!   page is an `error` issue with code `unknown_skill`.
+//! - **`params:` is declarable.** On a SKILL page, a `params:` block
+//!   that is neither a sequence nor a mapping — or an entry with no
+//!   `name:` — is an `error` issue with code
+//!   `frontmatter_params_malformed`; a `kind:` outside the renderable
+//!   set is a `warning` with code `frontmatter_param_kind_unknown`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -152,6 +157,113 @@ fn check_autonomy(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
     )
 }
 
+/// The `params:` checks (heron#11 / CR-7), on SKILL pages only.
+///
+/// The scoping is not cosmetic: `params:` is ALREADY taken on instance
+/// pages. A `[[query::*]]` page declares `params:` with a `type:` drawn from
+/// a different, richer vocabulary (`date`, `number`) and binds the values as
+/// SQL parameters. Running these checks there would start emitting findings
+/// against a surface that has shipped for releases.
+///
+/// Two findings, at deliberately different severities:
+///
+/// - `frontmatter_params_malformed` (**error**) — the block is neither a
+///   sequence nor a mapping, or a sequence entry has no `name`. Nothing can
+///   be rendered from it: a parameter with no name has nothing to be passed
+///   under, so there is no degraded form to fall back to.
+/// - `frontmatter_param_kind_unknown` (**warning**) — a `kind:` outside the
+///   renderable set. The catalogue reports the parameter as `string` and the
+///   form still works, so failing the write would be a behaviour change for
+///   a key that has never been validated. Compare `autonomy:`, which is
+///   error-severity because there the failure mode is an ungated write.
+fn check_params(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
+    if page_type != PageType::Skill {
+        return Vec::new();
+    }
+    let Some(raw) = fields.get("params") else {
+        return Vec::new();
+    };
+    let recognised: Vec<&str> = crate::ParamKind::recognised()
+        .iter()
+        .map(|k| k.as_str())
+        .collect();
+    let suggestion = format!("use one of: {}", recognised.join(" | "));
+    let malformed = |message: &str| {
+        vec![
+            Issue::error(
+                "frontmatter_params_malformed",
+                "frontmatter.params",
+                message,
+            )
+            .with_suggestion("e.g. `- {name: window, kind: string, required: true}`"),
+        ]
+    };
+
+    // (declared name, declared kind) per entry.
+    let entries: Vec<(String, Option<&YamlValue>)> = if let Some(seq) = raw.as_sequence() {
+        let mut out = Vec::new();
+        for item in seq {
+            let m = item.as_mapping();
+            let Some(name) = m.and_then(|m| m.get("name")).and_then(YamlValue::as_str) else {
+                return malformed(
+                    "every `params:` entry must be a mapping with a `name:` — \
+                     a parameter with no name cannot be passed to a run",
+                );
+            };
+            out.push((
+                name.to_owned(),
+                m.and_then(|m| m.get("kind").or_else(|| m.get("type"))),
+            ));
+        }
+        out
+    } else if let Some(map) = raw.as_mapping() {
+        map.iter()
+            .filter_map(|(k, v)| {
+                let name = k.as_str()?;
+                let attrs = v.as_mapping();
+                Some((
+                    name.to_owned(),
+                    attrs.and_then(|m| m.get("kind").or_else(|| m.get("type"))),
+                ))
+            })
+            .collect()
+    } else {
+        return malformed(
+            "`params:` must be a sequence of `{name, kind, required}` entries \
+             or a mapping of name to those attributes",
+        );
+    };
+
+    entries
+        .into_iter()
+        .filter_map(|(name, kind)| {
+            // No `kind:` at all is not a finding: an undeclared kind is a
+            // text field, which is what an author who omitted it meant.
+            let declared = kind?;
+            if declared
+                .as_str()
+                .is_some_and(|s| crate::ParamKind::parse(s).is_some())
+            {
+                return None;
+            }
+            let shown = declared
+                .as_str()
+                .map_or_else(|| format!("{declared:?}"), str::to_owned);
+            Some(
+                Issue::warning(
+                    "frontmatter_param_kind_unknown",
+                    format!("frontmatter.params.{name}.kind"),
+                    format!(
+                        "`kind: {shown}` on param `{name}` is not a renderable kind; \
+                         it is reported as `string`, so a client renders a text field"
+                    ),
+                )
+                .with_suggestion(suggestion.clone()),
+            )
+        })
+        .collect()
+}
+
 impl Indexer {
     /// Dry-run the indexer's authoring checks on `content` and
     /// return the resulting [`Issue`] list. Writes nothing.
@@ -194,6 +306,8 @@ impl Indexer {
         // The human-in-the-loop policy a skill declares (heron#5 / CR-1).
         // Cheap, local, and independent of every skill lookup below.
         issues.extend(check_autonomy(parsed.frontmatter.page_type, fields));
+        // The invocation-parameter block a skill declares (heron#11 / CR-7).
+        issues.extend(check_params(parsed.frontmatter.page_type, fields));
 
         // Skill pages declare themselves via `id:`; instance pages
         // via `skill:`.
