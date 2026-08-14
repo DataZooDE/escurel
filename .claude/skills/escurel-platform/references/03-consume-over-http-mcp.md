@@ -32,9 +32,14 @@ Standard **JSON-RPC 2.0** envelope; each tool call is `tools/call`:
   the `scope: "agent"` subset (~28 tools — the ones it can actually
   call), while an admin token sees the whole surface (~69). Calling an
   admin tool without the role is still refused at dispatch (`-32001`).
-- **Errors:** JSON-RPC error envelope (`error: {code, message}`). Tool-level
-  validation issues come back inside `result` (the issue list in
-  `references/02`), not as a transport error.
+- **Errors:** JSON-RPC error envelope
+  (`error: {code, message, data?}`). Branch on `error.data.code`
+  (stable strings: `admin_required`, `unknown_session`,
+  `event_not_found`, `already_assigned`, `read_only_replica`,
+  `quota_exhausted`, …) and honour `error.data.retryable` — never parse
+  `message` wording. Tool-level validation issues come back inside
+  `result` (the issue list in `references/02`), not as a transport
+  error.
 - **Streaming:** there is none — no SSE, no chunking, no `GET /mcp` event
   stream. Every response is a single JSON body; large blobs come back
   base64 in `fetch_blob`, capped at 25 MiB. Poll, or use the WS

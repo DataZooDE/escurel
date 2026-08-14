@@ -70,6 +70,20 @@ pin (see `SKILL.md` → "How this skill is installed").
   indistinguishable 404. `fetch_blob` stays as the MCP-envelope variant
   for agent callers.
 
+## 0.6.12 — machine-readable error `data: {code, retryable}`
+
+- `references/03-consume-over-http-mcp.md`: JSON-RPC refusals now carry
+  an additive `error.data` object with a stable `code` string and the
+  `retryable` flag `protocol.md` had promised. Clients branch on
+  `data.code` instead of parsing English: `admin_required`,
+  `tenant_suspended`, `layer_read_only`, `session_cap_reached`,
+  `unknown_session` (reopen, do not back off — it is `-32603` but NOT a
+  server fault), `event_not_found` vs `already_assigned` on
+  `assign_event`, `read_only_replica` (the retryable one — against the
+  writer), `quota_exhausted` (+ `dimension`, `retry_after_ms`),
+  `forbidden`, `failed_precondition`, `unsupported_on_replica`,
+  `publish_unavailable`. Errors without `data` are unclassified
+  internal faults. Fully additive — `code`/`message` unchanged.
 ## 0.6.11 — `tools/list` is role-scoped; every tool carries `scope`
 
 - Every `tools/list` entry now carries an additive
