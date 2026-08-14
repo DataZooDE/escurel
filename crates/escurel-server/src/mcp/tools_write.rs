@@ -1345,6 +1345,9 @@ pub(super) fn emit_page_event(
 pub(super) struct ListInboxArgs {
     #[serde(default)]
     limit: Option<usize>,
+    /// Resume cursor from a previous page's `next_cursor`.
+    #[serde(default)]
+    cursor: Option<String>,
 }
 
 /// Drop the events `caller` may not see (`Indexer::may_read_event`),
@@ -1394,12 +1397,37 @@ pub(super) async fn tool_list_inbox(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListInboxArgs = parse_args(args, "list_inbox")?;
-    let events = indexer
-        .list_inbox(a.limit)
+    let page = indexer
+        .list_inbox_page(
+            a.limit.unwrap_or(escurel_index::EVENTS_MAX_LIMIT),
+            a.cursor.as_deref(),
+        )
         .await
-        .map_err(|e| JsonRpcError::internal(format!("list_inbox: {e}")))?;
-    let events = acl_filter_events(indexer, &caller, event_acl, "list_inbox", events).await?;
-    Ok(json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() }))
+        .map_err(|e| cursor_aware_error("list_inbox", e))?;
+    let events = acl_filter_events(indexer, &caller, event_acl, "list_inbox", page.events).await?;
+    Ok(events_page_json(events, page.next_cursor))
+}
+
+/// An undecodable cursor is the caller's mistake (`invalid_params`),
+/// not a server fault.
+fn cursor_aware_error(tool: &str, e: IndexerError) -> JsonRpcError {
+    match e {
+        IndexerError::InvalidCursor(msg) => {
+            JsonRpcError::invalid_params(format!("{tool}: cursor: {msg}"))
+        }
+        e => JsonRpcError::internal(format!("{tool}: {e}")),
+    }
+}
+
+/// `{events, next_cursor?}` — `next_cursor` is present iff more rows
+/// lie past the page. Its ABSENCE (never a short page — the ACL filter
+/// shortens pages legitimately) is the termination signal.
+fn events_page_json(events: Vec<EventInfo>, next_cursor: Option<String>) -> Value {
+    let mut out = json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() });
+    if let Some(c) = next_cursor {
+        out["next_cursor"] = json!(c);
+    }
+    out
 }
 
 #[derive(Deserialize)]
@@ -1412,6 +1440,10 @@ pub(super) struct ListEventsArgs {
     /// status) and `instance_page_id` is ignored.
     #[serde(default)]
     event_id: Option<String>,
+    /// Resume cursor from a previous page's `next_cursor` (listing
+    /// branch only; meaningless with `event_id`).
+    #[serde(default)]
+    cursor: Option<String>,
 }
 
 pub(super) async fn tool_list_events(
@@ -1427,23 +1459,29 @@ pub(super) async fn tool_list_events(
     // to form the query. An event with no match is an empty list, not an
     // error: "not found" is a legitimate answer here, and the caller
     // distinguishes it from "found, still in the inbox".
-    let events = if let Some(event_id) = a.event_id.as_deref() {
-        indexer
+    let (events, next_cursor) = if let Some(event_id) = a.event_id.as_deref() {
+        let events = indexer
             .get_event(event_id)
             .await
             .map_err(|e| JsonRpcError::internal(format!("list_events: {e}")))?
             .into_iter()
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (events, None)
     } else {
         if a.instance_page_id.is_empty() {
             return Err(JsonRpcError::invalid_params(
                 "list_events: one of `instance_page_id` or `event_id` is required".to_owned(),
             ));
         }
-        indexer
-            .list_events(&a.instance_page_id, a.limit)
+        let page = indexer
+            .list_events_page(
+                &a.instance_page_id,
+                a.limit.unwrap_or(escurel_index::EVENTS_MAX_LIMIT),
+                a.cursor.as_deref(),
+            )
             .await
-            .map_err(|e| JsonRpcError::internal(format!("list_events: {e}")))?
+            .map_err(|e| cursor_aware_error("list_events", e))?;
+        (page.events, page.next_cursor)
     };
     // Both branches are filtered: the by-event lookup is a direct read of
     // one row and must not be a way around the instance-scoped listing.
@@ -1451,7 +1489,7 @@ pub(super) async fn tool_list_events(
     // event that does not exist, which is what this surface already
     // returns for a miss, so no existence is disclosed here either.
     let events = acl_filter_events(indexer, &caller, event_acl, "list_events", events).await?;
-    Ok(json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() }))
+    Ok(events_page_json(events, next_cursor))
 }
 
 #[derive(Deserialize)]

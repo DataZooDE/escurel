@@ -36,6 +36,7 @@ mod crm_demo_backends;
 mod delete_page;
 mod document_ingestion;
 mod event_acl;
+mod event_pagination;
 mod events;
 mod fusion_acl;
 mod group_members_acl;

@@ -888,11 +888,18 @@ Queries).
   server ULID when absent; `instance_page_id` only *pre-flags* a
   candidate — the event stays in the inbox until `assign_event`).
   Returns the stored event (`{event_id, at, status: "inbox", …}`).
-- **`list_inbox`** *(read)* — `{limit?}` → `{events: [Event, …]}`,
-  unprocessed events, newest first.
-- **`list_events`** *(read)* — `{instance_page_id, limit?}` →
-  `{events: [Event, …]}`, that instance's processed event history,
-  oldest first (the sequence whose projection is its state).
+- **`list_inbox`** *(read)* — `{limit?, cursor?}` →
+  `{events: [Event, …], next_cursor?}`, unprocessed events, newest
+  first.
+- **`list_events`** *(read)* — `{instance_page_id, limit?, cursor?}` →
+  `{events: [Event, …], next_cursor?}`, that instance's processed event
+  history, oldest first (the sequence whose projection is its state).
+
+Both listings paginate with an opaque cursor: `next_cursor` is present
+**iff** rows lie past the page — pass it back as `cursor` to continue.
+Only its absence means the listing is complete; a short page never does
+(the per-event ACL filter runs after `limit` and legitimately shortens
+pages). An undecodable cursor is `-32602 invalid_params`.
 - **`assign_event`** *(write)* — `{event_id, instance_page_id}` →
   marks the event `processed` and bound to the instance. This is the
   (external) agent's act of folding the event into state.
