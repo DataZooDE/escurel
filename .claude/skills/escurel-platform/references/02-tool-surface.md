@@ -24,11 +24,12 @@ section below.
 |---|---|---|---|
 | `search` | `q`, `k=10`, `granularity='block'\|'page'`, `page_type?`, `skill?` | ranked hits `{page_id, anchor, snippet, skill, page_type, score}` | natural-language vector + FTS hybrid; the cold-start primitive |
 | `resolve` | `wikilink` | `{parsed, page (PageRef), exists}` | parse + look up a `[[wikilink]]`; reports validity without raising |
-| `expand` | `page_id`, `anchor?`, `version?` | `{page, frontmatter, body, blocks[], wikilinks_out[]}` (+ `shadow` on an overlay that shadows a base skill: `{base_page_id, pack, base: {…base frontmatter…}}`) | the body fetch — the **most expensive** primitive; use sparingly |
+| `expand` | `page_id`, `as_of?`, `scenario?`, `full?` (all chunks of a document instance) | `{page, frontmatter, body, blocks[], wikilinks_out[]}` (+ `shadow` on an overlay that shadows a base skill: `{base_page_id, pack, base: {…base frontmatter…}}`) | the body fetch — the **most expensive** primitive; use sparingly |
 | `neighbours` | `page_id`, `direction='in'\|'out'\|'both'`, `link_skill?` | list of `Edge {src_page, dst_page, link_skill, link_version?, dst_anchor?}` | typed link-graph traversal (backlinks + forward links) |
 | `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, visibility, owner_field?, autonomy?, layer, shadows?}` | the Tier-1 catalogue, **scoped to the caller**; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>`; `autonomy` is the declared human-in-the-loop policy — see the note below |
-| `list_instances` | `skill`, `order_by_at='asc'\|'desc'?`, `limit?` | list of `{page_id, skill, frontmatter, at}` | enumerate instances of a skill (event-log scans, chain heads) |
-| `query_instance` | `ref` (a `query` page id), `params` (typed object) | `{rows, schema[], truncated}` | **the structured-data read**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side |
+| `list_instances` | `skill_id`, `order_by='at asc'\|'at desc'?`, `limit?`, `frontmatter_key?`+`frontmatter_value?`, `as_of?`, `scenario?` | list of `{page_id, skill, frontmatter, at}` | enumerate instances of a skill (event-log scans, chain heads); NB the filter param is `skill_id` here but `skill` on `search` |
+| `fetch_blob` | `page_id` (a document instance) | `{blob: {page_id, content_type, size, bytes_base64} \| null}` | the raw bytes behind a document/RAG instance; capped at 25 MiB |
+| `query_instance` | `ref` (a query-page id), `params` (typed object) | `{rows, schema[], truncated}` | **the structured-data read**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side |
 | `run_stored_query` | `query_id`, `params` (typed object) | `{rows, schema[], snapshot_version?}` | legacy stored-query execution; new consumers use `query_instance` |
 
 Notes:
@@ -60,10 +61,10 @@ Notes:
 - `search` granularity is `block` by default (pinpoints a block within a
   page); `page` collapses to one row per page. The choice is echoed in the
   response so a cache can tell them apart.
-- `list_instances` frontmatter filtering (`{status: open}`, `{at: '>= …'}`)
-  is in the contract; the MCP/CLI surface today exposes `skill`,
-  `order_by_at`, `limit` (richer filter clauses land per
-  `protocol.md` §list_instances).
+- `list_instances` frontmatter filtering beyond one
+  `frontmatter_key`/`frontmatter_value` pair (`{at: '>= …'}` ranges) is
+  in the contract; richer filter clauses land per
+  `protocol.md` §list_instances.
 - `query_instance` / `run_stored_query` params are bound as **typed
   values** (prepared statements), never string-interpolated. Missing
   required param → `missing_required_param`; unknown param →
@@ -148,9 +149,11 @@ Writes are layer-aware (`references/01` §Layer/stability axis):
 - a non-admin draft carrying a truthy `promotable:` refuses
   `promotable_requires_curator` (the promotion marker is curator-set).
 
-Note this list is **curated, not exhaustive** — the server exposes ~66 tools,
-most of them operator/admin surface (tenant CRUD, credential and endpoint
-registries, pack import/export, lane inspection, snapshot publishing). The
+Note this list is **curated, not exhaustive** — the server exposes 69 tools
+(the count is pinned by `skill_doc_parity.rs`; update it here when the
+surface changes), most of them operator/admin surface (tenant CRUD,
+credential and endpoint registries, pack import/export, lane inspection,
+snapshot publishing). The
 tables here cover what an application consumes. If you need one that isn't
 here, check `tools/list` against a running gateway and then fix this
 reference — see the repo's `CLAUDE.md` §*Keeping the consumer skill in sync*.

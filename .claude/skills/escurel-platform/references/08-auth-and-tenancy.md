@@ -27,17 +27,19 @@ surfaces as `escurel.role = "agent" | "admin"`.
 
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A
-mismatched tenant in a request body is rejected; an agent-role token never
-sees the admin tools (they're not even listed in `tools/list`).
+mismatched tenant in a request body is rejected. Note that `tools/list`
+is **not** filtered by role — an agent token still sees the admin tools
+listed; the gate is at dispatch, where a non-admin call gets `-32001`.
 
 ## Two roles
 
-- **Agent** — the normal app surface: all fourteen agent tools
+- **Agent** — the normal app surface: the ~29 agent tools
   (`references/02`), including `append_message` / `list_messages` for
-  chat history.
+  chat history and the event-bus quartet.
 - **Admin** (`escurel:admin`) — tenant CRUD + operator inspection
   (`admin_list_lanes`, `admin_lane_keys`, `admin_index_query`, …) plus
-  the destructive purges: `tenant_delete` and `DeleteChatHistory` (chat
+  the destructive purges: `tenant_delete`, `purge_page` and
+  `admin_delete_chat_history` (chat
   retention + GDPR right-to-erasure). The agent role can never delete
   chat history — by design. Out of scope for a typical consuming app
   except where the app schedules its own retention cron; see

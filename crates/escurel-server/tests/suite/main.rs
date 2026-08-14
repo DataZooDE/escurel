@@ -78,6 +78,7 @@ mod self_packaging;
 mod serve_demo;
 mod session_commit_writes_through;
 mod shadow_merge;
+mod skill_doc_parity;
 mod skill_params;
 mod snapshot_refresh;
 mod sql_creds;
