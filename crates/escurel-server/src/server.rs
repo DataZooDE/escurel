@@ -549,6 +549,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         .route("/mcp", post(mcp))
         .route("/ingest", post(crate::mcp::ingest))
         .route("/ingest/upload", post(crate::mcp::ingest_upload))
+        .route("/blob/{*page_id}", get(crate::mcp::blob_get))
         .route("/ws", get(ws_upgrade))
         .with_state(state.clone());
 

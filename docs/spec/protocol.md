@@ -1111,7 +1111,14 @@ acknowledged `{ status: "duplicate", event_id, blob_id }` without a
 second inbox event and without re-running the extraction worker
 (escurel#382). Absent, the server mints a ULID per request.
 
-Both routes sit behind the same cross-cutting gates as MCP dispatch: a
+The download twin is **`GET /blob/{page_id}`** (bearer-authed): the
+retained original bytes verbatim, with the declared (or sniffed)
+`Content-Type` and an honest `Content-Length` — no base64 detour and no
+25 MiB cap, unlike the `fetch_blob` tool it shares its ACL with. An
+absent page, a hidden page and a page with no retained blob are one
+indistinguishable `404` (no existence oracle).
+
+Both ingest routes sit behind the same cross-cutting gates as MCP dispatch: a
 suspended tenant refuses agent tokens (`403 tenant_suspended`), a
 ducklake reader refuses outright (`503 read_only_replica` — retry
 against the writer), and the per-tenant Writes budget applies (`429`).
