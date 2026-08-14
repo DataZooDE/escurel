@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.15 — `list_instances` cursor pagination (the null era ends)
+
+- `list_instances` accepts an opaque `cursor`, and its `next_cursor` —
+  "reserved; always null" since it shipped — finally loads: a string
+  while rows lie past the page, `null` on the final page. ONLY null
+  means done (the ACL filter legitimately shortens pages). Works under
+  every ordering incl. `order_by: "at desc"` with untimed instances,
+  and inside scenario overlays (the per-slug winner is chosen over the
+  whole set before the cursor cuts). Undecodable cursor → `-32602`.
+  Completes review finding R1 across all list surfaces.
 ## 0.6.14 — `GET /blob/{page_id}`: raw download twin of upload
 
 - New bearer-authed REST route serving a document instance's retained

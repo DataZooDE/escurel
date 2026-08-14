@@ -619,6 +619,158 @@ impl Indexer {
     }
 }
 
+impl Indexer {
+    /// [`Self::list_instances`] with a resume cursor — the last list
+    /// surface whose `next_cursor` was a hardcoded null (API review
+    /// R1). Returns `(page, next_cursor)`; `next_cursor` is `Some` iff
+    /// rows lie past the page.
+    ///
+    /// The cursor predicate and ordering are applied in an OUTER query
+    /// around the existing scenario-aware SELECT: the per-slug QUALIFY
+    /// dedup must pick its winner over the WHOLE candidate set before
+    /// the cursor cuts, or the winning twin could flip between pages.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_instances_page(
+        &self,
+        skill: &str,
+        order_by_at: Option<OrderDir>,
+        limit: usize,
+        filter: Option<(&str, &str)>,
+        as_of: Option<&str>,
+        scenario: Option<&str>,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<InstanceInfo>, Option<String>), IndexerError> {
+        let limit = limit.clamp(1, 10_000);
+        let cursor = match cursor {
+            Some(raw) => Some(crate::cursor::decode(raw)?),
+            None => None,
+        };
+
+        let filter_sql = if filter.is_some() {
+            " AND json_extract_string(frontmatter, ?) = ?"
+        } else {
+            ""
+        };
+        let as_of_sql = if as_of.is_some() {
+            " AND (at_ts <= ? OR at_ts IS NULL)"
+        } else {
+            ""
+        };
+        let (scenario_sql, qualify_sql) = if scenario.is_some() {
+            (
+                " AND (scenario = ? OR scenario IS NULL)",
+                " QUALIFY ROW_NUMBER() OVER (PARTITION BY slug ORDER BY scenario NULLS LAST, page_id) = 1",
+            )
+        } else {
+            (" AND scenario IS NULL", "")
+        };
+
+        // Cursor predicate + ordering over the deduped inner rows. The
+        // page_id tiebreak is ASC in every ordering (matching
+        // `list_instances`), so `page_id > ?` always advances.
+        let mut outer_where = String::new();
+        let mut cursor_binds: Vec<String> = Vec::new();
+        if let Some((at, page_id)) = &cursor {
+            match (order_by_at, at) {
+                (None, _) => {
+                    outer_where = " WHERE page_id > ?".to_owned();
+                    cursor_binds.push(page_id.clone());
+                }
+                (Some(OrderDir::Asc), Some(at)) => {
+                    outer_where =
+                        " WHERE ((at_ts IS NOT NULL AND at_ts > TRY_CAST(? AS TIMESTAMP)) \
+                         OR (at_ts = TRY_CAST(? AS TIMESTAMP) AND page_id > ?) \
+                         OR at_ts IS NULL)"
+                            .to_owned();
+                    cursor_binds.extend([at.clone(), at.clone(), page_id.clone()]);
+                }
+                (Some(OrderDir::Desc), Some(at)) => {
+                    outer_where =
+                        " WHERE ((at_ts IS NOT NULL AND at_ts < TRY_CAST(? AS TIMESTAMP)) \
+                         OR (at_ts = TRY_CAST(? AS TIMESTAMP) AND page_id > ?) \
+                         OR at_ts IS NULL)"
+                            .to_owned();
+                    cursor_binds.extend([at.clone(), at.clone(), page_id.clone()]);
+                }
+                (Some(_), None) => {
+                    outer_where = " WHERE (at_ts IS NULL AND page_id > ?)".to_owned();
+                    cursor_binds.push(page_id.clone());
+                }
+            }
+        }
+        let order_sql = match order_by_at {
+            Some(OrderDir::Asc) => " ORDER BY at_ts ASC NULLS LAST, page_id ASC",
+            Some(OrderDir::Desc) => " ORDER BY at_ts DESC NULLS LAST, page_id ASC",
+            None => " ORDER BY page_id",
+        };
+
+        let sql = format!(
+            "SELECT page_id, skill, frontmatter, at_full FROM ( \
+                 SELECT page_id, skill, frontmatter::VARCHAR AS frontmatter, at_ts, \
+                        strftime(at_ts, '%Y-%m-%d %H:%M:%S.%f') AS at_full \
+                 FROM pages \
+                 WHERE page_type = 'instance' AND skill = ?{filter_sql}{as_of_sql}{scenario_sql}{qualify_sql} \
+             ){outer_where}{order_sql} LIMIT {}",
+            limit + 1,
+        );
+
+        let mut binds: Vec<String> = vec![skill.to_owned()];
+        if let Some((key, value)) = filter {
+            binds.push(format!("$.{key}"));
+            binds.push(value.to_owned());
+        }
+        if let Some(ts) = as_of {
+            binds.push(ts.to_owned());
+        }
+        if let Some(sc) = scenario {
+            binds.push(sc.to_owned());
+        }
+        binds.extend(cursor_binds);
+
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(duckdb::params_from_iter(binds.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+
+        let mut raw: Vec<(String, String, String, Option<String>)> = Vec::new();
+        for row in rows {
+            raw.push(row?);
+        }
+        drop(stmt);
+        drop(conn);
+
+        let next_cursor = if raw.len() > limit {
+            raw.truncate(limit);
+            raw.last()
+                .map(|(page_id, _, _, at_full)| crate::cursor::encode(at_full.as_deref(), page_id))
+        } else {
+            None
+        };
+
+        let mut out = Vec::with_capacity(raw.len());
+        for (page_id, skill, fm_json, _) in raw {
+            let fm: serde_json::Value = serde_json::from_str(&fm_json)?;
+            let at = fm
+                .get("at")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            out.push(InstanceInfo {
+                page_id,
+                skill,
+                frontmatter: fm,
+                at,
+            });
+        }
+        Ok((out, next_cursor))
+    }
+}
+
 /// Reference to a single page in the index. The shape that
 /// `resolve` / `expand` / `neighbours` return when a page is
 /// known to exist.

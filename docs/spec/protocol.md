@@ -672,9 +672,14 @@ rollout flag of its own. The write half remains gated by
       "at": "2026-04-12T10:00:00+02:00" },   // the typed `at`, or null
     ...
   ],
-  "next_cursor": null               // reserved; always null today
+  "next_cursor": null               // string = more rows; null = done
 }
 ```
+
+`next_cursor` is an opaque resume cursor: a string when rows lie past
+the page — pass it back as `cursor` to continue — and `null` on the
+final page. **Only `null` means done**; the ACL filter runs after
+`limit` and can shorten any page. An undecodable cursor is `-32602`.
 
 This is the event-log primitive. Unlike `search`, `list_instances`
 does **not** accept the operator-wrapped `FilterClause` object — its
