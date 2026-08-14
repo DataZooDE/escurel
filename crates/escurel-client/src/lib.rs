@@ -63,19 +63,18 @@ pub use error::{Error, JSONRPC_ADMIN_REQUIRED};
 // frames. These are the same names the old gRPC client re-exported
 // from `escurel_proto::v1`, now sourced from `escurel-types`.
 pub use escurel_types::{
-    AbandonedPathsRequest, AbandonedPathsResponse, AppendMessageRequest, AppendMessageResponse,
-    AssignEventRequest, AssignEventResponse, CaptureEventRequest, ChatMessage, DeletePageRequest,
-    DeletePageResponse, Edge, Event, ExpandBlock, ExpandRequest, ExpandResponse,
-    ExpectationDriftRequest, ExpectationDriftResponse, InstanceInfo, ListEventsRequest,
+    AppendMessageRequest, AppendMessageResponse, AssignEventRequest, AssignEventResponse,
+    CaptureEventRequest, ChatMessage, DeletePageRequest, DeletePageResponse, Edge, Event,
+    ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, ListEventsRequest,
     ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
     ListInstancesResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
     ListSkillsResponse, LiveAck, LiveOp, MovePageRequest, MovePageResponse, NeighboursRequest,
     NeighboursResponse, PageRef, ProvenanceAncestryRequest, ProvenanceAncestryResponse,
-    ProvenancePathRequest, ProvenancePathResponse, PurgePageRequest, PurgePageResponse,
-    QueryInstanceRequest, QueryInstanceResponse, ResolveRequest, ResolveResponse,
-    RunStoredQueryRequest, RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill,
-    StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest,
-    ValidateResponse, ValidationIssue, WikilinkParsed,
+    ProvenancePathRequest, ProvenancePathResponse, ProvenanceReportRequest,
+    ProvenanceReportResponse, PurgePageRequest, PurgePageResponse, QueryInstanceRequest,
+    QueryInstanceResponse, ResolveRequest, ResolveResponse, SearchHit, SearchRequest,
+    SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse,
+    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
 };
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
@@ -220,31 +219,23 @@ impl Client {
         self.transport.call_typed("provenance_ancestry", args).await
     }
 
-    /// Decisions resting on a since-superseded expectation (ADR-0010).
-    pub async fn expectation_drift(
+    /// Corpus-wide provenance report (ADR-0010): `kind: "drift"` or
+    /// `kind: "abandoned"`, consolidated from the old
+    /// `expectation_drift` / `abandoned_paths` tools.
+    pub async fn provenance_report(
         &self,
-        req: ExpectationDriftRequest,
-    ) -> Result<ExpectationDriftResponse, Error> {
-        let mut args = json!({});
+        req: ProvenanceReportRequest,
+    ) -> Result<ProvenanceReportResponse, Error> {
+        let mut args = json!({ "kind": req.kind });
         if !req.skill.is_empty() {
             args["skill"] = json!(req.skill);
         }
-        self.transport.call_typed("expectation_drift", args).await
+        self.transport.call_typed("provenance_report", args).await
     }
 
-    /// Nodes retired by supersession/abandonment (ADR-0010).
-    pub async fn abandoned_paths(
-        &self,
-        req: AbandonedPathsRequest,
-    ) -> Result<AbandonedPathsResponse, Error> {
-        let mut args = json!({});
-        if !req.skill.is_empty() {
-            args["skill"] = json!(req.skill);
-        }
-        self.transport.call_typed("abandoned_paths", args).await
-    }
-
-    /// Shortest provenance path / reachability between two pages (ADR-0010).
+    /// Shortest provenance path / reachability between two pages —
+    /// `provenance_ancestry`'s path mode (the old `provenance_path`
+    /// tool, consolidated; `from_page` binds via the server alias).
     pub async fn provenance_path(
         &self,
         req: ProvenancePathRequest,
@@ -259,7 +250,7 @@ impl Client {
         if req.max_hops > 0 {
             args["max_hops"] = json!(req.max_hops);
         }
-        self.transport.call_typed("provenance_path", args).await
+        self.transport.call_typed("provenance_ancestry", args).await
     }
 
     /// Return the tenant's Tier-1 skill catalogue.
@@ -285,24 +276,6 @@ impl Client {
             args["frontmatter_value"] = json!(req.frontmatter_value);
         }
         self.transport.call_typed("list_instances", args).await
-    }
-
-    /// Execute a `[[query::<id>]]` instance with named parameters.
-    pub async fn run_stored_query(
-        &self,
-        req: RunStoredQueryRequest,
-    ) -> Result<RunStoredQueryResponse, Error> {
-        let params = if req.params.is_null() {
-            json!({})
-        } else {
-            req.params
-        };
-        self.transport
-            .call_typed(
-                "run_stored_query",
-                json!({ "query_id": req.query_id, "params": params }),
-            )
-            .await
     }
 
     /// Run a `[[query::<id>]]` report against its `target` sql_view

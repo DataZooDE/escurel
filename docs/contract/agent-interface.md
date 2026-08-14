@@ -65,7 +65,7 @@ the skill/instance model.
 | `neighbours` | `page_id: str`, `direction: 'in'\|'out'\|'both' = 'both'`, `link_skill?: str` | list of `{src, dst, link_skill, link_version?, anchor?}` | kind / time | the link-graph primitive; covers both backlinks and forward-links; time-axis traversal (`prev_review`, `supersedes`) uses the appropriate `link_skill` |
 | `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter}` | kind | the Tier 1 catalogue; semantically a `search(*, page_type='skill')` shortcut |
 | `list_instances` | `skill_id: str`, `filter?: {frontmatter clauses}`, `order_by?: str`, `limit?: int` | list of `{id, frontmatter}` | kind / time | `search`-shaped shortcut over `neighbours(skill, link_skill=skill)`; supports e.g. `{status: open}` to enumerate open decisions, `{prev_review: null}` to find the head of an append-only chain, or `{at: '>= 2026-04-01'}` plus `order_by='at desc'` to scan an event-typed skill's recent log |
-| `run_stored_query` | `query_id: str`, `params?: {…}` | `{rows: [...], schema: [...], snapshot_version?}` | origin | resolves `[[query::query_id]]` and executes against the query's declared `db:` (relational or ext); parameters bound as typed values per the query's `params:` schema (see §"Query parameters in detail") |
+| `query_instance` | `ref: str` (`query_id` accepted as an alias), `params?: {…}` | `{rows: [...], schema: [...], truncated}` | origin | resolves `[[query::<ref>]]` and executes it; parameters bound as typed values per the query's `params:` schema (see §"Query parameters in detail"). The one query surface — the legacy admin-gated `run_stored_query` was removed (2026-08-14 surface consolidation) |
 | `validate` | `content: str`, `as_page_id?: str` | `{issues: [...]}` | write | dry run; same issue list as `update_page`/`apply_op` but no commit. Used for authoring feedback. |
 | `open_session` | `page_id: str` | `{session, head_version, content}` | write (live) | open a CRDT session; agent enters the live-edit lane (see §"Write path in detail") |
 | `apply_op` | `session: str`, `op: CRDTOp` | `{ok, conflicts?: [...]}` | write (live) | apply a single CRDT op; concurrent merges are handled by Loro |
@@ -121,7 +121,7 @@ Once federation lands (F1 / G1) admin tools gain an explicit
 `escurel-admin`-gated plus a per-tenant `admin_grant` claim.
 
 `admin_index_query` is the one tool that intentionally exposes raw
-relational reads — it bypasses the `run_stored_query` sandboxing
+relational reads — it bypasses the `query_instance` sandboxing
 because the operator inspecting the index needs to issue ad-hoc
 projections. The `escurel-admin` role is the gate; without it this
 tool is invisible.
@@ -139,7 +139,7 @@ routes rather than an MCP tool.
 ### What the MCP surface deliberately does NOT expose
 
 - **No direct SQL.** Agents reach the relational store only through
-  `run_stored_query` (which dispatches to a `[[query::*]]` instance
+  `query_instance` (which dispatches to a `[[query::*]]` instance
   authored ahead of time, with declared schema). This is the H-SECURITY-1
   pattern: SQL is sandboxed AND author-mediated.
 - **No raw vector access.** Agents call `search`, not `embed` and
@@ -257,9 +257,10 @@ skills:
 - `[[table::<id>]]` — the body describes the table; the
   frontmatter declares `catalog`, `schema`, `name`, and
   `versioned`. Use `expand` to read the schema documentation;
-  use `run_stored_query` to read the data.
+  use `query_instance` (via a `[[query::*]]` page) to read the data.
 - `[[query::<id>]]` — the body declares an SQL view. Run via
-  `run_stored_query(<id>)`. The query's frontmatter declares
+  `query_instance(<id>)` (`query_id` accepted as an alias for
+  `ref`). The query's frontmatter declares
   `db` (`relational` for internal, `ext` for the attached
   DuckLake catalog) and an optional `params` schema.
 
@@ -352,10 +353,10 @@ wikilink — the catalogue is itself a `note` instance).
 | `resolve` | `[[wikilink]]` → `(page_id, skill, exists)` |
 | `expand` | page id → body + blocks + wikilinks_out |
 | `neighbours` | one-hop graph traversal, typed-filterable |
-| `provenance_ancestry` / `provenance_path` / `expectation_drift` / `abandoned_paths` | bounded multi-hop provenance-graph reads ([ADR-0010](../adr/0010-project-memory-provenance-graph.md)); the `project-memory` vertical |
+| `provenance_ancestry` / `provenance_report` | bounded multi-hop provenance-graph reads ([ADR-0010](../adr/0010-project-memory-provenance-graph.md)); the `project-memory` vertical. `provenance_ancestry` with `to_page` is the path/reachability form (formerly `provenance_path`); `provenance_report(kind: "drift"\|"abandoned")` returns `{kind, rows}` (formerly `expectation_drift` / `abandoned_paths`) |
 | `list_skills` | the Tier 1 catalogue |
 | `list_instances` | enumerate instances of a skill, optional frontmatter filter, optional ordering (`order_by`) — typical event-log call is `list_instances('meeting', filter={at: '>= 2026-04-01'}, order_by='at desc')` |
-| `run_stored_query` | execute a `[[query::*]]` instance with typed parameters |
+| `query_instance` | execute a `[[query::*]]` instance with typed parameters |
 | `validate` | dry-run the indexer's checks on a draft |
 | `open_session` / `apply_op` / `close_session` | live CRDT editing (when the MCP client supports the op stream) |
 | `update_page` | whole-page write fallback (no CRDT op stream required) |
@@ -367,7 +368,7 @@ wikilink — the catalogue is itself a `note` instance).
   usually enough.
 - Do NOT enumerate the whole catalogue if the task is narrow;
   search-first reaches the right skill in 2 calls.
-- Do NOT write raw SQL through `run_stored_query` — the dispatcher
+- Do NOT write raw SQL through `query_instance` — the dispatcher
   refuses queries that aren't `[[query::*]]` instances. Author
   the query as a page first, then call it.
 - Do NOT trust a page body's mention of an entity over a typed
@@ -403,7 +404,7 @@ A typical agent session against this surface:
    get all weekly-reviews citing a person; walk the
    `prev_review` chain back six weeks.
 
-6. **Execute stored queries if needed.** `run_stored_query` for
+6. **Execute stored queries if needed.** `query_instance` for
    anything that needs the relational or external lane (e.g.
    "the trend in Acme's churn score over Q1").
 
@@ -431,7 +432,7 @@ real-LLM driver `agent_tools.py`):
 | no `neighbours` (only `backlinks` + `forward_links`) | `neighbours(page_id, direction, link_skill)` | unify into one symmetric primitive |
 | no `validate` | `validate(content, as_page_id?)` | required for the authoring feedback path (H-AUTHORING-1 engine path); cheap to add |
 | no write path | `open_session`/`apply_op`/`close_session` (live) + `update_page` (fallback) | full CRDT op-stream write per locked decision (1); whole-page fallback for environments without CSP fix |
-| no `run_stored_query` over MCP yet (only Python) | expose it with parameter binding | the origin axis depends on it; parameters per locked decision (2) |
+| no stored-query tool over MCP yet (only Python) | expose it with parameter binding (shipped as `run_stored_query`, since consolidated into `query_instance`) | the origin axis depends on it; parameters per locked decision (2) |
 | no `escurel` meta-skill in the corpus | add it, mandatory + auto-shipped | per locked decision (3); the agent has no in-corpus documentation of the tool surface today |
 | `search` returns blocks only | `search(..., granularity='block'\|'page')` | both granularities exposed per locked decision (4); block remains the default |
 
@@ -440,7 +441,9 @@ meta-skill, which is just one markdown file.
 
 > **Status (delivered).** Every row above now ships in the Rust
 > gateway: `neighbours`, `validate`, the CRDT write path + `update_page`
-> fallback, `run_stored_query` over MCP, the mandatory auto-shipped
+> fallback, parameterised query execution over MCP (first as
+> `run_stored_query`, now consolidated into `query_instance` — the
+> 2026-08-14 surface consolidation), the mandatory auto-shipped
 > `escurel` meta-skill, and `search(granularity='block'|'page')` with
 > the frontmatter `filter`.
 
@@ -458,7 +461,8 @@ session:
    whole-page `update_page(...)` fallback is preserved as a
    degraded mode. See §"Write path in detail" below.
 
-2. **`run_stored_query` is parameterised.** Query instances
+2. **Query execution is parameterised** (locked for the then
+   `run_stored_query`; carried by today's `query_instance`). Query instances
    declare a `params:` schema in frontmatter; the dispatcher
    binds parameters safely. See §"Query parameters in detail"
    below.
@@ -557,9 +561,9 @@ sql: |
 Calling pattern:
 
 ```
-run_stored_query("customer-churn-trend",
-                 params={"customer_id": "acme-corp"})
-  → {rows: [...], schema: [...], snapshot_version: 27}
+query_instance("customer-churn-trend",
+               params={"customer_id": "acme-corp"})
+  → {rows: [...], schema: [...], truncated: false}
 ```
 
 Type enforcement happens at the dispatcher: parameters are
@@ -574,7 +578,7 @@ without dispatch. Extra parameters return
 `{error: 'unknown_param', name: 'xyz'}` — strict matching to
 the declared schema.
 
-The `snapshot_version` field is populated only for queries that
+The (reserved, not yet emitted) `snapshot_version` field is populated only for queries that
 hit a versioned external table (DuckLake). It pins the
 agent's view; if the agent caches the result and wants the
 same view later, it can pass `as_of_snapshot=<version>` to a

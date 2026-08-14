@@ -113,12 +113,17 @@ pub(super) fn tools_list_payload() -> Value {
                  causes); `down` returns everything derived from it. Optionally \
                  restrict to `relations` (e.g. [\"derived_from\",\"motivated_by\"]); \
                  `max_hops` is clamped server-side. Returns page-ref hops with \
-                 the reaching relation and depth.",
+                 the reaching relation and depth. Pass `to_page` to ask the \
+                 PATH question instead: does `page_id` reach `to_page` within \
+                 `max_hops`? Then returns `{reachable, path, depth}`; a route \
+                 through an ACL-private node reports `reachable: false` (no \
+                 existence leak).",
                 json!({
                     "type": "object",
                     "required": ["page_id"],
                     "properties": {
                         "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
+                        "to_page": { "type": "string", "description": "Target page: switches to reachability/shortest-path mode ({reachable, path, depth})." },
                         "direction": { "type": "string", "enum": ["up", "down"], "description": "up = what this rests on; down = what derives from it. Default up." },
                         "relations": { "type": "array", "items": { "type": "string" }, "description": "Restrict the walk to these edge kinds; absent/empty = all." },
                         "max_hops": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Hop ceiling (default 5, capped at 12)." },
@@ -127,54 +132,21 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
-                "expectation_drift",
+                "provenance_report",
                 Execution::Orchestration,
                 Scope::Agent,
-                "Cross-graph 'lost context' query (ADR-0010): decisions resting \
-                 on an expectation that has since been superseded — the \
-                 decision's `motivated_by`/`addresses` expectation was later \
-                 replaced by a `supersedes` revision authored after the \
-                 decision. Optionally scope to a decision `skill`.",
+                "Corpus-wide provenance report (ADR-0010). `kind: \"drift\"` = \
+                 decisions resting on a since-superseded expectation (lost \
+                 context); `kind: \"abandoned\"` = nodes retired by \
+                 `supersedes`/`abandons` (dead-ended branches). Optionally \
+                 scope to a `skill`. Returns `{kind, rows}`; rows touching an \
+                 ACL-private page are dropped, fail-closed.",
                 json!({
                     "type": "object",
+                    "required": ["kind"],
                     "properties": {
-                        "skill": { "type": "string", "description": "Restrict to decisions of this skill; absent/empty = all." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "abandoned_paths",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Nodes retired by supersession or abandonment (ADR-0010): the \
-                 dead-ended branches of the memory — something points at them \
-                 via `supersedes` or `abandons`. Optionally scope to a `skill`.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "skill": { "type": "string", "description": "Restrict to retired nodes of this skill; absent/empty = all." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "provenance_path",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Shortest provenance path / reachability between two pages \
-                 (ADR-0010): does `from_page` reach `to_page` following \
-                 `direction` (`up` = the rests-on chain) within `max_hops`, \
-                 optionally restricted to `relations`? Returns `{reachable, \
-                 path, depth}`; a route through an ACL-private node reports \
-                 `reachable: false` (no existence leak).",
-                json!({
-                    "type": "object",
-                    "required": ["from_page", "to_page"],
-                    "properties": {
-                        "from_page": { "type": "string" },
-                        "to_page": { "type": "string" },
-                        "direction": { "type": "string", "enum": ["up", "down"], "description": "up = follow the rests-on chain (default); down = follow derived-from." },
-                        "relations": { "type": "array", "items": { "type": "string" }, "description": "Restrict the walk to these edge kinds; absent/empty = all." },
-                        "max_hops": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Hop ceiling (default 5, capped at 12)." }
+                        "kind": { "type": "string", "enum": ["drift", "abandoned"] },
+                        "skill": { "type": "string", "description": "Restrict to this skill; absent/empty = all." }
                     }
                 }),
             ),
@@ -201,20 +173,6 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
-                "run_stored_query",
-                Execution::Deterministic,
-                Scope::Admin,
-                "DEPRECATED legacy stored-query execution — use `query_instance`. Execute a [[query::*]] instance with named parameters.",
-                json!({
-                    "type": "object",
-                    "required": ["query_id"],
-                    "properties": {
-                        "query_id": { "type": "string" },
-                        "params": { "type": "object" }
-                    }
-                }),
-            ),
-            tool_entry(
                 "query_instance",
                 Execution::Deterministic,
                 Scope::Agent,
@@ -228,6 +186,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "required": ["ref"],
                     "properties": {
                         "ref": { "type": "string", "description": "Query id or [[query::id]] wikilink; its `target` names the sql_view instance to read." },
+                        "query_id": { "type": "string", "description": "Alias for `ref` (the retired run_stored_query's spelling)." },
                         "params": { "type": "object", "description": "Runtime values bound to the report's `:param` placeholders." }
                     }
                 }),

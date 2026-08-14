@@ -854,22 +854,13 @@ async fn dispatch_tools_call(
         "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,
         "neighbours" => tool_neighbours(indexer, caller, params.arguments).await,
         "provenance_ancestry" => tool_provenance_ancestry(indexer, caller, params.arguments).await,
-        "expectation_drift" => tool_expectation_drift(indexer, caller, params.arguments).await,
-        "abandoned_paths" => tool_abandoned_paths(indexer, caller, params.arguments).await,
-        "provenance_path" => tool_provenance_path(indexer, caller, params.arguments).await,
+        "provenance_report" => tool_provenance_report(indexer, caller, params.arguments).await,
         "search" => tool_search(indexer, caller, params.arguments).await,
-        "run_stored_query" => {
-            // A stored query runs pre-declared arbitrary SQL over the whole
-            // corpus and returns arbitrary projected columns (aggregates,
-            // joins) — there is no per-row owner to filter on, so the ACL is
-            // at the capability level: operator/analytics only.
-            require_admin(role)?;
-            tool_run_stored_query(indexer, params.arguments).await
-        }
-        // A parameterized read over ONE sql_view instance's view. Unlike
-        // run_stored_query this is an agent-surface tool: the per-instance
-        // ACL gates the target instance (the data), so it is not admin-gated
-        // (issue #205).
+        // A parameterized read over ONE sql_view instance's view — an
+        // agent-surface tool: the per-instance ACL gates the target instance
+        // (the data), so it is not admin-gated (issue #205). The legacy
+        // corpus-wide `run_stored_query` twin was removed after its
+        // deprecation (2026-08-14 API review, minimalism finding 3).
         "query_instance" => tool_query_instance(indexer, caller, params.arguments).await,
         "validate" => tool_validate(indexer, params.arguments).await,
         "update_page" => {

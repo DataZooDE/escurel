@@ -50,9 +50,9 @@ escurel link neighbours <page_id> --direction both --link-skill meeting --limit 
 
 # provenance graph (ADR-0010)
 escurel provenance ancestry  <page_id>      # bounded multi-hop ancestry
-escurel provenance path      <src> <dst>    # shortest path / reachability
+escurel provenance path      <src> <dst>    # shortest path / reachability (ancestry with to_page)
 escurel provenance drift                    # decisions resting on a since-superseded expectation
-escurel provenance abandoned                # nodes retired by supersession/abandonment
+escurel provenance abandoned                # nodes retired by supersession/abandonment ({rows}, was {nodes})
 
 # workflows (against a `kind: workflow` plan skill)
 escurel workflow run    <skill>             # create the run board + capture the run event
@@ -62,8 +62,7 @@ escurel workflow stop   <run>               # mark the board `status: stopped`
 # interactive
 escurel ui                                  # k9s-style terminal browser
 
-# stored queries + query pages
-escurel query run      customer-churn-trend --params '{"customer_id":"acme-corp"}'
+# query pages
 escurel query instance '[[query::pipeline-by-stage]]' --params '{"from":"2026-01-01"}'
 
 # the event bus (M7)
@@ -115,9 +114,10 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `page delete` | `delete_page` |
 | `page blob` / `page snapshots` | `fetch_blob` / `list_snapshots` |
 | `link neighbours` | `neighbours` |
-| `provenance ancestry\|path\|drift\|abandoned` | `provenance_ancestry` / `provenance_path` / `expectation_drift` / `abandoned_paths` |
+| `provenance ancestry\|path` | `provenance_ancestry` (`path` passes `to_page` for the reachability shape) |
+| `provenance drift\|abandoned` | `provenance_report` (`kind: "drift"` / `"abandoned"`; both return `{kind, rows}` — the abandoned key changed from `nodes` to `rows`) |
 | `ui` | — (client-side TUI over the read tools) |
-| `query run` / `query instance` | `run_stored_query` (legacy) / `query_instance` |
+| `query instance` | `query_instance` (accepts `query_id` as an alias for `ref`; `query run` and its `run_stored_query` tool are gone) |
 | `event capture\|inbox\|list\|assign` | `capture_event` / `list_inbox` / `list_events` / `assign_event` |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
 | `session open\|apply\|close` | `open_session` / `apply_op` / `close_session` |
@@ -147,7 +147,7 @@ drive them over MCP/gRPC or the BFF.
   ```sh
   escurel page update markdown/instances/customer/acme-corp.md < acme-corp.md
   ```
-- `--params` for `query run` / `query instance` is a JSON object string
+- `--params` for `query instance` is a JSON object string
   (default `{}`).
 - `--page-type` is `skill` | `instance` | `any` (default `any`);
   `--direction` is `in` | `out` | `both` (default `both`); `limit 0`

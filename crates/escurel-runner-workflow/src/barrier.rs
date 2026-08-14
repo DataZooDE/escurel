@@ -5,7 +5,7 @@
 //! The decision path is deliberately agent-safe: the caller gathers votes
 //! via `list_instances(verify-vote, {run})` (the `Role::Agent` surface) and
 //! the terminal-step counts via the runner's own ledger — never
-//! `run_stored_query` (admin-only). This module is the pure arithmetic.
+//! `query_instance`. This module is the pure arithmetic.
 //!
 //! Three properties make it correct where a naive `HAVING count(*)` is not:
 //!

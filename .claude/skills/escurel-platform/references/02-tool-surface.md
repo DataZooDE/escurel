@@ -29,8 +29,7 @@ section below.
 | `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, visibility, owner_field?, autonomy?, layer, shadows?}` | the Tier-1 catalogue, **scoped to the caller**; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>`; `autonomy` is the declared human-in-the-loop policy — see the note below |
 | `list_instances` | `cursor?` (pass back the response next-cursor; ONLY a null one means done), `skill_id`, `order_by='at asc'\|'at desc'?`, `limit?`, `frontmatter_key?`+`frontmatter_value?`, `as_of?`, `scenario?` | list of `{page_id, skill, frontmatter, at}` | enumerate instances of a skill (event-log scans, chain heads); NB the filter param is `skill_id` here but `skill` on `search` |
 | `fetch_blob` | `page_id` (a document instance) | `{blob: {page_id, content_type, size, bytes_base64} \| null}` | the raw bytes behind a document/RAG instance; capped at 25 MiB. For browsers/large files prefer `GET /blob/{page_id}` — same ACL, raw bytes, real `Content-Type`, no cap |
-| `query_instance` | `ref` (a query-page id), `params` (typed object) | `{rows, schema[], truncated}` | **the structured-data read**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side |
-| `run_stored_query` | `query_id`, `params` (typed object) | `{rows, schema[], snapshot_version?}` | legacy stored-query execution; new consumers use `query_instance` |
+| `query_instance` | `ref` (a query-page id; `query_id` accepted as an alias), `params` (typed object) | `{rows, schema[], truncated}` | **the one query surface**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side. (The legacy admin-gated `run_stored_query` was removed in the 2026-08-14 surface consolidation.) |
 
 Notes:
 - **`list_skills` is caller-scoped, and never carries group names.** A
@@ -65,7 +64,7 @@ Notes:
   `frontmatter_key`/`frontmatter_value` pair (`{at: '>= …'}` ranges) is
   in the contract; richer filter clauses land per
   `protocol.md` §list_instances.
-- `query_instance` / `run_stored_query` params are bound as **typed
+- `query_instance` params are bound as **typed
   values** (prepared statements), never string-interpolated. Missing
   required param → `missing_required_param`; unknown param →
   `unknown_param`. A `query` page declares its params in frontmatter and
@@ -149,7 +148,7 @@ Writes are layer-aware (`references/01` §Layer/stability axis):
 - a non-admin draft carrying a truthy `promotable:` refuses
   `promotable_requires_curator` (the promotion marker is curator-set).
 
-Note this list is **curated, not exhaustive** — the server exposes 69 tools
+Note this list is **curated, not exhaustive** — the server exposes 66 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,
@@ -266,7 +265,7 @@ alongside the backend codes (`backend_read_only`) and `conflict`.
 - Don't `expand` every search hit — descriptions/snippets usually suffice.
 - Don't enumerate the whole catalogue for a narrow task — search-first
   reaches the right skill in ~2 calls.
-- Don't pass raw SQL to `query_instance`/`run_stored_query` — author a `[[query::*]]` page
+- Don't pass raw SQL to `query_instance` — author a `[[query::*]]` page
   first; the dispatcher refuses non-query-page SQL.
 - Don't trust a frontmatter `mentions:` string over a typed wikilink.
 

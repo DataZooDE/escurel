@@ -45,7 +45,12 @@ client.expand(ExpandRequest { page_id, anchor: String::new(), version: String::n
 client.neighbours(NeighboursRequest { page_id, direction: "both".into(), ..Default::default() }).await?;
 client.list_skills(ListSkillsRequest::default()).await?;
 client.list_instances(ListInstancesRequest { skill: "customer".into(), ..Default::default() }).await?;
-client.run_stored_query(RunStoredQueryRequest { query_id: "…".into(), params_json: "{}".into() }).await?;
+// Provenance (ADR-0010): the 0.6.18 consolidation removed the
+// run_stored_query / expectation_drift / abandoned_paths methods (and their
+// Request/Response types). provenance_report covers drift + abandoned;
+// provenance_path(...) still exists but calls provenance_ancestry with
+// `to_page` (ProvenanceAncestryRequest gained that field) under the hood.
+client.provenance_report(ProvenanceReportRequest { kind: "drift".into(), ..Default::default() }).await?;
 client.update_page(UpdatePageRequest { page_id, content }).await?;
 // Chat history (M-Chat, issue #63): append-mostly log keyed by an
 // opaque chat_group_id. See `references/02` §Chat tools.

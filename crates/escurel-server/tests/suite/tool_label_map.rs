@@ -31,7 +31,6 @@ use serde_json::{Value, json};
 
 /// `name:execution` for every advertised tool, sorted.
 const EXPECTED: &[&str] = &[
-    "abandoned_paths:orchestration",
     "add_group_member:orchestration",
     "admin_audit:deterministic",
     "admin_delete_chat_history:orchestration",
@@ -55,7 +54,6 @@ const EXPECTED: &[&str] = &[
     "delete_page:orchestration",
     "embedding_reload:orchestration",
     "expand:deterministic",
-    "expectation_drift:orchestration",
     "export_pack:deterministic",
     "fetch_blob:deterministic",
     "import_pack:orchestration",
@@ -74,7 +72,7 @@ const EXPECTED: &[&str] = &[
     "neighbours:deterministic",
     "open_session:orchestration",
     "provenance_ancestry:orchestration",
-    "provenance_path:orchestration",
+    "provenance_report:orchestration",
     "publish_snapshot:orchestration",
     "purge_page:orchestration",
     "query_instance:deterministic",
@@ -84,7 +82,6 @@ const EXPECTED: &[&str] = &[
     "register_endpoint:orchestration",
     "remove_group_member:orchestration",
     "resolve:deterministic",
-    "run_stored_query:deterministic",
     "search:deterministic",
     "submit_promotion:orchestration",
     "tenant_create:orchestration",

@@ -51,13 +51,7 @@ async fn every_tool_carries_an_execution_label() {
             .unwrap_or_default()
     };
     // Spot-checks of the split: reproducible compute vs loop state.
-    for det in [
-        "query_instance",
-        "run_stored_query",
-        "search",
-        "expand",
-        "validate",
-    ] {
+    for det in ["query_instance", "search", "expand", "validate"] {
         assert_eq!(exec_of(det), "deterministic", "{det}");
     }
     for orch in [

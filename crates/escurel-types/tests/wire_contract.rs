@@ -264,16 +264,17 @@ fn assign_event_response_has_status() {
 }
 
 #[test]
-fn run_stored_query_response_rows_and_column_type() {
-    // tool_run_stored_query: rows is an array, schema columns carry `type`.
+fn query_instance_response_rows_and_column_type() {
+    // tool_query_instance: rows is an array, schema columns carry `type`.
     let wire = json!({
         "rows": [ { "title": "Acme", "score": 0.9 } ],
         "schema": [
             { "name": "title", "type": "VARCHAR" },
             { "name": "score", "type": "DOUBLE" }
-        ]
+        ],
+        "truncated": false
     });
-    let resp: RunStoredQueryResponse = serde_json::from_value(wire).unwrap();
+    let resp: QueryInstanceResponse = serde_json::from_value(wire).unwrap();
     assert_eq!(resp.schema[0].type_name, "VARCHAR");
     assert!(resp.rows.is_array());
     assert_eq!(resp.rows[0]["title"], "Acme");
@@ -284,13 +285,12 @@ fn run_stored_query_response_rows_and_column_type() {
 }
 
 #[test]
-fn run_stored_query_request_params_is_object() {
-    let wire = json!({ "query_id": "by_tier", "params": { "tier": "gold" } });
-    let req: RunStoredQueryRequest = serde_json::from_value(wire).unwrap();
-    assert_eq!(req.params["tier"], "gold");
-    let back = serde_json::to_value(&req).unwrap();
-    assert!(back["params"].is_object());
-    assert!(back.get("params_json").is_none());
+fn provenance_report_round_trips_both_kinds() {
+    let wire = json!({ "kind": "drift", "rows": [ { "decision_page_id": "d" } ] });
+    let resp: ProvenanceReportResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(resp.kind, "drift");
+    assert!(resp.rows.is_array());
+    assert_eq!(serde_json::to_value(&resp).unwrap(), wire);
 }
 
 #[test]
@@ -439,12 +439,9 @@ fn roundtrip_agent() {
             dst_anchor: "".into(),
         }],
     });
-    rt(RunStoredQueryResponse {
-        rows: json!([{ "n": 1 }]),
-        schema: vec![StoredQueryColumn {
-            name: "n".into(),
-            type_name: "INTEGER".into(),
-        }],
+    rt(ProvenanceReportResponse {
+        kind: "abandoned".into(),
+        rows: json!([{ "page_id": "p" }]),
     });
     rt(ValidateResponse {
         ok: false,
