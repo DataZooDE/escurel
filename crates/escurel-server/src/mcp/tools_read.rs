@@ -103,6 +103,9 @@ pub(super) async fn tool_list_skills(
 #[derive(Deserialize)]
 pub(super) struct ListInstancesArgs {
     skill_id: String,
+    /// Resume cursor from a previous page's `next_cursor`.
+    #[serde(default)]
+    cursor: Option<String>,
     #[serde(default)]
     order_by: Option<String>,
     #[serde(default)]
@@ -142,17 +145,23 @@ pub(super) async fn tool_list_instances(
         (Some(k), Some(v)) if !k.is_empty() => Some((k, v)),
         _ => None,
     };
-    let out = indexer
-        .list_instances(
+    let (out, next_cursor) = indexer
+        .list_instances_page(
             &a.skill_id,
             order,
-            a.limit,
+            a.limit.unwrap_or(10_000),
             filter,
             a.as_of.as_deref(),
             a.scenario.as_deref(),
+            a.cursor.as_deref(),
         )
         .await
-        .map_err(|e| JsonRpcError::internal(format!("list_instances: {e}")))?;
+        .map_err(|e| match e {
+            escurel_index::IndexerError::InvalidCursor(msg) => {
+                JsonRpcError::invalid_params(format!("list_instances: cursor: {msg}"))
+            }
+            e => JsonRpcError::internal(format!("list_instances: {e}")),
+        })?;
     // Deterministic ACL filter: drop owner-private instances the caller
     // does not own (admin bypasses). Enumeration must not leak what a
     // direct read would deny.
@@ -171,9 +180,13 @@ pub(super) async fn tool_list_instances(
             }));
         }
     }
+    // `next_cursor` stays PRESENT (null on the last page) for
+    // byte-compat with clients written against the always-null era; a
+    // string value means more rows — and ONLY null means done (the ACL
+    // filter above legitimately shortens pages).
     Ok(json!({
         "instances": instances,
-        "next_cursor": Value::Null,
+        "next_cursor": next_cursor,
     }))
 }
 

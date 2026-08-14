@@ -34,6 +34,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "required": ["skill_id"],
                     "properties": {
                         "skill_id": { "type": "string" },
+                        "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor; ONLY a null next_cursor means done (ACL filtering shortens pages)." },
                         "order_by": { "type": "string", "enum": ["at asc", "at desc"] },
                         "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
                         "frontmatter_key": { "type": "string", "description": "Frontmatter field to filter on (with frontmatter_value)." },
