@@ -72,6 +72,19 @@ use schema::page_type_str;
 use tools_admin::*;
 use tools_read::*;
 pub(crate) use tools_write::event_to_json;
+
+/// The `search` tool for the WS live-search subscription (#355): same
+/// ACL-fused hybrid search, errors flattened to their message (the
+/// JSON-RPC envelope is an HTTP concern).
+pub(crate) async fn ws_search(
+    indexer: &escurel_index::Indexer,
+    caller: escurel_index::acl::AclCaller<'_>,
+    args: Value,
+) -> Result<Value, String> {
+    tools_read::tool_search(indexer, caller, args)
+        .await
+        .map_err(|e| e.message)
+}
 pub(crate) use tools_write::stamped_principal;
 use tools_write::*;
 

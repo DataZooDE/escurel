@@ -20,6 +20,16 @@ pin (see `SKILL.md` → "How this skill is installed").
 - Token lifetime on long sockets is now specified: auth is at upgrade
   only, a socket outlives its token's `exp`; bound it at the proxy or
   reconnect periodically — which `since_event_id` makes lossless.
+## 0.6.20 — WS live search: `search_subscribe` is real
+
+- The M3 stub (empty `search_event` ack, ignored payload) is gone:
+  `search_subscribe {subscription_id, q, k?, filter?}` runs the real
+  ACL-fused hybrid search immediately — the initial `search_event` IS
+  the ack, carrying real hits — and re-runs it whenever the index
+  mutates, pushing updated hits to the socket. Presence-only
+  connections; a missing/empty `q` answers
+  `{type: "error", code: "invalid_subscription"}`. Closes the
+  live-search half of escurel#355.
 ## 0.6.19 — verb-first dispatch aliases + scope-keyed quota exemption
 
 - The noun-first stragglers accept verb-first spellings at dispatch:

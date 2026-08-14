@@ -1427,8 +1427,8 @@ Message types:
 | `peer_op` | S→C | `{ session, merged_version, content, op }` — to the **other** attached peers |
 | `presence` | bidi | `{ session, user, anchor }` (heartbeat every 10 s) |
 | `resync_required` | S→C | `{ session, skipped, message }` — this peer fell behind |
-| `search_subscribe` | C→S | `{ subscription_id, q, k, filter? }` — live-updated search |
-| `search_event` | S→C | `{ subscription_id, hits: [...] }` |
+| `search_subscribe` | C→S | `{ subscription_id, q, k?, filter? }` — live search: runs the real ACL-fused search now (the initial `search_event` is the ack) and re-runs it on every index mutation, pushing updated hits; a missing/empty `q` answers `{type:"error", code:"invalid_subscription"}`; presence-only connections |
+| `search_event` | S→C | `{ subscription_id, hits: [...] }` — the current results for the subscribed query |
 | `event_subscribe` | C→S | `{ subscription_id, since_event_id? }` — push freshly captured bus events (#333); presence-only connections |
 | `event_subscribe_ack` | S→C | `{ subscription_id }` — subscription is live |
 | `event` | S→C | `{ subscription_id, event: <Event>, replayed? }` — one captured event this caller may read (`ESCUREL_EVENT_ACL` filtered, same rule as `list_inbox`); `replayed: true` marks catch-up frames |
