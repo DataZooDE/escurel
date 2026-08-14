@@ -1001,7 +1001,7 @@ pub(super) fn effective_queries(a: &SearchArgs) -> Result<Vec<String>, JsonRpcEr
     Ok(variants)
 }
 
-pub(super) async fn tool_search(
+pub(crate) async fn tool_search(
     indexer: &Indexer,
     caller: AclCaller<'_>,
     args: Value,

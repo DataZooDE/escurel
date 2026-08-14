@@ -134,7 +134,7 @@ async fn presence_frame_round_trips() {
 }
 
 #[tokio::test]
-async fn search_subscribe_acks_with_empty_event_in_m3() {
+async fn search_subscribe_acks_with_the_real_results() {
     let p = start_authed(None).await;
     let t = p.mint_token(TENANT, Role::Agent);
     let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&p.ws_url(), Some(&t)))
@@ -153,12 +153,15 @@ async fn search_subscribe_acks_with_empty_event_in_m3() {
     )
     .await;
 
+    // Since #355 the subscription is REAL: the initial `search_event`
+    // is the ack and carries the current ACL-fused results (the seeded
+    // corpus matches; ZeroEmbedder means the FTS lane does the work).
     let ack = recv_json(&mut sock).await;
     assert_eq!(ack["type"], "search_event");
     assert_eq!(ack["subscription_id"], "sub-1");
     assert!(
-        ack["hits"].as_array().is_some_and(Vec::is_empty),
-        "M3 placeholder must ack with empty hits array; got {ack}"
+        ack["hits"].is_array(),
+        "the ack carries the live hits array; got {ack}"
     );
 
     sock.close(None).await.ok();

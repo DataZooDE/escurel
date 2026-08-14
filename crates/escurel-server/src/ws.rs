@@ -208,10 +208,44 @@ async fn handle_socket(
         tokio::sync::broadcast::Receiver<std::sync::Arc<escurel_index::EventInfo>>,
     > = None;
     let mut event_sub_id = Value::Null;
+    // Live search subscription (#355): `Some((sub_id, args))` once the
+    // client sends `search_subscribe` with a query; the ticker arm below
+    // re-runs the search whenever the index's mutation epoch moves and
+    // pushes the updated hits.
+    let mut search_sub: Option<(Value, Value)> = None;
+    let mut search_epoch: u64 = 0;
+    let mut search_tick = tokio::time::interval(std::time::Duration::from_millis(500));
+    search_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         let frame = tokio::select! {
             incoming = next_json(&mut stream) => incoming,
+            _ = search_tick.tick(), if search_sub.is_some() => {
+                let Some(handle) = state.indexer.as_ref() else { continue };
+                let indexer = handle.current();
+                let epoch = indexer.mutation_epoch();
+                if epoch == search_epoch {
+                    continue;
+                }
+                search_epoch = epoch;
+                let (sub_id, args) = search_sub.as_ref().expect("arm gated");
+                match crate::mcp::ws_search(&indexer, caller.acl(), args.clone()).await {
+                    Ok(result) => {
+                        let mut frame = json!({
+                            "type": "search_event",
+                            "subscription_id": sub_id,
+                        });
+                        frame["hits"] = result.get("hits").cloned().unwrap_or(json!([]));
+                        if send_json(socket, frame).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "live search re-run failed");
+                    }
+                }
+                continue;
+            }
             pushed = async {
                 events_rx
                     .as_mut()
@@ -352,18 +386,76 @@ async fn handle_socket(
                     }
                 }
             }
+            // Live search (#355): the subscription runs the REAL
+            // ACL-fused search — the initial results are the ack — and
+            // the ticker arm above re-runs it on every index mutation
+            // epoch, pushing updated hits. Idempotent: a second
+            // subscribe replaces the first.
             "search_subscribe" => {
                 let sub_id = frame.get("subscription_id").cloned().unwrap_or(Value::Null);
-                // M3 ACKs with an empty event. The live push of
-                // new hits as new pages are indexed is a
-                // v1-deferred feature per the spec.
-                let event = json!({
-                    "type": "search_event",
-                    "subscription_id": sub_id,
-                    "hits": [],
-                });
-                if send_json(socket, event).await.is_err() {
-                    break;
+                let Some(q) = frame
+                    .get("q")
+                    .and_then(Value::as_str)
+                    .filter(|q| !q.is_empty())
+                else {
+                    let _ = send_json(
+                        socket,
+                        json!({
+                            "type": "error",
+                            "code": "invalid_subscription",
+                            "subscription_id": sub_id,
+                            "message": "search_subscribe requires a non-empty `q`",
+                        }),
+                    )
+                    .await;
+                    continue;
+                };
+                let mut args = json!({ "q": q });
+                if let Some(k) = frame.get("k").and_then(Value::as_u64) {
+                    args["k"] = json!(k);
+                }
+                if let Some(filter) = frame.get("filter").filter(|f| f.is_object()) {
+                    args["filter"] = filter.clone();
+                }
+                let Some(handle) = state.indexer.as_ref() else {
+                    let _ = send_json(
+                        socket,
+                        json!({
+                            "type": "error",
+                            "code": "invalid_subscription",
+                            "subscription_id": sub_id,
+                            "message": "no index wired on this server",
+                        }),
+                    )
+                    .await;
+                    continue;
+                };
+                let indexer = handle.current();
+                search_epoch = indexer.mutation_epoch();
+                match crate::mcp::ws_search(&indexer, caller.acl(), args.clone()).await {
+                    Ok(result) => {
+                        let mut ack = json!({
+                            "type": "search_event",
+                            "subscription_id": sub_id,
+                        });
+                        ack["hits"] = result.get("hits").cloned().unwrap_or(json!([]));
+                        if send_json(socket, ack).await.is_err() {
+                            break;
+                        }
+                        search_sub = Some((sub_id, args));
+                    }
+                    Err(e) => {
+                        let _ = send_json(
+                            socket,
+                            json!({
+                                "type": "error",
+                                "code": "invalid_subscription",
+                                "subscription_id": sub_id,
+                                "message": e,
+                            }),
+                        )
+                        .await;
+                    }
                 }
             }
             "close" => {
