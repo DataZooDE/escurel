@@ -682,7 +682,12 @@ pub(super) const PROVENANCE_DEFAULT_HOPS: u32 = 5;
 
 #[derive(Deserialize)]
 pub(super) struct ProvenanceAncestryArgs {
+    #[serde(alias = "from_page", alias = "from_page_id")]
     page_id: String,
+    /// Target page: switches to reachability/shortest-path mode — the
+    /// old `provenance_path` contract, folded in here (API review).
+    #[serde(default, alias = "to_page_id")]
+    to_page: Option<String>,
     /// `up` (everything this rests on) | `down` (everything derived from it).
     #[serde(default)]
     direction: Option<String>,
@@ -714,6 +719,35 @@ pub(super) async fn tool_provenance_ancestry(
     };
     let relations = a.relations.unwrap_or_default();
     let rel_opt = (!relations.is_empty()).then_some(relations.as_slice());
+
+    // `to_page` switches to the PATH question (the old `provenance_path`
+    // tool, folded in): does `page_id` reach `to_page` within `max_hops`?
+    // Fail-closed: a path is disclosed only if EVERY node on it is
+    // readable — a single private node reports `reachable: false` with no
+    // path, never confirming a connection through a hidden record.
+    if let Some(to_page) = a.to_page.as_deref().filter(|t| !t.is_empty()) {
+        let found = indexer
+            .provenance_path(
+                &a.page_id,
+                to_page,
+                dir,
+                rel_opt,
+                a.max_hops.unwrap_or(PROVENANCE_DEFAULT_HOPS),
+            )
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("provenance_ancestry path: {e}")))?;
+        let none = json!({ "reachable": false, "path": [], "depth": 0 });
+        let Some(p) = found else {
+            return Ok(none);
+        };
+        for pid in &p.path {
+            if !provenance_page_readable(indexer, &caller, pid).await? {
+                return Ok(none);
+            }
+        }
+        return Ok(json!({ "reachable": true, "path": p.path, "depth": p.depth }));
+    }
+
     let hops = indexer
         .provenance_ancestry(
             &a.page_id,
@@ -798,134 +832,75 @@ pub(super) async fn provenance_page_readable(
 }
 
 #[derive(Deserialize)]
-pub(super) struct ExpectationDriftArgs {
-    /// Restrict to decisions of this skill; absent/empty = all.
+pub(super) struct ProvenanceReportArgs {
+    /// `drift` (decisions resting on a superseded expectation) or
+    /// `abandoned` (nodes retired via supersedes/abandons).
+    kind: String,
+    /// Restrict to this skill; absent/empty = all.
     #[serde(default)]
     skill: Option<String>,
 }
 
-pub(super) async fn tool_expectation_drift(
+/// `provenance_report`: the corpus-wide ADR-0010 analytics, consolidated
+/// from the old `expectation_drift` / `abandoned_paths` tools (API
+/// review, minimalism finding 4). One normalized `{kind, rows}` shape;
+/// rows touching an ACL-private page are dropped, fail-closed.
+pub(super) async fn tool_provenance_report(
     indexer: &Indexer,
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: ExpectationDriftArgs = parse_args(args, "expectation_drift")?;
+    let a: ProvenanceReportArgs = parse_args(args, "provenance_report")?;
     let skill = a.skill.filter(|s| !s.is_empty());
-    let rows = indexer
-        .expectation_drift(skill.as_deref())
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("expectation_drift: {e}")))?;
-
-    // Fail-closed: drop a row if ANY of the three pages it references is
-    // unreadable — never disclose a drift edge that touches a private record.
-    let mut out = Vec::new();
-    for r in &rows {
-        let mut visible = true;
-        for pid in [
-            &r.decision_page_id,
-            &r.expectation_page_id,
-            &r.superseding_page_id,
-        ] {
-            if !provenance_page_readable(indexer, &caller, pid).await? {
-                visible = false;
-                break;
+    match a.kind.as_str() {
+        "drift" => {
+            let rows = indexer
+                .expectation_drift(skill.as_deref())
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("provenance_report: {e}")))?;
+            let mut out = Vec::new();
+            for r in &rows {
+                let mut visible = true;
+                for pid in [
+                    &r.decision_page_id,
+                    &r.expectation_page_id,
+                    &r.superseding_page_id,
+                ] {
+                    if !provenance_page_readable(indexer, &caller, pid).await? {
+                        visible = false;
+                        break;
+                    }
+                }
+                if visible {
+                    out.push(json!({
+                        "decision_page_id": r.decision_page_id,
+                        "decision_skill": r.decision_skill,
+                        "expectation_page_id": r.expectation_page_id,
+                        "superseding_page_id": r.superseding_page_id,
+                        "decided_at": r.decided_at,
+                        "superseded_at": r.superseded_at,
+                    }));
+                }
             }
+            Ok(json!({ "kind": "drift", "rows": out }))
         }
-        if visible {
-            out.push(json!({
-                "decision_page_id": r.decision_page_id,
-                "decision_skill": r.decision_skill,
-                "expectation_page_id": r.expectation_page_id,
-                "superseding_page_id": r.superseding_page_id,
-                "decided_at": r.decided_at,
-                "superseded_at": r.superseded_at,
-            }));
+        "abandoned" => {
+            let nodes = indexer
+                .abandoned_paths(skill.as_deref())
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("provenance_report: {e}")))?;
+            let mut out = Vec::new();
+            for n in &nodes {
+                if provenance_page_readable(indexer, &caller, &n.page_id).await? {
+                    out.push(json!({ "page_id": n.page_id, "skill": n.skill, "via": n.via }));
+                }
+            }
+            Ok(json!({ "kind": "abandoned", "rows": out }))
         }
+        other => Err(JsonRpcError::invalid_params(format!(
+            "provenance_report kind `{other}`; expected drift|abandoned"
+        ))),
     }
-    Ok(json!({ "rows": out }))
-}
-
-#[derive(Deserialize)]
-pub(super) struct AbandonedPathsArgs {
-    /// Restrict to retired nodes of this skill; absent/empty = all.
-    #[serde(default)]
-    skill: Option<String>,
-}
-
-pub(super) async fn tool_abandoned_paths(
-    indexer: &Indexer,
-    caller: AclCaller<'_>,
-    args: Value,
-) -> Result<Value, JsonRpcError> {
-    let a: AbandonedPathsArgs = parse_args(args, "abandoned_paths")?;
-    let skill = a.skill.filter(|s| !s.is_empty());
-    let nodes = indexer
-        .abandoned_paths(skill.as_deref())
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("abandoned_paths: {e}")))?;
-
-    let mut out = Vec::new();
-    for n in &nodes {
-        if provenance_page_readable(indexer, &caller, &n.page_id).await? {
-            out.push(json!({ "page_id": n.page_id, "skill": n.skill, "via": n.via }));
-        }
-    }
-    Ok(json!({ "nodes": out }))
-}
-
-#[derive(Deserialize)]
-pub(super) struct ProvenancePathArgs {
-    from_page: String,
-    to_page: String,
-    #[serde(default)]
-    direction: Option<String>,
-    #[serde(default)]
-    relations: Option<Vec<String>>,
-    #[serde(default)]
-    max_hops: Option<u32>,
-}
-
-pub(super) async fn tool_provenance_path(
-    indexer: &Indexer,
-    caller: AclCaller<'_>,
-    args: Value,
-) -> Result<Value, JsonRpcError> {
-    let a: ProvenancePathArgs = parse_args(args, "provenance_path")?;
-    let dir = match a.direction.as_deref().unwrap_or("up") {
-        "up" => GraphDir::Up,
-        "down" => GraphDir::Down,
-        other => {
-            return Err(JsonRpcError::invalid_params(format!(
-                "provenance_path direction `{other}`; expected up|down"
-            )));
-        }
-    };
-    let relations = a.relations.unwrap_or_default();
-    let rel_opt = (!relations.is_empty()).then_some(relations.as_slice());
-    let found = indexer
-        .provenance_path(
-            &a.from_page,
-            &a.to_page,
-            dir,
-            rel_opt,
-            a.max_hops.unwrap_or(PROVENANCE_DEFAULT_HOPS),
-        )
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("provenance_path: {e}")))?;
-
-    // Fail-closed: a path is disclosed only if EVERY node on it is readable.
-    // A single private node on the route returns `reachable: false` with no
-    // path — never confirm a connection that runs through a hidden record.
-    let none = json!({ "reachable": false, "path": [], "depth": 0 });
-    let Some(p) = found else {
-        return Ok(none);
-    };
-    for pid in &p.path {
-        if !provenance_page_readable(indexer, &caller, pid).await? {
-            return Ok(none);
-        }
-    }
-    Ok(json!({ "reachable": true, "path": p.path, "depth": p.depth }))
 }
 
 #[derive(Deserialize)]
@@ -1187,35 +1162,11 @@ pub(super) fn is_empty_filter(f: &Value) -> bool {
 }
 
 #[derive(Deserialize)]
-pub(super) struct RunStoredQueryArgs {
-    query_id: String,
-    #[serde(default)]
-    params: serde_json::Map<String, Value>,
-}
-
-pub(super) async fn tool_run_stored_query(
-    indexer: &Indexer,
-    args: Value,
-) -> Result<Value, JsonRpcError> {
-    let a: RunStoredQueryArgs = parse_args(args, "run_stored_query")?;
-    let out = indexer
-        .run_stored_query(&a.query_id, &a.params)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("run_stored_query: {e}")))?;
-    Ok(json!({
-        "rows": out.rows,
-        "schema": out.schema.iter().map(|c| json!({
-            "name": c.name,
-            "type": c.type_name,
-        })).collect::<Vec<_>>(),
-    }))
-}
-
-#[derive(Deserialize)]
 pub(super) struct QueryInstanceArgs {
     /// The query page: a bare id, `query::id`, or its `[[query::id]]`
     /// wikilink. `ref` is the documented key; `query_id` is accepted as an
-    /// alias for symmetry with `run_stored_query`.
+    /// alias (the retired `run_stored_query`'s spelling — kept so its
+    /// migrating callers bind).
     #[serde(rename = "ref", alias = "query_id")]
     query_ref: String,
     #[serde(default)]

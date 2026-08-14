@@ -1,4 +1,5 @@
-//! PR-4 (ADR-0010) — `provenance_path`: shortest path / reachability
+//! PR-4 (ADR-0010) — the path mode of `provenance_ancestry` (the old
+//! `provenance_path` tool, consolidated): shortest path / reachability
 //! between two pages over `resolved_links`.
 //!
 //! No mocks: real gateway + real DuckDB. A three-node chain
@@ -68,7 +69,7 @@ async fn path(p: &EscurelProcess, subject: &str, args: Value) -> Value {
         .header("authorization", format!("Bearer {token}"))
         .json(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "provenance_path", "arguments": args },
+            "params": { "name": "provenance_ancestry", "arguments": args },
         }))
         .send()
         .await
@@ -76,7 +77,10 @@ async fn path(p: &EscurelProcess, subject: &str, args: Value) -> Value {
         .json()
         .await
         .expect("json");
-    assert!(resp.get("error").is_none(), "provenance_path error: {resp}");
+    assert!(
+        resp.get("error").is_none(),
+        "provenance_ancestry error: {resp}"
+    );
     resp["result"]["structuredContent"].clone()
 }
 

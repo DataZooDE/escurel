@@ -1,5 +1,5 @@
-//! PR-3 (ADR-0010) — `expectation_drift` (the cross-graph "lost context"
-//! query) and `abandoned_paths`, over `resolved_links`.
+//! PR-3 (ADR-0010) — `provenance_report` (`kind: drift` — the cross-graph
+//! "lost context" query — and `kind: abandoned`), over `resolved_links`.
 //!
 //! No mocks: real gateway + real DuckDB. A tiny churn-style project is
 //! seeded where an expectation drifts:
@@ -137,7 +137,13 @@ fn has(arr: &Value, key: &str, needle: &str) -> bool {
 #[tokio::test]
 async fn expectation_drift_flags_the_stale_decision_only() {
     let p = start(false).await;
-    let sc = call(&p, "reader", "expectation_drift", json!({})).await;
+    let sc = call(
+        &p,
+        "reader",
+        "provenance_report",
+        json!({ "kind": "drift" }),
+    )
+    .await;
     let rows = &sc["rows"];
     let arr = rows.as_array().expect("rows");
 
@@ -177,8 +183,14 @@ async fn expectation_drift_flags_the_stale_decision_only() {
 #[tokio::test]
 async fn abandoned_paths_lists_superseded_and_abandoned_nodes() {
     let p = start(false).await;
-    let sc = call(&p, "reader", "abandoned_paths", json!({})).await;
-    let nodes = &sc["nodes"];
+    let sc = call(
+        &p,
+        "reader",
+        "provenance_report",
+        json!({ "kind": "abandoned" }),
+    )
+    .await;
+    let nodes = &sc["rows"];
 
     // e1 was superseded (by e2); h1 was abandoned (by d3).
     assert!(
@@ -199,13 +211,13 @@ async fn abandoned_paths_lists_superseded_and_abandoned_nodes() {
     let only_exp = call(
         &p,
         "reader",
-        "abandoned_paths",
-        json!({ "skill": "expectation" }),
+        "provenance_report",
+        json!({ "kind": "abandoned", "skill": "expectation" }),
     )
     .await;
-    assert!(has(&only_exp["nodes"], "page_id", "expectation/e1"));
+    assert!(has(&only_exp["rows"], "page_id", "expectation/e1"));
     assert!(
-        !has(&only_exp["nodes"], "page_id", "hypothesis/h1"),
+        !has(&only_exp["rows"], "page_id", "hypothesis/h1"),
         "skill filter excludes hypotheses: {only_exp}"
     );
 
@@ -218,14 +230,26 @@ async fn expectation_drift_is_fail_closed_when_the_decision_is_private() {
     // see the drift row (it references d1); the owner does.
     let p = start(true).await;
 
-    let hidden = call(&p, "not-the-owner", "expectation_drift", json!({})).await;
+    let hidden = call(
+        &p,
+        "not-the-owner",
+        "provenance_report",
+        json!({ "kind": "drift" }),
+    )
+    .await;
     assert_eq!(
         hidden["rows"].as_array().map(Vec::len),
         Some(0),
         "private decision hidden from non-owner: {hidden}"
     );
 
-    let seen = call(&p, "owner-x", "expectation_drift", json!({})).await;
+    let seen = call(
+        &p,
+        "owner-x",
+        "provenance_report",
+        json!({ "kind": "drift" }),
+    )
+    .await;
     assert!(
         has(&seen["rows"], "decision_page_id", "decision/d1"),
         "owner sees the drift row: {seen}"

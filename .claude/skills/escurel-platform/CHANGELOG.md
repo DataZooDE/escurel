@@ -43,6 +43,37 @@ pin (see `SKILL.md` → "How this skill is installed").
   which had silently forgotten every unprefixed admin tool
   (`list_credentials`, the pack ops, `create_sql_instance`, …).
 
+## 0.6.18 — surface consolidation: one query tool, two provenance tools
+
+- `run_stored_query` is **removed** (it was admin-gated and already
+  DEPRECATED since 0.6.13). `query_instance` is the one query surface;
+  it accepts `query_id` as an alias for `ref`, so old argument spellings
+  keep working. CLI: `escurel query run` is gone — use
+  `escurel query instance`.
+- `provenance_path` is **removed as a separate tool**: it is now
+  `provenance_ancestry` with an optional `to_page` argument (alias
+  `to_page_id`; `page_id` gains aliases `from_page`/`from_page_id`).
+  With `to_page` the response is the old `{reachable, path, depth}`
+  shape, same fail-closed ACL rule (any private node on the route →
+  `reachable: false`, no path); without it the classic `{hops}` walk is
+  unchanged.
+- `expectation_drift` and `abandoned_paths` are **removed**, consolidated
+  into `provenance_report` with input `{kind: "drift" | "abandoned",
+  skill?}` returning `{kind, rows}` — the old drift rows for
+  `kind: "drift"`, the old abandoned NODES (`{page_id, skill, via}`) for
+  `kind: "abandoned"`. Note the key is `rows` for BOTH kinds (the
+  abandoned key changed from `nodes`). Unknown kind → `-32602`;
+  ACL fail-closed row-dropping unchanged.
+- CLI: `escurel provenance drift|abandoned|path` still exist but call
+  `provenance_report` / `provenance_ancestry` under the hood (abandoned
+  output key changed from `nodes` to `rows`).
+- Rust client: `run_stored_query` / `expectation_drift` /
+  `abandoned_paths` methods and their `RunStoredQueryRequest/Response`,
+  `ExpectationDrift*`, `AbandonedPaths*` types are removed; new
+  `provenance_report(ProvenanceReportRequest { kind, skill })`;
+  `provenance_path(...)` still exists but calls the consolidated tool;
+  `ProvenanceAncestryRequest` gains `to_page`.
+- The server now exposes **66 tools** (4 removed, 1 added).
 ## 0.6.17 — openapi.json documents the whole HTTP surface; outputSchema
 
 - `GET /openapi.json` now describes the REST routes it previously

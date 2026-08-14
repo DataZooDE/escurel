@@ -46,8 +46,8 @@ deterministic reducer plus two skill kinds.
   embedded) for large binaries — an *optional* path that needs the ingest
   event relineaged into the run — and the verify barrier is a **run-scoped
   frontmatter query** over `verify-vote` instances. The barrier *decision*
-  runs on the agent-safe `list_instances` surface (not admin-only
-  `run_stored_query`); the SQL view is the operator-facing inspection form
+  runs on the agent-safe `list_instances` surface (not admin SQL);
+  the SQL view is the operator-facing inspection form
   of the same tally.
 
 ---
@@ -321,10 +321,12 @@ deep-research's verify phase is a **barrier with a vote count**: gather
 refutations. Each vote is a `verify-vote` instance; the barrier decision
 is a **read over those instances filtered by run**.
 
-**The decision path is agent-safe, not admin SQL.** `run_stored_query` is
-**admin-gated** in escurel (arbitrary SQL over the whole corpus) — routing
-the barrier through it would force the runner to hold an admin token,
-widening its blast radius to `tenant_delete` / `register_credential`. So
+**The decision path is agent-safe, not admin SQL.** Whole-corpus SQL was
+**admin-gated** in escurel (the legacy `run_stored_query` — since removed
+outright; `query_instance` is the one query surface, ACL-gated on its
+target) — routing
+the barrier through an admin path would force the runner to hold an admin
+token, widening its blast radius to `tenant_delete` / `register_credential`. So
 the load-bearing tally uses the **`Role::Agent` surface** the runner
 already has: `list_instances(skill_id='verify-vote', filter={workflow_run:
 <run>})` returns the run's votes, and the reducer counts them **in Rust**:
@@ -356,8 +358,8 @@ Three properties make this correct where a raw `HAVING count(*)` is not:
 
 The "skill instance as SQL" idiom still carries real weight — but as the
 **operator-facing inspection view**, not the control path. A
-`[[query::verify-tally]]` stored query (admin, `db: relational`) over
-`pages` renders the same tally on the run board and in `escurel query run`:
+`[[query::verify-tally]]` query page (operator inspection, `db: relational`) over
+`pages` renders the same tally on the run board and in `escurel query instance`:
 
 ```sql
 -- operator inspection only (admin surface); NOT the barrier decision path

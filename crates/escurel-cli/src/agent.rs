@@ -7,12 +7,11 @@ use std::io::Read as _;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use escurel_client::{
-    AbandonedPathsRequest, AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client,
-    DeletePageRequest, ExpandRequest, ExpectationDriftRequest, ListEventsRequest, ListInboxRequest,
-    ListInstancesRequest, ListMessagesRequest, ListSkillsRequest, MovePageRequest,
-    NeighboursRequest, ProvenanceAncestryRequest, ProvenancePathRequest, PurgePageRequest,
-    QueryInstanceRequest, ResolveRequest, RunStoredQueryRequest, SearchRequest, UpdatePageRequest,
-    ValidateRequest,
+    AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, DeletePageRequest,
+    ExpandRequest, ListEventsRequest, ListInboxRequest, ListInstancesRequest, ListMessagesRequest,
+    ListSkillsRequest, MovePageRequest, NeighboursRequest, ProvenanceAncestryRequest,
+    ProvenancePathRequest, ProvenanceReportRequest, PurgePageRequest, QueryInstanceRequest,
+    ResolveRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
 };
 use serde_json::{Value, json};
 
@@ -273,20 +272,12 @@ pub struct CaptureArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum QueryCmd {
-    /// Execute a `[[query::<id>]]` instance with named parameters.
-    Run(QueryRunArgs),
     /// Run a `[[query::<id>]]` report (declaring `target: [[skill::id]]`)
     /// against that sql_view instance's view; params are bound, not
-    /// interpolated (issue #205).
+    /// interpolated (issue #205). (The legacy `query run` /
+    /// `run_stored_query` twin was retired — this is the one query
+    /// surface.)
     Instance(QueryInstanceArgs),
-}
-
-#[derive(Args, Debug)]
-pub struct QueryRunArgs {
-    pub query_id: String,
-    /// JSON object of parameters, e.g. `{"skill":"customer"}`.
-    #[arg(long, default_value = "{}")]
-    pub params: String,
 }
 
 #[derive(Args, Debug)]
@@ -382,7 +373,6 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Provenance(ProvenanceCmd::Abandoned(a)) => abandoned_paths(client, a).await,
         Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
-        Command::Query(QueryCmd::Run(a)) => run_query(client, a).await,
         Command::Query(QueryCmd::Instance(a)) => query_instance(client, a).await,
         Command::Chat(ChatCmd::Append(a)) => chat_append(client, a).await,
         Command::Chat(ChatCmd::List(a)) => chat_list(client, a).await,
@@ -709,6 +699,7 @@ async fn provenance_ancestry(client: &Client, a: AncestryArgs) -> Result<Value> 
     let resp = client
         .provenance_ancestry(ProvenanceAncestryRequest {
             page_id: a.page_id,
+            to_page: String::new(),
             direction: a.direction,
             relations: a.relations,
             max_hops: a.max_hops,
@@ -732,39 +723,22 @@ async fn provenance_ancestry(client: &Client, a: AncestryArgs) -> Result<Value> 
 
 async fn expectation_drift(client: &Client, a: DriftArgs) -> Result<Value> {
     let resp = client
-        .expectation_drift(ExpectationDriftRequest {
+        .provenance_report(ProvenanceReportRequest {
+            kind: "drift".to_owned(),
             skill: a.skill.unwrap_or_default(),
         })
         .await?;
-    let rows: Vec<Value> = resp
-        .rows
-        .into_iter()
-        .map(|r| {
-            json!({
-                "decision_page_id": r.decision_page_id,
-                "decision_skill": r.decision_skill,
-                "expectation_page_id": r.expectation_page_id,
-                "superseding_page_id": r.superseding_page_id,
-                "decided_at": r.decided_at,
-                "superseded_at": r.superseded_at,
-            })
-        })
-        .collect();
-    Ok(json!({ "rows": rows }))
+    Ok(json!({ "rows": resp.rows }))
 }
 
 async fn abandoned_paths(client: &Client, a: AbandonedArgs) -> Result<Value> {
     let resp = client
-        .abandoned_paths(AbandonedPathsRequest {
+        .provenance_report(ProvenanceReportRequest {
+            kind: "abandoned".to_owned(),
             skill: a.skill.unwrap_or_default(),
         })
         .await?;
-    let nodes: Vec<Value> = resp
-        .nodes
-        .into_iter()
-        .map(|n| json!({ "page_id": n.page_id, "skill": n.skill, "via": n.via }))
-        .collect();
-    Ok(json!({ "nodes": nodes }))
+    Ok(json!({ "rows": resp.rows }))
 }
 
 async fn provenance_path(client: &Client, a: PathArgs) -> Result<Value> {
@@ -829,22 +803,6 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
             }))
         }
     }
-}
-
-async fn run_query(client: &Client, a: QueryRunArgs) -> Result<Value> {
-    let resp = client
-        .run_stored_query(RunStoredQueryRequest {
-            query_id: a.query_id,
-            params: parse_json_arg(Some(a.params)),
-        })
-        .await?;
-    Ok(json!({
-        "rows": json_or_null(&resp.rows),
-        "schema": resp.schema.into_iter().map(|c| json!({
-            "name": c.name,
-            "type": c.type_name,
-        })).collect::<Vec<_>>(),
-    }))
 }
 
 async fn query_instance(client: &Client, a: QueryInstanceArgs) -> Result<Value> {

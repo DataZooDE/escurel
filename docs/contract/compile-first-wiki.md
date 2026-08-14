@@ -246,7 +246,9 @@ ledger; the reconciler; workflow-aware recovery; the signed capture webhook; the
 ## 7. Invariants held
 
 - **Fail-closed ACL.** Every operation runs on `Role::Agent` /
-  `WORKFLOW_STEP_TOOLS`; **never** `run_stored_query` / admin SQL. Issues, woven
+  `WORKFLOW_STEP_TOOLS`; **never** admin SQL (the admin-gated
+  `run_stored_query` is gone — `query_instance` is the one, ACL-gated
+  query surface). Issues, woven
   pages, and improved skills carry normal owner frontmatter; skill edits
   `validate` first and the meta-skill is refused.
 - **Determinism / idempotency.** All fan-out is the pure reducer —

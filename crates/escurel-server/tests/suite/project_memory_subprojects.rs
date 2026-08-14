@@ -1,7 +1,7 @@
 //! Project / sub-project / conclusion lifecycle over the shipped tools —
 //! no new engine code, just the `project` + `conclusion` skills and the
 //! existing `neighbours` / `provenance_ancestry` / `expand` /
-//! `abandoned_paths` surface.
+//! `provenance_report(kind: "abandoned")` surface.
 //!
 //! Shape:
 //!   project::churn  (active)
@@ -12,7 +12,7 @@
 //!
 //! Proves: containment (part_of), closing (status + concluded_by), reuse
 //! (provenance_ancestry down via builds_on), scope, and retirement of an
-//! overturned conclusion (abandoned_paths).
+//! overturned conclusion (provenance_report kind=abandoned).
 
 use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
 use serde_json::{Value, json};
@@ -184,8 +184,13 @@ async fn subprojects_close_with_conclusions_that_carry_forward() {
 
     // 5. Retirement: c1 was superseded by c2, so it surfaces as abandoned;
     //    c2 (the current head) does not.
-    let ab = call(&p, "abandoned_paths", json!({ "skill": "conclusion" })).await;
-    let nodes: Vec<String> = ab["nodes"]
+    let ab = call(
+        &p,
+        "provenance_report",
+        json!({ "kind": "abandoned", "skill": "conclusion" }),
+    )
+    .await;
+    let nodes: Vec<String> = ab["rows"]
         .as_array()
         .unwrap()
         .iter()

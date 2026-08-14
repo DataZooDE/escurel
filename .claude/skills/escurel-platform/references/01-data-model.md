@@ -104,11 +104,12 @@ citation; never treat one as a link. The link's `skill` segment is its
 - **Origin axis.** External structured data lives as instances of two
   built-in skills:
   - `[[table::<id>]]` — frontmatter declares `catalog`, `schema`, `name`,
-    `versioned`. `expand` reads the schema doc; `run_stored_query` reads
-    the data.
+    `versioned`. `expand` reads the schema doc; `query_instance` (via a
+    `[[query::*]]` page) reads the data.
   - `[[query::<id>]]` — body declares an SQL view; frontmatter declares
     `db` (`relational` | `ext`) and a typed `params:` schema. Run via
-    `run_stored_query(<id>, params)`. See `references/02` §run_stored_query.
+    `query_instance(<id>, params)` (`query_id` is accepted as an alias
+    for `ref`). See `references/02` §query_instance.
 - **Backend axis.** A skill may declare an **instance backend** in its
   frontmatter (`backend: { kind: … }`), so its *instances* are sourced from
   outside markdown. `list_skills` reports each skill's `backend.kind`

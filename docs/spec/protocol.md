@@ -336,7 +336,7 @@ target's frontmatter), and the edge fields `anchor` /
 by the current dispatcher — a caller that sends the extra request keys
 has them silently ignored.
 
-#### Provenance graph (`provenance_ancestry` / `provenance_path` / `expectation_drift` / `abandoned_paths`)
+#### Provenance graph (`provenance_ancestry` / `provenance_report`)
 
 Bounded, read-only traversals over the provenance graph
 ([ADR-0010](../adr/0010-project-memory-provenance-graph.md)). Where
@@ -347,7 +347,7 @@ e.g. `derived_from`, `motivated_by`). They are **parameterized and
 bounded** — the agent supplies named scalars and an allow-listed
 `relations` filter, never SQL — and every returned instance is
 ACL-filtered fail-closed (a hop/row that crosses an owner-private page
-the caller can't read is dropped; a `provenance_path` through a private
+the caller can't read is dropped; a path query through a private
 node reports `reachable: false` with no path, never leaking existence).
 `max_hops` is clamped server-side (≤ 12). The engine runs on stock
 DuckDB recursive CTEs; a DuckPGQ `MATCH` backend sits behind a reserved
@@ -358,37 +358,47 @@ seam, gated on the extension becoming available for the pinned DuckDB
 // provenance_ancestry — "everything this rests on" (up) / "…derived from it" (down)
 // request
 { "page_id": "markdown/instances/result/gbm-auc.md",
+                                     // aliases: from_page / from_page_id
   "direction": "up",                 // "up" (default) | "down"
   "relations": ["produced_by","uses"], // optional allow-list; empty = all kinds
   "max_hops": 5,                     // optional, default 5, capped at 12
-  "as_of": null }                    // optional RFC 3339 source-birth cut
-// response
+  "as_of": null,                     // optional RFC 3339 source-birth cut
+  "to_page": null }                  // optional destination (alias: to_page_id)
+// response (no to_page — the classic walk)
 { "hops": [ { "page_id": "…/analysis/gbm-run.md", "skill": "analysis",
              "relation": "produced_by", "depth": 1 }, ... ] }
 
-// provenance_path — shortest path / reachability between two pages
+// provenance_ancestry with to_page — shortest path / reachability between two pages
 // request
-{ "from_page": "…/result/r.md", "to_page": "…/dataset/d.md",
+{ "page_id": "…/result/r.md", "to_page": "…/dataset/d.md",
   "direction": "up", "relations": ["derived_from"], "max_hops": 5 }
 // response
 { "reachable": true, "path": ["…/result/r.md", "…/analysis/a.md", "…/dataset/d.md"], "depth": 2 }
 
-// expectation_drift — decisions resting on a since-superseded expectation
-// request:  { "skill": null }        // optional: restrict to decisions of this skill
-// response
-{ "rows": [ { "decision_page_id": "…/decision/ship.md", "decision_skill": "decision",
+// provenance_report — cross-graph reports; kind selects the report
+// request:  { "kind": "drift", "skill": null }  // kind: "drift" | "abandoned"
+//                                               // (unknown kind → -32602);
+//                                               // skill optionally restricts
+// response (kind = "drift") — decisions resting on a since-superseded expectation
+{ "kind": "drift",
+  "rows": [ { "decision_page_id": "…/decision/ship.md", "decision_skill": "decision",
              "expectation_page_id": "…/expectation/churn-v1.md",
              "superseding_page_id": "…/expectation/churn-v2.md",
              "decided_at": "2026-02-06T09:00:00Z",
              "superseded_at": "2026-03-02T10:00:00Z" }, ... ] }
 
-// abandoned_paths — nodes retired by supersession/abandonment
-// request:  { "skill": null }
-// response: { "nodes": [ { "page_id": "…/expectation/churn-v1.md",
-//                          "skill": "expectation", "via": "supersedes" }, ... ] }
+// response (kind = "abandoned") — nodes retired by supersession/abandonment
+// { "kind": "abandoned",
+//   "rows": [ { "page_id": "…/expectation/churn-v1.md",
+//               "skill": "expectation", "via": "supersedes" }, ... ] }
 ```
 
-`expectation_drift` is the cross-graph "lost context" query: a
+(Before the 2026-08-14 surface consolidation these were four tools:
+`provenance_path` is now `provenance_ancestry` + `to_page`, and
+`expectation_drift` / `abandoned_paths` are `provenance_report` kinds —
+note the abandoned rows moved from a `nodes` key to `rows`.)
+
+`provenance_report(kind: "drift")` is the cross-graph "lost context" query: a
 `decision` whose `motivated_by`/`addresses` expectation was later
 replaced by a `supersedes` revision authored *after* the decision
 (`superseded_at > decided_at`). These tools are available for any tenant;
@@ -687,43 +697,21 @@ only filter is the single `frontmatter_key` = `frontmatter_value`
 string-equality pair. `order_by` is restricted to `at asc` / `at desc`.
 Owner-private instances the caller cannot read are filtered out.
 
-#### `run_stored_query`
-
-```jsonc
-// request
-{
-  "query_id": "customer-churn-trend",
-  "params":   { "customer_id": "acme-corp", "from_date": "2026-01-01" }
-}
-// response
-{
-  "rows":   [ ... ],
-  "schema": [ { "name": "as_of", "type": "DATE" }, ... ]
-}
-```
-
-**Not yet implemented.** The `as_of_snapshot` request key (pin to a
-DuckLake snapshot) and the `snapshot_version` response field are not
-accepted/emitted by the current handler — it reads `{query_id, params}`
-and returns `{rows, schema}`. For event-volume
-queries that exceed the markdown-friendly scale (~1 M),
-operators move the event records to an external DuckLake table
-and the agent reaches them through `run_stored_query` instead
-of `list_instances`. See [`storage.md`](storage.md#event-volume--scaling-beyond-1-m-events).
-
-**Access:** `run_stored_query` is **admin-only**. A stored query
-executes pre-declared arbitrary SQL over the whole corpus
-(`pages`/`blocks`/`links`) and projects arbitrary columns
-(aggregates, joins), so there is no per-row owner against which to
-apply the per-instance read ACL — the gate is therefore at the
-capability level (like the `admin_*` inspection tools). A non-admin
-caller is refused with the `admin role required` error; an
-unauthenticated dev/on-host caller (no verifier) is unaffected.
-
 #### `query_instance`
 
+The **one query surface**. (The legacy admin-gated `run_stored_query`
+tool — pre-declared arbitrary SQL over the whole corpus, with no
+per-row owner to ACL against — was removed in the 2026-08-14 surface
+consolidation; `query_instance` accepts `query_id` as an alias for
+`ref`, so old callers keep their argument spelling. For event-volume
+queries that exceed the markdown-friendly scale (~1 M), operators move
+the event records to an external DuckLake table and the agent reaches
+them through a `[[query::*]]` page via `query_instance` instead of
+`list_instances` — see
+[`storage.md`](storage.md#event-volume--scaling-beyond-1-m-events).)
+
 A parameterised, full-result-set read over **one `sql_view` instance's**
-view — the agent-surface counterpart of `run_stored_query`. The query page
+view. The query page
 (a `[[query::*]]` instance) declares a `target: [[skill::id]]` naming the
 `sql_view` instance and references its view via the `{{target}}` placeholder:
 
@@ -752,14 +740,14 @@ sql: "SELECT category, SUM(amount)::BIGINT AS total
 are kept separate by construction:
 
 - **Value position** — every `:param` runtime value is bound as a positional
-  DuckDB prepared-statement parameter (the `run_stored_query` pattern), so
+  DuckDB prepared-statement parameter, so
   injection through a param value is impossible and it never flows through the
   `sql_view` filter-interpolation path.
 - **Identifier position** — `{{target}}` resolves to the target's managed
   `vw_…` view name, allow-listed through the same `vw_`-prefix guard the
   projection path uses (never a bound value).
 
-**Access:** unlike `run_stored_query`, `query_instance` is an **agent tool**
+**Access:** `query_instance` is an **agent tool**
 gated by the **per-instance read ACL on the target instance**
 (`may_read_instance`, fail-closed): the caller must be allowed to read the
 underlying data, not merely the query template. Admin bypasses; a denied
@@ -1277,7 +1265,6 @@ empty value means "this gateway's tenant".
 | `validate_bindings` | `{}` | `{bindings: [{page_id, view, status, detail?}]}` | re-probe every `sql_view`; `binding_degraded` ⇒ that view reads fail closed |
 | `register_endpoint` / `list_endpoints` / `delete_endpoint` / `validate_endpoints` | see [Remote backends](#remote-backends-openapi--mcp) | — | remote-backend endpoint registry |
 | `create_remote_instance` | `{skill, id, overlay_body?}` | `{page_id, kind, endpoint}` | materialise an `openapi`/`mcp` overlay instance |
-| `run_stored_query` | `{query_id, params?}` | `{rows, schema}` | admin-gated stored SQL over the whole corpus (see [Read tools](#run_stored_query)) |
 | `admin_index_query` | `{table, limit?}` | `{rows, schema}` | read up to `limit` rows from an allow-listed index table (pages/blocks/links/crdt_ops/crdt_snapshots/chat_messages) |
 | `admin_list_lanes` | `{}` | `{lanes: [{name, backend, tenants_present}]}` | enumerate configured LaneStores |
 | `admin_lane_keys` | `{lane?, prefix?, limit?}` | `{keys: [{key, size_bytes}]}` | list lane keys under a prefix |

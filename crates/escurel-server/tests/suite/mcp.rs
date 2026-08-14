@@ -441,26 +441,6 @@ async fn search_page_granularity_and_filter_over_mcp() {
 }
 
 #[tokio::test]
-async fn run_stored_query_routes_through_http() {
-    let p = start_with_seeded_indexer().await;
-    let result = call_tool(
-        &p,
-        "run_stored_query",
-        json!({
-            "query_id": "count-by-skill",
-            "params": { "skill": "customer" }
-        }),
-    )
-    .await;
-    let rows = result["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 1);
-    // Raw stored queries are scenario-agnostic: they see every page,
-    // including the scenario-B future-corp customer (3 total).
-    assert_eq!(rows[0]["n"], 3);
-    p.shutdown().await;
-}
-
-#[tokio::test]
 async fn unknown_tool_returns_jsonrpc_method_not_found() {
     let p = start_with_seeded_indexer().await;
     let resp = reqwest::Client::new()
@@ -580,7 +560,7 @@ async fn tools_list_returns_the_agent_tools_with_schemas() {
         "expand",
         "neighbours",
         "search",
-        "run_stored_query",
+        "provenance_report",
         "update_page",
         "capture_event",
         "list_inbox",

@@ -17,7 +17,7 @@ against this repo**, not workarounds in your app.
   that's fine — it's a `dev-dependency`.)
 
 - **No raw SQL.** Reach relational/external data only through
-  `run_stored_query`, which dispatches to a `[[query::*]]` page authored
+  `query_instance`, which dispatches to a `[[query::*]]` page authored
   ahead of time with a declared `params:` schema. The dispatcher refuses
   SQL that isn't a query page. This is the sandbox; don't try to route
   around it.

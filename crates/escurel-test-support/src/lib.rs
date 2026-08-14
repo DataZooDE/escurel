@@ -64,7 +64,7 @@ pub use escurel_server::{AutonomyLintMode, EventAclMode, WriteAclMode};
 pub use escurel_client::{
     Edge, ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, ListInstancesRequest,
     ListInstancesResponse, ListSkillsRequest, ListSkillsResponse, NeighboursRequest,
-    NeighboursResponse, PageRef, ResolveRequest, ResolveResponse, RunStoredQueryRequest,
-    RunStoredQueryResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
-    UpdatePageRequest, UpdatePageResponse, ValidationIssue, WikilinkParsed,
+    NeighboursResponse, PageRef, ResolveRequest, ResolveResponse, SearchHit, SearchRequest,
+    SearchResponse, Skill, StoredQueryColumn, UpdatePageRequest, UpdatePageResponse,
+    ValidationIssue, WikilinkParsed,
 };

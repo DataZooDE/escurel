@@ -83,7 +83,7 @@ async fn agent_role_sees_only_callable_tools() {
         "tenant_create",
         "purge_page",
         "admin_index_query",
-        "run_stored_query",
+        "rebuild",
     ] {
         assert!(
             !agent_names.contains(&admin_only.to_owned()),

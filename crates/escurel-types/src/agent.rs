@@ -176,6 +176,9 @@ pub struct NeighboursResponse {
 #[serde(default)]
 pub struct ProvenanceAncestryRequest {
     pub page_id: String,
+    /// Target page: switches the tool to reachability/path mode
+    /// (`ProvenancePathResponse` shape). Empty = the ancestry walk.
+    pub to_page: String,
     pub direction: String,
     pub relations: Vec<String>,
     pub max_hops: u32,
@@ -201,11 +204,13 @@ pub struct ProvenanceAncestryResponse {
     pub hops: Vec<ProvenanceHop>,
 }
 
-/// `expectation_drift` arguments. `skill` (empty = all) restricts to
-/// decisions of that skill.
+/// `provenance_report` arguments: `kind` is `drift` or `abandoned`;
+/// `skill` (empty = all) restricts the report. Consolidates the old
+/// `expectation_drift` / `abandoned_paths` tools.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct ExpectationDriftRequest {
+pub struct ProvenanceReportRequest {
+    pub kind: String,
     pub skill: String,
 }
 
@@ -223,18 +228,15 @@ pub struct DriftRow {
     pub superseded_at: String,
 }
 
+/// `provenance_report` result. `rows` is kind-shaped: [`DriftRow`]s for
+/// `kind: "drift"`, [`AbandonedNode`]s for `kind: "abandoned"` — kept as
+/// raw JSON here so one response type serves both; decode into the row
+/// type matching `kind`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct ExpectationDriftResponse {
-    pub rows: Vec<DriftRow>,
-}
-
-/// `abandoned_paths` arguments. `skill` (empty = all) restricts to retired
-/// nodes of that skill.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct AbandonedPathsRequest {
-    pub skill: String,
+pub struct ProvenanceReportResponse {
+    pub kind: String,
+    pub rows: Value,
 }
 
 /// One node retired by supersession/abandonment. MCP wire keys:
@@ -247,14 +249,10 @@ pub struct AbandonedNode {
     pub via: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct AbandonedPathsResponse {
-    pub nodes: Vec<AbandonedNode>,
-}
-
-/// `provenance_path` arguments. Shortest path from `from_page` to
-/// `to_page` following `direction` (`up`/`down`), optionally restricted to
+/// Path-mode arguments (the old `provenance_path` tool, now
+/// `provenance_ancestry` with `to_page`; `from_page` binds via the
+/// server-side alias). Shortest path from `from_page` to `to_page`
+/// following `direction` (`up`/`down`), optionally restricted to
 /// `relations`; `max_hops` clamped server-side.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -478,39 +476,6 @@ pub struct ListInstancesResponse {
     pub next_cursor: Option<String>,
 }
 
-// ── stored queries ────────────────────────────────────────────────
-
-/// `run_stored_query` arguments. MCP wire keys: `query_id`, `params`
-/// (object). Proto used `query_id` + `params_json` (string).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct RunStoredQueryRequest {
-    pub query_id: String,
-    /// MCP wire key `params` carries a real JSON object (the proto
-    /// encoded this as the string `params_json`).
-    pub params: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct StoredQueryColumn {
-    pub name: String,
-    /// MCP wire key `type` (the proto field is `type_name`).
-    #[serde(rename = "type")]
-    pub type_name: String,
-}
-
-/// MCP wire keys: `rows` (array), `schema` (array of columns). Proto
-/// used `rows_json` (string) + `schema`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct RunStoredQueryResponse {
-    /// MCP wire key `rows` carries a real JSON array (the proto encoded
-    /// this as the string `rows_json`).
-    pub rows: Value,
-    pub schema: Vec<StoredQueryColumn>,
-}
-
 // ── query_instance (issue #205) ───────────────────────────────────
 
 /// `query_instance` arguments. MCP wire keys: `ref` (the query id or its
@@ -523,6 +488,17 @@ pub struct QueryInstanceRequest {
     #[serde(rename = "ref")]
     pub query_ref: String,
     pub params: Value,
+}
+
+/// One projected result column. MCP wire key `type` (the proto field
+/// was `type_name`). (Named for the retired stored-query surface it
+/// debuted on; `query_instance` is its remaining consumer.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct StoredQueryColumn {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_name: String,
 }
 
 /// MCP wire keys: `rows` (array), `schema` (columns), `truncated` (bool —

@@ -93,7 +93,7 @@ mod snapshot_refresh;
 mod sql_creds;
 mod sql_validate;
 mod sql_view_tools;
-mod stored_query_acl;
+mod surface_consolidation;
 mod tool_execution_labels;
 mod tool_label_map;
 mod tool_registry_conformance;
