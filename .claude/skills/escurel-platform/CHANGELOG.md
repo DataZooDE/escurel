@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.8 — `append_message` `msg_id` is a real idempotency key
+
+- `references/02-tool-surface.md`: a caller-supplied `msg_id` now
+  deduplicates — a retry with the same `(chat_group_id, msg_id)` echoes
+  the originally stored row (including the server-stamped `ts`) instead
+  of inserting a second, microseconds-apart copy. Same contract as
+  `capture_event`'s `event_id`. Offline clients can finally retry
+  deliveries safely; without a `msg_id` the server still mints a ULID
+  and every call appends.
 ## 0.6.7 — truth pass: discovery, streaming, wire-JSON claims corrected
 
 - `references/03-consume-over-http-mcp.md`: three false claims fixed.

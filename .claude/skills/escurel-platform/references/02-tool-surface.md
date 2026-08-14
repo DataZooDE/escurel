@@ -212,7 +212,7 @@ ADR: `docs/adr/0002-chat-message-surface.md`.
 
 | tool | inputs | output | mode |
 |---|---|---|---|
-| `append_message` | `chat_group_id`, `role`, `content`, `author?`, `ts?`, `metadata?`, `msg_id?`, `embed=true` | `{msg_id, ts}` | append (Writes quota) |
+| `append_message` | `chat_group_id`, `role`, `content`, `author?`, `ts?`, `metadata?`, `msg_id?`, `embed=true` | `{msg_id, ts}` | append (Writes quota); a caller-supplied `msg_id` is an **idempotency key** — a retry echoes the stored row (original `ts`), never a duplicate |
 | `list_messages` | `chat_group_id`, `since?`, `until?`, `limit=100`, `cursor?`, `direction='desc'` | `{messages[], next_cursor?}` | read (Queries quota) |
 
 Field semantics:

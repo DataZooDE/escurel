@@ -31,6 +31,7 @@ mod autonomy;
 mod backend_read_limits;
 mod binary_boots;
 mod chat_acl;
+mod chat_idempotency;
 mod crm_demo_backends;
 mod delete_page;
 mod document_ingestion;
