@@ -282,6 +282,22 @@ async fn record_and_dispatch_ingest(
         target_skill,
     } = job;
     let subject = caller.subject.as_str();
+    // #390: an empty/whitespace idempotency key would collapse every
+    // id-less ingest into ONE event (first writer wins, silent loss with
+    // a success receipt). Same invariant as the MCP door: refuse it.
+    if caller_event_id
+        .as_deref()
+        .is_some_and(|id| id.trim().is_empty())
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({
+                "error": "invalid_event_id",
+                "message": "event_id must be non-empty when supplied — it is the                             idempotency key (omit it to mint a server id)",
+            })),
+        )
+            .into_response();
+    }
     // escurel#382: a caller-supplied `event_id` is an idempotency key. A
     // redelivery — the same key already captured — is acknowledged without
     // re-capturing OR re-dispatching the worker: the bytes were deduped by

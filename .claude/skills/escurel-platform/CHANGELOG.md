@@ -20,6 +20,16 @@ pin (see `SKILL.md` → "How this skill is installed").
 - Token lifetime on long sockets is now specified: auth is at upgrade
   only, a socket outlives its token's `exp`; bound it at the proxy or
   reconnect periodically — which `since_event_id` makes lossless.
+## 0.6.22 — an empty `event_id` is refused, not a shared dedup key
+
+- `capture_event` and `POST /ingest*` refuse an empty/whitespace-only
+  `event_id` (`-32602` / `422 invalid_event_id`). It is the idempotency
+  key, so `""` made EVERY id-less capture the same event — first writer
+  wins, every later one silently discarded with a success receipt
+  (escurel#390's measured loss). An ABSENT key still mints a server
+  ULID; only the explicit empty string was ever affected — and those
+  callers were already losing data.
+
 ## 0.6.21 — atomic approve: `base_sha256` on `update_page`
 
 - `update_page` gains `base_sha256` — the content-hash CAS that works

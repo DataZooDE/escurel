@@ -381,7 +381,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["label_skill"],
                     "properties": {
-                        "event_id": { "type": "string", "description": "Caller-supplied id; server generates a ULID when absent." },
+                        "event_id": { "type": "string", "minLength": 1, "description": "Idempotency key: a redelivery with the same id echoes the stored event. Must be NON-EMPTY when supplied (#390); omit to mint a server ULID." },
                         "at": { "type": "string", "description": "RFC 3339 event time." },
                         "source": { "type": "string", "description": "Ingest source, e.g. gmail/meet/drive." },
                         "mime": { "type": "string", "description": "Content type, e.g. message/rfc822." },
