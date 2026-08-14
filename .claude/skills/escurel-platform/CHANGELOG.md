@@ -4,6 +4,25 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.13 — schema ergonomics: required label, aliases, honest envelopes
+
+- `capture_event` now **requires a non-empty `label_skill`** — `{}` used
+  to silently mint an event no runner could route (the label selects the
+  system prompt). This is the one non-additive change in the series; a
+  caller that omitted the label was already broken, just silently.
+- Sibling-spelling **aliases** (additive): `list_instances` accepts
+  `skill` beside `skill_id`; `search` accepts `skill_id` beside `skill`;
+  `move_page` accepts `from_page_id`/`to_page_id` (and
+  `from_page`/`to_page`); `export_pack` accepts `pack_id` beside `id`;
+  `unsubscribe_pack` accepts `id` beside `pack_id`. Unknown-arg dropping
+  can no longer turn a sibling spelling into silent default behaviour.
+- Every bare `page_id` input schema now documents the repo-relative
+  path format with an example (`markdown/instances/<skill>/<slug>.md`).
+- Admin write envelopes that omitted `ok` (`admin_delete_chat_history`,
+  `create_sql_instance`, `create_remote_instance`, `unsubscribe_pack`)
+  now carry `ok: true`, so their refusal path can reach MCP `isError`.
+- `run_stored_query` is marked DEPRECATED in its description — use
+  `query_instance`.
 ## 0.6.15 — `list_instances` cursor pagination (the null era ends)
 
 - `list_instances` accepts an opaque `cursor`, and its `next_cursor` —

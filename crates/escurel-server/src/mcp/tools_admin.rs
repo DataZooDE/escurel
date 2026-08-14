@@ -252,7 +252,7 @@ pub(super) async fn tool_admin_delete_chat_history(
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("admin_delete_chat_history: {e}")))?;
-    Ok(json!({ "deleted": deleted }))
+    Ok(json!({ "ok": true, "deleted": deleted }))
 }
 
 #[derive(Deserialize)]
@@ -431,7 +431,7 @@ pub(super) async fn tool_create_sql_instance(
         .create_instance(&a.skill, &sql_view, &a.id, &body)
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_sql_instance: {e}")))?;
-    Ok(json!({ "page_id": m.page_id, "view": m.view }))
+    Ok(json!({ "ok": true, "page_id": m.page_id, "view": m.view }))
 }
 
 // --- remote (openapi/mcp) backend tools ------------------------
@@ -645,7 +645,7 @@ pub(super) async fn tool_create_remote_instance(
         .update_page(&page_id, &content)
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_remote_instance: {e}")))?;
-    Ok(json!({ "page_id": page_id, "kind": kind, "endpoint": endpoint }))
+    Ok(json!({ "ok": true, "page_id": page_id, "kind": kind, "endpoint": endpoint }))
 }
 
 #[derive(Deserialize)]
@@ -926,6 +926,7 @@ pub(super) async fn tool_tenant_delete(
 #[derive(Deserialize)]
 pub(super) struct ExportPackArgs {
     tenant_id: String,
+    #[serde(alias = "pack_id")]
     id: String,
     version: u32,
     vertical: String,
@@ -1847,6 +1848,7 @@ pub(super) async fn tool_rebase_pack(state: &AppState, args: Value) -> Result<Va
 #[derive(Deserialize)]
 pub(super) struct UnsubscribePackArgs {
     tenant_id: String,
+    #[serde(alias = "id")]
     pack_id: String,
 }
 
@@ -1903,7 +1905,7 @@ pub(super) async fn tool_unsubscribe_pack(
         .delete_pack_subscription(&a.pack_id)
         .await
         .map_err(|e| JsonRpcError::internal(format!("unsubscribe_pack pin: {e}")))?;
-    Ok(json!({ "pack": a.pack_id, "pages_removed": pages_removed }))
+    Ok(json!({ "ok": true, "pack": a.pack_id, "pages_removed": pages_removed }))
 }
 
 /// Admin: the subscribed packs and their pins (REQ-SUB-01).

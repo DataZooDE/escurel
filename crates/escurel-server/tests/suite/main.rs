@@ -79,6 +79,7 @@ mod reader_role_chat;
 mod reader_role_crdt;
 mod reader_role_events;
 mod remote_backend_tools;
+mod schema_ergonomics;
 mod self_packaging;
 mod serve_demo;
 mod session_commit_writes_through;

@@ -102,6 +102,7 @@ pub(super) async fn tool_list_skills(
 
 #[derive(Deserialize)]
 pub(super) struct ListInstancesArgs {
+    #[serde(alias = "skill")]
     skill_id: String,
     /// Resume cursor from a previous page's `next_cursor`.
     #[serde(default)]
@@ -942,7 +943,7 @@ pub(super) struct SearchArgs {
     pub(super) k: usize,
     #[serde(default)]
     pub(super) page_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "skill_id")]
     pub(super) skill: Option<String>,
     /// RFC 3339 time-travel cut; blocks born after it are excluded.
     #[serde(default)]
