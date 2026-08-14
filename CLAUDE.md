@@ -113,7 +113,13 @@ A PR cycle:
    right reason (not a compile error you didn't intend, not a
    missing fixture).
 3. Implement the minimum to turn it green; rerun.
-4. Local pre-push — all four must pass:
+4. Local pre-push — all four must pass. **Never gate on a piped exit
+   code**: `cargo clippy … | tail -1` reports `tail`'s status, so a
+   failing clippy sails through `&&` — one green-locally/red-in-CI
+   incident came from exactly this (and `grep -c` exits 1 on a zero
+   count, breaking chains the other way). Use `set -o pipefail`, or
+   keep the status observable
+   (`cargo clippy … >/dev/null 2>clippy.log; echo $?`):
    - `cargo fmt --check`
    - `cargo clippy --workspace --all-targets -- -D warnings`
    - `cargo test --workspace --all-targets`
@@ -292,6 +298,13 @@ dev-debug`, then `cargo clean --profile dev-debug` when you're done.
 - **Before a large agent fan-out**, set `CARGO_INCREMENTAL=0` in the
   agents' environment. Incremental state was 7.1 GB per worktree and
   is worthless in a worktree that gets built once and abandoned.
+- **Worktrees live on the real disk, never on tmpfs.** `/tmp` is a
+  63 GB tmpfs here; five worktrees' `target/` dirs filled it in one
+  afternoon and took every in-flight build's *diagnostics* down with
+  them (ENOSPC kills the output you would debug with). Use a disk
+  path (e.g. `~/wt-escurel/`); `git worktree move` cannot cross
+  filesystems — copy + `git worktree repair` instead. See
+  [`docs/notes/discovered/2026-08-14-tmpfs-worktrees-and-piped-exit-codes.md`](docs/notes/discovered/2026-08-14-tmpfs-worktrees-and-piped-exit-codes.md).
 - **Don't** point every worktree at one shared `CARGO_TARGET_DIR`.
   Cargo takes an exclusive lock on the target dir, so parallel agents
   would serialise behind each other — it trades the disk problem for a
