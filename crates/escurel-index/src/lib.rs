@@ -50,7 +50,7 @@ pub use backend::{
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
 pub use creds::{CredentialInfo, CredentialRecord};
-pub use events::{EVENTS_MAX_LIMIT, EventInfo, NewEvent};
+pub use events::{EVENTS_MAX_LIMIT, EventInfo, EventPage, NewEvent};
 pub use graph::{
     AbandonedNode, DriftRow, GraphBackend, GraphDir, MAX_HOPS_CEILING, ProvenanceHop,
     ProvenancePath,

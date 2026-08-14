@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.10 — cursor pagination on `list_inbox` / `list_events`
+
+- `references/02-tool-surface.md`: both event listings accept an opaque
+  `cursor` and return `next_cursor` when rows lie past the page — the
+  `list_messages` idiom. **Only the absence of `next_cursor` means the
+  listing is complete**; a short page never does (the per-event ACL
+  filter runs after the limit and legitimately shortens pages). This
+  makes an instance's history past `limit` reachable at all — the tail
+  used to be permanently silent. An undecodable cursor is `-32602`.
 ## 0.6.9 — `/ingest` gained dispatch-gate parity + an idempotency key
 
 - `POST /ingest` and `POST /ingest/upload` accept an optional

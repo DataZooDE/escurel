@@ -14,6 +14,8 @@
 //! - [`Indexer::assign_event`] — assign an inbox event to an instance
 //!   (→ `processed`), the (simulated) agent's act of folding it into state.
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use duckdb::params;
 use ulid::Ulid;
 
@@ -64,6 +66,52 @@ pub enum EventsBackend {
 /// `JSON`, the attached-Postgres table stores JSON text in a `VARCHAR`
 /// column (see `snapshot::events_pg`'s doc comment) — and `::VARCHAR` is
 /// a no-op on an already-`VARCHAR` column.
+/// One page of events plus the resume cursor — the `list_messages`
+/// idiom applied to the event surfaces (API review R1). `next_cursor`
+/// is `Some` **iff** at least one row lies past the page; its absence —
+/// and nothing else — means the listing is complete. A short page is
+/// NOT a termination signal: the server-side ACL filter runs after the
+/// limit and legitimately shortens pages.
+#[derive(Debug, Clone)]
+pub struct EventPage {
+    pub events: Vec<EventInfo>,
+    pub next_cursor: Option<String>,
+}
+
+/// Cursor payload: base64url(`"<at-us-or-empty>|<event_id>"`). `at` is
+/// the row's `at_ts` at FULL microsecond precision (`%Y-%m-%d
+/// %H:%M:%S.%f`), not the second-precision RFC-3339 the wire shows —
+/// the equality comparison in the resume predicate must match the
+/// stored value exactly or a sub-second row would be replayed. Empty
+/// `at` marks `at_ts IS NULL` (the NULLS LAST block).
+#[derive(Debug)]
+struct EventCursor {
+    at: Option<String>,
+    event_id: String,
+}
+
+impl EventCursor {
+    fn encode(at: Option<&str>, event_id: &str) -> String {
+        let raw = format!("{}|{}", at.unwrap_or(""), event_id);
+        URL_SAFE_NO_PAD.encode(raw.as_bytes())
+    }
+
+    fn decode(raw: &str) -> Result<Self, IndexerError> {
+        let bytes = URL_SAFE_NO_PAD
+            .decode(raw.as_bytes())
+            .map_err(|e| IndexerError::InvalidCursor(format!("base64: {e}")))?;
+        let s = std::str::from_utf8(&bytes)
+            .map_err(|e| IndexerError::InvalidCursor(format!("utf-8: {e}")))?;
+        let (at, event_id) = s
+            .split_once('|')
+            .ok_or_else(|| IndexerError::InvalidCursor("missing separator".to_owned()))?;
+        Ok(EventCursor {
+            at: (!at.is_empty()).then(|| at.to_owned()),
+            event_id: event_id.to_owned(),
+        })
+    }
+}
+
 fn select_cols(table: &str) -> String {
     format!(
         "SELECT event_id, strftime(at_ts, '%Y-%m-%dT%H:%M:%SZ'), \
@@ -332,6 +380,131 @@ impl Indexer {
         );
         self.hydrate_events(&sql, Some(instance_page_id), tenant.as_deref())
             .await
+    }
+
+    /// [`Self::list_inbox`] with a resume cursor (newest first).
+    pub async fn list_inbox_page(
+        &self,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<EventPage, IndexerError> {
+        self.paged_events(None, false, limit, cursor).await
+    }
+
+    /// [`Self::list_events`] with a resume cursor (oldest first). This
+    /// is what makes an instance's history past `limit` reachable at
+    /// all — without it the tail was permanently silent.
+    pub async fn list_events_page(
+        &self,
+        instance_page_id: &str,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<EventPage, IndexerError> {
+        self.paged_events(Some(instance_page_id), true, limit, cursor)
+            .await
+    }
+
+    /// Shared paged listing. `instance` = `Some` is the processed-history
+    /// query (ASC), `None` the inbox (DESC). Fetches `limit + 1` rows to
+    /// detect a tail; the extra row is dropped and becomes the cursor.
+    ///
+    /// The resume predicates mirror `ORDER BY at_ts <dir> NULLS LAST,
+    /// event_id <dir>`: a non-NULL cursor row resumes within the
+    /// non-NULL block (or crosses into the NULL block, which sorts last
+    /// in both directions); a NULL cursor row resumes inside the NULL
+    /// block by `event_id` alone (ULIDs are time-ordered).
+    async fn paged_events(
+        &self,
+        instance: Option<&str>,
+        asc: bool,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<EventPage, IndexerError> {
+        let limit = limit.clamp(1, EVENTS_MAX_LIMIT);
+        let cursor = match cursor {
+            Some(raw) => Some(EventCursor::decode(raw)?),
+            None => None,
+        };
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> = Vec::new();
+        match instance {
+            Some(inst) => {
+                where_clauses.push("instance_page_id = ? AND status = 'processed'".to_owned());
+                bindings.push(Box::new(inst.to_owned()));
+            }
+            None => where_clauses.push("status = 'inbox'".to_owned()),
+        }
+        if let Some(t) = &tenant {
+            where_clauses.push("tenant = ?".to_owned());
+            bindings.push(Box::new(t.clone()));
+        }
+        if let Some(c) = &cursor {
+            let cmp = if asc { ">" } else { "<" };
+            match &c.at {
+                Some(at) => {
+                    where_clauses.push(format!(
+                        "((at_ts IS NOT NULL AND at_ts {cmp} TRY_CAST(? AS TIMESTAMP)) \
+                         OR (at_ts = TRY_CAST(? AS TIMESTAMP) AND event_id {cmp} ?) \
+                         OR at_ts IS NULL)"
+                    ));
+                    bindings.push(Box::new(at.clone()));
+                    bindings.push(Box::new(at.clone()));
+                    bindings.push(Box::new(c.event_id.clone()));
+                }
+                None => {
+                    where_clauses.push(format!("(at_ts IS NULL AND event_id {cmp} ?)"));
+                    bindings.push(Box::new(c.event_id.clone()));
+                }
+            }
+        }
+        let dir = if asc { "ASC" } else { "DESC" };
+        // select_cols + one extra column: the full-precision `at_ts` the
+        // NEXT cursor is built from (index 10; the EventRow reader only
+        // touches 0..=9, so it is invisible to the wire projection).
+        let projection = select_cols(&table);
+        let projection = projection
+            .strip_suffix(&format!(" FROM {table}"))
+            .expect("select_cols ends with FROM <table>");
+        let sql = format!(
+            "{projection}, strftime(at_ts, '%Y-%m-%d %H:%M:%S.%f') \
+             FROM {table} WHERE {} \
+             ORDER BY at_ts {dir} NULLS LAST, event_id {dir} LIMIT {}",
+            where_clauses.join(" AND "),
+            limit + 1,
+        );
+
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let param_refs: Vec<&dyn duckdb::ToSql> = bindings
+            .iter()
+            .map(|b| b.as_ref() as &dyn duckdb::ToSql)
+            .collect();
+        let mut rows: Vec<(EventRow, Option<String>)> = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                Ok((event_row_from_row(row)?, row.get::<_, Option<String>>(10)?))
+            })?
+            .collect::<duckdb::Result<Vec<_>>>()?;
+        drop(stmt);
+        drop(conn);
+
+        let next_cursor = if rows.len() > limit {
+            rows.truncate(limit);
+            rows.last()
+                .map(|(r, at_full)| EventCursor::encode(at_full.as_deref(), &r.0))
+        } else {
+            None
+        };
+        let events = rows
+            .into_iter()
+            .map(|(r, _)| event_from_row(r))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(EventPage {
+            events,
+            next_cursor,
+        })
     }
 
     /// One event by id, whatever its status — the by-event lookup the

@@ -417,11 +417,14 @@ pub(super) fn tools_list_payload() -> Value {
                  events you may see: an event filed into an instance follows \
                  that instance's ACL, an un-triaged one is yours only if you \
                  captured it, and admin sees all (`ESCUREL_EVENT_ACL`). A page \
-                 may therefore come back shorter than `limit`.",
+                 may therefore come back shorter than `limit` — ONLY the \
+                 absence of `next_cursor` means the listing is complete; pass \
+                 `next_cursor` back as `cursor` to continue.",
                 json!({
                     "type": "object",
                     "properties": {
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                        "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor." }
                     }
                 }),
             ),
@@ -434,13 +437,16 @@ pub(super) fn tools_list_payload() -> Value {
                  which is how you discover the instance an event was assigned \
                  to. Exactly one of `instance_page_id` or `event_id`. \
                  Filtered by the same per-event ACL as `list_inbox`; an event \
-                 you may not see is absent, not an error.",
+                 you may not see is absent, not an error. Paginated: ONLY the \
+                 absence of `next_cursor` means the history is complete; pass \
+                 it back as `cursor` to read past `limit`.",
                 json!({
                     "type": "object",
                     "properties": {
                         "instance_page_id": { "type": "string" },
                         "event_id": { "type": "string" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                        "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor (listing branch only)." }
                     }
                 }),
             ),
