@@ -1244,6 +1244,44 @@ impl Scope {
 
 /// The `{ok, issues[]}` refusal envelope every write tool returns —
 /// declared once, referenced per tool via [`output_schema_for`].
+/// Dispatch-level alias → canonical tool name (API review B1): the
+/// verb-first spellings of the noun-first stragglers. Returns `None`
+/// for anything already canonical (or unknown). These are COURTESY
+/// spellings only — `tools/list` advertises the canonical names, and
+/// the registry-conformance ratchets see only canonical arms.
+pub(crate) fn canonical_tool_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "create_tenant" => "tenant_create",
+        "list_tenants" => "tenant_list",
+        "get_tenant" => "tenant_get",
+        "update_tenant" => "tenant_update",
+        "delete_tenant" => "tenant_delete",
+        "export_tenant" => "tenant_export",
+        "import_tenant" => "tenant_import",
+        "reload_embedding" => "embedding_reload",
+        _ => return None,
+    })
+}
+
+/// The `scope: "admin"` tool names, memoised once from the same
+/// declarations `tools/list` serves — the quota exemption keys on this
+/// so it can never drift from the dispatch gate (the registry ratchet
+/// pins `scope` to `require_admin`).
+pub(crate) fn admin_scope_tools() -> &'static std::collections::HashSet<String> {
+    static SET: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        tools_list_payload()["tools"]
+            .as_array()
+            .map(|ts| {
+                ts.iter()
+                    .filter(|t| t["scope"] == "admin")
+                    .filter_map(|t| t["name"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
 fn write_envelope_schema() -> Value {
     json!({
         "type": "object",

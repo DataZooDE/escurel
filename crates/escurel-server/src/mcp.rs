@@ -167,7 +167,7 @@ pub async fn mcp(
 async fn mcp_inner(
     state: crate::server::AppState,
     headers: HeaderMap,
-    req: JsonRpcRequest,
+    mut req: JsonRpcRequest,
 ) -> axum::response::Response {
     tracing::info!(msg = "mcp.request.start", "mcp.request.start");
 
@@ -180,6 +180,18 @@ async fn mcp_inner(
         Ok(ctx) => ctx,
         Err(resp) => return resp,
     };
+
+    // Dispatch-level tool ALIASES (API review B1): the verb-first
+    // spellings of the noun-first stragglers resolve to their canonical
+    // names here, before anything keys on the name — quota, metrics,
+    // replica gates and the dispatch match all see the canonical
+    // spelling. `tools/list` advertises canonical names only.
+    if req.method == "tools/call"
+        && let Some(name) = req.params.get("name").and_then(Value::as_str)
+        && let Some(canonical) = schema::canonical_tool_name(name)
+    {
+        req.params["name"] = json!(canonical);
+    }
 
     // Quota gate — only enforced when a quota manager is
     // configured (and an auth context is available to name the
@@ -429,18 +441,12 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
     // *agent* rate budget — they must not debit the query/write
     // buckets (the old gRPC admin surface carried no quota
     // middleware). Otherwise an operator's own `admin_quota` snapshot
-    // would read back one-less-than-full.
-    if name.starts_with("admin_")
-        || name.starts_with("tenant_")
-        || matches!(
-            name,
-            "rebuild"
-                | "compact_lanes"
-                | "attach_external"
-                | "embedding_reload"
-                | "publish_snapshot"
-        )
-    {
+    // would read back one-less-than-full. Keyed on the `scope` label
+    // (the same declaration `tools/list` filters by and the registry
+    // ratchet pins to `require_admin`) — the previous hand-kept
+    // prefix + `matches!` list silently forgot every unprefixed admin
+    // tool, which then ate the tenant's agent budget (API review).
+    if schema::admin_scope_tools().contains(name) {
         return None;
     }
     Some(match name {

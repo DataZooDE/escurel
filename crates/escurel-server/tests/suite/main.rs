@@ -35,6 +35,7 @@ mod chat_acl;
 mod chat_idempotency;
 mod crm_demo_backends;
 mod delete_page;
+mod dispatch_aliases;
 mod document_ingestion;
 mod error_data;
 mod event_acl;
