@@ -24,6 +24,12 @@ pub(crate) struct IngestRequest {
     /// (e.g. a per-fraktion collection) when several accept the same MIME.
     #[serde(default)]
     skill: Option<String>,
+    /// Optional caller-supplied idempotency key (escurel#382): fed to
+    /// `capture_event`'s dedup, so a redelivery neither mints a second
+    /// inbox event nor re-runs the extraction worker. Absent = server
+    /// mints a fresh ULID per request (the legacy behaviour).
+    #[serde(default)]
+    event_id: Option<String>,
 }
 
 /// The authenticated caller of an ingest request — the bits needed to enforce
@@ -43,6 +49,36 @@ async fn ingest_gate(
     headers: &HeaderMap,
 ) -> Result<(std::sync::Arc<Indexer>, IngestCaller), axum::response::Response> {
     let auth_ctx = crate::auth_gate::authenticate(state, headers).await?;
+    // Dispatch-gate parity (API review B1): the REST intake door gives the
+    // same guarantees as the MCP door. A ducklake READER owns no writes —
+    // refuse before debiting quota, with the same typed vocabulary as the
+    // JSON-RPC `-32004` so the client knows to retry against the writer.
+    if state.reader_mode {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "read_only_replica",
+                "message": "this replica is a ducklake reader; retry the ingest against the writer",
+            })),
+        )
+            .into_response());
+    }
+    // #247 suspend gate, mirroring `dispatch`: agent-role callers are
+    // refused while an admin token can still operate (and `resume`).
+    if state
+        .tenant_suspended
+        .load(std::sync::atomic::Ordering::Relaxed)
+        && matches!(auth_ctx.as_ref().map(|c| c.role), Some(Role::Agent))
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "tenant_suspended",
+                "message": "tenant is suspended; an admin token can resume it",
+            })),
+        )
+            .into_response());
+    }
     let subject = auth_ctx
         .as_ref()
         .map(|c| c.subject.clone())
@@ -88,18 +124,31 @@ pub(crate) async fn ingest(
     headers: HeaderMap,
     Json(req): Json<IngestRequest>,
 ) -> axum::response::Response {
-    state.metrics.inc_request("/ingest", 200);
-    let (indexer, caller) = match ingest_gate(&state, &headers).await {
+    // Metrics record the OUTCOME — a refused request is not a 200.
+    let resp = ingest_inner(&state, &headers, req).await;
+    state.metrics.inc_request("/ingest", resp.status().as_u16());
+    resp
+}
+
+async fn ingest_inner(
+    state: &crate::server::AppState,
+    headers: &HeaderMap,
+    req: IngestRequest,
+) -> axum::response::Response {
+    let (indexer, caller) = match ingest_gate(state, headers).await {
         Ok(v) => v,
         Err(resp) => return resp,
     };
     record_and_dispatch_ingest(
         &indexer,
         &state.events_tx,
-        &req.blob_id,
-        &req.content_type,
-        req.title,
-        req.skill.as_deref(),
+        IngestJob {
+            caller_event_id: req.event_id,
+            blob_id: &req.blob_id,
+            content_type: &req.content_type,
+            title: req.title,
+            target_skill: req.skill.as_deref(),
+        },
         &caller,
     )
     .await
@@ -119,6 +168,9 @@ pub(crate) struct IngestUploadRequest {
     /// Optional explicit target document skill (see [`IngestRequest::skill`]).
     #[serde(default)]
     skill: Option<String>,
+    /// Optional idempotency key (see [`IngestRequest::event_id`]).
+    #[serde(default)]
+    event_id: Option<String>,
 }
 
 pub(crate) async fn ingest_upload(
@@ -126,8 +178,20 @@ pub(crate) async fn ingest_upload(
     headers: HeaderMap,
     Json(req): Json<IngestUploadRequest>,
 ) -> axum::response::Response {
-    state.metrics.inc_request("/ingest/upload", 200);
-    let (indexer, caller) = match ingest_gate(&state, &headers).await {
+    // Metrics record the OUTCOME — a refused request is not a 200.
+    let resp = ingest_upload_inner(&state, &headers, req).await;
+    state
+        .metrics
+        .inc_request("/ingest/upload", resp.status().as_u16());
+    resp
+}
+
+async fn ingest_upload_inner(
+    state: &crate::server::AppState,
+    headers: &HeaderMap,
+    req: IngestUploadRequest,
+) -> axum::response::Response {
+    let (indexer, caller) = match ingest_gate(state, headers).await {
         Ok(v) => v,
         Err(resp) => return resp,
     };
@@ -146,7 +210,6 @@ pub(crate) async fn ingest_upload(
     if let Some(quota) = state.quota.as_ref() {
         let cap = quota.max_blob_bytes(indexer.tenant());
         if cap > 0 && bytes.len() as u64 > cap {
-            state.metrics.inc_request("/ingest/upload", 413);
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 Json(json!({
@@ -180,13 +243,27 @@ pub(crate) async fn ingest_upload(
     record_and_dispatch_ingest(
         &indexer,
         &state.events_tx,
-        blob.as_str(),
-        &req.content_type,
-        req.title,
-        req.skill.as_deref(),
+        IngestJob {
+            caller_event_id: req.event_id,
+            blob_id: blob.as_str(),
+            content_type: &req.content_type,
+            title: req.title,
+            target_skill: req.skill.as_deref(),
+        },
         &caller,
     )
     .await
+}
+
+/// One ingest's inputs, bundled — the shared tail takes them as a unit
+/// so its signature stays readable as the surface grows.
+struct IngestJob<'a> {
+    /// Caller-supplied idempotency key (escurel#382); `None` = mint.
+    caller_event_id: Option<String>,
+    blob_id: &'a str,
+    content_type: &'a str,
+    title: Option<String>,
+    target_skill: Option<&'a str>,
 }
 
 /// Shared tail: resolve MIME→skill (REQ-DOC-06), record the immutable ingest
@@ -194,13 +271,45 @@ pub(crate) async fn ingest_upload(
 async fn record_and_dispatch_ingest(
     indexer: &std::sync::Arc<Indexer>,
     events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<escurel_index::EventInfo>>,
-    blob_id: &str,
-    content_type: &str,
-    title: Option<String>,
-    target_skill: Option<&str>,
+    job: IngestJob<'_>,
     caller: &IngestCaller,
 ) -> axum::response::Response {
+    let IngestJob {
+        caller_event_id,
+        blob_id,
+        content_type,
+        title,
+        target_skill,
+    } = job;
     let subject = caller.subject.as_str();
+    // escurel#382: a caller-supplied `event_id` is an idempotency key. A
+    // redelivery — the same key already captured — is acknowledged without
+    // re-capturing OR re-dispatching the worker: the bytes were deduped by
+    // the content hash, and this dedupes the WORK. Same first-writer-wins
+    // contract as the MCP `capture_event` verb.
+    if let Some(id) = caller_event_id.as_deref() {
+        match indexer.get_event(id).await {
+            Ok(Some(existing)) => {
+                return (
+                    StatusCode::OK,
+                    Json(json!({
+                        "event_id": existing.event_id,
+                        "blob_id": blob_id,
+                        "status": "duplicate",
+                    })),
+                )
+                    .into_response();
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("event lookup: {e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
     // Resolve the handler skill: an explicit `target_skill` (validated to be a
     // document-backend skill that accepts the MIME) wins; otherwise route by
     // MIME (REQ-DOC-06). An explicit skill that is missing, not a document
@@ -296,7 +405,7 @@ async fn record_and_dispatch_ingest(
         .map(str::to_owned);
     let event = indexer
         .capture_event(NewEvent {
-            event_id: None,
+            event_id: caller_event_id,
             at: None,
             source: "ingest".to_owned(),
             mime: content_type.to_owned(),
