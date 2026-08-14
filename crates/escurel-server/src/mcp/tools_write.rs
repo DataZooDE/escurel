@@ -1258,6 +1258,16 @@ pub(super) async fn tool_capture_event(
             "capture_event: `label_skill` is required (the label→skill routing key)".to_owned(),
         ));
     }
+    // #390: `event_id` is the idempotency key, so "" would make EVERY
+    // id-less capture the same event — first writer wins, each later one
+    // silently discarded with a success receipt. An empty/whitespace key
+    // is a caller bug; refuse it. An ABSENT key still mints a ULID.
+    if a.event_id.as_deref().is_some_and(|id| id.trim().is_empty()) {
+        return Err(JsonRpcError::invalid_params(
+            "capture_event: `event_id` must be non-empty when supplied — it is              the idempotency key (omit it to mint a server id)"
+                .to_owned(),
+        ));
+    }
     let requested = NewEvent {
         event_id: a.event_id,
         at: a.at,
