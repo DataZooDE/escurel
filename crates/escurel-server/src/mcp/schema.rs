@@ -20,12 +20,14 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_skills",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Return the tenant's Tier-1 skill catalogue.",
                 json!({ "type": "object", "properties": {} }),
             ),
             tool_entry(
                 "list_instances",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Enumerate instances of a skill, optionally filtered by a frontmatter field.",
                 json!({
                     "type": "object",
@@ -44,6 +46,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "resolve",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Parse a [[wikilink]] and look up its target page.",
                 json!({
                     "type": "object",
@@ -57,6 +60,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "expand",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Fetch a page's frontmatter + body + outbound wikilinks.",
                 json!({
                     "type": "object",
@@ -72,6 +76,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "fetch_blob",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Fetch the original retained file bytes of a document-backed instance (base64 + content type) for a faithful client preview.",
                 json!({
                     "type": "object",
@@ -84,6 +89,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "neighbours",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Typed link-graph traversal.",
                 json!({
                     "type": "object",
@@ -100,6 +106,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "provenance_ancestry",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Bounded multi-hop provenance traversal (ADR-0010). \
                  `direction: up` returns everything the page rests on (its \
                  causes); `down` returns everything derived from it. Optionally \
@@ -121,6 +128,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "expectation_drift",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Cross-graph 'lost context' query (ADR-0010): decisions resting \
                  on an expectation that has since been superseded — the \
                  decision's `motivated_by`/`addresses` expectation was later \
@@ -136,6 +144,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "abandoned_paths",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Nodes retired by supersession or abandonment (ADR-0010): the \
                  dead-ended branches of the memory — something points at them \
                  via `supersedes` or `abandons`. Optionally scope to a `skill`.",
@@ -149,6 +158,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "provenance_path",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Shortest provenance path / reachability between two pages \
                  (ADR-0010): does `from_page` reach `to_page` following \
                  `direction` (`up` = the rests-on chain) within `max_hops`, \
@@ -170,6 +180,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "search",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Hybrid vector + FTS search, RRF-fused. Pass `q` for a single \
                  query, or `queries` with 2-3 phrasings to fuse their results \
                  in one ranking (provide exactly one of the two).",
@@ -191,6 +202,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "run_stored_query",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Execute a [[query::*]] instance with named parameters.",
                 json!({
                     "type": "object",
@@ -204,6 +216,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "query_instance",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Run a [[query::*]] report that declares `target: [[skill::id]]` \
                  against that sql_view instance's view. Runtime `params` are bound \
                  as prepared-statement values (never interpolated); the report's \
@@ -221,6 +234,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "validate",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Dry-run the indexer's checks on a draft; returns the same issue list \
                  as update_page but commits nothing.",
                 json!({
@@ -235,6 +249,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "update_page",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Upsert a markdown page (whole-body write). Optional \
                  `base_version` (from a prior read's `version`) enables \
                  optimistic concurrency with CRDT auto-merge: a stale write is \
@@ -262,6 +277,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "delete_page",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Soft-delete (archive) a markdown page/instance: retract it from \
                  discovery (search/resolve/neighbours/list) by dropping its index \
                  rows and link edges, while retaining the canonical markdown \
@@ -283,6 +299,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "purge_page",
                 Execution::Orchestration,
+                Scope::Admin,
                 "ADMIN. Permanently remove an ALREADY-ARCHIVED page from the \
                  lane, finishing what `delete_page` started. `delete_page` \
                  retracts and retains the markdown as an audit record; this \
@@ -301,6 +318,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "move_page",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Move a page to a new `page_id`, leaving NOTHING at the old one. \
                  Use this to restructure ids; use `delete_page` to retract \
                  knowledge. The difference matters: a delete retains the old \
@@ -324,6 +342,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "append_message",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Append a message to a chat-group's conversation history. \
                  `chat_group_id` is opaque to escurel; consumers own the \
                  identifier scheme. `embed` defaults to true; set false to \
@@ -355,6 +374,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_messages",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Read back a chat-group's conversation history time-ordered. \
                  `since` is inclusive, `until` is exclusive. `direction` \
                  defaults to `desc` (most recent first). Use `next_cursor` \
@@ -384,6 +404,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "capture_event",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Append an event to the global inbox (M7). `label_skill` links \
                  to the skill that knows how to process this event type; \
                  `instance_page_id` may pre-flag a candidate instance but the \
@@ -413,6 +434,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_inbox",
                 Execution::Deterministic,
+                Scope::Agent,
                 "List unprocessed events (the inbox), newest first. Filtered to the \
                  events you may see: an event filed into an instance follows \
                  that instance's ACL, an un-triaged one is yours only if you \
@@ -431,6 +453,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_events",
                 Execution::Deterministic,
+                Scope::Agent,
                 "List an instance's processed event history (the event sequence \
                  whose projection is its state), oldest first. Pass `event_id` \
                  instead to look ONE event up by id — whatever its status — \
@@ -453,6 +476,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_snapshots",
                 Execution::Deterministic,
+                Scope::Agent,
                 "List the taken_at timestamps of an instance's CRDT snapshot \
                  history, oldest first — the discrete state-over-time points \
                  expand(as_of=T) can replay.",
@@ -467,6 +491,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_op_authors",
                 Execution::Deterministic,
+                Scope::Agent,
                 "Who wrote each live-editing (CRDT) op on a page, oldest first: \
                  op_id, hlc, applied_at and the server-verified `principal` that \
                  submitted it. The read side of write attribution — the principal \
@@ -488,6 +513,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "assign_event",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Assign an inbox event to an instance and mark it processed — the \
                  (external) agent folding the event into the instance. A \
                  compare-and-set: re-assigning to the SAME instance is a no-op \
@@ -506,6 +532,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "open_session",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Open a live CRDT session on a page; returns a session id and the WS upgrade URL.",
                 json!({
                     "type": "object",
@@ -518,6 +545,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "apply_op",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Apply a base64-encoded Loro op blob to an open session.",
                 json!({
                     "type": "object",
@@ -531,6 +559,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "close_session",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Close a session; optionally snapshot the doc (commit=true).",
                 json!({
                     "type": "object",
@@ -546,6 +575,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "admin_quota",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: per-tenant quota snapshot (remaining query/write/embed \
                  budget + concurrent sessions in use).",
                 json!({ "type": "object", "properties": {} }),
@@ -553,6 +583,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "admin_audit",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: drift between canonical markdown and the DuckDB index \
                  (markdown_not_in_duckdb / indexed_but_no_markdown).",
                 json!({ "type": "object", "properties": {} }),
@@ -560,6 +591,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "admin_webhook_deliveries",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: recent outbound capture-webhook delivery outcomes \
                  (newest first) — event_id, ok, http_status, error. \
                  `configured: false` when no ESCUREL_WEBHOOK_URL is set.",
@@ -573,6 +605,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "admin_index_query",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: read up to `limit` rows from an allow-listed index table \
                  (pages, blocks, links, crdt_ops, crdt_snapshots, \
                  chat_messages). Not arbitrary SQL.",
@@ -592,6 +625,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "admin_delete_chat_history",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: purge chat history. GDPR erasure of a whole group \
                  (chat_group_id set) or a single member across groups \
                  (author set), retention prune (before_ts set); filters \
@@ -609,6 +643,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "admin_list_lanes",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: enumerate the configured LaneStores (name, backend, \
                  tenants present). MCP twin of EscurelAdmin.AdminListLanes.",
                 json!({ "type": "object", "properties": {} }),
@@ -616,6 +651,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "admin_lane_keys",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: list keys under a prefix in a lane, with byte sizes. \
                  MCP twin of EscurelAdmin.AdminLaneKeys.",
                 json!({
@@ -630,6 +666,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "admin_lane_blob",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: fetch one blob (base64) from a lane, subject to a \
                  1 MiB cap. MCP twin of EscurelAdmin.AdminLaneBlob.",
                 json!({
@@ -644,6 +681,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "add_group_member",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: add a principal `subject` to a custom RBAC group \
                  `group_id`. Idempotent. Membership is the source of truth \
                  for groups escurel manages; reserved names \
@@ -661,6 +699,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "remove_group_member",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: remove a principal `subject` from a custom RBAC \
                  group `group_id`. No-op when the row is absent.",
                 json!({
@@ -675,6 +714,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_group_members",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: list the members of a custom RBAC group, with \
                  grant time + granting admin (audit).",
                 json!({
@@ -688,6 +728,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "register_credential",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: register (or replace) a named external-source \
                  credential a sql_view skill references via \
                  `backend.source.attach`. The secret is stored server-side \
@@ -705,6 +746,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_credentials",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: list registered external-source credentials WITHOUT \
                  their secrets (name, connector, registration audit).",
                 json!({ "type": "object", "properties": {} }),
@@ -712,6 +754,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "delete_credential",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: remove a registered external-source credential by \
                  name. No-op when absent.",
                 json!({
@@ -723,6 +766,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "validate_bindings",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: re-probe every SQL-view binding and report schema \
                  drift (binding_degraded) or unreachable sources \
                  (backend_unavailable). Reconciles views ⟂ backend_refs.",
@@ -731,6 +775,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "create_sql_instance",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: materialise a sql_view instance — the binding comes \
                  from the skill's backend.source block (read-only view + \
                  overlay page).",
@@ -747,6 +792,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "register_endpoint",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: register (or replace) a remote-backend endpoint an \
                  openapi/mcp skill references via `backend.endpoint`. The base \
                  URL + auth secret are stored server-side and NEVER in the \
@@ -767,6 +813,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_endpoints",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: list registered remote-backend endpoints WITHOUT their \
                  secrets (name, kind, base_url, auth scheme, audit).",
                 json!({ "type": "object", "properties": {} }),
@@ -774,6 +821,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "delete_endpoint",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: remove a registered remote-backend endpoint by name. \
                  No-op when absent.",
                 json!({
@@ -785,6 +833,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "validate_endpoints",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: probe every registered remote-backend endpoint for \
                  reachability; an unreachable endpoint's instances read closed.",
                 json!({ "type": "object", "properties": {} }),
@@ -792,6 +841,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "create_remote_instance",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: materialise a remote (openapi/mcp) instance — the \
                  binding comes from the skill's backend block (overlay page + \
                  backend_ref; data is fetched live on expand).",
@@ -808,6 +858,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "write_instance",
                 Execution::Orchestration,
+                Scope::Agent,
                 "Write-back to a remote (openapi/mcp) instance's upstream. \
                  Gated by the target instance's acl.update; a binding with no \
                  write op is refused.",
@@ -827,6 +878,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "tenant_create",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: provision a tenant (directory + DuckDB file).",
                 json!({
                     "type": "object",
@@ -840,12 +892,14 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "tenant_list",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: list all tenants in the tenant store.",
                 json!({ "type": "object", "properties": {} }),
             ),
             tool_entry(
                 "tenant_get",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: fetch one tenant's spec.",
                 json!({
                     "type": "object",
@@ -856,6 +910,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "tenant_update",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: partial-update a tenant's spec — display_name, status \
                  (active|suspended), quotas, embedding_provider. Changing \
                  embedding_provider requires a rebuild (`rebuild_required` in the \
@@ -892,6 +947,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "tenant_delete",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: delete a tenant and its on-disk state. Destructive — \
                  requires `confirm` equal to the tenant id.",
                 json!({
@@ -909,6 +965,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "tenant_export",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: export a tenant's canonical markdown as a base64 \
                  tar+gz blob (`tarball_b64` + `bytes`).",
                 json!({
@@ -920,6 +977,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "export_pack",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: build a versioned, HMAC-signed skill pack (a \
                  deterministic tar+gz of the named skills' pages + a signed \
                  manifest) — the unit of distribution between escurel nodes. \
@@ -948,6 +1006,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "import_pack",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: import a signed skill pack as this tenant's pinned, \
                  read-only base layer. Verifies signature + content hash \
                  fail-closed before unpacking; refuses silent version \
@@ -970,12 +1029,14 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "list_packs",
                 Execution::Deterministic,
+                Scope::Admin,
                 "Admin: the subscribed skill packs and their pinned versions.",
                 json!({ "type": "object", "properties": {} }),
             ),
             tool_entry(
                 "unsubscribe_pack",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: drop a pack subscription — removes every base page it \
                  landed and the version pin; tenant overlays survive.",
                 json!({
@@ -990,6 +1051,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "rebase_pack",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: the reviewed upgrade of a subscribed pack — the only \
                  operation that moves a version pin. Shadow-vs-upstream \
                  conflicts surface as rebase_conflict Issues and block until \
@@ -1015,6 +1077,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "submit_promotion",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin/curator: propose a scrubbed pack candidate from this \
                  node's own promotable skills (the L2→L3 harvest). Default-deny: \
                  skills-only, curator-marked `promotable: true`, tenant-authored; \
@@ -1037,6 +1100,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "tenant_import",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: import a tenant's markdown from a base64 tar+gz blob \
                  into an existing tenant; returns `bytes_imported`.",
                 json!({
@@ -1051,6 +1115,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "rebuild",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: rebuild the tenant's index from canonical markdown; \
                  returns the final `{done, total}` page counts.",
                 json!({
@@ -1063,6 +1128,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "compact_lanes",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: compact the tenant's CRDT op lanes; returns \
                  `{ops_compacted, bytes_reclaimed}`.",
                 json!({
@@ -1074,6 +1140,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "publish_snapshot",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: trigger a DuckLake publish of this writer's current \
                  index state, then prune old snapshots down to \
                  `ESCUREL_SNAPSHOT_KEEP`. A no-op (`skipped: true`) when \
@@ -1087,6 +1154,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "attach_external",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: attach an external read-only DuckDB source; the \
                  catalog alias is derived from `source_url` and returned as \
                  `source_id`.",
@@ -1102,6 +1170,7 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "embedding_reload",
                 Execution::Orchestration,
+                Scope::Admin,
                 "Admin: hot-reload the embedding model from the captured \
                  config; returns the new `model_revision`.",
                 json!({ "type": "object", "properties": {} }),
@@ -1152,7 +1221,32 @@ impl Execution {
     }
 }
 
-fn tool_entry(name: &str, execution: Execution, description: &str, input_schema: Value) -> Value {
+/// Who can actually call a tool: the ordinary agent surface, or the
+/// `require_admin`-gated operator surface. `tools/list` filters by this
+/// for agent-role callers — an agent no longer receives 41 schemas that
+/// can only ever answer `-32001`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    Agent,
+    Admin,
+}
+
+impl Scope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+fn tool_entry(
+    name: &str,
+    execution: Execution,
+    scope: Scope,
+    description: &str,
+    input_schema: Value,
+) -> Value {
     json!({
         "name": name,
         "description": description,
@@ -1160,7 +1254,31 @@ fn tool_entry(name: &str, execution: Execution, description: &str, input_schema:
         // WI-8 (REQ-LABEL-01): additive execution label. Declared here, at the
         // tool, rather than in a remote list keyed by name — see [`Execution`].
         "execution": execution.as_str(),
+        // Additive scope label (2026-08-14 API review): which role can
+        // actually call this tool. Declared at the definition site like
+        // `execution` — and ratcheted against the dispatch arms by
+        // `tool_registry_conformance`, so it cannot lie about the gate.
+        "scope": scope.as_str(),
     })
+}
+
+/// [`tools_list_payload`] filtered for the caller's role: an agent-role
+/// token sees only `scope: "agent"` entries — the tools it can actually
+/// call. Admin — and verifier-less dev mode (`role: None`, treated as
+/// admin everywhere else) — sees the whole surface.
+pub(crate) fn tools_list_payload_for(role: Option<escurel_auth::Role>) -> Value {
+    let payload = tools_list_payload();
+    if !matches!(role, Some(escurel_auth::Role::Agent)) {
+        return payload;
+    }
+    let tools: Vec<Value> = payload["tools"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t["scope"] == json!("agent"))
+        .collect();
+    json!({ "tools": tools })
 }
 
 /// Build an OpenAPI 3.1 document describing escurel's tool surface — the

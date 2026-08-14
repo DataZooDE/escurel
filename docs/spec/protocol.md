@@ -1219,10 +1219,13 @@ The admin/operator capabilities are exposed as admin-role-gated MCP
 tools over `POST /mcp` — there is no separate admin service. Each
 requires the admin role on the OIDC token (configurable; see
 [`platform.md`](platform.md#auth)); a call from a token without the
-required role yields JSON-RPC error code `-32001`. This gate is at
-**dispatch**, not discovery: `tools/list` is *not* role-filtered — every
-admin tool is always listed, and a non-admin caller is refused only when
-it *calls* one (see [MCP-over-HTTP framing](#mcp-over-http-framing)).
+required role yields JSON-RPC error code `-32001`. The gate is enforced at
+**dispatch** (`-32001`), and since the scope label landed, discovery
+matches it: every `tools/list` entry carries `scope: "agent" | "admin"`,
+and an **agent-role** token receives only the `scope: "agent"` subset —
+the tools it can actually call. Admin tokens (and verifier-less dev
+mode) receive the whole surface (see
+[MCP-over-HTTP framing](#mcp-over-http-framing)).
 Tenant resolution rules are *different* on admin tools — the tenant is
 named explicitly (`tenant_id`) rather than taken from the token's claim
 — but because a gateway is single-tenant, a `tenant_id` that names a
@@ -1338,13 +1341,17 @@ resolve          → method = "tools/call", name = "resolve"
 update_page      → method = "tools/call", name = "update_page"
 ```
 
-Tool discovery is the usual MCP `tools/list` response, declaring
-every tool — agent **and** admin — with its JSON Schema input
-definition. `tools/list` is **not** role-gated: the admin tools are
-always listed, and the admin role is enforced only at `tools/call`
-dispatch (`-32001` for a non-admin caller). The same
-`tools/list` payload is also published as an OpenAPI 3.1 document at
-`GET /openapi.json` for non-MCP HTTP clients.
+Tool discovery is the usual MCP `tools/list` response; every entry
+carries its JSON Schema input definition plus two additive labels:
+`execution: "deterministic" | "orchestration"` and
+`scope: "agent" | "admin"`. **`tools/list` is role-scoped**: an
+agent-role token receives only the `scope: "agent"` subset (28 tools it
+can actually call); an admin token — and verifier-less dev mode —
+receives the whole surface. The admin role is still enforced at
+`tools/call` dispatch (`-32001`); the scope label is ratcheted against
+the dispatch arms by `tool_registry_conformance`, so the two cannot
+drift. The full (unfiltered) payload is also published as an OpenAPI
+3.1 document at `GET /openapi.json` for non-MCP HTTP clients.
 
 Long-running tools (`rebuild`, `compact_lanes`, `tenant_export`,
 `tenant_import`) block until done and return their final result in
