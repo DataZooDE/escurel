@@ -872,7 +872,13 @@ async fn dispatch_tools_call(
         "move_page" => {
             tool_move_page(state, indexer, caller, state.write_acl, params.arguments).await
         }
-        "purge_page" => tool_purge_page(state, indexer, params.arguments).await,
+        "purge_page" => {
+            // Destroys the audit record `delete_page` retained — an operator
+            // act. Admin-gated like the other audit-destroying tools; the
+            // owner of a page may retract it, but not erase the husk.
+            require_admin(role)?;
+            tool_purge_page(state, indexer, params.arguments).await
+        }
         "append_message" => {
             tool_append_message(indexer, caller, state.write_acl, params.arguments).await
         }
