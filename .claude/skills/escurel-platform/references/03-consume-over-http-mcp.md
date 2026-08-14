@@ -27,24 +27,27 @@ Standard **JSON-RPC 2.0** envelope; each tool call is `tools/call`:
 { "jsonrpc": "2.0", "id": 1, "result": { "hits": [ … ], "granularity": "block" } }
 ```
 
-- **Discovery:** `tools/list` returns all fourteen agent tools with their
-  JSON Schema input definitions (the twelve KB tools plus `append_message`
-  and `list_messages` for chat history — `references/02` §Chat tools).
-  Admin tools appear as a second group **only** when the token carries the
-  admin role (otherwise invisible — `references/08`).
+- **Discovery:** `tools/list` returns the **whole surface with JSON Schema
+  input definitions — admin-gated tools included**. It is NOT filtered by
+  role: an agent token sees every tool, and calling an admin-gated one is
+  refused at dispatch with `-32001`. The agent-callable subset is the ~29
+  tools tabled in `references/02`.
 - **Errors:** JSON-RPC error envelope (`error: {code, message}`). Tool-level
   validation issues come back inside `result` (the issue list in
   `references/02`), not as a transport error.
-- **Streaming:** large/streamed responses (search, rebuild progress) use
-  SSE — `event: chunk` for incremental data, `event: done` to terminate.
+- **Streaming:** there is none — no SSE, no chunking, no `GET /mcp` event
+  stream. Every response is a single JSON body; large blobs come back
+  base64 in `fetch_blob`, capped at 25 MiB. Poll, or use the WS
+  `event_subscribe` push (`references/11`) for event-driven wake-ups.
 - **Auth:** `Authorization: Bearer <token>` on every call (`references/08`).
   Argument names match `protocol.md` exactly; note the wire field names
   differ slightly from the contract's prose (e.g. `q`/`k` not
   `query`/`top_k`) — trust `protocol.md`.
 
-JSON-bearing fields (`frontmatter_json`, `rows_json`, `params_json`) carry
-a JSON string you parse client-side — the wire keeps them opaque so the
-schema doesn't churn per tool.
+JSON-bearing fields (`frontmatter`, `rows`, `params`) are **real JSON
+objects/arrays on the wire**, not encoded strings. (Early versions carried
+`frontmatter_json`-style string fields; that era is over — nothing needs a
+second parse.)
 
 A minimal client is just an HTTP client that POSTs that envelope and reads
 `result`. If your runtime has an MCP SDK, point it at `/mcp` and call the

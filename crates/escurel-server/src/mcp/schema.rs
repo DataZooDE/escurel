@@ -64,7 +64,8 @@ pub(super) fn tools_list_payload() -> Value {
                     "properties": {
                         "page_id": { "type": "string" },
                         "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." },
-                        "scenario": { "type": "string", "description": "What-if overlay to read against; absent = base only." }
+                        "scenario": { "type": "string", "description": "What-if overlay to read against; absent = base only." },
+                        "full": { "type": "boolean", "description": "Return ALL chunks of a document instance instead of the bounded lead (REQ-DOC-05)." }
                     }
                 }),
             ),

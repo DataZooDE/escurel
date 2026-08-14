@@ -91,7 +91,7 @@ citation; never treat one as a link. The link's `skill` segment is its
     are event-typed (`meeting`, `email`, `incident`, …). Events cite the
     entities they affect via wikilinks; reach an entity's timeline with
     `neighbours(entity, link_skill IN (<event-skills>))` sorted by `at`,
-    or `list_instances(<event-skill>, order_by_at='desc')`. Events are
+    or `list_instances(<event-skill>, order_by='at desc')`. Events are
     immutable by convention; corrections are new events with a
     `corrects: [[…]]` link.
   - **Append-only chains** — a skill with `prev_<X>` in

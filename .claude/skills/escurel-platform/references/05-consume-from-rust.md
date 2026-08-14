@@ -65,8 +65,8 @@ client.list_messages(ListMessagesRequest {
 ```
 
 Field names follow the wire contract (`q`/`k`, not `query`/`top_k`);
-JSON-bearing fields (`frontmatter_json`, `rows_json`, `params_json`) are
-JSON strings you parse. See `crates/escurel-types/src/` and
+JSON-bearing fields (`frontmatter`, `rows`, `params`) are typed
+`serde_json::Value`s — real JSON, not encoded strings. See `crates/escurel-types/src/` and
 `references/03` for the message shapes. The live-CRDT trio and admin
 methods are added as `protocol.md` and the types catch up.
 

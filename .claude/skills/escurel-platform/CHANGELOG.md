@@ -4,6 +4,39 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.7 — truth pass: discovery, streaming, wire-JSON claims corrected
+
+- `references/03-consume-over-http-mcp.md`: three false claims fixed.
+  `tools/list` is NOT role-filtered — every caller sees the whole
+  surface (admin tools refuse at dispatch with `-32001`); there is NO
+  SSE/streaming on `/mcp` (single JSON bodies only; use the WS
+  `event_subscribe` push for wake-ups); JSON-bearing fields
+  (`frontmatter`, `rows`, `params`) are real JSON on the wire, not
+  `*_json` strings.
+- `references/08-auth-and-tenancy.md`: same discovery correction;
+  role lists updated (`purge_page` is admin; `admin_delete_chat_history`
+  is the real tool name).
+- `references/02-tool-surface.md`: `list_instances` row corrected
+  (`skill_id` + `order_by='at asc'|'at desc'` — NOT `skill`/`order_by_at`);
+  `expand` row corrected (`as_of`/`scenario`/`full`; `anchor`/`version`
+  are long gone); `fetch_blob` row added; tool count corrected to 69.
+- `expand` now advertises its `full` argument in the input schema (it was
+  parsed but undocumented on the wire).
+- **New mechanical guard**: `escurel-server/tests/suite/skill_doc_parity.rs`
+  reconciles this skill's tool tables (names, input names, the tool count)
+  against the live `tools/list` on every test run — the drift class the
+  2026-08-02 audit documented can no longer land silently. Prose remains
+  a write-time obligation.
+
+## 0.6.6 — WS `event_subscribe`: the bus pushes to open sessions
+
+- `references/11-event-driven-agents.md`: a consumer that cannot host the
+  HTTP webhook subscribes over `GET /ws` — `event_subscribe` frame →
+  `event_subscribe_ack` → `{type:"event", event:{…}}` pushes for every
+  captured event the caller may read (`ESCUREL_EVENT_ACL`-filtered, same
+  rule as `list_inbox`); `event_lagged` marks gaps (poll once to catch
+  up). Subscription starts at now — no replay. Closes escurel#333.
+
 ## 0.6.5 — `assign_event` write-gates its target instance
 
 - `references/02-tool-surface.md`: under `ESCUREL_EVENT_ACL=enforce`,
@@ -25,15 +58,6 @@ pin (see `SKILL.md` → "How this skill is installed").
   client following MCP conventions read it as success. The payload
   contract is byte-identical. `validate` results and `dry_run:true`
   results keep `isError: false` — they report, they don't refuse.
-
-## 0.6.6 — WS `event_subscribe`: the bus pushes to open sessions
-
-- `references/11-event-driven-agents.md`: a consumer that cannot host the
-  HTTP webhook subscribes over `GET /ws` — `event_subscribe` frame →
-  `event_subscribe_ack` → `{type:"event", event:{…}}` pushes for every
-  captured event the caller may read (`ESCUREL_EVENT_ACL`-filtered, same
-  rule as `list_inbox`); `event_lagged` marks gaps (poll once to catch
-  up). Subscription starts at now — no replay. Closes escurel#333.
 
 ## 0.6.3 — `list_skills` is caller-scoped and no longer discloses group names
 
