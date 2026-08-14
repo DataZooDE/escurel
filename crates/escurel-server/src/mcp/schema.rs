@@ -230,6 +230,7 @@ pub(super) fn tools_list_payload() -> Value {
                         "content": { "type": "string" },
                         "base_version": { "type": "string" },
                         "require_exact_base": { "type": "boolean" },
+                        "base_sha256": { "type": "string", "description": "Content-hash CAS — the approval guard that works on EVERY gateway (base_version needs a CRDT backend). Hex sha256 of the stored markdown the held write was drafted against; \"\" = approve-create (expect no page). Mismatch refuses {code: conflict} + head_sha256 + head_content. (#354)" },
                         "provenance": { "type": "object" }
                     }
                 }),
