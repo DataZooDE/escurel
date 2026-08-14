@@ -20,6 +20,17 @@ pin (see `SKILL.md` → "How this skill is installed").
 - Token lifetime on long sockets is now specified: auth is at upgrade
   only, a socket outlives its token's `exp`; bound it at the proxy or
   reconnect periodically — which `since_event_id` makes lossless.
+## 0.6.25 — the chat cursor always makes progress
+
+- `list_messages`' pagination cursor is now built from a full-µs
+  timestamp instead of the second-truncated wire `ts` (escurel#406,
+  found by the herkules downstream fix): when a page boundary fell
+  inside one wall-clock second, `next_cursor` repeated verbatim forever
+  and a naive drain loop spun. The wire `ts` is unchanged; only the
+  opaque cursor payload gained precision — in-flight old cursors still
+  decode (their second-precision value binds, at worst replaying rows
+  from the boundary second once; dedupe by `msg_id`).
+
 ## 0.6.24 — the typed Rust client carries the pagination cursor
 
 - `escurel-types`: `ListInboxResponse`/`ListEventsResponse` gain

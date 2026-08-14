@@ -98,3 +98,63 @@ async fn append_message_retry_with_same_msg_id_is_one_row() {
         "one delivery + one retry must be ONE row: {page}"
     );
 }
+
+/// escurel#406 (found by the herkules downstream fix): the pagination
+/// cursor used to encode the SECOND-truncated `ts` while rows store
+/// sub-second `CURRENT_TIMESTAMP` — so when a page boundary fell inside
+/// one second, the resume predicate re-qualified the cursor's own rows
+/// and `next_cursor` repeated verbatim forever (an infinite drain
+/// loop). The cursor must always make progress.
+#[tokio::test]
+async fn chat_cursor_makes_progress_within_one_second() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    // Five server-stamped messages land microseconds apart — all within
+    // the same wall-clock second (the trap window).
+    for i in 0..5 {
+        let r = call(
+            &p,
+            &token,
+            "append_message",
+            json!({
+                "chat_group_id": CHAT,
+                "role": "user",
+                "content": format!("msg {i}"),
+                "embed": false,
+            }),
+        )
+        .await;
+        assert!(r["msg_id"].is_string(), "append {i}: {r}");
+    }
+
+    // Drain in pages of 2. The old cursor repeats verbatim after the
+    // first page; a correct one walks all five in three pages.
+    let mut seen = std::collections::BTreeSet::new();
+    let mut cursor: Option<String> = None;
+    let mut last_cursor = String::new();
+    for page_no in 0..6 {
+        let mut args = json!({ "chat_group_id": CHAT, "limit": 2 });
+        if let Some(c) = &cursor {
+            assert_ne!(
+                c, &last_cursor,
+                "page {page_no}: next_cursor repeated verbatim — the \
+                 drain would spin forever (escurel#406)"
+            );
+            last_cursor = c.clone();
+            args["cursor"] = json!(c);
+        }
+        let out = call(&p, &token, "list_messages", args).await;
+        for m in out["messages"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{out}"))
+        {
+            seen.insert(m["msg_id"].as_str().unwrap().to_owned());
+        }
+        match out["next_cursor"].as_str() {
+            Some(c) => cursor = Some(c.to_owned()),
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), 5, "every message reachable exactly once");
+}

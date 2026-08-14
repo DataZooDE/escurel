@@ -485,10 +485,18 @@ impl Indexer {
         }
 
         let table = self.chat_table();
+        // The 9th column is the CURSOR's timestamp at FULL microsecond
+        // precision — never surfaced on the wire (the visible `ts` stays
+        // second-precision RFC 3339). Encoding the cursor from the
+        // truncated wire `ts` was escurel#406: rows land microseconds
+        // apart within one second, the resume predicate re-qualified the
+        // cursor's own second, and `next_cursor` repeated verbatim
+        // forever. Same fix pattern as the event/instance cursors.
         let sql = format!(
             "SELECT chat_group_id, msg_id, \
                     strftime(ts, '%Y-%m-%dT%H:%M:%SZ'), \
-                    role, author, content, metadata::VARCHAR, embedded \
+                    role, author, content, metadata::VARCHAR, embedded, \
+                    strftime(ts, '%Y-%m-%d %H:%M:%S.%f') \
              FROM {table} \
              WHERE {where_clause} \
              ORDER BY ts {order}, msg_id {order} \
@@ -506,6 +514,7 @@ impl Indexer {
         let mut rows = stmt.query(param_refs.as_slice())?;
 
         let mut messages = Vec::with_capacity(limit + 1);
+        let mut cursor_ts = Vec::with_capacity(limit + 1);
         while let Some(row) = rows.next()? {
             let chat_group_id: String = row.get(0)?;
             let msg_id: String = row.get(1)?;
@@ -519,6 +528,7 @@ impl Indexer {
                 Some(s) => Some(serde_json::from_str(&s)?),
                 None => None,
             };
+            cursor_ts.push(row.get::<_, String>(8)?);
             messages.push(ChatMessage {
                 chat_group_id,
                 msg_id,
@@ -535,9 +545,12 @@ impl Indexer {
         // a cursor pointing at the last row of the visible page.
         let next_cursor = if messages.len() > limit {
             messages.truncate(limit);
+            cursor_ts.truncate(limit);
             messages.last().map(|m| {
                 Cursor {
-                    ts: m.ts.clone(),
+                    // Full-µs precision so the resume predicate always
+                    // advances (escurel#406) — NOT the wire `ts`.
+                    ts: cursor_ts.last().cloned().unwrap_or_else(|| m.ts.clone()),
                     msg_id: m.msg_id.clone(),
                 }
                 .encode()
