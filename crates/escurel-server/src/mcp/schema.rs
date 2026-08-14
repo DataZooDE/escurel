@@ -346,7 +346,7 @@ pub(super) fn tools_list_payload() -> Value {
                         "metadata": { "type": "object" },
                         "msg_id": {
                             "type": "string",
-                            "description": "Caller-supplied id; server generates a ULID when absent"
+                            "description": "Caller-supplied IDEMPOTENCY KEY: a retry with the same (chat_group_id, msg_id) echoes the stored row instead of inserting a duplicate. Server generates a ULID when absent (no dedup)."
                         },
                         "embed": { "type": "boolean", "default": true }
                     }

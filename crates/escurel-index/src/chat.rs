@@ -207,6 +207,11 @@ impl Indexer {
     ///
     /// Behaviour:
     ///
+    /// - When `input.msg_id` is `Some`, it is an **idempotency key**: a
+    ///   second append with the same `(chat_group_id, msg_id)` echoes
+    ///   the stored row (its original `ts`, content, metadata) and
+    ///   inserts nothing — the same contract as `capture_event`'s
+    ///   `event_id`.
     /// - When `input.msg_id` is `None`, a ULID is generated server-side.
     /// - When `input.ts` is `None`, the row's `ts` is stamped with
     ///   DuckDB's `CURRENT_TIMESTAMP` at insert time. The resolved
@@ -238,6 +243,19 @@ impl Indexer {
         // serialise on the (embed → write) sequence and a slower
         // embed cannot overwrite a newer commit.
         let conn = self.conn.lock().await;
+
+        // A caller-supplied `msg_id` is an idempotency key, the same
+        // contract as `capture_event`'s `event_id`: a redelivery echoes
+        // the stored row instead of inserting a second one. Checked
+        // under the lock so a concurrent retry cannot race the insert.
+        // (The PK is `(chat_group_id, ts, msg_id)` and an omitted `ts`
+        // is stamped at insert time, so without this check a retry
+        // lands a second, microseconds-apart row — API review R4.)
+        if input.msg_id.is_some()
+            && let Some(existing) = self.find_chat_message(&conn, input.chat_group_id, &msg_id)?
+        {
+            return Ok(existing);
+        }
 
         let dense_vec_literal: Option<String> = if input.embed {
             let vectors = self.embedder.embed(&[input.content]).await?;
@@ -353,6 +371,61 @@ impl Indexer {
             metadata: input.metadata,
             embedded: input.embed,
         })
+    }
+
+    /// Look up one message by its `(chat_group_id, msg_id)` dedup key.
+    /// Called under the per-tenant conn lock (takes the guard's target
+    /// to prove it). Ties — which the idempotent-append contract makes
+    /// unreachable — resolve to the earliest row.
+    fn find_chat_message(
+        &self,
+        conn: &duckdb::Connection,
+        chat_group_id: &str,
+        msg_id: &str,
+    ) -> Result<Option<ChatMessage>, IndexerError> {
+        let mut where_clauses = vec!["chat_group_id = ?", "msg_id = ?"];
+        let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> = vec![
+            Box::new(chat_group_id.to_owned()),
+            Box::new(msg_id.to_owned()),
+        ];
+        if let Some(tenant) = self.chat_tenant_scope() {
+            where_clauses.push("tenant = ?");
+            bindings.push(Box::new(tenant.to_owned()));
+        }
+        let table = self.chat_table();
+        let sql = format!(
+            "SELECT chat_group_id, msg_id, \
+                    strftime(ts, '%Y-%m-%dT%H:%M:%SZ'), \
+                    role, author, content, metadata::VARCHAR, embedded \
+             FROM {table} \
+             WHERE {} \
+             ORDER BY ts ASC LIMIT 1",
+            where_clauses.join(" AND "),
+        );
+        let param_refs: Vec<&dyn duckdb::ToSql> = bindings
+            .iter()
+            .map(|b| b.as_ref() as &dyn duckdb::ToSql)
+            .collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(param_refs.as_slice())?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let metadata_json: Option<String> = row.get(6)?;
+        let metadata: Option<serde_json::Value> = match metadata_json {
+            Some(s) => Some(serde_json::from_str(&s)?),
+            None => None,
+        };
+        Ok(Some(ChatMessage {
+            chat_group_id: row.get(0)?,
+            msg_id: row.get(1)?,
+            ts: row.get(2)?,
+            role: row.get(3)?,
+            author: row.get(4)?,
+            content: row.get(5)?,
+            metadata,
+            embedded: row.get(7)?,
+        }))
     }
 
     /// Return a page of messages for the chat group, time-ordered.
