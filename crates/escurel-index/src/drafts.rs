@@ -89,3 +89,37 @@ impl Indexer {
         Ok(())
     }
 }
+
+impl Indexer {
+    /// Every page with a pending draft. Unfiltered by skill on purpose: an
+    /// unpublished draft has no `pages` row to read a skill from, so the
+    /// caller resolves the skill from the draft's own content.
+    ///
+    /// This is what makes the review queue see a **new** record. Filtering
+    /// published instances would show only drafts that edit something that
+    /// already exists — and the commonest held write is the one that brings a
+    /// record into being, which is precisely the write nobody has looked at.
+    pub async fn all_pending_drafts(&self) -> Result<Vec<(String, PendingDraft)>, IndexerError> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT page_id, version, snapshot_hlc, drafted_by, base_version \
+             FROM page_drafts ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                PendingDraft {
+                    version: r.get(1)?,
+                    snapshot_hlc: r.get(2)?,
+                    drafted_by: r.get(3)?,
+                    base_version: r.get(4)?,
+                },
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+}

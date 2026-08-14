@@ -40,7 +40,8 @@ pub(super) fn tools_list_payload() -> Value {
                         "frontmatter_key": { "type": "string", "description": "Frontmatter field to filter on (with frontmatter_value)." },
                         "frontmatter_value": { "type": "string", "description": "Required value of frontmatter_key." },
                         "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; instances born after it are excluded (untimed always remain)." },
-                        "scenario": { "type": "string", "description": "What-if overlay; absent = base only, else base ∪ overlay (overlay wins per slug)." }
+                        "scenario": { "type": "string", "description": "What-if overlay; absent = base only, else base ∪ overlay (overlay wins per slug)." },
+                        "drafts_only": { "type": "boolean", "description": "Return ONLY instances with a pending draft - the review queue (CR-2). Same ACL and scoping as any other listing." }
                     }
                 }),
             ),

@@ -126,14 +126,104 @@ pub(super) struct ListInstancesArgs {
     /// with the overlay winning per slug.
     #[serde(default)]
     scenario: Option<String>,
+    /// Return ONLY instances with a pending draft — the review queue (CR-2).
+    ///
+    /// The same verb, the same ACL and the same scoping as any other listing,
+    /// rather than a `list_drafts` with a second permission model to get right.
+    ///
+    /// Deliberately an enumeration and not a search: "everything waiting" has
+    /// no query text, and anything ranked can drop an item without saying so.
+    /// A queue that quietly omits work is worse than no queue.
+    #[serde(default)]
+    drafts_only: bool,
+}
+
+/// The review queue: instances with a pending draft, ACL-filtered.
+///
+/// The frontmatter used for the ACL decision comes from the DRAFT when the
+/// page is unpublished, because there is nothing else to decide on — and
+/// deciding on nothing would either hide every new record from the person who
+/// must review it, or show every caller a record they may not read. The draft's
+/// own frontmatter is the honest input: it is the record as proposed.
+async fn drafts_queue(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    a: &ListInstancesArgs,
+) -> Result<Value, JsonRpcError> {
+    let pending = indexer
+        .all_pending_drafts()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list drafts: {e}")))?;
+
+    let mut instances = Vec::new();
+    for (page_id, draft) in pending {
+        // The draft's content decides both the skill and the ACL input.
+        let Some(md) = (match state.crdt_backend.as_ref() {
+            Some(backend) => backend
+                .snapshot_at(&page_id, draft.snapshot_hlc)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|b| escurel_crdt::codec::body_from_snapshot(&b).ok()),
+            None => None,
+        }) else {
+            continue;
+        };
+        let Ok(parsed) = escurel_md::parse(&md) else {
+            continue;
+        };
+        let skill = parsed
+            .frontmatter
+            .fields
+            .get("skill")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if !a.skill_id.is_empty() && skill != a.skill_id {
+            continue;
+        }
+        let fm = serde_json::to_value(&parsed.frontmatter.fields).unwrap_or(Value::Null);
+        if !indexer
+            .may_read_instance(&caller, &skill, &fm)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("drafts acl: {e}")))?
+        {
+            continue;
+        }
+        instances.push(json!({
+            "page_id": page_id,
+            "skill": skill,
+            "frontmatter": fm,
+            "at": Value::Null,
+            // Named so a reviewer can approve straight from the queue; without
+            // it every row costs a round trip to learn the one value the
+            // approval needs.
+            "draft_version": draft.version,
+            "drafted_by": draft.drafted_by,
+        }));
+    }
+    Ok(json!({ "instances": instances, "next_cursor": Value::Null }))
 }
 
 pub(super) async fn tool_list_instances(
+    state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListInstancesArgs = parse_args(args, "list_instances")?;
+
+    // The review queue is enumerated from the DRAFTS, not filtered from the
+    // published instances, and that is the whole point of the branch.
+    //
+    // A held write that CREATES a record has no `pages` row — that is what
+    // "unpublished" means — so filtering published instances would show only
+    // drafts that edit something already there, and silently omit every new
+    // record awaiting review. The commonest held write is exactly that one.
+    if a.drafts_only {
+        return drafts_queue(state, indexer, caller, &a).await;
+    }
     let order = match a.order_by.as_deref() {
         Some(s) => match s.to_ascii_lowercase().as_str() {
             "at asc" | "at_asc" => Some(OrderDir::Asc),
@@ -173,12 +263,27 @@ pub(super) async fn tool_list_instances(
             .await
             .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?
         {
-            instances.push(json!({
+            // The draft, when there is one. Fetched per surviving row rather
+            // than joined, so the ACL above decides FIRST: a caller must not
+            // learn that a page they may not read has a change pending.
+            let draft = indexer
+                .pending_draft(&i.page_id)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("list_instances draft: {e}")))?;
+            let mut row = json!({
                 "page_id": i.page_id,
                 "skill": i.skill,
                 "frontmatter": i.frontmatter,
                 "at": i.at,
-            }));
+            });
+            if let Some(d) = draft {
+                // Named here so a reviewer can approve straight from the queue.
+                // Without it every row costs a second round trip to learn the
+                // one value the approval needs.
+                row["draft_version"] = json!(d.version);
+                row["drafted_by"] = json!(d.drafted_by);
+            }
+            instances.push(row);
         }
     }
     // `next_cursor` stays PRESENT (null on the last page) for

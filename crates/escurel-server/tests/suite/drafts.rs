@@ -410,3 +410,151 @@ async fn drafts_are_off_by_default_and_a_review_skill_still_publishes() {
 
     p.shutdown().await;
 }
+
+// =========================================================================
+// The review queue
+// =========================================================================
+
+/// A reviewer can enumerate what is waiting, without knowing where to look.
+///
+/// `pending_draft` answers "does *this* page have one", which is the wrong
+/// question for a review feed: a reviewer does not know which pages an agent
+/// touched. This is the same verb that already lists instances, and therefore
+/// the same ACL and the same scoping — a review queue is an ordinary query.
+///
+/// Deliberately not a search: "everything waiting" has no query text, and
+/// anything ranked can drop an item without saying so. A queue that can
+/// quietly omit work is worse than no queue.
+#[tokio::test]
+async fn drafts_only_lists_the_instances_awaiting_approval() {
+    let p = start(DraftMode::Enforce).await;
+    let agent = p.mint_token(TENANT, Role::Agent);
+
+    let held = call(
+        &p,
+        &agent,
+        "update_page",
+        json!({
+            "page_id": TRIAGE_PAGE,
+            "content": published("triage", "t-1", "Proposed."),
+        }),
+    )
+    .await;
+    assert_eq!(held["draft"], json!(true), "precondition: {held}");
+
+    let queue = call(
+        &p,
+        &agent,
+        "list_instances",
+        json!({ "skill_id": "triage", "drafts_only": true }),
+    )
+    .await;
+    let ids: Vec<&str> = queue["instances"]
+        .as_array()
+        .expect("instances")
+        .iter()
+        .filter_map(|i| i["page_id"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![TRIAGE_PAGE],
+        "only the instance with a pending draft may be listed: {queue}"
+    );
+    assert!(
+        queue["instances"][0]["draft_version"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty()),
+        "and each row must name the version to approve, or the reviewer has \
+         to go and ask for it page by page: {queue}"
+    );
+
+    // CONTROL — the ordinary listing is unchanged. The assertion above would
+    // otherwise pass against a `list_instances` that had started returning
+    // nothing at all.
+    let all = call(
+        &p,
+        &agent,
+        "list_instances",
+        json!({ "skill_id": "triage" }),
+    )
+    .await;
+    assert_eq!(
+        all["instances"].as_array().map(Vec::len),
+        Some(1),
+        "control: the unfiltered listing must still show the published \
+         instance: {all}"
+    );
+
+    p.shutdown().await;
+}
+
+/// **A draft that CREATES a record must reach the queue.**
+///
+/// Found by a control assertion rather than by design: a held write to a page
+/// that does not exist yet leaves no `pages` row — that is what unpublished
+/// means — so a queue built by filtering published instances shows nothing.
+/// And the commonest held write is exactly this one: an agent filing something
+/// new, which is the write no human has ever looked at.
+///
+/// The ACL for such a row is decided on the DRAFT's own frontmatter, because
+/// there is nothing else to decide on. Deciding on nothing would either hide
+/// every new record from its reviewer, or show it to everyone.
+#[tokio::test]
+async fn a_draft_that_creates_a_new_record_still_reaches_the_queue() {
+    let p = start(DraftMode::Enforce).await;
+    let agent = p.mint_token(TENANT, Role::Agent);
+
+    let held = call(
+        &p,
+        &agent,
+        "update_page",
+        json!({
+            "page_id": "markdown/instances/triage/t-new.md",
+            "content": published("triage", "t-new", "A record nobody has seen."),
+        }),
+    )
+    .await;
+    assert_eq!(held["draft"], json!(true), "precondition: {held}");
+
+    // It does not exist as an instance — nothing was published.
+    let all = call(
+        &p,
+        &agent,
+        "list_instances",
+        json!({ "skill_id": "triage" }),
+    )
+    .await;
+    let published_ids: Vec<&str> = all["instances"]
+        .as_array()
+        .expect("instances")
+        .iter()
+        .filter_map(|i| i["page_id"].as_str())
+        .collect();
+    assert!(
+        !published_ids.contains(&"markdown/instances/triage/t-new.md"),
+        "precondition: an unapproved new record must not be published: {all}"
+    );
+
+    // …and yet the reviewer must see it.
+    let queue = call(
+        &p,
+        &agent,
+        "list_instances",
+        json!({ "skill_id": "triage", "drafts_only": true }),
+    )
+    .await;
+    let queued: Vec<&str> = queue["instances"]
+        .as_array()
+        .expect("instances")
+        .iter()
+        .filter_map(|i| i["page_id"].as_str())
+        .collect();
+    assert_eq!(
+        queued,
+        vec!["markdown/instances/triage/t-new.md"],
+        "a held CREATE must reach the review queue — otherwise the write \
+         nobody has ever seen is also the one nobody is told about: {queue}"
+    );
+
+    p.shutdown().await;
+}
