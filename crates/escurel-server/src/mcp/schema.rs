@@ -70,7 +70,8 @@ pub(super) fn tools_list_payload() -> Value {
                         "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
                         "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." },
                         "scenario": { "type": "string", "description": "What-if overlay to read against; absent = base only." },
-                        "full": { "type": "boolean", "description": "Return ALL chunks of a document instance instead of the bounded lead (REQ-DOC-05)." }
+                        "full": { "type": "boolean", "description": "Return ALL chunks of a document instance instead of the bounded lead (REQ-DOC-05)." },
+                        "include_drafts": { "type": "boolean", "description": "Return the pending DRAFT version instead of the published one, when there is one (CR-2). A held write is invisible to an ordinary read by design; this is how a reviewer sees what they are approving." }
                     }
                 }),
             ),
@@ -265,13 +266,21 @@ pub(super) fn tools_list_payload() -> Value {
                  writing unguarded.",
                 json!({
                     "type": "object",
-                    "required": ["page_id", "content"],
+                    // `content` is required in practice but not in the schema:
+                    // an APPROVAL (`approve`) carries none, because what
+                    // publishes is the draft's own reviewed bytes. Declaring it
+                    // required here rejects every approval before it reaches
+                    // the tool. The either/or is enforced in code, with a
+                    // message naming both, rather than expressed as an `anyOf`
+                    // this validator does not evaluate.
+                    "required": ["page_id"],
                     "properties": {
                         "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
                         "content": { "type": "string" },
                         "base_version": { "type": "string" },
                         "require_exact_base": { "type": "boolean" },
-                        "provenance": { "type": "object" }
+                        "provenance": { "type": "object" },
+                        "approve": { "type": "string" }
                     }
                 }),
             ),

@@ -9,6 +9,9 @@ use super::*;
 #[derive(Deserialize)]
 pub(super) struct UpdatePageArgs {
     page_id: String,
+    /// The page's new markdown. Absent only on an approval, which publishes
+    /// the draft's own bytes instead — see [`UpdatePageArgs::approve`].
+    #[serde(default)]
     content: String,
     /// Optimistic-concurrency guard (#246): the version the client last read.
     /// When the head has advanced past it, the write conflicts.
@@ -43,6 +46,218 @@ pub(super) struct UpdatePageArgs {
     /// so only genuine out-of-band edits trigger the eager improvement pass.
     #[serde(default)]
     provenance: Option<Value>,
+    /// Approve the draft version named here, publishing exactly its bytes
+    /// (CR-2, #354).
+    ///
+    /// **The same verb, made richer, rather than a second one.** Publishing is
+    /// not a different concept from updating — it is what an update does — so
+    /// an `apply_proposal` tool would be a parallel write path with its own
+    /// ACL, its own validation and its own bugs. `content` is ignored when this
+    /// is set: what ships is what was reviewed, and re-rendering at approval
+    /// time is precisely how a reviewed diff drifts from what lands.
+    #[serde(default)]
+    approve: Option<String>,
+}
+
+/// Publish a pending draft (CR-2, #354).
+///
+/// **The refusals here are the feature.** Approving is the moment a held change
+/// becomes real, so every way of getting it wrong is a way of publishing
+/// something nobody reviewed:
+///
+/// - no such draft, or a version that is not the pending one — the reviewer is
+///   approving something other than what they read;
+/// - the approver wrote the draft — an approval by the author is not a review;
+/// - the page moved under it — the diff was computed against a page that no
+///   longer exists, which is what `require_exact_base` already refuses for
+///   ordinary writes and must refuse here for the same reason.
+async fn approve_draft(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    a: &UpdatePageArgs,
+    version: &str,
+) -> Result<Value, JsonRpcError> {
+    let refuse = |code: &str, message: String| {
+        Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": code,
+                "location": "approve",
+                "message": message,
+            }],
+        }))
+    };
+
+    let Some(draft) = indexer
+        .pending_draft(&a.page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("pending draft: {e}")))?
+    else {
+        return refuse(
+            "draft_not_found",
+            format!("{} has no pending draft to approve", a.page_id),
+        );
+    };
+    if draft.version != version {
+        return refuse(
+            "draft_not_found",
+            format!(
+                "{} has no pending draft at {version}; the pending draft is {}",
+                a.page_id, draft.version
+            ),
+        );
+    }
+
+    // Maker != checker, from the principal the gateway stamped (#357) rather
+    // than anything the caller said about itself.
+    if draft.drafted_by.as_deref() == Some(caller.subject) {
+        return refuse(
+            "approval_by_author",
+            format!(
+                "`{}` wrote this draft and may not approve it; an approval by \
+                 the author is not a review",
+                caller.subject
+            ),
+        );
+    }
+
+    // Read back through the CRDT BACKEND, which is the connection that wrote
+    // the snapshot. The indexer has its own, and the two are not the same
+    // database handle — reading the bytes from there finds nothing, which
+    // presents as a draft that cannot be published and is indistinguishable
+    // from a corrupt store.
+    let content = match state.crdt_backend.as_ref() {
+        Some(backend) => backend
+            .snapshot_at(&a.page_id, draft.snapshot_hlc)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|bytes| escurel_crdt::codec::body_from_snapshot(&bytes).ok()),
+        None => None,
+    };
+    let Some(content) = content else {
+        // The row exists and its snapshot does not. Refused rather than
+        // published-as-empty: an approval that silently ships nothing is the
+        // one outcome worse than an error here.
+        return refuse(
+            "draft_unreadable",
+            format!("the draft at {version} has no recoverable snapshot"),
+        );
+    };
+
+    // The same write ACL as any other publish. Approving IS updating.
+    if write_acl == crate::server::WriteAclMode::Enforce
+        && !indexer
+            .may_write_page(&caller, &a.page_id, &content)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("approve acl: {e}")))?
+    {
+        return refuse(
+            "forbidden",
+            format!(
+                "write denied: caller `{}` may not publish {}",
+                caller.subject, a.page_id
+            ),
+        );
+    }
+
+    // The stale-base guard, unchanged. A reviewer approved one diff against
+    // one base; if the page has moved, a merge would persist a third document
+    // neither they nor the concurrent author ever saw (spike S6).
+    if a.require_exact_base
+        && let Some(base) = a.base_version.as_deref()
+        && let Some(backend) = state.crdt_backend.as_ref()
+    {
+        let head_hlc = u64::try_from(backend.max_hlc(&a.page_id).await.unwrap_or(0)).unwrap_or(0);
+        let head = Version::from_op_count(head_hlc).as_str().to_owned();
+        if head != base {
+            return refuse(
+                "conflict",
+                format!(
+                    "{} has moved to {head} since this draft was written against {base}",
+                    a.page_id
+                ),
+            );
+        }
+    }
+
+    indexer
+        .update_page_as(&a.page_id, &content, stamped_principal(caller.subject))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("publish draft: {e}")))?;
+    indexer
+        .clear_draft(&a.page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("clear draft: {e}")))?;
+
+    Ok(json!({
+        "ok": true,
+        "issues": [],
+        "new_version": version,
+        "approved": version,
+    }))
+}
+
+/// Should this write be HELD as a draft rather than published (CR-2, #354)?
+///
+/// True when the gate is on and the page's skill declares `autonomy: review`.
+/// That key has been documented since CR-1 as *"the write is held for human
+/// approval before it lands"* and nothing enforced it; this is where it starts
+/// meaning what it says.
+///
+/// The skill is read from the CONTENT being written rather than from the
+/// existing page row, because a create has no row yet — and a create is the
+/// case the gate matters most for: it is the write that brings a record into
+/// existence with nobody having looked at it.
+async fn should_hold(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    content: &str,
+    page_id: &str,
+) -> bool {
+    use crate::server::DraftMode;
+    if state.drafts == DraftMode::Off {
+        return false;
+    }
+    let Ok(parsed) = escurel_md::parse(content) else {
+        return false;
+    };
+    // Only instances are held. A skill page is the schema and the policy
+    // itself; holding an edit to it behind the policy it declares is a knot
+    // an operator cannot untie — the page that says `autonomy: review` would
+    // need approval to stop saying it.
+    if parsed.frontmatter.page_type != PageType::Skill {
+        let skill = parsed
+            .frontmatter
+            .fields
+            .get("skill")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default();
+        let review = indexer
+            .list_skills()
+            .await
+            .ok()
+            .and_then(|skills| {
+                skills
+                    .into_iter()
+                    .find(|s| s.id == skill)
+                    .and_then(|s| s.autonomy)
+            })
+            .is_some_and(|a| a == escurel_index::read::Autonomy::Review);
+        if review && state.drafts == DraftMode::Log {
+            tracing::warn!(
+                page_id = %page_id,
+                skill = %skill,
+                "drafts (log mode): this write WOULD be held for approval",
+            );
+            return false;
+        }
+        return review;
+    }
+    false
 }
 
 /// What the compare-and-swap decided, named.
@@ -151,6 +366,17 @@ pub(super) async fn tool_update_page(
 ) -> Result<Value, JsonRpcError> {
     let a: UpdatePageArgs = parse_args(args, "update_page")?;
 
+    // Exactly one of the two. Enforced here rather than in the schema, which
+    // cannot express the either/or; the message names both so a caller who
+    // sent neither is not left guessing which one this call wanted.
+    if a.content.is_empty() && a.approve.is_none() {
+        return Err(JsonRpcError::invalid_params(
+            "update_page: send `content` to write a page, or `approve` to \
+             publish a pending draft"
+                .to_owned(),
+        ));
+    }
+
     // `require_exact_base` without a base is a caller bug, and the harmless
     // reading of it — ignore the flag — is the one that loses data: the caller
     // asked for a strict CAS and would get an unguarded write. Rejected as
@@ -159,6 +385,14 @@ pub(super) async fn tool_update_page(
         return Err(JsonRpcError::invalid_params(
             "update_page: `require_exact_base` needs a `base_version` to be exact about".to_owned(),
         ));
+    }
+
+    // APPROVE (CR-2, #354) — the same verb, richer. Handled before everything
+    // below because it carries no `content`: what publishes is the draft's own
+    // bytes, read back from its snapshot. Re-rendering at approval time is
+    // exactly how a reviewed diff drifts from what lands.
+    if let Some(version) = a.approve.clone() {
+        return approve_draft(state, indexer, caller, write_acl, &a, &version).await;
     }
 
     // Read-only-backend guard (REQ-BK-03): reject an attempt to write backend
@@ -475,6 +709,48 @@ pub(super) async fn tool_update_page(
             "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
         }));
     }
+    // HELD, not published (CR-2, #354). The snapshot is taken — the draft IS
+    // that version — but the page row is left alone, so every ordinary read
+    // still returns what was published. Nothing else in this function changes:
+    // the write was validated, ACL-checked and CAS-checked exactly as a
+    // publishing write is, because it is the same write. Only its visibility
+    // differs.
+    if should_hold(state, indexer, &content_to_write, &a.page_id).await
+        && let Some(backend) = state.crdt_backend.as_ref()
+    {
+        let bytes = snapshot_bytes_from_markdown(&content_to_write)
+            .map_err(|e| JsonRpcError::internal(format!("update_page crdt: {e}")))?;
+        let hlc = backend
+            .snapshot_next(&a.page_id, &Snapshot::new(bytes))
+            .await
+            .map(|h| u64::try_from(h).unwrap_or(head_hlc + 1))
+            .unwrap_or(head_hlc + 1);
+        let version = Version::from_op_count(hlc).as_str().to_owned();
+        indexer
+            .record_draft(
+                &a.page_id,
+                &version,
+                i64::try_from(hlc).unwrap_or_default(),
+                // Server-stamped, like every other attribution here: it is
+                // what makes "an approval by the author is not a review"
+                // enforceable rather than advisory.
+                stamped_principal(caller.subject),
+                a.base_version.as_deref(),
+            )
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("record draft: {e}")))?;
+        return Ok(json!({
+            "ok": true,
+            "issues": [],
+            "new_version": version,
+            // The caller MUST be able to tell a proposal from a landed
+            // change. Without this the response is indistinguishable from a
+            // publish, and an agent would report the change as made.
+            "draft": true,
+            "auto_merged": auto_merged,
+        }));
+    }
+
     // The write, attributed. `stamped_principal` reads ONLY the verified
     // token subject — nothing from `a`, so no argument, frontmatter key or
     // `provenance` block the caller sent can reach the column (#357).

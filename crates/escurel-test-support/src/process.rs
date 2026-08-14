@@ -19,11 +19,11 @@ use escurel_embed::ReloadableEmbedder;
 use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::{Indexer, IndexerHandle, Migrator};
 use escurel_quota::QuotaManager;
-use escurel_server::EventAclMode;
 use escurel_server::{
     AlwaysReady, AutonomyLintMode, EmbedderFactory, ReadinessProbe, ServerConfig, ServerHandle,
     WriteAclMode, serve,
 };
+use escurel_server::{DraftMode, EventAclMode};
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
 
@@ -50,6 +50,8 @@ pub struct ConfigOverrides {
     /// `None` → `Off` (the production default): `validate` still reports an
     /// unrecognised value, `update_page` still writes it.
     pub autonomy_lint: Option<AutonomyLintMode>,
+    /// Whether `autonomy: review` holds writes as drafts (`ESCUREL_DRAFTS`).
+    pub drafts: Option<DraftMode>,
     /// Value returned by `GET /version`. Defaults to
     /// `"0.0.0-test"`.
     pub gateway_version: Option<String>,
@@ -393,6 +395,7 @@ impl EscurelProcess {
             write_acl: overrides.write_acl.unwrap_or_default(),
             event_acl: overrides.event_acl.unwrap_or_default(),
             autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),
+            drafts: overrides.drafts.unwrap_or_default(),
             listen: "127.0.0.1:0".to_owned(),
             version,
             readiness,

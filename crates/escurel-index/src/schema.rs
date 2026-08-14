@@ -206,6 +206,16 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the `page_drafts` table (CR-2 / #354) exists.
+    ///
+    /// Idempotent and run on every connection, like
+    /// [`Self::ensure_write_attribution`]: a tenant DB provisioned before
+    /// drafts existed gains it on the next boot, with no operator step.
+    pub fn ensure_page_drafts(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_14_PAGE_DRAFTS)?;
+        Ok(())
+    }
+
     /// Ensure the `resolved_links` provenance-graph VIEW (ADR-0010) exists.
     /// A VIEW, not a table — `CREATE OR REPLACE`, so it is safe (and cheap) to
     /// run on EVERY connection like the other `ensure_*` methods, and it stays
@@ -267,6 +277,7 @@ impl Migrator {
         // the method) off the fresh-database path entirely. Called anyway so
         // `up` and the reopen chain cannot disagree about the schema.
         Self::ensure_write_attribution(conn)?;
+        Self::ensure_page_drafts(conn)?;
         // Provenance-graph VIEW (ADR-0010) over the now-existing pages/links
         // tables. A derived read surface; `CREATE OR REPLACE` + also run on
         // every reopen via `ensure_provenance_graph`.
@@ -300,6 +311,7 @@ const STAGE_10_EXTERNAL_ENDPOINTS: &str = include_str!("../sql/0008_external_end
 const STAGE_11_PACK_SUBSCRIPTIONS: &str = include_str!("../sql/0009_pack_subscriptions.sql");
 const STAGE_12_PROVENANCE_GRAPH: &str = include_str!("../sql/0010_provenance_graph.sql");
 const STAGE_13_WRITE_ATTRIBUTION: &str = include_str!("../sql/0011_write_attribution.sql");
+const STAGE_14_PAGE_DRAFTS: &str = include_str!("../sql/0012_page_drafts.sql");
 
 #[cfg(test)]
 mod tests {

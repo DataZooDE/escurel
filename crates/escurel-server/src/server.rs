@@ -132,6 +132,50 @@ impl EventAclMode {
     }
 }
 
+/// Whether `autonomy: review` actually holds a write as a draft
+/// (`ESCUREL_DRAFTS`).
+///
+/// `Autonomy::Review` has been documented since CR-1 as *"the write is held
+/// for human approval before it lands"* and nothing enforced it: the lint
+/// validates the value, and the write lands anyway. This is the knob that
+/// makes the key mean what it says.
+///
+/// **Its own knob, and `Off` by default, for the same reason as
+/// [`EventAclMode`]** — tenants already carry `autonomy: review` skill pages
+/// written when the key was documentation. Enforcing on upgrade would stop
+/// those pages publishing, silently, and the first sign would be a user
+/// asking why nothing saves. `Log` names the writes that WOULD be held, so an
+/// operator can find them before they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DraftMode {
+    /// `autonomy: review` is documentation; every write publishes (today's
+    /// behaviour, exactly).
+    #[default]
+    Off,
+    /// Log the writes that would be held, and publish them anyway.
+    Log,
+    /// Hold the write as a draft version. It publishes when approved.
+    Enforce,
+}
+
+impl DraftMode {
+    /// Parse `ESCUREL_DRAFTS` (`off` | `log` | `enforce`); unknown or unset →
+    /// [`DraftMode::Off`].
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var("ESCUREL_DRAFTS")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "enforce" => Self::Enforce,
+            "log" => Self::Log,
+            _ => Self::Off,
+        }
+    }
+}
+
 /// Enforcement mode for the skill-page `autonomy:` lint
 /// (`ESCUREL_AUTONOMY_LINT`).
 ///
@@ -187,6 +231,8 @@ pub struct ServerConfig {
     /// Write-time enforcement mode for the `autonomy:` lint
     /// (`ESCUREL_AUTONOMY_LINT`).
     pub autonomy_lint: AutonomyLintMode,
+    /// Whether `autonomy: review` holds a write as a draft (`ESCUREL_DRAFTS`).
+    pub drafts: DraftMode,
     /// HTTP listener — `0.0.0.0:8080` in production; tests pass
     /// `127.0.0.1:0` to let the OS pick a free port.
     pub listen: String,
@@ -404,6 +450,7 @@ pub(crate) struct AppState {
     pub(crate) write_acl: WriteAclMode,
     pub(crate) event_acl: EventAclMode,
     pub(crate) autonomy_lint: AutonomyLintMode,
+    pub(crate) drafts: DraftMode,
     pub(crate) version: String,
     pub(crate) readiness: Arc<dyn ReadinessProbe>,
     /// The single tenant this instance serves. The auth gate compares
@@ -511,6 +558,7 @@ pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         write_acl: config.write_acl,
         event_acl: config.event_acl,
         autonomy_lint: config.autonomy_lint,
+        drafts: config.drafts,
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
         served_tenant,

@@ -264,6 +264,15 @@ pub(super) struct ExpandArgs {
     /// the whole text), not the default grounding/preview path.
     #[serde(default)]
     full: bool,
+    /// Return the pending DRAFT version instead of the published one, when
+    /// there is one (CR-2, #354).
+    ///
+    /// Opt-in, and that direction is the requirement rather than a default:
+    /// a held write is invisible to ordinary reads, or it is not held. But it
+    /// has to be readable *somehow* — a proposal nobody can read cannot be
+    /// reviewed, and the whole point is that a human reads it before it lands.
+    #[serde(default)]
+    include_drafts: bool,
 }
 
 pub(super) async fn tool_expand(
@@ -317,6 +326,38 @@ pub(super) async fn tool_expand(
                     "version": w.version, "alias": w.alias,
                 })).collect::<Vec<_>>(),
             });
+            // The pending DRAFT, when the caller asked for it (CR-2, #354).
+            //
+            // Substituted over the published projection rather than returned
+            // beside it: a reviewer reads a page, and what they must read is
+            // the version they are being asked to approve. Two bodies in one
+            // response is a decision the caller would have to get right every
+            // time, and getting it wrong means approving something you did not
+            // read.
+            //
+            // `blocks` is emptied rather than carried over. A draft is not
+            // indexed — that is *why* it is invisible — so it genuinely has no
+            // block rows, and reusing the published page's anchors would hand
+            // back citation targets that do not address this text.
+            if a.include_drafts
+                && let Some(draft) = indexer
+                    .pending_draft(&e_page_id)
+                    .await
+                    .map_err(|err| JsonRpcError::internal(format!("expand draft: {err}")))?
+                && let Some(backend) = state.crdt_backend.as_ref()
+                && let Ok(Some(bytes)) = backend.snapshot_at(&e_page_id, draft.snapshot_hlc).await
+                && let Ok(md) = escurel_crdt::codec::body_from_snapshot(&bytes)
+                && let Ok(parsed) = escurel_md::parse(&md)
+            {
+                page["frontmatter"] = serde_json::to_value(&parsed.frontmatter.fields)
+                    .unwrap_or_else(|_| page["frontmatter"].clone());
+                page["body"] = json!(parsed.body);
+                page["blocks"] = json!([]);
+                page["draft"] = json!(true);
+                page["draft_version"] = json!(draft.version);
+                page["drafted_by"] = json!(draft.drafted_by);
+            }
+
             // #246: surface the page's current monotonic version so a client
             // can pass it back as `base_version` on the next `update_page`
             // (the read→edit→write optimistic-concurrency cycle).
