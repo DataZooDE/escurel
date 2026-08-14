@@ -402,26 +402,29 @@ pub(super) struct FetchBlobArgs {
 /// ACL mirrors `expand`: an instance the caller may not read resolves to a null
 /// blob (existence is not leaked). Non-document pages and missing pages also
 /// resolve to null. The transfer is size-capped.
-pub(super) async fn tool_fetch_blob(
+/// Resolve `page_id` to its retained original blob under `caller`'s read
+/// ACL. `Ok(None)` is ONE indistinguishable answer for absent, hidden,
+/// and no-fetchable-blob pages (no existence oracle). Shared by the
+/// `fetch_blob` tool (base64, capped) and `GET /blob/{page_id}` (raw).
+pub(super) async fn resolve_readable_blob(
     indexer: &Indexer,
-    caller: AclCaller<'_>,
-    args: Value,
-) -> Result<Value, JsonRpcError> {
-    let a: FetchBlobArgs = parse_args(args, "fetch_blob")?;
+    caller: &AclCaller<'_>,
+    page_id: &str,
+) -> Result<Option<(String, bytes::Bytes)>, String> {
     let out = indexer
-        .expand(&a.page_id, None, None)
+        .expand(page_id, None, None)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("fetch_blob expand: {e}")))?;
+        .map_err(|e| format!("blob expand: {e}"))?;
     let Some(e) = out else {
-        return Ok(json!({ "blob": Value::Null }));
+        return Ok(None);
     };
     if e.page.page_type == PageType::Instance
         && !indexer
-            .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
+            .may_read_instance(caller, &e.page.skill, &e.frontmatter)
             .await
-            .map_err(|err| JsonRpcError::internal(format!("fetch_blob acl: {err}")))?
+            .map_err(|err| format!("blob acl: {err}"))?
     {
-        return Ok(json!({ "blob": Value::Null }));
+        return Ok(None);
     }
     let blob_id_str = e
         .frontmatter
@@ -429,20 +432,14 @@ pub(super) async fn tool_fetch_blob(
         .and_then(|b| b.get("blob_id"))
         .and_then(Value::as_str);
     if !BackendView::of(&e.frontmatter).has_fetchable_blob() || blob_id_str.is_none() {
-        return Ok(json!({ "blob": Value::Null }));
+        return Ok(None);
     }
     let blob_id = escurel_storage::BlobId::parse(blob_id_str.unwrap())
-        .ok_or_else(|| JsonRpcError::internal("fetch_blob: malformed blob_id"))?;
+        .ok_or_else(|| "blob: malformed blob_id".to_owned())?;
     let bytes = indexer
         .read_blob(&blob_id)
         .await
-        .map_err(|err| JsonRpcError::internal(format!("fetch_blob read: {err}")))?;
-    if bytes.len() > FETCH_BLOB_MAX_BYTES {
-        return Err(JsonRpcError::invalid_params(format!(
-            "blob is {} bytes, over the {FETCH_BLOB_MAX_BYTES}-byte fetch cap",
-            bytes.len()
-        )));
-    }
+        .map_err(|err| format!("blob read: {err}"))?;
     // Prefer the MIME the upload DECLARED (recorded on the overlay since
     // GH #356) over sniffing the bytes: the sniff knows PDF/OOXML/text and
     // answers `application/octet-stream` for everything else — which is
@@ -455,10 +452,34 @@ pub(super) async fn tool_fetch_blob(
         .and_then(|b| b.get("content_type"))
         .and_then(Value::as_str)
         .filter(|ct| !ct.is_empty());
+    let content_type = declared
+        .unwrap_or_else(|| sniff_content_type(&bytes))
+        .to_owned();
+    Ok(Some((content_type, bytes)))
+}
+
+pub(super) async fn tool_fetch_blob(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: FetchBlobArgs = parse_args(args, "fetch_blob")?;
+    let Some((content_type, bytes)) = resolve_readable_blob(indexer, &caller, &a.page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("fetch_blob {e}")))?
+    else {
+        return Ok(json!({ "blob": Value::Null }));
+    };
+    if bytes.len() > FETCH_BLOB_MAX_BYTES {
+        return Err(JsonRpcError::invalid_params(format!(
+            "blob is {} bytes, over the {FETCH_BLOB_MAX_BYTES}-byte fetch cap",
+            bytes.len()
+        )));
+    }
     Ok(json!({
         "blob": {
-            "page_id": e.page.page_id,
-            "content_type": declared.unwrap_or_else(|| sniff_content_type(&bytes)),
+            "page_id": a.page_id,
+            "content_type": content_type,
             "size": bytes.len(),
             "bytes_base64": B64.encode(&bytes),
         }

@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.14 — `GET /blob/{page_id}`: raw download twin of upload
+
+- New bearer-authed REST route serving a document instance's retained
+  original bytes verbatim — declared/sniffed `Content-Type`, honest
+  `Content-Length`, no base64 inflation, no 25 MiB cap. Exactly
+  `fetch_blob`'s ACL; absent/hidden/blob-less pages are one
+  indistinguishable 404. `fetch_blob` stays as the MCP-envelope variant
+  for agent callers.
+
 ## 0.6.11 — `tools/list` is role-scoped; every tool carries `scope`
 
 - Every `tools/list` entry now carries an additive

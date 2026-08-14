@@ -638,3 +638,81 @@ async fn run_document_ingest(
             .into_response(),
     }
 }
+
+/// `GET /blob/{page_id}` — the raw-bytes download twin of
+/// `POST /ingest/upload` (API review B2). Serves the retained original
+/// verbatim with a real `Content-Type`, under exactly `fetch_blob`'s
+/// ACL: absent, hidden and blob-less pages are one indistinguishable
+/// `404`. Unlike the base64 tool there is no 25 MiB cap — the body is
+/// the plain HTTP payload a browser can render or range over.
+pub(crate) async fn blob_get(
+    State(state): State<crate::server::AppState>,
+    axum::extract::Path(page_id): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let resp = blob_get_inner(&state, &page_id, &headers).await;
+    state.metrics.inc_request("/blob", resp.status().as_u16());
+    resp
+}
+
+async fn blob_get_inner(
+    state: &crate::server::AppState,
+    page_id: &str,
+    headers: &HeaderMap,
+) -> axum::response::Response {
+    let auth_ctx = match crate::auth_gate::authenticate(state, headers).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    // Suspend gate, mirroring dispatch: agent traffic stops, admin passes.
+    if state
+        .tenant_suspended
+        .load(std::sync::atomic::Ordering::Relaxed)
+        && matches!(auth_ctx.as_ref().map(|c| c.role), Some(Role::Agent))
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "tenant_suspended" })),
+        )
+            .into_response();
+    }
+    let subject = auth_ctx
+        .as_ref()
+        .map(|c| c.subject.clone())
+        .unwrap_or_default();
+    let groups = crate::auth_gate::rbac_groups(state, auth_ctx.as_ref());
+    let is_admin = match &auth_ctx {
+        Some(c) => matches!(c.role, Role::Admin),
+        None => true,
+    };
+    let Some(handle) = state.indexer.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "no indexer wired" })),
+        )
+            .into_response();
+    };
+    let indexer = handle.current();
+    let caller = AclCaller {
+        subject: &subject,
+        is_admin,
+        token_groups: &groups,
+    };
+    match super::tools_read::resolve_readable_blob(&indexer, &caller, page_id).await {
+        Ok(Some((content_type, bytes))) => (
+            StatusCode::OK,
+            [
+                ("content-type", content_type),
+                ("content-length", bytes.len().to_string()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not_found" }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}

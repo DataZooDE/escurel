@@ -66,7 +66,7 @@ mod schema;
 mod tools_admin;
 mod tools_read;
 mod tools_write;
-pub(crate) use ingest::{ingest, ingest_upload};
+pub(crate) use ingest::{blob_get, ingest, ingest_upload};
 pub(crate) use schema::openapi_document;
 use schema::page_type_str;
 use tools_admin::*;
