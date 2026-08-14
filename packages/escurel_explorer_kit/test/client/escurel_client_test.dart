@@ -103,21 +103,28 @@ class _StubClient implements EscurelClient {
       throw notYetImplemented('list_skills');
 
   @override
-  Future<List<InstanceSummary>> listInstances(
+  Future<InstancePage> listInstances(
     String skillId, {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
     String? asOf,
     String? scenario,
+    String? cursor,
   }) async => throw notYetImplemented('list_instances');
 
   @override
-  Future<List<Event>> listInbox({int? limit}) async =>
+  Future<EventPage> listInbox({int? limit, String? cursor}) async =>
       throw notYetImplemented('list_inbox');
   @override
-  Future<List<Event>> listEvents(String instancePageId, {int? limit}) async =>
-      throw notYetImplemented('list_events');
+  Future<EventPage> listEvents(
+    String instancePageId, {
+    int? limit,
+    String? cursor,
+  }) async => throw notYetImplemented('list_events');
+  @override
+  Future<List<ToolInfo>> listTools() async =>
+      throw notYetImplemented('tools/list');
   @override
   Future<List<String>> listSnapshots(String pageId) async =>
       throw notYetImplemented('list_snapshots');
@@ -343,6 +350,7 @@ class _StubClient implements EscurelClient {
     required String contentType,
     required List<int> bytes,
     String? title,
+    String? eventId,
   }) async => throw notYetImplemented('ingest/upload');
 
   @override

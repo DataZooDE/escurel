@@ -1095,6 +1095,22 @@ class _DocumentIngestState extends ConsumerState<_DocumentIngest> {
   String? _error;
   bool _busy = false;
 
+  /// The idempotency key of the CURRENT logical upload. Minted on the
+  /// first submit, kept across failed attempts so a retry redelivers the
+  /// same `event_id` (the server answers `{status: "duplicate"}` if the
+  /// first delivery actually landed), and dropped on success or when the
+  /// operator edits the content (a new logical upload).
+  String? _uploadEventId;
+
+  @override
+  void initState() {
+    super.initState();
+    _title.addListener(_resetUploadKey);
+    _content.addListener(_resetUploadKey);
+  }
+
+  void _resetUploadKey() => _uploadEventId = null;
+
   @override
   void dispose() {
     _title.dispose();
@@ -1108,6 +1124,7 @@ class _DocumentIngestState extends ConsumerState<_DocumentIngest> {
       _error = null;
       _outcome = null;
     });
+    _uploadEventId ??= generateUploadEventId();
     try {
       final outcome = await ref
           .read(escurelClientProvider)
@@ -1115,10 +1132,15 @@ class _DocumentIngestState extends ConsumerState<_DocumentIngest> {
             contentType: _contentType,
             bytes: utf8.encode(_content.text),
             title: _title.text.trim().isEmpty ? null : _title.text.trim(),
+            eventId: _uploadEventId,
           );
       setState(() => _outcome = outcome);
+      // The upload landed (fresh or duplicate) — the key has done its
+      // job; the next submit is a new logical upload.
+      _uploadEventId = null;
     } on EscurelClientException catch (e) {
-      setState(() => _error = e.message);
+      // Key kept: retrying redelivers the same event_id.
+      setState(() => _error = humanizeEscurelError(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -1165,7 +1187,9 @@ class _IngestOutcomeView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
-    final ok = outcome.materialised;
+    // A duplicate redelivery (same `event_id` idempotency key) is
+    // success-with-note, never an error: the first delivery did the work.
+    final ok = outcome.materialised || outcome.duplicate;
     final rows = <(String, String?)>[
       ('status', outcome.status),
       ('handler', outcome.handlerSkill),
@@ -1212,6 +1236,15 @@ class _IngestOutcomeView extends StatelessWidget {
                     ],
                   ),
                 ),
+            if (outcome.duplicate)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  'Already uploaded — this delivery was a duplicate '
+                  '(same idempotency key); nothing was re-ingested.',
+                  style: text.bodySmall?.copyWith(color: kSuccess),
+                ),
+              ),
             if (outcome.issueMessage != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),

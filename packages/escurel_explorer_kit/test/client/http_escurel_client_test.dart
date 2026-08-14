@@ -42,7 +42,15 @@ class _MockMcpServer {
   final Map<String, String> rawRouteHandlers = {};
 
   /// Pre-built tool error to return on the next call (overrides handler).
-  ({int code, String message})? nextError;
+  /// `data` is the optional machine-readable `error.data` object
+  /// (`{code, retryable, ...}`) newer gateways attach.
+  ({int code, String message, Map<String, dynamic>? data})? nextError;
+
+  /// Canned `tools/list` result (`{tools: [...]}`); null → JSON-RPC error.
+  Map<String, dynamic>? toolsListResult;
+
+  /// The decoded JSON body of the last non-MCP POST (e.g. /ingest/upload).
+  Map<String, dynamic>? lastPostBody;
 
   static Future<_MockMcpServer> start() async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -62,9 +70,21 @@ class _MockMcpServer {
           await _respondJson(req, 200, {
             'jsonrpc': '2.0',
             'id': body['id'],
-            'error': {'code': nextError!.code, 'message': nextError!.message},
+            'error': {
+              'code': nextError!.code,
+              'message': nextError!.message,
+              if (nextError!.data != null) 'data': nextError!.data,
+            },
           });
           nextError = null;
+          return;
+        }
+        if (body['method'] == 'tools/list') {
+          await _respondJson(req, 200, {
+            'jsonrpc': '2.0',
+            'id': body['id'],
+            'result': toolsListResult ?? {'tools': <Object>[]},
+          });
           return;
         }
         final params = body['params'] as Map<String, dynamic>;
@@ -86,6 +106,15 @@ class _MockMcpServer {
           'result': result,
         });
         return;
+      }
+      if (req.method == 'POST') {
+        // Capture the JSON body of non-MCP POSTs so tests can assert
+        // what actually crossed the wire (e.g. /ingest/upload's
+        // `event_id` idempotency key).
+        final rawBody = await utf8.decoder.bind(req).join();
+        lastPostBody = rawBody.isEmpty
+            ? null
+            : jsonDecode(rawBody) as Map<String, dynamic>?;
       }
       final raw = rawRouteHandlers[req.uri.path];
       if (raw != null) {
@@ -572,6 +601,7 @@ void main() {
       mock.nextError = (
         code: -32000,
         message: 'pack_signature_invalid: manifest signature does not verify',
+        data: null,
       );
       await expectLater(
         client.importPack('{"id":"p","version":1}', 'AAAA'),
@@ -614,7 +644,7 @@ void main() {
 
   group('errors', () {
     test('tool error envelope surfaces as EscurelToolException', () async {
-      mock.nextError = (code: -32000, message: 'page not found');
+      mock.nextError = (code: -32000, message: 'page not found', data: null);
       await expectLater(
         client.expand('not-a-real-page'),
         throwsA(
@@ -634,6 +664,260 @@ void main() {
         throwsA(isA<EscurelTransportException>()),
       );
       bad.close();
+    });
+  });
+
+  group('cursor pagination', () {
+    test('list_inbox round-trips the cursor; absence means done', () async {
+      final sentArgs = <Map<String, dynamic>>[];
+      mock.toolHandlers['list_inbox'] = (args) {
+        sentArgs.add(args);
+        // First page carries next_cursor; the continuation page does not.
+        if (args['cursor'] == null) {
+          return {
+            'events': [
+              {'event_id': 'ev-1'},
+            ],
+            'next_cursor': 'c-1',
+          };
+        }
+        return {
+          'events': [
+            {'event_id': 'ev-2'},
+          ],
+        };
+      };
+
+      final first = await client.listInbox(limit: 1);
+      expect(first.events.single.eventId, 'ev-1');
+      expect(first.nextCursor, 'c-1');
+      expect(first.hasMore, isTrue);
+      // No cursor on the first request.
+      expect(sentArgs.first.containsKey('cursor'), isFalse);
+
+      final second = await client.listInbox(limit: 1, cursor: first.nextCursor);
+      expect(sentArgs.last['cursor'], 'c-1');
+      expect(second.events.single.eventId, 'ev-2');
+      // ABSENCE of next_cursor (never a short page) means done.
+      expect(second.nextCursor, isNull);
+      expect(second.hasMore, isFalse);
+    });
+
+    test('list_events round-trips the cursor', () async {
+      Map<String, dynamic>? sent;
+      mock.toolHandlers['list_events'] = (args) {
+        sent = args;
+        return {
+          'events': [
+            {'event_id': 'ev-9', 'status': 'processed'},
+          ],
+          'next_cursor': 'c-next',
+        };
+      };
+      final page = await client.listEvents(
+        'customer::acme',
+        limit: 50,
+        cursor: 'c-prev',
+      );
+      expect(sent, {
+        'instance_page_id': 'customer::acme',
+        'limit': 50,
+        'cursor': 'c-prev',
+      });
+      expect(page.events.single.eventId, 'ev-9');
+      expect(page.nextCursor, 'c-next');
+    });
+
+    test(
+      'list_instances sends cursor and parses next_cursor (null = done)',
+      () async {
+        Map<String, dynamic>? sent;
+        mock.toolHandlers['list_instances'] = (args) {
+          sent = args;
+          return {
+            'instances': [
+              {'page_id': 'lead__a', 'skill': 'lead'},
+            ],
+            'next_cursor': 'c-2',
+          };
+        };
+        final page = await client.listInstances('lead', cursor: 'c-1');
+        expect(sent!['cursor'], 'c-1');
+        expect(page.instances.single.id, 'lead__a');
+        expect(page.nextCursor, 'c-2');
+
+        // `next_cursor: null` when done.
+        mock.toolHandlers['list_instances'] = (_) => {
+          'instances': <Object>[],
+          'next_cursor': null,
+        };
+        final done = await client.listInstances('lead');
+        expect(done.nextCursor, isNull);
+        expect(done.hasMore, isFalse);
+      },
+    );
+  });
+
+  group('machine-readable errors', () {
+    test('error.data {code, retryable} parses into the exception', () async {
+      mock.nextError = (
+        code: -32000,
+        message: 'replica cannot write',
+        data: {'code': 'read_only_replica', 'retryable': true},
+      );
+      await expectLater(
+        client.updatePage('p', '# x'),
+        throwsA(
+          isA<EscurelToolException>()
+              .having((e) => e.code, 'code', 'read_only_replica')
+              .having((e) => e.retryable, 'retryable', isTrue),
+        ),
+      );
+    });
+
+    test('quota_exhausted carries dimension + retry_after_ms', () async {
+      mock.nextError = (
+        code: -32000,
+        message: 'quota exhausted',
+        data: {
+          'code': 'quota_exhausted',
+          'retryable': true,
+          'dimension': 'writes',
+          'retry_after_ms': 4200,
+        },
+      );
+      await expectLater(
+        client.updatePage('p', '# x'),
+        throwsA(
+          isA<EscurelToolException>()
+              .having((e) => e.code, 'code', 'quota_exhausted')
+              .having((e) => e.dimension, 'dimension', 'writes')
+              .having((e) => e.retryAfterMs, 'retryAfterMs', 4200),
+        ),
+      );
+    });
+
+    test('an error without data stays backward compatible', () async {
+      // Older gateways: no `error.data` — the numeric JSON-RPC code is
+      // kept and retryable defaults to false.
+      mock.nextError = (code: -32000, message: 'boom', data: null);
+      await expectLater(
+        client.expand('p'),
+        throwsA(
+          isA<EscurelToolException>()
+              .having((e) => e.code, 'code', '-32000')
+              .having((e) => e.retryable, 'retryable', isFalse),
+        ),
+      );
+    });
+
+    test('humanizeEscurelError branches on the stable code', () {
+      expect(
+        humanizeEscurelError(
+          const EscurelToolException(
+            'raw',
+            code: 'quota_exhausted',
+            retryable: true,
+            details: {'retry_after_ms': 3000},
+          ),
+        ),
+        'Rate limit reached — retry in 3s.',
+      );
+      expect(
+        humanizeEscurelError(
+          const EscurelToolException('raw', code: 'read_only_replica'),
+        ),
+        contains('read-only'),
+      );
+      // Unknown code / older gateway → the raw message.
+      expect(
+        humanizeEscurelError(
+          const EscurelToolException('page not found', code: '-32000'),
+        ),
+        'page not found',
+      );
+    });
+  });
+
+  group('tools/list', () {
+    test('parses name + scope + execution-hint annotations', () async {
+      mock.toolsListResult = {
+        'tools': [
+          {
+            'name': 'search',
+            'description': 'hybrid search',
+            'scope': 'agent',
+            'annotations': {'readOnlyHint': true},
+          },
+          {
+            'name': 'unsubscribe_pack',
+            'scope': 'admin',
+            'annotations': {'destructiveHint': true},
+          },
+          // Older gateway: no scope label → agent by default.
+          {'name': 'resolve'},
+        ],
+      };
+      final tools = await client.listTools();
+      expect(tools, hasLength(3));
+      final search = tools.firstWhere((t) => t.name == 'search');
+      expect(search.scope, 'agent');
+      expect(search.readOnly, isTrue);
+      final unsub = tools.firstWhere((t) => t.name == 'unsubscribe_pack');
+      expect(unsub.scope, 'admin');
+      expect(unsub.destructive, isTrue);
+      expect(tools.firstWhere((t) => t.name == 'resolve').scope, 'agent');
+    });
+  });
+
+  group('upload idempotency', () {
+    test('ingestUpload passes the event_id idempotency key', () async {
+      mock.routeHandlers['/ingest/upload'] = () => {
+        'status': 'materialised',
+        'event_id': 'k-1',
+      };
+      await client.ingestUpload(
+        contentType: 'text/plain',
+        bytes: 'hello'.codeUnits,
+        eventId: 'k-1',
+      );
+      expect(mock.lastPostBody!['event_id'], 'k-1');
+    });
+
+    test('ingestUpload omits event_id when the caller passes none', () async {
+      mock.routeHandlers['/ingest/upload'] = () => {'status': 'materialised'};
+      await client.ingestUpload(
+        contentType: 'text/plain',
+        bytes: 'hello'.codeUnits,
+      );
+      expect(mock.lastPostBody!.containsKey('event_id'), isFalse);
+    });
+
+    test('a duplicate redelivery parses as success-with-note', () async {
+      mock.routeHandlers['/ingest/upload'] = () => {
+        'status': 'duplicate',
+        'event_id': 'k-1',
+      };
+      final out = await client.ingestUpload(
+        contentType: 'text/plain',
+        bytes: 'hello'.codeUnits,
+        eventId: 'k-1',
+      );
+      expect(out.duplicate, isTrue);
+      expect(out.materialised, isFalse);
+    });
+
+    test('generateUploadEventId mints distinct v4-shaped keys', () {
+      final a = generateUploadEventId();
+      final b = generateUploadEventId();
+      expect(a, isNot(b));
+      expect(
+        RegExp(
+          r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+        ).hasMatch(a),
+        isTrue,
+        reason: 'not a UUID v4: $a',
+      );
     });
   });
 

@@ -72,23 +72,34 @@ abstract class EscurelClient {
   /// excludes instances born after the cut (untimed always remain).
   /// `scenario` selects a what-if overlay (base ∪ overlay, overlay
   /// wins per slug); null returns the shared base only.
-  Future<List<InstanceSummary>> listInstances(
+  ///
+  /// Cursor-paginated: pass a prior page's [InstancePage.nextCursor]
+  /// as [cursor] to continue; `nextCursor == null` means done.
+  Future<InstancePage> listInstances(
     String skillId, {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
     String? asOf,
     String? scenario,
+    String? cursor,
   });
 
   // ── events / inbox (M7) ──────────────────────────────────────
 
-  /// Unprocessed events (the inbox), newest first.
-  Future<List<Event>> listInbox({int? limit});
+  /// Unprocessed events (the inbox), newest first. Cursor-paginated:
+  /// pass a prior page's [EventPage.nextCursor] as [cursor]; the
+  /// cursor's ABSENCE (never a short page) means the inbox is drained.
+  Future<EventPage> listInbox({int? limit, String? cursor});
 
   /// An instance's processed event history (the event sequence whose
-  /// projection is its state), oldest first.
-  Future<List<Event>> listEvents(String instancePageId, {int? limit});
+  /// projection is its state), oldest first. Cursor-paginated like
+  /// [listInbox].
+  Future<EventPage> listEvents(
+    String instancePageId, {
+    int? limit,
+    String? cursor,
+  });
 
   /// The taken_at timestamps of an instance's CRDT snapshot history,
   /// oldest first — the discrete state-over-time points `expand(asOf=T)`
@@ -346,11 +357,22 @@ abstract class EscurelClient {
   /// deposits the bytes into the inbox, records an ingest Event, and runs
   /// the worker. Returns the outcome (materialised / extraction_failed /
   /// no_handler).
+  ///
+  /// [eventId] is the optional idempotency key: generate one per
+  /// LOGICAL upload (see [generateUploadEventId]), keep it with the
+  /// in-flight upload state, and reuse it on retry — a redelivery
+  /// answers `{status: "duplicate"}` (success-with-note, not an error).
   Future<IngestOutcome> ingestUpload({
     required String contentType,
     required List<int> bytes,
     String? title,
+    String? eventId,
   });
+
+  /// The tools the gateway exposes to this token (`tools/list`), each
+  /// carrying its `scope` label (`agent` | `admin`) and execution-hint
+  /// annotations. Agent tokens only receive the agent subset.
+  Future<List<ToolInfo>> listTools();
 
   // ── substrate health ────────────────────────────────────────
 

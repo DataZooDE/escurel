@@ -6,11 +6,28 @@
 /// client and the editor widgets.
 library;
 
+import 'dart:math';
 import 'dart:typed_data';
 
 import '../md/frontmatter.dart';
 
 // ── common ──────────────────────────────────────────────────────
+
+/// A fresh UUID-v4 idempotency key for one LOGICAL upload
+/// (`POST /ingest/upload`'s optional `event_id`). Generate once when
+/// the upload starts, keep it with the in-flight upload state, and
+/// reuse it on retry — a redelivery answers `{status: "duplicate"}`.
+String generateUploadEventId() {
+  final rng = Random.secure();
+  final b = List<int>.generate(16, (_) => rng.nextInt(256));
+  b[6] = (b[6] & 0x0f) | 0x40; // version 4
+  b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+  String hex(int i, int n) => b
+      .sublist(i, i + n)
+      .map((x) => x.toRadixString(16).padLeft(2, '0'))
+      .join();
+  return '${hex(0, 4)}-${hex(4, 2)}-${hex(6, 2)}-${hex(8, 2)}-${hex(10, 6)}';
+}
 
 /// Restrict a search to pages of a particular kind.
 enum PageTypeFilter { skill, instance, any }
@@ -451,6 +468,11 @@ class IngestOutcome {
 
   bool get materialised => status == 'materialised';
 
+  /// A redelivery of an already-processed upload (same `event_id`
+  /// idempotency key). Success-with-note, never an error: the first
+  /// delivery did the work.
+  bool get duplicate => status == 'duplicate';
+
   factory IngestOutcome.fromJson(Map<String, dynamic> j) {
     final issue = j['issue'] as Map<String, dynamic>?;
     return IngestOutcome(
@@ -669,6 +691,18 @@ bool isArchivedFrontmatter(Map<String, dynamic> frontmatter) {
   return v is String && v.trim().toLowerCase() == 'true';
 }
 
+/// One page of [InstanceSummary]s plus the opaque cursor for the next
+/// page. The server returns `next_cursor: null` when done, a string when
+/// more rows remain — pass it back as `cursor` to continue.
+class InstancePage {
+  const InstancePage({required this.instances, this.nextCursor});
+  final List<InstanceSummary> instances;
+  final String? nextCursor;
+
+  /// Whether another page can be fetched.
+  bool get hasMore => nextCursor != null;
+}
+
 // ── events / inbox (M7) ─────────────────────────────────────────
 
 /// One event — the dynamic input of the memory triad. Its [labelSkill]
@@ -713,6 +747,59 @@ class Event {
     body: (j['body'] as String?) ?? '',
     provenance: Map<String, dynamic>.from(j['provenance'] as Map? ?? const {}),
   );
+}
+
+/// One page of [Event]s plus the opaque cursor for the next page.
+/// `list_inbox` / `list_events` emit `next_cursor` iff more rows remain
+/// — its ABSENCE (never a short page) means the listing is exhausted.
+class EventPage {
+  const EventPage({required this.events, this.nextCursor});
+  final List<Event> events;
+  final String? nextCursor;
+
+  /// Whether another page can be fetched.
+  bool get hasMore => nextCursor != null;
+}
+
+// ── tools/list (scope labels) ───────────────────────────────────
+
+/// One entry from `tools/list`: the tool's name plus its scope label
+/// (`agent` | `admin` — agent tokens only receive the agent subset)
+/// and the MCP execution-hint annotations rendered as badges.
+class ToolInfo {
+  const ToolInfo({
+    required this.name,
+    this.description = '',
+    this.scope = 'agent',
+    this.readOnly,
+    this.destructive,
+    this.idempotent,
+  });
+
+  final String name;
+  final String description;
+
+  /// `agent` | `admin`; defaults to `agent` on older gateways that
+  /// carry no scope label.
+  final String scope;
+
+  /// MCP annotation hints (`readOnlyHint` / `destructiveHint` /
+  /// `idempotentHint`); null when the server declares none.
+  final bool? readOnly;
+  final bool? destructive;
+  final bool? idempotent;
+
+  factory ToolInfo.fromJson(Map<String, dynamic> j) {
+    final ann = j['annotations'] as Map<String, dynamic>? ?? const {};
+    return ToolInfo(
+      name: (j['name'] as String?) ?? '',
+      description: (j['description'] as String?) ?? '',
+      scope: (j['scope'] as String?) ?? 'agent',
+      readOnly: ann['readOnlyHint'] as bool?,
+      destructive: ann['destructiveHint'] as bool?,
+      idempotent: ann['idempotentHint'] as bool?,
+    );
+  }
 }
 
 // ── run_stored_query ────────────────────────────────────────────

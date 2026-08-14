@@ -7,6 +7,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../client/errors.dart';
 import '../client/models.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
@@ -21,6 +22,12 @@ class EventPane extends ConsumerWidget {
     final events = ref.watch(entityEventsProvider);
     final inbox = ref.watch(inboxEventsProvider);
     final open = ref.watch(openEventProvider);
+    // The history's cursor lives on the UNfiltered accumulated page —
+    // present iff the server has more rows (never inferred from length).
+    final historyCursor = ref
+        .watch(entityEventHistoryProvider)
+        .valueOrNull
+        ?.nextCursor;
 
     return Semantics(
       label: 'event-pane',
@@ -34,7 +41,9 @@ class EventPane extends ConsumerWidget {
           // Master: the focused instance's event history.
           _SectionHeader(
             label: 'EVENTS',
-            trailing: events.maybeWhen(data: (e) => '${e.length}', orElse: () => null),
+            trailing: events.maybeWhen(
+                data: (e) => '${e.length}${historyCursor != null ? '+' : ''}',
+                orElse: () => null),
           ),
           Expanded(
             flex: 5,
@@ -44,19 +53,28 @@ class EventPane extends ConsumerWidget {
               explicitChildNodes: true,
               child: events.when(
                 loading: () => const _Loading(),
-                error: (e, _) => _Error('$e'),
+                error: (e, _) => _Error(humanizeEscurelError(e)),
                 data: (list) => list.isEmpty
                     ? const _Empty('No events for this instance')
                     : ListView.separated(
                         padding: EdgeInsets.zero,
-                        itemCount: list.length,
+                        // A trailing "load more" row iff the server sent a
+                        // cursor (more rows remain).
+                        itemCount: list.length + (historyCursor != null ? 1 : 0),
                         separatorBuilder: (_, _) => const Divider(height: 1),
-                        itemBuilder: (_, i) => _EventTile(
-                          event: list[i],
-                          selected: list[i].eventId == open,
-                          onTap: () => ref.read(openEventProvider.notifier).state = list[i].eventId,
-                          onSkill: () => focusSkill(ref, list[i].labelSkill),
-                        ),
+                        itemBuilder: (_, i) => i < list.length
+                            ? _EventTile(
+                                event: list[i],
+                                selected: list[i].eventId == open,
+                                onTap: () => ref.read(openEventProvider.notifier).state = list[i].eventId,
+                                onSkill: () => focusSkill(ref, list[i].labelSkill),
+                              )
+                            : _LoadMoreTile(
+                                semanticsLabel: 'load-more-events',
+                                onTap: () => ref
+                                    .read(entityEventHistoryProvider.notifier)
+                                    .loadMore(),
+                              ),
                       ),
               ),
             ),
@@ -77,7 +95,10 @@ class EventPane extends ConsumerWidget {
                 children: [
                   _SectionHeader(
                     label: 'INBOX',
-                    trailing: inbox.maybeWhen(data: (e) => '${e.length}', orElse: () => null),
+                    trailing: inbox.maybeWhen(
+                        data: (page) =>
+                            '${page.events.length}${page.hasMore ? '+' : ''}',
+                        orElse: () => null),
                     background: kSurfaceContainerHighest,
                   ),
                   Expanded(
@@ -87,22 +108,31 @@ class EventPane extends ConsumerWidget {
                       explicitChildNodes: true,
                       child: inbox.when(
                         loading: () => const _Loading(),
-                        error: (e, _) => _Error('$e'),
-                        data: (list) => list.isEmpty
-                            ? const _Empty('Inbox empty')
-                            : ListView.separated(
-                                padding: EdgeInsets.zero,
-                                itemCount: list.length,
-                                separatorBuilder: (_, _) => const Divider(height: 1),
-                                itemBuilder: (_, i) => _EventTile(
-                                  event: list[i],
-                                  selected: list[i].eventId == open,
-                                  inbox: true,
-                                  onTap: () =>
-                                      ref.read(openEventProvider.notifier).state = list[i].eventId,
-                                  onSkill: () => focusSkill(ref, list[i].labelSkill),
-                                ),
-                              ),
+                        error: (e, _) => _Error(humanizeEscurelError(e)),
+                        data: (page) {
+                          final list = page.events;
+                          if (list.isEmpty) return const _Empty('Inbox empty');
+                          return ListView.separated(
+                            padding: EdgeInsets.zero,
+                            itemCount: list.length + (page.hasMore ? 1 : 0),
+                            separatorBuilder: (_, _) => const Divider(height: 1),
+                            itemBuilder: (_, i) => i < list.length
+                                ? _EventTile(
+                                    event: list[i],
+                                    selected: list[i].eventId == open,
+                                    inbox: true,
+                                    onTap: () =>
+                                        ref.read(openEventProvider.notifier).state = list[i].eventId,
+                                    onSkill: () => focusSkill(ref, list[i].labelSkill),
+                                  )
+                                : _LoadMoreTile(
+                                    semanticsLabel: 'load-more-inbox',
+                                    onTap: () => ref
+                                        .read(inboxEventsProvider.notifier)
+                                        .loadMore(),
+                                  ),
+                          );
+                        },
                       ),
                     ),
                   ),
@@ -291,6 +321,44 @@ class _EventTile extends StatelessWidget {
       onTap: onTap,
       excludeSemantics: true,
       child: dual,
+    );
+  }
+}
+
+/// The trailing "load more" row of a cursor-paginated event list —
+/// rendered only while the server reports another page (a `next_cursor`
+/// on the accumulated listing).
+class _LoadMoreTile extends StatelessWidget {
+  const _LoadMoreTile({required this.semanticsLabel, required this.onTap});
+  final String semanticsLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Semantics(
+      label: semanticsLabel,
+      button: true,
+      onTap: onTap,
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.expand_more, size: 14, color: kPrimary),
+              const SizedBox(width: 4),
+              Text(
+                'load more',
+                style: text.labelSmall
+                    ?.copyWith(color: kPrimary, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

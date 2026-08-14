@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../client/errors.dart';
 import '../client/models.dart';
 import '../md/frontmatter.dart' as md;
 import '../state/providers.dart';
@@ -26,7 +27,7 @@ class CataloguePane extends ConsumerWidget {
       child: async.when(
         loading: () =>
             const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-        error: (e, _) => _ErrorBlock(message: '$e'),
+        error: (e, _) => _ErrorBlock(message: humanizeEscurelError(e)),
         data: (skills) => ListView(
           padding: const EdgeInsets.all(8),
           children: [for (final s in skills) _SkillTile(skill: s)],
@@ -133,8 +134,9 @@ class _SkillTile extends ConsumerWidget {
                     child: CircularProgressIndicator(strokeWidth: 1.5),
                   ),
                 ),
-                error: (e, _) => _ErrorBlock(message: '$e'),
-                data: (instances) {
+                error: (e, _) => _ErrorBlock(message: humanizeEscurelError(e)),
+                data: (page) {
+                final instances = page.instances;
                 // Archived instances (`archived: true`) are hidden per skill by
                 // default; the per-skill toggle below reveals them (muted).
                 final showArchived = ref
@@ -167,6 +169,15 @@ class _SkillTile extends ConsumerWidget {
                             color: kOnSurfaceVariant,
                           ),
                         ),
+                      ),
+                    // Cursor pagination: the server sent a `next_cursor`
+                    // iff more instances remain — offer "load more".
+                    if (page.hasMore)
+                      _LoadMoreRow(
+                        skillId: skill.id,
+                        onTap: () => ref
+                            .read(instancesProvider(skill.id).notifier)
+                            .loadMore(),
                       ),
                     if (archived.isNotEmpty)
                       _ShowArchivedToggle(
@@ -301,6 +312,47 @@ class _AclBadge extends StatelessWidget {
             ownerScoped ? Icons.lock_outline : Icons.shield_outlined,
             size: 14,
             color: kOnSurfaceVariant,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The trailing "load more" row of a cursor-paginated instance list —
+/// shown only while the server reports a `next_cursor` for the skill.
+class _LoadMoreRow extends StatelessWidget {
+  const _LoadMoreRow({required this.skillId, required this.onTap});
+
+  final String skillId;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Semantics(
+      label: 'load-more-instances:$skillId',
+      identifier: 'load-more-instances:$skillId',
+      button: true,
+      onTap: onTap,
+      excludeSemantics: true,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Row(
+            children: [
+              const Icon(Icons.expand_more, size: 14, color: kPrimary),
+              const SizedBox(width: 6),
+              Text(
+                'load more',
+                style: text.bodySmall?.copyWith(
+                  color: kPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
         ),
       ),

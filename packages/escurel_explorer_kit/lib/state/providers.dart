@@ -170,12 +170,52 @@ final endpointsProvider = FutureProvider<List<EndpointInfo>>((ref) {
 // refresh-on-demand and reads `listPacks()` straight off the client —
 // see `_SubscribedPacks` in inspector/backend_admin_panel.dart.)
 
-/// Instances of a given skill, keyed by skill id.
-final instancesProvider = FutureProvider.family<List<InstanceSummary>, String>((
-  ref,
-  skillId,
-) {
-  return ref.watch(escurelClientProvider).listInstances(skillId);
+/// How many instances one catalogue page requests per fetch. The server
+/// answers with `next_cursor` while more remain; the catalogue offers a
+/// "load more" affordance until the cursor comes back null.
+const int kInstancesPageSize = 200;
+
+/// Instances of a given skill, keyed by skill id — cursor-paginated.
+/// The state is the ACCUMULATED [InstancePage] (all rows fetched so
+/// far + the cursor for the next fetch); [InstancesOfSkill.loadMore]
+/// appends the next page. Invalidation (auto-refresh) resets to the
+/// first page.
+final instancesProvider =
+    AsyncNotifierProvider.family<InstancesOfSkill, InstancePage, String>(
+      InstancesOfSkill.new,
+    );
+
+class InstancesOfSkill extends FamilyAsyncNotifier<InstancePage, String> {
+  @override
+  Future<InstancePage> build(String skillId) {
+    return ref
+        .watch(escurelClientProvider)
+        .listInstances(skillId, limit: kInstancesPageSize);
+  }
+
+  /// Fetch the next page (no-op when exhausted or still loading) and
+  /// append it to the accumulated listing.
+  Future<void> loadMore() async {
+    final current = state.valueOrNull;
+    final cursor = current?.nextCursor;
+    if (current == null || cursor == null) return;
+    final next = await ref
+        .read(escurelClientProvider)
+        .listInstances(arg, limit: kInstancesPageSize, cursor: cursor);
+    state = AsyncData(
+      InstancePage(
+        instances: [...current.instances, ...next.instances],
+        nextCursor: next.nextCursor,
+      ),
+    );
+  }
+}
+
+/// The gateway's `tools/list` — every tool visible to this token, with
+/// its `scope` label (`agent` | `admin`) and execution-hint badges.
+/// Powers the dev inspector's Tools panel.
+final toolsListProvider = FutureProvider<List<ToolInfo>>((ref) {
+  return ref.watch(escurelClientProvider).listTools();
 });
 
 /// Skill ids whose archived instances are currently revealed in the catalogue.

@@ -8,6 +8,7 @@ import '../state/explorer_nav.dart';
 import '../theme/app_theme.dart';
 import 'backend_admin_panel.dart';
 import 'md_inspector_panel.dart';
+import 'tools_panel.dart';
 
 /// The dev inspector drawer — surfaces escurel's primitives directly
 /// for under-the-hood debugging. Today: a Markdown Inspector that
@@ -49,6 +50,14 @@ class InspectorShell extends ConsumerWidget {
                   selected: panelId == 'md',
                 ),
                 const SizedBox(width: 4),
+                // tools/list is served to every token (agent tokens get
+                // the agent subset), so the panel is never admin-gated.
+                _PanelChip(
+                  id: 'tools',
+                  label: 'Tools',
+                  selected: panelId == 'tools',
+                ),
+                const SizedBox(width: 4),
                 _PanelChip(
                   id: 'lanes',
                   label: 'LaneStore',
@@ -82,6 +91,7 @@ class InspectorShell extends ConsumerWidget {
   Widget _panelFor(String id) {
     return switch (id) {
       'md' => const MdInspectorPanel(),
+      'tools' => const ToolsPanel(),
       'backends' => const BackendAdminPanel(),
       _ => _ComingSoonPanel(panelId: id),
     };
@@ -89,6 +99,7 @@ class InspectorShell extends ConsumerWidget {
 
   String _label(String id) => switch (id) {
     'md' => 'Markdown',
+    'tools' => 'Tools',
     'lanes' => 'LaneStore',
     'index' => 'Index',
     'backends' => 'Backends',

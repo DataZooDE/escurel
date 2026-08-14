@@ -30,7 +30,7 @@ Future<void> _pump(WidgetTester tester, List<SkillSummary> skills) async {
       overrides: [
         skillsCatalogueProvider.overrideWith((ref) async => skills),
         // The tile watches per-skill instances; keep them empty.
-        instancesProvider.overrideWith((ref, id) async => const []),
+        instancesProvider.overrideWith(_EmptyInstances.new),
       ],
       child: const MaterialApp(home: Scaffold(body: CataloguePane())),
     ),
@@ -59,4 +59,12 @@ void main() {
     expect(find.text('sql view'), findsOneWidget);
     expect(find.text('document'), findsOneWidget);
   });
+}
+
+/// Family-notifier override: every skill answers an empty first page
+/// (no cursor), matching the old empty-list override.
+class _EmptyInstances extends InstancesOfSkill {
+  @override
+  Future<InstancePage> build(String skillId) async =>
+      const InstancePage(instances: []);
 }

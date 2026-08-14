@@ -26,7 +26,8 @@ void main() {
   });
 
   test('listInstances is multi-account per skill', () async {
-    Future<int> n(String s) async => (await client.listInstances(s)).length;
+    Future<int> n(String s) async =>
+        (await client.listInstances(s)).instances.length;
     expect(await n('customer'), greaterThanOrEqualTo(3));
     expect(await n('contact'), greaterThanOrEqualTo(6));
     expect(await n('workstream'), greaterThanOrEqualTo(4));
@@ -47,11 +48,11 @@ void main() {
   });
 
   test('events, inbox and snapshots return real corpus data', () async {
-    final history = await client.listEvents(crmDemoSpineId);
+    final history = (await client.listEvents(crmDemoSpineId)).events;
     expect(history, isNotEmpty);
     expect(history.every((e) => e.status == 'processed'), isTrue);
 
-    final inbox = await client.listInbox();
+    final inbox = (await client.listInbox()).events;
     expect(inbox.length, greaterThanOrEqualTo(5));
     expect(inbox.every((e) => e.status == 'inbox'), isTrue);
 
@@ -60,13 +61,13 @@ void main() {
   });
 
   test('captureEvent appends to the inbox', () async {
-    final before = (await client.listInbox()).length;
+    final before = (await client.listInbox()).events.length;
     final ev = await client.captureEvent(
       source: 'manual',
       title: 'probe',
       body: 'probe',
     );
     expect(ev.status, 'inbox');
-    expect((await client.listInbox()).length, before + 1);
+    expect((await client.listInbox()).events.length, before + 1);
   });
 }

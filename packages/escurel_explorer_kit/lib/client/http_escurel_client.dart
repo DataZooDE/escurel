@@ -50,13 +50,21 @@ class HttpEscurelClient implements EscurelClient {
   Future<Map<String, dynamic>> _call(
     String tool,
     Map<String, dynamic> args,
+  ) => _rpc('tools/call', {'name': tool, 'arguments': args});
+
+  /// One raw JSON-RPC round-trip over `/mcp`. [_call] wraps it for
+  /// `tools/call`; `tools/list` (a method-level request, no tool
+  /// envelope) posts through here directly.
+  Future<Map<String, dynamic>> _rpc(
+    String method,
+    Map<String, dynamic> params,
   ) async {
     final id = ++_jsonRpcId;
     final body = {
       'jsonrpc': '2.0',
       'id': id,
-      'method': 'tools/call',
-      'params': {'name': tool, 'arguments': args},
+      'method': method,
+      'params': params,
     };
 
     Response<Map<String, dynamic>> resp;
@@ -74,12 +82,10 @@ class HttpEscurelClient implements EscurelClient {
       throw const EscurelTransportException('empty body from /mcp');
     }
     if (data['error'] is Map) {
-      final err = data['error'] as Map;
-      throw EscurelToolException(
-        (err['message'] as String?) ?? 'tool error',
-        code: (err['code']?.toString()) ?? 'unknown',
-        details: err['data'] as Map<String, Object?>?,
-      );
+      // Machine-readable errors: `error.data` carries `{code, retryable}`
+      // with stable string codes on newer gateways; the factory falls
+      // back to the numeric JSON-RPC code when `data` is absent.
+      throw EscurelToolException.fromJsonRpcError(data['error'] as Map);
     }
     final result = data['result'];
     if (result is! Map<String, dynamic>) {
@@ -490,9 +496,12 @@ class HttpEscurelClient implements EscurelClient {
     required String contentType,
     required List<int> bytes,
     String? title,
+    String? eventId,
   }) async {
     // Not an MCP tool — a dedicated authed endpoint the BFF proxies. The
     // backend deposits the inline bytes into the inbox, then ingests.
+    // `event_id` is the caller's idempotency key: a redelivery of a key
+    // the server already processed answers `{status: "duplicate"}`.
     Response<Map<String, dynamic>> resp;
     try {
       resp = await _dio.post<Map<String, dynamic>>(
@@ -501,6 +510,7 @@ class HttpEscurelClient implements EscurelClient {
           'content_type': contentType,
           'bytes_b64': base64Encode(bytes),
           'title': ?title,
+          'event_id': ?eventId,
         },
       );
     } on DioException catch (e) {
@@ -513,13 +523,26 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<List<InstanceSummary>> listInstances(
+  Future<List<ToolInfo>> listTools() async {
+    // Method-level JSON-RPC (`tools/list`), not a tools/call envelope.
+    // Every entry carries `scope: "agent"|"admin"`; an agent token only
+    // ever receives the agent subset.
+    final result = await _rpc('tools/list', const {});
+    return (result['tools'] as List? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(ToolInfo.fromJson)
+        .toList();
+  }
+
+  @override
+  Future<InstancePage> listInstances(
     String skillId, {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
     String? asOf,
     String? scenario,
+    String? cursor,
   }) async {
     // The server takes a single frontmatter equality filter as a
     // (frontmatter_key, frontmatter_value) pair (PR-5). Translate the
@@ -535,8 +558,9 @@ class HttpEscurelClient implements EscurelClient {
       'limit': ?limit,
       'as_of': ?asOf,
       'scenario': ?scenario,
+      'cursor': ?cursor,
     });
-    return (result['instances'] as List? ?? const [])
+    final instances = (result['instances'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
         // `id` is the instance's open handle == its page_id. The server
         // returns `page_id`; older shapes used `id`. CataloguePane and
@@ -552,28 +576,45 @@ class HttpEscurelClient implements EscurelClient {
           ),
         )
         .toList();
+    // `next_cursor: null` when done, a string when more rows remain.
+    return InstancePage(
+      instances: instances,
+      nextCursor: result['next_cursor'] as String?,
+    );
   }
 
   @override
-  Future<List<Event>> listInbox({int? limit}) async {
-    final result = await _call('list_inbox', {'limit': ?limit});
-    return (result['events'] as List? ?? const [])
-        .cast<Map<String, dynamic>>()
-        .map(Event.fromJson)
-        .toList();
+  Future<EventPage> listInbox({int? limit, String? cursor}) async {
+    final result = await _call('list_inbox', {
+      'limit': ?limit,
+      'cursor': ?cursor,
+    });
+    return _eventPage(result);
   }
 
   @override
-  Future<List<Event>> listEvents(String instancePageId, {int? limit}) async {
+  Future<EventPage> listEvents(
+    String instancePageId, {
+    int? limit,
+    String? cursor,
+  }) async {
     final result = await _call('list_events', {
       'instance_page_id': instancePageId,
       'limit': ?limit,
+      'cursor': ?cursor,
     });
-    return (result['events'] as List? ?? const [])
+    return _eventPage(result);
+  }
+
+  /// `{events[], next_cursor?}` — the cursor is present iff more rows
+  /// remain; its ABSENCE (never a short page) means done.
+  EventPage _eventPage(Map<String, dynamic> result) => EventPage(
+    events: (result['events'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
         .map(Event.fromJson)
-        .toList();
-  }
+        .toList(),
+    nextCursor: result['next_cursor'] as String?,
+  );
 
   @override
   Future<List<String>> listSnapshots(String pageId) async {

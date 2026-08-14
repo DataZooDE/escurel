@@ -162,6 +162,10 @@ class FixtureEscurelClient implements EscurelClient {
   /// has data to render in fixture mode.
   final List<WebhookDelivery> _webhookDeliveries = [];
 
+  /// `event_id` idempotency keys already accepted by [ingestUpload];
+  /// a redelivery answers `{status: "duplicate"}`.
+  final Set<String> _seenUploadEventIds = {};
+
   static md.Page _tryParse(String basename, String raw) {
     try {
       return md.parse(raw);
@@ -255,13 +259,14 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<List<InstanceSummary>> listInstances(
+  Future<InstancePage> listInstances(
     String skillId, {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
     String? asOf, // ignored in fixture mode; honoured by the HTTP backend
     String? scenario, // ignored in fixture mode; honoured by the HTTP backend
+    String? cursor,
   }) async {
     var instances = _pages.values
         .where((p) => p.pageType == md.PageType.instance && p.skill == skillId)
@@ -288,19 +293,36 @@ class FixtureEscurelClient implements EscurelClient {
       });
     }
 
-    if (limit != null && instances.length > limit) {
-      instances = instances.sublist(0, limit);
-    }
+    // Mirror the server's cursor pagination: the cursor is an opaque
+    // offset here; `nextCursor` is a string while more rows remain and
+    // null when done.
+    final (page, next) = _paginate(instances, limit: limit, cursor: cursor);
 
-    return instances
-        .map(
-          (p) => InstanceSummary(
-            id: p.id,
-            skill: p.skill,
-            frontmatter: p.frontmatter,
-          ),
-        )
-        .toList();
+    return InstancePage(
+      instances: page
+          .map(
+            (p) => InstanceSummary(
+              id: p.id,
+              skill: p.skill,
+              frontmatter: p.frontmatter,
+            ),
+          )
+          .toList(),
+      nextCursor: next,
+    );
+  }
+
+  /// Offset-cursor pagination over an in-memory list, mirroring the
+  /// server's contract: with no [limit] everything fits in one page;
+  /// otherwise a `next` cursor is present iff more rows remain.
+  (List<T>, String?) _paginate<T>(List<T> all, {int? limit, String? cursor}) {
+    final offset = int.tryParse(cursor ?? '') ?? 0;
+    if (limit == null) {
+      return (offset == 0 ? all : all.skip(offset).toList(), null);
+    }
+    final page = all.skip(offset).take(limit).toList();
+    final nextOffset = offset + page.length;
+    return (page, nextOffset < all.length ? '$nextOffset' : null);
   }
 
   @override
@@ -500,23 +522,25 @@ class FixtureEscurelClient implements EscurelClient {
   // ── events / inbox / snapshots (real, over the fixture corpus) ──
 
   @override
-  Future<List<Event>> listInbox({int? limit}) async {
+  Future<EventPage> listInbox({int? limit, String? cursor}) async {
     final inbox = _events.where((e) => e.status == 'inbox').toList();
-    return (limit != null && inbox.length > limit)
-        ? inbox.sublist(0, limit)
-        : inbox;
+    final (page, next) = _paginate(inbox, limit: limit, cursor: cursor);
+    return EventPage(events: page, nextCursor: next);
   }
 
   @override
-  Future<List<Event>> listEvents(String instancePageId, {int? limit}) async {
+  Future<EventPage> listEvents(
+    String instancePageId, {
+    int? limit,
+    String? cursor,
+  }) async {
     final hist = _events
         .where(
           (e) => e.status == 'processed' && e.instancePageId == instancePageId,
         )
         .toList();
-    return (limit != null && hist.length > limit)
-        ? hist.sublist(0, limit)
-        : hist;
+    final (page, next) = _paginate(hist, limit: limit, cursor: cursor);
+    return EventPage(events: page, nextCursor: next);
   }
 
   @override
@@ -934,6 +958,27 @@ class FixtureEscurelClient implements EscurelClient {
   // ── health ──────────────────────────────────────────────────
 
   @override
+  Future<List<ToolInfo>> listTools() async =>
+      // A representative slice of the gateway's tools/list so the Tools
+      // panel renders offline: scope labels + execution-hint badges as
+      // the real server emits them.
+      const [
+        ToolInfo(name: 'search', scope: 'agent', readOnly: true),
+        ToolInfo(name: 'resolve', scope: 'agent', readOnly: true),
+        ToolInfo(name: 'expand', scope: 'agent', readOnly: true),
+        ToolInfo(name: 'neighbours', scope: 'agent', readOnly: true),
+        ToolInfo(name: 'list_skills', scope: 'agent', readOnly: true),
+        ToolInfo(name: 'list_instances', scope: 'agent', readOnly: true),
+        ToolInfo(name: 'capture_event', scope: 'agent'),
+        ToolInfo(name: 'assign_event', scope: 'agent', idempotent: true),
+        ToolInfo(name: 'update_page', scope: 'agent'),
+        ToolInfo(name: 'admin_quota', scope: 'admin', readOnly: true),
+        ToolInfo(name: 'admin_audit', scope: 'admin', readOnly: true),
+        ToolInfo(name: 'import_pack', scope: 'admin'),
+        ToolInfo(name: 'unsubscribe_pack', scope: 'admin', destructive: true),
+      ];
+
+  @override
   Future<HealthInfo> healthz() async =>
       HealthInfo(ok: true, checkedAt: DateTime.now().toUtc());
 
@@ -1145,7 +1190,17 @@ class FixtureEscurelClient implements EscurelClient {
     required String contentType,
     required List<int> bytes,
     String? title,
+    String? eventId,
   }) async {
+    // Idempotency: a redelivery of an already-seen `event_id` answers
+    // `{status: "duplicate"}` without re-materialising (mirrors the
+    // server's /ingest/upload contract).
+    if (eventId != null) {
+      if (_seenUploadEventIds.contains(eventId)) {
+        return IngestOutcome(status: 'duplicate', eventId: eventId);
+      }
+      _seenUploadEventIds.add(eventId);
+    }
     // Resolve a document-backed handler skill by content type; with none
     // declared, park the upload the way the server does (no_handler_skill).
     final handlers = _pages.values
