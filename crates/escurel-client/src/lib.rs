@@ -441,6 +441,9 @@ impl Client {
         if req.limit > 0 {
             args["limit"] = json!(req.limit);
         }
+        if !req.cursor.is_empty() {
+            args["cursor"] = json!(req.cursor);
+        }
         self.transport.call_typed("list_inbox", args).await
     }
 
@@ -456,6 +459,9 @@ impl Client {
         };
         if req.limit > 0 {
             args["limit"] = json!(req.limit);
+        }
+        if !req.cursor.is_empty() {
+            args["cursor"] = json!(req.cursor);
         }
         self.transport.call_typed("list_events", args).await
     }

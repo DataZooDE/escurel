@@ -55,12 +55,20 @@ pub struct CaptureEventRequest {
 #[serde(default)]
 pub struct ListInboxRequest {
     pub limit: u32,
+    /// Resume cursor from a previous page's `next_cursor`. Empty = first page.
+    pub cursor: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ListInboxResponse {
     pub events: Vec<Event>,
+    /// Present iff rows lie past the page — pass back as `cursor` to
+    /// continue. **Only its absence means the listing is complete**; a
+    /// short page never does (the per-event ACL filter runs after the
+    /// limit and legitimately shortens pages).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -80,12 +88,18 @@ pub struct ListEventsRequest {
     /// but never learn which page it landed on, so the effect could not be
     /// confirmed and the run never cascaded.
     pub event_id: Option<String>,
+    /// Resume cursor from a previous page's `next_cursor` (listing
+    /// branch only; meaningless with `event_id`). Empty = first page.
+    pub cursor: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ListEventsResponse {
     pub events: Vec<Event>,
+    /// See [`ListInboxResponse::next_cursor`] — same contract.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// `assign_event` arguments. MCP wire keys: `event_id`,

@@ -277,6 +277,7 @@ pub async fn package(
         None => {
             let inbox = client
                 .list_inbox(ListInboxRequest {
+                    cursor: String::new(),
                     limit: EVENT_HISTORY_LIMIT,
                 })
                 .await

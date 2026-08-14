@@ -777,7 +777,12 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
             Ok(event(stored))
         }
         EventCmd::Inbox { limit } => {
-            let resp = client.list_inbox(ListInboxRequest { limit }).await?;
+            let resp = client
+                .list_inbox(ListInboxRequest {
+                    limit,
+                    ..Default::default()
+                })
+                .await?;
             Ok(json!({ "events": resp.events.into_iter().map(event).collect::<Vec<_>>() }))
         }
         EventCmd::List { instance, limit } => {

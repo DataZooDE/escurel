@@ -356,7 +356,10 @@ async fn capture_inbox_assign_list_events_round_trip() {
 
     // Unassigned event is visible in the global inbox.
     let inbox = client
-        .list_inbox(ListInboxRequest { limit: 0 })
+        .list_inbox(ListInboxRequest {
+            limit: 0,
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert!(
@@ -394,7 +397,10 @@ async fn capture_inbox_assign_list_events_round_trip() {
     assert_eq!(assigned.instance_page_id, acme);
 
     let inbox_after = client
-        .list_inbox(ListInboxRequest { limit: 0 })
+        .list_inbox(ListInboxRequest {
+            limit: 0,
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert!(
@@ -423,7 +429,10 @@ async fn list_inbox_respects_limit() {
             .unwrap();
     }
     let limited = client
-        .list_inbox(ListInboxRequest { limit: 2 })
+        .list_inbox(ListInboxRequest {
+            limit: 2,
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(limited.events.len(), 2, "limit=2 should cap the inbox read");

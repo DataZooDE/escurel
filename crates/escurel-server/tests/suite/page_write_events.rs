@@ -64,7 +64,10 @@ async fn a_write_notifies_the_webhook_but_never_the_inbox() {
     let c = p.client_for(TENANT, Role::Agent).await;
 
     let before = c
-        .list_inbox(ListInboxRequest { limit: 100 })
+        .list_inbox(ListInboxRequest {
+            limit: 100,
+            ..Default::default()
+        })
         .await
         .expect("list_inbox")
         .events
@@ -99,7 +102,10 @@ async fn a_write_notifies_the_webhook_but_never_the_inbox() {
     // …and the WORK QUEUE is untouched. This is the property that keeps the
     // runner from dispatching writes and looping.
     let after = c
-        .list_inbox(ListInboxRequest { limit: 100 })
+        .list_inbox(ListInboxRequest {
+            limit: 100,
+            ..Default::default()
+        })
         .await
         .expect("list_inbox")
         .events

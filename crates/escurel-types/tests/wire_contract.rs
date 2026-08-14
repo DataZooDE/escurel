@@ -285,6 +285,22 @@ fn query_instance_response_rows_and_column_type() {
 }
 
 #[test]
+fn event_listings_carry_the_resume_cursor() {
+    // v2026.08.14 wire: next_cursor present iff rows lie past the page.
+    // The typed client DROPPED this field at first (found by the peacock
+    // downstream audit) — this pin keeps the wrapper honest.
+    let wire = json!({ "events": [], "next_cursor": "b64cursor" });
+    let inbox: ListInboxResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(inbox.next_cursor.as_deref(), Some("b64cursor"));
+    assert_eq!(serde_json::to_value(&inbox).unwrap(), wire);
+    let done: ListInboxResponse = serde_json::from_value(json!({ "events": [] })).unwrap();
+    assert_eq!(done.next_cursor, None);
+    let ev: ListEventsResponse =
+        serde_json::from_value(json!({ "events": [], "next_cursor": "c" })).unwrap();
+    assert_eq!(ev.next_cursor.as_deref(), Some("c"));
+}
+
+#[test]
 fn provenance_report_round_trips_both_kinds() {
     let wire = json!({ "kind": "drift", "rows": [ { "decision_page_id": "d" } ] });
     let resp: ProvenanceReportResponse = serde_json::from_value(wire.clone()).unwrap();
@@ -506,6 +522,7 @@ fn roundtrip_events() {
         ..Default::default()
     });
     rt(ListInboxResponse {
+        next_cursor: None,
         events: vec![Event::default()],
     });
     rt(AssignEventResponse {
