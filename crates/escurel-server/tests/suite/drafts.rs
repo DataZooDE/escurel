@@ -558,3 +558,133 @@ async fn a_draft_that_creates_a_new_record_still_reaches_the_queue() {
 
     p.shutdown().await;
 }
+
+// =========================================================================
+// Discard
+// =========================================================================
+
+/// A draft can be thrown away, and **its author may throw away their own**.
+///
+/// The maker/checker rule is about approval, not about drafts. Withdrawing
+/// your own proposal is not self-approval — it publishes nothing — and
+/// forbidding it would strand a draft its writer already knows is wrong, in a
+/// queue nobody else can clear.
+#[tokio::test]
+async fn a_draft_can_be_discarded_including_by_its_own_author() {
+    let p = start(DraftMode::Enforce).await;
+    let agent = p.mint_token(TENANT, Role::Agent);
+
+    let drafted = call(
+        &p,
+        &agent,
+        "update_page",
+        json!({
+            "page_id": TRIAGE_PAGE,
+            "content": published("triage", "t-1", "Proposed in error."),
+        }),
+    )
+    .await;
+    let version = drafted["new_version"].as_str().expect("version").to_owned();
+
+    let discarded = call(
+        &p,
+        &agent,
+        "update_page",
+        json!({ "page_id": TRIAGE_PAGE, "discard": version }),
+    )
+    .await;
+    assert_eq!(
+        discarded["ok"],
+        json!(true),
+        "the author must be able to withdraw their own draft — it publishes \
+         nothing, so it is not self-approval: {discarded}"
+    );
+
+    // Gone from the queue…
+    let queue = call(
+        &p,
+        &agent,
+        "list_instances",
+        json!({ "skill_id": "triage", "drafts_only": true }),
+    )
+    .await;
+    assert_eq!(
+        queue["instances"].as_array().map(Vec::len),
+        Some(0),
+        "a discarded draft must leave the review queue, or 'refused' and \
+         'still waiting' look the same: {queue}"
+    );
+
+    // …and NOTHING was published. This is the assertion that separates
+    // discard from approve; without it, a discard that quietly published
+    // would satisfy everything above.
+    assert!(
+        body_of(&p, &agent, TRIAGE_PAGE).await.contains("Original."),
+        "discarding must publish nothing"
+    );
+
+    // CONTROL — the same page can be drafted again afterwards. Without it
+    // this passes against a discard that left the page permanently unwritable.
+    let again = call(
+        &p,
+        &agent,
+        "update_page",
+        json!({
+            "page_id": TRIAGE_PAGE,
+            "content": published("triage", "t-1", "A better proposal."),
+        }),
+    )
+    .await;
+    assert_eq!(again["draft"], json!(true), "control: {again}");
+
+    p.shutdown().await;
+}
+
+/// Discarding a version that is not the pending one is refused.
+///
+/// The same reasoning as approve: a caller naming a stale version is acting on
+/// a different draft than the one that exists, and silently throwing away the
+/// current one would discard a change nobody looked at.
+#[tokio::test]
+async fn discarding_a_version_that_is_not_pending_is_refused() {
+    let p = start(DraftMode::Enforce).await;
+    let agent = p.mint_token(TENANT, Role::Agent);
+
+    let drafted = call(
+        &p,
+        &agent,
+        "update_page",
+        json!({
+            "page_id": TRIAGE_PAGE,
+            "content": published("triage", "t-1", "Proposed."),
+        }),
+    )
+    .await;
+    let version = drafted["new_version"].as_str().expect("version").to_owned();
+
+    let refused = call(
+        &p,
+        &agent,
+        "update_page",
+        json!({ "page_id": TRIAGE_PAGE, "discard": "v999" }),
+    )
+    .await;
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "a stale version names a different draft than the one pending: {refused}"
+    );
+
+    // CONTROL — the real one still discards, so the refusal is about the
+    // version and not about discard being broken.
+    let ok = call(
+        &p,
+        &agent,
+        "update_page",
+        json!({ "page_id": TRIAGE_PAGE, "discard": version }),
+    )
+    .await;
+    assert_eq!(ok["ok"], json!(true), "control: {ok}");
+
+    p.shutdown().await;
+}

@@ -57,6 +57,15 @@ pub(super) struct UpdatePageArgs {
     /// time is precisely how a reviewed diff drifts from what lands.
     #[serde(default)]
     approve: Option<String>,
+    /// Throw away the pending draft named here, publishing nothing (CR-2).
+    ///
+    /// **Its author may discard their own**, unlike [`Self::approve`]. The
+    /// maker/checker rule is about approval: withdrawing a proposal publishes
+    /// nothing, so it is not self-approval — and forbidding it would strand a
+    /// draft its writer already knows is wrong in a queue nobody else can
+    /// clear.
+    #[serde(default)]
+    discard: Option<String>,
 }
 
 /// Publish a pending draft (CR-2, #354).
@@ -198,6 +207,83 @@ async fn approve_draft(
         "issues": [],
         "new_version": version,
         "approved": version,
+    }))
+}
+
+/// Throw away a pending draft (CR-2, #354). Publishes nothing.
+///
+/// The write ACL still applies — a caller who may not write the page may not
+/// decide its pending change either — but the author restriction does **not**.
+/// See [`UpdatePageArgs::discard`].
+async fn discard_draft(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    a: &UpdatePageArgs,
+    version: &str,
+) -> Result<Value, JsonRpcError> {
+    let refuse = |code: &str, message: String| {
+        Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": code,
+                "location": "discard",
+                "message": message,
+            }],
+        }))
+    };
+
+    let Some(draft) = indexer
+        .pending_draft(&a.page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("pending draft: {e}")))?
+    else {
+        return refuse(
+            "draft_not_found",
+            format!("{} has no pending draft to discard", a.page_id),
+        );
+    };
+    // A stale version names a different draft than the one that exists.
+    // Discarding the current one anyway would throw away a change the caller
+    // never saw — the same reasoning as approving one.
+    if draft.version != version {
+        return refuse(
+            "draft_not_found",
+            format!(
+                "{} has no pending draft at {version}; the pending draft is {}",
+                a.page_id, draft.version
+            ),
+        );
+    }
+
+    if write_acl == crate::server::WriteAclMode::Enforce
+        && !indexer
+            .may_write_page(&caller, &a.page_id, "")
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("discard acl: {e}")))?
+    {
+        return refuse(
+            "forbidden",
+            format!(
+                "write denied: caller `{}` may not decide drafts of {}",
+                caller.subject, a.page_id
+            ),
+        );
+    }
+
+    indexer
+        .clear_draft(&a.page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("clear draft: {e}")))?;
+
+    // The snapshot is deliberately LEFT in place. It is a version of the page
+    // and the version history is append-only; deleting it would punch a hole
+    // in the CRDT log to hide a decision that history should record.
+    Ok(json!({
+        "ok": true,
+        "issues": [],
+        "discarded": version,
     }))
 }
 
@@ -369,10 +455,10 @@ pub(super) async fn tool_update_page(
     // Exactly one of the two. Enforced here rather than in the schema, which
     // cannot express the either/or; the message names both so a caller who
     // sent neither is not left guessing which one this call wanted.
-    if a.content.is_empty() && a.approve.is_none() {
+    if a.content.is_empty() && a.approve.is_none() && a.discard.is_none() {
         return Err(JsonRpcError::invalid_params(
-            "update_page: send `content` to write a page, or `approve` to \
-             publish a pending draft"
+            "update_page: send `content` to write a page, `approve` to publish \
+             a pending draft, or `discard` to throw one away"
                 .to_owned(),
         ));
     }
@@ -393,6 +479,9 @@ pub(super) async fn tool_update_page(
     // exactly how a reviewed diff drifts from what lands.
     if let Some(version) = a.approve.clone() {
         return approve_draft(state, indexer, caller, write_acl, &a, &version).await;
+    }
+    if let Some(version) = a.discard.clone() {
+        return discard_draft(indexer, caller, write_acl, &a, &version).await;
     }
 
     // Read-only-backend guard (REQ-BK-03): reject an attempt to write backend

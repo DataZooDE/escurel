@@ -281,7 +281,8 @@ pub(super) fn tools_list_payload() -> Value {
                         "base_version": { "type": "string" },
                         "require_exact_base": { "type": "boolean" },
                         "provenance": { "type": "object" },
-                        "approve": { "type": "string" }
+                        "approve": { "type": "string" },
+                        "discard": { "type": "string" }
                     }
                 }),
             ),
