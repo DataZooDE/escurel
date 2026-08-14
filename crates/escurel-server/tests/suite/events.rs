@@ -56,7 +56,10 @@ async fn capture_inbox_assign_events_round_trip() {
 
     // Both sit in the inbox.
     let inbox = c
-        .list_inbox(ListInboxRequest { limit: 0 })
+        .list_inbox(ListInboxRequest {
+            limit: 0,
+            ..Default::default()
+        })
         .await
         .expect("list_inbox");
     assert_eq!(inbox.events.len(), 2);
@@ -85,7 +88,10 @@ async fn capture_inbox_assign_events_round_trip() {
 
     // The inbox shrank and the spine's history grew.
     let inbox_after = c
-        .list_inbox(ListInboxRequest { limit: 0 })
+        .list_inbox(ListInboxRequest {
+            limit: 0,
+            ..Default::default()
+        })
         .await
         .expect("list_inbox after");
     assert_eq!(inbox_after.events.len(), 1, "e1 left the inbox");

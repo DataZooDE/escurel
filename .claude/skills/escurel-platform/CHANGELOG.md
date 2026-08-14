@@ -20,6 +20,15 @@ pin (see `SKILL.md` → "How this skill is installed").
 - Token lifetime on long sockets is now specified: auth is at upgrade
   only, a socket outlives its token's `exp`; bound it at the proxy or
   reconnect periodically — which `since_event_id` makes lossless.
+## 0.6.24 — the typed Rust client carries the pagination cursor
+
+- `escurel-types`: `ListInboxResponse`/`ListEventsResponse` gain
+  `next_cursor` and the requests gain `cursor` — the 0.6.10 wire field
+  the typed wrapper had silently DROPPED, so no Rust consumer could
+  page past the first response (found by the peacock downstream
+  audit). `escurel-client` forwards the cursor. Struct literals without
+  spread need `..Default::default()`.
+
 ## 0.6.23 — codex-review compat: legacy routing + kit contract sync
 
 - The retired `run_stored_query` wire name now ROUTES to
