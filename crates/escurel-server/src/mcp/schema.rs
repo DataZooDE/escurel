@@ -1242,6 +1242,76 @@ impl Scope {
     }
 }
 
+/// The `{ok, issues[]}` refusal envelope every write tool returns —
+/// declared once, referenced per tool via [`output_schema_for`].
+fn write_envelope_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "ok": { "type": "boolean" },
+            "issues": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": { "type": "string" },
+                        "code": { "type": "string" },
+                        "location": { "type": "string" },
+                        "message": { "type": "string" },
+                        "suggestion": { "type": "string" }
+                    }
+                }
+            }
+        },
+        "additionalProperties": true
+    })
+}
+
+/// MCP `outputSchema` for the tools whose result shape is a load-bearing
+/// contract (API review R2). Coverage is deliberate, not exhaustive:
+/// every write tool declares the shared `{ok, issues[]}` envelope, the
+/// core reads declare their top-level keys, and tools whose results are
+/// still ad-hoc `json!` literals stay undeclared rather than lying.
+fn output_schema_for(name: &str) -> Option<Value> {
+    let obj = |props: Value| json!({ "type": "object", "properties": props, "additionalProperties": true });
+    Some(match name {
+        "update_page" | "delete_page" | "move_page" | "purge_page" | "write_instance"
+        | "apply_op" | "close_session" | "import_pack" | "rebase_pack" => write_envelope_schema(),
+        "validate" => obj(json!({ "issues": { "type": "array" } })),
+        "search" => obj(json!({
+            "hits": { "type": "array" },
+            "granularity": { "type": "string" }
+        })),
+        "list_skills" => obj(json!({ "skills": { "type": "array" } })),
+        "list_instances" => obj(json!({
+            "instances": { "type": "array" },
+            "next_cursor": { "type": ["string", "null"], "description": "string = more rows (pass back as cursor); null = done" }
+        })),
+        "list_inbox" | "list_events" => obj(json!({
+            "events": { "type": "array" },
+            "next_cursor": { "type": "string", "description": "present iff rows lie past the page; absence (only) means done" }
+        })),
+        "list_messages" => obj(json!({
+            "messages": { "type": "array" },
+            "next_cursor": { "type": "string" }
+        })),
+        "capture_event" | "assign_event" => obj(json!({
+            "event_id": { "type": "string" }
+        })),
+        "fetch_blob" => obj(json!({
+            "blob": { "type": ["object", "null"] }
+        })),
+        "expand" => obj(json!({
+            "page": { "type": ["object", "null"] },
+            "frontmatter": { "type": "object" },
+            "body": { "type": "string" },
+            "blocks": { "type": "array" },
+            "wikilinks_out": { "type": "array" }
+        })),
+        _ => return None,
+    })
+}
+
 fn tool_entry(
     name: &str,
     execution: Execution,
@@ -1249,7 +1319,7 @@ fn tool_entry(
     description: &str,
     input_schema: Value,
 ) -> Value {
-    json!({
+    let mut entry = json!({
         "name": name,
         "description": description,
         "inputSchema": input_schema,
@@ -1261,7 +1331,13 @@ fn tool_entry(
         // `execution` — and ratcheted against the dispatch arms by
         // `tool_registry_conformance`, so it cannot lie about the gate.
         "scope": scope.as_str(),
-    })
+    });
+    // Additive result contract where one is declared (see
+    // `output_schema_for`); absent = the shape is not yet pinned.
+    if let Some(os) = output_schema_for(name) {
+        entry["outputSchema"] = os;
+    }
+    entry
 }
 
 /// [`tools_list_payload`] filtered for the caller's role: an agent-role
@@ -1313,15 +1389,18 @@ pub(crate) fn openapi_document(version: &str) -> Value {
             "title": "escurel agent surface",
             "version": version,
             "description": "escurel exposes its agent + admin tools as MCP over \
-                HTTP (JSON-RPC 2.0) at POST /mcp. This document describes that \
-                surface for non-MCP HTTP clients; each tool's input schema is \
-                under components.schemas.<tool>_input.",
+                HTTP (JSON-RPC 2.0) at POST /mcp, plus a small REST surface \
+                (document intake + blob download + ops probes). Each tool's \
+                input schema is under components.schemas.<tool>_input; tools \
+                with a pinned result shape carry outputSchema in tools/list.",
         },
+        "security": [ { "bearerAuth": [] } ],
         "paths": {
             "/mcp": {
                 "post": {
                     "summary": "JSON-RPC 2.0 tools/call (or tools/list) envelope",
                     "operationId": "mcp_call",
+                    "security": [ { "bearerAuth": [] } ],
                     "requestBody": {
                         "required": true,
                         "content": {
@@ -1331,12 +1410,98 @@ pub(crate) fn openapi_document(version: &str) -> Value {
                         }
                     },
                     "responses": {
-                        "200": { "description": "JSON-RPC result or error object" }
+                        "200": { "description": "JSON-RPC result, or error object whose data carries {code, retryable}" }
                     }
+                }
+            },
+            "/ingest": {
+                "post": {
+                    "summary": "Ingest a blob already deposited in the tenant's inbox area",
+                    "operationId": "ingest",
+                    "security": [ { "bearerAuth": [] } ],
+                    "requestBody": {
+                        "required": true,
+                        "content": { "application/json": { "schema": {
+                            "type": "object",
+                            "required": ["blob_id", "content_type"],
+                            "properties": {
+                                "blob_id": { "type": "string" },
+                                "content_type": { "type": "string" },
+                                "title": { "type": "string" },
+                                "skill": { "type": "string", "description": "Explicit target document skill; must accept the MIME (422 otherwise, create-ACL enforced)." },
+                                "event_id": { "type": "string", "description": "Idempotency key: a redelivery answers {status: duplicate} without re-running extraction." }
+                            }
+                        } } }
+                    },
+                    "responses": {
+                        "200": { "description": "{status, event_id, blob_id, page_id?, handler_skill?, chunk_count?, issue?}; status ∈ materialised|extraction_failed|no_handler|duplicate" },
+                        "403": { "description": "tenant_suspended (agent tokens while suspended)" },
+                        "422": { "description": "invalid_target_skill" },
+                        "429": { "description": "rate_limited (Writes budget)" },
+                        "503": { "description": "read_only_replica — retry against the writer" }
+                    }
+                }
+            },
+            "/ingest/upload": {
+                "post": {
+                    "summary": "Deposit base64 bytes into the inbox AND ingest in one call",
+                    "operationId": "ingest_upload",
+                    "security": [ { "bearerAuth": [] } ],
+                    "requestBody": {
+                        "required": true,
+                        "content": { "application/json": { "schema": {
+                            "type": "object",
+                            "required": ["content_type", "bytes_b64"],
+                            "properties": {
+                                "content_type": { "type": "string" },
+                                "bytes_b64": { "type": "string" },
+                                "title": { "type": "string" },
+                                "skill": { "type": "string" },
+                                "event_id": { "type": "string" }
+                            }
+                        } } }
+                    },
+                    "responses": {
+                        "200": { "description": "same pipeline outcome as /ingest" },
+                        "413": { "description": "payload_too_large (per-upload blob quota)" }
+                    }
+                }
+            },
+            "/blob/{page_id}": {
+                "get": {
+                    "summary": "The retained original bytes of a document instance, verbatim",
+                    "operationId": "blob_get",
+                    "security": [ { "bearerAuth": [] } ],
+                    "parameters": [ { "name": "page_id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+                    "responses": {
+                        "200": { "description": "raw bytes with the declared/sniffed Content-Type" },
+                        "404": { "description": "absent, hidden, or blob-less — one indistinguishable answer" }
+                    }
+                }
+            },
+            "/healthz": {
+                "get": {
+                    "summary": "Dependency-free liveness probe",
+                    "responses": { "200": { "description": "alive" } }
+                }
+            },
+            "/readyz": {
+                "get": {
+                    "summary": "Component-reporting readiness probe",
+                    "responses": { "200": { "description": "ready" }, "503": { "description": "components not ready (JSON body)" } }
+                }
+            },
+            "/version": {
+                "get": {
+                    "summary": "Build version (text)",
+                    "responses": { "200": { "description": "version string" } }
                 }
             }
         },
         "components": {
+            "securitySchemes": {
+                "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+            },
             "schemas": {
                 "JsonRpcRequest": {
                     "type": "object",
