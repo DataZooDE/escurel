@@ -146,7 +146,11 @@ polling (#333, shipped):
 4. on `{ "type": "event_lagged", "skipped": n }` the push stream has
    gaps — poll `list_inbox` once to catch up, keep the subscription.
 
-The subscription starts at NOW (no replay): pair it with one initial
+pass `since_event_id` (the last event id you processed) on the
+subscribe frame to resume gap-free: the gap replays oldest-first with
+`replayed: true` before the live stream — dedupe by `event_id`, an
+overlap event can arrive twice. Without it the subscription starts at
+now (no replay).
 `escurel event inbox --limit 50` poll for anything captured before the
 ack. The runner path is unchanged — **runner = event starts a new agent
 run**; **event_subscribe = an open session watching the bus live**.

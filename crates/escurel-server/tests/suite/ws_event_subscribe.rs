@@ -160,3 +160,61 @@ async fn off_mode_pushes_to_every_subscriber() {
 
     p.shutdown().await;
 }
+
+/// A reconnecting consumer resumes GAP-FREE: `since_event_id` on the
+/// subscribe frame replays the inbox events captured after that id
+/// (oldest first, `replayed: true`, ACL-filtered) before the live
+/// stream — previously the subscription started at NOW and the skill
+/// prescribed a racy initial-poll dance instead (API review B4).
+#[tokio::test]
+async fn resume_with_since_event_id_replays_the_gap() {
+    let p = start_with(EventAclMode::Off).await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+
+    // The consumer saw EVT-R-1, then went away; EVT-R-2 landed meanwhile.
+    capture(&p, &alice, "EVT-R-1").await;
+    capture(&p, &alice, "EVT-R-2").await;
+
+    let mut req = p.ws_url().into_client_request().unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {alice}").parse().unwrap());
+    let (mut sock, _) = tokio_tungstenite::connect_async(req).await.expect("ws");
+    sock.send(Message::Text(
+        json!({ "type": "hello", "presence_only": true }).to_string(),
+    ))
+    .await
+    .expect("hello");
+    sock.send(Message::Text(
+        json!({
+            "type": "event_subscribe",
+            "subscription_id": "sub-r",
+            "since_event_id": "EVT-R-1",
+        })
+        .to_string(),
+    ))
+    .await
+    .expect("subscribe");
+
+    let ack = recv_json(&mut sock).await.expect("ack");
+    assert_eq!(ack["type"], "event_subscribe_ack", "{ack}");
+
+    // The gap replays first…
+    let replayed = recv_json(&mut sock).await.expect("replayed event");
+    assert_eq!(replayed["type"], "event", "{replayed}");
+    assert_eq!(replayed["event"]["event_id"], "EVT-R-2", "{replayed}");
+    assert_eq!(
+        replayed["replayed"],
+        json!(true),
+        "a replayed frame says so, so a client can separate catch-up \
+         from live: {replayed}"
+    );
+
+    // …then the stream is live.
+    capture(&p, &alice, "EVT-R-3").await;
+    let live = recv_json(&mut sock).await.expect("live event");
+    assert_eq!(live["event"]["event_id"], "EVT-R-3", "{live}");
+    assert!(
+        live.get("replayed").is_none(),
+        "live frames are unmarked: {live}"
+    );
+}
