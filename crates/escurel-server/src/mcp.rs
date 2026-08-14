@@ -68,7 +68,7 @@ mod tools_read;
 mod tools_write;
 pub(crate) use ingest::{ingest, ingest_upload};
 pub(crate) use schema::openapi_document;
-use schema::{page_type_str, tools_list_payload};
+use schema::page_type_str;
 use tools_admin::*;
 use tools_read::*;
 pub(crate) use tools_write::event_to_json;
@@ -260,7 +260,7 @@ async fn mcp_inner(
     let result = match req.method.as_str() {
         "initialize" => Ok(initialize_result(&req.params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(tools_list_payload()),
+        "tools/list" => Ok(schema::tools_list_payload_for(role)),
         "tools/call" => {
             // Per-tool metrics (escurel_tool_calls / _latency_ms):
             // name the tool, time the dispatch, record on completion.
@@ -1619,7 +1619,7 @@ mod registry_conformance {
     }
 
     fn advertised_names() -> BTreeSet<String> {
-        super::tools_list_payload()["tools"]
+        super::schema::tools_list_payload()["tools"]
             .as_array()
             .expect("tools array")
             .iter()
@@ -1662,6 +1662,84 @@ mod registry_conformance {
              is the direction that actually bit once, when a merge kept a \
              `purge_page` dispatch arm and dropped its schema entry."
         );
+    }
+
+    /// Arm name → does its dispatch block call `require_admin`? The block
+    /// is the source between this arm's `"name" =>` and the next arm's.
+    fn dispatch_admin_gated() -> std::collections::BTreeMap<String, bool> {
+        let src = include_str!("mcp.rs");
+        let start = src
+            .find("async fn dispatch_tools_call")
+            .expect("dispatch_tools_call exists");
+        let body = &src[start..];
+        let open = body.find('{').expect("function body");
+        let mut depth = 0usize;
+        let mut end = body.len();
+        for (i, c) in body.char_indices().skip(open) {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let window = &body[..end];
+        // (arm name, byte offset) pairs, reusing the line-shape rule from
+        // `dispatch_arm_names` so the two parsers cannot disagree on what
+        // an arm is.
+        let names = dispatch_arm_names();
+        let mut arms: Vec<(String, usize)> = Vec::new();
+        for name in &names {
+            let pat = format!("\"{name}\" =>");
+            if let Some(pos) = window.find(&pat) {
+                arms.push((name.clone(), pos));
+            }
+        }
+        arms.sort_by_key(|(_, pos)| *pos);
+        let mut out = std::collections::BTreeMap::new();
+        for i in 0..arms.len() {
+            let (name, pos) = &arms[i];
+            let block_end = arms.get(i + 1).map_or(window.len(), |(_, p)| *p);
+            out.insert(
+                name.clone(),
+                window[*pos..block_end].contains("require_admin"),
+            );
+        }
+        out
+    }
+
+    /// The advertised `scope` label must tell the truth about the gate:
+    /// `scope: "admin"` ⟺ the dispatch arm calls `require_admin`. This is
+    /// the ratchet that keeps the role-filtered `tools/list` honest — a
+    /// tool advertised to agents that then answers `-32001` (or an admin
+    /// tool leaking into the agent view) fails here, at write time.
+    #[test]
+    fn scope_label_matches_the_dispatch_gate() {
+        let gated = dispatch_admin_gated();
+        assert!(gated.len() > 50, "arm parser went blind: {}", gated.len());
+        let payload = super::schema::tools_list_payload();
+        let mut errors = Vec::new();
+        for t in payload["tools"].as_array().expect("tools") {
+            let name = t["name"].as_str().expect("name");
+            let scope = t["scope"].as_str().expect("scope");
+            match (gated.get(name), scope) {
+                (Some(true), "admin") | (Some(false), "agent") => {}
+                (Some(true), other) => errors.push(format!(
+                    "`{name}` is require_admin-gated but advertises scope `{other}`"
+                )),
+                (Some(false), other) if other != "agent" => errors.push(format!(
+                    "`{name}` is agent-callable but advertises scope `{other}`"
+                )),
+                (None, _) => errors.push(format!("`{name}` has no dispatch arm")),
+                _ => {}
+            }
+        }
+        assert!(errors.is_empty(), "scope drift:\n  {}", errors.join("\n  "));
     }
 
     #[test]

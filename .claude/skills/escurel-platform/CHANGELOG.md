@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.11 — `tools/list` is role-scoped; every tool carries `scope`
+
+- Every `tools/list` entry now carries an additive
+  `scope: "agent" | "admin"` label, declared at the definition site like
+  `execution` and ratcheted against the dispatch arms (a tool cannot
+  advertise a scope its gate contradicts).
+- **`tools/list` filters by role**: an agent token receives only the
+  `scope: "agent"` subset (~28 callable tools) instead of all ~69 — no
+  more burning harness context on 41 schemas that can only answer
+  `-32001`. Admin tokens and verifier-less dev mode see everything;
+  `GET /openapi.json` stays unfiltered.
 ## 0.6.10 — cursor pagination on `list_inbox` / `list_events`
 
 - `references/02-tool-surface.md`: both event listings accept an opaque

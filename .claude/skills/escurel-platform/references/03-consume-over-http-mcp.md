@@ -27,11 +27,11 @@ Standard **JSON-RPC 2.0** envelope; each tool call is `tools/call`:
 { "jsonrpc": "2.0", "id": 1, "result": { "hits": [ … ], "granularity": "block" } }
 ```
 
-- **Discovery:** `tools/list` returns the **whole surface with JSON Schema
-  input definitions — admin-gated tools included**. It is NOT filtered by
-  role: an agent token sees every tool, and calling an admin-gated one is
-  refused at dispatch with `-32001`. The agent-callable subset is the ~29
-  tools tabled in `references/02`.
+- **Discovery:** `tools/list` is **role-scoped**. Every entry carries a
+  `scope: "agent" | "admin"` label; an agent-role token receives only
+  the `scope: "agent"` subset (~28 tools — the ones it can actually
+  call), while an admin token sees the whole surface (~69). Calling an
+  admin tool without the role is still refused at dispatch (`-32001`).
 - **Errors:** JSON-RPC error envelope (`error: {code, message}`). Tool-level
   validation issues come back inside `result` (the issue list in
   `references/02`), not as a transport error.

@@ -27,9 +27,10 @@ surfaces as `escurel.role = "agent" | "admin"`.
 
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A
-mismatched tenant in a request body is rejected. Note that `tools/list`
-is **not** filtered by role — an agent token still sees the admin tools
-listed; the gate is at dispatch, where a non-admin call gets `-32001`.
+mismatched tenant in a request body is rejected. `tools/list` is
+role-scoped: an agent-role token receives only the `scope: "agent"`
+subset; admin tools are listed for admin tokens and refused at dispatch
+(`-32001`) regardless.
 
 ## Two roles
 

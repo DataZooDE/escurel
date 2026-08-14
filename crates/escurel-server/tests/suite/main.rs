@@ -91,6 +91,7 @@ mod stored_query_acl;
 mod tool_execution_labels;
 mod tool_label_map;
 mod tool_registry_conformance;
+mod tools_list_scope;
 mod update_page_automerge;
 mod update_page_concurrency;
 mod update_page_strict_cas;
