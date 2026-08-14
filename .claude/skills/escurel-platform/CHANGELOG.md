@@ -4,6 +4,22 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.16 — WS gap-free resume + the mode split written down
+
+- `references/11-event-driven-agents.md`: `event_subscribe` accepts
+  `since_event_id` (the last id you processed) — the gap replays
+  oldest-first with `replayed: true` before the live stream; dedupe by
+  `event_id` (an overlap event can arrive twice; duplicates are
+  recoverable, gaps are not). Replay window = the most recent 10 000
+  inbox rows.
+- The WS protocol's two connection modes are now documented as the
+  state machine they are (`protocol.md` §WebSocket framing): `hello`
+  picks session mode OR presence-only mode irrevocably;
+  `event_subscribe` exists only in presence-only mode (session mode
+  answers `unknown_frame`); two surfaces = two sockets.
+- Token lifetime on long sockets is now specified: auth is at upgrade
+  only, a socket outlives its token's `exp`; bound it at the proxy or
+  reconnect periodically — which `since_event_id` makes lossless.
 ## 0.6.17 — openapi.json documents the whole HTTP surface; outputSchema
 
 - `GET /openapi.json` now describes the REST routes it previously

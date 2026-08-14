@@ -1393,12 +1393,50 @@ Message types:
 | `resync_required` | S→C | `{ session, skipped, message }` — this peer fell behind |
 | `search_subscribe` | C→S | `{ subscription_id, q, k, filter? }` — live-updated search |
 | `search_event` | S→C | `{ subscription_id, hits: [...] }` |
-| `event_subscribe` | C→S | `{ subscription_id }` — push freshly captured bus events (#333); presence-only connections |
+| `event_subscribe` | C→S | `{ subscription_id, since_event_id? }` — push freshly captured bus events (#333); presence-only connections |
 | `event_subscribe_ack` | S→C | `{ subscription_id }` — subscription is live |
-| `event` | S→C | `{ subscription_id, event: <Event> }` — one captured event this caller may read (`ESCUREL_EVENT_ACL` filtered, same rule as `list_inbox`) |
+| `event` | S→C | `{ subscription_id, event: <Event>, replayed? }` — one captured event this caller may read (`ESCUREL_EVENT_ACL` filtered, same rule as `list_inbox`); `replayed: true` marks catch-up frames |
 | `event_lagged` | S→C | `{ subscription_id, skipped, message }` — push stream has gaps; poll `list_inbox` to catch up |
 | `close` | C→S | `{ session, commit: bool }` |
 | `error` | S→C | `{ code, message }` |
+
+### The two connection modes (a state machine, not a flat table)
+
+The `hello` frame chooses one of two modes **irrevocably** for the
+socket's lifetime:
+
+- **session mode** (`{hello, session}`) — the live-CRDT surface: `op` /
+  `op_ack` / `peer_op` / `presence` (server-rebuilt, broadcast) /
+  `resync_required` / `close`. `event_subscribe` is NOT available here
+  and answers `unknown_frame`.
+- **presence-only mode** (`{hello, presence_only: true}`) — the
+  subscription surface: `event_subscribe` (+ ack/`event`/
+  `event_lagged`), `search_subscribe`, and `presence` (echoed to the
+  sender only, not broadcast).
+
+A client that wants live co-editing AND event push holds two sockets.
+
+### Resume (`since_event_id`)
+
+A reconnecting subscriber passes the last event id it processed as
+`since_event_id`: after the ack, the inbox events captured **after**
+that id are replayed oldest-first, marked `replayed: true`, before the
+live stream — gap-free. The server subscribes to the live bus *before*
+the replay query, so an event landing in between may arrive twice;
+**dedupe by `event_id`** (duplicates are recoverable, gaps are not).
+Ordering rides the event-id sort — exact for server-minted ULIDs; a
+caller-supplied id scheme must be monotonic to resume on. The replay
+window is the most recent 10 000 inbox rows; further behind than that,
+rebuild via `list_inbox` pagination.
+
+### Token lifetime
+
+Auth happens once, at the upgrade. The server does NOT re-verify the
+bearer mid-connection: a socket outlives its token's `exp`, and an ACL
+revocation bites at the next attach (documented above), not
+immediately. Deployments that need a hard bound put an idle/lifetime
+limit on the proxy in front (`kamal-proxy`), or the consumer reconnects
+periodically — which `since_event_id` now makes lossless.
 
 ### Multi-peer sessions
 

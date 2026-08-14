@@ -291,6 +291,10 @@ async fn handle_socket(
             // subscribe replaces the first (fresh cursor, new id).
             "event_subscribe" => {
                 event_sub_id = frame.get("subscription_id").cloned().unwrap_or(Value::Null);
+                // Subscribe BEFORE the replay query below: an event that
+                // lands between the two shows up in both, and the client
+                // dedupes by `event_id` — a duplicate is recoverable, a
+                // gap is not.
                 events_rx = Some(state.events_tx.subscribe());
                 let ack = json!({
                     "type": "event_subscribe_ack",
@@ -298,6 +302,54 @@ async fn handle_socket(
                 });
                 if send_json(socket, ack).await.is_err() {
                     break;
+                }
+                // Gap-free resume (API review B4): replay the inbox
+                // events captured after `since_event_id`, oldest first,
+                // marked `replayed: true`, before the live stream. Same
+                // per-event ACL as the live push. Ordering rides the
+                // event-id sort — exact for server-minted ULIDs; a
+                // caller-supplied id scheme must be monotonic to resume
+                // on. Bounded to the most recent 10 000 inbox rows (the
+                // list_inbox cap) — a consumer further behind than that
+                // should rebuild from `list_inbox` pagination instead.
+                if let Some(since) = frame.get("since_event_id").and_then(Value::as_str)
+                    && let Some(handle) = state.indexer.as_ref()
+                {
+                    let indexer = handle.current();
+                    match indexer.list_inbox(Some(10_000)).await {
+                        Ok(events) => {
+                            let mut missed: Vec<_> = events
+                                .into_iter()
+                                .filter(|e| e.event_id.as_str() > since)
+                                .collect();
+                            missed.sort_by(|a, b| a.event_id.cmp(&b.event_id));
+                            for e in missed {
+                                if event_push_allowed(&state, &caller, &e).await {
+                                    let frame = json!({
+                                        "type": "event",
+                                        "subscription_id": event_sub_id,
+                                        "event": crate::mcp::event_to_json(&e),
+                                        "replayed": true,
+                                    });
+                                    if send_json(socket, frame).await.is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = send_json(
+                                socket,
+                                json!({
+                                    "type": "error",
+                                    "code": "replay_failed",
+                                    "subscription_id": event_sub_id,
+                                    "message": format!("since_event_id replay: {e}"),
+                                }),
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
             "search_subscribe" => {
