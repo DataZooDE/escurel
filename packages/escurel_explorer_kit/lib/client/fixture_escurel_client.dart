@@ -552,7 +552,9 @@ class FixtureEscurelClient implements EscurelClient {
     String? at,
     String source = '',
     String mime = '',
-    String labelSkill = '',
+    // Required since the 0.6.13 server contract: an unlabelled capture
+    // is refused `-32602` (`label_skill` is the label→skill routing key).
+    required String labelSkill,
     String? instancePageId,
     String title = '',
     String body = '',

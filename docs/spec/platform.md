@@ -156,7 +156,7 @@ pub struct TenantHandle {
 ```
 
 - **Read path** (search/resolve/expand/neighbours/list_skills/
-  list_instances/run_stored_query): no lock; a DuckDB read
+  list_instances/query_instance): no lock; a DuckDB read
   connection is pulled from `duck` and serves all queries
   (relational, vector via `vss`, full-text via `fts`) under
   DuckDB's MVCC.
@@ -194,7 +194,7 @@ Targets:
 | `neighbours` (limit=100) | 6 ms | 15 ms |
 | `list_skills` | 4 ms | 8 ms |
 | `list_instances` (limit=50, with `at` filter) | 6 ms | 12 ms |
-| `run_stored_query` | varies | varies |
+| `query_instance` | varies | varies |
 | `update_page` | 40 ms | 100 ms |
 | `apply_op` | 5 ms | 20 ms |
 
@@ -209,7 +209,7 @@ Three dimensions, all token-bucket per tenant:
 
 | dimension | refill | what counts |
 |---|---|---|
-| `queries_per_minute` | continuous | all read tools: `search`, `resolve`, `expand`, `neighbours`, `list_skills`, `list_instances`, `run_stored_query`, `validate` |
+| `queries_per_minute` | continuous | all read tools: `search`, `resolve`, `expand`, `neighbours`, `list_skills`, `list_instances`, `query_instance`, `validate` |
 | `writes_per_minute` | continuous | all writes: `update_page`, `apply_op`, `close_session(commit=true)`; document ingestion (`POST /ingest`, `POST /ingest/upload`) is rate-limited here too; also `embeds_per_minute` is debited from this bucket when a write triggers embedding |
 | `embeds_per_minute` | continuous | counts embedding jobs (one per new/changed block); shared bucket means a bulk import — or a multi-chunk document ingestion — triggers backpressure here |
 | `concurrent_sessions` | semaphore | counts open MCP sessions and WS connections |

@@ -627,7 +627,9 @@ class HttpEscurelClient implements EscurelClient {
     String? at,
     String source = '',
     String mime = '',
-    String labelSkill = '',
+    // Required since the 0.6.13 server contract: an unlabelled capture
+    // is refused `-32602` (`label_skill` is the label→skill routing key).
+    required String labelSkill,
     String? instancePageId,
     String title = '',
     String body = '',
@@ -659,7 +661,11 @@ class HttpEscurelClient implements EscurelClient {
     String queryId, {
     Map<String, Object?> params = const {},
   }) async {
-    final result = await _call('run_stored_query', {
+    // The `run_stored_query` tool was retired (2026-08-14 surface
+    // consolidation); `query_instance` accepts `query_id` as an alias
+    // and answers a superset response. The gateway also routes the old
+    // name, but the kit calls the real tool directly.
+    final result = await _call('query_instance', {
       'query_id': queryId,
       'params': params,
     });

@@ -1219,6 +1219,13 @@ pub(crate) fn canonical_tool_name(name: &str) -> Option<&'static str> {
         "export_tenant" => "tenant_export",
         "import_tenant" => "tenant_import",
         "reload_embedding" => "embedding_reload",
+        // Codex-review P2: the retired legacy tool routes to its
+        // successor — `query_instance` accepts the legacy `query_id`
+        // argument and answers a superset response, so shipped callers
+        // (explorer-kit, older seeded meta-skills) keep working. The
+        // legacy tool was admin-gated; the target enforces the
+        // per-instance ACL, so routing is never a privilege increase.
+        "run_stored_query" => "query_instance",
         _ => return None,
     })
 }

@@ -20,6 +20,18 @@ pin (see `SKILL.md` → "How this skill is installed").
 - Token lifetime on long sockets is now specified: auth is at upgrade
   only, a socket outlives its token's `exp`; bound it at the proxy or
   reconnect periodically — which `since_event_id` makes lossless.
+## 0.6.23 — codex-review compat: legacy routing + kit contract sync
+
+- The retired `run_stored_query` wire name now ROUTES to
+  `query_instance` at dispatch (the `query_id` alias binds, the
+  response is a superset) — shipped callers keep working instead of
+  hitting method-not-found. The seeded in-tenant meta-skill and
+  `platform.md` no longer teach the retired name.
+- explorer-kit: `captureEvent` requires a non-empty `labelSkill`
+  (matching the 0.6.13 server contract instead of silently sending
+  `''` into a `-32602`); `runStoredQuery` is `@Deprecated` and
+  delegates to `query_instance`.
+
 ## 0.6.22 — an empty `event_id` is refused, not a shared dedup key
 
 - `capture_event` and `POST /ingest*` refuse an empty/whitespace-only
