@@ -141,3 +141,31 @@ async fn unprefixed_admin_tools_do_not_debit_the_agent_budget() {
         );
     }
 }
+
+/// Codex-review P2: shipped consumers (explorer-kit, the seeded
+/// meta-skill) still post the retired `run_stored_query`. The alias
+/// layer routes the legacy name to `query_instance` — whose `query_id`
+/// alias binds the legacy argument and whose response is a superset —
+/// so old callers keep working instead of hitting method-not-found.
+/// (The legacy tool was admin-gated; the routed target enforces the
+/// per-instance ACL, so this is never a privilege increase.)
+#[tokio::test]
+async fn legacy_run_stored_query_routes_to_query_instance() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides::default(),
+        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+    })
+    .await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let out = call(&p, &admin, "run_stored_query", json!({})).await;
+    // The routed target refuses the missing ref as invalid params —
+    // NOT `-32601 method not found`, which is what a dropped tool
+    // answers and what a legacy caller cannot recover from.
+    assert_ne!(
+        out["error"]["code"],
+        json!(-32601),
+        "legacy name must route, not vanish: {out}"
+    );
+    assert_eq!(out["error"]["code"], json!(-32602), "{out}");
+}

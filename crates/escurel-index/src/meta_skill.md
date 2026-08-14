@@ -99,9 +99,9 @@ skills:
 - `[[table::<id>]]` — the body describes the table; the
   frontmatter declares `catalog`, `schema`, `name`, and
   `versioned`. Use `expand` to read the schema documentation;
-  use `run_stored_query` to read the data.
+  use `query_instance` to read the data.
 - `[[query::<id>]]` — the body declares an SQL view. Run via
-  `run_stored_query(<id>)`. The query's frontmatter declares
+  `query_instance(<id>)`. The query's frontmatter declares
   `db` (`relational` for internal, `ext` for the attached
   DuckLake catalog) and an optional `params` schema.
 
@@ -166,7 +166,7 @@ wikilink — the catalogue is itself a `note` instance).
 | `neighbours` | graph traversal, typed-filterable |
 | `list_skills` | the Tier 1 catalogue; each row carries `layer` (`overlay` \| `base@<pack>@v<N>`) and, for a shadowing overlay, a `shadows` pin |
 | `list_instances` | enumerate instances of a skill, optional frontmatter filter, optional ordering (`order_by`) — typical event-log call is `list_instances('meeting', filter={at: '>= 2026-04-01'}, order_by='at desc')` |
-| `run_stored_query` | execute a `[[query::*]]` instance with typed parameters |
+| `query_instance` | execute a `[[query::*]]` instance with typed parameters |
 | `validate` | dry-run the indexer's checks on a draft |
 | `open_session` / `apply_op` / `close_session` | live CRDT editing (when the MCP client supports the op stream) |
 | `update_page` | whole-page write fallback (no CRDT op stream required) |
@@ -203,7 +203,7 @@ make it land on the right passage instead of a near-miss.
   usually enough.
 - Do NOT enumerate the whole catalogue if the task is narrow;
   search-first reaches the right skill in 2 calls.
-- Do NOT write raw SQL through `run_stored_query` — the dispatcher
+- Do NOT write raw SQL through `query_instance` — the dispatcher
   refuses queries that aren't `[[query::*]]` instances. Author
   the query as a page first, then call it.
 - Do NOT trust a page body's mention of an entity over a typed

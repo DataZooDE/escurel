@@ -468,12 +468,12 @@ void main() {
       },
     );
 
-    test('run_stored_query parses the server schema into columns', () async {
+    test('runStoredQuery delegates to query_instance and parses the schema', () async {
       // The server emits `schema: [{name, type}]` (mcp.rs
       // tool_run_stored_query) — the client used to read a
       // non-existent `columns` key and silently dropped all column
       // metadata.
-      mock.toolHandlers['run_stored_query'] = (_) => {
+      mock.toolHandlers['query_instance'] = (_) => {
         'rows': [
           {'customer': 'acme', 'total': 12000},
         ],

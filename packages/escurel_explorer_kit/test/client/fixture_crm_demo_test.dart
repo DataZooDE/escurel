@@ -64,6 +64,7 @@ void main() {
     final before = (await client.listInbox()).events.length;
     final ev = await client.captureEvent(
       source: 'manual',
+      labelSkill: 'note',
       title: 'probe',
       body: 'probe',
     );
