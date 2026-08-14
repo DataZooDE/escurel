@@ -226,6 +226,7 @@ async fn mcp_inner(
             "error": {
                 "code": -32003,
                 "message": format!("tenant `{tenant_id}` is suspended"),
+                "data": { "code": "tenant_suspended", "retryable": false },
             }
         });
         return (StatusCode::FORBIDDEN, Json(body)).into_response();
@@ -381,7 +382,7 @@ fn quota_response(id: Value, err: &QuotaError) -> axum::response::Response {
         "error": {
             "code": -32000,
             "message": format!("quota exhausted on {dim}; retry after {retry} ms"),
-            "data": { "dimension": dim, "retry_after_ms": retry }
+            "data": { "code": "quota_exhausted", "retryable": true, "dimension": dim, "retry_after_ms": retry }
         }
     });
     let mut response = (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
@@ -466,7 +467,9 @@ fn require_admin(role: Option<Role>) -> Result<(), JsonRpcError> {
         Some(_) => Err(JsonRpcError {
             code: -32001,
             message: "admin role required for this tool".to_owned(),
-        }),
+            data: None,
+        }
+        .with_code("admin_required", false)),
     }
 }
 
@@ -1053,7 +1056,9 @@ async fn tool_open_session(
                 a.page_id,
                 escurel_index::pack::RESERVED_BASE_PREFIX
             ),
-        });
+            data: None,
+        }
+        .with_code("layer_read_only", false));
     }
     // Session-only servers (`indexer = None`) have no page corpus, so no
     // stored base pages to guard beyond the prefix above.
@@ -1071,7 +1076,9 @@ async fn tool_open_session(
                      page to specialise it",
                     a.page_id
                 ),
-            });
+                data: None,
+            }
+            .with_code("layer_read_only", false));
         }
     }
 
@@ -1087,7 +1094,9 @@ async fn tool_open_session(
                     message: format!(
                         "session_cap_reached: tenant `{tenant_id}` is at its concurrent_sessions cap"
                     ),
-                });
+                    data: None,
+                }
+                .with_code("session_cap_reached", true));
             }
         }
     } else {
@@ -1343,7 +1352,15 @@ async fn tool_close_session(
 /// as `-32603 internal` per the spec (the wire shape doesn't
 /// have a distinct "not found" code for tools).
 fn session_error_to_jsonrpc(err: &SessionError, tool: &str) -> JsonRpcError {
-    JsonRpcError::internal(format!("{tool}: {err}"))
+    let e = JsonRpcError::internal(format!("{tool}: {err}"));
+    match err {
+        // The caller's state problem, not a server fault: the session was
+        // never opened or has been closed — reopen, don't back off. The
+        // numeric code stays `-32603` (frozen wire contract); the data
+        // code is what lets a client tell the two apart.
+        SessionError::UnknownSession(_) => e.with_code("unknown_session", false),
+        _ => e,
+    }
 }
 
 // --- tools/list payload ----------------------------------------
@@ -1356,25 +1373,40 @@ fn session_error_to_jsonrpc(err: &SessionError, tool: &str) -> JsonRpcError {
 struct JsonRpcError {
     code: i32,
     message: String,
+    /// Machine-readable refusal detail: `{code, retryable, …}`.
+    /// Additive — `code`/`message` are the frozen wire contract, and a
+    /// client that ignores `data` behaves exactly as before. `data.code`
+    /// is a stable string a client can branch on INSTEAD of parsing the
+    /// message (which is one wording edit away from breaking them), and
+    /// `data.retryable` is the flag `protocol.md` §Errors promised.
+    data: Option<Value>,
 }
 
 impl JsonRpcError {
+    /// Attach the machine-readable `{code, retryable}` detail.
+    fn with_code(mut self, code: &str, retryable: bool) -> Self {
+        self.data = Some(json!({ "code": code, "retryable": retryable }));
+        self
+    }
     fn method_not_found(msg: impl Into<String>) -> Self {
         Self {
             code: -32601,
             message: msg.into(),
+            data: None,
         }
     }
     fn invalid_params(msg: impl Into<String>) -> Self {
         Self {
             code: -32602,
             message: msg.into(),
+            data: None,
         }
     }
     fn internal(msg: impl Into<String>) -> Self {
         Self {
             code: -32603,
             message: msg.into(),
+            data: None,
         }
     }
     /// The caller is authenticated but not permitted to perform the action
@@ -1384,7 +1416,9 @@ impl JsonRpcError {
         Self {
             code: -32003,
             message: msg.into(),
+            data: None,
         }
+        .with_code("forbidden", false)
     }
     /// A precondition the server can't satisfy (e.g. an admin tool
     /// asked to act on a tenant other than the one this single-tenant
@@ -1393,7 +1427,9 @@ impl JsonRpcError {
         Self {
             code: -32002,
             message: msg.into(),
+            data: None,
         }
+        .with_code("failed_precondition", false)
     }
     /// A ducklake reader replica cannot serve a mutating tool — its
     /// index is a throwaway copy adopted from the lake; only the writer
@@ -1408,7 +1444,9 @@ impl JsonRpcError {
                 "`{tool}` is unavailable: this is a read-only ducklake replica; \
                  retry against the writer instance"
             ),
+            data: None,
         }
+        .with_code("read_only_replica", true)
     }
     /// A ducklake reader replica has no CRDT/session backend at all
     /// (`crdt_backend: None`), and its chat/events surfaces are
@@ -1424,7 +1462,9 @@ impl JsonRpcError {
                 "`{tool}` is unsupported on a ducklake replica: no chat/events/CRDT \
                  backend is wired here"
             ),
+            data: None,
         }
+        .with_code("unsupported_on_replica", false)
     }
     /// `publish_snapshot` has no lake to publish to — the single-file
     /// backend (`ESCUREL_INDEX_BACKEND` unset or `single-file`), which
@@ -1436,7 +1476,9 @@ impl JsonRpcError {
         Self {
             code: -32006,
             message: format!("`publish_snapshot` is unavailable: {}", reason.into()),
+            data: None,
         }
+        .with_code("publish_unavailable", false)
     }
     fn into_response(self, id: Value) -> axum::response::Response {
         (
@@ -1444,7 +1486,12 @@ impl JsonRpcError {
             Json(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "error": { "code": self.code, "message": self.message },
+                "error": match self.data {
+                    Some(data) => {
+                        json!({ "code": self.code, "message": self.message, "data": data })
+                    }
+                    None => json!({ "code": self.code, "message": self.message }),
+                },
             })),
         )
             .into_response()
@@ -1455,6 +1502,7 @@ fn error_response(id: Value, code: i32, msg: impl Into<String>) -> axum::respons
     JsonRpcError {
         code,
         message: msg.into(),
+        data: None,
     }
     .into_response(id)
 }

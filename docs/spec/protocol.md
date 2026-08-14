@@ -1332,8 +1332,8 @@ Contract relied on by orchestrators:
   is assembled: `format_version` is the export-format version (int) and
   `sha256` is the hex digest of the tarball body, so consumers verify
   before treating the tarball as durable.
-- **Failures**. Surface as a JSON-RPC `error` object with
-  `retryable: bool`. Retryable errors invite the consumer to
+- **Failures**. Surface as a JSON-RPC `error` object whose `data`
+  carries `retryable: bool` (see §Error `data`). Retryable errors invite the consumer to
   re-issue the call; non-retryable errors indicate corruption and
   require operator intervention.
 - **Idempotency is the consumer's responsibility**. Re-running
@@ -1369,6 +1369,34 @@ Long-running tools (`rebuild`, `compact_lanes`, `tenant_export`,
 `tenant_import`) block until done and return their final result in
 the JSON-RPC result. There is no SSE; live op streams use the
 WebSocket transport (`/ws`).
+
+### Error `data` (machine-readable refusals)
+
+JSON-RPC refusals carry an additive
+`error.data: { code, retryable, … }` object. `error.code` /
+`error.message` are the frozen wire contract (never branch on message
+wording); `data.code` is the stable string a client branches on, and
+`data.retryable` tells it whether re-issuing the same call can ever
+succeed. Codes in use:
+
+| data.code | numeric | retryable | meaning |
+|---|---|---|---|
+| `admin_required` | `-32001` | no | admin-gated tool, agent token |
+| `failed_precondition` | `-32002` | no | e.g. foreign `tenant_id` on a single-tenant gateway |
+| `forbidden` | `-32003` | no | authenticated but not permitted (ACL) |
+| `tenant_suspended` | `-32003` | no | suspend gate; admin can `resume` |
+| `read_only_replica` | `-32004` | **yes** | retry the same call against the writer |
+| `unsupported_on_replica` | `-32005` | no | surface not wired on this replica |
+| `publish_unavailable` | `-32006` | no | not a ducklake writer |
+| `quota_exhausted` | `-32000` | **yes** | plus `dimension`, `retry_after_ms` |
+| `layer_read_only` | `-32000` | no | pack-managed base page |
+| `session_cap_reached` | `-32000` | yes | concurrent-sessions cap; retry later |
+| `unknown_session` | `-32603` | no | session never opened / already closed — reopen |
+| `event_not_found` | `-32602` | no | absent OR hidden by the event ACL (no existence oracle) |
+| `already_assigned` | `-32602` | no | another worker won the `assign_event` CAS |
+
+Errors without `data` are unclassified internal faults; treat as
+non-retryable server errors. New codes are additive.
 
 ## WebSocket framing
 

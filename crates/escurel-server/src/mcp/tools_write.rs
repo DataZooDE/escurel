@@ -1568,7 +1568,8 @@ pub(super) async fn tool_assign_event(
                         IndexerError::EventNotFound {
                             event_id: a.event_id.clone(),
                         }
-                    )));
+                    ))
+                    .with_code("event_not_found", false));
                 }
             }
             // The TARGET check (#363): assignment is the operation that
@@ -1609,7 +1610,8 @@ pub(super) async fn tool_assign_event(
                             IndexerError::EventNotFound {
                                 event_id: a.event_id.clone(),
                             }
-                        )));
+                        ))
+                        .with_code("event_not_found", false));
                     }
                 }
             }
@@ -1626,8 +1628,13 @@ pub(super) async fn tool_assign_event(
             // tells a retrying caller that retrying will not help.
             // Re-assigning to the SAME instance returns Ok(()) and never
             // reaches here, so runner recovery is unaffected.
-            IndexerError::EventNotFound { .. } | IndexerError::EventAlreadyAssigned { .. } => {
+            IndexerError::EventNotFound { .. } => {
                 JsonRpcError::invalid_params(format!("assign_event: {e}"))
+                    .with_code("event_not_found", false)
+            }
+            IndexerError::EventAlreadyAssigned { .. } => {
+                JsonRpcError::invalid_params(format!("assign_event: {e}"))
+                    .with_code("already_assigned", false)
             }
             other => JsonRpcError::internal(format!("assign_event: {other}")),
         })?;
