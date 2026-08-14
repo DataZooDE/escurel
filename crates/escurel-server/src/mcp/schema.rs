@@ -282,10 +282,11 @@ pub(super) fn tools_list_payload() -> Value {
             tool_entry(
                 "purge_page",
                 Execution::Orchestration,
-                "Permanently remove an ALREADY-ARCHIVED page from the lane, \
-                 finishing what `delete_page` started. `delete_page` retracts \
-                 and retains the markdown as an audit record; this gives that \
-                 record up. Refuses a LIVE page (`{code:not_archived}`) — purging \
+                "ADMIN. Permanently remove an ALREADY-ARCHIVED page from the \
+                 lane, finishing what `delete_page` started. `delete_page` \
+                 retracts and retains the markdown as an audit record; this \
+                 gives that record up — an operator act, refused for non-admin \
+                 tokens. Refuses a LIVE page (`{code:not_archived}`) — purging \
                  is not a shortcut past retraction. Returns \
                  `{ok:false, issues:[{code:not_found}]}` for an absent page, so a \
                  sweep is re-runnable. The mandatory `escurel` meta-skill cannot \

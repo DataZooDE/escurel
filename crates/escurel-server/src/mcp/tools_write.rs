@@ -1609,8 +1609,9 @@ pub(super) struct PurgePageArgs {
 }
 
 /// `purge_page`: hard-remove an archived husk. Admin-shaped rather than
-/// agent-shaped — it destroys the audit record a soft delete kept, so it is
-/// gated on the write role and refuses anything still live.
+/// agent-shaped — it destroys the audit record a soft delete kept, so the
+/// dispatch arm gates it on the admin role and it refuses anything still
+/// live.
 pub(super) async fn tool_purge_page(
     state: &crate::server::AppState,
     indexer: &Indexer,

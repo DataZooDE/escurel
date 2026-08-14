@@ -135,6 +135,58 @@ async fn admin_writes_anything() {
     assert_eq!(r2["ok"], json!(true), "admin curates public talks: {r2}");
 }
 
+/// Raw `tools/call` returning the full JSON-RPC body — needed where the
+/// expected outcome is an error envelope, which `update` panics on.
+async fn call(p: &EscurelProcess, token: &str, tool: &str, args: Value) -> Value {
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": tool, "arguments": args },
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), 200, "http status");
+    resp.json().await.unwrap()
+}
+
+/// `purge_page` destroys the audit husk a soft delete retained — an
+/// operator act, not an agent one. The dispatch arm must refuse an
+/// agent-role token with `-32001` (admin required), exactly like the
+/// other audit-destroying admin tools; admin then purges the husk.
+#[tokio::test]
+async fn purge_page_requires_admin_role() {
+    let p = start(WriteAclMode::Enforce).await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+
+    // Alice retracts her own page — allowed, leaves the archived husk.
+    let del = call(&p, &alice, "delete_page", json!({ "page_id": ALICE_PAGE })).await;
+    assert_eq!(
+        del["result"]["structuredContent"]["ok"],
+        json!(true),
+        "owner retracts her own record: {del}"
+    );
+
+    // An agent token — even the page's owner — must not purge the husk.
+    let purge = call(&p, &alice, "purge_page", json!({ "page_id": ALICE_PAGE })).await;
+    assert_eq!(
+        purge["error"]["code"],
+        json!(-32001),
+        "agent purge must be refused with admin-required: {purge}"
+    );
+
+    // Admin finishes the job.
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let purged = call(&p, &admin, "purge_page", json!({ "page_id": ALICE_PAGE })).await;
+    assert_eq!(
+        purged["result"]["structuredContent"]["ok"],
+        json!(true),
+        "admin purges the archived husk: {purged}"
+    );
+}
+
 #[tokio::test]
 async fn off_mode_does_not_gate_writes() {
     // The same non-owner write that Enforce rejects must SUCCEED with the

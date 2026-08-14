@@ -130,6 +130,11 @@ canonical markdown is retained for audit. Do not reach for it expecting the
 bytes to be gone. `base_version` is an optimistic-concurrency guard (the
 version you last read); omit it to delete unconditionally.
 
+If the bytes DO have to be gone, `purge_page` hard-removes an
+already-archived husk — but it destroys the audit record, so it is
+**admin-role only** (an agent token gets `-32001`); it refuses a live
+page (`not_archived`), so it is never a shortcut past retraction.
+
 Writes are layer-aware (`references/01` §Layer/stability axis):
 
 - a page whose stored `layer:` is `base@<pack>@v<N>` (anything under
