@@ -574,7 +574,9 @@ pub(super) struct DeletePageArgs {
 
 #[derive(serde::Deserialize)]
 pub(super) struct MovePageArgs {
+    #[serde(alias = "from_page_id", alias = "from_page")]
     from: String,
+    #[serde(alias = "to_page_id", alias = "to_page")]
     to: String,
 }
 
@@ -1200,6 +1202,14 @@ pub(super) async fn tool_capture_event(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: CaptureEventArgs = parse_args(args, "capture_event")?;
+    // An event with no `label_skill` is unroutable: the runner selects its
+    // system prompt by that label, and `{}` used to mint junk the inbox
+    // could never dispatch (API review F4). Refuse at the door.
+    if a.label_skill.trim().is_empty() {
+        return Err(JsonRpcError::invalid_params(
+            "capture_event: `label_skill` is required (the label→skill routing key)".to_owned(),
+        ));
+    }
     let requested = NewEvent {
         event_id: a.event_id,
         at: a.at,

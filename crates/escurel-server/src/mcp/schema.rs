@@ -67,7 +67,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["page_id"],
                     "properties": {
-                        "page_id": { "type": "string" },
+                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
                         "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." },
                         "scenario": { "type": "string", "description": "What-if overlay to read against; absent = base only." },
                         "full": { "type": "boolean", "description": "Return ALL chunks of a document instance instead of the bounded lead (REQ-DOC-05)." }
@@ -83,7 +83,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["page_id"],
                     "properties": {
-                        "page_id": { "type": "string" }
+                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
                     }
                 }),
             ),
@@ -96,7 +96,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["page_id"],
                     "properties": {
-                        "page_id": { "type": "string" },
+                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
                         "direction": { "type": "string", "enum": ["in", "out", "both"] },
                         "link_skill": { "type": "string" },
                         "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; edges from sources born after it are hidden." },
@@ -118,7 +118,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["page_id"],
                     "properties": {
-                        "page_id": { "type": "string" },
+                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
                         "direction": { "type": "string", "enum": ["up", "down"], "description": "up = what this rests on; down = what derives from it. Default up." },
                         "relations": { "type": "array", "items": { "type": "string" }, "description": "Restrict the walk to these edge kinds; absent/empty = all." },
                         "max_hops": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Hop ceiling (default 5, capped at 12)." },
@@ -204,7 +204,7 @@ pub(super) fn tools_list_payload() -> Value {
                 "run_stored_query",
                 Execution::Deterministic,
                 Scope::Admin,
-                "Execute a [[query::*]] instance with named parameters.",
+                "DEPRECATED legacy stored-query execution — use `query_instance`. Execute a [[query::*]] instance with named parameters.",
                 json!({
                     "type": "object",
                     "required": ["query_id"],
@@ -267,7 +267,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["page_id", "content"],
                     "properties": {
-                        "page_id": { "type": "string" },
+                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
                         "content": { "type": "string" },
                         "base_version": { "type": "string" },
                         "require_exact_base": { "type": "boolean" },
@@ -292,7 +292,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["page_id"],
                     "properties": {
-                        "page_id": { "type": "string" },
+                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
                         "base_version": { "type": "string" }
                     }
                 }),
@@ -313,7 +313,7 @@ pub(super) fn tools_list_payload() -> Value {
                 json!({
                     "type": "object",
                     "required": ["page_id"],
-                    "properties": { "page_id": { "type": "string" } }
+                    "properties": { "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." } }
                 }),
             ),
             tool_entry(
@@ -419,6 +419,7 @@ pub(super) fn tools_list_payload() -> Value {
                  submission back under the same id.",
                 json!({
                     "type": "object",
+                    "required": ["label_skill"],
                     "properties": {
                         "event_id": { "type": "string", "description": "Caller-supplied id; server generates a ULID when absent." },
                         "at": { "type": "string", "description": "RFC 3339 event time." },
@@ -485,7 +486,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["page_id"],
                     "properties": {
-                        "page_id": { "type": "string" }
+                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
                     }
                 }),
             ),
@@ -507,7 +508,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["page_id"],
                     "properties": {
-                        "page_id": { "type": "string" }
+                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
                     }
                 }),
             ),
@@ -539,7 +540,7 @@ pub(super) fn tools_list_payload() -> Value {
                     "type": "object",
                     "required": ["page_id"],
                     "properties": {
-                        "page_id": { "type": "string" }
+                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
                     }
                 }),
             ),

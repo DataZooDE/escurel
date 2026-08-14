@@ -281,7 +281,7 @@ async fn capture_event_without_webhook_url_is_a_noop() {
         &p,
         Role::Agent,
         "capture_event",
-        json!({ "source": "manual", "title": "no hook", "body": "no hook" }),
+        json!({ "source": "manual", "label_skill": "note", "title": "no hook", "body": "no hook" }),
     )
     .await;
     assert_eq!(captured["status"].as_str(), Some("inbox"));

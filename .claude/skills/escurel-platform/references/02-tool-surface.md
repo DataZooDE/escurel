@@ -168,7 +168,7 @@ instance's **history** once assigned. Workers build chains on this
 
 | tool | inputs (key ones) | output | what for |
 |---|---|---|---|
-| `capture_event` | `source`, `mime`, `label_skill`, `title`, `body`, `instance_page_id?`, `event_id?`, `provenance?` | the stored `Event` (server mints `event_id`/`at` when empty) | ingest an event; fires the webhook |
+| `capture_event` | `label_skill` (**required** — the label→skill routing key; an unlabelled capture is refused `-32602`), `source`, `mime`, `title`, `body`, `instance_page_id?`, `event_id?`, `provenance?` | the stored `Event` (server mints `event_id`/`at` when empty) | ingest an event; fires the webhook |
 | `list_inbox` | `limit`, `cursor?` | `{events[], next_cursor?}` | the tenant's UNPROCESSED events (a worker's poll fallback); pass `next_cursor` back as `cursor` — ONLY its absence means done (ACL filtering legitimately shortens pages) |
 | `assign_event` | `event_id`, `instance_page_id` | ack | mark processed + attach to a page's history |
 | `list_events` | `instance_page_id`, `limit`, `cursor?` | `{events[], next_cursor?}` | a page's PROCESSED history, **oldest first** — assigned events only (an unassigned inbox event is a pending work item, not history); paginated like `list_inbox`, so history past `limit` stays reachable |
