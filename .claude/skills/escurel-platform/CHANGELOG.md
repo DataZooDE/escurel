@@ -20,6 +20,18 @@ pin (see `SKILL.md` → "How this skill is installed").
 - Token lifetime on long sockets is now specified: auth is at upgrade
   only, a socket outlives its token's `exp`; bound it at the proxy or
   reconnect periodically — which `since_event_id` makes lossless.
+## 0.6.21 — atomic approve: `base_sha256` on `update_page`
+
+- `update_page` gains `base_sha256` — the content-hash CAS that works
+  on EVERY gateway (`base_version` needs a CRDT backend; without one it
+  answers `versioning_unavailable`, and before this an unknown guard
+  arg was silently dropped and the write went through UNGUARDED). Hex
+  sha256 of the stored markdown the held write was drafted against;
+  `""` = approve-create. A mismatch refuses `{code: conflict}` with
+  `head_sha256` + `head_content`; the `base_version` conflict now also
+  carries a structured `head_version`. Closes escurel#354 (the
+  narrowed approve-atomicity ask): hold `{draft, hash}`, approve via
+  the guard, re-diff on conflict — never a silent overwrite.
 ## 0.6.20 — WS live search: `search_subscribe` is real
 
 - The M3 stub (empty `search_event` ack, ignored payload) is gone:

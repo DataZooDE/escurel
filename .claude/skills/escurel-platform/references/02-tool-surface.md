@@ -57,6 +57,15 @@ Notes:
   how you tell it apart from an honest absence. `update_page` refuses such a
   write only when the operator has set `ESCUREL_AUTONOMY_LINT=enforce`
   (default `off`, middle rung `log`).
+  **The approve recipe (atomic, race-free):** when you hold a
+  `review`/`confirm` write, store the draft **and** the sha256 of the
+  stored markdown it was drafted against (or the `expand` `version` on
+  a CRDT gateway). Approval = `update_page` with `base_sha256` (or
+  `base_version` + `require_exact_base`); a concurrent edit refuses
+  `{code: conflict}` carrying `head_sha256`/`head_version` +
+  `head_content`, so you re-diff and re-approve — approval can never
+  silently overwrite an edit that landed in between. `base_sha256: ""`
+  guards a create ("I expect no page yet").
 - `search` granularity is `block` by default (pinpoints a block within a
   page); `page` collapses to one row per page. The choice is echoed in the
   response so a cache can tell them apart.
@@ -81,7 +90,7 @@ Notes:
 | tool | inputs | output | mode |
 |---|---|---|---|
 | `validate` | `content`, `as_page_id?` | `{issues[]}` | dry run — no commit |
-| `update_page` | `page_id`, `content` | `{ok, issues[], new_version}` | whole-page write (the public write path) |
+| `update_page` | `page_id`, `content`, `base_version?`+`require_exact_base?` (CRDT gateways), `base_sha256?` (every gateway) | `{ok, issues[], new_version}` | whole-page write (the public write path); the `base_*` guards are the **atomic-approve** CAS — see the autonomy note |
 | `delete_page` | `page_id`, `base_version?` | `{ok, …}` | **soft**-delete / archive |
 | `open_session` | `page_id` | `{session, head_version, content}` | live CRDT |
 | `apply_op` | `session`, `op` | `{ok, conflicts?}` | live CRDT |

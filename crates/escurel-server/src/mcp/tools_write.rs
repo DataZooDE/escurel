@@ -37,6 +37,15 @@ pub(super) struct UpdatePageArgs {
     /// gets `code: conflict` plus `head_content` and re-drafts.
     #[serde(default)]
     require_exact_base: bool,
+    /// Content-hash compare-and-swap — the approval guard that works on
+    /// EVERY gateway (`base_version` needs a CRDT backend; without one
+    /// it answers `versioning_unavailable`). The hex sha256 of the
+    /// stored markdown the held write was drafted against; `""` means
+    /// "I expect no page yet" (approve-create). A mismatch refuses
+    /// `{code: conflict}` carrying `head_sha256` + `head_content` so
+    /// the approver re-diffs — never a silent overwrite. (#354)
+    #[serde(default)]
+    base_sha256: Option<String>,
     /// Optional provenance passthrough (#246): a runner-orchestrated write
     /// carries its `provenance.workflow`/`runner` block. Its presence suppresses
     /// the opt-in `page-edited` event (the cascade already handles those writes),
@@ -126,6 +135,7 @@ pub(super) async fn resolve_base_version(
             let head_content = hydrate_content(backend, page_id).await.ok().flatten();
             Cas::Conflict(json!({
                 "ok": false,
+                "head_version": head.as_str(),
                 "issues": [{
                     "severity": "error",
                     "code": "conflict",
@@ -321,6 +331,44 @@ pub(super) async fn tool_update_page(
     // survivor). Held to the end of the version bump below; every early
     // return releases it on drop.
     let _cas_gate = state.update_page_gate.lock().await;
+
+    // Content-hash CAS (#354): checked under the same gate as the
+    // version CAS so the read-compare-write cannot interleave with a
+    // concurrent update. Absent page hashes to the "" sentinel.
+    if let Some(want) = a.base_sha256.as_deref() {
+        let current = indexer
+            .read_page_markdown(&a.page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("update_page hash guard: {e}")))?;
+        let head_sha256 = current
+            .as_deref()
+            .map(|c| {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(c.as_bytes()))
+            })
+            .unwrap_or_default();
+        if want != head_sha256 {
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "conflict",
+                    "location": "base_sha256",
+                    "message": if current.is_none() {
+                        "base_sha256 names a page state, but no page exists yet \
+                         (send an empty base_sha256 to approve a create)"
+                            .to_owned()
+                    } else {
+                        "base_sha256 is stale — the page changed since the held                          write was drafted; re-diff against head_content"
+                            .to_owned()
+                    },
+                }],
+                "head_sha256": head_sha256,
+                "head_content": current,
+            }));
+        }
+    }
+
     let head_hlc = match state.crdt_backend.as_ref() {
         Some(b) => u64::try_from(b.max_hlc(&a.page_id).await.unwrap_or(0)).unwrap_or(0),
         None => 0,
