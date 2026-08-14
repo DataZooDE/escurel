@@ -27,7 +27,14 @@ final allInstancesRawProvider = FutureProvider<List<InstanceSummary>>((
   final out = <InstanceSummary>[];
   for (final s in skills) {
     if (s.id == 'escurel') continue;
-    out.addAll(await client.listInstances(s.id));
+    // Drain every page — this provider is the flattened whole-tenant
+    // view (breadcrumb counts, cross-skill listings), not a lazy list.
+    String? cursor;
+    do {
+      final page = await client.listInstances(s.id, cursor: cursor);
+      out.addAll(page.instances);
+      cursor = page.nextCursor;
+    } while (cursor != null);
   }
   return out;
 });
@@ -78,14 +85,49 @@ final effectiveLeftCollapsedProvider = Provider<bool>((ref) {
 /// workspace).
 final openEventProvider = StateProvider<String?>((ref) => null);
 
-/// The focused instance's *full* processed event history (`list_events`),
-/// oldest first. Unfiltered — the timeline range + the cut both derive
-/// from this so the range never shrinks as you scrub.
-final entityEventHistoryProvider = FutureProvider<List<Event>>((ref) async {
-  final id = ref.watch(currentPageIdProvider);
-  if (id == null) return const <Event>[];
-  return ref.watch(escurelClientProvider).listEvents(id);
-});
+/// How many events one page requests per fetch (`list_events` /
+/// `list_inbox`). `next_cursor` is present iff more rows remain; its
+/// ABSENCE (never a short page) means the listing is drained.
+const int kEventsPageSize = 100;
+
+/// The focused instance's processed event history (`list_events`),
+/// oldest first — cursor-paginated. The state is the ACCUMULATED
+/// [EventPage] (events fetched so far + the cursor for the next fetch);
+/// [EntityEventHistory.loadMore] appends the next page. Unfiltered — the
+/// timeline range + the cut both derive from this so the range never
+/// shrinks as you scrub. Invalidation (auto-refresh) resets to page one.
+final entityEventHistoryProvider =
+    AsyncNotifierProvider<EntityEventHistory, EventPage>(
+      EntityEventHistory.new,
+    );
+
+class EntityEventHistory extends AsyncNotifier<EventPage> {
+  @override
+  Future<EventPage> build() async {
+    final id = ref.watch(currentPageIdProvider);
+    if (id == null) return const EventPage(events: []);
+    return ref
+        .watch(escurelClientProvider)
+        .listEvents(id, limit: kEventsPageSize);
+  }
+
+  /// Fetch + append the next page (no-op when drained or not loaded).
+  Future<void> loadMore() async {
+    final current = state.valueOrNull;
+    final cursor = current?.nextCursor;
+    final id = ref.read(currentPageIdProvider);
+    if (current == null || cursor == null || id == null) return;
+    final next = await ref
+        .read(escurelClientProvider)
+        .listEvents(id, limit: kEventsPageSize, cursor: cursor);
+    state = AsyncData(
+      EventPage(
+        events: [...current.events, ...next.events],
+        nextCursor: next.nextCursor,
+      ),
+    );
+  }
+}
 
 /// The selected event-type (SOURCES) filter — a single `label_skill`
 /// (the processing skill an event links to), or null for all. Toggling
@@ -96,7 +138,8 @@ final eventSourceFilterProvider = StateProvider<String?>((ref) => null);
 /// history — the chips the SOURCES filter offers. Sorted, stable.
 final availableSourcesProvider = Provider<List<String>>((ref) {
   final history =
-      ref.watch(entityEventHistoryProvider).valueOrNull ?? const <Event>[];
+      ref.watch(entityEventHistoryProvider).valueOrNull?.events ??
+      const <Event>[];
   final set = <String>{};
   for (final e in history) {
     if (e.labelSkill.isNotEmpty) set.add(e.labelSkill);
@@ -109,7 +152,7 @@ final availableSourcesProvider = Provider<List<String>>((ref) {
 /// events that had landed by T) and matching the SOURCES filter.
 /// Undated events always pass the time cut.
 final entityEventsProvider = FutureProvider<List<Event>>((ref) async {
-  final all = await ref.watch(entityEventHistoryProvider.future);
+  final all = (await ref.watch(entityEventHistoryProvider.future)).events;
   final asOf = ref.watch(asOfProvider);
   final source = ref.watch(eventSourceFilterProvider);
   final cut = asOf?.toUtc();
@@ -122,9 +165,34 @@ final entityEventsProvider = FutureProvider<List<Event>>((ref) async {
 });
 
 /// The inbox — unprocessed events across the tenant, newest first.
-final inboxEventsProvider = FutureProvider<List<Event>>((ref) async {
-  return ref.watch(escurelClientProvider).listInbox();
-});
+/// Cursor-paginated like [entityEventHistoryProvider]: the state is the
+/// accumulated [EventPage]; [InboxEvents.loadMore] appends the next page.
+final inboxEventsProvider = AsyncNotifierProvider<InboxEvents, EventPage>(
+  InboxEvents.new,
+);
+
+class InboxEvents extends AsyncNotifier<EventPage> {
+  @override
+  Future<EventPage> build() {
+    return ref.watch(escurelClientProvider).listInbox(limit: kEventsPageSize);
+  }
+
+  /// Fetch + append the next page (no-op when drained or not loaded).
+  Future<void> loadMore() async {
+    final current = state.valueOrNull;
+    final cursor = current?.nextCursor;
+    if (current == null || cursor == null) return;
+    final next = await ref
+        .read(escurelClientProvider)
+        .listInbox(limit: kEventsPageSize, cursor: cursor);
+    state = AsyncData(
+      EventPage(
+        events: [...current.events, ...next.events],
+        nextCursor: next.nextCursor,
+      ),
+    );
+  }
+}
 
 /// The focused instance's CRDT snapshot timeline — the discrete
 /// `taken_at` points `expand(asOf=T)` can replay, oldest first. Powers
@@ -142,8 +210,10 @@ final openEventDetailProvider = Provider<Event?>((ref) {
   final id = ref.watch(openEventProvider);
   if (id == null) return null;
   final history =
-      ref.watch(entityEventHistoryProvider).valueOrNull ?? const <Event>[];
-  final inbox = ref.watch(inboxEventsProvider).valueOrNull ?? const <Event>[];
+      ref.watch(entityEventHistoryProvider).valueOrNull?.events ??
+      const <Event>[];
+  final inbox =
+      ref.watch(inboxEventsProvider).valueOrNull?.events ?? const <Event>[];
   for (final e in [...history, ...inbox]) {
     if (e.eventId == id) return e;
   }

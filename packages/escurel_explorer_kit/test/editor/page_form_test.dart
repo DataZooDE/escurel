@@ -73,7 +73,9 @@ void main() {
     // Keyed <skill>__<id>, visible to expand + listInstances.
     final page = await client.expand('note__b');
     expect(page.frontmatter['title'], 'B');
-    final ids = (await client.listInstances('note')).map((i) => i.id).toSet();
+    final ids = (await client.listInstances(
+      'note',
+    )).instances.map((i) => i.id).toSet();
     expect(ids, containsAll({'note__a', 'note__b'}));
   });
 

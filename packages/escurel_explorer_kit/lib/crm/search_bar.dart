@@ -7,6 +7,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../client/errors.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
 
@@ -35,7 +36,7 @@ class _SearchBarState extends ConsumerState<WorkspaceSearchBar> {
       clearNavHistory(ref);
       setState(() => _status = '${res.hits.length} hits → ${res.hits.first.skill}');
     } catch (e) {
-      setState(() => _status = 'error: $e');
+      setState(() => _status = 'error: ${humanizeEscurelError(e)}');
     }
   }
 

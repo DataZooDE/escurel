@@ -115,13 +115,14 @@ class _CapStubClient implements EscurelClient {
   Future<List<SkillSummary>> listSkills() => inner.listSkills();
 
   @override
-  Future<List<InstanceSummary>> listInstances(
+  Future<InstancePage> listInstances(
     String skillId, {
     Map<String, Object?>? filter,
     String? orderBy,
     int? limit,
     String? asOf,
     String? scenario,
+    String? cursor,
   }) => inner.listInstances(
     skillId,
     filter: filter,
@@ -129,6 +130,7 @@ class _CapStubClient implements EscurelClient {
     limit: limit,
     asOf: asOf,
     scenario: scenario,
+    cursor: cursor,
   );
 
   @override
@@ -138,10 +140,19 @@ class _CapStubClient implements EscurelClient {
   }) => inner.runStoredQuery(queryId, params: params);
 
   @override
-  Future<List<Event>> listInbox({int? limit}) => inner.listInbox(limit: limit);
+  Future<EventPage> listInbox({int? limit, String? cursor}) =>
+      inner.listInbox(limit: limit, cursor: cursor);
   @override
-  Future<List<Event>> listEvents(String instancePageId, {int? limit}) =>
-      inner.listEvents(instancePageId, limit: limit);
+  Future<EventPage> listEvents(
+    String instancePageId, {
+    int? limit,
+    String? cursor,
+  }) => inner.listEvents(instancePageId, limit: limit, cursor: cursor);
+  @override
+  Future<void> assignEvent(String eventId, String instancePageId) =>
+      inner.assignEvent(eventId, instancePageId);
+  @override
+  Future<List<ToolInfo>> listTools() => inner.listTools();
   @override
   Future<List<String>> listSnapshots(String pageId) =>
       inner.listSnapshots(pageId);
@@ -387,11 +398,17 @@ class _CapStubClient implements EscurelClient {
 
   @override
   Future<IngestOutcome> ingestUpload({
+    String? eventId,
     required String contentType,
     required List<int> bytes,
     String? title,
   }) =>
-      inner.ingestUpload(contentType: contentType, bytes: bytes, title: title);
+      inner.ingestUpload(
+    contentType: contentType,
+    bytes: bytes,
+    title: title,
+    eventId: eventId,
+  );
 
   @override
   void close() => inner.close();

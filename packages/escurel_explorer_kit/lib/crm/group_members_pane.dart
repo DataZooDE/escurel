@@ -9,6 +9,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../client/errors.dart';
 import '../client/models.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
@@ -38,7 +39,7 @@ class _GroupMembersPaneState extends ConsumerState<GroupMembersPane> {
           .listGroupMembers(groupId);
       if (mounted) setState(() => _members = members);
     } catch (e) {
-      if (mounted) setState(() => _status = 'error: $e');
+      if (mounted) setState(() => _status = 'error: ${humanizeEscurelError(e)}');
     }
   }
 
@@ -56,7 +57,7 @@ class _GroupMembersPaneState extends ConsumerState<GroupMembersPane> {
       await _refresh();
       setState(() => _status = 'added');
     } catch (e) {
-      setState(() => _status = 'error: $e');
+      setState(() => _status = 'error: ${humanizeEscurelError(e)}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -74,7 +75,7 @@ class _GroupMembersPaneState extends ConsumerState<GroupMembersPane> {
       await _refresh();
       setState(() => _status = 'removed');
     } catch (e) {
-      setState(() => _status = 'error: $e');
+      setState(() => _status = 'error: ${humanizeEscurelError(e)}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }

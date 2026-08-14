@@ -9,6 +9,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../client/errors.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
 import 'crm_providers.dart';
@@ -45,7 +46,9 @@ class _CaptureBarState extends ConsumerState<CaptureBar> {
       ref.read(openEventProvider.notifier).state = ev.eventId;
       setState(() => _status = 'captured → inbox');
     } catch (e) {
-      setState(() => _status = 'error: $e');
+      // Branch on the stable machine code when the gateway sent one
+      // (error.data.{code,retryable}); raw message otherwise.
+      setState(() => _status = 'error: ${humanizeEscurelError(e)}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }

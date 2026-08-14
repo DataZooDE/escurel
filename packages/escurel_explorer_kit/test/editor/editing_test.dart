@@ -259,7 +259,7 @@ void main() {
       expect(page.frontmatter['title'], 'Fresh Note');
 
       // And it shows up in the catalogue listing.
-      final instances = await client.listInstances('note');
+      final instances = (await client.listInstances('note')).instances;
       expect(instances.map((i) => i.id), contains('note__fresh'));
     },
   );
@@ -285,7 +285,7 @@ void main() {
       expect(page.frontmatter['status'], 'erased');
       // Default hide-erased behaviour: still present in the raw corpus but
       // marked erased — the listing's `erased` flag is set.
-      final instances = await client.listInstances('note');
+      final instances = (await client.listInstances('note')).instances;
       final welcome = instances.firstWhere((i) => i.id == 'note__welcome');
       expect(welcome.erased, isTrue);
     },

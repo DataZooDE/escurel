@@ -98,7 +98,7 @@ void main() {
     });
 
     test('listInstances returns instances of one skill', () async {
-      final contacts = await client.listInstances('contact');
+      final contacts = (await client.listInstances('contact')).instances;
       expect(contacts.map((i) => i.id).toList(), ['contact__dora']);
     });
 
@@ -107,12 +107,12 @@ void main() {
         'customer',
         filter: const {'country': 'DE'},
       );
-      expect(de, hasLength(1));
+      expect(de.instances, hasLength(1));
       final us = await client.listInstances(
         'customer',
         filter: const {'country': 'US'},
       );
-      expect(us, isEmpty);
+      expect(us.instances, isEmpty);
     });
 
     test('resolve finds existing instance via typed wikilink', () async {
@@ -200,16 +200,16 @@ void main() {
       // assign_event moves it onto the instance timeline.
       expect(ev.status, 'inbox');
       expect(
-        (await client.listEvents('customer::acme')).map((e) => e.eventId),
+        (await client.listEvents('customer::acme')).events.map((e) => e.eventId),
         isNot(contains(ev.eventId)),
       );
 
       await client.assignEvent(ev.eventId, 'customer::acme');
 
-      final history = await client.listEvents('customer::acme');
+      final history = (await client.listEvents('customer::acme')).events;
       expect(history.map((e) => e.eventId), contains(ev.eventId));
       expect(
-        (await client.listInbox()).map((e) => e.eventId),
+        (await client.listInbox()).events.map((e) => e.eventId),
         isNot(contains(ev.eventId)),
       );
     });
