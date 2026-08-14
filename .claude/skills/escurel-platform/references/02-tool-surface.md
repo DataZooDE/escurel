@@ -287,6 +287,9 @@ them is `escurel:admin`-gated and so not part of the normal agent surface:
 - `validate_bindings()` — re-probe every `sql_view` for schema drift; a
   `binding_degraded` view reads fail-closed.
 - Document uploads use the authenticated `POST /ingest` / `POST /ingest/upload`
+  (both accept an optional `event_id` **idempotency key** — a redelivery
+  with the same key returns `{status: "duplicate"}` instead of minting a
+  second inbox event and re-running extraction; escurel#382)
   HTTP routes (not an MCP tool). See `references/01` §Backend axis and the
   repo's `docs/spec/protocol.md` § Instance backends.
 

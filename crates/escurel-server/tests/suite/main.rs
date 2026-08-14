@@ -44,6 +44,7 @@ mod hlc_single_authority;
 mod index_backend;
 mod ingest_audio;
 mod ingest_blob_quota;
+mod ingest_gate_parity;
 mod ingest_owner_scope;
 mod ingest_webhook;
 mod instance_acl;

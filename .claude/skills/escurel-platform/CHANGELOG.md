@@ -4,6 +4,19 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.9 — `/ingest` gained dispatch-gate parity + an idempotency key
+
+- `POST /ingest` and `POST /ingest/upload` accept an optional
+  `event_id`: the caller's idempotency key, fed to `capture_event`'s
+  dedup. A redelivered upload is acknowledged
+  `{status: "duplicate", event_id, blob_id}` — one inbox event, no
+  second extraction run (escurel#382). Absent = unchanged behaviour.
+- The REST intake doors now enforce the same cross-cutting gates as MCP
+  dispatch: a suspended tenant refuses agent tokens (403
+  `tenant_suspended`), a ducklake reader refuses with 503
+  `read_only_replica` (retry against the writer), and `/metrics` records
+  the actual response status per route (a refused ingest is no longer
+  counted as a 200).
 ## 0.6.8 — `append_message` `msg_id` is a real idempotency key
 
 - `references/02-tool-surface.md`: a caller-supplied `msg_id` now

@@ -1093,12 +1093,26 @@ Writes:
 
 | route | body | purpose |
 |---|---|---|
-| `POST /ingest` | `{ blob_id, content_type, title? }` | ingest a blob already deposited in the tenant's `blobs/inbox/` area |
-| `POST /ingest/upload` | `{ content_type, bytes_b64, title? }` | deposit (base64) **and** ingest in one call |
+| `POST /ingest` | `{ blob_id, content_type, title?, skill?, event_id? }` | ingest a blob already deposited in the tenant's `blobs/inbox/` area |
+| `POST /ingest/upload` | `{ content_type, bytes_b64, title?, skill?, event_id? }` | deposit (base64) **and** ingest in one call |
+
+`skill` explicitly targets a document-backend skill that `accepts` the
+MIME (422 otherwise, create-ACL enforced); absent, the skill is resolved
+from the MIME (REQ-DOC-06). `event_id` is the caller's **idempotency
+key**, fed to `capture_event`'s dedup: a redelivery with the same key is
+acknowledged `{ status: "duplicate", event_id, blob_id }` without a
+second inbox event and without re-running the extraction worker
+(escurel#382). Absent, the server mints a ULID per request.
+
+Both routes sit behind the same cross-cutting gates as MCP dispatch: a
+suspended tenant refuses agent tokens (`403 tenant_suspended`), a
+ducklake reader refuses outright (`503 read_only_replica` — retry
+against the writer), and the per-tenant Writes budget applies (`429`).
 
 Both return the pipeline outcome:
 `{ status, event_id, blob_id, page_id?, handler_skill?, chunk_count?, issue? }`
-where `status` ∈ `materialised` | `extraction_failed` | `no_handler`. On
+where `status` ∈ `materialised` | `extraction_failed` | `no_handler` |
+`duplicate`. On
 extraction failure the inbox blob is retained and the instance is marked
 `extraction_failed` (the upload is never lost).
 
