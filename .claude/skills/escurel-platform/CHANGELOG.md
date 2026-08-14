@@ -20,6 +20,19 @@ pin (see `SKILL.md` → "How this skill is installed").
 - Token lifetime on long sockets is now specified: auth is at upgrade
   only, a socket outlives its token's `exp`; bound it at the proxy or
   reconnect periodically — which `since_event_id` makes lossless.
+## 0.6.19 — verb-first dispatch aliases + scope-keyed quota exemption
+
+- The noun-first stragglers accept verb-first spellings at dispatch:
+  `create_tenant`/`list_tenants`/`get_tenant`/`update_tenant`/
+  `delete_tenant`/`export_tenant`/`import_tenant` → `tenant_*`, and
+  `reload_embedding` → `embedding_reload`. Courtesy aliases only —
+  `tools/list` advertises the canonical names.
+- Admin-scope tools no longer debit the tenant's *agent* rate budget.
+  The exemption keys on the `scope` label (ratcheted against
+  `require_admin`) instead of the old `admin_` prefix + hand-kept list,
+  which had silently forgotten every unprefixed admin tool
+  (`list_credentials`, the pack ops, `create_sql_instance`, …).
+
 ## 0.6.17 — openapi.json documents the whole HTTP surface; outputSchema
 
 - `GET /openapi.json` now describes the REST routes it previously

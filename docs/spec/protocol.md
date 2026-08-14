@@ -1231,7 +1231,15 @@ The admin/operator capabilities are exposed as admin-role-gated MCP
 tools over `POST /mcp` — there is no separate admin service. Each
 requires the admin role on the OIDC token (configurable; see
 [`platform.md`](platform.md#auth)); a call from a token without the
-required role yields JSON-RPC error code `-32001`. The gate is enforced at
+required role yields JSON-RPC error code `-32001`. The noun-first `tenant_*` family and `embedding_reload` also accept
+verb-first dispatch ALIASES (`create_tenant`, `list_tenants`,
+`get_tenant`, `update_tenant`, `delete_tenant`, `export_tenant`,
+`import_tenant`, `reload_embedding`) — resolved to the canonical name
+before quota, metrics, gating and dispatch, and never advertised in
+`tools/list`. Admin-scope tools are exempt from the tenant's *agent*
+rate budget, keyed on the same `scope` label discovery filters by.
+
+The gate is enforced at
 **dispatch** (`-32001`), and since the scope label landed, discovery
 matches it: every `tools/list` entry carries `scope: "agent" | "admin"`,
 and an **agent-role** token receives only the `scope: "agent"` subset —
