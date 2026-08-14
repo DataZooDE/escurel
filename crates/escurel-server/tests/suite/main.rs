@@ -61,6 +61,7 @@ mod mcp_session_tools;
 mod meta_skill;
 mod metrics_real;
 mod multi_issuer_groups;
+mod openapi_surface;
 mod pack_export;
 mod pack_import;
 mod pack_rebase;

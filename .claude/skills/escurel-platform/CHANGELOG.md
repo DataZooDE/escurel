@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.17 — openapi.json documents the whole HTTP surface; outputSchema
+
+- `GET /openapi.json` now describes the REST routes it previously
+  omitted — `/ingest`, `/ingest/upload`, `/blob/{page_id}`, `/healthz`,
+  `/readyz`, `/version` — with typed request bodies and per-status
+  responses, plus `securitySchemes.bearerAuth` (the `/mcp` and REST
+  operations declare it).
+- `tools/list` entries with a pinned result shape carry an additive MCP
+  `outputSchema`: every write tool declares the shared `{ok, issues[]}`
+  envelope; `search`/`expand`/`fetch_blob`/`list_*` declare their
+  top-level keys incl. the `next_cursor` pagination contract. Tools
+  whose results are still ad-hoc stay undeclared rather than lying.
 ## 0.6.13 — schema ergonomics: required label, aliases, honest envelopes
 
 - `capture_event` now **requires a non-empty `label_skill`** — `{}` used
