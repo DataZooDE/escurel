@@ -650,6 +650,30 @@ pub(super) struct MovePageArgs {
     to: String,
 }
 
+/// #558 fast-follow: `update_page` already holds `ok:true` for a scoped,
+/// synchronous lake publish (`Indexer::publish_page_sync`) so a caller
+/// never observes a write that only survives in the local DuckDB
+/// `SingleFileStore::Always` wipes on every writer boot. delete/purge/move
+/// share that same gap — this is the one-line hook each uses to close it.
+/// `page_id`'s local rows may be present (a fresh archive/rename target)
+/// or absent (a delete/purge/vacated move source, which correctly
+/// publishes zero rows and removes any stale lake copy) — both are valid
+/// inputs to the scoped publish.
+async fn publish_durably(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    page_id: &str,
+) -> Result<(), JsonRpcError> {
+    if let Some(cfg) = state.lake.as_ref() {
+        indexer.publish_page_sync(cfg, page_id).await.map_err(|e| {
+            JsonRpcError::internal(format!(
+                "wrote locally but failed to publish durably to the lake: {e}"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 /// `move_page`: rename a page id, leaving nothing behind.
 ///
 /// Distinct from `delete_page` on purpose. A delete is a *retraction* and
@@ -744,6 +768,11 @@ pub(super) async fn tool_move_page(
 
     match indexer.move_page(&a.from, &a.to).await {
         Ok(true) => {
+            // Publish the destination (new content) and the source (now
+            // vacated — removes any stale copy a prior publish left in
+            // the lake under the old id) before this is durable.
+            publish_durably(state, indexer, &a.to).await?;
+            publish_durably(state, indexer, &a.from).await?;
             state.metrics.inc_write(indexer.tenant(), "human");
             Ok(json!({ "ok": true, "issues": [], "from": a.from, "to": a.to }))
         }
@@ -911,6 +940,9 @@ pub(super) async fn tool_delete_page(
 
     match indexer.delete_page(&a.page_id).await {
         Ok(true) => {
+            // The index rows are gone locally; publish that removal to
+            // the lake before this retraction is durable.
+            publish_durably(state, indexer, &a.page_id).await?;
             state.metrics.inc_write(indexer.tenant(), "human");
             Ok(json!({ "ok": true, "issues": [], "page_id": a.page_id }))
         }
@@ -1784,6 +1816,10 @@ pub(super) async fn tool_purge_page(
 
     match indexer.purge_page(&a.page_id).await {
         Ok(true) => {
+            // Defensive, same spirit as purge_page's own local re-delete
+            // of a half-retracted page's index rows: make sure the lake
+            // agrees nothing is left under this id.
+            publish_durably(state, indexer, &a.page_id).await?;
             state.metrics.inc_write(indexer.tenant(), "human");
             Ok(json!({ "ok": true, "issues": [], "page_id": a.page_id }))
         }
