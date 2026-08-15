@@ -98,6 +98,7 @@ mod sql_creds;
 mod sql_validate;
 mod sql_view_tools;
 mod surface_consolidation;
+mod synchronous_lake_durability;
 mod tool_execution_labels;
 mod tool_label_map;
 mod tool_registry_conformance;
