@@ -56,6 +56,62 @@ pub struct RefreshTask {
     /// The snapshot id already being served when this task starts —
     /// normally the id `adopt_lake` returned for the boot-time adopt.
     initial_snapshot_id: Option<i64>,
+    /// Shared-surface attaches to re-apply to every freshly adopted
+    /// indexer — see [`SharedAttaches`]. `None` = plain corpus reader.
+    shared_attaches: Option<SharedAttaches>,
+}
+
+/// The shared chat/events/CRDT attaches a Postgres-catalog reader wires
+/// onto its indexer at boot (`EscurelConfig::build`'s `is_pg_catalog()`
+/// branch). A refresh swap builds a brand-new in-memory indexer, so
+/// WITHOUT re-applying these the swap silently downgraded the reader:
+/// `has_shared_chat`/`has_shared_events`/`has_shared_crdt` all reverted
+/// to false and the dispatch gate started answering
+/// `unsupported_on_replica` for tools it had been serving fine. Lake-
+/// backed append surfaces hit this on the FIRST tick (their own
+/// `CREATE TABLE IF NOT EXISTS` at boot advances the lake snapshot, so
+/// a re-adopt is immediate); Postgres-backed ones hit it on the first
+/// corpus publish after boot.
+#[derive(Clone)]
+pub struct SharedAttaches {
+    pub chat: crate::config::AppendBackend,
+    pub events: crate::config::AppendBackend,
+    /// `Some(dsn)` re-attaches the shared CRDT op-log/snapshot tables
+    /// on the indexer's own connection (`Indexer::attach_crdt_pg`).
+    /// The session-actor `DuckdbCrdtBackend` lives on its own
+    /// connection outside the swap and needs no re-attach.
+    pub crdt_pg_dsn: Option<String>,
+}
+
+impl SharedAttaches {
+    /// Apply onto a freshly adopted indexer — the same sequence the
+    /// reader boot path runs.
+    async fn apply(
+        &self,
+        indexer: &escurel_index::Indexer,
+        lake_cfg: &LakeConfig,
+    ) -> Result<(), escurel_index::snapshot::SnapshotError> {
+        match self.chat {
+            crate::config::AppendBackend::Postgres => {
+                indexer.attach_chat_pg(&lake_cfg.catalog_dsn).await?;
+            }
+            crate::config::AppendBackend::DuckLake => {
+                indexer.attach_chat_lake(lake_cfg).await?;
+            }
+        }
+        match self.events {
+            crate::config::AppendBackend::Postgres => {
+                indexer.attach_events_pg(&lake_cfg.catalog_dsn).await?;
+            }
+            crate::config::AppendBackend::DuckLake => {
+                indexer.attach_events_lake(lake_cfg).await?;
+            }
+        }
+        if let Some(dsn) = &self.crdt_pg_dsn {
+            indexer.attach_crdt_pg(dsn).await?;
+        }
+        Ok(())
+    }
 }
 
 impl RefreshTask {
@@ -81,7 +137,19 @@ impl RefreshTask {
             tenant: tenant.into(),
             interval,
             initial_snapshot_id,
+            shared_attaches: None,
         }
+    }
+
+    /// Re-apply these shared-surface attaches after every adopt, before
+    /// the swap — a Postgres-catalog reader passes the same backends it
+    /// attached at boot. An attach failure keeps serving the CURRENT
+    /// indexer (with its working attaches) rather than swapping in a
+    /// downgraded one.
+    #[must_use]
+    pub fn with_shared_attaches(mut self, shared: SharedAttaches) -> Self {
+        self.shared_attaches = Some(shared);
+        self
     }
 
     /// Spawn the poll/adopt/swap loop on the current Tokio runtime.
@@ -99,6 +167,7 @@ impl RefreshTask {
             tenant,
             interval,
             initial_snapshot_id,
+            shared_attaches,
         } = self;
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         let join = tokio::spawn(async move {
@@ -115,6 +184,7 @@ impl RefreshTask {
                             &embedder,
                             &tenant,
                             current_snapshot_id,
+                            shared_attaches.as_ref(),
                         )
                         .await;
                     }
@@ -139,6 +209,7 @@ async fn poll_and_adopt(
     embedder: &Arc<dyn Embedder>,
     tenant: &str,
     current: Option<i64>,
+    shared_attaches: Option<&SharedAttaches>,
 ) -> Option<i64> {
     let latest = match latest_lake_snapshot_id(lake_cfg).await {
         Ok(latest) => latest,
@@ -174,6 +245,24 @@ async fn poll_and_adopt(
     {
         Ok(Some(adopted)) => {
             let snapshot_id = adopted.snapshot_id;
+            // Re-wire the shared chat/events/CRDT surfaces BEFORE the
+            // swap: the adopted indexer is brand-new and carries none of
+            // the boot-time attaches (see `SharedAttaches`). On failure,
+            // keep serving the current indexer — a stale snapshot with
+            // working shared surfaces beats a fresh one that answers
+            // `unsupported_on_replica`.
+            if let Some(shared) = shared_attaches
+                && let Err(e) = shared.apply(&adopted.indexer, lake_cfg).await
+            {
+                tracing::warn!(
+                    target: "escurel",
+                    tenant,
+                    error = %e,
+                    "reader refresh: shared-surface re-attach failed, \
+                     keeping serving stale snapshot"
+                );
+                return current;
+            }
             // Swap in the freshly adopted indexer; drop the returned old
             // one. `Arc`'s refcounting means any in-flight request that
             // captured the old `Arc<Indexer>` via `IndexerHandle::current`

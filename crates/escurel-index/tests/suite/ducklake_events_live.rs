@@ -37,13 +37,17 @@ struct Replica {
 }
 
 async fn replica(dsn: &str) -> Replica {
+    replica_for(dsn, TENANT).await
+}
+
+async fn replica_for(dsn: &str, tenant: &str) -> Replica {
     let store_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
     let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
     let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
     let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
     Migrator::up(&conn).unwrap();
-    let indexer = Indexer::new(store, embedder, conn, TENANT).unwrap();
+    let indexer = Indexer::new(store, embedder, conn, tenant).unwrap();
     indexer
         .attach_events_pg(dsn)
         .await
@@ -173,4 +177,123 @@ async fn capture_with_explicit_event_id_is_idempotent_over_attached_postgres() {
 
     let inbox = r.indexer.list_inbox(None).await.unwrap();
     assert_eq!(inbox.len(), 1, "no duplicate row for the deduplicated id");
+}
+
+/// Two tenants may reuse the same client-supplied `event_id` — the row
+/// key on the shared table is `(tenant, event_id)`, not `event_id`
+/// alone. With the old single-column PK, tenant B's insert hit
+/// `ON CONFLICT DO NOTHING` against tenant A's row and the
+/// tenant-scoped readback found nothing: a silent cross-tenant
+/// collision surfacing as a failed capture.
+#[tokio::test]
+async fn same_event_id_across_tenants_is_two_rows() {
+    let (_pg, dsn) = live_postgres().await;
+    let a = replica_for(&dsn, "acme").await;
+    let b = replica_for(&dsn, "globex").await;
+
+    let shared_id = "01HSHAREDACROSSTENANTS0001";
+    let ev_a = NewEvent {
+        event_id: Some(shared_id.to_owned()),
+        title: "acme's event".to_owned(),
+        source: "gmail".to_owned(),
+        label_skill: "email".to_owned(),
+        ..Default::default()
+    };
+    let ev_b = NewEvent {
+        title: "globex's event".to_owned(),
+        ..ev_a.clone()
+    };
+
+    let stored_a = a.indexer.capture_event(ev_a).await.expect("capture on A");
+    let stored_b = b
+        .indexer
+        .capture_event(ev_b)
+        .await
+        .expect("tenant B reusing tenant A's event_id must land B's own row");
+    assert_eq!(stored_a.title, "acme's event");
+    assert_eq!(stored_b.title, "globex's event");
+
+    // Each tenant sees exactly its own row.
+    let inbox_a = a.indexer.list_inbox(None).await.unwrap();
+    assert_eq!(inbox_a.len(), 1);
+    assert_eq!(inbox_a[0].title, "acme's event");
+    let inbox_b = b.indexer.list_inbox(None).await.unwrap();
+    assert_eq!(inbox_b.len(), 1);
+    assert_eq!(inbox_b[0].title, "globex's event");
+
+    // And the per-tenant idempotency contract still holds.
+    let again = b
+        .indexer
+        .capture_event(NewEvent {
+            event_id: Some(shared_id.to_owned()),
+            title: "globex retry".to_owned(),
+            source: "gmail".to_owned(),
+            label_skill: "email".to_owned(),
+            ..Default::default()
+        })
+        .await
+        .expect("same-tenant re-capture stays a no-op");
+    assert_eq!(again.title, "globex's event", "first write wins per tenant");
+}
+
+/// A deployed table created with the OLD shape — `event_id` alone as the
+/// PRIMARY KEY (the lab Cloud SQL has one) — must be migrated in place
+/// by `attach_events_pg`: `CREATE TABLE IF NOT EXISTS` will not touch an
+/// existing relation, so the attach path detects the single-column PK
+/// and `ALTER`s it to `(tenant, event_id)` idempotently.
+#[tokio::test]
+async fn attach_migrates_deployed_single_column_pk_to_composite() {
+    let (_pg, dsn) = live_postgres().await;
+
+    // Stand in for the deployed table: create the OLD shape directly,
+    // before any indexer has attached.
+    let raw = Connection::open_in_memory().unwrap();
+    raw.execute_batch("INSTALL postgres; LOAD postgres;")
+        .unwrap();
+    raw.execute_batch(&format!("ATTACH '{dsn}' AS old_pg (TYPE postgres);"))
+        .unwrap();
+    raw.execute_batch(
+        "CREATE TABLE old_pg.escurel_events (\
+            tenant            VARCHAR    NOT NULL, \
+            event_id          VARCHAR    NOT NULL PRIMARY KEY, \
+            at_ts             TIMESTAMP, \
+            source            VARCHAR    NOT NULL DEFAULT '', \
+            mime              VARCHAR    NOT NULL DEFAULT '', \
+            label_skill       VARCHAR    NOT NULL DEFAULT '', \
+            instance_page_id  VARCHAR, \
+            status            VARCHAR    NOT NULL DEFAULT 'inbox', \
+            title             VARCHAR    NOT NULL DEFAULT '', \
+            body              VARCHAR    NOT NULL DEFAULT '', \
+            provenance        VARCHAR, \
+            created_at        TIMESTAMP  NOT NULL DEFAULT now()\
+        );",
+    )
+    .unwrap();
+    drop(raw);
+
+    // Attaching onto the old table migrates it; a second attach is a
+    // no-op (idempotent).
+    let a = replica_for(&dsn, "acme").await;
+    a.indexer
+        .attach_events_pg(&dsn)
+        .await
+        .expect("re-attach after migration is idempotent");
+    let b = replica_for(&dsn, "globex").await;
+
+    // The composite key is live: both tenants store the same event_id.
+    let shared_id = "01HMIGRATEDCOMPOSITEKEY001";
+    for (r, title) in [(&a, "acme row"), (&b, "globex row")] {
+        r.indexer
+            .capture_event(NewEvent {
+                event_id: Some(shared_id.to_owned()),
+                title: title.to_owned(),
+                source: "gmail".to_owned(),
+                label_skill: "email".to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_or_else(|e| panic!("capture `{title}` after migration: {e}"));
+    }
+    assert_eq!(a.indexer.list_inbox(None).await.unwrap().len(), 1);
+    assert_eq!(b.indexer.list_inbox(None).await.unwrap().len(), 1);
 }

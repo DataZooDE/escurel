@@ -188,3 +188,72 @@ async fn reader_no_longer_rejects_events_tools_when_ducklake_configured() {
     booted.refresh_handle.unwrap().shutdown().await;
     booted.handle.shutdown().await;
 }
+
+/// Same gate, LAKE events backend (`ESCUREL_EVENTS_BACKEND=ducklake`):
+/// `attach_events_lake` sets `EventsBackend::AttachedLake`, and
+/// `has_shared_events` — the probe `SHARED_SURFACE_GATES` consults —
+/// must report it as shared. Before the fix the probe matched only
+/// `AttachedPostgres`, so this exact deployment shape wrongly answered
+/// unsupported_on_replica for every event tool.
+#[tokio::test]
+async fn reader_serves_events_tools_with_lake_events_backend() {
+    let h = fresh_harness().await;
+    seed_and_publish(&h).await;
+    let lake = lake_config(&h);
+    let booted = EscurelConfig::from_source(&source(env_map(vec![
+        (
+            "ESCUREL_SERVER_DATA_DIR",
+            h.data_root.path().to_str().unwrap().to_owned(),
+        ),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0".to_owned()),
+        (
+            "ESCUREL_OBSERVABILITY_METRICS_LISTEN",
+            "127.0.0.1:0".to_owned(),
+        ),
+        ("ESCUREL_TENANT", TENANT.to_owned()),
+        ("ESCUREL_EMBEDDING_PROVIDER", "zero".to_owned()),
+        ("ESCUREL_INDEX_BACKEND", "ducklake".to_owned()),
+        ("ESCUREL_ROLE", "reader".to_owned()),
+        ("ESCUREL_EVENTS_BACKEND", "ducklake".to_owned()),
+        ("ESCUREL_DUCKLAKE_CATALOG_DSN", lake.catalog_dsn),
+        ("ESCUREL_DUCKLAKE_DATA_PATH", lake.data_path),
+        ("ESCUREL_SNAPSHOT_REFRESH_SECS", "30".to_owned()),
+        ("ESCUREL_SNAPSHOT_PUBLISH_SECS", "0".to_owned()),
+    ])))
+    .expect("reader config parses")
+    .build()
+    .await
+    .expect("reader boots with lake-backed events");
+    let base = format!("http://{}", booted.handle.local_addr);
+
+    let capture_resp = call(
+        &base,
+        "capture_event",
+        serde_json::json!({
+            "source": "gmail",
+            "label_skill": "email",
+            "title": "over the lake, on a reader",
+        }),
+    )
+    .await;
+    assert!(
+        capture_resp.get("error").is_none(),
+        "capture_event on a lake-events reader must succeed, not \
+         unsupported_on_replica: {capture_resp}"
+    );
+
+    let list_resp = call(&base, "list_inbox", serde_json::json!({})).await;
+    assert!(
+        list_resp.get("error").is_none(),
+        "list_inbox on a lake-events reader must succeed: {list_resp}"
+    );
+    let events = &list_resp["result"]["structuredContent"]["events"];
+    assert_eq!(
+        events.as_array().map(|a| a.len()),
+        Some(1),
+        "the reader must read back the event it just captured: {list_resp}"
+    );
+
+    booted.refresh_handle.unwrap().shutdown().await;
+    booted.handle.shutdown().await;
+}

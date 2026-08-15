@@ -33,6 +33,7 @@ mod backend_read_limits;
 mod binary_boots;
 mod blob_route;
 mod chat_acl;
+mod chat_cursor;
 mod chat_idempotency;
 mod crm_demo_backends;
 mod delete_page;

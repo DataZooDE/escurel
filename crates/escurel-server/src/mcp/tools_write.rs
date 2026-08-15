@@ -1148,7 +1148,10 @@ pub(super) async fn tool_list_messages(
             direction,
         })
         .await
-        .map_err(|e| JsonRpcError::internal(format!("list_messages: {e}")))?;
+        // A garbage cursor is the caller's mistake — same routing as the
+        // event surfaces (`list_inbox`/`list_events`), which answer
+        // invalid_params for an undecodable cursor, internal otherwise.
+        .map_err(|e| cursor_aware_error("list_messages", e))?;
     let messages: Vec<Value> = page.messages.iter().map(chat_message_to_json).collect();
     let mut out = json!({ "messages": messages });
     if let Some(c) = page.next_cursor {

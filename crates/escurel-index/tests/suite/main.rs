@@ -10,6 +10,7 @@
 //! warns you about it.
 
 mod acl;
+mod append_lake_probe;
 mod as_of;
 mod backend_registry;
 mod chat_messages;
