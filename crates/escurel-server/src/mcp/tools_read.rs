@@ -317,6 +317,24 @@ pub(super) async fn tool_expand(
                     "version": w.version, "alias": w.alias,
                 })).collect::<Vec<_>>(),
             });
+            // The read half of the approve loop (#354/heron#30): publish
+            // the hash of the STORED markdown bytes — exactly the value
+            // `update_page`'s `base_sha256` guard compares against — so a
+            // client can hold "what the drafter saw" without a write-probe
+            // or a byte-perfect reconstruction from parsed fields. Only on
+            // PLAIN reads: an `as_of`/`scenario` body is not the current
+            // stored bytes, and publishing the current hash beside a
+            // historical body would invite guarding the wrong thing.
+            if a.as_of.is_none()
+                && a.scenario.is_none()
+                && let Some(stored) = indexer
+                    .read_page_markdown(&e_page_id)
+                    .await
+                    .map_err(|err| JsonRpcError::internal(format!("expand hash: {err}")))?
+            {
+                use sha2::{Digest, Sha256};
+                page["content_sha256"] = json!(format!("{:x}", Sha256::digest(stored.as_bytes())));
+            }
             // #246: surface the page's current monotonic version so a client
             // can pass it back as `base_version` on the next `update_page`
             // (the read→edit→write optimistic-concurrency cycle).
