@@ -422,6 +422,8 @@ mod tests {
         let rpc = escurel_client::Error::JsonRpc {
             code: -32000,
             message: "quota".into(),
+            data_code: Some("quota_exhausted".into()),
+            retryable: Some(true),
         };
         assert!(matches!(
             classify_client_error(&rpc),

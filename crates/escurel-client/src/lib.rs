@@ -78,6 +78,14 @@ pub use escurel_types::{
 };
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
+// Typed shapes for the previously call_raw-only agent tools: the blob /
+// CRDT-history reads, the remote write-back, and the HTTP session trio.
+pub use escurel_types::{
+    ApplyOpRequest, ApplyOpResponse, BlobInfo, CloseSessionRequest, CloseSessionResponse,
+    FetchBlobRequest, FetchBlobResponse, ListOpAuthorsRequest, ListOpAuthorsResponse,
+    ListSnapshotsRequest, ListSnapshotsResponse, OpAuthor, OpenSessionRequest, OpenSessionResponse,
+    WriteInstanceRequest, WriteInstanceResponse,
+};
 // Re-exported so callers don't need to depend on `secrecy` directly
 // just to spell out a token. Keeping the version in sync with this
 // crate's `Cargo.toml` is part of the semver contract.
@@ -554,6 +562,103 @@ impl Client {
         S: futures_util::Stream<Item = LiveOp> + Send + 'static,
     {
         self.transport.live_session(ops).await
+    }
+
+    /// Fetch the original retained file bytes of a `document`-backed
+    /// instance (base64 + declared content type) for a faithful client
+    /// preview. `blob: None` is ONE indistinguishable answer for an
+    /// absent page, a non-document page, and a page the caller may not
+    /// read (no existence oracle). The transfer is server-capped.
+    pub async fn fetch_blob(&self, req: FetchBlobRequest) -> Result<FetchBlobResponse, Error> {
+        self.transport
+            .call_typed("fetch_blob", json!({ "page_id": req.page_id }))
+            .await
+    }
+
+    /// List the `taken_at` timestamps of a page's CRDT snapshot history,
+    /// oldest first — the discrete state-over-time points
+    /// `expand(as_of=T)` can replay.
+    pub async fn list_snapshots(
+        &self,
+        req: ListSnapshotsRequest,
+    ) -> Result<ListSnapshotsResponse, Error> {
+        self.transport
+            .call_typed("list_snapshots", json!({ "page_id": req.page_id }))
+            .await
+    }
+
+    /// Who wrote each live-editing (CRDT) op on a page, oldest first —
+    /// the read side of write attribution (#357). The `principal` is the
+    /// gateway-verified caller, never the Loro peer id in the payload.
+    /// A page the caller may not read reports an empty history.
+    pub async fn list_op_authors(
+        &self,
+        req: ListOpAuthorsRequest,
+    ) -> Result<ListOpAuthorsResponse, Error> {
+        self.transport
+            .call_typed("list_op_authors", json!({ "page_id": req.page_id }))
+            .await
+    }
+
+    /// Write-back to a remote (openapi/mcp) instance's upstream, gated by
+    /// the target instance's `acl.update` (fail-closed). Returns the
+    /// re-projected upstream state after the write. A binding with no
+    /// `write` op is refused (`backend_read_only`).
+    pub async fn write_instance(
+        &self,
+        req: WriteInstanceRequest,
+    ) -> Result<WriteInstanceResponse, Error> {
+        let payload = if req.payload.is_null() {
+            json!({})
+        } else {
+            req.payload
+        };
+        self.transport
+            .call_typed(
+                "write_instance",
+                json!({ "ref": req.instance_ref, "payload": payload }),
+            )
+            .await
+    }
+
+    /// Open a live CRDT co-editing session on a page over HTTP. Returns
+    /// the session id every subsequent [`Self::apply_op`] /
+    /// [`Self::close_session`] (or WS `hello`) names, the page's head
+    /// version at open time, and the advisory WS upgrade path. Requires
+    /// a gateway with a CRDT backend.
+    pub async fn open_session(
+        &self,
+        req: OpenSessionRequest,
+    ) -> Result<OpenSessionResponse, Error> {
+        self.transport
+            .call_typed("open_session", json!({ "page_id": req.page_id }))
+            .await
+    }
+
+    /// Apply one base64-encoded Loro op blob to an open session over
+    /// HTTP (the polling alternative to the WS channel of
+    /// [`Self::live_session`]). The op author is always the verified
+    /// token subject — there is no way to name one (#357).
+    pub async fn apply_op(&self, req: ApplyOpRequest) -> Result<ApplyOpResponse, Error> {
+        self.transport
+            .call_typed("apply_op", json!({ "session": req.session, "op": req.op }))
+            .await
+    }
+
+    /// Close a live session. `commit: true` (the default, also of
+    /// [`CloseSessionRequest::default`]) snapshots the merged doc AND
+    /// writes the merged body through to the indexer, so reads and
+    /// search observe it; `commit: false` discards.
+    pub async fn close_session(
+        &self,
+        req: CloseSessionRequest,
+    ) -> Result<CloseSessionResponse, Error> {
+        self.transport
+            .call_typed(
+                "close_session",
+                json!({ "session": req.session, "commit": req.commit }),
+            )
+            .await
     }
 
     /// Low-level escape hatch: call an arbitrary MCP tool and get the
