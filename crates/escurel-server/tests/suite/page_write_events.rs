@@ -76,6 +76,7 @@ async fn a_write_notifies_the_webhook_but_never_the_inbox() {
     c.update_page(UpdatePageRequest {
         page_id: PAGE.to_owned(),
         content: BODY.to_owned(),
+        ..Default::default()
     })
     .await
     .expect("update_page");
@@ -133,6 +134,7 @@ async fn a_skill_page_write_is_not_announced() {
             page_id: "markdown/skills/customer.md".to_owned(),
             content: "---\ntype: skill\nid: customer\ndescription: Customers.\n---\n# customer\n"
                 .to_owned(),
+            ..Default::default()
         })
         .await;
 

@@ -561,7 +561,11 @@ async fn validate(client: &Client, page_id: String) -> Result<Value> {
 async fn update_page(client: &Client, page_id: String) -> Result<Value> {
     let content = read_stdin("page body")?;
     let resp = client
-        .update_page(UpdatePageRequest { page_id, content })
+        .update_page(UpdatePageRequest {
+            page_id,
+            content,
+            ..Default::default()
+        })
         .await?;
     Ok(json!({
         "ok": resp.ok,

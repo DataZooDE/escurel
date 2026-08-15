@@ -65,6 +65,7 @@ async fn removing_a_standard_section_is_rejected() {
         .update_page(UpdatePageRequest {
             page_id: META_PAGE_ID.to_owned(),
             content: mangled,
+            ..Default::default()
         })
         .await
         .expect("update_page");
@@ -86,6 +87,7 @@ async fn appending_tenant_guidance_is_accepted() {
         .update_page(UpdatePageRequest {
             page_id: META_PAGE_ID.to_owned(),
             content: extended,
+            ..Default::default()
         })
         .await
         .expect("update_page");

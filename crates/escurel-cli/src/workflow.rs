@@ -76,6 +76,7 @@ async fn invoke(client: &Client, a: RunArgs) -> Result<Value> {
         .update_page(UpdatePageRequest {
             page_id: page.clone(),
             content: board_markdown(&run_id, &a.skill, "running"),
+            ..Default::default()
         })
         .await
         .context("create the run board")?;
@@ -192,6 +193,7 @@ async fn stop(client: &Client, run_id: &str) -> Result<Value> {
         .update_page(UpdatePageRequest {
             page_id: page.clone(),
             content: board_markdown(run_id, &wf_skill, "stopped"),
+            ..Default::default()
         })
         .await
         .context("mark the run stopped")?;
