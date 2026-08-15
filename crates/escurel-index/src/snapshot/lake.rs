@@ -503,6 +503,7 @@ pub fn publish_page_sync(
     conn: &mut Connection,
     cfg: &LakeConfig,
     page_id: &str,
+    model_id: &str,
 ) -> Result<(), SnapshotError> {
     attach_lake(conn, cfg, false)?;
     let tx = conn.transaction()?;
@@ -512,12 +513,58 @@ pub fn publish_page_sync(
     // `WHERE false` establishes the schema — including the blocks
     // FLOAT[] cast — with zero rows, so it's a no-op once the table is
     // real.
+    //
+    // #563: this ALSO creates (empty) group_members/external_endpoints/
+    // pack_subscriptions — tables this scoped path never writes rows
+    // into (that stays publish_lake's job) — because
+    // `Indexer::load_from_lake` (a writer boot's #563 adoption) does an
+    // unconditional bulk INSERT from all of them. Without an empty
+    // table here, a lake whose only durability has ever come from this
+    // scoped path (periodic publish off, or simply hasn't ticked yet)
+    // would have real pages/blocks/links but no group_members table at
+    // all, and a second writer boot's adoption would hard-error rather
+    // than correctly finding nothing to adopt for it.
     tx.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.pages AS SELECT * FROM pages WHERE false;
          CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.blocks AS \
              SELECT * REPLACE (dense_vec::FLOAT[] AS dense_vec) FROM blocks WHERE false;
-         CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.links AS SELECT * FROM links WHERE false;"
+         CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.links AS SELECT * FROM links WHERE false;
+         CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.group_members \
+             AS SELECT * FROM group_members WHERE false;
+         CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.external_endpoints \
+             AS SELECT * FROM external_endpoints WHERE false;
+         CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.pack_subscriptions \
+             AS SELECT * FROM pack_subscriptions WHERE false;"
     ))?;
+    // #563: `escurel_manifest` carries the compat fields
+    // (`adopt_lake`/`adopt_lake_for_writer`'s `check_manifest_compat`
+    // reads schema_version/model_id/dim, nothing else) that a writer
+    // boot's adoption gate needs to trust this lake at all. A deployment
+    // that relies solely on this scoped path (periodic publish off, or
+    // simply hasn't ticked yet) would otherwise have real data but no
+    // manifest — `adopt_lake_for_writer` correctly refuses that
+    // (indistinguishable from "data tables with no manifest" some other
+    // way), so a second writer boot could never adopt, and the fix for
+    // #563 would make such a deployment permanently unbootable rather
+    // than just briefly non-durable. `IF NOT EXISTS`: never overwrite a
+    // real publish_lake's accurate pages/blocks/published_epoch with
+    // this placeholder — those fields are corpus-wide and this path
+    // doesn't touch them by design (see the fn doc above).
+    tx.execute(
+        &format!(
+            "CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.escurel_manifest AS \
+             SELECT ?::INTEGER AS schema_version, ?::VARCHAR AS model_id, \
+                    ?::INTEGER AS dim, ?::VARCHAR AS escurel_version, \
+                    0::BIGINT AS pages, 0::BIGINT AS blocks, \
+                    0::BIGINT AS published_epoch"
+        ),
+        params![
+            i64::from(Migrator::SCHEMA_VERSION),
+            model_id,
+            BLOCKS_DENSE_VEC_DIM as i64,
+            env!("CARGO_PKG_VERSION"),
+        ],
+    )?;
     tx.execute(
         &format!("DELETE FROM {LAKE_ALIAS}.pages WHERE page_id = ?"),
         params![page_id],
@@ -789,6 +836,48 @@ pub async fn adopt_lake(
         indexer: Arc::new(indexer),
         snapshot_id,
     }))
+}
+
+/// #563: load an already-published lake's corpus into an ALREADY-BOOTED,
+/// ALREADY-ATTACHED writer [`Indexer`] — the writer-boot counterpart to
+/// [`adopt_lake`] (readers).
+///
+/// Unlike [`adopt_lake`], this does not build a fresh in-memory
+/// connection or run migrations: the caller's `SingleFileStore::open`
+/// already did both, and the lake is already attached on the indexer's
+/// own connection (the writer's idempotent `ATTACH`,
+/// [`Indexer::attach_lake`]). Must run before the writer starts serving
+/// and before a periodic publish's first tick can fire — otherwise that
+/// tick's `CREATE OR REPLACE TABLE lake.X AS SELECT * FROM X` treats
+/// this pod's fresh, near-empty local corpus as the whole truth and
+/// destroys everything only the lake remembers (#563's finding).
+///
+/// Returns `Ok(None)` when the lake has never been published — a
+/// legitimate state on a brand-new cluster's very first writer boot,
+/// not an error. Returns `Ok(Some(snapshot_id))` after a successful
+/// load. Fails closed (`Err`) on anything else — incompatible schema or
+/// embedding model, data tables with no manifest, or a hard lake error
+/// — the same posture [`adopt_lake`] already takes for readers: a
+/// writer that cannot verify what is already durable must not start
+/// serving, or it repeats #563 rather than fixing it.
+pub async fn adopt_lake_for_writer(
+    indexer: &Indexer,
+    embedder: &dyn Embedder,
+) -> Result<Option<i64>, SnapshotError> {
+    {
+        let conn = indexer.conn.lock().await;
+        if !lake_table_exists(&conn, "escurel_manifest")? {
+            if lake_table_exists(&conn, "pages")? {
+                return Err(SnapshotError::LakeIncompatible(
+                    "lake has data tables but no escurel_manifest".to_owned(),
+                ));
+            }
+            return Ok(None);
+        }
+        check_manifest_compat(&conn, embedder)?;
+    }
+    let snapshot_id = indexer.load_from_lake(LAKE_ALIAS).await?;
+    Ok(Some(snapshot_id))
 }
 
 /// `SET temp_directory` so the in-memory reader can spill large

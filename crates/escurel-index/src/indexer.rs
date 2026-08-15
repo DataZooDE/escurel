@@ -670,7 +670,7 @@ impl Indexer {
     ) -> Result<(), crate::snapshot::SnapshotError> {
         let _write = self.write_guard().await;
         let mut conn = self.conn.lock().await;
-        crate::snapshot::publish_page_sync(&mut conn, cfg, page_id)
+        crate::snapshot::publish_page_sync(&mut conn, cfg, page_id, &self.embedder.model_id())
     }
 
     /// Take the per-tenant write lock — the same lock
@@ -1474,8 +1474,23 @@ impl Indexer {
                 [],
                 |r| r.get(0),
             )?;
+            // #563: a reader's local tables are always empty here (a
+            // fresh in-memory connection, nothing has written to it
+            // yet), so these DELETEs are a no-op for that caller. A
+            // WRITER'S are not — `SingleFileStore::open` already
+            // reseeded the mandatory meta-skill page before this runs,
+            // and the lake's `pages` carries that same page_id, so a
+            // bare INSERT would hit a primary-key collision. Clearing
+            // first makes the lake's published state authoritative
+            // either way, matching what this function is actually for.
             tx.execute_batch(&format!(
-                "INSERT INTO pages  BY NAME SELECT * FROM {alias}.pages; \
+                "DELETE FROM pages; \
+                 DELETE FROM links; \
+                 DELETE FROM group_members; \
+                 DELETE FROM external_endpoints; \
+                 DELETE FROM pack_subscriptions; \
+                 DELETE FROM blocks; \
+                 INSERT INTO pages  BY NAME SELECT * FROM {alias}.pages; \
                  INSERT INTO links  BY NAME SELECT * FROM {alias}.links; \
                  INSERT INTO group_members      BY NAME SELECT * FROM {alias}.group_members; \
                  INSERT INTO external_endpoints BY NAME SELECT * FROM {alias}.external_endpoints; \

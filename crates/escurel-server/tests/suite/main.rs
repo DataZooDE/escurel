@@ -111,6 +111,7 @@ mod webhook;
 mod write_acl;
 mod write_attribution;
 mod write_origin_metrics;
+mod writer_boot_adopts_lake;
 mod writer_lease;
 mod ws;
 mod ws_attach_acl;

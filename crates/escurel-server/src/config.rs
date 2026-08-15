@@ -98,7 +98,7 @@ use escurel_embed::{Embedder, ReloadableEmbedder, ZeroEmbedder};
 use escurel_index::backend::ContextualizeMode;
 use escurel_index::snapshot::{
     AttachRetrievalFn, IndexStore, LakeConfig, ObjectStoreSecret, SingleFileStore, SnapshotError,
-    WriterLease, adopt_lake,
+    WriterLease, adopt_lake, adopt_lake_for_writer,
 };
 use escurel_index::{Indexer, IndexerHandle};
 use escurel_quota::{QuotaConfig, QuotaManager};
@@ -1717,6 +1717,45 @@ impl EscurelConfig {
                             }
                         }
                         indexer.attach_lake(lake_cfg).await?;
+
+                        // #563: adopt whatever the lake already durably
+                        // holds BEFORE this writer can serve or the
+                        // periodic publish task's first tick can fire.
+                        // Without this, a fresh writer boot's local
+                        // corpus is just the reseeded meta-skill page,
+                        // and that first tick's full-overwrite publish
+                        // (`CREATE OR REPLACE TABLE lake.X AS SELECT *
+                        // FROM X`) destroys everything only the lake
+                        // remembered — see #563 for the finding this
+                        // closes. Fail-closed: same posture the reader's
+                        // synchronous adopt already takes (a writer that
+                        // cannot verify what's already durable must not
+                        // start serving).
+                        let adopted_snapshot_id =
+                            adopt_lake_for_writer(&indexer, embedder.as_ref()).await?;
+                        if let Some(snapshot_id) = adopted_snapshot_id {
+                            // The adopted state IS the lake's current
+                            // published state as of THIS moment — read
+                            // mutation_epoch now (not assumed to be 0:
+                            // boot bootstrapping before this point, e.g.
+                            // meta-skill seeding, may already have
+                            // bumped it) and seed last_published_epoch to
+                            // match. Without this the first periodic
+                            // tick's dirty-check (`last_published_epoch
+                            // == Some(epoch)`) never matches and
+                            // republishes pointlessly — harmless now
+                            // that local truly mirrors the lake, but
+                            // wasted snapshot/GC churn on every boot.
+                            let epoch_at_adopt = indexer.mutation_epoch();
+                            *last_published_epoch
+                                .lock()
+                                .expect("last_published_epoch lock") = Some(epoch_at_adopt);
+                            tracing::info!(
+                                snapshot_id,
+                                epoch_at_adopt,
+                                "writer boot: adopted existing lake content before serving"
+                            );
+                        }
 
                         // Phase B (DuckLake PR 8): the writer ALSO moves
                         // onto the shared chat Postgres table — chat
