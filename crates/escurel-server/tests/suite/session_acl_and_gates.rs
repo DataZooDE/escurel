@@ -377,3 +377,120 @@ async fn suspended_tenant_is_rejected_at_the_ws_upgrade() {
 
     p.shutdown().await;
 }
+
+// ------------------------------- 5. group-scoped pages, not just owners ---
+
+// The OTHER shape a deployment gates instances with: no `owner_field` and no
+// per-subject ownership at all, but group grants — on the skill, and on the
+// instance's own `acl:` block (#351). One tenant, many customers, isolation
+// carried by which groups a token claims. `update_page` enforces exactly this;
+// §1 above proved `open_session` mirrors `update_page` for OWNER-private
+// pages, and that turned out not to generalise.
+const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+    acl:\n  read: [public]\n  create: [team-red]\n  update: [team-red]\n---\n# note\n";
+const RED_NOTE: &str = "---\ntype: instance\nskill: note\nid: red-1\nteam: team-red\n\
+    acl:\n  read: [team-red]\n  update: [team-red]\n---\n# Red\nBody.\n";
+const RED_PAGE: &str = "markdown/instances/note/red-1.md";
+
+async fn start_group_scoped() -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            live_crdt: true,
+            write_acl: Some(WriteAclMode::Enforce),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", NOTE_SKILL)
+                .instance("note", "red-1", RED_NOTE)
+                .done(),
+        ),
+    })
+    .await
+}
+
+/// A caller `update_page` refuses must not be handed a session instead — on a
+/// GROUP-scoped page, not only an owner-private one.
+///
+/// The two assertions are deliberately in one test: the `update_page` refusal
+/// is what makes the `open_session` grant a hole rather than a policy choice.
+/// Asserting the session denial alone would leave "perhaps this page is simply
+/// writable by everyone" open, and that reading is the one under which nothing
+/// is wrong.
+#[tokio::test]
+async fn a_caller_outside_the_group_cannot_open_a_session_either() {
+    let p = start_group_scoped().await;
+    let outsider = p.mint_token_with_groups(TENANT, "consultant:bob", &["team-blue"], false);
+    let member = p.mint_token_with_groups(TENANT, "consultant:alice", &["team-red"], false);
+
+    let write = call(
+        &p,
+        &outsider,
+        "update_page",
+        json!({ "page_id": RED_PAGE, "content": RED_NOTE }),
+    )
+    .await;
+    let refused =
+        write["result"]["structuredContent"]["ok"] == json!(false) || write.get("error").is_some();
+    assert!(
+        refused,
+        "premise: update_page must refuse the outsider, or this test is \
+         asserting nothing: {write}"
+    );
+
+    let denied = call(
+        &p,
+        &outsider,
+        "open_session",
+        json!({ "page_id": RED_PAGE }),
+    )
+    .await;
+    assert!(
+        denied["result"]["structuredContent"]["session"]
+            .as_str()
+            .is_none(),
+        "an outsider must NOT receive a session on a page update_page refuses \
+         them — the op stream edits it byte by byte: {denied}"
+    );
+
+    // POSITIVE CONTROL: the gate is a decision, not a wall.
+    let opened = call(&p, &member, "open_session", json!({ "page_id": RED_PAGE })).await;
+    assert!(
+        opened["result"]["structuredContent"]["session"].is_string(),
+        "control: a member of the granted group must open a session: {opened}"
+    );
+
+    p.shutdown().await;
+}
+
+/// A session cannot be opened on a page that does not exist.
+///
+/// This is the fail-open the group case exposed: the write gate reads the
+/// stored page to decide, and when there is nothing to read it decides
+/// *nothing* and allows. A session on a page nobody has written has no
+/// meaningful policy behind it — there is no ACL to consult, so the only
+/// honest answer is refusal.
+#[tokio::test]
+async fn a_session_cannot_be_opened_on_a_page_that_does_not_exist() {
+    let p = start_group_scoped().await;
+    let member = p.mint_token_with_groups(TENANT, "consultant:alice", &["team-red"], false);
+
+    let ghost = call(
+        &p,
+        &member,
+        "open_session",
+        json!({ "page_id": "markdown/instances/note/no-such-note.md" }),
+    )
+    .await;
+    assert!(
+        ghost["result"]["structuredContent"]["session"]
+            .as_str()
+            .is_none(),
+        "a session on a non-existent page must be refused, not minted with a \
+         head version of v0: {ghost}"
+    );
+
+    p.shutdown().await;
+}

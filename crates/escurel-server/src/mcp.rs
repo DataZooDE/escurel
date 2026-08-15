@@ -1148,6 +1148,36 @@ async fn tool_open_session(
     // not get a session instead. Mirrors the WS attach gate (#352), on
     // the write side. Session-only servers (`indexer = None`) have no
     // page corpus, so no ACL exists to enforce.
+    // A session on a page that does not exist has no policy behind it, and
+    // the gate below reads the STORED page to decide — so with nothing to
+    // read it decides nothing and allows. #410 closed the case where the page
+    // existed and the caller was outside its ACL; this is the same fail-open
+    // reached through absence, and it is not hypothetical: the caller gets a
+    // session id, `head_version: "v0"` and a `/ws` URL for a page nobody
+    // wrote. Refusal is the only honest answer, and it must not distinguish
+    // "no such page" from "not yours" — the two are one message on purpose.
+    //
+    // Session-only servers (`indexer = None`) keep their behaviour: they have
+    // no page corpus, so absence is their normal state rather than a gap.
+    if write_acl != crate::server::WriteAclMode::Off
+        && let Some(ix) = indexer
+        && ix
+            .read_page_markdown(&a.page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("open_session existence: {e}")))?
+            .is_none()
+    {
+        return Err(JsonRpcError {
+            code: -32000,
+            message: format!(
+                "open_session denied: caller `{}` may not open a session on `{}`",
+                caller.subject, a.page_id
+            ),
+            data: None,
+        }
+        .with_code("forbidden", false));
+    }
+
     if write_acl != crate::server::WriteAclMode::Off
         && let Some(ix) = indexer
         && !session_write_allowed(ix, &caller, &a.page_id, None).await?
