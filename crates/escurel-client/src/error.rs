@@ -49,8 +49,24 @@ pub enum Error {
     /// `-32001` ([`JSONRPC_ADMIN_REQUIRED`]) means the caller lacked the
     /// admin role; `-32000` is quota exhaustion; the rest follow the
     /// JSON-RPC spec.
+    ///
+    /// The gateway's typed refusals additionally carry
+    /// `error.data = {code, retryable, …}` — the STABLE app-level code
+    /// (`"tenant_suspended"`, `"conflict"`, `"read_only_replica"`,
+    /// `"quota_exhausted"`, …) and whether backing off and retrying can
+    /// help. Both surface here as `data_code` / `retryable`; `None` when
+    /// the envelope carried no `data` (plain protocol errors). Branch on
+    /// `data_code`, not the numeric `code` — several refusals share
+    /// `-32000`.
     #[error("jsonrpc error: code={code} message={message}")]
-    JsonRpc { code: i64, message: String },
+    JsonRpc {
+        code: i64,
+        message: String,
+        /// `error.data.code` — the stable app-level refusal code.
+        data_code: Option<String>,
+        /// `error.data.retryable` — whether a backoff-and-retry can help.
+        retryable: Option<bool>,
+    },
 
     /// The response body could not be decoded into the expected typed
     /// shape (malformed JSON, missing `result`, or a field-type

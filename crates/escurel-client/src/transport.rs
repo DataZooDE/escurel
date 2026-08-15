@@ -118,7 +118,23 @@ impl McpTransport {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            return Err(Error::JsonRpc { code, message });
+            // Typed refusals carry `error.data = {code, retryable, …}` —
+            // the stable app-level code the docs tell callers to branch
+            // on. Surface both instead of dropping them at the boundary.
+            let data = err.get("data");
+            let data_code = data
+                .and_then(|d| d.get("code"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let retryable = data
+                .and_then(|d| d.get("retryable"))
+                .and_then(Value::as_bool);
+            return Err(Error::JsonRpc {
+                code,
+                message,
+                data_code,
+                retryable,
+            });
         }
         let result = body.get("result").cloned().ok_or_else(|| {
             Error::Decode(format!("response missing `result` field: {body_text}"))

@@ -442,6 +442,7 @@ fn roundtrip_agent() {
         shadow: Some(json!({ "base_page_id": "markdown/base/p/skills/s.md" })),
         version: Some("v7".into()),
         content_sha256: Some("ab".repeat(32)),
+        backend_projection: Some(json!({ "source": "crm_rest", "fields": { "tier": "gold" } })),
     });
     rt(ResolveResponse {
         parsed: Some(WikilinkParsed::default()),
@@ -747,4 +748,109 @@ fn list_instances_cursor_wire_shape() {
     }))
     .unwrap();
     assert_eq!(more.next_cursor.as_deref(), Some("tok"));
+}
+
+// ── typed shapes for the previously call_raw-only tools ───────────
+
+/// `write_instance`'s wire key is `ref` (a Rust keyword) — pinned like
+/// `QueryInstanceRequest.query_ref`.
+#[test]
+fn write_instance_request_ref_rename() {
+    let req = WriteInstanceRequest {
+        instance_ref: "customer::acme".into(),
+        payload: json!({ "account_tier": "platinum" }),
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert_eq!(v["ref"], "customer::acme");
+    assert!(v.get("instance_ref").is_none(), "field name never leaks");
+    let back: WriteInstanceRequest = serde_json::from_value(v).unwrap();
+    assert_eq!(back, req);
+}
+
+/// `fetch_blob`'s `blob: null` (absent / hidden / non-document — one
+/// indistinguishable answer) decodes to `None`; a present blob decodes
+/// field-for-field.
+#[test]
+fn fetch_blob_response_wire_shape() {
+    let none: FetchBlobResponse = serde_json::from_value(json!({ "blob": null })).unwrap();
+    assert!(none.blob.is_none());
+
+    let some: FetchBlobResponse = serde_json::from_value(json!({
+        "blob": {
+            "page_id": "markdown/instances/memo/m1.md",
+            "content_type": "application/pdf",
+            "size": 3,
+            "bytes_base64": "AQID",
+        }
+    }))
+    .unwrap();
+    let blob = some.blob.unwrap();
+    assert_eq!(blob.content_type, "application/pdf");
+    assert_eq!(blob.size, 3);
+    assert_eq!(blob.bytes_base64, "AQID");
+}
+
+/// Mirrors `tool_list_op_authors`' per-op json! builder: `principal` /
+/// `applied_at` are nullable (pre-attribution ops) and decode to `None`.
+#[test]
+fn list_op_authors_response_wire_shape() {
+    let resp: ListOpAuthorsResponse = serde_json::from_value(json!({
+        "page_id": "p",
+        "ops": [
+            { "op_id": "a", "hlc": 1, "applied_at": null, "principal": null },
+            { "op_id": "b", "hlc": 2, "applied_at": "2026-01-01T00:00:00Z",
+              "principal": "user:jr" },
+        ],
+    }))
+    .unwrap();
+    assert_eq!(resp.ops.len(), 2);
+    assert!(resp.ops[0].principal.is_none(), "pre-attribution op");
+    assert_eq!(resp.ops[1].principal.as_deref(), Some("user:jr"));
+    assert_eq!(
+        resp.ops[1].applied_at.as_deref(),
+        Some("2026-01-01T00:00:00Z")
+    );
+}
+
+#[test]
+fn roundtrip_session_tools() {
+    rt(OpenSessionResponse {
+        session: "s-1".into(),
+        head_version: "v3".into(),
+        ws_url: "/ws".into(),
+    });
+    rt(ApplyOpRequest {
+        session: "s-1".into(),
+        op: "AQID".into(),
+    });
+    rt(ApplyOpResponse {
+        ok: true,
+        merged_version: "v4".into(),
+    });
+    rt(CloseSessionRequest {
+        session: "s-1".into(),
+        commit: false,
+    });
+    rt(CloseSessionResponse {
+        ok: true,
+        final_version: "v5".into(),
+        issues: vec![],
+    });
+    rt(ListSnapshotsResponse {
+        snapshots: vec!["2026-01-01T00:00:00Z".into()],
+    });
+    rt(WriteInstanceResponse {
+        ok: true,
+        source: "crm_rest".into(),
+        fields: json!({ "tier": "gold" }),
+    });
+}
+
+/// The wire default for an omitted `commit` is TRUE (a defaulted close
+/// commits) — `Default::default()` and serde's absent-key default agree.
+#[test]
+fn close_session_commit_defaults_true() {
+    assert!(CloseSessionRequest::default().commit);
+    let decoded: CloseSessionRequest = serde_json::from_value(json!({ "session": "s" })).unwrap();
+    assert!(decoded.commit, "absent commit decodes to the wire default");
 }
