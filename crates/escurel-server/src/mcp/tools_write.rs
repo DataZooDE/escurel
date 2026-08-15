@@ -535,6 +535,28 @@ pub(super) async fn tool_update_page(
         .await
     {
         Ok(()) => {
+            // #558: the write above is only durable in the local DuckDB,
+            // which `SingleFileStore::Always` wipes on every writer
+            // boot. Publish this page's rows into the lake NOW, still
+            // inside this handler, so a client cannot observe `ok:true`
+            // before the write survives a restart. Scoped to this one
+            // page (`Indexer::publish_page_sync`, O(page)) — the
+            // corpus-wide `publish_lake` on its 5-minute timer would be
+            // far too expensive to call per write. If this fails, the
+            // page content is NOT considered durable: refuse the
+            // response rather than returning `ok:true` for a write that
+            // only local-DuckDB-deep, matching every other writer path.
+            if let Some(cfg) = state.lake.as_ref() {
+                indexer
+                    .publish_page_sync(cfg, &a.page_id)
+                    .await
+                    .map_err(|e| {
+                        JsonRpcError::internal(format!(
+                            "update_page: wrote locally but failed to publish durably to the \
+                             lake: {e}"
+                        ))
+                    })?;
+            }
             // Advance the monotonic version: snapshot the new whole-page content
             // at the next hlc so `max_hlc` (and any later `base_version` read)
             // reflects this write. The apply_op session path reads the same
