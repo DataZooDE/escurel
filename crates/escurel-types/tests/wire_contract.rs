@@ -440,6 +440,8 @@ fn roundtrip_agent() {
         }],
         wikilinks_out: vec![WikilinkParsed::default()],
         shadow: Some(json!({ "base_page_id": "markdown/base/p/skills/s.md" })),
+        version: Some("v7".into()),
+        content_sha256: Some("ab".repeat(32)),
     });
     rt(ResolveResponse {
         parsed: Some(WikilinkParsed::default()),
@@ -473,6 +475,10 @@ fn roundtrip_agent() {
         ok: true,
         issues: vec![],
         new_version: "v1".into(),
+        auto_merged: false,
+        head_version: None,
+        head_sha256: None,
+        head_content: None,
     });
     rt(ListSkillsResponse {
         skills: vec![Skill {
@@ -607,4 +613,138 @@ fn roundtrip_admin() {
         ops_compacted: 3,
         bytes_reclaimed: 4096,
     });
+}
+
+// ── update_page guard wire semantics (contract-parity) ────────────
+
+/// Absent guards stay absent on the wire (absent means UNGUARDED), and
+/// `base_sha256: Some("")` — the approve-create sentinel — serializes as
+/// the explicit empty string, never dropped.
+#[test]
+fn update_page_request_guard_wire_semantics() {
+    // Unguarded request: no guard key leaks onto the wire.
+    let bare = UpdatePageRequest {
+        page_id: "p".into(),
+        content: "c".into(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&bare).unwrap();
+    let obj = v.as_object().unwrap();
+    for k in [
+        "base_version",
+        "require_exact_base",
+        "base_sha256",
+        "provenance",
+    ] {
+        assert!(!obj.contains_key(k), "unset guard `{k}` must be omitted");
+    }
+
+    // Fully guarded request: every field serializes under its wire key.
+    let guarded = UpdatePageRequest {
+        page_id: "p".into(),
+        content: "c".into(),
+        base_version: Some("v9".into()),
+        require_exact_base: true,
+        base_sha256: Some(String::new()), // approve-create sentinel
+        provenance: Some(json!({ "workflow": "w" })),
+    };
+    let v = serde_json::to_value(&guarded).unwrap();
+    assert_eq!(v["base_version"], "v9");
+    assert_eq!(v["require_exact_base"], true);
+    assert_eq!(
+        v["base_sha256"], "",
+        "Some(\"\") serializes as the sentinel"
+    );
+    assert_eq!(v["provenance"]["workflow"], "w");
+    // ...and round-trips.
+    let back: UpdatePageRequest = serde_json::from_value(v).unwrap();
+    assert_eq!(back, guarded);
+}
+
+/// Mirrors `tool_update_page`'s `base_sha256` conflict refusal.
+#[test]
+fn update_page_conflict_response_wire_shape() {
+    let wire = json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "conflict",
+            "location": "base_sha256",
+            "message": "stale",
+        }],
+        "head_sha256": "ab".repeat(32),
+        "head_content": "---\n---\n# head\n",
+    });
+    let resp: UpdatePageResponse = serde_json::from_value(wire).unwrap();
+    assert!(!resp.ok);
+    assert_eq!(resp.issues[0].code, "conflict");
+    assert_eq!(resp.head_sha256.as_deref(), Some("ab".repeat(32).as_str()));
+    assert_eq!(resp.head_content.as_deref(), Some("---\n---\n# head\n"));
+    assert!(!resp.auto_merged, "absent auto_merged decodes to false");
+    assert!(resp.head_version.is_none());
+}
+
+/// Mirrors `tool_expand`'s guard-field emission (#246/#354/#408): the
+/// typed response carries `version` + `content_sha256` when present and
+/// tolerates their absence (old server / `as_of` read).
+#[test]
+fn expand_response_guard_fields_wire_shape() {
+    let wire = json!({
+        "page": {
+            "page_id": "p", "slug": "s", "skill": "sk",
+            "page_type": "instance", "last_written_by": null,
+        },
+        "frontmatter": {},
+        "body": "b",
+        "blocks": [],
+        "wikilinks_out": [],
+        "version": "v12",
+        "content_sha256": "cd".repeat(32),
+    });
+    let resp: ExpandResponse = serde_json::from_value(wire).unwrap();
+    assert_eq!(resp.version.as_deref(), Some("v12"));
+    assert_eq!(
+        resp.content_sha256.as_deref(),
+        Some("cd".repeat(32).as_str())
+    );
+    // Absence (historical read / old server) decodes to None.
+    let old: ExpandResponse = serde_json::from_value(json!({
+        "page": null,
+    }))
+    .unwrap();
+    assert!(old.version.is_none());
+    assert!(old.content_sha256.is_none());
+}
+
+/// `list_instances` cursor plumbing: the request omits an empty cursor
+/// and carries a set one; `next_cursor: null` (last page) decodes `None`.
+#[test]
+fn list_instances_cursor_wire_shape() {
+    let bare = ListInstancesRequest {
+        skill: "customer".into(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&bare).unwrap();
+    assert!(!v.as_object().unwrap().contains_key("cursor"));
+
+    let resumed = ListInstancesRequest {
+        skill: "customer".into(),
+        cursor: "tok".into(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&resumed).unwrap();
+    assert_eq!(v["cursor"], "tok");
+
+    let last: ListInstancesResponse = serde_json::from_value(json!({
+        "instances": [],
+        "next_cursor": null,
+    }))
+    .unwrap();
+    assert!(last.next_cursor.is_none(), "only null/absent means done");
+    let more: ListInstancesResponse = serde_json::from_value(json!({
+        "instances": [],
+        "next_cursor": "tok",
+    }))
+    .unwrap();
+    assert_eq!(more.next_cursor.as_deref(), Some("tok"));
 }

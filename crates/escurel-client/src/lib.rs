@@ -166,12 +166,18 @@ impl Client {
 
     /// Parse a `[[wikilink]]` and look up its target page.
     pub async fn resolve(&self, req: ResolveRequest) -> Result<ResolveResponse, Error> {
-        self.transport
-            .call_typed("resolve", json!({ "wikilink": req.wikilink }))
-            .await
+        let mut args = json!({ "wikilink": req.wikilink });
+        if !req.scenario.is_empty() {
+            args["scenario"] = json!(req.scenario);
+        }
+        self.transport.call_typed("resolve", args).await
     }
 
     /// Fetch a page's frontmatter, body, and outbound wikilinks.
+    ///
+    /// A plain read (no `as_of`/`scenario`) also returns the guard pair
+    /// for the read→hash→guarded-write loop: `content_sha256` (always,
+    /// on a server ≥ #408) and `version` (live-CRDT gateways).
     pub async fn expand(&self, req: ExpandRequest) -> Result<ExpandResponse, Error> {
         let mut args = json!({ "page_id": req.page_id });
         if !req.anchor.is_empty() {
@@ -179,6 +185,14 @@ impl Client {
         }
         if !req.version.is_empty() {
             args["version"] = json!(req.version);
+        }
+        // Time-travel cut and scenario overlay — optional-with-meaning:
+        // omitting them silently read the current base state.
+        if !req.as_of.is_empty() {
+            args["as_of"] = json!(req.as_of);
+        }
+        if !req.scenario.is_empty() {
+            args["scenario"] = json!(req.scenario);
         }
         if req.full {
             args["full"] = json!(true);
@@ -194,6 +208,12 @@ impl Client {
         }
         if !req.link_skill.is_empty() {
             args["link_skill"] = json!(req.link_skill);
+        }
+        if !req.as_of.is_empty() {
+            args["as_of"] = json!(req.as_of);
+        }
+        if !req.scenario.is_empty() {
+            args["scenario"] = json!(req.scenario);
         }
         self.transport.call_typed("neighbours", args).await
     }
@@ -275,6 +295,19 @@ impl Client {
             args["frontmatter_key"] = json!(req.frontmatter_key);
             args["frontmatter_value"] = json!(req.frontmatter_value);
         }
+        if !req.as_of.is_empty() {
+            args["as_of"] = json!(req.as_of);
+        }
+        if !req.scenario.is_empty() {
+            args["scenario"] = json!(req.scenario);
+        }
+        // Resume cursor from the previous response's `next_cursor`.
+        // Only an absent/null `next_cursor` means done — a string always
+        // means more rows (ACL filtering may shorten a page below
+        // `limit` with rows still to come).
+        if !req.cursor.is_empty() {
+            args["cursor"] = json!(req.cursor);
+        }
         self.transport.call_typed("list_instances", args).await
     }
 
@@ -309,13 +342,31 @@ impl Client {
     }
 
     /// Upsert a markdown page (the public write path).
+    ///
+    /// The optional guards on [`UpdatePageRequest`] make this the write
+    /// half of the read→hash→guarded-write loop: `base_version` (#246)
+    /// is the optimistic-concurrency CAS with CRDT auto-merge,
+    /// `require_exact_base` makes it strict (approvals), and
+    /// `base_sha256` (#354) is the content-hash CAS that works on every
+    /// gateway — `Some("")` approves a create. All default to absent =
+    /// unguarded, so existing callers are unchanged.
     pub async fn update_page(&self, req: UpdatePageRequest) -> Result<UpdatePageResponse, Error> {
-        self.transport
-            .call_typed(
-                "update_page",
-                json!({ "page_id": req.page_id, "content": req.content }),
-            )
-            .await
+        let mut args = json!({ "page_id": req.page_id, "content": req.content });
+        if let Some(v) = &req.base_version {
+            args["base_version"] = json!(v);
+        }
+        if req.require_exact_base {
+            args["require_exact_base"] = json!(true);
+        }
+        // `Some("")` is the approve-create sentinel and MUST reach the
+        // wire as the explicit empty string; only `None` is omitted.
+        if let Some(h) = &req.base_sha256 {
+            args["base_sha256"] = json!(h);
+        }
+        if let Some(p) = &req.provenance {
+            args["provenance"] = p.clone();
+        }
+        self.transport.call_typed("update_page", args).await
     }
 
     /// Soft-delete (archive) a markdown page (#300). Retracts it from

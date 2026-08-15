@@ -4,6 +4,24 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.27 — the typed Rust client catches up with the wire guards
+
+- `escurel-client` / `escurel-types` contract parity
+  (`references/05-consume-from-rust.md`): `UpdatePageRequest` now
+  carries the CAS/approve guards (`base_version`, `require_exact_base`,
+  `base_sha256` — `Some("")` = approve-create — and the `provenance`
+  passthrough); `UpdatePageResponse` gained `auto_merged` +
+  `head_version`/`head_sha256`/`head_content`; `ExpandResponse` gained
+  `version` + `content_sha256`, so the full read→hash→guarded-write
+  loop is typed end to end. Absent guard = unguarded, byte-identical to
+  the old client's wire traffic.
+- `ListInstancesRequest.cursor` + client plumbing: `list_instances`
+  now resumes from `next_cursor` (only its absence means done).
+- The client stopped dropping `as_of`/`scenario` on
+  `expand`/`neighbours`/`list_instances` (and `scenario` on `resolve`)
+  — they were on the typed requests all along but never reached the
+  wire, silently returning current/base state.
+
 ## 0.6.16 — WS gap-free resume + the mode split written down
 
 - `references/11-event-driven-agents.md`: `event_subscribe` accepts
