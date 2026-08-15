@@ -482,15 +482,20 @@ pub(crate) struct AppState {
 /// once the HTTP (and optional metrics) listener is bound so tests
 /// can read back the local addresses. Both background tasks run
 /// until [`ServerHandle::shutdown`] fires or the process exits.
-pub async fn serve(config: ServerConfig) -> Result<ServerHandle, ServerError> {
-    // Install the global JSON tracing subscriber once per process.
-    // Tests install their own subscriber up front (a scoped one
-    // pointing at a buffer) and the `AlreadyInstalled` error is
-    // ignored — `init_telemetry` is idempotent from the caller's
-    // perspective. The returned `TelemetryGuard` is parked on the
-    // server handle so the OTLP exporter (when configured) flushes
-    // on shutdown.
-    let telemetry_guard = install_telemetry(&config);
+///
+/// `telemetry_guard`: the normal caller is `EscurelConfig::build`,
+/// which installs telemetry as its very first step (so every log line
+/// from the rest of boot — DuckLake attach, lake adoption, the
+/// writer lease — is actually captured) and hands the resulting guard
+/// straight through here. `None` falls back to installing it now, for
+/// a caller that reaches `serve` without going through `build` — same
+/// idempotent-install behaviour this function always had, just no
+/// longer the FIRST place telemetry could come up.
+pub async fn serve(
+    config: ServerConfig,
+    telemetry_guard: Option<escurel_obs::TelemetryGuard>,
+) -> Result<ServerHandle, ServerError> {
+    let telemetry_guard = telemetry_guard.or_else(|| install_telemetry(&config.version));
     let metrics_registry = Arc::new(Metrics::new());
     // The gateway is "up" the moment we build state — flip the
     // liveness gauge before binding the listener so a /metrics
@@ -669,16 +674,18 @@ async fn spawn_metrics(
 /// Install the process-global JSON tracing subscriber. Errors
 /// returned by `init_telemetry` (notably `AlreadyInstalled`) are
 /// swallowed: tests pre-install their own subscriber, and a
-/// second `serve()` call in the same process must not panic. The
-/// production path's first call gets the real installer; every
-/// later call (or a test's `serve()` after the test installed its
-/// own subscriber) silently keeps the existing global.
-fn install_telemetry(config: &ServerConfig) -> Option<escurel_obs::TelemetryGuard> {
+/// second install in the same process must not panic. The
+/// production path's first call (now `EscurelConfig::build`, as
+/// early as possible — see its doc comment on why) gets the real
+/// installer; every later call (this fn's own fallback in `serve`
+/// for a caller that bypassed `build`, or a test's own subscriber)
+/// silently keeps the existing global.
+pub(crate) fn install_telemetry(version: &str) -> Option<escurel_obs::TelemetryGuard> {
     let env = std::env::var("ESCUREL_ENV").unwrap_or_else(|_| "dev".to_owned());
     let cfg = TelemetryConfig {
         app: "escurel".to_owned(),
         env,
-        version: config.version.clone(),
+        version: version.to_owned(),
         // Convention name is `ESCUREL_OBSERVABILITY_OTLP_ENDPOINT` (env = TOML
         // key path); the bare `ESCUREL_OTLP_ENDPOINT` is kept as a deprecated
         // fallback so existing deployments don't break.

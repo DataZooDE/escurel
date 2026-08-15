@@ -427,7 +427,12 @@ impl EscurelProcess {
             snapshot_keep: 5,
             last_published_epoch: Arc::new(std::sync::Mutex::new(None)),
         };
-        let handle = serve(cfg)
+        // This harness bypasses `EscurelConfig::build` (constructs
+        // `ServerConfig` directly), so there's no earlier-installed
+        // guard to hand over — `None` makes `serve` install its own,
+        // same as it always did before telemetry init moved into
+        // `build`.
+        let handle = serve(cfg, None)
             .await
             .expect("escurel-test-support: serve() failed");
         let base_url = format!("http://{}", handle.local_addr);
