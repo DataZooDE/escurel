@@ -333,3 +333,117 @@ async fn gc_noop_when_fewer_snapshots_than_keep() {
     assert_eq!(pruned, 0);
     assert_eq!(lake_snapshot_count(&cfg), before);
 }
+
+/// #558: `update_page` must not be able to report `ok:true` for a write
+/// that only survives in the local DuckDB `SingleFileStore::Always`
+/// wipes on every writer boot. `publish_page_sync` is the mechanism —
+/// prove it lands a page in the lake with NO periodic `publish_lake`
+/// call at all.
+#[tokio::test]
+async fn publish_page_sync_lands_a_single_page_with_no_periodic_publish() {
+    let h = fresh_harness();
+    let cfg = lake_config(&h);
+
+    h.indexer
+        .update_page("markdown/skills/customer.md", CUSTOMER_SKILL)
+        .await
+        .unwrap();
+
+    h.indexer
+        .publish_page_sync(&cfg, "markdown/skills/customer.md")
+        .await
+        .expect("scoped synchronous publish");
+
+    let reader = reader_conn(&cfg);
+    let pages: i64 = reader
+        .query_row("SELECT count(*) FROM lake.pages", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(pages, 1, "the page must be durable in the lake");
+    let blocks: i64 = reader
+        .query_row("SELECT count(*) FROM lake.blocks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(blocks, 1);
+}
+
+/// It is genuinely scoped (O(page)), not a corpus-wide publish in
+/// disguise: publishing page B must not pull in page A, which was
+/// never synced.
+#[tokio::test]
+async fn publish_page_sync_does_not_pull_in_other_dirty_pages() {
+    let h = fresh_harness();
+    let cfg = lake_config(&h);
+
+    h.indexer
+        .update_page("markdown/skills/customer.md", CUSTOMER_SKILL)
+        .await
+        .unwrap();
+    h.indexer
+        .update_page("markdown/instances/customer/acme-corp.md", ACME_INSTANCE)
+        .await
+        .unwrap();
+
+    h.indexer
+        .publish_page_sync(&cfg, "markdown/instances/customer/acme-corp.md")
+        .await
+        .expect("scoped synchronous publish");
+
+    let reader = reader_conn(&cfg);
+    let pages: Vec<String> = {
+        let mut stmt = reader.prepare("SELECT page_id FROM lake.pages").unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        pages,
+        vec!["markdown/instances/customer/acme-corp.md".to_owned()],
+        "only the synced page may appear; the other page's write is a \
+         local-only dirty page this scoped publish must not touch"
+    );
+}
+
+/// Editing the same page twice must not leave stale duplicate rows
+/// behind in the lake — the scoped publish deletes-then-inserts, same
+/// as the local write.
+#[tokio::test]
+async fn publish_page_sync_is_idempotent_across_repeated_edits() {
+    let h = fresh_harness();
+    let cfg = lake_config(&h);
+
+    h.indexer
+        .update_page("markdown/skills/customer.md", CUSTOMER_SKILL)
+        .await
+        .unwrap();
+    h.indexer
+        .publish_page_sync(&cfg, "markdown/skills/customer.md")
+        .await
+        .unwrap();
+
+    // Edit again and re-publish.
+    h.indexer
+        .update_page(
+            "markdown/skills/customer.md",
+            "---\ntype: skill\nid: customer\ndescription: a customer, edited\n---\n# customer\n",
+        )
+        .await
+        .unwrap();
+    h.indexer
+        .publish_page_sync(&cfg, "markdown/skills/customer.md")
+        .await
+        .unwrap();
+
+    let reader = reader_conn(&cfg);
+    let pages: i64 = reader
+        .query_row("SELECT count(*) FROM lake.pages", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(pages, 1, "no duplicate row from the second publish");
+    let frontmatter: String = reader
+        .query_row(
+            "SELECT frontmatter->>'description' FROM lake.pages",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(frontmatter, "a customer, edited");
+}

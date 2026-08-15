@@ -472,6 +472,84 @@ pub async fn publish_lake(
     })
 }
 
+/// Publish exactly one page's rows into the lake, synchronously, so a
+/// caller (`update_page` and friends) can hold `ok:true` until the write
+/// is durable in the lake, not just in the local DuckDB.
+///
+/// This is deliberately NOT `publish_lake`: that copies all
+/// [`PUBLISH_TABLES`] with `CREATE OR REPLACE TABLE .. AS SELECT *`,
+/// O(corpus) per call — fine on a 5-minute timer, ruinous per write.
+/// This instead mirrors the exact rows a single-page write touches —
+/// `pages`/`blocks` keyed by `page_id`, `links` keyed by `src_page`
+/// (the local write already does a full `src_page` refresh, see
+/// `Indexer::update_page_as`) — via scoped `DELETE` + `INSERT ... SELECT`
+/// in one transaction, O(page).
+///
+/// Deliberately does NOT touch `escurel_manifest` (its `pages`/`blocks`
+/// counts are corpus-wide and would go stale here) or advance the
+/// caller's `last_published_epoch` bookkeeping — the periodic
+/// [`publish_lake`] still owns those, plus the other
+/// [`PUBLISH_TABLES`] (`group_members`, `external_endpoints`,
+/// `pack_subscriptions`) this scoped path does not touch. Callers
+/// should still run the periodic full publish; this only closes the
+/// window between a write and that publish for the tables an
+/// individual page write can change.
+///
+/// Must be called with `Indexer::write_guard` already held (same lock
+/// order `publish_lake` documents) so this cannot interleave with a
+/// concurrent full publish or another page's scoped publish racing the
+/// same lake tables.
+pub fn publish_page_sync(
+    conn: &mut Connection,
+    cfg: &LakeConfig,
+    page_id: &str,
+) -> Result<(), SnapshotError> {
+    attach_lake(conn, cfg, false)?;
+    let tx = conn.transaction()?;
+    // A tenant's very first write hits an empty lake: none of these
+    // tables exist yet (`publish_lake`'s `CREATE OR REPLACE TABLE`
+    // creates-if-missing; a bare `DELETE`/`INSERT` here would not).
+    // `WHERE false` establishes the schema — including the blocks
+    // FLOAT[] cast — with zero rows, so it's a no-op once the table is
+    // real.
+    tx.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.pages AS SELECT * FROM pages WHERE false;
+         CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.blocks AS \
+             SELECT * REPLACE (dense_vec::FLOAT[] AS dense_vec) FROM blocks WHERE false;
+         CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.links AS SELECT * FROM links WHERE false;"
+    ))?;
+    tx.execute(
+        &format!("DELETE FROM {LAKE_ALIAS}.pages WHERE page_id = ?"),
+        params![page_id],
+    )?;
+    tx.execute(
+        &format!("INSERT INTO {LAKE_ALIAS}.pages SELECT * FROM pages WHERE page_id = ?"),
+        params![page_id],
+    )?;
+    tx.execute(
+        &format!("DELETE FROM {LAKE_ALIAS}.blocks WHERE page_id = ?"),
+        params![page_id],
+    )?;
+    tx.execute(
+        &format!(
+            "INSERT INTO {LAKE_ALIAS}.blocks \
+             SELECT * REPLACE (dense_vec::FLOAT[] AS dense_vec) \
+             FROM blocks WHERE page_id = ?"
+        ),
+        params![page_id],
+    )?;
+    tx.execute(
+        &format!("DELETE FROM {LAKE_ALIAS}.links WHERE src_page = ?"),
+        params![page_id],
+    )?;
+    tx.execute(
+        &format!("INSERT INTO {LAKE_ALIAS}.links SELECT * FROM links WHERE src_page = ?"),
+        params![page_id],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Prune old DuckLake snapshots (+ the Parquet files only they
 /// reference), keeping the `keep` most recent snapshots (DuckLake
 /// program, PR 7).

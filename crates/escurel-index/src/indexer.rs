@@ -648,6 +648,31 @@ impl Indexer {
         crate::snapshot::attach_lake(&conn, cfg, false)
     }
 
+    /// Synchronously publish exactly `page_id`'s rows into the lake, so
+    /// a caller (`update_page` and friends) can hold `ok:true` until the
+    /// write is durable in the lake too, not just in the local DuckDB
+    /// `SingleFileStore::Always` wipes on every writer boot. See
+    /// [`crate::snapshot::publish_page_sync`] for what "exactly this
+    /// page's rows" covers and why it's cheap enough to call per write.
+    ///
+    /// Takes [`Self::write_guard`] for the duration — the same lock
+    /// `publish_lake` holds across a full publish — so this can't
+    /// interleave with a concurrent full publish or another page's
+    /// scoped publish racing the same lake tables.
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::snapshot::publish_page_sync`].
+    pub async fn publish_page_sync(
+        &self,
+        cfg: &crate::snapshot::LakeConfig,
+        page_id: &str,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        let _write = self.write_guard().await;
+        let mut conn = self.conn.lock().await;
+        crate::snapshot::publish_page_sync(&mut conn, cfg, page_id)
+    }
+
     /// Take the per-tenant write lock — the same lock
     /// [`Self::update_page`] serialises writers through. `publish_lake`
     /// holds it across the whole publish so a snapshot can't interleave
