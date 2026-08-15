@@ -130,6 +130,20 @@ pub struct ExpandResponse {
     /// (additive; old servers never emit it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<Value>,
+    /// The page's current monotonic version (`v<hlc>`, #246) — the value
+    /// to send back as [`UpdatePageRequest::base_version`] in the
+    /// read→edit→guarded-write cycle. Emitted only by a gateway with a
+    /// live CRDT backend; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Hex sha256 of the STORED markdown bytes (#354/#408) — exactly what
+    /// [`UpdatePageRequest::base_sha256`] compares against, closing the
+    /// read→hash→guarded-write approve loop without a write-probe.
+    /// Published on **plain reads only**: absent under `as_of`/`scenario`
+    /// (a historical/overlaid body is not the current stored bytes) and
+    /// on old servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_sha256: Option<String>,
 }
 
 // ── neighbours ────────────────────────────────────────────────────
@@ -443,6 +457,10 @@ pub struct ListSkillsResponse {
 pub struct ListInstancesRequest {
     #[serde(rename = "skill_id")]
     pub skill: String,
+    /// Resume cursor from a previous response's
+    /// [`ListInstancesResponse::next_cursor`]. Empty = start from the top.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cursor: String,
     pub order_by_at: String,
     pub limit: u32,
     pub frontmatter_key: String,
@@ -470,8 +488,10 @@ pub struct InstanceInfo {
 #[serde(default)]
 pub struct ListInstancesResponse {
     pub instances: Vec<InstanceInfo>,
-    /// MCP wire emits `next_cursor` (null today); pagination is not
-    /// yet implemented server-side.
+    /// Resume cursor: pass it back as [`ListInstancesRequest::cursor`] to
+    /// fetch the next page. The wire keeps the key present (`null` on the
+    /// last page) — **only absence/null means done**; an ACL filter may
+    /// legitimately shorten a page below `limit` with more rows to come.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
@@ -545,21 +565,73 @@ pub struct ValidateResponse {
 
 // ── update / live ─────────────────────────────────────────────────
 
-/// `update_page` arguments. MCP wire keys: `page_id`, `content`.
+/// `update_page` arguments. MCP wire keys: `page_id`, `content`, plus the
+/// optional concurrency/approve guards `base_version`,
+/// `require_exact_base`, `base_sha256`, and the `provenance` passthrough.
+///
+/// Every guard is optional-with-meaning: **absent means unguarded** (the
+/// wire semantics), so all of them are omitted from the serialized
+/// arguments unless explicitly set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct UpdatePageRequest {
     pub page_id: String,
     pub content: String,
+    /// Optimistic-concurrency guard (#246): the page `version` the client
+    /// last read (published by `expand` on a live-CRDT gateway, and by
+    /// this tool's own `new_version`). Stale base → CRDT three-way
+    /// auto-merge, or a typed `conflict` when unmergeable. On a gateway
+    /// with no CRDT backend the guard refuses (`versioning_unavailable`)
+    /// rather than being silently dropped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_version: Option<String>,
+    /// Strict compare-and-swap: with a stale `base_version`, conflict
+    /// outright instead of attempting the auto-merge — the
+    /// human-in-the-loop approval shape. Requires `base_version`
+    /// (the server rejects the flag without one).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub require_exact_base: bool,
+    /// Content-hash compare-and-swap (#354) — the approve guard that works
+    /// on EVERY gateway: the hex sha256 of the stored markdown the held
+    /// write was drafted against, as published by `expand`'s
+    /// `content_sha256`. `Some("")` is the **approve-create sentinel**
+    /// ("I expect no page yet") and is serialized as the empty string;
+    /// `None` means unguarded and is omitted from the wire. A mismatch
+    /// refuses with `code: conflict` + `head_sha256` + `head_content`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_sha256: Option<String>,
+    /// Provenance passthrough (#246): a runner-orchestrated write carries
+    /// its `provenance.workflow`/`runner` block, which suppresses the
+    /// opt-in `page-edited` event for that write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Value>,
 }
 
-/// MCP wire keys: `ok`, `issues`, `new_version`.
+/// MCP wire keys: `ok`, `issues`, `new_version`, `auto_merged`, and — on a
+/// `conflict` refusal — `head_version` / `head_sha256` / `head_content`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct UpdatePageResponse {
     pub ok: bool,
     pub issues: Vec<ValidationIssue>,
     pub new_version: String,
+    /// The write landed as a CRDT three-way auto-merge of a stale
+    /// `base_version` draft with the concurrent head (never `true` under
+    /// `require_exact_base`). Absent on old servers ⇒ `false`.
+    pub auto_merged: bool,
+    /// On a `base_version` conflict: the head version the caller must
+    /// re-read before re-drafting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_version: Option<String>,
+    /// On a `base_sha256` conflict: the hash of the stored markdown at
+    /// head (`""` when no page exists yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_sha256: Option<String>,
+    /// On a conflict: the stored markdown at head, for the caller to
+    /// re-diff / re-draft against. The wire may carry an explicit `null`
+    /// (page absent), which decodes to `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_content: Option<String>,
 }
 
 /// `delete_page` arguments (#300). MCP wire keys: `page_id`, optional

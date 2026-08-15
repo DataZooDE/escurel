@@ -51,7 +51,7 @@ client.list_instances(ListInstancesRequest { skill: "customer".into(), ..Default
 // provenance_path(...) still exists but calls provenance_ancestry with
 // `to_page` (ProvenanceAncestryRequest gained that field) under the hood.
 client.provenance_report(ProvenanceReportRequest { kind: "drift".into(), ..Default::default() }).await?;
-client.update_page(UpdatePageRequest { page_id, content }).await?;
+client.update_page(UpdatePageRequest { page_id, content, ..Default::default() }).await?;
 // Chat history (M-Chat, issue #63): append-mostly log keyed by an
 // opaque chat_group_id. See `references/02` §Chat tools.
 client.append_message(AppendMessageRequest {
@@ -67,6 +67,38 @@ client.list_messages(ListMessagesRequest {
     limit: 50,
     ..Default::default()
 }).await?;
+```
+
+The read methods forward the optional-with-meaning wire fields: `as_of`
+(time-travel cut) and `scenario` (overlay) on
+`expand`/`neighbours`/`list_instances`/`search` (+ `scenario` on
+`resolve`) are sent when non-empty — empty = current base state.
+`list_instances` paginates: pass `cursor` from the previous response's
+`next_cursor`; **only an absent `next_cursor` means done** (a string
+always means more rows, even on a short page).
+
+### Guarded writes (the read→hash→approve loop)
+
+`expand` (plain reads only) returns `content_sha256` — the hash of the
+stored markdown bytes — and, on a live-CRDT gateway, `version`.
+`UpdatePageRequest` carries the matching guards; all default to absent =
+unguarded, so plain upserts are unchanged:
+
+```rust
+let read = client.expand(ExpandRequest { page_id: page_id.clone(), ..Default::default() }).await?;
+let resp = client.update_page(UpdatePageRequest {
+    page_id,
+    content: redraft,
+    base_sha256: read.content_sha256,        // content-hash CAS (#354): works on EVERY gateway
+    // base_version: read.version,           // version CAS (#246): live-CRDT only; stale → auto-merge
+    // require_exact_base: true,             // strict: stale base → conflict, never a merge (approvals)
+    // base_sha256: Some(String::new()),     // Some("") = approve-create ("I expect no page yet")
+    ..Default::default()
+}).await?;
+if !resp.ok && resp.issues.iter().any(|i| i.code == "conflict") {
+    // resp.head_sha256 / resp.head_content / resp.head_version: re-diff
+    // against head and retry. resp.auto_merged reports a landed merge.
+}
 ```
 
 Field names follow the wire contract (`q`/`k`, not `query`/`top_k`);

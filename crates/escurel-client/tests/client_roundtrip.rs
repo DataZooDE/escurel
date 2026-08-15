@@ -234,6 +234,7 @@ name: Globex\n\
         .update_page(UpdatePageRequest {
             page_id: "markdown/instances/customer/globex.md".to_owned(),
             content: body.to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();
