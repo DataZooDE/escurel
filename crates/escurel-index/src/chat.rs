@@ -246,12 +246,32 @@ impl Indexer {
 
         // A caller-supplied `msg_id` is an idempotency key, the same
         // contract as `capture_event`'s `event_id`: a redelivery echoes
-        // the stored row instead of inserting a second one. Checked
-        // under the lock so a concurrent retry cannot race the insert.
-        // (The PK is `(chat_group_id, ts, msg_id)` and an omitted `ts`
-        // is stamped at insert time, so without this check a retry
-        // lands a second, microseconds-apart row — API review R4.)
+        // the stored row instead of inserting a second one.
+        //
+        // WHO enforces it depends on the backend:
+        //
+        // - `Local`: this check-then-insert, under the per-tenant conn
+        //   lock — a single process owns the file, so the mutex IS the
+        //   serialisation. (The PK is `(chat_group_id, ts, msg_id)` and
+        //   an omitted `ts` is stamped at insert time, so without this
+        //   check a retry lands a second, microseconds-apart row — API
+        //   review R4.)
+        // - `AttachedPostgres`: the TABLE enforces it. The mutex only
+        //   serialises THIS process; two replicas of the deployment can
+        //   both pass a check-then-insert and the loser used to surface
+        //   a raw primary-key error. The insert below is `ON CONFLICT
+        //   (msg_id) DO NOTHING` + a readback of the stored row, so the
+        //   pre-check is skipped entirely — races and redeliveries
+        //   collapse to the same echo path.
+        // - `AttachedLake`: DuckLake enforces no constraints, so the
+        //   check-then-insert is all there is. Cross-replica duplicates
+        //   are prevented by the deployment invariant instead: the lake
+        //   append surface runs single-writer (STOP-FIRST pet, one
+        //   writer lease — see #371), so no second process races this
+        //   mutex.
+        let pg_backend = matches!(self.chat_backend(), ChatBackend::AttachedPostgres { .. });
         if input.msg_id.is_some()
+            && !pg_backend
             && let Some(existing) = self.find_chat_message(&conn, input.chat_group_id, &msg_id)?
         {
             return Ok(existing);
@@ -341,11 +361,36 @@ impl Indexer {
                 bindings.push(Box::new(input.content.to_owned()));
                 bindings.push(Box::new(metadata_json.clone()));
                 bindings.push(Box::new(input.embed));
-                format!(
-                    "INSERT INTO {table} \
-                     (tenant, chat_group_id, msg_id, ts, role, author, content, metadata, dense_vec, embedded) \
-                     VALUES (?, ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, {vec_expr}, ?)"
-                )
+                // Conflict-tolerant on the Postgres backend only: the
+                // shared table's PK (`msg_id`) is what makes a cross-
+                // replica duplicate append detectable, and DO NOTHING +
+                // the readback below is what turns it into the
+                // documented echo instead of a PK error. The lake table
+                // has no constraints to conflict on (DuckLake enforces
+                // none) — its dedup is the pre-check above plus the
+                // single-writer deployment invariant.
+                if pg_backend {
+                    // `created_at` is written EXPLICITLY on this path.
+                    // With `ON CONFLICT` the DuckDB Postgres connector
+                    // materialises EVERY column of the target relation
+                    // (same INSERT-as-COPY behaviour `events.rs`'s
+                    // capture path documents), so an omitted column
+                    // arrives as an explicit NULL rather than falling
+                    // through to Postgres' `DEFAULT now()` — a not-null
+                    // violation on every append.
+                    format!(
+                        "INSERT INTO {table} \
+                         (tenant, chat_group_id, msg_id, ts, role, author, content, metadata, dense_vec, embedded, created_at) \
+                         VALUES (?, ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, {vec_expr}, ?, CURRENT_TIMESTAMP::TIMESTAMP) \
+                         ON CONFLICT (msg_id) DO NOTHING"
+                    )
+                } else {
+                    format!(
+                        "INSERT INTO {table} \
+                         (tenant, chat_group_id, msg_id, ts, role, author, content, metadata, dense_vec, embedded) \
+                         VALUES (?, ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, {vec_expr}, ?)"
+                    )
+                }
             }
         };
 
@@ -355,11 +400,49 @@ impl Indexer {
             .collect();
         let stored_ts: String = match already_resolved_ts {
             Some(ts) => {
-                conn.execute(&sql, param_refs.as_slice())?;
+                // `ON CONFLICT` over the attached-Postgres table is NOT
+                // an atomic upsert: the connector resolves the conflict
+                // clause with its own pre-check and still ships the row
+                // via COPY, so the LOSER of a genuinely concurrent
+                // cross-replica race surfaces Postgres' duplicate-key
+                // error here instead of a quiet no-op. That loser is
+                // exactly the redelivery case the contract covers —
+                // swallow it and let the readback below echo the stored
+                // row; any other error propagates untouched.
+                match conn.execute(&sql, param_refs.as_slice()) {
+                    Ok(_) => {}
+                    // Only when the caller supplied the msg_id — that is
+                    // the idempotency-key contract, and the readback
+                    // below is what turns the swallow into an echo. A
+                    // server-generated ULID cannot legitimately collide;
+                    // if it somehow does, fail loudly.
+                    Err(e)
+                        if pg_backend
+                            && input.msg_id.is_some()
+                            && e.to_string()
+                                .contains("duplicate key value violates unique constraint") => {}
+                    Err(e) => return Err(e.into()),
+                }
                 ts
             }
             None => conn.query_row(&sql, param_refs.as_slice(), |row| row.get(0))?,
         };
+
+        // Postgres backend + caller-supplied msg_id: the insert may have
+        // been a conflict no-op (a redelivery, or a concurrent append
+        // from another replica that won the PK race). Read the STORED
+        // row back and echo it — its original `ts`/content/metadata —
+        // so the idempotency contract holds regardless of who inserted.
+        // A fresh insert reads back exactly what just landed. No row at
+        // all means the caller reused a `msg_id` that exists under a
+        // DIFFERENT chat group or tenant (the single-column PK fired,
+        // the scoped readback misses): surface that instead of
+        // fabricating success.
+        if pg_backend && input.msg_id.is_some() {
+            return self
+                .find_chat_message(&conn, input.chat_group_id, &msg_id)?
+                .ok_or(IndexerError::Duckdb(duckdb::Error::QueryReturnedNoRows));
+        }
 
         Ok(ChatMessage {
             chat_group_id: input.chat_group_id.to_owned(),

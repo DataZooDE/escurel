@@ -233,3 +233,123 @@ async fn assign_event_on_a_missing_event_is_an_error() {
         .expect_err("assigning an event that was never captured must fail");
     assert!(err.to_string().contains("does not exist"), "got: {err}",);
 }
+
+/// Drain a paged event surface until `next_cursor` disappears; panics on
+/// a replayed id (a cursor that fails to advance) or a runaway listing.
+async fn drain_pages<F, Fut>(mut fetch: F) -> Vec<String>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = escurel_index::EventPage>,
+{
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for page_no in 0..20 {
+        let page = fetch(cursor.clone()).await;
+        for e in &page.events {
+            assert!(
+                !seen.contains(&e.event_id),
+                "page {page_no} replayed `{}` — the cursor must advance",
+                e.event_id,
+            );
+            seen.push(e.event_id.clone());
+        }
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => return seen,
+        }
+    }
+    panic!("listing never terminated — next_cursor kept coming");
+}
+
+/// Capture 3 dated + 3 undated (`at_ts IS NULL`) events. The NULLS LAST
+/// block must paginate correctly in BOTH directions: the cursor crosses
+/// the dated→NULL boundary and then resumes inside the NULL block by
+/// `event_id` alone (`events.rs`'s resume predicate).
+async fn capture_mixed_null_at(h: &Harness) -> Vec<String> {
+    let mut ids = Vec::new();
+    for i in 0..6 {
+        let at = (i < 3).then(|| format!("2026-04-01T09:0{i}:00Z"));
+        let ev = h
+            .indexer
+            .capture_event(NewEvent {
+                event_id: Some(format!("01HNULLPAGET{i:012}")),
+                at,
+                source: "test".to_owned(),
+                label_skill: "email".to_owned(),
+                title: format!("event {i}"),
+                body: "b".to_owned(),
+                ..Default::default()
+            })
+            .await
+            .expect("capture");
+        ids.push(ev.event_id);
+    }
+    ids
+}
+
+#[tokio::test]
+async fn inbox_pagination_descends_through_null_at_ts_rows() {
+    let h = fresh_harness();
+    let ids = capture_mixed_null_at(&h).await;
+
+    let seen = drain_pages(|cursor| {
+        let idx = &h.indexer;
+        async move {
+            idx.list_inbox_page(2, cursor.as_deref())
+                .await
+                .expect("list_inbox_page")
+        }
+    })
+    .await;
+
+    assert_eq!(seen.len(), ids.len(), "every event reachable: {seen:?}");
+    // DESC order with NULLS LAST: dated rows newest-first, then the
+    // NULL block by event_id DESC.
+    let expected: Vec<String> = vec![
+        ids[2].clone(),
+        ids[1].clone(),
+        ids[0].clone(),
+        ids[5].clone(),
+        ids[4].clone(),
+        ids[3].clone(),
+    ];
+    assert_eq!(
+        seen, expected,
+        "DESC NULLS LAST order preserved across pages"
+    );
+}
+
+#[tokio::test]
+async fn history_pagination_ascends_through_null_at_ts_rows() {
+    let h = fresh_harness();
+    let ids = capture_mixed_null_at(&h).await;
+    for id in &ids {
+        h.indexer.assign_event(id, INSTANCE).await.expect("assign");
+    }
+
+    let seen = drain_pages(|cursor| {
+        let idx = &h.indexer;
+        async move {
+            idx.list_events_page(INSTANCE, 2, cursor.as_deref())
+                .await
+                .expect("list_events_page")
+        }
+    })
+    .await;
+
+    assert_eq!(seen.len(), ids.len(), "every event reachable: {seen:?}");
+    // ASC order with NULLS LAST: dated rows oldest-first, then the NULL
+    // block by event_id ASC.
+    let expected: Vec<String> = vec![
+        ids[0].clone(),
+        ids[1].clone(),
+        ids[2].clone(),
+        ids[3].clone(),
+        ids[4].clone(),
+        ids[5].clone(),
+    ];
+    assert_eq!(
+        seen, expected,
+        "ASC NULLS LAST order preserved across pages"
+    );
+}

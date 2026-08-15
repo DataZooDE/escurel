@@ -558,3 +558,61 @@ async fn single_file_backend_chat_unaffected() {
         "single-file boot must default to the local chat_messages table"
     );
 }
+
+/// The escurel#406 bug class, pinned at the indexer boundary: several
+/// messages land microseconds apart INSIDE one visible second (the wire
+/// `ts` truncates to seconds), and the page boundary falls between
+/// them. The cursor is built from the full-µs stored timestamp, so it
+/// must advance through the sub-second rows instead of re-qualifying
+/// its own second and repeating `next_cursor` verbatim forever.
+#[tokio::test]
+async fn list_paginates_within_one_visible_second() {
+    let h = fresh_harness();
+
+    // Five messages inside the SAME wall-clock second, µs apart.
+    for (i, us) in [0, 137, 400, 512, 999_900].iter().enumerate() {
+        let ts = format!("2026-05-25T10:00:00.{us:06}Z");
+        h.indexer
+            .append_chat_message(append("room-µs", "user", &format!("m{i}"), Some(&ts)))
+            .await
+            .expect("append");
+    }
+
+    for direction in [OrderDir::Asc, OrderDir::Desc] {
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for page_no in 0..10 {
+            let page = h
+                .indexer
+                .list_chat_messages(ListChatMessages {
+                    chat_group_id: "room-µs",
+                    since: None,
+                    until: None,
+                    limit: 2,
+                    cursor: cursor.as_deref(),
+                    direction,
+                })
+                .await
+                .expect("list page");
+            for m in &page.messages {
+                assert!(
+                    !seen.contains(&m.content),
+                    "page {page_no} ({direction:?}) replayed `{}` — the \
+                     cursor must advance within a single visible second",
+                    m.content,
+                );
+                seen.push(m.content.clone());
+            }
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            5,
+            "({direction:?}) all sub-second messages reachable, exactly \
+             once: {seen:?}"
+        );
+    }
+}

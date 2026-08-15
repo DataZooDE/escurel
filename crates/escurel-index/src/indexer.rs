@@ -385,19 +385,26 @@ impl Indexer {
             .unwrap_or(EventsBackend::Local)
     }
 
-    /// `true` once [`Self::attach_events_pg`] has wired this indexer onto
-    /// the shared events Postgres table. `escurel-server`'s ducklake-
-    /// reader dispatch gate (DuckLake PR 9) consults this to decide
-    /// whether `capture_event`/`assign_event`/`list_events`/`list_inbox`
+    /// `true` once [`Self::attach_events_pg`] or
+    /// [`Self::attach_events_lake`] has wired this indexer onto a shared
+    /// events table. `escurel-server`'s ducklake-reader dispatch gate
+    /// (DuckLake PR 9) consults this to decide whether
+    /// `capture_event`/`assign_event`/`list_events`/`list_inbox`
     /// are servable on a reader — a reader boots with no local write
     /// surface, but event rows now live in a table every replica can
     /// reach, so those four tools stop being reader-unsupported exactly
     /// when this is `true`.
     #[must_use]
     pub fn has_shared_events(&self) -> bool {
+        // BOTH shared variants, mirroring `has_shared_chat`: the lake
+        // events table (`attach_events_lake`) is just as reachable from
+        // every replica as the Postgres one, so a reader serves the
+        // event tools for either. Matching only `AttachedPostgres` here
+        // made a DuckLake-events reader wrongly reject
+        // capture_event/assign_event/list_events/list_inbox.
         matches!(
             self.events_backend(),
-            EventsBackend::AttachedPostgres { .. }
+            EventsBackend::AttachedPostgres { .. } | EventsBackend::AttachedLake { .. }
         )
     }
 

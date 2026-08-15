@@ -252,7 +252,7 @@ impl Indexer {
                 "INSERT INTO {table} \
                  (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, created_at) \
                  VALUES (?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ?, CURRENT_TIMESTAMP::TIMESTAMP) \
-                 ON CONFLICT (event_id) DO NOTHING"
+                 ON CONFLICT (tenant, event_id) DO NOTHING"
             ),
             (Some(_), true) => format!(
                 "INSERT INTO {table} \

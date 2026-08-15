@@ -108,6 +108,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::config_probe::DependencyProbe;
+use crate::snapshot_refresh::SharedAttaches;
 use crate::{EmbedderFactory, ServerConfig, serve};
 
 /// Default vector dimension (EmbeddingGemma 768).
@@ -1586,6 +1587,14 @@ impl EscurelConfig {
                     // local tables, only the attached Postgres ones, so a
                     // bare in-memory connection is sufficient).
                     let mut reader_crdt_backend: Option<Arc<dyn CrdtBackend>> = None;
+                    // Handed to the RefreshTask below so every re-adopt
+                    // re-applies the same attaches — a refresh swap
+                    // builds a brand-new indexer, and without this the
+                    // reader silently lost its shared chat/events/CRDT
+                    // surfaces on the first refresh (immediately, for a
+                    // lake-backed append surface: its CREATE TABLE at
+                    // boot advances the lake snapshot).
+                    let mut refresh_shared_attaches: Option<SharedAttaches> = None;
                     if lake_cfg.is_pg_catalog() {
                         // CRDT uses `crdt_pg_dsn`, which defaults to the
                         // catalog DSN but can point elsewhere — see the
@@ -1617,6 +1626,11 @@ impl EscurelConfig {
                             }
                         }
                         adopted.indexer.attach_crdt_pg(crdt_dsn).await?;
+                        refresh_shared_attaches = Some(SharedAttaches {
+                            chat: self.chat_backend,
+                            events: self.events_backend,
+                            crdt_pg_dsn: Some(crdt_dsn.to_owned()),
+                        });
 
                         let crdt_conn = Connection::open_in_memory().map_err(|source| {
                             ConfigError::DuckdbOpen {
@@ -1632,7 +1646,7 @@ impl EscurelConfig {
                         reader_crdt_backend = Some(Arc::new(backend));
                     }
                     let handle = IndexerHandle::fixed(adopted.indexer);
-                    let refresh = crate::snapshot_refresh::RefreshTask::new(
+                    let mut refresh_task = crate::snapshot_refresh::RefreshTask::new(
                         handle.clone(),
                         lake_cfg.clone(),
                         Arc::clone(&store),
@@ -1640,8 +1654,11 @@ impl EscurelConfig {
                         self.tenant.clone(),
                         Duration::from_secs(self.snapshot_refresh_secs),
                         Some(adopted.snapshot_id),
-                    )
-                    .spawn();
+                    );
+                    if let Some(shared) = refresh_shared_attaches {
+                        refresh_task = refresh_task.with_shared_attaches(shared);
+                    }
+                    let refresh = refresh_task.spawn();
                     (handle, reader_crdt_backend, true, Some(refresh), None)
                 }
                 (backend, _writer_role) => {

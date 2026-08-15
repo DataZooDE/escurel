@@ -201,3 +201,120 @@ async fn delete_chat_history_removes_rows_for_all_replicas() {
         "delete on one replica must remove the row for every replica: {page:?}"
     );
 }
+
+fn append_with_id<'a>(group: &'a str, msg_id: &'a str, content: &'a str) -> AppendChatMessage<'a> {
+    AppendChatMessage {
+        chat_group_id: group,
+        role: "user",
+        content,
+        author: None,
+        ts: None,
+        metadata: None,
+        msg_id: Some(msg_id),
+        embed: false,
+    }
+}
+
+/// The documented idempotency contract, enforced by the TABLE, not by a
+/// process-local mutex: a second append of the same `msg_id` — from a
+/// DIFFERENT replica — echoes the stored row (`ON CONFLICT … DO NOTHING`
+/// + readback), it does not error and does not land a second row.
+#[tokio::test]
+async fn second_replica_appending_same_msg_id_echoes_stored_row() {
+    let (_pg, dsn) = live_postgres().await;
+    let a = replica(&dsn).await;
+    let b = replica(&dsn).await;
+
+    let first = a
+        .indexer
+        .append_chat_message(append_with_id(
+            "room-4",
+            "01HRETRYKEY0000000000000A",
+            "first",
+        ))
+        .await
+        .expect("append on A");
+
+    let echoed = b
+        .indexer
+        .append_chat_message(append_with_id(
+            "room-4",
+            "01HRETRYKEY0000000000000A",
+            "second",
+        ))
+        .await
+        .expect("redelivery on another replica must echo, not error");
+    assert_eq!(echoed.content, "first", "the STORED row wins");
+    assert_eq!(echoed.msg_id, first.msg_id);
+    assert_eq!(echoed.ts, first.ts, "original ts echoed, not restamped");
+
+    let page = a
+        .indexer
+        .list_chat_messages(ListChatMessages {
+            chat_group_id: "room-4",
+            since: None,
+            until: None,
+            limit: 10,
+            cursor: None,
+            direction: OrderDir::Asc,
+        })
+        .await
+        .expect("list");
+    assert_eq!(page.messages.len(), 1, "exactly one row: {page:?}");
+}
+
+/// The RACE the mutex cannot guard (escurel finding 3): two replicas
+/// append the same `msg_id` CONCURRENTLY. Each process's check-then-
+/// insert mutex only serialises its own process, so before the insert
+/// was made conflict-tolerant this intermittently surfaced a raw
+/// primary-key violation. Both calls must succeed and exactly one row
+/// may land, every round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_same_msg_id_appends_across_replicas_never_error() {
+    let (_pg, dsn) = live_postgres().await;
+    let a = Arc::new(replica(&dsn).await);
+    let b = Arc::new(replica(&dsn).await);
+
+    for round in 0..20 {
+        let group = format!("race-room-{round}");
+        let msg_id = format!("01HRACE{round:017}");
+        let (ra, rb) = (Arc::clone(&a), Arc::clone(&b));
+        let (g1, m1) = (group.clone(), msg_id.clone());
+        let (g2, m2) = (group.clone(), msg_id.clone());
+        let ta = tokio::spawn(async move {
+            ra.indexer
+                .append_chat_message(append_with_id(&g1, &m1, "from-A"))
+                .await
+        });
+        let tb = tokio::spawn(async move {
+            rb.indexer
+                .append_chat_message(append_with_id(&g2, &m2, "from-B"))
+                .await
+        });
+        let (res_a, res_b) = (ta.await.unwrap(), tb.await.unwrap());
+        let msg_a = res_a.unwrap_or_else(|e| panic!("round {round}: A errored: {e}"));
+        let msg_b = res_b.unwrap_or_else(|e| panic!("round {round}: B errored: {e}"));
+        assert_eq!(
+            msg_a.content, msg_b.content,
+            "round {round}: both callers must observe the ONE stored row"
+        );
+
+        let page = a
+            .indexer
+            .list_chat_messages(ListChatMessages {
+                chat_group_id: &group,
+                since: None,
+                until: None,
+                limit: 10,
+                cursor: None,
+                direction: OrderDir::Asc,
+            })
+            .await
+            .expect("list");
+        assert_eq!(
+            page.messages.len(),
+            1,
+            "round {round}: exactly one stored row: {page:?}"
+        );
+    }
+}

@@ -4,6 +4,21 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.28 — chat cursor errors are typed; reader event tools over the lake
+
+- `list_messages` with an undecodable `cursor` now answers
+  `invalid_params` (-32602) instead of `internal` (-32603) — parity
+  with `list_inbox`/`list_events`, whose garbage-cursor refusal was
+  already typed. Treat it like any other bad argument: fix the cursor
+  (pass back `next_cursor` verbatim), don't retry.
+- A ducklake READER whose event bus is lake-backed
+  (`ESCUREL_EVENTS_BACKEND=ducklake`) now serves
+  `capture_event`/`assign_event`/`list_events`/`list_inbox` instead of
+  rejecting them with `unsupported_on_replica` — the reader gate's
+  shared-events probe matched only the Postgres backend. The shared
+  surfaces also survive a reader's snapshot refresh now (the hot-swap
+  re-applies the chat/events/CRDT attaches).
+
 ## 0.6.27 — session write ACL + scoped snapshot history + honest WS resume
 
 - The live-CRDT session surface now enforces `update_page`'s write ACL
