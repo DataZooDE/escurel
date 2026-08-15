@@ -1311,7 +1311,8 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "frontmatter": { "type": "object" },
             "body": { "type": "string" },
             "blocks": { "type": "array" },
-            "wikilinks_out": { "type": "array" }
+            "wikilinks_out": { "type": "array" },
+            "content_sha256": { "type": "string", "description": "Hash of the STORED markdown bytes — pass back as update_page's base_sha256 for an atomic approve. Plain reads only (absent under as_of/scenario)." }
         })),
         _ => return None,
     })

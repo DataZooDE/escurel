@@ -20,6 +20,15 @@ pin (see `SKILL.md` → "How this skill is installed").
 - Token lifetime on long sockets is now specified: auth is at upgrade
   only, a socket outlives its token's `exp`; bound it at the proxy or
   reconnect periodically — which `since_event_id` makes lossless.
+## 0.6.26 — `expand` publishes the approve-guard hash
+
+- `expand` (plain reads only — not under `as_of`/`scenario`) now emits
+  `content_sha256`: the hash of the STORED markdown bytes, i.e. exactly
+  what `update_page`'s `base_sha256` CAS compares against. The
+  hold→approve recipe becomes read→hold→guard with no write-probe and
+  no byte-perfect reconstruction from parsed fields (heron#30's ask,
+  root-caused: `expand` returns parsed frontmatter+body, which cannot
+  reproduce the stored bytes).
 ## 0.6.25 — the chat cursor always makes progress
 
 - `list_messages`' pagination cursor is now built from a full-µs

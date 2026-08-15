@@ -208,3 +208,47 @@ async fn version_conflict_carries_the_head_version_structurally() {
         "the conflict names the head version structurally: {stale}"
     );
 }
+
+/// The read half of the approve loop: `expand` publishes
+/// `content_sha256` — the hash of the STORED markdown bytes, i.e.
+/// exactly the value `update_page`'s `base_sha256` guard compares
+/// against — so a client can hold "what the drafter saw" without a
+/// write-probe or byte-perfect reconstruction from parsed fields.
+#[tokio::test]
+async fn expand_publishes_the_guard_hash() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let body: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "expand", "arguments": { "page_id": PAGE } },
+        }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+    let s = &body["result"]["structuredContent"];
+    assert_eq!(
+        s["content_sha256"],
+        json!(sha(DRAFT_BASE)),
+        "expand names the stored-bytes hash: {body}"
+    );
+
+    // And it IS the guard: approving with it commits first time.
+    let ok = update(
+        &p,
+        &token,
+        json!({
+            "page_id": PAGE,
+            "content": DRAFT_BASE.replace("v1", "approved"),
+            "base_sha256": s["content_sha256"],
+        }),
+    )
+    .await;
+    assert_eq!(ok["ok"], json!(true), "{ok}");
+}
