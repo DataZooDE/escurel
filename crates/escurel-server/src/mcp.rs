@@ -725,6 +725,20 @@ async fn dispatch_tools_call(
         }
     }
 
+    // Deterministic per-instance ACL caller (escurel-index). The admin
+    // role bypasses owner-visibility; a missing role is dev/on-host mode
+    // (no verifier, open gateway) and likewise bypasses — there is no
+    // subject to scope against. A real Agent token is enforced.
+    // `token_groups` are the RBAC groups from the JWT (admin-value already
+    // stripped by the caller in `mcp_inner`). Built BEFORE the session-tool
+    // routing below: `open_session` / `close_session` enforce the same
+    // write policy `update_page` does, so they need the caller too.
+    let caller = AclCaller {
+        subject,
+        is_admin: matches!(role, None | Some(Role::Admin)),
+        token_groups,
+    };
+
     // Session tools depend on `crdt_backend` + `sessions`, not on
     // the indexer. Route them before the indexer gate.
     match params.name.as_str() {
@@ -735,6 +749,8 @@ async fn dispatch_tools_call(
                 Arc::clone(&state.sessions),
                 state.quota.as_ref(),
                 tenant_id,
+                caller,
+                state.write_acl,
                 params.arguments,
             )
             .await;
@@ -754,6 +770,7 @@ async fn dispatch_tools_call(
                 current_indexer.as_deref(),
                 Arc::clone(&state.sessions),
                 subject,
+                caller,
                 params.arguments,
             )
             .await;
@@ -847,18 +864,6 @@ async fn dispatch_tools_call(
         JsonRpcError::internal("server has no indexer wired; tools/call is unavailable")
     })?;
 
-    // Deterministic per-instance ACL caller (escurel-index). The admin
-    // role bypasses owner-visibility; a missing role is dev/on-host mode
-    // (no verifier, open gateway) and likewise bypasses — there is no
-    // subject to scope against. A real Agent token is enforced.
-    // `token_groups` are the RBAC groups from the JWT (admin-value already
-    // stripped by the caller in `mcp_inner`).
-    let caller = AclCaller {
-        subject,
-        is_admin: matches!(role, None | Some(Role::Admin)),
-        token_groups,
-    };
-
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer, caller).await,
         "list_instances" => tool_list_instances(indexer, caller, params.arguments).await,
@@ -918,7 +923,7 @@ async fn dispatch_tools_call(
         }
         "list_inbox" => tool_list_inbox(indexer, caller, state.event_acl, params.arguments).await,
         "list_events" => tool_list_events(indexer, caller, state.event_acl, params.arguments).await,
-        "list_snapshots" => tool_list_snapshots(indexer, params.arguments).await,
+        "list_snapshots" => tool_list_snapshots(indexer, caller, params.arguments).await,
         "list_op_authors" => {
             tool_list_op_authors(
                 state.crdt_backend.as_ref(),
@@ -1039,12 +1044,57 @@ struct OpenSessionArgs {
     page_id: String,
 }
 
+/// Whether `caller` may WRITE the page a session targets — the SAME policy
+/// `update_page` enforces (`may_write_page`), applied to the session
+/// surface so live co-authoring cannot route around the write ACL.
+///
+/// Two checks, both fail-closed on a denial:
+///
+/// * the **stored page** (the `move_page`/`delete_page` shape): may this
+///   caller overwrite what is there? A page that does not exist yet has no
+///   ACL to consult and passes — the create is then gated by…
+/// * the **incoming content**, when one is supplied (the commit body at
+///   `close_session`) and it parses as a page: the `update_page` shape,
+///   which also catches a create-owned-by-someone-else. A body that does
+///   not parse is left to `update_page_as` itself, which refuses it the
+///   same way it always has.
+async fn session_write_allowed(
+    ix: &Indexer,
+    caller: &AclCaller<'_>,
+    page_id: &str,
+    incoming: Option<&str>,
+) -> Result<bool, JsonRpcError> {
+    if let Some(existing) = ix
+        .read_page_markdown(page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("session acl read: {e}")))?
+        && !ix
+            .may_write_page(caller, page_id, &existing)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("session acl: {e}")))?
+    {
+        return Ok(false);
+    }
+    if let Some(incoming) = incoming.filter(|c| escurel_md::parse(c).is_ok())
+        && !ix
+            .may_write_page(caller, page_id, incoming)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("session acl: {e}")))?
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn tool_open_session(
     backend: Option<&Arc<dyn CrdtBackend>>,
     indexer: Option<&Indexer>,
     sessions: Arc<SessionManager>,
     quota: Option<&Arc<QuotaManager>>,
     tenant_id: &str,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: OpenSessionArgs = parse_args(args, "open_session")?;
@@ -1089,6 +1139,35 @@ async fn tool_open_session(
                 data: None,
             }
             .with_code("layer_read_only", false));
+        }
+    }
+
+    // Write-ACL gate: an open session's `apply_op` stream edits the page
+    // byte by byte, so opening one is gated by the SAME write policy
+    // `update_page` enforces — a caller `update_page` would refuse must
+    // not get a session instead. Mirrors the WS attach gate (#352), on
+    // the write side. Session-only servers (`indexer = None`) have no
+    // page corpus, so no ACL exists to enforce.
+    if write_acl != crate::server::WriteAclMode::Off
+        && let Some(ix) = indexer
+        && !session_write_allowed(ix, &caller, &a.page_id, None).await?
+    {
+        if write_acl == crate::server::WriteAclMode::Log {
+            tracing::warn!(
+                subject = %caller.subject,
+                page_id = %a.page_id,
+                "write-ACL would deny this open_session (log mode) — allowing"
+            );
+        } else {
+            return Err(JsonRpcError {
+                code: -32000,
+                message: format!(
+                    "open_session denied: caller `{}` does not own instance `{}`",
+                    caller.subject, a.page_id
+                ),
+                data: None,
+            }
+            .with_code("forbidden", false));
         }
     }
 
@@ -1306,6 +1385,7 @@ async fn tool_close_session(
     indexer: Option<&Indexer>,
     sessions: Arc<SessionManager>,
     subject: &str,
+    caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: CloseSessionArgs = parse_args(args, "close_session")?;
@@ -1334,6 +1414,37 @@ async fn tool_close_session(
         // reports. Writing it would blank the page, so a no-op session stays
         // a no-op.
         if !body.trim().is_empty() {
+            // Re-check the write ACL at COMMIT time, under the same policy
+            // `update_page` enforces. The open-time gate is not enough: the
+            // ACL can change while a session is open (an ownership
+            // transfer, a revoked grant), and the commit is the write. A
+            // refusal uses `update_page`'s own denial shape and leaves the
+            // session OPEN — the caller can still discard (`commit:
+            // false`), mirroring the failing-indexer-write contract below.
+            if state.write_acl != crate::server::WriteAclMode::Off
+                && !session_write_allowed(ix, &caller, &page_id, Some(&body)).await?
+            {
+                if state.write_acl == crate::server::WriteAclMode::Log {
+                    tracing::warn!(
+                        subject = %caller.subject,
+                        page_id = %page_id,
+                        "write-ACL would deny this close_session commit (log mode) — allowing"
+                    );
+                } else {
+                    return Ok(json!({
+                        "ok": false,
+                        "issues": [{
+                            "severity": "error",
+                            "code": "forbidden",
+                            "location": "frontmatter",
+                            "message": format!(
+                                "write denied: caller `{}` does not own instance `{}`",
+                                caller.subject, page_id
+                            ),
+                        }],
+                    }));
+                }
+            }
             let _gate = state.update_page_gate.lock().await;
             // The commit is a page write, so it carries the same stamp an
             // `update_page` would (#357): the caller that closed the
