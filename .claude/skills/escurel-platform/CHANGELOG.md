@@ -4,6 +4,29 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.27 — session write ACL + scoped snapshot history + honest WS resume
+
+- The live-CRDT session surface now enforces `update_page`'s write ACL
+  (`ESCUREL_WRITE_ACL`): `open_session` refuses a caller who may not
+  write the page (JSON-RPC `-32000`, data code `forbidden`), and
+  `close_session(commit: true)` re-checks the same policy at commit
+  time — a refusal returns `update_page`'s `{ok: false, issues:
+  [{code: "forbidden"}]}` shape and leaves the session open for a
+  `commit: false` discard (`references/02`).
+- `list_snapshots` is now scoped by the page's read ACL, exactly like
+  `list_op_authors`: denial reads as absence — a page you may not read
+  reports the same empty history as one that does not exist
+  (`references/02`).
+- `GET /ws` now applies the tenant suspend gate at the upgrade, matching
+  `POST /mcp`: a suspended tenant refuses non-admin bearers with HTTP
+  403 before the socket opens; admin still connects.
+- `event_subscribe`'s `since_event_id` resume is documented as what it
+  is: **best-effort and inbox-only, not gap-free** — the replay reads
+  `list_inbox`, so events assigned/processed while disconnected are not
+  replayed; reconcile terminal transitions via `list_events`
+  (`references/11`). This corrects 0.6.16's "gap-free"/"lossless"
+  wording; the wire behaviour is unchanged.
+
 ## 0.6.16 — WS gap-free resume + the mode split written down
 
 - `references/11-event-driven-agents.md`: `event_subscribe` accepts

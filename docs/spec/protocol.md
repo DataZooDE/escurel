@@ -248,6 +248,10 @@ seeded snapshot history now honour the time cut.
   …]}`, the RFC-3339 timestamps of an instance's snapshot history,
   oldest first. These are the discrete points `expand(as_of=T)` can
   replay — the "state over time" version markers in the instance view.
+  Follows the page's own read ACL, exactly like `list_op_authors`:
+  denial is absence, not error — a page you may not read reports the
+  same empty history as a page that does not exist (no existence
+  oracle).
 
 - **`list_op_authors`** *(read)* — `{page_id}` → `{page_id, ops:
   [{op_id, hlc, applied_at, principal}, …]}`, oldest first: who wrote
@@ -793,6 +797,18 @@ The `ws_url` returned by `open_session` is the recommended
 channel for `apply_op` — the WS path delivers ops with lower
 overhead than HTTP. MCP-over-HTTP clients without WS may
 continue calling `apply_op` over HTTP.
+
+**Write ACL.** The session surface enforces the same write policy as
+`update_page` (`ESCUREL_WRITE_ACL`): `open_session` refuses a caller
+who may not write the page (JSON-RPC `-32000`, data code `forbidden` —
+a session's op stream would edit the page byte by byte), and
+`close_session` **re-checks** that policy at commit time, since the ACL
+can change while a session is open. A refused commit returns
+`update_page`'s denial shape (`{ok: false, issues: [{code:
+"forbidden", …}]}`) and leaves the session open, so the caller can
+still discard with `commit: false`. `apply_op` itself stays keyed by
+session possession (session ids are unguessable); the open and close
+gates are what hold.
 
 #### `update_page` (whole-page fallback)
 
@@ -1396,8 +1412,11 @@ non-retryable server errors. New codes are additive.
 ## WebSocket framing
 
 Single endpoint, `/ws`. Connection auth in the upgrade request
-(`Authorization: Bearer ...`). Once connected, the client sends a
-hello frame:
+(`Authorization: Bearer ...`). The upgrade applies the same tenant
+suspend gate as `POST /mcp` (#247): a suspended tenant refuses
+non-admin bearers with HTTP `403` (`tenant_suspended`) **before** the
+socket opens; an admin still connects (to `resume`). Once connected,
+the client sends a hello frame:
 
 ```jsonc
 { "type": "hello", "session": "sess_xyz" }    // attaches to an open CRDT session
@@ -1442,15 +1461,20 @@ A client that wants live co-editing AND event push holds two sockets.
 ### Resume (`since_event_id`)
 
 A reconnecting subscriber passes the last event id it processed as
-`since_event_id`: after the ack, the inbox events captured **after**
-that id are replayed oldest-first, marked `replayed: true`, before the
-live stream — gap-free. The server subscribes to the live bus *before*
-the replay query, so an event landing in between may arrive twice;
-**dedupe by `event_id`** (duplicates are recoverable, gaps are not).
-Ordering rides the event-id sort — exact for server-minted ULIDs; a
-caller-supplied id scheme must be monotonic to resume on. The replay
-window is the most recent 10 000 inbox rows; further behind than that,
-rebuild via `list_inbox` pagination.
+`since_event_id`: after the ack, the **still-inbox** events captured
+after that id are replayed oldest-first, marked `replayed: true`,
+before the live stream. This is a **best-effort, inbox-only** resume,
+not a gap-free one: the replay reads `list_inbox`, which is a queue,
+not an event log — an event that was assigned or processed while the
+subscriber was disconnected has left the inbox and is **not**
+replayed. A consumer that must not miss terminal transitions
+reconciles those via `list_events` on the instances it cares about.
+The server subscribes to the live bus *before* the replay query, so an
+event landing in between may arrive twice; **dedupe by `event_id`**
+(duplicates are recoverable). Ordering rides the event-id sort — exact
+for server-minted ULIDs; a caller-supplied id scheme must be monotonic
+to resume on. The replay window is the most recent 10 000 inbox rows;
+further behind than that, rebuild via `list_inbox` pagination.
 
 ### Token lifetime
 
@@ -1459,7 +1483,8 @@ bearer mid-connection: a socket outlives its token's `exp`, and an ACL
 revocation bites at the next attach (documented above), not
 immediately. Deployments that need a hard bound put an idle/lifetime
 limit on the proxy in front (`kamal-proxy`), or the consumer reconnects
-periodically — which `since_event_id` now makes lossless.
+periodically — `since_event_id` replays what is still in the inbox
+across the reconnect (best-effort; see Resume above).
 
 ### Multi-peer sessions
 

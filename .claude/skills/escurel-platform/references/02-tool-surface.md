@@ -108,7 +108,14 @@ delivered to the others as a `peer_op` frame (carrying the merged
 the other peers, which is what makes live cursors work. The originator gets
 `op_ack` and not `peer_op` — it already knows its write landed.
 
-Two properties to design for. **Attaching is ACL-gated and evaluated at
+Three properties to design for. **Opening and committing are gated by
+`update_page`'s write ACL** (`ESCUREL_WRITE_ACL`): `open_session` refuses a
+caller who may not write the page (JSON-RPC `-32000`, data code
+`forbidden`), and `close_session(commit: true)` re-checks the same policy
+at commit time — the ACL can change while a session is open — refusing
+with `update_page`'s `{ok: false, issues: [{code: "forbidden"}]}` shape
+and leaving the session open for a `commit: false` discard.
+**Attaching is ACL-gated and evaluated at
 attach time**: a principal who may not read the page is refused with
 `{"type":"error","code":"forbidden"}`, and an ACL revoked mid-session bites
 when that peer next attaches rather than immediately (disconnect the peer if
@@ -116,6 +123,10 @@ you need it sooner). **There is no replay**: a peer that reconnects, or that
 receives `resync_required` after falling behind the broadcast buffer, must
 `expand` the page and re-attach. The CRDT state is lossless; the *delivery*
 history is not retained.
+
+Related read-side scoping: `list_snapshots` and `list_op_authors` both
+follow the page's read ACL, and denial reads as absence — a page you may
+not read reports the same empty history as a page that does not exist.
 
 `close_session(commit: true)` **writes the merged body through to the
 store**, exactly as `update_page` would: the page is re-indexed, so the

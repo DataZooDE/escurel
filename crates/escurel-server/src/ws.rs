@@ -75,6 +75,32 @@ pub async fn ws_upgrade(
         Err(resp) => return resp,
     };
 
+    // #247 suspend gate — the same rule `POST /mcp` applies, at the same
+    // place (BEFORE the upgrade, so the client gets a real status code):
+    // a suspended tenant rejects non-admin callers, while an admin still
+    // connects (to `resume`). Only bites when a verifier is wired; dev /
+    // on-host mode (no auth context) is unaffected, exactly as on HTTP.
+    if state
+        .tenant_suspended
+        .load(std::sync::atomic::Ordering::Relaxed)
+        && auth_ctx
+            .as_ref()
+            .is_some_and(|c| matches!(c.role, Role::Agent))
+    {
+        let tenant = auth_ctx
+            .as_ref()
+            .map(|c| c.tenant_id.as_str())
+            .unwrap_or("");
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({
+                "error": "tenant_suspended",
+                "message": format!("tenant `{tenant}` is suspended"),
+            })),
+        )
+            .into_response();
+    }
+
     // Quota gate — debit a session slot. The guard is moved into
     // the upgraded socket task and released on drop.
     let session_guard = match (state.quota.as_ref(), auth_ctx.as_ref()) {
@@ -337,10 +363,16 @@ async fn handle_socket(
                 if send_json(socket, ack).await.is_err() {
                     break;
                 }
-                // Gap-free resume (API review B4): replay the inbox
-                // events captured after `since_event_id`, oldest first,
-                // marked `replayed: true`, before the live stream. Same
-                // per-event ACL as the live push. Ordering rides the
+                // Best-effort INBOX-ONLY resume (API review B4, contract
+                // narrowed in the 2026-08 security review): replay the
+                // still-inbox events captured after `since_event_id`,
+                // oldest first, marked `replayed: true`, before the live
+                // stream. This is `list_inbox`, NOT an event log — an
+                // event assigned/processed while the consumer was
+                // disconnected has left the inbox and is NOT replayed, so
+                // the resume is not gap-free. A consumer that must not
+                // miss terminal transitions reconciles via `list_events`.
+                // Same per-event ACL as the live push. Ordering rides the
                 // event-id sort — exact for server-minted ULIDs; a
                 // caller-supplied id scheme must be monotonic to resume
                 // on. Bounded to the most recent 10 000 inbox rows (the

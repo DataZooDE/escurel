@@ -1565,15 +1565,39 @@ pub(super) struct ListSnapshotsArgs {
     page_id: String,
 }
 
+/// `list_snapshots` follows the page's own read ACL — the same
+/// `may_read_instance` gate as `list_op_authors`, for the same reason:
+/// snapshot history is metadata ABOUT the page, and a shared tenant must
+/// not let a non-owner enumerate the history of an owner-private page.
+/// Denial is **absence, not error**: a denied caller gets the empty list a
+/// page with no history returns, byte-identical to a page that is not
+/// there — no existence oracle. Skill pages (the public catalogue) and
+/// unindexed page ids are never gated, exactly as in `tool_list_op_authors`.
 pub(super) async fn tool_list_snapshots(
     indexer: &Indexer,
+    caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListSnapshotsArgs = parse_args(args, "list_snapshots")?;
-    let snapshots = indexer
-        .list_snapshots(&a.page_id)
+    let readable = match indexer
+        .expand(&a.page_id, None, None)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("list_snapshots: {e}")))?;
+        .map_err(|e| JsonRpcError::internal(format!("list_snapshots acl: {e}")))?
+    {
+        Some(e) if e.page.page_type == PageType::Instance => indexer
+            .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_snapshots acl: {e}")))?,
+        _ => true,
+    };
+    let snapshots = if readable {
+        indexer
+            .list_snapshots(&a.page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_snapshots: {e}")))?
+    } else {
+        Vec::new()
+    };
     Ok(json!({ "snapshots": snapshots }))
 }
 

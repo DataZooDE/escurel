@@ -87,6 +87,7 @@ mod remote_backend_tools;
 mod schema_ergonomics;
 mod self_packaging;
 mod serve_demo;
+mod session_acl_and_gates;
 mod session_commit_writes_through;
 mod shadow_merge;
 mod skill_doc_parity;

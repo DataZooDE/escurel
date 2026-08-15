@@ -147,10 +147,14 @@ polling (#333, shipped):
    gaps — poll `list_inbox` once to catch up, keep the subscription.
 
 pass `since_event_id` (the last event id you processed) on the
-subscribe frame to resume gap-free: the gap replays oldest-first with
-`replayed: true` before the live stream — dedupe by `event_id`, an
-overlap event can arrive twice. Without it the subscription starts at
-now (no replay).
+subscribe frame to resume: the still-**inbox** events after that id
+replay oldest-first with `replayed: true` before the live stream —
+dedupe by `event_id`, an overlap event can arrive twice. This resume is
+**best-effort and inbox-only, NOT gap-free**: the replay reads
+`list_inbox`, so an event that was assigned/processed while you were
+disconnected has left the inbox and is not replayed — reconcile
+terminal transitions via `list_events` if you must not miss them.
+Without `since_event_id` the subscription starts at now (no replay).
 `escurel event inbox --limit 50` poll for anything captured before the
 ack. The runner path is unchanged — **runner = event starts a new agent
 run**; **event_subscribe = an open session watching the bus live**.

@@ -441,7 +441,9 @@ pub(super) fn tools_list_payload() -> Value {
                 Scope::Agent,
                 "List the taken_at timestamps of an instance's CRDT snapshot \
                  history, oldest first — the discrete state-over-time points \
-                 expand(as_of=T) can replay.",
+                 expand(as_of=T) can replay. Follows the page's own read \
+                 ACL: a page you may not read reports an empty history, \
+                 indistinguishable from one that has none.",
                 json!({
                     "type": "object",
                     "required": ["page_id"],
@@ -495,7 +497,10 @@ pub(super) fn tools_list_payload() -> Value {
                 "open_session",
                 Execution::Orchestration,
                 Scope::Agent,
-                "Open a live CRDT session on a page; returns a session id and the WS upgrade URL.",
+                "Open a live CRDT session on a page; returns a session id and \
+                 the WS upgrade URL. Gated by the same write ACL as \
+                 update_page: a caller who may not write the page is refused \
+                 (`forbidden`).",
                 json!({
                     "type": "object",
                     "required": ["page_id"],
@@ -522,7 +527,11 @@ pub(super) fn tools_list_payload() -> Value {
                 "close_session",
                 Execution::Orchestration,
                 Scope::Agent,
-                "Close a session; optionally snapshot the doc (commit=true).",
+                "Close a session; optionally snapshot the doc (commit=true). \
+                 The commit re-checks update_page's write ACL (it can change \
+                 while a session is open); a refused commit returns \
+                 update_page's `forbidden` issue and leaves the session open \
+                 so it can still be discarded.",
                 json!({
                     "type": "object",
                     "required": ["session"],
