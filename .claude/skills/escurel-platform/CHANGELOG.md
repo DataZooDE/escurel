@@ -4,6 +4,21 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.28 — typed shapes for the rest of the agent tool surface
+
+- `escurel-client` (`references/05-consume-from-rust.md`): typed
+  request/response structs + methods for the previously `call_raw`-only
+  agent tools — `fetch_blob`, `list_snapshots`, `list_op_authors`,
+  `write_instance` (wire key `ref`), and the HTTP session trio
+  `open_session`/`apply_op`/`close_session`
+  (`CloseSessionRequest::default()` carries the wire default
+  `commit: true`). `ExpandResponse` additionally decodes
+  `backend_projection` (sql_view/remote live overlay).
+- `Error::JsonRpc` gained `data_code`/`retryable`, surfacing the
+  gateway's `error.data = {code, retryable}` through the typed client —
+  branch on the stable `data_code`, not the numeric JSON-RPC code
+  (several refusals share `-32000`). Both `None` when no `data` is sent.
+
 ## 0.6.27 — the typed Rust client catches up with the wire guards
 
 - `escurel-client` / `escurel-types` contract parity

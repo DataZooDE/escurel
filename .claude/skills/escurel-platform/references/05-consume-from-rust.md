@@ -30,8 +30,13 @@ let client = Client::connect(
   is shared) — build it once at startup, wrap in `Arc`, clone per request.
 - Errors: `Error::{InvalidEndpoint, InvalidToken, Transport, Http, JsonRpc}`
   — `Transport(reqwest::Error)` / `Http{status, body}` for transport-level
-  failures, `JsonRpc{code, message}` for tool-level errors. The enum is
-  intentionally small; additions are breaking.
+  failures, `JsonRpc{code, message, data_code, retryable}` for tool-level
+  errors. `data_code`/`retryable` surface the gateway's
+  `error.data = {code, retryable}` — branch on the STABLE `data_code`
+  (`"tenant_suspended"`, `"read_only_replica"`, `"quota_exhausted"`, …),
+  not the numeric `code` (several refusals share `-32000`); both are
+  `None` when the envelope carried no `data`. The enum is intentionally
+  small; additions are breaking.
 
 ## The typed methods
 
@@ -104,8 +109,29 @@ if !resp.ok && resp.issues.iter().any(|i| i.code == "conflict") {
 Field names follow the wire contract (`q`/`k`, not `query`/`top_k`);
 JSON-bearing fields (`frontmatter`, `rows`, `params`) are typed
 `serde_json::Value`s — real JSON, not encoded strings. See `crates/escurel-types/src/` and
-`references/03` for the message shapes. The live-CRDT trio and admin
-methods are added as `protocol.md` and the types catch up.
+`references/03` for the message shapes.
+
+The formerly `call_raw`-only agent tools are typed too:
+
+```rust
+client.fetch_blob(FetchBlobRequest { page_id }).await?;          // → blob: Option<BlobInfo> (None = absent/hidden/non-document)
+client.list_snapshots(ListSnapshotsRequest { page_id }).await?;  // → snapshots: Vec<String> (taken_at, oldest first)
+client.list_op_authors(ListOpAuthorsRequest { page_id }).await?; // → ops: Vec<OpAuthor> (verified principal per CRDT op)
+client.write_instance(WriteInstanceRequest {                     // remote (openapi/mcp) write-back
+    instance_ref: "customer::acme".into(),                       // wire key `ref`
+    payload: json!({ "account_tier": "platinum" }),
+}).await?;                                                       // → {ok, source, fields}
+// The HTTP session trio (the WS channel stays `live_session`):
+let s = client.open_session(OpenSessionRequest { page_id }).await?;   // {session, head_version, ws_url}
+client.apply_op(ApplyOpRequest { session: s.session.clone(), op }).await?;  // op = base64 Loro blob
+client.close_session(CloseSessionRequest { session: s.session, commit: true }).await?;
+// CloseSessionRequest::default() has commit: true — a defaulted close
+// commits (snapshot + indexer write-through), it never silently discards.
+```
+
+`ExpandResponse` also carries `backend_projection` (the sql_view/remote
+live overlay projection) when the server emits it. Admin methods live on
+`AdminClient`.
 
 ## The backend pattern (from `examples/echo-app/src/lib.rs`)
 

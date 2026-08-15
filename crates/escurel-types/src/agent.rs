@@ -144,6 +144,13 @@ pub struct ExpandResponse {
     /// on old servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_sha256: Option<String>,
+    /// Backend overlay projection: for a `sql_view` instance the bounded
+    /// rows + projected source columns (REQ-SQL-06/REQ-OV-02); for a
+    /// remote (openapi/mcp) instance the LIVE upstream projection
+    /// `{source, fields}` — or `{issue}` when the upstream failed.
+    /// Absent for plain markdown pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_projection: Option<Value>,
 }
 
 // ── neighbours ────────────────────────────────────────────────────
@@ -720,4 +727,117 @@ pub struct WebhookDeliveriesResponse {
     /// empty because nothing is ever sent.
     pub configured: bool,
     pub deliveries: Vec<WebhookDelivery>,
+}
+
+// ── fetch_blob ────────────────────────────────────────────────────
+
+/// `fetch_blob` arguments. MCP wire key: `page_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct FetchBlobRequest {
+    pub page_id: String,
+}
+
+/// The retained original file of a `document`-backed instance. MCP wire
+/// keys: `page_id`, `content_type`, `size`, `bytes_base64`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BlobInfo {
+    pub page_id: String,
+    /// The MIME the upload declared (falling back to a byte sniff for
+    /// overlays written before the field existed).
+    pub content_type: String,
+    /// Decoded size in bytes (server-capped per transfer).
+    pub size: u64,
+    /// The original bytes, base64-encoded.
+    pub bytes_base64: String,
+}
+
+/// MCP wire key: `blob` — `null` for an absent page, a non-document page,
+/// or a page the caller may not read (ONE indistinguishable answer; no
+/// existence oracle). Decodes to `None`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct FetchBlobResponse {
+    pub blob: Option<BlobInfo>,
+}
+
+// ── list_snapshots / list_op_authors (CRDT history reads) ─────────
+
+/// `list_snapshots` arguments. MCP wire key: `page_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListSnapshotsRequest {
+    pub page_id: String,
+}
+
+/// MCP wire key: `snapshots` — the `taken_at` timestamps of the page's
+/// CRDT snapshot history, oldest first: the discrete state-over-time
+/// points `expand(as_of=T)` can replay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListSnapshotsResponse {
+    pub snapshots: Vec<String>,
+}
+
+/// `list_op_authors` arguments. MCP wire key: `page_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListOpAuthorsRequest {
+    pub page_id: String,
+}
+
+/// One CRDT op's attribution. MCP wire keys: `op_id`, `hlc`,
+/// `applied_at`, `principal`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpAuthor {
+    pub op_id: String,
+    /// Hybrid logical clock the op landed at (the version space
+    /// `v<hlc>` is minted from).
+    pub hlc: i64,
+    /// RFC-3339-ish apply timestamp; `null` for pre-migration rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_at: Option<String>,
+    /// The **server-verified** principal that submitted the op — never
+    /// the Loro peer id in the payload (a device, not a person; #357).
+    /// `null` for ops applied before the gateway recorded one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+}
+
+/// MCP wire keys: `page_id`, `ops` (oldest first). A page the caller may
+/// not read reports an empty history — indistinguishable from one that
+/// has none (no existence oracle). No op bytes are ever returned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListOpAuthorsResponse {
+    pub page_id: String,
+    pub ops: Vec<OpAuthor>,
+}
+
+// ── write_instance (remote proxy write-back) ──────────────────────
+
+/// `write_instance` arguments. MCP wire keys: `ref` (a Rust keyword,
+/// hence the field rename — the target instance id or its
+/// `[[skill::id]]` wikilink) and `payload` (object forwarded to the
+/// binding's upstream `write` op). Gated by the target instance's
+/// `acl.update`, fail-closed; a binding with no `write` op is refused
+/// (`backend_read_only`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WriteInstanceRequest {
+    #[serde(rename = "ref")]
+    pub instance_ref: String,
+    pub payload: Value,
+}
+
+/// MCP wire keys: `ok`, `source` (the endpoint name written through),
+/// `fields` (the re-projected upstream state after the write).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WriteInstanceResponse {
+    pub ok: bool,
+    pub source: String,
+    pub fields: Value,
 }
