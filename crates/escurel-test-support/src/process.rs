@@ -145,6 +145,13 @@ pub struct ConfigOverrides {
     /// (default) is every other test — a writer or a health-only
     /// gateway.
     pub reader_mode: bool,
+    /// Attach a DuckLake so `state.lake` is `Some` — otherwise always
+    /// `None` (see `serve`'s `ServerConfig` construction). Tests for
+    /// lake-durability behavior (#567: `/ingest/upload`'s synchronous
+    /// publish) need this; a test-owned `indexer` alone isn't enough
+    /// since `state.lake` is a separate field the ingest/write-tool
+    /// handlers read directly, not derived from the indexer.
+    pub lake: Option<escurel_index::snapshot::LakeConfig>,
 }
 
 impl std::fmt::Debug for ConfigOverrides {
@@ -169,6 +176,7 @@ impl std::fmt::Debug for ConfigOverrides {
                 &self.embedder_factory.is_some(),
             )
             .field("reader_mode", &self.reader_mode)
+            .field("lake_overridden", &self.lake.is_some())
             .finish()
     }
 }
@@ -419,11 +427,14 @@ impl EscurelProcess {
             metrics_listen: Some("127.0.0.1:0".to_owned()),
             reader_mode: overrides.reader_mode,
             // DuckLake publish/GC surface (PR 7): this harness always
-            // boots the single-file backend, so there is no lake to
-            // publish against; `publish_snapshot` refuses with a typed
-            // precondition error, matching production's single-file
-            // shape.
-            lake: None,
+            // boots the single-file backend (no attach happens here,
+            // unlike EscurelConfig::build's DuckLake branch), so
+            // `publish_snapshot`/the synchronous per-write publish
+            // still refuse/no-op unless a test explicitly hands in a
+            // LakeConfig (`overrides.lake`) pointed at a real lake it
+            // set up itself — same "test owns the plumbing" shape as
+            // `overrides.indexer`.
+            lake: overrides.lake.clone(),
             snapshot_keep: 5,
             last_published_epoch: Arc::new(std::sync::Mutex::new(None)),
         };
