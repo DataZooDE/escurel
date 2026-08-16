@@ -167,11 +167,16 @@ impl SessionManager {
     /// per-tenant quota manager (or `None` when no quota is
     /// configured); the registry takes ownership and drops it on
     /// [`close`](Self::close).
+    /// `seed` is the page's stored markdown, used only when the CRDT knows
+    /// nothing about the page yet (#421). Passing `None` keeps the old
+    /// behaviour of starting from an empty document, which is correct only for
+    /// a page that genuinely has no content.
     pub async fn open(
         &self,
         backend: Arc<dyn CrdtBackend>,
         page_id: &str,
         guard: Option<SessionGuard>,
+        seed: Option<&str>,
     ) -> Result<(String, Version), SessionError> {
         // One session per page (see [`SessionError::AlreadyOpen`]).
         // The DashMap `entry` API holds a shard write lock for the
@@ -211,7 +216,7 @@ impl SessionManager {
 
         // Open outside the shard lock — LiveDoc::open touches DuckDB
         // and could otherwise hold the lock across IO.
-        let doc = match LiveDoc::open(backend, page_id).await {
+        let doc = match LiveDoc::open(backend, page_id, seed).await {
             Ok(d) => d,
             Err(e) => {
                 // Roll the reservation back; otherwise the page
@@ -397,7 +402,7 @@ mod tests {
     async fn page_id_of_round_trips_through_open() {
         let (_dir, b) = backend();
         let sm = SessionManager::new();
-        let (sid, _v) = sm.open(b, "page-x", None).await.unwrap();
+        let (sid, _v) = sm.open(b, "page-x", None, None).await.unwrap();
         assert_eq!(sm.page_id_of(&sid).as_deref(), Some("page-x"));
         // After close the lookup must return None (the slot is
         // gone and the quota guard, if any, is dropped).
@@ -416,12 +421,15 @@ mod tests {
     async fn second_open_on_same_page_rejected() {
         let (_dir, b) = backend();
         let sm = SessionManager::new();
-        let (sid_a, _) = sm.open(Arc::clone(&b), "page-x", None).await.unwrap();
-        let err = sm.open(Arc::clone(&b), "page-x", None).await.unwrap_err();
+        let (sid_a, _) = sm.open(Arc::clone(&b), "page-x", None, None).await.unwrap();
+        let err = sm
+            .open(Arc::clone(&b), "page-x", None, None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, SessionError::AlreadyOpen(_)));
         // After close, a second open is allowed again.
         let _ = sm.close(&sid_a, false).await.unwrap();
-        let _ = sm.open(b, "page-x", None).await.unwrap();
+        let _ = sm.open(b, "page-x", None, None).await.unwrap();
     }
 
     #[tokio::test]
@@ -434,7 +442,7 @@ mod tests {
         // `LiveDoc::close(&self)` the close goes through cleanly.
         let (_dir, b) = backend();
         let sm = SessionManager::new();
-        let (sid, _v) = sm.open(b, "page-held", None).await.unwrap();
+        let (sid, _v) = sm.open(b, "page-held", None, None).await.unwrap();
 
         // Reach into the registry (same module) and clone the doc Arc.
         let held: Arc<escurel_crdt::LiveDoc> = {
@@ -458,7 +466,7 @@ mod tests {
     async fn current_content_round_trips() {
         let (_dir, b) = backend();
         let sm = SessionManager::new();
-        let (sid, _) = sm.open(b, "page-content", None).await.unwrap();
+        let (sid, _) = sm.open(b, "page-content", None, None).await.unwrap();
         // Empty doc → empty content.
         assert_eq!(sm.current_content(&sid).await.as_deref(), Some(""));
         // Unknown id → None.
@@ -475,13 +483,16 @@ mod tests {
         let (_dir, b) = backend();
         let sm = SessionManager::with_idle_ttl(Duration::ZERO);
 
-        let (sid_a, _) = sm.open(Arc::clone(&b), "page-lock", None).await.unwrap();
+        let (sid_a, _) = sm
+            .open(Arc::clone(&b), "page-lock", None, None)
+            .await
+            .unwrap();
         // Simulate a silent transport drop: no close() is called.
 
         // A second open on the same page succeeds by evicting the idle
         // predecessor (TTL is zero, so it's immediately idle).
         let (sid_b, _) = sm
-            .open(Arc::clone(&b), "page-lock", None)
+            .open(Arc::clone(&b), "page-lock", None, None)
             .await
             .expect("idle session must be evicted, not locked out");
         assert_ne!(sid_a, sid_b, "a new session was minted");
@@ -502,8 +513,11 @@ mod tests {
         // gets AlreadyOpen.
         let (_dir, b) = backend();
         let sm = SessionManager::with_idle_ttl(Duration::from_secs(3600));
-        let (_sid, _) = sm.open(Arc::clone(&b), "page-busy", None).await.unwrap();
-        let err = sm.open(b, "page-busy", None).await.unwrap_err();
+        let (_sid, _) = sm
+            .open(Arc::clone(&b), "page-busy", None, None)
+            .await
+            .unwrap();
+        let err = sm.open(b, "page-busy", None, None).await.unwrap_err();
         assert!(matches!(err, SessionError::AlreadyOpen(_)), "{err}");
     }
 
@@ -511,14 +525,14 @@ mod tests {
     async fn evict_idle_sweeps_stale_sessions() {
         let (_dir, b) = backend();
         let sm = SessionManager::with_idle_ttl(Duration::from_secs(3600));
-        let (_a, _) = sm.open(Arc::clone(&b), "p1", None).await.unwrap();
-        let (_b, _) = sm.open(Arc::clone(&b), "p2", None).await.unwrap();
+        let (_a, _) = sm.open(Arc::clone(&b), "p1", None, None).await.unwrap();
+        let (_b, _) = sm.open(Arc::clone(&b), "p2", None, None).await.unwrap();
         assert_eq!(sm.open_count(), 2);
         // A zero-TTL sweep evicts everything idle (all of it).
         let n = sm.evict_idle(Duration::ZERO).await;
         assert_eq!(n, 2);
         assert_eq!(sm.open_count(), 0);
         // Pages are freed → reopen succeeds.
-        let _ = sm.open(b, "p1", None).await.unwrap();
+        let _ = sm.open(b, "p1", None, None).await.unwrap();
     }
 }

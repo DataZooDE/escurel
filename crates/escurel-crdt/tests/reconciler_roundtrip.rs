@@ -87,7 +87,7 @@ async fn seed_snapshot(
     page_id: &str,
     text: &str,
 ) -> Result<Vec<u8>> {
-    let doc = LiveDoc::open(backend, page_id).await?;
+    let doc = LiveDoc::open(backend, page_id, None).await?;
     let client_doc = LoroDoc::new();
     let vv = client_doc.oplog_vv();
     client_doc.get_text("body").insert(0, text)?;

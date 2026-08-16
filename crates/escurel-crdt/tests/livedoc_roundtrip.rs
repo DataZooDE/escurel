@@ -74,7 +74,7 @@ impl Client {
 async fn create_livedoc_and_apply_text_op_round_trips() -> Result<()> {
     let (_dir, conn) = fresh_db()?;
     let backend: Arc<dyn CrdtBackend> = Arc::new(DuckdbCrdtBackend::new(conn));
-    let doc = LiveDoc::open(backend.clone(), "page-a").await?;
+    let doc = LiveDoc::open(backend.clone(), "page-a", None).await?;
 
     let mut client = Client::new();
     let op = client.insert(0, "hello");
@@ -90,7 +90,7 @@ async fn snapshot_then_close_then_reopen_replays_content() -> Result<()> {
     let (_dir, conn) = fresh_db()?;
     let backend: Arc<dyn CrdtBackend> = Arc::new(DuckdbCrdtBackend::new(conn));
 
-    let doc = LiveDoc::open(backend.clone(), "page-b").await?;
+    let doc = LiveDoc::open(backend.clone(), "page-b", None).await?;
     let mut client = Client::new();
     let op1 = client.insert(0, "alpha ");
     doc.apply_op(op1).await?;
@@ -102,7 +102,7 @@ async fn snapshot_then_close_then_reopen_replays_content() -> Result<()> {
     let final_v = doc.close(true).await?;
     assert_eq!(final_v.as_str(), "v2");
 
-    let reopened = LiveDoc::open(backend.clone(), "page-b").await?;
+    let reopened = LiveDoc::open(backend.clone(), "page-b", None).await?;
     assert_eq!(reopened.current_content().await, "alpha beta");
     Ok(())
 }
@@ -111,7 +111,7 @@ async fn snapshot_then_close_then_reopen_replays_content() -> Result<()> {
 async fn multiple_ops_persisted_in_crdt_ops_table_in_order() -> Result<()> {
     let (_dir, conn) = fresh_db()?;
     let backend: Arc<dyn CrdtBackend> = Arc::new(DuckdbCrdtBackend::new(conn.clone()));
-    let doc = LiveDoc::open(backend.clone(), "page-c").await?;
+    let doc = LiveDoc::open(backend.clone(), "page-c", None).await?;
 
     let mut client = Client::new();
     for chunk in ["one ", "two ", "three"] {
@@ -139,7 +139,7 @@ async fn multiple_ops_persisted_in_crdt_ops_table_in_order() -> Result<()> {
 async fn concurrent_apply_ops_serialise_through_actor() -> Result<()> {
     let (_dir, conn) = fresh_db()?;
     let backend: Arc<dyn CrdtBackend> = Arc::new(DuckdbCrdtBackend::new(conn.clone()));
-    let doc = Arc::new(LiveDoc::open(backend.clone(), "page-d").await?);
+    let doc = Arc::new(LiveDoc::open(backend.clone(), "page-d", None).await?);
 
     // Spawn N concurrent tasks each applying one insert from an
     // independent client. Independent clients model the
@@ -188,7 +188,7 @@ async fn reopening_with_only_snapshot_returns_correct_state() -> Result<()> {
     let (_dir, conn) = fresh_db()?;
     let backend: Arc<dyn CrdtBackend> = Arc::new(DuckdbCrdtBackend::new(conn.clone()));
 
-    let doc = LiveDoc::open(backend.clone(), "page-e").await?;
+    let doc = LiveDoc::open(backend.clone(), "page-e", None).await?;
     let mut client = Client::new();
     let op = client.insert(0, "snapshot-only");
     doc.apply_op(op).await?;
@@ -201,7 +201,7 @@ async fn reopening_with_only_snapshot_returns_correct_state() -> Result<()> {
         guard.execute("DELETE FROM crdt_ops WHERE page_id = ?", ["page-e"])?;
     }
 
-    let reopened = LiveDoc::open(backend.clone(), "page-e").await?;
+    let reopened = LiveDoc::open(backend.clone(), "page-e", None).await?;
     assert_eq!(reopened.current_content().await, "snapshot-only");
     Ok(())
 }
@@ -212,7 +212,7 @@ async fn reopening_with_snapshot_plus_ops_replays_to_correct_state() -> Result<(
     let backend: Arc<dyn CrdtBackend> = Arc::new(DuckdbCrdtBackend::new(conn.clone()));
 
     // Phase 1: write + snapshot "hello".
-    let doc = LiveDoc::open(backend.clone(), "page-f").await?;
+    let doc = LiveDoc::open(backend.clone(), "page-f", None).await?;
     let mut client = Client::new();
     let op1 = client.insert(0, "hello");
     doc.apply_op(op1).await?;
@@ -220,7 +220,7 @@ async fn reopening_with_snapshot_plus_ops_replays_to_correct_state() -> Result<(
 
     // Phase 2: reopen, apply incremental op, close WITHOUT snapshot.
     // A new client simulates a different editor session.
-    let doc = LiveDoc::open(backend.clone(), "page-f").await?;
+    let doc = LiveDoc::open(backend.clone(), "page-f", None).await?;
     let mut client = Client::new();
     // Sync the new client to the doc's existing state so its
     // "world" anchor is consistent with the actor's.
@@ -240,7 +240,7 @@ async fn reopening_with_snapshot_plus_ops_replays_to_correct_state() -> Result<(
     let _ = doc.close(false).await?;
 
     // Phase 3: reopen and assert combined snapshot+ops state.
-    let reopened = LiveDoc::open(backend.clone(), "page-f").await?;
+    let reopened = LiveDoc::open(backend.clone(), "page-f", None).await?;
     assert_eq!(reopened.current_content().await, "hello, world");
     Ok(())
 }
@@ -249,7 +249,7 @@ async fn reopening_with_snapshot_plus_ops_replays_to_correct_state() -> Result<(
 async fn empty_page_open_returns_empty_doc() -> Result<()> {
     let (_dir, conn) = fresh_db()?;
     let backend: Arc<dyn CrdtBackend> = Arc::new(DuckdbCrdtBackend::new(conn));
-    let doc = LiveDoc::open(backend.clone(), "never-written").await?;
+    let doc = LiveDoc::open(backend.clone(), "never-written", None).await?;
     assert_eq!(doc.current_content().await, "");
     Ok(())
 }
@@ -265,7 +265,7 @@ async fn close_commit_after_reopen_without_ops_does_not_dup_snapshot() -> Result
 
     // Phase 1: write one op, close with commit=true → snapshot at hlc=1.
     let mut client = Client::new();
-    let doc = LiveDoc::open(backend.clone(), "page-rg").await?;
+    let doc = LiveDoc::open(backend.clone(), "page-rg", None).await?;
     let op1 = client.insert(0, "x");
     doc.apply_op(op1).await?;
     let _ = doc.close(true).await?;
@@ -273,7 +273,7 @@ async fn close_commit_after_reopen_without_ops_does_not_dup_snapshot() -> Result
     // Phase 2: reopen and immediately close with commit=true — no
     // ops applied this session. Must succeed without trying to
     // insert a second snapshot at the same hlc.
-    let doc2 = LiveDoc::open(backend.clone(), "page-rg").await?;
+    let doc2 = LiveDoc::open(backend.clone(), "page-rg", None).await?;
     let _ = doc2.close(true).await?;
 
     // Confirm exactly one snapshot row remains.
@@ -304,7 +304,7 @@ async fn local_backend_is_unaffected_by_the_shared_pg_seam() -> Result<()> {
 
     let backend: Arc<dyn CrdtBackend> = Arc::new(backend);
     let mut client = Client::new();
-    let doc = LiveDoc::open(backend.clone(), "page-local-only").await?;
+    let doc = LiveDoc::open(backend.clone(), "page-local-only", None).await?;
     let op = client.insert(0, "local");
     doc.apply_op(op).await?;
     let _ = doc.close(true).await?;
