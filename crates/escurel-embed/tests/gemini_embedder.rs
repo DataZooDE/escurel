@@ -162,6 +162,47 @@ async fn dyn_trait_object_is_send_sync() {
     assert_eq!(e.dim(), 768);
 }
 
+/// #569: `GeminiEmbedder` used to build its client as bare
+/// `reqwest::Client::new()` — no timeout, so a hung/slow upstream call
+/// blocked the calling request forever. Hit this for real against `lab`:
+/// a `POST /ingest/upload` never returned and `/healthz` started failing
+/// until kubelet force-restarted the pod. Proves the fix: a mocked
+/// response slower than the configured timeout must error out AROUND
+/// the timeout, not hang for the mock's full delay.
+#[tokio::test]
+async fn slow_upstream_response_times_out_instead_of_hanging_forever() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "embeddings": [{ "values": vec![0.0_f32; 8] }] }))
+                .set_delay(std::time::Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+
+    let e = GeminiEmbedder::new("test-key")
+        .with_base_url(server.uri())
+        .with_dim(8)
+        .with_timeout(std::time::Duration::from_millis(200));
+
+    let started = std::time::Instant::now();
+    e.embed(&["x"])
+        .await
+        .expect_err("a response slower than the timeout must error, not hang");
+    let elapsed = started.elapsed();
+
+    // The load-bearing assertion: bounded wall-clock time. This is what
+    // #569 actually was — the call hung until something external (kubelet)
+    // killed the process; the error's exact wording is secondary to
+    // "it returns at all, promptly."
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "must fail around the 200ms timeout, not wait for the mock's 5s delay: took {elapsed:?}"
+    );
+}
+
 #[tokio::test]
 async fn request_body_carries_output_dimensionality_and_model() {
     let server = MockServer::start().await;
