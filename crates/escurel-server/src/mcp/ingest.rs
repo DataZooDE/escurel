@@ -142,6 +142,7 @@ async fn ingest_inner(
     record_and_dispatch_ingest(
         &indexer,
         &state.events_tx,
+        state.lake.as_ref(),
         IngestJob {
             caller_event_id: req.event_id,
             blob_id: &req.blob_id,
@@ -243,6 +244,7 @@ async fn ingest_upload_inner(
     record_and_dispatch_ingest(
         &indexer,
         &state.events_tx,
+        state.lake.as_ref(),
         IngestJob {
             caller_event_id: req.event_id,
             blob_id: blob.as_str(),
@@ -271,6 +273,7 @@ struct IngestJob<'a> {
 async fn record_and_dispatch_ingest(
     indexer: &std::sync::Arc<Indexer>,
     events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<escurel_index::EventInfo>>,
+    lake: Option<&escurel_index::snapshot::LakeConfig>,
     job: IngestJob<'_>,
     caller: &IngestCaller,
 ) -> axum::response::Response {
@@ -460,6 +463,7 @@ async fn record_and_dispatch_ingest(
         Some(skill) => {
             run_document_ingest(
                 indexer,
+                lake,
                 &skill,
                 blob_id,
                 content_type,
@@ -493,6 +497,7 @@ async fn record_and_dispatch_ingest(
 #[allow(clippy::too_many_arguments)]
 async fn run_document_ingest(
     indexer: &std::sync::Arc<Indexer>,
+    lake: Option<&escurel_index::snapshot::LakeConfig>,
     skill: &str,
     blob_id_str: &str,
     content_type: &str,
@@ -623,30 +628,74 @@ async fn run_document_ingest(
         Ok(IngestOutcome::Materialised {
             page_id,
             chunk_count,
-        }) => (
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "event_id": event_id,
-                "blob_id": blob_id_str,
-                "handler_skill": skill,
-                "status": "materialised",
-                "page_id": page_id,
-                "chunk_count": chunk_count,
-            })),
-        )
-            .into_response(),
-        Ok(IngestOutcome::ExtractionFailed { page_id, reason }) => (
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "event_id": event_id,
-                "blob_id": blob_id_str,
-                "handler_skill": skill,
-                "status": "extraction_failed",
-                "page_id": page_id,
-                "issue": { "code": "extraction_failed", "message": reason },
-            })),
-        )
-            .into_response(),
+        }) => {
+            // #567: `materialize_document`/`write_document_blocks` never
+            // got #414/#415's synchronous per-write lake publish — only
+            // the MCP write tools did, because at the time nothing in
+            // escurel-server was found calling this path. It IS called,
+            // from here: `202 Accepted` + `"status": "materialised"` is
+            // exactly the same durability promise `update_page`'s
+            // `ok:true` makes, so it needs the same guard before the
+            // caller sees it.
+            if let Some(cfg) = lake
+                && let Err(e) = indexer.publish_page_sync(cfg, &page_id).await
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!(
+                            "ingest worker: materialised locally but failed to publish \
+                             durably to the lake: {e}"
+                        ),
+                    })),
+                )
+                    .into_response();
+            }
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "event_id": event_id,
+                    "blob_id": blob_id_str,
+                    "handler_skill": skill,
+                    "status": "materialised",
+                    "page_id": page_id,
+                    "chunk_count": chunk_count,
+                })),
+            )
+                .into_response()
+        }
+        Ok(IngestOutcome::ExtractionFailed { page_id, reason }) => {
+            // Same guard: an `extraction_failed` overlay is still a real
+            // page write (materialize_document ran with zero chunks) and
+            // still gets acknowledged to the caller — #567 covers this
+            // outcome too, not just a successful extraction.
+            if let Some(cfg) = lake
+                && let Err(e) = indexer.publish_page_sync(cfg, &page_id).await
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!(
+                            "ingest worker: wrote the extraction_failed overlay locally \
+                             but failed to publish it durably to the lake: {e}"
+                        ),
+                    })),
+                )
+                    .into_response();
+            }
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "event_id": event_id,
+                    "blob_id": blob_id_str,
+                    "handler_skill": skill,
+                    "status": "extraction_failed",
+                    "page_id": page_id,
+                    "issue": { "code": "extraction_failed", "message": reason },
+                })),
+            )
+                .into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("ingest worker: {e}") })),
