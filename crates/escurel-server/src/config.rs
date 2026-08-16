@@ -108,6 +108,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::config_probe::DependencyProbe;
+use crate::server::install_telemetry;
 use crate::snapshot_refresh::SharedAttaches;
 use crate::{EmbedderFactory, ServerConfig, serve};
 
@@ -1433,6 +1434,19 @@ impl EscurelConfig {
     /// the build's features can't satisfy). Embedder *load* failure is
     /// recoverable and does not error here.
     pub async fn build(&self) -> Result<BootedServer, ConfigError> {
+        // 0. Telemetry, before ANYTHING else. This used to be the last
+        // thing `serve` did, at the very end of boot — meaning every
+        // log line from the rest of this function (DuckLake attach,
+        // the writer lease, #563's boot-time lake adoption) was
+        // silently dropped: no subscriber existed yet to capture it.
+        // Discovered chasing exactly that — a genuinely-firing log
+        // statement that never appeared anywhere. `install_telemetry`
+        // only needs `self.version` (a plain field, not something
+        // this boot computes), so there's no reason it can't run
+        // first. The guard is threaded through to `serve` at the end
+        // of this fn instead of installed a second time there.
+        let telemetry_guard = install_telemetry(&self.version);
+
         // 1. Data dir on the host volume.
         std::fs::create_dir_all(&self.data_dir).map_err(|source| ConfigError::DataDir {
             path: self.data_dir.display().to_string(),
@@ -1942,7 +1956,7 @@ impl EscurelConfig {
             metrics_listen: self.metrics_listen.clone(),
         };
 
-        let handle = serve(server_config).await.map_err(|e| {
+        let handle = serve(server_config, telemetry_guard).await.map_err(|e| {
             // Attribute a bind failure to the knob that actually controls
             // the listener that failed — a busy metrics port sends the
             // operator to `ESCUREL_OBSERVABILITY_METRICS_LISTEN`, not the
