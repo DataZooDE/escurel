@@ -43,6 +43,16 @@ pub struct JwkRaw {
     pub y: Option<String>,
 }
 
+/// `reqwest` has no default request timeout — see the substrate finding
+/// (issue #569) that a bare `Client::new()` on a similar external call
+/// (Gemini's embed API) hung a whole pod's request handling until kubelet
+/// force-restarted it. This client sits on the AUTHENTICATED-REQUEST path
+/// (every request behind an expired TTL can trigger a refresh), so an
+/// unbounded hang here is the same failure mode with a wider blast radius.
+/// 10s matches `remote_backend.rs`'s existing precedent for a comparably
+/// small, fast external call.
+const JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// In-memory JWKS cache. Cloneable; shared across requests by
 /// holding `Arc<JwksCache>`.
 #[derive(Debug, Clone)]
@@ -79,8 +89,23 @@ impl JwksCache {
             jwks_uri: jwks_uri.into(),
             ttl,
             state: Arc::new(RwLock::new(CacheState::default())),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(JWKS_FETCH_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
         }
+    }
+
+    /// Override the fetch timeout ([`JWKS_FETCH_TIMEOUT`] by default).
+    /// Exposed so a test can prove a hung JWKS endpoint actually errors
+    /// out instead of blocking forever, without a real 10s-long test.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_default();
+        self
     }
 
     /// Look up a decoding key by `kid`. Refreshes the JWKS on

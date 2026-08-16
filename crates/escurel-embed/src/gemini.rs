@@ -17,6 +17,17 @@ use crate::{EmbedError, Embedder};
 /// document can chunk into more than that, so we split into ≤100-text calls.
 const MAX_BATCH: usize = 100;
 
+/// `reqwest` has no default request timeout — an unbounded `Client::new()`
+/// here means a hung/slow call to Google's API blocks the calling request
+/// forever, with no error and no way out short of the process being killed
+/// externally. Hit this for real: a `POST /ingest/upload` against `lab`
+/// never returned, and `/healthz` (a hardcoded 200, no locks) started
+/// failing minutes later until kubelet force-restarted the pod. 30s is
+/// generous for embedding a batch of up to `MAX_BATCH` texts — longer than
+/// `remote_backend.rs`'s 10s precedent for a simpler external call, because
+/// this one can legitimately carry more payload.
+const EMBED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// HTTP-backed embedder calling `models.batchEmbedContents` on the
 /// Gemini API.
 ///
@@ -45,7 +56,10 @@ impl GeminiEmbedder {
             base_url: "https://generativelanguage.googleapis.com".to_owned(),
             model: "gemini-embedding-001".to_owned(),
             dim: 768,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(EMBED_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
         }
     }
 
@@ -64,6 +78,18 @@ impl GeminiEmbedder {
     #[must_use]
     pub fn with_dim(mut self, dim: usize) -> Self {
         self.dim = dim;
+        self
+    }
+
+    /// Override the request timeout ([`EMBED_TIMEOUT`] by default). Exposed
+    /// so a test can prove a hung upstream call actually errors out instead
+    /// of blocking forever, without a real 30s-long test.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_default();
         self
     }
 }
