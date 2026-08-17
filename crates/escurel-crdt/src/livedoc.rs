@@ -77,16 +77,53 @@ impl LiveDoc {
     /// fails to import (corrupted blob, version mismatch with the
     /// engine), and [`Error::Duckdb`] if the backend's `load`
     /// fails.
-    pub async fn open(backend: Arc<dyn CrdtBackend>, page_id: &str) -> Result<Self, Error> {
+    pub async fn open(
+        backend: Arc<dyn CrdtBackend>,
+        page_id: &str,
+        seed: Option<&str>,
+    ) -> Result<Self, Error> {
         let doc = LoroDoc::new();
 
-        if let Some((snap, ops)) = backend.load(page_id).await? {
+        let loaded = backend.load(page_id).await?;
+        let had_state = loaded
+            .as_ref()
+            .is_some_and(|(snap, ops)| !snap.as_bytes().is_empty() || !ops.is_empty());
+        if let Some((snap, ops)) = loaded {
             if !snap.as_bytes().is_empty() {
                 doc.import(snap.as_bytes())?;
             }
             for op in ops {
                 doc.import(op.as_bytes())?;
             }
+        }
+
+        // **Seed from the page when the CRDT knows nothing about it (#421).**
+        //
+        // A page written through `update_page` has no snapshot and no ops, so
+        // without this the session starts EMPTY over a page full of content —
+        // and `close_session {commit: true}` then writes the document's text
+        // as the whole page. Every device joining sees a blank document, and
+        // the first edit committed replaces what was there. No error is raised
+        // anywhere: the write is well-formed, it is simply not the page.
+        //
+        // It is persisted rather than held in memory, because the next `open`
+        // must find it: an in-memory-only seed hydrates correctly once, then
+        // starts empty again on reopen as soon as the room has applied any op
+        // of its own — the same bug, one session later, and harder to see.
+        //
+        // Persisted as a SNAPSHOT, not as an op, and the difference is not
+        // bookkeeping. An op is somebody's edit; `list_op_authors` enumerates
+        // them and reports each one's principal. The seed is the page's
+        // existing content, whose author is whoever last wrote the page — so
+        // recording it as an op adds an anonymous editor to the history
+        // (`principal: null`) and tells a reader that someone unidentified
+        // touched their page. It cost a test in `write_attribution` to notice.
+        // A snapshot is what this actually is: the base state a session starts
+        // from.
+        if !had_state && let Some(text) = seed.filter(|t| !t.is_empty()) {
+            doc.get_text("body").insert(0, text)?;
+            let snap = crate::Snapshot::new(doc.export(ExportMode::Snapshot)?);
+            backend.snapshot_next(page_id, &snap).await?;
         }
 
         // Seed op_count from the highest persisted hlc, not the

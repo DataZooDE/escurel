@@ -1222,8 +1222,21 @@ async fn tool_open_session(
         None
     };
 
+    // The page's stored markdown, so a session over a page that has content
+    // starts FROM that content (#421). Read here rather than inside the
+    // session manager because this is the layer that has the indexer, and a
+    // session-only server (`indexer = None`) genuinely has no page to seed
+    // from — its documents are the whole story.
+    let seed = match indexer {
+        Some(ix) => ix
+            .read_page_markdown(&a.page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("open_session seed: {e}")))?,
+        None => None,
+    };
+
     let (session_id, head) = sessions
-        .open(Arc::clone(backend), &a.page_id, guard)
+        .open(Arc::clone(backend), &a.page_id, guard, seed.as_deref())
         .await
         .map_err(|e| session_error_to_jsonrpc(&e, "open_session"))?;
 
