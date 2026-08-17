@@ -107,6 +107,8 @@ async-trait = "0.1"
 # `live-ducklake`): a real MinIO backs the lake's `s3://` DATA_PATH.
 testcontainers-modules = { version = "0.15", features = ["postgres", "minio"] }
 tokio-postgres = "0.7"
+# contextualize_llm.rs timeout regression test (#569), feature `contextualize-llm`.
+wiremock = "0.6"
 
 [lints]
 workspace = true

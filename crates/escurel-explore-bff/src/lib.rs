@@ -222,6 +222,15 @@ impl Signer {
 /// The tenant claim name escurel's verifier reads by default.
 const TENANT_CLAIM: &str = "tenant";
 
+/// #569: `reqwest` has no default request timeout. This client proxies
+/// EVERY incoming `POST /mcp` (and `GET /version`) to the backend — a
+/// bare `Client::new()` would let a hung backend stall this BFF's request
+/// handling indefinitely for that call. Same bug class `gemini.rs`'s embed
+/// client had in the main gateway, which hung a live pod for real until
+/// kubelet killed it. 30s matches that precedent for a comparable
+/// proxied-external-call shape.
+const BACKEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Shared router state.
 struct AppState {
     cfg: Config,
@@ -261,7 +270,10 @@ pub fn try_app(cfg: Config) -> Result<Router, BootError> {
     }
 
     let state = Arc::new(AppState {
-        http: reqwest::Client::new(),
+        http: reqwest::Client::builder()
+            .timeout(BACKEND_TIMEOUT)
+            .build()
+            .unwrap_or_default(),
         signer,
         cfg,
     });

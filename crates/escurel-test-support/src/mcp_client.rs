@@ -13,6 +13,13 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use serde_json::{Value, json};
 
+/// #569: `reqwest` has no default request timeout. This client only ever
+/// talks to a same-process, localhost `EscurelProcess`, so a real hang is
+/// unlikely — but a bare `Client::new()` on a genuine hang would still turn
+/// into "the test suite never finishes" rather than a clean failure. Kept
+/// consistent with the fix everywhere else this pattern was found.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Error variants returned by [`McpTestClient::call`]. Mirrors the
 /// wire-failure modes a test cares about: transport, HTTP status,
 /// JSON-RPC error envelope, JSON decode.
@@ -55,7 +62,10 @@ impl std::fmt::Debug for McpTestClient {
 impl McpTestClient {
     pub(crate) fn new(mcp_url: String, bearer: Option<String>) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
             mcp_url,
             bearer,
             next_id: std::sync::Arc::new(AtomicI64::new(1)),
