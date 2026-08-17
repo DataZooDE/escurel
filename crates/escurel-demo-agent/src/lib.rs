@@ -25,6 +25,10 @@ use serde_json::{Value, json};
 mod error;
 pub use error::AgentError;
 
+/// #569: `reqwest` has no default request timeout — see the sibling fix in
+/// `escurel-client`/`gemini.rs` for the incident that found this pattern.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A minimal MCP-over-HTTP client scoped to the event/inbox tools the
 /// agent needs. Talks the same `/mcp` JSON-RPC surface the gateway
 /// exposes to every agent.
@@ -63,7 +67,10 @@ impl McpClient {
         Self {
             mcp_url: mcp_url.into(),
             token: token.into(),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
         }
     }
 

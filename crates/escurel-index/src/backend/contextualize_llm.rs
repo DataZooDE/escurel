@@ -16,6 +16,17 @@
 
 use crate::backend::document::structural_context_prefix;
 
+/// #569: `reqwest` has no default request timeout, and this module's own
+/// design promise — any call failure degrades to the structural prefix,
+/// never blocks ingest — is silently broken by an unbounded `Client::new()`.
+/// A hung endpoint would stall `context_prefix` (and the whole per-chunk
+/// ingest loop calling it) forever instead of degrading. Same class of bug
+/// `gemini.rs`'s embed client had — that one hung a live pod for real until
+/// kubelet killed it. 20s: generous for a one-sentence completion, and this
+/// path is one call per chunk, so it should stay well short of the 30s
+/// `gemini.rs` timeout budgets for a whole batch.
+const CONTEXTUALIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// A per-chunk LLM situating-context generator.
 #[derive(Clone)]
 pub struct LlmContextualizer {
@@ -40,8 +51,24 @@ impl LlmContextualizer {
         Self {
             endpoint: endpoint.into(),
             api_key: api_key.into(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(CONTEXTUALIZE_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
         }
+    }
+
+    /// Override the request timeout ([`CONTEXTUALIZE_TIMEOUT`] by default).
+    /// Exposed so a test can prove a hung endpoint actually degrades to the
+    /// structural prefix instead of blocking forever, without a real
+    /// 20s-long test.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_default();
+        self
     }
 
     /// Ask the model to situate `chunk` within its document in one short

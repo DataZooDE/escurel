@@ -21,6 +21,14 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use crate::error::Error;
 use escurel_types::{LiveAck, LiveOp};
 
+/// #569: `reqwest` has no default request timeout — a bare `Client::new()`
+/// would let a hung server call block a caller of this SDK forever. 60s is
+/// generous for the plain JSON-RPC `call`/`call_typed` methods below (which
+/// can legitimately cover slow operations like `search`/`list_instances`
+/// over a large corpus); it does NOT apply to [`McpTransport::live_session`],
+/// which connects over raw `tokio_tungstenite`, not this `reqwest::Client`.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Cheap-to-clone transport handle. Wraps an arc-internal
 /// `reqwest::Client`, the resolved URLs, and the bearer token.
 #[derive(Clone)]
@@ -59,7 +67,10 @@ impl McpTransport {
         };
         let mcp_url = format!("{base}/mcp");
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
             base,
             mcp_url,
             bearer,
