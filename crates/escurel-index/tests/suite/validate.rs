@@ -393,3 +393,66 @@ async fn rebuild_tolerates_dangling_links_that_authoring_would_flag() {
     let drift = h.indexer.audit().await.expect("audit");
     assert!(drift.is_clean(), "rebuild reconciles cleanly: {drift:?}");
 }
+
+/// **The reserved `skill::` namespace must validate, not just resolve (#424).**
+///
+/// `[[skill::<id>]]` is the documented way to reference a skill *definition*
+/// page — `read.rs` calls the namespace reserved and `resolve` constrains on
+/// `page_type = 'skill'` for it (#212). The validator did not know: it treated
+/// `skill` as a skill id, looked for a skill page called `skill`, and refused
+/// every page using the form with `unknown_skill`.
+///
+/// So a page that resolves correctly could not be WRITTEN. It surfaced from
+/// Heron, whose workshop formats reference a shared procedure exactly this way
+/// (BR-WS-2): its Rust tests seed through a fixture builder that writes
+/// straight to the store, so validation never ran on them, and the first thing
+/// to author a format the way a tenant would — an app test over the real write
+/// path — was refused.
+#[tokio::test]
+async fn validate_accepts_the_reserved_skill_namespace() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER]).await;
+
+    let draft = "---\n\
+                 type: skill\n\
+                 id: onboarding\n\
+                 description: References another skill's procedure.\n\
+                 ---\n\
+                 # onboarding\n\
+                 Then follow [[skill::customer]].\n";
+    let issues = h.indexer.validate(None, draft).await.unwrap();
+    assert!(
+        issues.is_empty(),
+        "a wikilink into the reserved `skill::` namespace must validate when \
+         the referenced SKILL exists — `resolve` honours the namespace, so a \
+         page that resolves must also be writable: {issues:?}"
+    );
+}
+
+/// The control, and it is what keeps the exemption from being a hole: a
+/// reserved-namespace link to a skill that does NOT exist is still an error.
+///
+/// Without this, exempting `skill::` from the check would turn every
+/// mistyped skill reference into a silently dangling link — the failure the
+/// `unknown_skill` issue exists to prevent, reintroduced through the fix for
+/// its false positive.
+#[tokio::test]
+async fn validate_still_refuses_a_reserved_link_to_a_missing_skill() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER]).await;
+
+    let draft = "---\n\
+                 type: skill\n\
+                 id: onboarding\n\
+                 description: References a skill that is not there.\n\
+                 ---\n\
+                 # onboarding\n\
+                 Then follow [[skill::no_such_procedure]].\n";
+    let issues = h.indexer.validate(None, draft).await.unwrap();
+    assert!(
+        issues.iter().any(|i| i.code == "unknown_skill"),
+        "a reserved-namespace link to a missing skill must still be an error, \
+         or the fix for the false positive becomes a dangling-link hole: \
+         {issues:?}"
+    );
+}
