@@ -334,8 +334,16 @@ impl Indexer {
             wanted.insert(skill);
         }
         for wl in body_links.iter().chain(fm_links.iter().map(|(_, wl)| wl)) {
-            if let (Some(skill), Some(_)) = (&wl.skill, &wl.id) {
-                wanted.insert(skill.as_str());
+            if let (Some(skill), Some(id)) = (&wl.skill, &wl.id) {
+                // The reserved `skill::` namespace names a skill DEFINITION
+                // page, so the skill to look up is the link's ID segment.
+                // Fetching `skill` instead asks for a skill nobody has, which
+                // is what made `[[skill::<id>]]` unwritable (#424).
+                wanted.insert(if skill == "skill" {
+                    id.as_str()
+                } else {
+                    skill.as_str()
+                });
             }
         }
         // `skills[slug]` present  => skill exists, value is its
@@ -391,12 +399,30 @@ impl Indexer {
         // frontmatter alike.
         for wl in body_links.iter().chain(fm_links.iter().map(|(_, wl)| wl)) {
             match (&wl.skill, &wl.id) {
-                (Some(skill), Some(_)) => {
-                    if !skills.contains_key(skill.as_str()) {
+                (Some(skill), Some(id)) => {
+                    // The reserved `skill::` namespace (#212): `[[skill::<id>]]`
+                    // names a skill DEFINITION page, so the thing that must
+                    // exist is the skill `<id>` — not a skill called `skill`,
+                    // which never exists and made every use of the documented
+                    // form unwritable (#424). `resolve` has always constrained
+                    // this on `page_type = 'skill'`; the validator did not
+                    // know, so a page that resolved could not be saved.
+                    //
+                    // Heron found it: its workshop formats reference a shared
+                    // procedure exactly this way (BR-WS-2), and its Rust
+                    // fixtures write straight to the store, so validation
+                    // never ran on them until an app test authored a format
+                    // through the real write path.
+                    let (missing, named) = if skill == "skill" {
+                        (!skills.contains_key(id.as_str()), id)
+                    } else {
+                        (!skills.contains_key(skill.as_str()), skill)
+                    };
+                    if missing {
                         issues.push(Issue::error(
                             "unknown_skill",
                             format!("wikilink `[[{skill}::...]]`"),
-                            format!("wikilink references unknown skill `{skill}`"),
+                            format!("wikilink references unknown skill `{named}`"),
                         ));
                     }
                 }

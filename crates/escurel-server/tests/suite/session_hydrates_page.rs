@@ -205,3 +205,74 @@ async fn a_session_opened_on_a_page_starts_from_its_content() {
 
     p.shutdown().await;
 }
+
+/// **A stranger must not be able to discard someone else's session (#425).**
+///
+/// `close_session {commit: true}` re-checks the write ACL. `{commit: false}`
+/// checked nothing at all, deliberately: a caller whose grant was revoked
+/// mid-session must still be able to abandon their own work rather than leave
+/// the page wedged until the idle TTL.
+///
+/// That exemption did not distinguish **the opener** from **anyone holding the
+/// session id**. A consultant on another engagement could terminate a live
+/// workshop in a room they have no relationship to. No content is read, so it
+/// is not a disclosure — it is a cross-engagement denial of service, and in a
+/// room the symptom is the facilitator's session dying mid-sentence.
+///
+/// Found by an AI review of Heron's P5 work (2026-08-21), then reproduced
+/// here: bob, on `team-blue`, closed a `team-red` session and its owner could
+/// immediately reopen the page — proving the first session was destroyed.
+#[tokio::test]
+async fn an_outsider_cannot_discard_someone_elses_session() {
+    let p = start().await;
+    let member = p.mint_token_with_groups(TENANT, "member-1", &["team-red"], false);
+    let outsider = p.mint_token_with_groups(TENANT, "outsider-1", &["team-blue"], false);
+
+    let session = call(&p, &member, "open_session", json!({ "page_id": RED_PAGE })).await["result"]
+        ["structuredContent"]["session"]
+        .as_str()
+        .expect("session")
+        .to_owned();
+
+    let discarded = call(
+        &p,
+        &outsider,
+        "close_session",
+        json!({ "session": session, "commit": false }),
+    )
+    .await;
+    assert!(
+        discarded["result"]["structuredContent"]["ok"] != json!(true),
+        "an outsider must not discard a session on a page they may not write: \
+         {discarded}"
+    );
+
+    // The session must SURVIVE. If it were destroyed, the page is free and a
+    // fresh open succeeds — which is exactly how the defect was detected, and
+    // is what the refusal above must prevent rather than merely report.
+    let reopened = call(&p, &member, "open_session", json!({ "page_id": RED_PAGE })).await;
+    assert!(
+        reopened["result"]["structuredContent"]["session"]
+            .as_str()
+            .is_none(),
+        "the owner's session must still hold the page — a second open \
+         succeeding means the outsider's discard took effect: {reopened}"
+    );
+
+    // POSITIVE CONTROL: the owner can still discard their own session, which
+    // is the property the exemption exists for. A fix that simply required
+    // the write ACL here would strand a caller whose grant was revoked
+    // mid-session, leaving the page wedged until the idle TTL.
+    let own = call(
+        &p,
+        &member,
+        "close_session",
+        json!({ "session": session, "commit": false }),
+    )
+    .await;
+    assert_eq!(
+        own["result"]["structuredContent"]["ok"],
+        json!(true),
+        "control: the opener must still be able to abandon their own work: {own}"
+    );
+}

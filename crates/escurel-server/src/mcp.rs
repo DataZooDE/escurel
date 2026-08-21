@@ -1236,7 +1236,13 @@ async fn tool_open_session(
     };
 
     let (session_id, head) = sessions
-        .open(Arc::clone(backend), &a.page_id, guard, seed.as_deref())
+        .open(
+            Arc::clone(backend),
+            &a.page_id,
+            guard,
+            seed.as_deref(),
+            caller.subject,
+        )
         .await
         .map_err(|e| session_error_to_jsonrpc(&e, "open_session"))?;
 
@@ -1451,6 +1457,43 @@ async fn tool_close_session(
     } else {
         None
     };
+
+    // **Discard is gated too, but on identity rather than the write ACL
+    // (#425).** The commit path re-checks the write policy below. Discard
+    // deliberately does not, so a caller whose grant was revoked mid-session
+    // can still abandon their own work instead of wedging the page until the
+    // idle TTL — but that exemption has to know WHOSE work it is. Without this
+    // it protected anyone holding the session id, and a caller on another
+    // engagement could terminate a live workshop in a room they have no
+    // relationship to. No content is read, so it is not a disclosure; it is a
+    // cross-engagement denial of service.
+    //
+    // Admin passes, as everywhere. The opener passes. Anyone else must be able
+    // to write the page, which is the same bar `open_session` set.
+    if !a.commit && !caller.is_admin && sessions.opened_by(&a.session).as_deref() != Some(subject) {
+        let permitted = match (sessions.page_id_of(&a.session), indexer) {
+            (Some(page_id), Some(ix)) => {
+                state.write_acl == crate::server::WriteAclMode::Off
+                    || session_write_allowed(ix, &caller, &page_id, None).await?
+            }
+            // No page behind it (session-only server) or an unknown session:
+            // nothing to protect, and an unknown id must not read differently
+            // from a forbidden one.
+            _ => true,
+        };
+        if !permitted {
+            return Err(JsonRpcError {
+                code: -32000,
+                message: format!(
+                    "close_session denied: caller `{subject}` neither opened \
+                     session `{}` nor may write its page",
+                    a.session
+                ),
+                data: None,
+            }
+            .with_code("forbidden", false));
+        }
+    }
 
     if let Some((page_id, ix, body)) = write_through {
         // Empty is what a just-opened session that never received an op
