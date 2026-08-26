@@ -1434,7 +1434,7 @@ Message types:
 | `presence` | bidi | `{ session, user, anchor }` (heartbeat every 10 s) |
 | `resync_required` | S→C | `{ session, skipped, message }` — this peer fell behind |
 | `search_subscribe` | C→S | `{ subscription_id, q, k?, filter? }` — live search: runs the real ACL-fused search now (the initial `search_event` is the ack) and re-runs it on every index mutation, pushing updated hits; a missing/empty `q` answers `{type:"error", code:"invalid_subscription"}`; presence-only connections |
-| `search_event` | S→C | `{ subscription_id, hits: [...] }` — the current results for the subscribed query |
+| `search_event` | S→C | `{ subscription_id, hits: [...] }` — the **current results** for the subscribed query, never a delta. A reconnecting client therefore needs no replay: it re-sends `search_subscribe` and the initial frame already carries whatever changed while it was away (asserted by `a_resubscribe_carries_what_changed_while_the_client_was_gone`). Subscriptions do not survive the socket, and are ACL-fused on every re-run, not only at subscribe time (`a_subscription_is_not_a_side_channel_around_the_acl`) |
 | `event_subscribe` | C→S | `{ subscription_id, since_event_id? }` — push freshly captured bus events (#333); presence-only connections |
 | `event_subscribe_ack` | S→C | `{ subscription_id }` — subscription is live |
 | `event` | S→C | `{ subscription_id, event: <Event>, replayed? }` — one captured event this caller may read (`ESCUREL_EVENT_ACL` filtered, same rule as `list_inbox`); `replayed: true` marks catch-up frames |
