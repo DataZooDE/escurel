@@ -447,3 +447,124 @@ async fn publish_page_sync_is_idempotent_across_repeated_edits() {
         .unwrap();
     assert_eq!(frontmatter, "a customer, edited");
 }
+
+/// A writer connection with the lake attached read-write, so a test can
+/// shape `lake.pages` the way a long-lived deployment's lake actually is
+/// before the code under test ever touches it.
+fn lake_writer_conn(cfg: &LakeConfig) -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(&install_load_sql(cfg)).unwrap();
+    if let Some(sql) = secret_sql(cfg).unwrap() {
+        conn.execute_batch(&sql).unwrap();
+    }
+    conn.execute_batch(&attach_sql(cfg, false).unwrap())
+        .unwrap();
+    conn
+}
+
+/// The scoped publish must not care what ORDER the lake's columns are in.
+///
+/// A lake is created once and then outlives many local migrations. `pages`
+/// declares `last_written_by` between `at_ts` and `created_at`
+/// (`sql/0001_b_tables.sql`), but a database provisioned before that column
+/// existed gains it via `ALTER TABLE … ADD COLUMN`
+/// (`sql/0011_write_attribution.sql`), which appends it LAST. Both shapes
+/// are correct; every ordinary query is column-named and never notices.
+///
+/// A positional `INSERT INTO lake.pages SELECT * FROM pages` does notice: it
+/// lines the principal up against `created_at` and the write fails with
+///
+/// ```text
+/// Conversion Error: invalid timestamp field format: "anonymous"
+///   when casting from source column last_written_by
+/// ```
+///
+/// which makes the tenant permanently unwritable — the local write succeeds,
+/// so the page is visible until the next boot and then gone.
+#[tokio::test]
+async fn publish_page_sync_survives_a_lake_whose_column_order_differs() {
+    let h = fresh_harness();
+    let cfg = lake_config(&h);
+
+    // A lake frozen in the legacy order: `last_written_by` appended after
+    // `created_at`/`updated_at`/`scenario`, exactly as the 0011 ALTER leaves
+    // a database that predates the column.
+    lake_writer_conn(&cfg)
+        .execute_batch(
+            "CREATE TABLE lake.pages (
+                 page_id VARCHAR, slug VARCHAR, skill VARCHAR, page_type VARCHAR,
+                 frontmatter JSON, body_hash VARCHAR, at_ts TIMESTAMP,
+                 created_at TIMESTAMP, updated_at TIMESTAMP,
+                 scenario VARCHAR, last_written_by VARCHAR);",
+        )
+        .unwrap();
+
+    h.indexer
+        .update_page_as(
+            "markdown/skills/customer.md",
+            CUSTOMER_SKILL,
+            Some("anonymous"),
+        )
+        .await
+        .unwrap();
+
+    h.indexer
+        .publish_page_sync(&cfg, "markdown/skills/customer.md")
+        .await
+        .expect("a differently-ordered lake must still accept a scoped publish");
+
+    // Landing without error is not enough — the values must be in the right
+    // columns, which is precisely what a positional insert got wrong.
+    let reader = reader_conn(&cfg);
+    let (page_id, writer): (String, Option<String>) = reader
+        .query_row("SELECT page_id, last_written_by FROM lake.pages", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(page_id, "markdown/skills/customer.md");
+    assert_eq!(
+        writer.as_deref(),
+        Some("anonymous"),
+        "the principal must land in last_written_by, not in a timestamp column"
+    );
+}
+
+/// The other half: a lake created before a column existed at all. `BY NAME`
+/// alone would fail there ("table does not have column"), so the scoped
+/// publish first brings the lake's table up to the local schema.
+#[tokio::test]
+async fn publish_page_sync_adds_columns_a_stale_lake_is_missing() {
+    let h = fresh_harness();
+    let cfg = lake_config(&h);
+
+    // No `last_written_by` and no `scenario` — a lake first published by an
+    // escurel that had neither.
+    lake_writer_conn(&cfg)
+        .execute_batch(
+            "CREATE TABLE lake.pages (
+                 page_id VARCHAR, slug VARCHAR, skill VARCHAR, page_type VARCHAR,
+                 frontmatter JSON, body_hash VARCHAR, at_ts TIMESTAMP,
+                 created_at TIMESTAMP, updated_at TIMESTAMP);",
+        )
+        .unwrap();
+
+    h.indexer
+        .update_page_as(
+            "markdown/skills/customer.md",
+            CUSTOMER_SKILL,
+            Some("consultant:alice"),
+        )
+        .await
+        .unwrap();
+
+    h.indexer
+        .publish_page_sync(&cfg, "markdown/skills/customer.md")
+        .await
+        .expect("a lake missing a migrated column must be widened, not rejected");
+
+    let reader = reader_conn(&cfg);
+    let writer: Option<String> = reader
+        .query_row("SELECT last_written_by FROM lake.pages", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(writer.as_deref(), Some("consultant:alice"));
+}

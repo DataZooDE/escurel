@@ -75,8 +75,12 @@ pub enum SnapshotError {
     /// single-file backend never publishes snapshots).
     #[error("{0}")]
     Unsupported(&'static str),
-    /// A [`LakeConfig`] field failed the splice guards (unsafe character,
-    /// empty value, secret/scheme mismatch, missing local data dir).
+    /// A spliced lake fragment failed the guards: a [`LakeConfig`] field
+    /// (unsafe character, empty value, secret/scheme mismatch, missing local
+    /// data dir), or a catalog identifier that `ensure_lake_columns` was
+    /// about to splice into an `ALTER TABLE`. The latter should be
+    /// unreachable — those names come from our own `information_schema` —
+    /// and is checked anyway rather than trusted for its provenance.
     #[error("invalid lake config: {0}")]
     InvalidLakeConfig(String),
     /// The lake's `escurel_manifest` disagrees with this reader — wrong
