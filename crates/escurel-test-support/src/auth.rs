@@ -73,9 +73,12 @@ pub(crate) const TEST_KID: &str = "escurel-test-support";
 /// continuity.
 pub(crate) const TEST_ISSUER_PATH: &str = "/realms/test";
 
-/// Ephemeral RSA keypair used by the in-process issuer. Regenerated
-/// on every [`crate::EscurelProcess::spawn`] so independent test
-/// processes never share signing material.
+/// Ephemeral RSA keypair used by the in-process issuer.
+///
+/// Generated **once per process** and shared by every
+/// [`crate::EscurelProcess::spawn`] in it — see [`Keys::shared`]. Signing
+/// material still never crosses a process boundary: it is never written to
+/// disk, and every test process mints its own.
 pub(crate) struct Keys {
     private_pem: Vec<u8>,
     n_b64: String,
@@ -83,11 +86,32 @@ pub(crate) struct Keys {
 }
 
 impl Keys {
+    /// The process-wide keypair, generated on first use.
+    ///
+    /// This used to be a fresh keypair per spawn, and that was the single
+    /// most expensive thing the harness did. Tests build with the `dev`
+    /// profile, and the old doc comment here measured keygen "under ~200 ms
+    /// in *release* builds" — which was true, and irrelevant, because no
+    /// test has ever run it in release. Unoptimized it measured a mean of
+    /// 4.88s (median 3.01s, max 9.73s), paid on each of ~400 spawns.
+    ///
+    /// The root `Cargo.toml` now lifts `rsa` + `num-bigint-dig` to
+    /// `opt-level = 3` in the dev profile, which is the bulk of the fix
+    /// (4.88s -> 0.23s). Memoising on top of that removes the rest wherever
+    /// one process runs many tests, i.e. plain `cargo test`. Under
+    /// `cargo nextest`, which runs each test in its own process, this is one
+    /// keygen per test either way — that residual ~0.2s is the floor, and
+    /// buying it down further would mean committing a private key to the
+    /// repo, which is not a trade worth making for 6% of the suite.
+    pub(crate) fn shared() -> &'static Self {
+        static KEYS: std::sync::LazyLock<Keys> = std::sync::LazyLock::new(Keys::generate);
+        &KEYS
+    }
+
     /// Generate a fresh 2048-bit RSA keypair. 2048 is the smallest
-    /// size `jsonwebtoken`'s RS256 path accepts without warning,
-    /// matches the production substrate's Keycloak issuer, and
-    /// keeps key generation under ~200 ms in release builds.
-    pub(crate) fn generate() -> Self {
+    /// size `jsonwebtoken`'s RS256 path accepts without warning and
+    /// matches the production substrate's Keycloak issuer.
+    fn generate() -> Self {
         let mut rng = rand::thread_rng();
         let private = RsaPrivateKey::new(&mut rng, 2048).expect("rsa keygen");
         let public = RsaPublicKey::from(&private);
@@ -113,7 +137,7 @@ fn b64url(b: &[u8]) -> String {
 /// so [`crate::EscurelProcess`] can carry ownership for the
 /// process's lifetime.
 pub(crate) struct TestIssuer {
-    pub(crate) keys: Keys,
+    pub(crate) keys: &'static Keys,
     pub(crate) issuer_url: String,
     pub(crate) jwks_url: String,
     /// When the gateway was configured with a custom
@@ -136,8 +160,8 @@ impl TestIssuer {
 
     pub(crate) async fn start_with_groups_claim(groups_claim: Option<String>) -> Self {
         let mock_server = MockServer::start().await;
-        let keys = Keys::generate();
-        mount_jwks(&mock_server, &keys).await;
+        let keys = Keys::shared();
+        mount_jwks(&mock_server, keys).await;
         let issuer_url = format!("{}{}", mock_server.uri(), TEST_ISSUER_PATH);
         let jwks_url = format!("{issuer_url}/protocol/openid-connect/certs");
         Self {

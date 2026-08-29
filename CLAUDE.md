@@ -122,7 +122,10 @@ A PR cycle:
    (`cargo clippy … >/dev/null 2>clippy.log; echo $?`):
    - `cargo fmt --check`
    - `cargo clippy --workspace --all-targets -- -D warnings`
-   - `cargo test --workspace --all-targets`
+   - `cargo test --workspace --all-targets` (what CI runs).
+     `cargo nextest run --workspace` covers the same tests and is ~2x
+     faster *on a many-core machine*; it is slower on a 2-core CI runner,
+     which is why CI does not use it. See `.config/nextest.toml`.
    - `cargo build --workspace --release`
 5. Push the branch; open a PR with **Summary** and **Test plan**
    sections. The test plan names the new integration test(s) by
@@ -312,14 +315,13 @@ dev-debug`, then `cargo clean --profile dev-debug` when you're done.
   right shape; it also means `git worktree remove` frees the cache
   atomically.
 
-**The two big crates are already consolidated.** `escurel-server` and
-`escurel-index` no longer build one binary per test file: their tests
-live in `tests/suite/` and are declared as modules from
-`tests/suite/main.rs`, which Cargo builds as a single target named
-`suite`. 120 linked executables became 4. **If you add a test file to
-either crate, put it in `tests/suite/` and add its `mod` line** — a
-file that is not listed there is silently never compiled, and nothing
-warns you.
+**The five big crates are already consolidated.** `escurel-server`,
+`escurel-index`, `escurel-runner`, `escurel-cli` and `escurel-client` no
+longer build one binary per test file: their tests live in `tests/suite/`
+and are declared as modules from `tests/suite/main.rs`, which Cargo builds
+as a single target named `suite`. **If you add a test file to one of those
+crates, put it in `tests/suite/` and add its `mod` line** — a file that is
+not listed there is silently never compiled, and nothing warns you.
 
 The layout matters: it must be `tests/suite/main.rs`, not
 `tests/suite.rs`. A test target's root file resolves `mod x;` against
@@ -331,9 +333,13 @@ process-global `tracing` subscriber and are mutually exclusive inside
 one process. See the header of
 `crates/escurel-server/tests/suite/main.rs`.
 
-The remaining crates are deliberately untouched: the largest is
-`escurel-runner` at 18 files, and below that the churn plus the lost
-process isolation is not worth the link time saved.
+The remaining crates are deliberately untouched, and the reason is
+binary *size*, not file count. Consolidation pays where a test binary
+statically links the gateway and DuckDB: the five crates above averaged
+97-118 MB per binary and accounted for 4.4 GB of the workspace's 5.8 GB.
+Everything left averages 8-25 MB — `escurel-storage`'s six binaries total
+50 MB between them — so the churn and the lost process isolation buy
+nothing worth having.
 
 See [`docs/notes/discovered/2026-08-02-cargo-target-disk-blowup.md`](docs/notes/discovered/2026-08-02-cargo-target-disk-blowup.md).
 

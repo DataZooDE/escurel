@@ -6,7 +6,7 @@
 //! Run it on demand / nightly:
 //!
 //! ```text
-//! cargo test -p escurel-runner --test claude_live -- --ignored
+//! cargo test -p escurel-runner --test suite claude_live:: -- --ignored
 //! ```
 //!
 //! It is a REAL test, structured exactly like the echo end-to-end DoD

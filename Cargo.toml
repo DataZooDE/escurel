@@ -81,3 +81,23 @@ debug = 2
 
 [profile.dev-debug.package."*"]
 debug = true
+
+# The test harness pays for a 2048-bit RSA keypair on every
+# `EscurelProcess::spawn` with `AuthMode::TestIssuer` (163 call sites) —
+# `escurel-test-support`'s in-process OIDC issuer signs its JWTs with a
+# freshly generated key. At the default dev opt-level of 0, `rsa` +
+# `num-bigint-dig` run their bignum arithmetic unoptimized, and that keygen
+# measures a mean of 4.88s (median 3.01s, max 9.73s). At opt-level 3 the
+# same keygen is a mean of 0.23s — a ~21x difference, and it was the single
+# largest line item in the suite's CPU time.
+#
+# Only these two packages are lifted, not the whole dependency graph: they
+# are pure-computation crates well outside the code under test, so
+# optimizing them costs a one-off compile and changes nothing a test can
+# observe. Our own crates stay at opt-level 0 — debuggable backtraces and
+# fast incremental rebuilds are worth more there than throughput.
+[profile.dev.package.rsa]
+opt-level = 3
+
+[profile.dev.package.num-bigint-dig]
+opt-level = 3

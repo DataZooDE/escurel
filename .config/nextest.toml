@@ -1,0 +1,36 @@
+# cargo-nextest configuration.
+#
+# nextest is a LOCAL convenience here, not the merge gate. CI runs plain
+# `cargo test --workspace --all-targets`, and that is a measured decision —
+# see the comment on the `cargo test` step in .github/workflows/ci.yml.
+#
+# The short version: libtest parallelises *within* a test binary but runs the
+# 77 binaries one after another, whereas nextest schedules across them. On a
+# 32-core workstation that is worth having (100s -> 50s). But nextest runs
+# each test in its OWN process, and this suite has a real per-process cost —
+# the test issuer's RSA keypair, which `Keys::shared` can only amortise
+# within a process. That trades CPU for scheduling, and pinned to two cores,
+# the way CI runs, the trade loses:
+#
+#   cargo test --workspace --all-targets   4m49s wall,  6m41s CPU
+#   cargo nextest run --workspace          5m46s wall,  8m41s CPU
+#
+# So: use nextest locally if you have the cores, and expect CI to be the
+# arbiter either way. If this ever runs on a bigger CI runner, re-measure —
+# the ordering flips as soon as cores stop being the binding constraint.
+
+[profile.default]
+# The suite boots real gateways on real ports against real DuckDB files.
+# Nothing here should take a minute; flag it rather than let it hide.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci]
+# Not used by .github/workflows/ci.yml (see above) — kept for anyone
+# reproducing a CI-shaped run locally.
+fail-fast = false
+failure-output = "immediate-final"
+# Deliberately NO `retries`. A retry turns a real race into a green run and
+# the flake is never investigated; this repo's contract is that a surprise
+# gets asked about, not papered over. If the suite starts flaking on ports
+# or startup timing, that is the bug.
+retries = 0

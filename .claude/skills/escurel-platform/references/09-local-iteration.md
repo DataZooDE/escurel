@@ -117,6 +117,37 @@ honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
   the top of `crates/escurel-server/src/config.rs`, which is generated from
   the same parser that reads them.
 
+## Make your test suite fast
+
+`EscurelProcess::spawn` with `AuthMode::TestIssuer` mints a 2048-bit RSA
+keypair for the in-process OIDC issuer. Your tests build with the `dev`
+profile, where dependencies are unoptimized by default — and unoptimized,
+that keygen measures a **mean of 4.88s** (median 3.01s, max 9.73s). One
+spawn per test makes it the most expensive thing your suite does.
+
+Put this in your workspace's root `Cargo.toml`:
+
+```toml
+[profile.dev.package.rsa]
+opt-level = 3
+
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+```
+
+That is a ~21x cut on the keygen (4.88s -> 0.23s), and it costs you a
+one-off compile of two pure-computation crates well outside your own code.
+In escurel's own suite it took the whole workspace from 54 to 14 CPU-minutes.
+A spawn then costs ~0.31s with the test issuer, ~0.10s without it.
+
+`cargo nextest run` schedules across test binaries rather than running them
+one at a time, which is worth having locally once you have more than a
+couple. Measure before you put it in CI, though: it runs each test in its
+own process, so a per-process setup cost (the test issuer's keypair, for
+one) is paid per *test* rather than per binary. On escurel's own 2-core CI
+runner that made it slower than plain `cargo test`, and faster only on a
+many-core workstation.
+
 ## The iterate loop
 
 1. Author/adjust seed pages (`references/07`) and your data model

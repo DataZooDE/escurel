@@ -61,7 +61,7 @@ vendor adk-rust:
 - **Live** `crates/escurel-runner/tests/adk_live.rs`: the same flow with a
   **real adk-rust `LlmAgent`** runner (Gemini), `#[ignore]`'d (needs a built
   runner binary + `GEMINI_API_KEY`; non-deterministic/slow). Runnable with
-  `cargo test -p escurel-runner --test adk_live -- --ignored`.
+  `cargo test -p escurel-runner --test suite adk_live:: -- --ignored`.
 
 ## How to recognise / build the live runner
 
@@ -76,7 +76,7 @@ cd datazoo-agent-template
 cargo build --release --bin datazoo-agent-adk-runner
 GEMINI_API_KEY=... LLM_PROVIDER=gemini \
   ESCUREL_RUNNER_ADK_BIN=$PWD/target/release/datazoo-agent-adk-runner \
-  cargo test -p escurel-runner --test adk_live -- --ignored
+  cargo test -p escurel-runner --test suite adk_live:: -- --ignored
 ```
 
 If a future contributor sees "Python ADK / `MCPToolset` script" in the issue
