@@ -70,6 +70,18 @@ Add `--release` to the safety step in that job, and put the cache back:
     fi
 ```
 
+## Verifying it
+
+A cache fix cannot be verified by the run that ships it: the first run after
+any key change is cold, and a cold cache always links. Verification took two
+runs on the same PR branch, with the second commit touching no `Cargo.toml`,
+`Cargo.lock` or `rust-toolchain.toml` so the rust-cache key was unchanged:
+
+| run | cache | `build --release` |
+|---|---|---|
+| 1 | cold (saved `v0-rust-release-build-…`, 624 MiB) | 23m18s |
+| 2 | restored | see below |
+
 ## How to recognise it next time
 
 - **`cargo clean -p` takes a profile.** So do `cargo clean` and most of the
