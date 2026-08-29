@@ -1,47 +1,32 @@
-//! Live end-to-end DoD test for the Google ADK adapter (#154) — **no
-//! mocks**, but `#[ignore]` because it drives a real adk-rust `LlmAgent`
-//! (needs a built adk-rust runner binary + `GEMINI_API_KEY`, and is
-//! non-deterministic/slow, so it must not run in the default gate).
+//! Live end-to-end DoD test for the Codex CLI adapter (#153) — **no
+//! mocks**, but `#[ignore]` because it drives a real LLM (needs `codex`
+//! auth + API quota and is non-deterministic/slow, so it must not run in the
+//! default gate).
 //!
 //! Run it on demand / nightly:
 //!
 //! ```text
-//! cargo test -p escurel-runner --test adk_live -- --ignored
+//! cargo test -p escurel-runner --test suite codex_live:: -- --ignored
 //! ```
 //!
-//! ## Building the live adk-rust runner binary
+//! It is a REAL test, structured exactly like the Claude end-to-end DoD
+//! (`claude_live.rs`) but with the **real `codex` CLI** as the harness:
 //!
-//! This adapter spawns an **external** adk-rust runner by path — the heavy
-//! adk-rust + bundled-DuckDB tree stays out of escurel's workspace (see the
-//! `AdkHarness` module doc + `docs/notes/discovered/2026-06-07-...`). Build the
-//! runner from DataZoo's adk-rust template, which keeps adk-rust scoped to its
-//! own standalone workspace:
+//! 1. Spawn a real gateway (`EscurelProcess`, TestIssuer auth) seeded via
+//!    `FixtureBuilder` with a skill page + a target instance page.
+//! 2. `capture_event` a real inbox event labelled with the skill and
+//!    pre-flagged to the target instance, over the real `/mcp`.
+//! 3. Spawn the real `escurel-runner` with `ESCUREL_RUNNER_HARNESS=codex`,
+//!    pointed at the real gateway. The runner packages the trigger and runs
+//!    the **real `codex exec` subprocess**, which registers the gateway as a
+//!    streamable-HTTP MCP server in a per-run `CODEX_HOME` and makes real
+//!    `/mcp` tool calls under the scoped token to fold the event.
+//! 4. Assert the end-to-end effect on the REAL gateway: the event becomes
+//!    `processed` and the runner's durable ledger run is terminal.
 //!
-//! ```text
-//! git clone https://github.com/DataZooDE/datazoo-agent-template
-//! cd datazoo-agent-template
-//! # Build a runner speaking the AdkHarness I/O contract:
-//! #   - read the token-less AdkTask JSON on stdin
-//! #     ({instructions, input, mcp_endpoint, allowed_tools});
-//! #   - read the scoped bearer from $ESCUREL_MCP_BEARER and set it as
-//! #     Authorization: Bearer on a streamable-HTTP MCPToolset → mcp_endpoint;
-//! #   - .instruction(<instructions>) on the adk-rust LlmAgent; fold <input>;
-//! #   - print a HarnessOutcome JSON on stdout, exit 0.
-//! cargo build --release --bin datazoo-agent-adk-runner
-//! ```
-//!
-//! Then run this test with the env wired:
-//!
-//! ```text
-//! GEMINI_API_KEY=... LLM_PROVIDER=gemini \
-//!   ESCUREL_RUNNER_ADK_BIN=/abs/path/to/datazoo-agent-adk-runner \
-//!   cargo test -p escurel-runner --test adk_live -- --ignored
-//! ```
-//!
-//! It is a REAL test, structured exactly like the Codex/Claude end-to-end DoD
-//! but with the **real adk-rust `LlmAgent`** (Gemini-backed) as the harness's
-//! brain. Auth: the escurel `/mcp` bearer is the scoped token the runner
-//! mints; that is separate from the `GEMINI_API_KEY` the LLM itself uses.
+//! Auth: a live run needs `codex` to be authenticated (a `codex login` /
+//! `OPENAI_API_KEY`). The escurel `/mcp` bearer is the scoped token the runner
+//! mints; that is separate from the OpenAI credential the LLM itself uses.
 
 use std::net::TcpListener;
 use std::process::{Child, Command};
@@ -100,14 +85,8 @@ async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Va
 }
 
 #[tokio::test]
-#[ignore = "live adk-rust LlmAgent; run with --ignored; needs an adk runner binary + GEMINI_API_KEY"]
-async fn adk_harness_folds_event_into_instance_end_to_end() {
-    // The live runner binary must be built from the datazoo-agent-template and
-    // pointed at via ESCUREL_RUNNER_ADK_BIN (see this file's module doc).
-    let adk_bin = std::env::var("ESCUREL_RUNNER_ADK_BIN").expect(
-        "set ESCUREL_RUNNER_ADK_BIN to a built adk-rust runner binary (see module doc to build it)",
-    );
-
+#[ignore = "live LLM; run with --ignored; needs codex auth + API quota"]
+async fn codex_harness_folds_event_into_instance_end_to_end() {
     // 1. Real gateway with a skill + target instance.
     let gateway = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -144,8 +123,7 @@ async fn adk_harness_folds_event_into_instance_end_to_end() {
         .expect("capture_event returns an event_id")
         .to_owned();
 
-    // 3. Spawn the real runner with the ADK harness selected, pointed at the
-    //    built adk-rust runner binary.
+    // 3. Spawn the real runner with the CODEX harness selected.
     let token = gateway.mint_token(TENANT, Role::Agent);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
@@ -154,22 +132,11 @@ async fn adk_harness_folds_event_into_instance_end_to_end() {
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
         .env("ESCUREL_RUNNER_TENANT", TENANT)
         .env("ESCUREL_RUNNER_TOKEN", &token)
-        .env("ESCUREL_RUNNER_HARNESS", "adk")
-        .env("ESCUREL_RUNNER_ADK_BIN", &adk_bin)
+        .env("ESCUREL_RUNNER_HARNESS", "codex")
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "1s");
-    // Honour explicit model / provider overrides if the operator set them.
-    if let Ok(model) = std::env::var("ESCUREL_RUNNER_ADK_MODEL") {
-        cmd.env("ESCUREL_RUNNER_ADK_MODEL", model);
-    }
-    for key in [
-        "LLM_PROVIDER",
-        "GEMINI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-    ] {
-        if let Ok(val) = std::env::var(key) {
-            cmd.env(key, val);
-        }
+    // Honour an explicit model override if the operator set one.
+    if let Ok(model) = std::env::var("ESCUREL_RUNNER_CODEX_MODEL") {
+        cmd.env("ESCUREL_RUNNER_CODEX_MODEL", model);
     }
     let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
 
@@ -215,7 +182,7 @@ async fn adk_harness_folds_event_into_instance_end_to_end() {
         }
 
         if Instant::now() >= deadline {
-            panic!("adk harness never folded {event_id} into {instance_page_id} within 180s");
+            panic!("codex harness never folded {event_id} into {instance_page_id} within 180s");
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }

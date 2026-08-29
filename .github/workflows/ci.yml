@@ -27,16 +27,20 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
   RUST_BACKTRACE: short
-  # The workspace statically links libduckdb into ~15 test
-  # binaries. Linking them with full debuginfo, in parallel, blows
-  # past the 7 GB on a GitHub-hosted runner — the first re-enabled
-  # CI run got SIGTERM'd (exit 143) mid-link before any test ran.
-  # Drop test/dev debuginfo (duckdb's is enormous) and serialise
-  # build jobs to cap peak link memory. CI-only; the committed
-  # profiles and local dev builds are untouched.
+  # The workspace statically links libduckdb into its fat test binaries.
+  # Linking them with full debuginfo, in parallel, blows past the 7 GB on a
+  # GitHub-hosted runner — the first re-enabled CI run got SIGTERM'd (exit
+  # 143) mid-link before any test ran. Drop test/dev debuginfo (duckdb's is
+  # enormous). CI-only; the committed profiles and local dev builds are
+  # untouched.
+  #
+  # `CARGO_BUILD_JOBS: "1"` used to sit here too, job-wide, as the other half
+  # of that memory cap. Job-wide was too broad: it also serialised `cargo
+  # clippy`, which runs no linker at all and so was paying the cap without
+  # ever having posed the risk. It now sits on the steps that link (the
+  # `cargo test` build below, and `cargo build --release` in its own job).
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
-  CARGO_BUILD_JOBS: "1"
 
 jobs:
   ci:
@@ -44,8 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     # DuckDB is no longer compiled from source — libduckdb-sys downloads
     # the precompiled libduckdb (see .cargo/config.toml: DUCKDB_DOWNLOAD_LIB).
-    # `CARGO_BUILD_JOBS=1` (the link-memory cap, see env above) still
-    # serialises linking, so keep generous headroom for the release stage.
+    # `CARGO_BUILD_JOBS=1` (the link-memory cap) still serialises linking on
+    # the test step, so keep generous headroom.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -91,8 +95,32 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Still plain `cargo test`, and that is a measured decision rather than
+      # inertia — `cargo nextest` was tried here and is SLOWER on this runner.
+      #
+      # nextest schedules tests across binaries where libtest runs the
+      # binaries one after another, which is worth a lot on a workstation:
+      # 100s -> 50s on 32 cores. But it runs each test in its OWN process,
+      # and this suite's per-process cost is real (an RSA keypair for the
+      # test issuer, which `Keys::shared` can only amortise *within* a
+      # process). That trades CPU for scheduling, and a 2-core runner has no
+      # spare CPU to trade. Pinned to two cores, measured on this workspace:
+      #
+      #   cargo test --workspace --all-targets   4m49s wall,  6m41s CPU
+      #   cargo nextest run --workspace          5m46s wall,  8m41s CPU
+      #
+      # So nextest stays a local convenience (see .config/nextest.toml) and
+      # CI keeps libtest. Revisit if this job ever moves to a bigger runner —
+      # the ordering flips as soon as cores stop being the binding constraint.
+      #
+      # This step links the fat binaries, so it keeps the `CARGO_BUILD_JOBS:
+      # 1` memory cap that used to apply to the whole job. That cap is on
+      # cargo's build parallelism only; it does not throttle libtest's test
+      # threads.
       - name: cargo test
         run: cargo test --workspace --all-targets
+        env:
+          CARGO_BUILD_JOBS: "1"
 
   # `cargo build --release` in its OWN job.
   #
@@ -136,6 +164,10 @@ jobs:
       # rust-cache here" for the same reasoning on the tag-release path.
       - name: cargo build --release
         run: cargo build --workspace --release
+        env:
+          # Same link-memory cap as the test build; this job links every
+          # binary in the workspace.
+          CARGO_BUILD_JOBS: "1"
 
   # The SHIPPED feature set, in its OWN job.
   #
