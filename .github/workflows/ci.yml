@@ -82,6 +82,10 @@ jobs:
       # (e.g. an older cache, or a partial restore): the libduckdb-sys
       # build script only re-downloads when it actually re-runs, so force
       # that by cleaning just that crate when the .so is absent.
+      # `cargo clean -p <pkg>` is per-PROFILE: bare, it cleans target/debug
+      # only. This job builds dev/test artifacts, so bare is correct here —
+      # but see the `build --release` job below, where the missing `--release`
+      # silently made the identical step a no-op and cost that job its cache.
       - name: Ensure libduckdb is present (cache-restore safety)
         run: |
           if ! ls target/duckdb-download/*/*/libduckdb.so >/dev/null 2>&1; then
@@ -146,22 +150,48 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustup component add rustfmt clippy
 
-      # NO rust-cache here — deliberately, and NOT an oversight. libduckdb-sys
-      # (DUCKDB_DOWNLOAD_LIB, see .cargo/config.toml) downloads the shared
-      # libduckdb into target/duckdb-download and links against it.
-      # Swatinem/rust-cache PRUNES that downloaded .so when it saves the cache,
-      # so a *restored* cache link-fails with `rust-lld: unable to find library
-      # -lduckdb` — the build-script fingerprint is restored (so the script
-      # does NOT re-run and re-download) but the .so it points at is gone. The
-      # prior `cache-directories: target/duckdb-download` + conditional
-      # `cargo clean -p libduckdb-sys` safety step did NOT close this (the
-      # release job stayed red on main), so we do what release.yml already
-      # proved correct on all three platforms: no cache → the build script
-      # always runs → libduckdb is always freshly downloaded → the link always
-      # resolves. A cold release build per PR is the price of a green gate;
-      # libduckdb is a precompiled download (no C++ compile), and this job has
-      # its own 90-minute budget. See release.yml's "NOTE: deliberately NO
-      # rust-cache here" for the same reasoning on the tag-release path.
+      # This job used to run with NO cache at all, and the comment here said
+      # that was deliberate: libduckdb-sys (DUCKDB_DOWNLOAD_LIB, see
+      # .cargo/config.toml) downloads libduckdb into target/duckdb-download,
+      # Swatinem/rust-cache prunes it on save, and a restored cache then
+      # link-fails with `unable to find library -lduckdb` — the build-script
+      # fingerprint comes back, so the script does not re-run and re-download,
+      # but the .so it points at is gone. All of that is true. The conclusion
+      # drawn from it — that the `cache-directories` + `cargo clean -p
+      # libduckdb-sys` safety step "did NOT close this" — was not.
+      #
+      # The safety step never ran against this job's artifacts. `cargo clean
+      # -p <pkg>` cleans the DEV profile only; it needs `--release` to touch
+      # target/release. Measured on this workspace with both profiles built:
+      #
+      #   cargo clean -p libduckdb-sys            -> 58 files, all target/debug
+      #   cargo clean -p libduckdb-sys --release  -> 48 files, all target/release
+      #
+      # So in the `ci` job (dev profile) the safety net worked and the cache
+      # was fine; here it was a guaranteed no-op, the stale fingerprint
+      # survived, and the link failed. The fix is the missing flag, not the
+      # missing cache — and dropping the cache cost a full cold dependency
+      # build on every PR (23m36s, the longest job in the run).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Its own key: this job's target/ holds release artifacts, the `ci`
+          # job's holds dev+test ones, and they must not overwrite each other.
+          shared-key: release-build
+          cache-directories: target/duckdb-download
+          cache-on-failure: true
+
+      # The safety net, with the flag that makes it apply to THIS job's
+      # profile. rust-cache prunes the downloaded libduckdb even though it is
+      # listed in `cache-directories` (verified in run 33258823279, where this
+      # step fired on a warm-cache `ci` job), so assume the .so is absent and
+      # force the build script to re-run whenever it is.
+      - name: Ensure libduckdb is present (cache-restore safety)
+        run: |
+          if ! ls target/duckdb-download/*/*/libduckdb.so >/dev/null 2>&1; then
+            echo "libduckdb not in restored cache — forcing libduckdb-sys rebuild"
+            cargo clean -p libduckdb-sys --release || true
+          fi
+
       - name: cargo build --release
         run: cargo build --workspace --release
         env:
