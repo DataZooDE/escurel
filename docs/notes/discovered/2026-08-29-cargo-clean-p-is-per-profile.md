@@ -80,7 +80,20 @@ runs on the same PR branch, with the second commit touching no `Cargo.toml`,
 | run | cache | `build --release` |
 |---|---|---|
 | 1 | cold (saved `v0-rust-release-build-…`, 624 MiB) | 23m18s |
-| 2 | restored | see below |
+| 2 | restored, `full match: true` | **12m27s** |
+
+Run 2 is the one that proves it. Its log shows the cache restored *and* the
+safety step firing —
+
+```
+Restored from cache key "v0-rust-release-build-Linux-x64-…" full match: true.
+libduckdb not in restored cache — forcing libduckdb-sys rebuild
+```
+
+— which is precisely the situation that used to end in `unable to find
+library -lduckdb`. It confirms both halves at once: rust-cache really does
+prune the downloaded `.so` despite `cache-directories`, and with `--release`
+the clean now forces the re-download that makes the link resolve.
 
 ## How to recognise it next time
 
