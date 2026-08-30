@@ -59,6 +59,11 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scoped. Both this workflow and the other image build in this repo
+          # used a bare `type=gha`, which is ONE shared scope — the Rust gateway image
+          # and the other were overwriting each other's layer cache, so
+          # whichever ran last left the other cold. Distinct scopes give each
+          # image its own.
+          cache-from: type=gha,scope=escurel-server
+          cache-to: type=gha,mode=max,scope=escurel-server
           provenance: false

@@ -118,8 +118,13 @@ jobs:
             ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:sha-${{ steps.meta.outputs.sha_short }}
             ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:latest
             ghcr.io/${{ steps.meta.outputs.owner_lc }}/escurel-explore:main
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scoped. Both this workflow and the other image build in this repo
+          # used a bare `type=gha`, which is ONE shared scope — the Flutter SPA image
+          # and the other were overwriting each other's layer cache, so
+          # whichever ran last left the other cold. Distinct scopes give each
+          # image its own.
+          cache-from: type=gha,scope=escurel-explore
+          cache-to: type=gha,mode=max,scope=escurel-explore
 
       - name: Summary
         run: |
