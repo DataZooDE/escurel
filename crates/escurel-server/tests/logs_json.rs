@@ -247,10 +247,16 @@ async fn tool_call_record_carries_full_audit_fields() {
 
     // The tool.completed audit record must carry the full per-record
     // contract field set (platform.md §Observability).
+    // Select by TOOL, not just by msg: these tests share one process-wide
+    // log buffer and run concurrently, so "the first tool.completed" is
+    // whichever test won the race.
     let rec = all
         .iter()
-        .find(|v| v.get("msg").and_then(|m| m.as_str()) == Some("tool.completed"))
-        .unwrap_or_else(|| panic!("no tool.completed record; lines: {all:?}"));
+        .find(|v| {
+            v.get("msg").and_then(|m| m.as_str()) == Some("tool.completed")
+                && v.get("tool").and_then(|t| t.as_str()) == Some("list_skills")
+        })
+        .unwrap_or_else(|| panic!("no list_skills tool.completed record; lines: {all:?}"));
     for key in [
         "ts",
         "level",
@@ -271,6 +277,89 @@ async fn tool_call_record_carries_full_audit_fields() {
     assert_eq!(rec["tenant"], "default");
     assert_eq!(rec["subject"], "anonymous");
     assert!(rec["duration_ms"].is_number(), "duration_ms numeric: {rec}");
+    // A SUCCESSFUL call carries an empty reason, so `error_detail` being
+    // non-empty is always a real failure and never a leftover field.
+    assert_eq!(
+        rec["error_detail"], "",
+        "success must not carry a reason: {rec}"
+    );
+
+    p.shutdown().await;
+}
+
+/// A FAILED tool must record WHY, not just `status: "error"`.
+///
+/// Regression for 2026-08-30: `query_instance` failed on `lab` for days
+/// while the only evidence anywhere was `status: "error"` and an LLM
+/// three services away paraphrasing it as "the upstream systems are
+/// returning connectivity errors". The reason was already on the wire to
+/// the caller; it simply was not written down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_tool_call_records_why_it_failed() {
+    let buf = shared_buf();
+    let start_offset = buf.lock().unwrap().len();
+
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant("acme")
+                .skill("customer", CUSTOMER_SKILL)
+                .done(),
+        ),
+        config_overrides: ConfigOverrides {
+            gateway_version: Some("test-logs".to_owned()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    let http = reqwest::Client::new();
+    // A query page that does not exist — the exact shape that was silent
+    // in production.
+    let resp = http
+        .post(p.mcp_url())
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "query_instance",
+                "arguments": { "query_ref": "[[query::does_not_exist]]", "params": {} }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let all = {
+        let raw = String::from_utf8(buf.lock().unwrap()[start_offset..].to_vec()).unwrap();
+        raw.lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect::<Vec<_>>()
+    };
+
+    let rec = all
+        .iter()
+        .find(|v| {
+            v.get("msg").and_then(|m| m.as_str()) == Some("tool.completed")
+                && v.get("tool").and_then(|t| t.as_str()) == Some("query_instance")
+        })
+        .unwrap_or_else(|| panic!("no query_instance tool.completed record; lines: {all:?}"));
+
+    assert_eq!(rec["status"], "error", "expected a failure: {rec}");
+    let detail = rec["error_detail"].as_str().unwrap_or("");
+    assert!(
+        !detail.is_empty(),
+        "a failed tool must say why, not just status:error: {rec}"
+    );
+    // Names the tool that failed, so the line is greppable on its own
+    // without correlating back to the request.
+    assert!(
+        detail.contains("query_instance"),
+        "reason should name the failing tool: {detail}"
+    );
 
     p.shutdown().await;
 }

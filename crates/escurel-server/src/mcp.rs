@@ -322,6 +322,32 @@ async fn mcp_inner(
             } else {
                 "ok"
             };
+            // The REASON a tool failed, for the audit record below.
+            //
+            // Until 2026-08-30 a failed tool logged `status: "error"` and
+            // nothing else, so the only trace of `query_instance` failing
+            // was an LLM three services away paraphrasing it as "the
+            // upstream systems are returning connectivity errors". The
+            // actual cause (a `[[query::*]]` page that resolves to
+            // nothing) never appeared in any log line on any host.
+            //
+            // `message` is already the operator-facing string every
+            // constructor here builds, and it is already sent to the
+            // caller on the wire — recording it locally reveals nothing
+            // the client was not told. `data.code` rides along when the
+            // error carries one, because it is the stable thing to alert
+            // on; `message` is one wording edit from breaking a matcher.
+            let error_detail = r.as_ref().err().map(|e| {
+                match e
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("code"))
+                    .and_then(Value::as_str)
+                {
+                    Some(code) => format!("{code}: {}", e.message),
+                    None => e.message.clone(),
+                }
+            });
             let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
             state
                 .metrics
@@ -337,6 +363,7 @@ async fn mcp_inner(
                 tool = %tool,
                 status,
                 duration_ms,
+                error_detail = error_detail.as_deref().unwrap_or(""),
                 msg = "tool.completed",
                 "tool.completed"
             );
