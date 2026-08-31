@@ -393,6 +393,24 @@ impl Indexer {
              stemmer = 'german', stopwords = 'german_stopwords', \
              ignore = '(\\.|[^a-z0-9äöüß])+', lower = 1, overwrite = 1);",
         )?;
+        // CHECKPOINT, for the reason `Migrator::ensure_write_attribution`
+        // documents at length: an operation DuckDB cannot replay from the WAL
+        // is a live grenade — the process that ran it keeps working, and the
+        // NEXT process to open the file fails to start.
+        //
+        // `overwrite = 1` drops the existing `fts_main_blocks` schema before
+        // recreating it, and replay cannot perform that drop:
+        //
+        //   Failure while replaying WAL file "…/escurel.duckdb.wal":
+        //   Cannot drop entry "fts_main_blocks" because there are entries
+        //   that depend on it.
+        //
+        // Observed against a real tenant: an index rebuilt from the lanes
+        // served queries perfectly, and the gateway then refused to boot
+        // afterwards — every restart needing the index deleted and rebuilt.
+        // Folding it into the database file and truncating the WAL leaves
+        // nothing to replay.
+        conn.execute_batch("CHECKPOINT;")?;
         Ok(())
     }
 
