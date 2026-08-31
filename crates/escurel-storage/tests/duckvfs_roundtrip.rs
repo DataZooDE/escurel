@@ -36,6 +36,7 @@ fn store_and_dir() -> Option<(DuckVfsStore, TempDir)> {
     let store = DuckVfsStore::new(&DuckVfsStoreConfig {
         root,
         extension_path: Some(extension_path),
+        extension_repo: None,
         drive_id: None,
         drive_scope: None,
     })
