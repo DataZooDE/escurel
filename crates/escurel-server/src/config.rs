@@ -35,7 +35,8 @@
 //! | `ESCUREL_REBUILD_INDEX_ON_BOOT` | `if-missing` | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent) or `always` (drop + rebuild from the markdown LaneStore each start; the container default — HNSW-persistence-reload workaround) |
 //! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs`, `s3`, `gcs` or `duckvfs` |
 //! | `ESCUREL_STORAGE_DUCKVFS_ROOT` | — | root URL, e.g. `gdrive://escurel/lanes` (backend=duckvfs); its scheme picks the filesystem |
-//! | `ESCUREL_STORAGE_DUCKVFS_EXTENSION` | — | path to a built `gdrive.duckdb_extension` (backend=duckvfs); needed for every scheme, not only `gdrive://`, until it ships via the community repo |
+//! | `ESCUREL_STORAGE_DUCKVFS_EXTENSION` | — | path to a built `gdrive.duckdb_extension` (backend=duckvfs); needed for every scheme, not only `gdrive://`. Prefer `…_EXTENSION_REPO` — a path is a local build a container does not have |
+//! | `ESCUREL_STORAGE_DUCKVFS_EXTENSION_REPO` | — | `community` (the DuckDB community repository) or a repository URL, used when `…_EXTENSION` is unset. Setting NEITHER skips the load rather than failing, so the store opens and the first WRITE fails on a missing `write_blob` |
 //! | `ESCUREL_STORAGE_DUCKVFS_DRIVE_ID` | — | Shared Drive id `0A…`; REQUIRED for a `gdrive://` root, else the store would silently target the credential's My Drive |
 //! | `ESCUREL_STORAGE_DUCKVFS_DRIVE_SCOPE` | `…/auth/drive` | OAuth scope; the default is read/write because the extension's own `drive.readonly` default cannot serve a lane store |
 //! | `ESCUREL_STORAGE_GCS_BUCKET` | — | GCS bucket (backend=gcs) |
@@ -554,6 +555,12 @@ pub struct DuckVfsConfig {
     /// SQL functions the store needs live in it, for every scheme and not
     /// only `gdrive://`.
     pub extension_path: Option<String>,
+    /// Repository to INSTALL the extension from when `extension_path` is
+    /// unset: `community`, or a repository URL. This is what makes the
+    /// backend deployable — a path names a local build, which a container
+    /// does not have, and leaving both unset skips the load rather than
+    /// failing, so the store opens and the first WRITE fails instead.
+    pub extension_repo: Option<String>,
     /// Shared Drive id (`0A…`) for a `gdrive://` root.
     pub drive_id: Option<String>,
     /// OAuth scope override; defaults to read/write `drive`.
@@ -927,6 +934,9 @@ impl EscurelConfig {
                 root,
                 extension_path: env
                     .get("ESCUREL_STORAGE_DUCKVFS_EXTENSION")
+                    .filter(|v| !v.is_empty()),
+                extension_repo: env
+                    .get("ESCUREL_STORAGE_DUCKVFS_EXTENSION_REPO")
                     .filter(|v| !v.is_empty()),
                 drive_id,
                 drive_scope: env
@@ -2068,6 +2078,7 @@ impl EscurelConfig {
         let store = escurel_storage::DuckVfsStore::new(&escurel_storage::DuckVfsStoreConfig {
             root: cfg.root.clone(),
             extension_path: cfg.extension_path.clone(),
+            extension_repo: cfg.extension_repo.clone(),
             drive_id: cfg.drive_id.clone(),
             drive_scope: cfg.drive_scope.clone(),
         })

@@ -81,9 +81,22 @@ pub struct DuckVfsStoreConfig {
     /// for a `gdrive://` root and ignored otherwise — but note that the
     /// `write_blob`/`remove_file`/`move_file`/`file_size` functions live in
     /// that extension, so **every** root needs it loaded until they ship in
-    /// DuckDB core. `None` skips the `LOAD` and assumes they are already
-    /// present.
+    /// DuckDB core. `None` falls back to [`Self::extension_repo`]; if that
+    /// is `None` too the `LOAD` is skipped and they are assumed present.
     pub extension_path: Option<String>,
+    /// Where to fetch the extension when [`Self::extension_path`] is unset:
+    /// `"community"` for the DuckDB community repository, or a repository
+    /// URL such as `http://get.erpl.io`.
+    ///
+    /// This is what makes a `duckvfs` store deployable at all. A path names
+    /// a locally built file, which is fine on a developer's machine and
+    /// impossible in a container — and falling through to `None` is worse
+    /// than it looks: it skips the load rather than failing, so the store
+    /// opens cleanly and the first WRITE fails on a missing function.
+    ///
+    /// Ignored when `extension_path` is set, so an operator pointing at a
+    /// local build always gets that build.
+    pub extension_repo: Option<String>,
     /// Shared Drive id (`0A…`) for a `gdrive://` root. Becomes the secret's
     /// `DRIVE_ID`, which both roots the path and scopes every listing to
     /// that drive.
@@ -99,6 +112,9 @@ pub struct DuckVfsStore {
     conn: Arc<Mutex<Connection>>,
     root: String,
 }
+
+/// The DuckDB community repository, named rather than spelled as a URL.
+pub const COMMUNITY_REPO: &str = "community";
 
 /// Default OAuth scope. `drive.readonly` — the extension's default — is not
 /// enough for a store that has to write.
@@ -129,10 +145,22 @@ impl DuckVfsStore {
 
         if let Some(path) = &cfg.extension_path {
             // A path, not a name: LOAD '<file>' takes the local build
-            // directly. Once gdrive is in the community repository this
-            // becomes INSTALL gdrive FROM community; LOAD gdrive;
+            // directly, and wins over a repository so an operator pointing
+            // at a build always gets that build.
             conn.execute_batch(&format!("LOAD '{}';", escape_sql(path)))
                 .map_err(|e| duck_err("load extension", e))?;
+        } else if let Some(repo) = &cfg.extension_repo {
+            // `community` is a KEYWORD in DuckDB's grammar and must not be
+            // quoted; a repository URL must be. Quoting the keyword makes
+            // DuckDB look for a repository literally named "community" and
+            // fail with a message that says nothing about quoting.
+            let install = if repo == COMMUNITY_REPO {
+                "INSTALL gdrive FROM community;".to_owned()
+            } else {
+                format!("INSTALL gdrive FROM '{}';", escape_sql(repo))
+            };
+            conn.execute_batch(&format!("{install} LOAD gdrive;"))
+                .map_err(|e| duck_err("install extension", e))?;
         }
 
         if cfg.root.starts_with("gdrive://") {
@@ -391,6 +419,7 @@ mod tests {
         DuckVfsStoreConfig {
             root: root.to_owned(),
             extension_path: std::env::var("ESCUREL_TEST_GDRIVE_EXTENSION").ok(),
+            extension_repo: None,
             drive_id: None,
             drive_scope: None,
         }
@@ -430,6 +459,7 @@ mod tests {
         let cfg = DuckVfsStoreConfig {
             root: "gdrive://escurel".to_owned(),
             extension_path: None,
+            extension_repo: None,
             drive_id: Some("0AA5vtjzlyjnoUk9PVA".to_owned()),
             drive_scope: None,
         };
@@ -450,6 +480,7 @@ mod tests {
         let cfg = DuckVfsStoreConfig {
             root: "gdrive://escurel".to_owned(),
             extension_path: None,
+            extension_repo: None,
             drive_id: Some("it's-bad".to_owned()),
             drive_scope: None,
         };
