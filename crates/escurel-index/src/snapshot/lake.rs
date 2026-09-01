@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use duckdb::{Connection, params};
+use duckdb::{Connection, Transaction, params};
 use escurel_embed::Embedder;
 use escurel_storage::LaneStore;
 
@@ -499,6 +499,82 @@ pub async fn publish_lake(
 /// order `publish_lake` documents) so this cannot interleave with a
 /// concurrent full publish or another page's scoped publish racing the
 /// same lake tables.
+///
+/// # Why every INSERT here is `BY NAME`
+///
+/// The lake's tables are created ONCE and then outlive many local schema
+/// migrations, while `publish_lake` re-establishes its tables wholesale
+/// (`CREATE OR REPLACE TABLE … AS SELECT *`) and so silently self-heals.
+/// This scoped path only ever INSERTs, so it is the one that meets a lake
+/// whose column ORDER no longer matches the local table's.
+///
+/// The orders genuinely diverge. `pages` declares `last_written_by` between
+/// `at_ts` and `created_at` (`sql/0001_b_tables.sql`), but a database
+/// provisioned before that column existed gains it by `ALTER TABLE … ADD
+/// COLUMN` (`sql/0011_write_attribution.sql`), which APPENDS it last —
+/// after `created_at`, `updated_at` and the `scenario` column that 0003
+/// appended before it. Both databases are correct and every other query is
+/// column-named, so nothing notices until a positional `SELECT *` copies
+/// one into the other:
+///
+/// ```text
+/// Conversion Error: invalid timestamp field format: "anonymous",
+///   expected format is (YYYY-MM-DD HH:MM:SS…)
+///   when casting from source column last_written_by
+/// ```
+///
+/// That is a principal landing in `created_at`, and it makes a tenant
+/// permanently unwritable — every `update_page` fails after the local write
+/// succeeds, so the page survives until the next boot and then disappears.
+/// `BY NAME` matches on the column name like
+/// [`Indexer::load_from_lake`] already does, and [`ensure_lake_columns`]
+/// first adds anything the lake is missing so the name match cannot fail.
+/// Add to `{LAKE_ALIAS}.<table>` any column the local `<table>` has and it
+/// does not, so a name-matched INSERT cannot fail on a lake that predates a
+/// migration.
+///
+/// The lake's copy of a table is created once (`CREATE TABLE IF NOT EXISTS
+/// … AS SELECT * FROM <table> WHERE false`) and then lives for the life of
+/// the deployment, so it freezes whatever the local schema was on that day.
+/// `Migrator`'s `ensure_*` methods keep adding columns to the local side on
+/// every boot — `pages.last_written_by` (0011), `blocks.context` (0007) —
+/// and none of them reach across the attach. Without this, the first scoped
+/// publish after such a migration fails against an older lake.
+///
+/// Only ADDs. A column the lake has and the local schema does not is left
+/// alone: this path must not drop data it does not understand.
+fn ensure_lake_columns(tx: &Transaction<'_>, table: &str) -> Result<(), SnapshotError> {
+    let mut stmt = tx.prepare(
+        "SELECT column_name, data_type FROM information_schema.columns \
+         WHERE table_catalog = current_database() AND table_schema = 'main' \
+           AND table_name = ? \
+           AND column_name NOT IN ( \
+             SELECT column_name FROM information_schema.columns \
+             WHERE table_catalog = ? AND table_name = ?)",
+    )?;
+    let missing: Vec<(String, String)> = stmt
+        .query_map(params![table, LAKE_ALIAS, table], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+
+    for (column, ty) in missing {
+        // Both values come from our own catalog, never from a caller, but
+        // splice through the same guard every other spliced fragment in this
+        // module uses rather than trusting provenance.
+        if !is_safe_sql_fragment(&column) || !is_safe_sql_fragment(&ty) {
+            return Err(SnapshotError::InvalidLakeConfig(format!(
+                "refusing to splice column `{column}` ({ty}) into an ALTER"
+            )));
+        }
+        tx.execute_batch(&format!(
+            "ALTER TABLE {LAKE_ALIAS}.{table} ADD COLUMN IF NOT EXISTS {column} {ty};"
+        ))?;
+    }
+    Ok(())
+}
+
 pub fn publish_page_sync(
     conn: &mut Connection,
     cfg: &LakeConfig,
@@ -536,6 +612,13 @@ pub fn publish_page_sync(
          CREATE TABLE IF NOT EXISTS {LAKE_ALIAS}.pack_subscriptions \
              AS SELECT * FROM pack_subscriptions WHERE false;"
     ))?;
+    // The CREATE above only fires for a lake that has never been published
+    // to. An EXISTING lake froze its column set on the day it was created,
+    // so bring the three tables this path writes up to the local schema
+    // before any name-matched INSERT touches them.
+    for table in ["pages", "blocks", "links"] {
+        ensure_lake_columns(&tx, table)?;
+    }
     // #563: `escurel_manifest` carries the compat fields
     // (`adopt_lake`/`adopt_lake_for_writer`'s `check_manifest_compat`
     // reads schema_version/model_id/dim, nothing else) that a writer
@@ -570,7 +653,7 @@ pub fn publish_page_sync(
         params![page_id],
     )?;
     tx.execute(
-        &format!("INSERT INTO {LAKE_ALIAS}.pages SELECT * FROM pages WHERE page_id = ?"),
+        &format!("INSERT INTO {LAKE_ALIAS}.pages BY NAME SELECT * FROM pages WHERE page_id = ?"),
         params![page_id],
     )?;
     tx.execute(
@@ -579,7 +662,7 @@ pub fn publish_page_sync(
     )?;
     tx.execute(
         &format!(
-            "INSERT INTO {LAKE_ALIAS}.blocks \
+            "INSERT INTO {LAKE_ALIAS}.blocks BY NAME \
              SELECT * REPLACE (dense_vec::FLOAT[] AS dense_vec) \
              FROM blocks WHERE page_id = ?"
         ),
@@ -590,7 +673,7 @@ pub fn publish_page_sync(
         params![page_id],
     )?;
     tx.execute(
-        &format!("INSERT INTO {LAKE_ALIAS}.links SELECT * FROM links WHERE src_page = ?"),
+        &format!("INSERT INTO {LAKE_ALIAS}.links BY NAME SELECT * FROM links WHERE src_page = ?"),
         params![page_id],
     )?;
     tx.commit()?;
