@@ -27,6 +27,18 @@ COPY . .
 # memory-hungry and OOMs a default-parallelism release+LTO build on a 7 GB CI
 # runner (the CI workflow caps this the same way). Release profile already
 # strips symbols.
+# `duckvfs` is in the feature list because the backend is otherwise absent
+# from the binary entirely: ESCUREL_STORAGE_BACKEND=duckvfs then refuses at
+# boot with "requires the 'duckvfs' cargo feature; this binary was built
+# without it". It costs nothing to carry -- the feature is `dep:duckdb`, and
+# libduckdb is already linked for escurel-index -- so leaving it out only
+# meant the image could not serve a Google Drive lane store.
+#
+# Two runtime requirements come with it, both satisfied by the deployment
+# rather than the image: the duckdb-gdrive extension is fetched from the
+# DuckDB community repository on first use (so the process needs egress and a
+# writable $HOME for ~/.duckdb), and ESCUREL_STORAGE_DUCKVFS_EXTENSION_REPO
+# must name that repository.
 ENV CARGO_BUILD_JOBS=1
 # Download mode (.cargo/config.toml: DUCKDB_DOWNLOAD_LIB=1) links libduckdb
 # DYNAMICALLY: the binary carries `NEEDED libduckdb.so` with no rpath, so the
@@ -35,7 +47,7 @@ ENV CARGO_BUILD_JOBS=1
 # COPY stages), into non-mounted dirs that persist in the builder layer.
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo build --release -p escurel-server --features gemini,s3,gcs \
+    cargo build --release -p escurel-server --features gemini,s3,gcs,duckvfs \
     && cp target/release/escurel-server /usr/local/bin/escurel-server \
     && cp "$(find target -name libduckdb.so -print -quit)" /usr/local/lib/libduckdb.so
 
