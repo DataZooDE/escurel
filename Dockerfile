@@ -51,6 +51,50 @@ RUN --mount=type=cache,target=/build/target \
     && cp target/release/escurel-server /usr/local/bin/escurel-server \
     && cp "$(find target -name libduckdb.so -print -quit)" /usr/local/lib/libduckdb.so
 
+# ---- extension cache ------------------------------------------------------
+# Pre-install every DuckDB extension escurel loads, so a container downloads
+# NOTHING at boot.
+#
+# Measured in the cluster before this existed: a cold pod fetched ~137MB
+# (postgres_scanner 41MB, ducklake 36MB, vss 32MB, gdrive 20MB, fts 11MB) and
+# had not finished after 7m56s, while the next start in the SAME pod reached
+# the catalog in 7 SECONDS off a warm cache. A PersistentVolume does not fix
+# it: `helm upgrade --atomic` deletes the PVC when the release is rolled back,
+# so the cache never survives the very failure it would prevent.
+#
+# The version and platform in the path are not cosmetic -- DuckDB resolves
+# extensions under <version>/<platform>, so a mismatch silently downloads
+# again at runtime. Both are asserted below rather than assumed.
+FROM debian:bookworm-slim AS extensions
+ARG DUCKDB_VERSION=v1.5.5
+# gdrive from the erpl.io mirror, NOT `community`: workload identity federation
+# only exists in v2026.09.01 and the community repository still serves
+# v2026.08.07, whose credential_chain refuses external_account outright. Swap
+# once duckdb/community-extensions#2588 is merged and built.
+ARG GDRIVE_REPO=http://get.erpl.io
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSfL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" \
+      -o /tmp/duckdb.zip \
+ && unzip -q /tmp/duckdb.zip -d /usr/local/bin \
+ && chmod +x /usr/local/bin/duckdb \
+ && rm /tmp/duckdb.zip
+ENV HOME=/opt/escurel
+RUN mkdir -p /opt/escurel \
+ && duckdb -unsigned -c "INSTALL ducklake; INSTALL postgres; INSTALL httpfs; INSTALL fts; INSTALL vss; INSTALL gdrive FROM '${GDRIVE_REPO}';"
+# Fail the BUILD, not the pod, if anything did not land where DuckDB looks for
+# it. A missing extension here is a silent 137MB download at boot.
+RUN set -eu; \
+    d="/opt/escurel/.duckdb/extensions/${DUCKDB_VERSION}/linux_amd64"; \
+    # postgres_scanner, not postgres: `INSTALL postgres` is an ALIAS and the
+    # artifact it lands is postgres_scanner.duckdb_extension. Checking the
+    # alias name failed the build while all six were present.
+    for e in ducklake postgres_scanner httpfs fts vss gdrive; do \
+      test -s "$d/$e.duckdb_extension" || { echo "MISSING: $e in $d"; ls -la "$d" || true; exit 1; }; \
+    done; \
+    echo "baked $(ls "$d"/*.duckdb_extension | wc -l) extensions, $(du -sh /opt/escurel/.duckdb | cut -f1)"
+
 # ---- runtime -------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 # libstdc++6: the downloaded libduckdb links it dynamically and debian-slim
@@ -64,6 +108,12 @@ COPY --from=builder /usr/local/bin/escurel-server /usr/local/bin/escurel-server
 # no rpath — finds it at startup.
 COPY --from=builder /usr/local/lib/libduckdb.so /usr/lib/libduckdb.so
 RUN ldconfig
+# The pre-installed extensions, owned by the uid the substrate chart runs as
+# (securityContext.runAsUser 65532) so DuckDB can read them under a read-only
+# root filesystem. HOME is set to match, because HOME is what decides where
+# DuckDB looks: pointing it anywhere else silently reverts to downloading.
+COPY --from=extensions --chown=65532:65532 /opt/escurel/.duckdb /opt/escurel/.duckdb
+ENV HOME=/opt/escurel
 
 # Kamal (the substrate's deployer) asserts at deploy that the image carries a
 # `service` label exactly matching the Kamal service name, else it refuses to
