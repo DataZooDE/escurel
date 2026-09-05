@@ -154,6 +154,21 @@ pub(crate) struct TestIssuer {
 }
 
 impl TestIssuer {
+    /// The issuer's signing key, as PKCS#1 PEM, and the `kid` it publishes.
+    ///
+    /// Exposed for ONE purpose: a workload that MINTS its own bearer rather
+    /// than holding a pasted one has to be tested against a real gateway
+    /// doing real verification, and that means the test must hand it the key
+    /// the gateway's JWKS will check against. Signing material still never
+    /// leaves the process — this is the same ephemeral key the harness
+    /// already generates.
+    pub(crate) fn signing_material(&self) -> (String, &'static str) {
+        (
+            String::from_utf8(self.keys.private_pem.clone()).expect("pem is utf-8"),
+            TEST_KID,
+        )
+    }
+
     pub(crate) async fn start() -> Self {
         Self::start_with_groups_claim(None).await
     }

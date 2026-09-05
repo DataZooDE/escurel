@@ -537,7 +537,37 @@ impl EscurelProcess {
     /// `AuthMode::Disabled` or `AuthMode::External`. Tests that
     /// need bearer tokens against an external OIDC must mint them
     /// out-of-band.
+    /// The test issuer's URL — the `iss` a minted token must carry.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the process was spawned with [`AuthMode::TestIssuer`].
     #[must_use]
+    pub fn issuer_url(&self) -> String {
+        self.issuer
+            .as_ref()
+            .expect("EscurelProcess::issuer_url requires AuthMode::TestIssuer")
+            .issuer_url
+            .clone()
+    }
+
+    /// The test issuer's signing key (PKCS#1 PEM) and `kid`.
+    ///
+    /// For testing a workload that MINTS its own bearer instead of holding
+    /// one: it needs the key the gateway's JWKS verifies against, or the
+    /// test proves only that this harness can sign.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the process was spawned with [`AuthMode::TestIssuer`].
+    #[must_use]
+    pub fn signing_material(&self) -> (String, &'static str) {
+        self.issuer
+            .as_ref()
+            .expect("EscurelProcess::signing_material requires AuthMode::TestIssuer")
+            .signing_material()
+    }
+
     pub fn mint_token(&self, tenant: &str, role: Role) -> String {
         let issuer = self.issuer.as_ref().expect(
             "EscurelProcess::mint_token requires AuthMode::TestIssuer; spawned with a different mode",

@@ -170,8 +170,14 @@ pub enum PackageError {
     },
     /// The runner is not configured with a tenant-scoped token, so the
     /// packaged toolset pointer would carry no usable bearer.
-    #[error("no ESCUREL_RUNNER_TOKEN configured; cannot mint a scoped toolset token")]
+    #[error(
+        "no runner credential configured; set ESCUREL_RUNNER_TOKEN, or \
+         ESCUREL_RUNNER_AUTH_ISSUER + ESCUREL_RUNNER_AUTH_SIGNING_KEY to mint one"
+    )]
     MissingToken,
+    /// A credential is configured but could not be minted.
+    #[error("could not mint the runner's gateway bearer: {0}")]
+    Auth(String),
 }
 
 /// The packaged unit of work handed to a harness adapter: the skill body as
@@ -274,11 +280,15 @@ pub async fn package(
     trigger: &Trigger,
     client: &Client,
     cfg: &RunnerConfig,
+    tokens: Option<&crate::TokenSource>,
 ) -> Result<TaskContext, PackageError> {
-    let token = cfg
-        .token
-        .clone()
-        .ok_or(PackageError::MissingToken)
+    // Taken from the source at PACKAGE time, not held from boot: a minted
+    // bearer is re-minted before it lapses, and a run packaged with an
+    // expired one fails every `/mcp` call while the process looks healthy.
+    let token = tokens
+        .ok_or(PackageError::MissingToken)?
+        .current()
+        .map_err(|e| PackageError::Auth(e.to_string()))
         .map(SecretString::from)?;
 
     // ── Instructions: resolve the skill wikilink → expand its body. ──

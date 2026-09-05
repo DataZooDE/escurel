@@ -14,6 +14,7 @@
 //! [`docs/contract/agent-orchestration.md`]: https://github.com/DataZooDE/escurel/blob/main/docs/contract/agent-orchestration.md
 
 mod admit;
+mod auth;
 mod cascade;
 mod config;
 mod dispatch;
@@ -26,6 +27,7 @@ mod trigger;
 mod workflow;
 
 pub use admit::{Admission, LoopLimits, admit};
+pub use auth::{AuthError, Signer, TokenSource};
 pub use cascade::{CascadeError, CascadeOutcome, emit_cascade};
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};

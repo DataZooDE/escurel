@@ -275,6 +275,23 @@ pub struct RunnerConfig {
     /// configured default.
     /// Source: `ESCUREL_RUNNER_ADK_MODEL` (unset → `None`).
     pub adk_model: Option<String>,
+    /// Issuer for a bearer the runner MINTS for itself, instead of holding
+    /// a static one. Absent means "not configured", never "guess": an issuer
+    /// the gateway does not trust mints tokens that are silently rejected,
+    /// which presents as an empty inbox rather than as a misconfiguration.
+    /// Source: `ESCUREL_RUNNER_AUTH_ISSUER` (unset → `None`).
+    pub auth_issuer: Option<String>,
+    /// Audience for minted bearers.
+    /// Source: `ESCUREL_RUNNER_AUTH_AUDIENCE` (default `escurel`).
+    pub auth_audience: String,
+    /// `kid` for minted bearers; derived from the key when absent, which is
+    /// what keeps a rotation from stranding the identifier.
+    /// Source: `ESCUREL_RUNNER_AUTH_KID` (unset → `None`).
+    pub auth_kid: Option<String>,
+    /// `sub` claim for minted bearers — a SERVICE principal, since the
+    /// runner acts on events whose author has gone home.
+    /// Source: `ESCUREL_RUNNER_AUTH_SUBJECT` (default `escurel-runner`).
+    pub auth_subject: String,
     /// API key for the Gemini adapter — the one harness that needs no CLI,
     /// no node runtime and no interactive login, which is what makes it the
     /// harness a container can actually run.
@@ -329,6 +346,45 @@ pub struct RunnerConfig {
 }
 
 impl RunnerConfig {
+    /// The runner's gateway credential, however this deployment supplies it.
+    ///
+    /// A static `ESCUREL_RUNNER_TOKEN` wins when set, so an existing
+    /// deployment is unaffected. Otherwise, with an issuer and a signing key,
+    /// the runner mints its own — which is the shape a cluster wants: a
+    /// pasted bearer expires silently, and a runner whose token has lapsed
+    /// still answers `/healthz` and simply stops filing anything.
+    ///
+    /// `None` means no credential at all; the poller and dispatch loop stay
+    /// disabled, as they already do without a token.
+    ///
+    /// # Errors
+    /// When a signing key is present but unusable.
+    pub fn token_source(
+        &self,
+        signing_key_pem: Option<&str>,
+    ) -> Option<Result<crate::TokenSource, crate::AuthError>> {
+        if let Some(token) = &self.token {
+            return Some(Ok(crate::TokenSource::Static(token.clone())));
+        }
+        let issuer = self.auth_issuer.clone()?;
+        let key = signing_key_pem.filter(|k| !k.trim().is_empty())?;
+        let tenant = self.tenant.clone().unwrap_or_else(|| "default".to_owned());
+        Some(
+            crate::Signer::build(
+                issuer,
+                self.auth_audience.clone(),
+                tenant,
+                self.auth_kid.clone(),
+                key,
+            )
+            .map(|signer| crate::TokenSource::Minted {
+                signer,
+                subject: self.auth_subject.clone(),
+                cached: std::sync::Mutex::new(None),
+            }),
+        )
+    }
+
     /// Load configuration from `ESCUREL_RUNNER_*` environment variables,
     /// falling back to the documented defaults.
     pub fn from_env() -> Result<Self, ConfigError> {
@@ -406,6 +462,18 @@ impl RunnerConfig {
         // deployment already binds from Secret Manager for `heron-escurel`;
         // inventing a runner-prefixed twin would mean two names for one
         // secret and a rotation that updates one of them.
+        // The SIGNING KEY is deliberately not a field on this struct: it is
+        // read where the token source is built, so a secret can never reach
+        // a log through the derived `Debug`.
+        let auth_issuer = lookup("ESCUREL_RUNNER_AUTH_ISSUER").filter(|s| !s.is_empty());
+        let auth_audience = lookup("ESCUREL_RUNNER_AUTH_AUDIENCE")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "escurel".to_owned());
+        let auth_kid = lookup("ESCUREL_RUNNER_AUTH_KID").filter(|s| !s.is_empty());
+        let auth_subject = lookup("ESCUREL_RUNNER_AUTH_SUBJECT")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "escurel-runner".to_owned());
+
         let gemini_api_key = lookup("ESCUREL_GEMINI_API_KEY").filter(|s| !s.is_empty());
         let gemini_model = lookup("ESCUREL_RUNNER_GEMINI_MODEL").filter(|s| !s.is_empty());
         let gemini_base_url = lookup("ESCUREL_RUNNER_GEMINI_BASE_URL").filter(|s| !s.is_empty());
@@ -478,6 +546,10 @@ impl RunnerConfig {
             harness,
             claude_bin,
             claude_model,
+            auth_issuer,
+            auth_audience,
+            auth_kid,
+            auth_subject,
             gemini_api_key,
             gemini_model,
             gemini_base_url,

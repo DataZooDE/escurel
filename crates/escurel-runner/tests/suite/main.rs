@@ -31,6 +31,7 @@ mod gemini_live;
 mod healthz;
 mod inbox_poll;
 mod loop_controls;
+mod minted_credential;
 mod packager;
 mod quota_throttle;
 mod reconcile_retry;
