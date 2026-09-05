@@ -337,11 +337,39 @@ pub async fn package(
                     call: "list_events",
                     source,
                 })?;
-            let trigger_event = history
+            let mut trigger_event = history
                 .events
                 .iter()
                 .find(|e| e.event_id == trigger.event_id)
                 .cloned();
+            // A pre-flagged event is NOT in the instance's history: it is
+            // still in the inbox until something assigns it, and
+            // `list_events` returns processed history only. So the branch
+            // that had a target found no event and fell back to rendering
+            // two ids — the agent was asked to fold an event whose title,
+            // body and provenance it had never been shown, and it could not
+            // say so, because a plausible answer is always available.
+            //
+            // Invisible until now because the deployed loop never ran, and
+            // because the tests that did run captured events the harness
+            // then assigned itself before anyone looked.
+            if trigger_event.is_none() {
+                let inbox = client
+                    .list_inbox(ListInboxRequest {
+                        cursor: String::new(),
+                        limit: EVENT_HISTORY_LIMIT,
+                    })
+                    .await
+                    .map_err(|source| PackageError::Client {
+                        call: "list_inbox",
+                        source,
+                    })?;
+                trigger_event = inbox
+                    .events
+                    .iter()
+                    .find(|e| e.event_id == trigger.event_id)
+                    .cloned();
+            }
             let input = build_input_for_instance(
                 trigger,
                 trigger_event.as_ref(),
@@ -416,14 +444,40 @@ pub async fn package(
 fn render_event_payload(trigger: &Trigger, event: Option<&Event>) -> String {
     match event {
         Some(e) => format!(
-            "event_id: {}\nlabel_skill: {}\nsource: {}\ntitle: {}\n\n{}\n",
-            e.event_id, e.label_skill, e.source, e.title, e.body
+            "event_id: {}\nlabel_skill: {}\nsource: {}\ntitle: {}\n{}\n{}\n",
+            e.event_id,
+            e.label_skill,
+            e.source,
+            e.title,
+            render_provenance(&e.provenance),
+            e.body
         ),
         None => format!(
             "event_id: {}\nlabel_skill: {}\n",
             trigger.event_id, trigger.label_skill
         ),
     }
+}
+
+/// The event's `provenance`, as a line the agent can read — or nothing.
+///
+/// This was missing, and it is the half of attribution the agent could not
+/// see. A capture that arrived through an AUTHORED route carries the
+/// engagement it was routed to (heron's P3.3, "authored, never inferred"),
+/// and a chat capture carries the conversation it belongs to. Both live in
+/// `provenance`, and none of it reached the model: the agent was asked which
+/// customer an email concerns while being shown everything about it EXCEPT
+/// the one field a human had already answered that question in.
+///
+/// Rendered as compact JSON rather than prose: it is a fact the event
+/// carries, not a claim this packager makes, and the shape says so.
+/// Server-stamped `captured_by` travels in the same object, so "who" and
+/// "on whose behalf" stay together.
+fn render_provenance(provenance: &serde_json::Value) -> String {
+    if provenance.is_null() || provenance.as_object().is_some_and(|o| o.is_empty()) {
+        return String::new();
+    }
+    format!("provenance: {provenance}")
 }
 
 /// Build the instructions: a short task framing plus the skill body.
@@ -534,6 +588,49 @@ mod tests {
     fn mcp_endpoint_appends_mcp_and_tolerates_trailing_slash() {
         assert_eq!(mcp_endpoint("http://gw:8080"), "http://gw:8080/mcp");
         assert_eq!(mcp_endpoint("http://gw:8080/"), "http://gw:8080/mcp");
+    }
+
+    /// The agent must SEE what a human already decided about the event.
+    #[test]
+    fn the_event_payload_carries_provenance_when_there_is_any() {
+        let trigger = Trigger {
+            tenant: "acme".into(),
+            event_id: "EVT1".into(),
+            label_skill: "email".into(),
+            instance_page_id: None,
+            lineage: crate::Lineage::root("EVT1"),
+            workflow: None,
+        };
+        let routed = Event {
+            event_id: "EVT1".into(),
+            label_skill: "email".into(),
+            title: "Renewal".into(),
+            body: "BODYMARK".into(),
+            provenance: serde_json::json!({
+                "engagement": "engagement-hoffmann",
+                "captured_by": "consultant:alice",
+            }),
+            ..Event::default()
+        };
+        let rendered = render_event_payload(&trigger, Some(&routed));
+        assert!(
+            rendered.contains("engagement-hoffmann"),
+            "an authored route's engagement must reach the agent — it is the \
+             question the agent is being asked, already answered: {rendered}"
+        );
+        assert!(rendered.contains("consultant:alice"), "{rendered}");
+        assert!(rendered.contains("BODYMARK"), "{rendered}");
+
+        // Positive control for the absence below: the SAME event without
+        // provenance renders without an empty `provenance:` line, so a model
+        // is never shown a field that says nothing.
+        let bare = Event {
+            provenance: serde_json::Value::Null,
+            ..routed.clone()
+        };
+        let rendered = render_event_payload(&trigger, Some(&bare));
+        assert!(!rendered.contains("provenance"), "{rendered}");
+        assert!(rendered.contains("BODYMARK"), "{rendered}");
     }
 
     #[test]

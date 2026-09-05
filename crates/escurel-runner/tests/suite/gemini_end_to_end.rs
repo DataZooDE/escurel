@@ -132,6 +132,15 @@ async fn spawn_stub_model(instance_page_id: String, seen: Arc<Mutex<Seen>>) -> S
             );
         }
         let is_first = req["contents"].as_array().map_or(0, Vec::len) == 1;
+        if is_first {
+            let input = req["contents"][0]["parts"][0]["text"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                input.contains("engagement-globex"),
+                "the event's provenance must reach the model: {input}"
+            );
+        }
         st.seen.lock().expect("lock").requests.push(req);
 
         let names: Vec<&str> = decls.iter().filter_map(|d| d["name"].as_str()).collect();
@@ -217,6 +226,10 @@ async fn gemini_adapter_folds_an_event_through_real_mcp_calls() {
             "instance_page_id": instance_page_id,
             "title": "renewal request",
             "body": "customer wants to renew",
+            // What an AUTHORED route already decided about this event. It is
+            // the question the agent is about to be asked, answered — and
+            // until the packager rendered provenance, the model never saw it.
+            "provenance": { "engagement": "engagement-globex" },
         }),
     )
     .await;
