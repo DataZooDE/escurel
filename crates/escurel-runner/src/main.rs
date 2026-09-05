@@ -45,7 +45,9 @@ use escurel_runner_core::{
     run_with_retry,
 };
 use escurel_runner_core::{DeadLetterReason, RunId};
-use escurel_runner_harness::{AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, Harness};
+use escurel_runner_harness::{
+    AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness,
+};
 use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -806,8 +808,9 @@ fn echo_harness_path() -> String {
 /// Build the configured harness adapter. `echo` is the deterministic real
 /// harness (#151); `claude` drives the real Claude Code CLI (#152); `codex`
 /// drives the real Codex CLI (#153); `adk` drives an external adk-rust runner
-/// binary (#154). Unknown selectors fall back to `echo` with a warning so a
-/// typo never silently disables dispatch.
+/// binary (#154); `gemini` drives Gemini over HTTP in process. Unknown
+/// selectors fall back to `echo` with a warning so a typo never silently
+/// disables dispatch.
 fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
     match config.harness.as_str() {
         "echo" => Arc::new(EchoHarness::new(echo_harness_path())),
@@ -820,6 +823,29 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
         "adk" => {
             Arc::new(AdkHarness::new(config.adk_bin.clone()).with_model(config.adk_model.clone()))
         }
+        // The one harness a container can run: HTTP to the model, no CLI, no
+        // node runtime, no interactive login.
+        "gemini" => match config.gemini_api_key.clone() {
+            Some(key) => Arc::new(
+                GeminiHarness::new(key)
+                    .with_model(config.gemini_model.clone())
+                    .with_base_url(config.gemini_base_url.clone()),
+            ),
+            // Deliberately NOT the echo fallback below. A misconfigured
+            // `gemini` selector that quietly became `echo` would keep
+            // dispatching — writing echo's deterministic stand-in text into
+            // the tenant's knowledge base and marking real events processed.
+            // Refusing to start is the recoverable failure.
+            None => {
+                tracing::error!(
+                    target: "escurel_runner",
+                    "ESCUREL_RUNNER_HARNESS=gemini needs ESCUREL_GEMINI_API_KEY; refusing to \
+                     start rather than falling back to the echo harness, which would write \
+                     stand-in content into a real corpus"
+                );
+                std::process::exit(2);
+            }
+        },
         other => {
             tracing::warn!(
                 target: "escurel_runner",
@@ -1230,13 +1256,19 @@ fn package_error_to_reconcile(e: escurel_runner_core::PackageError) -> Reconcile
 }
 
 /// Map an adapter-level harness error to a reconcile classification. Spawn /
-/// timeout / I/O are transient (the host/subprocess may recover); a non-zero
+/// timeout / I/O / upstream are transient (the host, subprocess or upstream
+/// may recover); a non-zero
 /// exit is permanent; **unparseable output** is its own `BadOutput` variant so
 /// the dispatch loop dead-letters it `bad_output` (#158).
 fn harness_error_to_reconcile(e: &escurel_runner_harness::HarnessError) -> ReconcileError {
     use escurel_runner_harness::HarnessError as H;
     match e {
-        H::Spawn { .. } | H::Timeout { .. } | H::Io { .. } => {
+        // `Upstream` is transient by the same reasoning as `Spawn`: a 429
+        // from the model API or a gateway that blinked is exactly what the
+        // retry policy exists for. A genuinely permanent misconfiguration
+        // (a revoked key) will exhaust `max_attempts` and dead-letter with
+        // the upstream's own message attached, which is the diagnosis.
+        H::Spawn { .. } | H::Timeout { .. } | H::Io { .. } | H::Upstream { .. } => {
             ReconcileError::Transient(e.to_string())
         }
         H::BadOutcome { .. } => ReconcileError::BadOutput(e.to_string()),

@@ -25,6 +25,8 @@ mod claude_live;
 mod codex_live;
 mod confirm_unflagged;
 mod echo_end_to_end;
+mod gemini_end_to_end;
+mod gemini_live;
 mod healthz;
 mod inbox_poll;
 mod loop_controls;
