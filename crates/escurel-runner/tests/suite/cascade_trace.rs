@@ -39,8 +39,8 @@ const TENANT: &str = "acme";
 const ALPHA_SKILL: &str = "alpha";
 const BETA_SKILL: &str = "beta";
 
-const ALPHA_SKILL_BODY: &str = "---\ntype: skill\nid: alpha\ncascade_target: markdown/instances/beta/b1.md\n---\n# alpha\n\nFold the event into the beta instance.\n";
-const BETA_SKILL_BODY: &str = "---\ntype: skill\nid: beta\ncascade_target: markdown/instances/alpha/a1.md\n---\n# beta\n\nFold the event into the alpha instance.\n";
+const ALPHA_SKILL_BODY: &str = "---\ntype: skill\nid: alpha\nautonomy: auto\ncascade_target: markdown/instances/beta/b1.md\n---\n# alpha\n\nFold the event into the beta instance.\n";
+const BETA_SKILL_BODY: &str = "---\ntype: skill\nid: beta\nautonomy: auto\ncascade_target: markdown/instances/alpha/a1.md\n---\n# beta\n\nFold the event into the alpha instance.\n";
 const A_INSTANCE_BODY: &str =
     "---\ntype: instance\nid: a1\nskill: alpha\n---\n# A1\n\nBASELINE alpha.\n";
 const B_INSTANCE_BODY: &str =

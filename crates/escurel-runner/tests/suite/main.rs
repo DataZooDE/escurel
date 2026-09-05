@@ -19,6 +19,7 @@
 
 mod adk_end_to_end;
 mod adk_live;
+mod autonomy_gate;
 mod cascade_lineage;
 mod cascade_trace;
 mod claude_live;

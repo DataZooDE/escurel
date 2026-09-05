@@ -48,8 +48,8 @@ const BETA_SKILL: &str = "beta";
 // Each skill declares its cascade_target: the instance a confirmed cross-skill
 // write should pre-flag its follow-on event onto. alpha cascades to b1, beta
 // cascades to a1 — closing the A→B→A loop.
-const ALPHA_SKILL_BODY: &str = "---\ntype: skill\nid: alpha\ncascade_target: markdown/instances/beta/b1.md\n---\n# alpha\n\nFold the event into the beta instance it concerns.\n";
-const BETA_SKILL_BODY: &str = "---\ntype: skill\nid: beta\ncascade_target: markdown/instances/alpha/a1.md\n---\n# beta\n\nFold the event into the alpha instance it concerns.\n";
+const ALPHA_SKILL_BODY: &str = "---\ntype: skill\nid: alpha\nautonomy: auto\ncascade_target: markdown/instances/beta/b1.md\n---\n# alpha\n\nFold the event into the beta instance it concerns.\n";
+const BETA_SKILL_BODY: &str = "---\ntype: skill\nid: beta\nautonomy: auto\ncascade_target: markdown/instances/alpha/a1.md\n---\n# beta\n\nFold the event into the alpha instance it concerns.\n";
 
 const A_INSTANCE_BODY: &str =
     "---\ntype: instance\nid: a1\nskill: alpha\n---\n# A1\n\nBASELINE alpha.\n";

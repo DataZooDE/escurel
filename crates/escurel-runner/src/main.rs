@@ -38,11 +38,11 @@ use axum::routing::{get, post};
 use escurel_client::{Client, SecretString};
 use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
 use escurel_runner_core::{
-    Admission, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue, EnqueueOutcome,
-    Governor, Ledger, LedgerDecision, LoopLimits, QuotaDecision, QuotaLimits, ReconcileError,
-    RunFailure, RunStatus, RunnerConfig, TaskContext, Trigger, admit, classify_client_error,
-    confirm_effect, drive_workflow, emit_cascade, package, recover_pending, recover_workflows,
-    run_with_retry,
+    Admission, Autonomy, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue,
+    EnqueueOutcome, Governor, Ledger, LedgerDecision, LoopLimits, QuotaDecision, QuotaLimits,
+    ReconcileError, RunFailure, RunStatus, RunnerConfig, TaskContext, Trigger, admit,
+    classify_client_error, confirm_draft, confirm_effect, drive_workflow, emit_cascade, package,
+    recover_pending, recover_workflows, run_with_retry,
 };
 use escurel_runner_core::{DeadLetterReason, RunId};
 use escurel_runner_harness::{
@@ -1011,6 +1011,28 @@ async fn dispatch_loop(
                     version = %effect.version,
                     "dispatch: run succeeded; recorded processed with produced instance + version"
                 );
+                // A HELD write ends here. It is a real, read-back effect —
+                // recorded in the ledger with the draft's hash as its version
+                // — but nothing has landed, so there is nothing for a
+                // follow-on agent to react to and nothing for a workflow
+                // reducer to advance. Cascading it would spend a whole
+                // lineage's budget on a change a human may still refuse, and
+                // would do it BEFORE they were asked.
+                if effect.held {
+                    // No second `record_run_terminal`: this arm already
+                    // counted the run `processed`, and counting it twice
+                    // would quietly inflate the metric the absorption curve
+                    // is read from.
+                    tracing::info!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        target = %effect.instance_page_id,
+                        draft_sha256 = %effect.version,
+                        "dispatch: run produced a DRAFT awaiting a human; no cascade"
+                    );
+                    continue;
+                }
                 // Dynamic workflows: a confirmed write whose trigger carries a
                 // `provenance.workflow` block drives the reducer instead of the
                 // cascade — the cascade is the width-≤1 special case, the
@@ -1223,7 +1245,15 @@ async fn attempt_run(
     // processed + bound and the instance's version advanced (#155). For an
     // unflagged trigger this now resolves the instance the agent chose, via
     // the by-event lookup — `assign_event` recorded the binding.
-    match confirm_effect(client, trigger).await {
+    // WHAT to confirm depends on what the skill allowed the run to do. A
+    // review run leaves the event in the inbox on purpose, so the landed-write
+    // read-back would never converge — it would burn every retry and
+    // dead-letter each held write.
+    let confirmed = match task.autonomy {
+        Autonomy::Auto => confirm_effect(client, trigger).await,
+        Autonomy::Review => confirm_draft(client, trigger).await,
+    };
+    match confirmed {
         Ok(effect) => Ok(effect),
         // Read-back could not confirm anything, the harness reported no
         // produced instance, and nothing was pre-flagged: the agent ran

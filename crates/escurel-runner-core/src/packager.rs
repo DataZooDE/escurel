@@ -49,6 +49,75 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "assign_event",
 ];
 
+/// The narrowed tool surface for a run that must NOT commit: the read
+/// surface + `validate` + `create_draft`, and nothing that lands bytes.
+///
+/// `update_page` is absent, so a review run cannot write the page even if
+/// the model decides to. `assign_event` is absent too, and that is the part
+/// worth stating: the event stays in the inbox until a human promotes the
+/// draft, because marking it `processed` would say the knowledge base has
+/// absorbed something it has not. `capture_event` is absent for the same
+/// reason `WORKFLOW_STEP_TOOLS` denies it — a run that cannot land its own
+/// write must not be able to fan out others.
+pub const REVIEW_TOOLS: &[&str] = &[
+    "list_skills",
+    "list_instances",
+    "resolve",
+    "expand",
+    "neighbours",
+    "search",
+    "list_events",
+    "list_inbox",
+    "list_messages",
+    "validate",
+    "create_draft",
+    "append_message",
+];
+
+/// What a skill's `autonomy:` declaration means for a run.
+///
+/// escurel has published this per skill on `list_skills` since #360 and
+/// enforced nothing — the doc comment says so outright: it "reports what the
+/// page declares, so a client can render the gate". Every client rendered it
+/// differently or not at all, and the runner committed regardless. This is
+/// where the declaration becomes behaviour.
+///
+/// Two values, not three: `confirm` and `review` differ in what a HUMAN is
+/// asked, not in what the runner may write, and both mean "do not land it".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Autonomy {
+    /// The agent commits directly.
+    Auto,
+    /// The agent produces a draft; a human lands it.
+    Review,
+}
+
+impl Autonomy {
+    /// Read a skill page's `autonomy:` frontmatter.
+    ///
+    /// **Absent or unrecognised is `Review`.** Only the exact string `auto`
+    /// buys unattended writes. A typo (`atuo:`) that silently meant "commit
+    /// without a gate" is the one direction this must not fail in, and the
+    /// cost of the opposite mistake is a human seeing a draft they would
+    /// have approved anyway.
+    #[must_use]
+    pub fn from_frontmatter(frontmatter: &serde_json::Value) -> Self {
+        match frontmatter.get("autonomy").and_then(|v| v.as_str()) {
+            Some("auto") => Self::Auto,
+            _ => Self::Review,
+        }
+    }
+
+    /// The tool surface a run under this policy may call.
+    #[must_use]
+    pub fn tools(self) -> &'static [&'static str] {
+        match self {
+            Self::Auto => ALLOWED_TOOLS,
+            Self::Review => REVIEW_TOOLS,
+        }
+    }
+}
+
 /// The narrowed tool surface for a **workflow step** agent (`§7`, injection
 /// containment). A step agent's job is to write its phase's `produces:`
 /// instance and nothing else, so it gets the read surface + `validate` +
@@ -124,6 +193,11 @@ pub struct TaskContext {
     pub mcp_endpoint: String,
     /// The narrowed tool surface the run may call (see [`ALLOWED_TOOLS`]).
     pub allowed_tools: Vec<String>,
+    /// What the triggering skill's `autonomy:` declared. The reconciler
+    /// reads it to know WHAT to confirm — a landed write, or a held one —
+    /// and the dispatch loop reads it to know that a held write must not
+    /// cascade.
+    pub autonomy: Autonomy,
     /// Tenant-scoped bearer for the `/mcp` toolset, held opaque.
     ///
     /// For now this reuses the configured `ESCUREL_RUNNER_TOKEN`. The
@@ -164,6 +238,9 @@ impl TaskContext {
             input,
             mcp_endpoint,
             allowed_tools,
+            // The gated policy, so a hand-built context in a test never
+            // silently exercises the committing surface.
+            autonomy: Autonomy::Review,
             token,
         }
     }
@@ -297,19 +374,36 @@ pub async fn package(
         }
     };
 
-    let instructions = build_instructions(trigger, &skill.body, trigger_event.as_ref());
-
-    // A workflow-step agent gets the narrowed surface (no event tools); every
-    // other agent gets the full surface.
+    // What the skill declared — except for a workflow step, which is
+    // `Auto` by construction.
+    //
+    // That is not an exemption smuggled in: a workflow runs because a human
+    // invoked a named plan, and the plan's phases say what will be written
+    // before anything runs. The gate `autonomy:` exists for is the one
+    // between an EVENT arriving and a page changing with nobody having asked
+    // for it. A step also keeps `WORKFLOW_STEP_TOOLS`, which is narrower than
+    // the committing surface in the direction that matters (no event tools).
+    //
+    // The two must agree: the reconciler confirms a landed write or a draft
+    // depending on this value, so a step packaged with committing tools and
+    // reconciled as a draft would dead-letter every workflow run.
+    let autonomy = if trigger.workflow.is_some() {
+        Autonomy::Auto
+    } else {
+        Autonomy::from_frontmatter(&skill.frontmatter)
+    };
     let tools = if trigger.workflow.is_some() {
         WORKFLOW_STEP_TOOLS
     } else {
-        ALLOWED_TOOLS
+        autonomy.tools()
     };
+
+    let instructions = build_instructions(trigger, &skill.body, trigger_event.as_ref(), autonomy);
 
     Ok(TaskContext {
         instructions,
         input,
+        autonomy,
         mcp_endpoint: mcp_endpoint(&cfg.gateway_url),
         allowed_tools: tools.iter().map(|s| s.to_string()).collect(),
         token,
@@ -342,13 +436,35 @@ fn render_event_payload(trigger: &Trigger, event: Option<&Event>) -> String {
 ///
 /// It is the right split independently of that limit: the system prompt
 /// carries the PROCEDURE, the input carries the DATA.
-fn build_instructions(trigger: &Trigger, skill_body: &str, event: Option<&Event>) -> String {
+fn build_instructions(
+    trigger: &Trigger,
+    skill_body: &str,
+    event: Option<&Event>,
+    autonomy: Autonomy,
+) -> String {
     let title = event.map(|e| e.title.as_str()).unwrap_or("");
+    // Under review the tool surface already makes committing impossible, but
+    // a model that discovers this by calling a tool it was never given burns
+    // a turn and writes a confused transcript. Say it once, plainly.
+    let gate = match autonomy {
+        Autonomy::Auto => String::new(),
+        Autonomy::Review => format!(
+            "\n\n## This change must be REVIEWED before it lands\n\n\
+             `{skill}` declares `autonomy: review`, so you do not write the page. \
+             Read the target with `expand`, compose the WHOLE markdown you would \
+             have written, and call `create_draft` with `target_page_id`, that \
+             `content`, and `base_sha256` set to the target's `content_sha256` from \
+             `expand` (or an empty string if no page exists yet). A human decides \
+             whether it lands. Do not try to write or assign — you cannot, and the \
+             event stays in the inbox on purpose until your draft is approved.",
+            skill = trigger.label_skill,
+        ),
+    };
     format!(
         "A new event of type `{skill}` arrived (event `{event_id}`{title}). Fold it into \
          the appropriate `{skill}` instance per the skill below. The event itself is in \
          the task input.\n\n\
-         ## Skill: {skill}\n\n{skill_body}",
+         ## Skill: {skill}\n\n{skill_body}{gate}",
         skill = trigger.label_skill,
         event_id = trigger.event_id,
         title = if title.is_empty() {
@@ -485,7 +601,7 @@ mod tests {
             body: "x".repeat(220 * 1024),
             ..Event::default()
         };
-        let instr = build_instructions(&trigger, "SKILLBODY", Some(&event));
+        let instr = build_instructions(&trigger, "SKILLBODY", Some(&event), Autonomy::Auto);
         assert!(
             instr.len() < MAX_ARG_STRLEN,
             "instructions are {} bytes, over the {MAX_ARG_STRLEN}-byte per-argument \
@@ -518,7 +634,7 @@ mod tests {
             body: "BODYMARK".into(),
             ..Event::default()
         };
-        let instr = build_instructions(&trigger, "SKILLBODY", Some(&event));
+        let instr = build_instructions(&trigger, "SKILLBODY", Some(&event), Autonomy::Auto);
         assert!(instr.contains("note"));
         assert!(instr.contains("SKILLBODY"));
         assert!(instr.contains("EVT1"));
@@ -539,7 +655,7 @@ mod tests {
         );
 
         // No event record recovered → fall back to the trigger ids.
-        let fallback = build_instructions(&trigger, "SKILLBODY", None);
+        let fallback = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Auto);
         assert!(fallback.contains("EVT1"));
     }
 
@@ -565,6 +681,7 @@ mod tests {
             input: "in".into(),
             mcp_endpoint: "http://gw/mcp".into(),
             allowed_tools: vec!["update_page".into()],
+            autonomy: Autonomy::Auto,
             token: SecretString::from("super-secret-token".to_string()),
         };
         let dbg = format!("{ctx:?}");

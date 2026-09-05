@@ -32,11 +32,13 @@ pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
 pub use ledger::{
     DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
 };
-pub use packager::{ALLOWED_TOOLS, PackageError, TaskContext, WORKFLOW_STEP_TOOLS, package};
+pub use packager::{
+    ALLOWED_TOOLS, Autonomy, PackageError, REVIEW_TOOLS, TaskContext, WORKFLOW_STEP_TOOLS, package,
+};
 pub use quota::{Governor, QuotaDecision, QuotaLimits, RunSlot, ThrottleReason};
 pub use reconciler::{
-    ConfirmedEffect, ReconcileError, RunFailure, RunReport, classify_client_error, confirm_effect,
-    run_with_retry,
+    ConfirmedEffect, ReconcileError, RunFailure, RunReport, classify_client_error, confirm_draft,
+    confirm_effect, run_with_retry,
 };
 pub use recovery::{RecoveryReport, recover_pending};
 pub use secrecy::SecretString;
