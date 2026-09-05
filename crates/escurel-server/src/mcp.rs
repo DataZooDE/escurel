@@ -936,7 +936,7 @@ async fn dispatch_tools_call(
         "create_draft" => {
             tool_create_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }
-        "list_drafts" => tool_list_drafts(indexer, params.arguments).await,
+        "list_drafts" => tool_list_drafts(indexer, caller, params.arguments).await,
         "promote_draft" => {
             tool_promote_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }
