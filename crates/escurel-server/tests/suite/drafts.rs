@@ -535,3 +535,70 @@ mod scope {
         );
     }
 }
+
+/// A draft whose frontmatter does not PARSE must be refused at draft time.
+///
+/// Found end to end, with a real model on real mail: an unquoted
+/// `subject: Re: Workshop…` is invalid YAML. `validate` reported it,
+/// `create_draft` accepted it anyway — the blocking set had no reason to
+/// carry `frontmatter_parse`, because `update_page` fails on such content
+/// before validation can matter — and the reviewer saw an ordinary card whose
+/// promotion then died with an internal error naming a line number.
+///
+/// That is the exact failure the draft-time validation exists to prevent: a
+/// human is the wrong component to discover a YAML quoting bug.
+#[tokio::test]
+async fn a_draft_whose_frontmatter_does_not_parse_is_refused() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    // The real shape, minimised: a colon in an unquoted scalar.
+    let unparseable = "---\ntype: instance\nskill: note\nid: plan\n\
+        subject: Re: Workshop Groz-Beckert am 29.07.2026\n---\n# Plan\nBody.\n";
+    let refused = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": PAGE, "content": unparseable }),
+    )
+    .await;
+    assert_eq!(refused["ok"], json!(false), "must refuse: {refused}");
+    assert!(
+        refused["issues"]
+            .as_array()
+            .expect("issues")
+            .iter()
+            .any(|i| i["code"] == json!("frontmatter_parse")),
+        "the refusal must name the reason: {refused}"
+    );
+    let waiting = call(&p, &token, "list_drafts", json!({})).await;
+    assert!(
+        waiting["drafts"].as_array().expect("drafts").is_empty(),
+        "an unpromotable draft must never reach a reviewer: {waiting}"
+    );
+
+    // The same content through `update_page` now refuses TYPED as well,
+    // instead of the internal error it used to raise. A caller can act on
+    // `{ok:false, issues}`; it cannot act on -32603.
+    let direct = call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": PAGE, "content": unparseable }),
+    )
+    .await;
+    assert_eq!(direct["ok"], json!(false), "{direct}");
+
+    // Positive control: quote the value and both paths accept it, so the
+    // refusals above are about the YAML and not about colons in a subject.
+    let quoted = "---\ntype: instance\nskill: note\nid: plan\n\
+        subject: \"Re: Workshop Groz-Beckert am 29.07.2026\"\n---\n# Plan\nBody.\n";
+    let ok = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": PAGE, "content": quoted, "base_sha256": sha(BASE) }),
+    )
+    .await;
+    assert_eq!(ok["ok"], json!(true), "quoted frontmatter must pass: {ok}");
+}

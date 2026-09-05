@@ -512,28 +512,37 @@ async fn update_page_round_trips_through_http() {
     p.shutdown().await;
 }
 
+/// Content that cannot be parsed is refused as a TYPED issue, not as a
+/// JSON-RPC internal error.
+///
+/// This test used to assert the opposite (`-32603`), and the opposite was
+/// defensible while `update_page` was the only door: the write path hits the
+/// parse failure itself, so no validation filtering changed the outcome.
+///
+/// `create_draft` made it matter. It stores content for a HUMAN to approve,
+/// and it accepted a document that could never land — found end to end with a
+/// real model on real mail, where an unquoted `subject: Re: Workshop…` is
+/// invalid YAML. Adding `frontmatter_parse` to the shared blocking set fixes
+/// the draft path and, as a consequence, upgrades this answer: `{ok:false,
+/// issues:[…]}` is something a client can act on, and `-32603` is not.
 #[tokio::test]
-async fn update_page_propagates_parse_error_as_jsonrpc_internal() {
+async fn update_page_refuses_unparseable_content_as_a_typed_issue() {
     let p = start_with_seeded_indexer().await;
-    let resp = reqwest::Client::new()
-        .post(p.mcp_url())
-        .json(&json!({
-            "jsonrpc": "2.0",
-            "id": 99,
-            "method": "tools/call",
-            "params": {
-                "name": "update_page",
-                "arguments": {
-                    "page_id": "x.md",
-                    "content": "no frontmatter at all"
-                }
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["error"]["code"], -32603, "internal error: {body}");
+    let result = call_tool(
+        &p,
+        "update_page",
+        json!({ "page_id": "x.md", "content": "no frontmatter at all" }),
+    )
+    .await;
+    assert_eq!(result["ok"], false, "must refuse: {result}");
+    assert!(
+        result["issues"]
+            .as_array()
+            .expect("issues")
+            .iter()
+            .any(|i| i["code"] == "frontmatter_parse"),
+        "the refusal must name the reason: {result}"
+    );
     p.shutdown().await;
 }
 
