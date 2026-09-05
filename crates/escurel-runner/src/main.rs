@@ -882,17 +882,6 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
     }
 }
 
-/// The real dispatch loop (lifecycle steps 5-7): consume each `Trigger`,
-/// `package` it ("skill body = instructions, `/mcp` = tools"), run the
-/// selected `harness` (a real subprocess that makes the escurel writes via
-/// its own `/mcp` calls), then **reconcile minimally** — read back that the
-/// triggering event is now `processed` on the gateway — and mark the durable
-/// ledger run terminal (`processed` on success, `failed` otherwise).
-///
-/// The full reconciler/retry policy is #155; this keeps the reconcile minimal
-/// but REAL: the event genuinely becomes processed through the harness's
-/// `/mcp` calls, and the ledger reflects the confirmed outcome.
-#[allow(clippy::too_many_arguments)]
 /// A gateway client built with a CURRENT bearer.
 ///
 /// Called wherever a loop is about to use its client, not once at boot: a
@@ -919,6 +908,16 @@ async fn connect_now(
     }
 }
 
+/// The real dispatch loop (lifecycle steps 5-7): consume each `Trigger`,
+/// `package` it ("skill body = instructions, `/mcp` = tools"), run the
+/// selected `harness` (a real subprocess that makes the escurel writes via
+/// its own `/mcp` calls), then **reconcile minimally** — read back that the
+/// triggering event is now `processed` on the gateway — and mark the durable
+/// ledger run terminal (`processed` on success, `failed` otherwise).
+///
+/// The full reconciler/retry policy is #155; this keeps the reconcile minimal
+/// but REAL: the event genuinely becomes processed through the harness's
+/// `/mcp` calls, and the ledger reflects the confirmed outcome.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_loop(
     mut consumer: DispatchConsumer,
