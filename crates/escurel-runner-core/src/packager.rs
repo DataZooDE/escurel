@@ -514,13 +514,22 @@ fn build_instructions(
         Autonomy::Auto => String::new(),
         Autonomy::Review => format!(
             "\n\n## This change must be REVIEWED before it lands\n\n\
-             `{skill}` declares `autonomy: review`, so you do not write the page. \
-             Read the target with `expand`, compose the WHOLE markdown you would \
-             have written, and call `create_draft` with `target_page_id`, that \
-             `content`, and `base_sha256` set to the target's `content_sha256` from \
-             `expand` (or an empty string if no page exists yet). A human decides \
-             whether it lands. Do not try to write or assign — you cannot, and the \
-             event stays in the inbox on purpose until your draft is approved.",
+             `{skill}` declares `autonomy: review`, so you do not write pages. \
+             Follow the procedure above as written, and wherever it tells you to \
+             WRITE a page, create a draft of that page instead:\n\n\
+             - read the target with `expand`;\n\
+             - compose the WHOLE markdown you would have written;\n\
+             - call `create_draft` with `target_page_id`, that `content`, and \
+             `base_sha256` set to the target's `content_sha256` from `expand` (an \
+             empty string when no page exists yet).\n\n\
+             **One draft per page.** If the procedure produces several pages — an \
+             artifact and a typed fact promoted out of it, say — draft each of \
+             them. Do not collapse them into one document.\n\n\
+             `create_draft` VALIDATES. A refusal comes back as \
+             `{{ok:false, issues:[…]}}` naming what is wrong; fix that and call it \
+             again. A refused draft is not a failed run.\n\n\
+             Do not try to write or assign — you have neither verb. The event \
+             stays in the inbox on purpose until a human decides.",
             skill = trigger.label_skill,
         ),
     };
