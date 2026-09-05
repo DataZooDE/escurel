@@ -139,6 +139,12 @@ impl IndexStore for SingleFileStore {
         // (idempotent), so a tenant DB provisioned before the columns
         // existed gains them.
         Migrator::ensure_write_attribution(&conn)?;
+        // Held writes awaiting a human: ensure on EVERY boot (idempotent),
+        // like the credential registry. Drafts arrived after every deployed
+        // tenant was provisioned, so without this a tenant would serve the
+        // draft tools against a table that does not exist — and a review gate
+        // that errors is a gate that gets turned off.
+        Migrator::ensure_drafts(&conn)?;
         // Provenance-graph VIEW (ADR-0010): ensure on EVERY boot (CREATE OR
         // REPLACE), after pages/links exist. A derived read surface.
         Migrator::ensure_provenance_graph(&conn)?;

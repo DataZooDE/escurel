@@ -39,6 +39,7 @@ mod crm_demo_backends;
 mod delete_page;
 mod dispatch_aliases;
 mod document_ingestion;
+mod drafts;
 mod empty_event_id;
 mod error_data;
 mod event_acl;

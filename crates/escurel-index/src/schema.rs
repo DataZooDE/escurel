@@ -112,6 +112,19 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the `drafts` table (held writes awaiting a human) exists.
+    /// Idempotent (`CREATE TABLE IF NOT EXISTS`) and run on EVERY connection
+    /// like [`Migrator::ensure_group_members`]: drafts arrived after the
+    /// deployed tenants were provisioned, so a tenant that predates them must
+    /// gain the table on reopen rather than on a rebuild nobody runs.
+    ///
+    /// A SEPARATE canonical input — a draft is not derivable from `pages/`,
+    /// so `rebuild` must NOT drop it.
+    pub fn ensure_drafts(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_12_DRAFTS)?;
+        Ok(())
+    }
+
     /// Ensure the `external_credentials` table (SQL-view backend) exists.
     /// Idempotent (`CREATE TABLE IF NOT EXISTS`) and run on EVERY connection
     /// like [`Migrator::ensure_group_members`]. This is a SEPARATE canonical
@@ -246,6 +259,11 @@ impl Migrator {
         conn.execute_batch(STAGE_4_CHAT_MESSAGES)?;
         conn.execute_batch(STAGE_5_SCENARIOS)?;
         conn.execute_batch(STAGE_6_EVENTS)?;
+        // Drafts: a held write awaiting a human. Added after `events`, so it
+        // is ALSO applied on every reopen (`ensure_drafts`) — a tenant
+        // provisioned before drafts existed must gain the table, and every
+        // deployed tenant was.
+        conn.execute_batch(STAGE_12_DRAFTS)?;
         // Group ACL v1. Idempotent (`IF NOT EXISTS`) and ALSO run on every
         // reopen via `ensure_group_members`, so a DB provisioned before
         // this table existed still gains it. Running it here too means a
@@ -293,6 +311,7 @@ const STAGE_3_FTS: &str = include_str!("../sql/0001_c_fts.sql");
 const STAGE_4_CHAT_MESSAGES: &str = include_str!("../sql/0002_chat_messages.sql");
 const STAGE_5_SCENARIOS: &str = include_str!("../sql/0003_scenarios.sql");
 const STAGE_6_EVENTS: &str = include_str!("../sql/0004_events.sql");
+const STAGE_12_DRAFTS: &str = include_str!("../sql/0012_drafts.sql");
 const STAGE_7_GROUP_MEMBERS: &str = include_str!("../sql/0005_group_members.sql");
 const STAGE_8_EXTERNAL_CREDENTIALS: &str = include_str!("../sql/0006_external_credentials.sql");
 const STAGE_9_BLOCK_CONTEXT: &str = include_str!("../sql/0007_block_context.sql");

@@ -1649,6 +1649,20 @@ impl EscurelConfig {
                                 adopted.indexer.attach_events_lake(lake_cfg).await?;
                             }
                         }
+                        // Drafts follow the events selector deliberately: no
+                        // separate knob, because a deployment with shared events
+                        // and Local drafts loses its review queue on rollout.
+                        match self.events_backend {
+                            AppendBackend::Postgres => {
+                                adopted
+                                    .indexer
+                                    .attach_drafts_pg(&lake_cfg.catalog_dsn)
+                                    .await?;
+                            }
+                            AppendBackend::DuckLake => {
+                                adopted.indexer.attach_drafts_lake(lake_cfg).await?;
+                            }
+                        }
                         adopted.indexer.attach_crdt_pg(crdt_dsn).await?;
                         refresh_shared_attaches = Some(SharedAttaches {
                             chat: self.chat_backend,
@@ -1819,6 +1833,14 @@ impl EscurelConfig {
                                 }
                                 AppendBackend::DuckLake => {
                                     indexer.attach_events_lake(lake_cfg).await?;
+                                }
+                            }
+                            match self.events_backend {
+                                AppendBackend::Postgres => {
+                                    indexer.attach_drafts_pg(&lake_cfg.catalog_dsn).await?;
+                                }
+                                AppendBackend::DuckLake => {
+                                    indexer.attach_drafts_lake(lake_cfg).await?;
                                 }
                             }
                             indexer.attach_crdt_pg(crdt_dsn).await?;

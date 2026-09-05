@@ -107,6 +107,15 @@ impl SharedAttaches {
                 indexer.attach_events_lake(lake_cfg).await?;
             }
         }
+        // Drafts share the events selector; see `Indexer::attach_drafts_pg`.
+        match self.events {
+            crate::config::AppendBackend::Postgres => {
+                indexer.attach_drafts_pg(&lake_cfg.catalog_dsn).await?;
+            }
+            crate::config::AppendBackend::DuckLake => {
+                indexer.attach_drafts_lake(lake_cfg).await?;
+            }
+        }
         if let Some(dsn) = &self.crdt_pg_dsn {
             indexer.attach_crdt_pg(dsn).await?;
         }

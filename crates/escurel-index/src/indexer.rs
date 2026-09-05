@@ -98,6 +98,10 @@ pub struct Indexer {
     /// [`Self::attach_events_pg`] runs. Mirrors [`Self::chat_backend`]
     /// exactly, including the `OnceLock` rationale.
     events_backend: std::sync::OnceLock<EventsBackend>,
+    /// Which physical table [`crate::drafts`]'s held-write methods read
+    /// and write. Unset (→ `DraftsBackend::Local`) until
+    /// [`Self::attach_drafts_pg`] runs. Mirrors [`Self::events_backend`].
+    drafts_backend: std::sync::OnceLock<crate::drafts::DraftsBackend>,
     /// Which physical table [`crate::crdt_history`]'s `list_snapshots` /
     /// `seed_snapshot_history` read and write (DuckLake PR 10, Phase B).
     /// Unset (→ [`CrdtPgBackend::Local`]) until [`Self::attach_crdt_pg`]
@@ -319,6 +323,7 @@ impl Indexer {
             contextualize: crate::backend::ContextualizeMode::default(),
             chat_backend: std::sync::OnceLock::new(),
             events_backend: std::sync::OnceLock::new(),
+            drafts_backend: std::sync::OnceLock::new(),
             crdt_pg_backend: std::sync::OnceLock::new(),
         })
     }
@@ -376,6 +381,16 @@ impl Indexer {
         Ok(())
     }
 
+    /// The drafts backend this indexer is currently wired to —
+    /// `DraftsBackend::Local` until `attach_drafts_pg` has run. Mirrors
+    /// [`Self::events_backend`].
+    pub(crate) fn drafts_backend(&self) -> crate::drafts::DraftsBackend {
+        self.drafts_backend
+            .get()
+            .cloned()
+            .unwrap_or(crate::drafts::DraftsBackend::Local)
+    }
+
     /// The events backend this indexer is currently wired to —
     /// [`EventsBackend::Local`] until [`Self::attach_events_pg`] has run.
     pub(crate) fn events_backend(&self) -> EventsBackend {
@@ -431,6 +446,52 @@ impl Indexer {
         let _ = self.events_backend.set(EventsBackend::AttachedPostgres {
             alias: crate::snapshot::EVENTS_PG_ALIAS.to_owned(),
         });
+        Ok(())
+    }
+
+    /// As [`Self::attach_events_pg`], for drafts. Called at the same
+    /// boot point and driven by the same backend selector — a
+    /// deployment whose events are shared but whose drafts are not
+    /// would lose its review queue on the next rollout, which is the
+    /// one failure this surface exists to prevent.
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::snapshot::attach_drafts_pg`].
+    pub async fn attach_drafts_pg(
+        &self,
+        catalog_dsn: &str,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        {
+            let conn = self.conn.lock().await;
+            crate::snapshot::attach_drafts_pg(&conn, catalog_dsn)?;
+        }
+        let _ = self
+            .drafts_backend
+            .set(crate::drafts::DraftsBackend::AttachedPostgres {
+                alias: crate::snapshot::DRAFTS_PG_ALIAS.to_owned(),
+            });
+        Ok(())
+    }
+
+    /// As [`Self::attach_events_lake`], for drafts.
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::snapshot::attach_drafts_lake`].
+    pub async fn attach_drafts_lake(
+        &self,
+        cfg: &crate::snapshot::LakeConfig,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        {
+            let conn = self.conn.lock().await;
+            crate::snapshot::attach_drafts_lake(&conn, cfg)?;
+        }
+        let _ = self
+            .drafts_backend
+            .set(crate::drafts::DraftsBackend::AttachedLake {
+                alias: crate::snapshot::APPEND_LAKE_ALIAS.to_owned(),
+            });
         Ok(())
     }
 

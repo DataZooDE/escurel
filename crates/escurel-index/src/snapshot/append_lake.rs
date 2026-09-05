@@ -37,6 +37,7 @@ use duckdb::Connection;
 use super::lake::LAKE_ALIAS;
 use super::{LakeConfig, SnapshotError, attach_sql, install_load_sql, secret_sql};
 use crate::chat::CHAT_PG_TABLE_NAME;
+use crate::drafts::DRAFTS_PG_TABLE_NAME;
 use crate::events::EVENTS_PG_TABLE_NAME;
 
 /// Fixed ATTACH alias for the read-write append surface. Deliberately not
@@ -110,12 +111,47 @@ pub fn create_events_lake_table_sql() -> String {
     )
 }
 
+/// The drafts table, in the lake. Same columns as
+/// [`super::create_drafts_pg_table_sql`] minus the Postgres-only
+/// `DEFAULT now()`; DuckLake has no server-side clock to default from,
+/// so `create_draft` supplies `created_at` explicitly.
+#[must_use]
+pub fn create_drafts_lake_table_sql() -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {APPEND_LAKE_ALIAS}.{DRAFTS_PG_TABLE_NAME} (\
+            tenant          VARCHAR   NOT NULL, \
+            draft_id        VARCHAR   NOT NULL, \
+            target_page_id  VARCHAR   NOT NULL, \
+            content         VARCHAR   NOT NULL, \
+            content_sha256  VARCHAR   NOT NULL, \
+            base_sha256     VARCHAR, \
+            author          VARCHAR   NOT NULL, \
+            event_id        VARCHAR, \
+            status          VARCHAR   NOT NULL, \
+            reason          VARCHAR   NOT NULL, \
+            decided_by      VARCHAR   NOT NULL, \
+            created_at      TIMESTAMP, \
+            decided_at      TIMESTAMP\
+        );"
+    )
+}
+
 /// Attach the lake read-write under [`APPEND_LAKE_ALIAS`] and create the
 /// chat table. Idempotent: `ATTACH IF NOT EXISTS` + `CREATE TABLE IF NOT
 /// EXISTS` make a re-run a no-op.
 pub fn attach_chat_lake(conn: &Connection, cfg: &LakeConfig) -> Result<(), SnapshotError> {
     attach_append_lake(conn, cfg)?;
     conn.execute_batch(&create_chat_lake_table_sql())?;
+    Ok(())
+}
+
+/// As [`attach_chat_lake`], for the drafts table.
+///
+/// # Errors
+/// When the attach or the create fails.
+pub fn attach_drafts_lake(conn: &Connection, cfg: &LakeConfig) -> Result<(), SnapshotError> {
+    attach_append_lake(conn, cfg)?;
+    conn.execute_batch(&create_drafts_lake_table_sql())?;
     Ok(())
 }
 
