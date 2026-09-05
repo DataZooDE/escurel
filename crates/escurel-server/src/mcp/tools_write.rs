@@ -404,7 +404,8 @@ pub(super) async fn tool_update_page(
                          (send an empty base_sha256 to approve a create)"
                             .to_owned()
                     } else {
-                        "base_sha256 is stale — the page changed since the held                          write was drafted; re-diff against head_content"
+                        "base_sha256 is stale — the page changed since the \
+                         held write was drafted; re-diff against head_content"
                             .to_owned()
                     },
                 }],
