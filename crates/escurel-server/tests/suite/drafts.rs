@@ -602,3 +602,78 @@ async fn a_draft_whose_frontmatter_does_not_parse_is_refused() {
     .await;
     assert_eq!(ok["ok"], json!(true), "quoted frontmatter must pass: {ok}");
 }
+
+/// An instance page with no `skill:` is refused — it would be invisible.
+///
+/// Found end to end, and only visible from the client's side: an agent
+/// drafted a `note` under `markdown/instances/note/…`, a human approved it,
+/// the `about:` edge into the customer was really there — and
+/// `list_instances --skill note` did not return it, because that query reads
+/// the FRONTMATTER, not the path. The page was real, linked, and could never
+/// appear in any catalogue view a reader browses.
+///
+/// `validate` reported nothing at all, which is why this is a validator fix
+/// and not a corpus one: the page id looks like it declares the skill and
+/// does not, so every author will make this mistake eventually.
+#[tokio::test]
+async fn an_instance_with_no_skill_is_refused_because_it_would_be_unbrowsable() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let skill_less = "---\ntype: instance\nid: orphan\ntitle: \"A note\"\n---\n# A note\nBody.\n";
+    let page = "markdown/instances/note/orphan.md";
+
+    let refused = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": page, "content": skill_less, "base_sha256": "" }),
+    )
+    .await;
+    assert_eq!(refused["ok"], json!(false), "must refuse: {refused}");
+    assert!(
+        refused["issues"]
+            .as_array()
+            .expect("issues")
+            .iter()
+            .any(|i| {
+                i["code"] == json!("frontmatter_required_key_missing")
+                    && i["location"] == json!("frontmatter.skill")
+            }),
+        "the refusal must name the missing key: {refused}"
+    );
+
+    // The same content through `update_page` is refused too — one rule, not
+    // a draft-only courtesy that direct writes walk past.
+    let direct = call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": page, "content": skill_less }),
+    )
+    .await;
+    assert_eq!(direct["ok"], json!(false), "{direct}");
+
+    // Positive control, and the assertion that gives the rule its meaning:
+    // add `skill: note` and the page not only writes, it is FINDABLE by
+    // type, which is the whole thing the missing key costs.
+    let with_skill =
+        "---\ntype: instance\nskill: note\nid: orphan\ntitle: \"A note\"\n---\n# A note\nBody.\n";
+    let ok = call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": page, "content": with_skill }),
+    )
+    .await;
+    assert_eq!(ok["ok"], json!(true), "declared skill must write: {ok}");
+    let listed = call(&p, &token, "list_instances", json!({ "skill_id": "note" })).await;
+    assert!(
+        listed["instances"]
+            .as_array()
+            .expect("instances")
+            .iter()
+            .any(|i| i["page_id"] == json!(page)),
+        "with `skill:` the page is browsable by type: {listed}"
+    );
+}
