@@ -168,6 +168,22 @@ pub(super) fn blocking_issues<'a>(
         .iter()
         .filter(|i| i.severity == Severity::Error)
         .filter(|i| match i.code.as_str() {
+            // Content whose frontmatter does not PARSE. Not previously here
+            // because `update_page` never needed it: the write path hits the
+            // parse error itself and raises a -32603 internal error, so no
+            // amount of validation filtering changed the outcome.
+            //
+            // `create_draft` made the omission matter. It stores content for
+            // a HUMAN to approve, and it accepted a document that could never
+            // land — found end-to-end, with a real model: an unquoted
+            // `subject: Re: Workshop…` is invalid YAML, the draft was queued,
+            // the reviewer saw a perfectly ordinary card, and promotion died
+            // with an internal error naming a line number.
+            //
+            // Blocking it here also upgrades `update_page`'s answer for the
+            // same content from that -32603 to `{ok:false, issues:[…]}` —
+            // a refusal a client can act on, which an internal error is not.
+            "frontmatter_parse" => true,
             // A link that names a type or a page that does not exist. This is
             // the hole being closed: an agent could cite
             // `[[customer::invented-gmbh]]` and the graph would carry it.
