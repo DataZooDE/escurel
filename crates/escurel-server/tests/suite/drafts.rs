@@ -410,3 +410,128 @@ mod acl {
         assert_eq!(ok["ok"], json!(true), "the owner may draft: {ok}");
     }
 }
+
+/// The review queue is SCOPED, and it must be.
+///
+/// escurel's deployment model is one shared tenant with several people in
+/// it, so an unfiltered `list_drafts` would show every consultant every
+/// other consultant's held writes — content included, before anyone
+/// approved anything. The draft carries no owner column on purpose: who may
+/// see it is answered from the proposed CONTENT, the same question the page
+/// it would become will answer, from the same source.
+mod scope {
+    use super::*;
+    use escurel_server::WriteAclMode;
+
+    const ALICE: &str = "whatsapp:111";
+    const BOB: &str = "whatsapp:222";
+    const MEMBER_SKILL: &str = "---\ntype: skill\nid: community_member\n\
+        description: A member.\nvisibility: owner\nowner_field: credential\n---\n# community_member\n";
+    const TALK_SKILL: &str = "---\ntype: skill\nid: talk\ndescription: A talk.\n\
+        visibility: public\n---\n# talk\n";
+    const ALICE_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+        credential: \"whatsapp:111\"\n---\n# Alice\n";
+    const ALICE_PAGE: &str = "markdown/instances/community_member/alice.md";
+    const ALICE_EDIT: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+        credential: \"whatsapp:111\"\n---\n# Alice\nPRIVATE edit.\n";
+    const KEYNOTE: &str = "---\ntype: instance\nskill: talk\nid: keynote\n---\n# Keynote\n";
+    const KEYNOTE_PAGE: &str = "markdown/instances/talk/keynote.md";
+    const KEYNOTE_EDIT: &str =
+        "---\ntype: instance\nskill: talk\nid: keynote\n---\n# Keynote\nPUBLIC edit.\n";
+
+    async fn start_scoped() -> EscurelProcess {
+        EscurelProcess::spawn(Opts {
+            auth: AuthMode::TestIssuer,
+            config_overrides: ConfigOverrides {
+                write_acl: Some(WriteAclMode::Enforce),
+                ..Default::default()
+            },
+            fixtures: Some(
+                FixtureBuilder::new()
+                    .tenant(TENANT)
+                    .skill("community_member", MEMBER_SKILL)
+                    .skill("talk", TALK_SKILL)
+                    .instance("community_member", "alice", ALICE_MEMBER)
+                    .instance("talk", "keynote", KEYNOTE)
+                    .done(),
+            ),
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn one_persons_held_write_is_not_in_another_persons_queue() {
+        let p = start_scoped().await;
+        let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+        let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+        // Alice drafts against her own owner-private record.
+        let private = call(
+            &p,
+            &alice,
+            "create_draft",
+            json!({ "target_page_id": ALICE_PAGE, "content": ALICE_EDIT }),
+        )
+        .await;
+        assert_eq!(private["ok"], json!(true), "{private}");
+        let private_id = private["draft"]["draft_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+
+        // Bob sees nothing of it — not the row, not the content.
+        let bobs_queue = call(&p, &bob, "list_drafts", json!({})).await;
+        let raw = bobs_queue.to_string();
+        assert!(
+            !raw.contains(&private_id) && !raw.contains("PRIVATE edit"),
+            "another person's held write must not appear in this queue: {bobs_queue}"
+        );
+
+        // ...and cannot decide it either. Denial reads as absence.
+        let steal = call(&p, &bob, "promote_draft", json!({ "draft_id": private_id })).await;
+        assert_eq!(steal["ok"], json!(false), "{steal}");
+        assert_eq!(steal["issues"][0]["code"], json!("not_found"), "{steal}");
+        let kill = call(&p, &bob, "discard_draft", json!({ "draft_id": private_id })).await;
+        assert_eq!(kill["ok"], json!(false), "{kill}");
+
+        // The draft survived Bob entirely: still open, still Alice's.
+        let alices_queue = call(&p, &alice, "list_drafts", json!({})).await;
+        assert!(
+            alices_queue["drafts"]
+                .as_array()
+                .expect("drafts")
+                .iter()
+                .any(|d| d["draft_id"] == json!(private_id)),
+            "the owner must still see their own open draft: {alices_queue}"
+        );
+
+        // Positive control: filtering is by ACL, not by author. A draft
+        // against a PUBLIC page is visible to Bob even though someone else
+        // wrote it — without this the assertions above would also pass if
+        // `list_drafts` simply returned nothing to anyone.
+        //
+        // Drafted by an admin because a public / no-`owner_field` instance is
+        // admin-write-only under `Enforce` (see `write_acl.rs`), and
+        // `create_draft` runs exactly that ACL — which is itself the rule
+        // this file's `acl` module pins.
+        let admin = p.mint_token(TENANT, Role::Admin);
+        let public = call(
+            &p,
+            &admin,
+            "create_draft",
+            json!({ "target_page_id": KEYNOTE_PAGE, "content": KEYNOTE_EDIT }),
+        )
+        .await;
+        assert_eq!(public["ok"], json!(true), "{public}");
+        let public_id = public["draft"]["draft_id"].as_str().expect("id").to_owned();
+        let bobs_queue = call(&p, &bob, "list_drafts", json!({})).await;
+        assert!(
+            bobs_queue["drafts"]
+                .as_array()
+                .expect("drafts")
+                .iter()
+                .any(|d| d["draft_id"] == json!(public_id)),
+            "a draft against a readable page must be in the queue: {bobs_queue}"
+        );
+    }
+}

@@ -56,6 +56,44 @@ pub(super) struct DecideDraftArgs {
     reason: String,
 }
 
+/// Whether `caller` may SEE this draft, decided from the proposed content's
+/// own frontmatter — the same question, answered the same way, as for the
+/// page it would become.
+///
+/// This is not optional hardening. escurel's own deployment model is one
+/// shared tenant with several people in it (heron's D7), so an unfiltered
+/// queue would show every consultant every other consultant's held writes,
+/// including the content. A draft carries no owner column on purpose: two
+/// places answering "who may read this?" from two different sources
+/// eventually disagree, and the disagreement is silent.
+///
+/// Unparseable content fails CLOSED — nobody but an admin sees a draft whose
+/// ACL cannot be determined.
+async fn may_see(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    draft: &escurel_index::drafts::DraftInfo,
+) -> Result<bool, JsonRpcError> {
+    if caller.is_admin {
+        return Ok(true);
+    }
+    let Ok(parsed) = escurel_md::parse(&draft.content) else {
+        return Ok(false);
+    };
+    let skill = parsed
+        .frontmatter
+        .fields
+        .get("skill")
+        .and_then(escurel_md::YamlValue::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let fm = serde_json::to_value(&parsed.frontmatter.fields).unwrap_or_else(|_| json!({}));
+    indexer
+        .may_read_instance(caller, &skill, &fm)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("draft acl: {e}")))
+}
+
 fn draft_to_json(d: &escurel_index::drafts::DraftInfo) -> Value {
     json!({
         "draft_id": d.draft_id,
@@ -149,6 +187,7 @@ pub(super) async fn tool_create_draft(
 /// Everything still waiting, newest first.
 pub(super) async fn tool_list_drafts(
     indexer: &Indexer,
+    caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListDraftsArgs = parse_args(args, "list_drafts")?;
@@ -156,9 +195,13 @@ pub(super) async fn tool_list_drafts(
         .list_drafts(a.limit)
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_drafts: {e}")))?;
-    Ok(json!({
-        "drafts": drafts.iter().map(draft_to_json).collect::<Vec<_>>(),
-    }))
+    let mut visible = Vec::new();
+    for d in &drafts {
+        if may_see(indexer, &caller, d).await? {
+            visible.push(draft_to_json(d));
+        }
+    }
+    Ok(json!({ "drafts": visible }))
 }
 
 /// Land a held write, under the approver's identity.
@@ -185,6 +228,19 @@ pub(super) async fn tool_promote_draft(
             }],
         }));
     };
+    if !may_see(indexer, &caller, &draft).await? {
+        // Denial reads as absence, as it does for every other scoped read
+        // here: "there is a draft you may not see" is itself information.
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_found",
+                "location": "draft_id",
+                "message": format!("no draft `{}`", a.draft_id),
+            }],
+        }));
+    }
     if draft.status != "open" {
         // Not an error the caller can retry away: the decision was already
         // taken, and the honest answer is which one.
@@ -238,6 +294,25 @@ pub(super) async fn tool_discard_draft(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: DecideDraftArgs = parse_args(args, "discard_draft")?;
+    // Refusing someone else's held write is a decision on their work, so it
+    // takes the same visibility check promotion does. Without it the cheapest
+    // attack on this surface is to discard every draft in the tenant.
+    if let Some(draft) = indexer
+        .get_draft(&a.draft_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("discard_draft: {e}")))?
+        && !may_see(indexer, &caller, &draft).await?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_found",
+                "location": "draft_id",
+                "message": format!("no OPEN draft `{}`", a.draft_id),
+            }],
+        }));
+    }
     let closed = indexer
         .close_draft(&a.draft_id, "discarded", caller.subject, &a.reason)
         .await
