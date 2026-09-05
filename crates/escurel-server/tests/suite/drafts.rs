@@ -677,3 +677,49 @@ async fn an_instance_with_no_skill_is_refused_because_it_would_be_unbrowsable() 
         "with `skill:` the page is browsable by type: {listed}"
     );
 }
+
+/// An unquoted wikilink in frontmatter is REPORTED, and still written.
+///
+/// `about: [[customer::acme]]` parses as a nested YAML list rather than a
+/// string. The obvious conclusion — that the edge is lost — is wrong, and
+/// measuring it is what stopped this from shipping as a refusal: two
+/// otherwise identical pages, one quoted and one not, both produce the
+/// in-edge, because edge extraction reads the raw frontmatter text.
+///
+/// What the shape does change is what a CONSUMER reading the field as a
+/// value receives. So it is a warning: reported, never blocking, and a page
+/// that has been fine for a year does not suddenly refuse to save.
+#[tokio::test]
+async fn an_unquoted_wikilink_in_frontmatter_warns_but_still_writes() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let unquoted = "---\ntype: instance\nskill: note\nid: plan\n\
+        about: [[note::plan]]\n---\n# Plan\nBody.\n";
+    let reported = call(&p, &token, "validate", json!({ "content": unquoted })).await;
+    let issue = reported["issues"]
+        .as_array()
+        .expect("issues")
+        .iter()
+        .find(|i| i["code"] == json!("frontmatter_wikilink_unquoted"))
+        .unwrap_or_else(|| panic!("must report it: {reported}"));
+    assert_eq!(issue["severity"], json!("warning"), "{issue}");
+    assert_eq!(issue["location"], json!("frontmatter.about"), "{issue}");
+    assert!(
+        issue["suggestion"]
+            .as_str()
+            .is_some_and(|s| s.contains("\"[[note::plan]]\"")),
+        "the fix is one pair of quotes; say so: {issue}"
+    );
+
+    // ...and it writes. A warning that blocked would refuse pages that have
+    // been correct for a year, to fix something nothing has lost.
+    let ok = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": PAGE, "content": unquoted, "base_sha256": sha(BASE) }),
+    )
+    .await;
+    assert_eq!(ok["ok"], json!(true), "a warning must not block: {ok}");
+}

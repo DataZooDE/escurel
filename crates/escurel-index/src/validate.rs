@@ -398,6 +398,21 @@ impl Indexer {
             ));
         }
 
+        for (key, text) in Self::unquoted_frontmatter_wikilinks(fields) {
+            issues.push(
+                Issue::warning(
+                    "frontmatter_wikilink_unquoted",
+                    format!("frontmatter.{key}"),
+                    format!(
+                        "`{key}: [[{text}]]` parses as a nested YAML list, not a string \
+                         — the link edge still resolves, but any consumer reading this \
+                         field as a value sees a list"
+                    ),
+                )
+                .with_suggestion(format!("{key}: \"[[{text}]]\"")),
+            );
+        }
+
         // required_frontmatter — only when the draft's declared
         // skill resolves to a skill page that declares required keys.
         if let Some(skill) = declared_skill {
@@ -567,6 +582,57 @@ impl Indexer {
 
     /// Typed wikilinks appearing in frontmatter *values*, paired with the
     /// key they sit under so a required-field link can be graded.
+    /// Frontmatter fields holding an UNQUOTED wikilink.
+    ///
+    /// `about: [[customer::acme]]` is not a string in YAML. It is a sequence
+    /// containing a sequence containing `customer::acme`.
+    ///
+    /// **The edge still resolves.** That was measured, not assumed, and it
+    /// is the opposite of what this check was first written to claim: two
+    /// otherwise identical pages, one quoted and one not, both produce the
+    /// in-edge on `neighbours`. Edge extraction reads the raw frontmatter
+    /// text, so the YAML shape does not reach it.
+    ///
+    /// What the shape DOES change is every consumer that reads the field as
+    /// a value rather than as text — the parsed frontmatter a client
+    /// receives holds `[["customer::acme"]]`, not a string. Heron reads
+    /// `engagement:` that way, and a field that silently becomes a nested
+    /// list is a defect waiting for the first consumer who reads it.
+    ///
+    /// So: a WARNING, not an error. Nothing is lost today; the value is not
+    /// what its author wrote.
+    ///
+    /// Detected structurally rather than by re-parsing text: a one-element
+    /// sequence whose one element is a one-element sequence of a string
+    /// shaped `<skill>::<id>` is a YAML flow list nobody writes on purpose.
+    fn unquoted_frontmatter_wikilinks(fields: &YamlMapping) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for (key, value) in fields.iter() {
+            let Some(key) = key.as_str() else { continue };
+            let YamlValue::Sequence(outer) = value else {
+                continue;
+            };
+            for item in outer {
+                let YamlValue::Sequence(inner) = item else {
+                    continue;
+                };
+                for leaf in inner {
+                    if let YamlValue::String(text) = leaf
+                        && let Some((skill, id)) = text.split_once("::")
+                        && !skill.is_empty()
+                        && !id.is_empty()
+                        && skill
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    {
+                        out.push((key.to_owned(), text.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn frontmatter_wikilinks(fields: &YamlMapping) -> Vec<(String, WikilinkParsed)> {
         let mut out = Vec::new();
         for (key, value) in fields.iter() {
