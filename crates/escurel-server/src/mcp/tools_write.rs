@@ -196,7 +196,14 @@ pub(super) fn blocking_issues<'a>(
             "unknown_skill" => i.location.starts_with("wikilink"),
             // A page with no `id` indexes but can neither be expanded nor
             // resolved — an identity failure, not a completeness one.
-            "frontmatter_required_key_missing" => i.location == "frontmatter.id",
+            // Identity, not completeness: a page with no `id` can neither be
+            // expanded nor resolved, and one with no `skill` is invisible to
+            // `list_instances` — real, linked and unbrowsable. Everything
+            // else `required_frontmatter` declares stays non-blocking, for
+            // the migration reason above.
+            "frontmatter_required_key_missing" => {
+                i.location == "frontmatter.id" || i.location == "frontmatter.skill"
+            }
             // A skill page declaring an unrecognised `autonomy:` policy
             // (heron#5 / CR-1). GATED, unlike every other arm above, because
             // `autonomy:` has been unvalidated free-form frontmatter: a tenant
