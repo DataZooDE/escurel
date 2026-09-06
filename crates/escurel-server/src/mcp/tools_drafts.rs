@@ -159,7 +159,7 @@ pub(super) async fn tool_create_draft(
         .validate(Some(&a.target_page_id), &a.content)
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_draft validate: {e}")))?;
-    let blocking = crate::mcp::tools_write::blocking_issues(state, &issues);
+    let blocking = draft_blocking_issues(state, &issues);
     if !blocking.is_empty() {
         return Ok(json!({
             "ok": false,
@@ -329,4 +329,43 @@ pub(super) async fn tool_discard_draft(
         }));
     }
     Ok(json!({ "ok": true, "draft_id": a.draft_id }))
+}
+
+/// The blocking set for a DRAFT, which is the shared one plus every key the
+/// skill itself declares required.
+///
+/// `update_page` deliberately blocks only `id` and `skill` among the
+/// `required_frontmatter` keys, because a bulk seed or an older corpus may
+/// legitimately lack the rest and breaking those writes is a migration, not a
+/// fix. The draft path carries none of that history — it shipped in
+/// 2026-09 — so it can hold the stricter line, and it is the path where the
+/// looser one does real damage.
+///
+/// Measured on 2026-09-06, end to end with a real model: a Gemini run drafted
+/// a page with no `engagement:`, `create_draft` answered `ok`, and the draft
+/// was then invisible to every consultant — Heron scopes the review queue by
+/// exactly that field and fails closed on its absence. The run had turns left
+/// and could have acted on a refusal; instead it succeeded into a black hole,
+/// and the phone said "Nothing waiting. Everything captured has been filed or
+/// decided."
+///
+/// A draft is content proposed for a HUMAN to approve. One that cannot be
+/// attributed cannot be shown to the person who would approve it, and in a
+/// shared tenant an unattributable record about a customer is precisely what
+/// the attribution rule exists to prevent. Refusing it while an agent is
+/// still running is the recoverable failure.
+fn draft_blocking_issues<'a>(
+    state: &crate::server::AppState,
+    issues: &'a [escurel_index::Issue],
+) -> Vec<&'a escurel_index::Issue> {
+    let mut blocking = crate::mcp::tools_write::blocking_issues(state, issues);
+    for i in issues {
+        if i.severity == escurel_index::Severity::Error
+            && i.code == "frontmatter_required_key_missing"
+            && !blocking.iter().any(|b| std::ptr::eq(*b, i))
+        {
+            blocking.push(i);
+        }
+    }
+    blocking
 }

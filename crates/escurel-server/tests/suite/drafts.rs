@@ -723,3 +723,101 @@ async fn an_unquoted_wikilink_in_frontmatter_warns_but_still_writes() {
     .await;
     assert_eq!(ok["ok"], json!(true), "a warning must not block: {ok}");
 }
+
+/// A skill that REQUIRES `engagement`, so the draft path has something to hold
+/// the line on. `update_page`'s looser rule is asserted against this same
+/// skill below, which is the point of declaring it here.
+const SCOPED_SKILL: &str = "---\ntype: skill\nid: scoped\ndescription: A scoped note.\n\
+    visibility: public\nrequired_frontmatter: [id, skill, engagement]\n---\n# scoped\n";
+const SCOPED_BASE: &str = "---\ntype: instance\nskill: scoped\nid: plan\n\
+    engagement: engagement-groz\n---\n# Plan\nv1 body.\n";
+const SCOPED_PAGE: &str = "markdown/instances/scoped/plan.md";
+
+/// A draft missing a key its own skill declares required is refused.
+///
+/// Measured end to end with a real model on 2026-09-06: a Gemini run drafted a
+/// page with no `engagement:`, `create_draft` answered `ok`, and the draft was
+/// then invisible to every consultant — Heron scopes the review queue by
+/// exactly that field and fails closed on its absence. The run still had turns
+/// left and could have acted on a refusal.
+///
+/// The draft path holds a stricter line than `update_page` deliberately, and
+/// the second half of this test pins that difference: an older corpus may
+/// legitimately lack a declared key, and breaking those writes is a migration
+/// rather than a fix. A draft has no such history.
+#[tokio::test]
+async fn a_draft_missing_a_key_its_skill_requires_is_refused() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides::default(),
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("scoped", SCOPED_SKILL)
+                .instance("scoped", "plan", SCOPED_BASE)
+                .done(),
+        ),
+    })
+    .await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let unattributable = "---\ntype: instance\nskill: scoped\nid: plan\n---\n\
+        # Plan\nDrafted without saying whose this is.\n";
+    let refused = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": SCOPED_PAGE, "content": unattributable }),
+    )
+    .await;
+    assert_eq!(refused["ok"], json!(false), "must refuse: {refused}");
+    assert!(
+        refused["issues"]
+            .as_array()
+            .expect("issues")
+            .iter()
+            .any(|i| i["code"] == json!("frontmatter_required_key_missing")
+                && i["location"] == json!("frontmatter.engagement")),
+        "the refusal must name the missing field, so an agent can act on it: {refused}"
+    );
+    let waiting = call(&p, &token, "list_drafts", json!({})).await;
+    assert!(
+        waiting["drafts"].as_array().expect("drafts").is_empty(),
+        "an unattributable draft must never reach a reviewer: {waiting}"
+    );
+
+    // POSITIVE CONTROL: the same content WITH the field is accepted, so the
+    // refusal above is about the missing key and not about this skill or page.
+    let attributed = "---\ntype: instance\nskill: scoped\nid: plan\n\
+        engagement: engagement-groz\n---\n# Plan\nDrafted properly.\n";
+    let ok = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": SCOPED_PAGE,
+            "content": attributed,
+            "base_sha256": sha(SCOPED_BASE),
+        }),
+    )
+    .await;
+    assert_eq!(ok["ok"], json!(true), "control: {ok}");
+
+    // And `update_page` is UNCHANGED: the same missing key is not blocking
+    // there. A stricter draft path is the decision; a stricter write path
+    // would be a migration nobody asked for.
+    let direct = call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": SCOPED_PAGE, "content": unattributable }),
+    )
+    .await;
+    assert_eq!(
+        direct["ok"],
+        json!(true),
+        "update_page must keep its looser required_frontmatter rule: {direct}"
+    );
+
+    p.shutdown().await;
+}

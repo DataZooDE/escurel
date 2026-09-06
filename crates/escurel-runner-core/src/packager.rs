@@ -525,9 +525,18 @@ fn build_instructions(
              **One draft per page.** If the procedure produces several pages — an \
              artifact and a typed fact promoted out of it, say — draft each of \
              them. Do not collapse them into one document.\n\n\
-             `create_draft` VALIDATES. A refusal comes back as \
-             `{{ok:false, issues:[…]}}` naming what is wrong; fix that and call it \
-             again. A refused draft is not a failed run.\n\n\
+             `create_draft` VALIDATES, and on the draft path EVERY key the skill \
+             declares in `required_frontmatter` is required — not just `id` and \
+             `skill`. A refusal comes back as `{{ok:false, issues:[…]}}` naming \
+             what is wrong; fix that and call it again. A refused draft is not a \
+             failed run.\n\n\
+             **If you cannot determine a required field, do not invent one and do \
+             not draft.** `engagement` in particular says WHOSE this is, and it is \
+             answered by a human or by an authored routing rule — never inferred \
+             from the content. An event that arrives without one is a question for \
+             a person, not a gap for you to fill: say so and stop. A draft nobody \
+             can attribute is a draft nobody can be shown, and it is worse than no \
+             draft at all.\n\n\
              Do not try to write or assign — you have neither verb. The event \
              stays in the inbox on purpose until a human decides.",
             skill = trigger.label_skill,
