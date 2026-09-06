@@ -299,6 +299,14 @@ pub struct RunnerConfig {
     /// a test can outlive a bearer in seconds and prove the long-running
     /// loops re-mint rather than freezing one at boot.
     pub auth_ttl_secs: u64,
+
+    /// Model-turn bound for the harness, when the deployment sets one.
+    ///
+    /// Source: `ESCUREL_RUNNER_MAX_TURNS` (unset → the harness's own
+    /// default). A knob rather than a raised default: a run that stops short
+    /// is usually looping, and buying it more turns buys more looping. Raise
+    /// it against a measurement, not a hunch.
+    pub harness_max_turns: Option<u32>,
     /// API key for the Gemini adapter — the one harness that needs no CLI,
     /// no node runtime and no interactive login, which is what makes it the
     /// harness a container can actually run.
@@ -478,6 +486,9 @@ impl RunnerConfig {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "escurel".to_owned());
         let auth_kid = lookup("ESCUREL_RUNNER_AUTH_KID").filter(|s| !s.is_empty());
+        let harness_max_turns = lookup("ESCUREL_RUNNER_MAX_TURNS")
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 0);
         let auth_ttl_secs = lookup("ESCUREL_RUNNER_AUTH_TTL_SECS")
             .and_then(|v| v.parse::<u64>().ok())
             .filter(|v| *v > 0)
@@ -563,6 +574,7 @@ impl RunnerConfig {
             auth_kid,
             auth_subject,
             auth_ttl_secs,
+            harness_max_turns,
             gemini_api_key,
             gemini_model,
             gemini_base_url,

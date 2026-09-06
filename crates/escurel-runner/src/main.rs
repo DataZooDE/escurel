@@ -856,11 +856,15 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
         // The one harness a container can run: HTTP to the model, no CLI, no
         // node runtime, no interactive login.
         "gemini" => match config.gemini_api_key.clone() {
-            Some(key) => Arc::new(
-                GeminiHarness::new(key)
+            Some(key) => {
+                let mut h = GeminiHarness::new(key)
                     .with_model(config.gemini_model.clone())
-                    .with_base_url(config.gemini_base_url.clone()),
-            ),
+                    .with_base_url(config.gemini_base_url.clone());
+                if let Some(turns) = config.harness_max_turns {
+                    h = h.with_max_turns(turns);
+                }
+                Arc::new(h)
+            }
             // Deliberately NOT the echo fallback below. A misconfigured
             // `gemini` selector that quietly became `echo` would keep
             // dispatching — writing echo's deterministic stand-in text into
@@ -1281,7 +1285,7 @@ async fn attempt_run(
     // Carried past the match so the read-back below can tell "the harness
     // named a page" from "it named nothing" — the latter is only meaningful
     // once the gateway has also been asked.
-    let harness_produced = match harness.run(&task).await {
+    let (harness_produced, harness_reported_failure) = match harness.run(&task).await {
         Ok(outcome) => {
             tracing::info!(
                 target: "escurel_runner",
@@ -1294,15 +1298,24 @@ async fn attempt_run(
                 summary = %outcome.summary,
                 "dispatch: harness completed"
             );
-            if !outcome.ok {
-                // The harness ran cleanly but reported it could not complete
-                // — re-running won't change that, so fail fast.
-                return Err(ReconcileError::Permanent(format!(
-                    "harness {} reported a failed outcome: {}",
-                    harness.name(),
-                    outcome.summary
-                )));
-            }
+            // A self-reported FAILURE is not evidence either.
+            //
+            // This used to return here, before the read-back — which
+            // contradicted the rule stated eight lines below and enforced
+            // everywhere else in this function: the gateway is the authority,
+            // never the harness's own account of itself. Measured in the
+            // cluster on 2026-09-06: a Gemini run created a draft
+            // (`create_draft` → `status: ok`), kept talking, hit the turn cap,
+            // and reported failure. The run was recorded `failed
+            // (retriable re-drive)` for work that had landed — and a re-drive
+            // would have produced a SECOND draft for a page whose rule is
+            // one draft per page.
+            //
+            // So carry the report past the read-back and let it decide. If
+            // the gateway confirms an effect, the run succeeded whatever the
+            // model said; if it confirms nothing, this becomes the permanent
+            // failure it always was, with the harness's own words attached.
+            let reported_failure = (!outcome.ok).then(|| outcome.summary.clone());
             // NB: "produced no instance + no pre-flagged target" is NOT by
             // itself a no-op, and treating it as one was a real bug. Both
             // real LLM adapters hardcode `produced_instance: None` — their
@@ -1315,7 +1328,7 @@ async fn attempt_run(
             //
             // The gateway is the authority, so ask it first (below) and
             // decide afterwards.
-            outcome.produced_instance
+            (outcome.produced_instance, reported_failure)
         }
         Err(e) => {
             tracing::warn!(
@@ -1342,7 +1355,30 @@ async fn attempt_run(
         Autonomy::Review => confirm_draft(client, trigger).await,
     };
     match confirmed {
-        Ok(effect) => Ok(effect),
+        Ok(effect) => {
+            if let Some(summary) = &harness_reported_failure {
+                // Worth a line: the model said it failed and the gateway
+                // disagrees. The gateway wins, and someone should know the
+                // harness is stopping short of its own success.
+                tracing::info!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    harness = %harness.name(),
+                    attempt,
+                    summary = %summary,
+                    "dispatch: harness reported failure but the gateway confirms the effect; \
+                     taking the gateway's word"
+                );
+            }
+            Ok(effect)
+        }
+        // The harness said it failed and the gateway confirms nothing. Now
+        // the report is the answer, and re-running will not change it.
+        Err(_) if harness_reported_failure.is_some() => Err(ReconcileError::Permanent(format!(
+            "harness {} reported a failed outcome and the gateway confirms no effect: {}",
+            harness.name(),
+            harness_reported_failure.unwrap_or_default()
+        ))),
         // Read-back could not confirm anything, the harness reported no
         // produced instance, and nothing was pre-flagged: the agent ran
         // cleanly and genuinely did nothing. Terminate CLEANLY (#156/#157)
