@@ -214,16 +214,37 @@ async fn run_until_terminal(draft: bool) -> (Value, EscurelProcess, String) {
     // regression still fails, it just fails after waiting.
     let deadline = Instant::now() + Duration::from_secs(240);
     loop {
+        // NOT `terminal`. Only `processed` and `dead_letter` are terminal by
+        // design — a `failed` row is deliberately re-claimable so a transient
+        // failure is not wedged for ever (escurel #157). The no-draft case
+        // here ends `failed`, so waiting on `terminal` waits for something
+        // that will never happen, and the test times out saying nothing.
+        // Wait for a VERDICT of any kind instead.
         if let Ok(resp) = reqwest::get(&ledger_url).await
             && let Ok(v) = resp.json::<Value>().await
-            && v["terminal"].as_i64().unwrap_or(0) > 0
+            && ["succeeded", "failed", "dead_letter"]
+                .iter()
+                .any(|k| v[*k].as_i64().unwrap_or(0) > 0)
         {
             return (v, gateway, page_id);
         }
-        assert!(
-            Instant::now() < deadline,
-            "the run never reached a terminal ledger state"
-        );
+        // Say WHICH stage stalled. This failed once in CI and could not be
+        // reproduced locally, and "never reached a terminal state" named
+        // neither the poller, the harness, nor the verdict. The ledger
+        // snapshot distinguishes all three: no row at all means the poller
+        // never enqueued; a row with no verdict means the run is still in
+        // flight.
+        if Instant::now() >= deadline {
+            let last = reqwest::get(&ledger_url)
+                .await
+                .ok()
+                .map(|r| async { r.text().await.unwrap_or_default() });
+            let snapshot = match last {
+                Some(f) => f.await,
+                None => "<ledger unreachable>".to_owned(),
+            };
+            panic!("the run never reached a verdict; ledger says {snapshot}");
+        }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
