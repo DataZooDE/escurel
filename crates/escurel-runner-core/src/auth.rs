@@ -41,7 +41,7 @@ const TENANT_CLAIM: &str = "tenant";
 /// Long enough that a run and its retries never straddle an expiry; short
 /// enough that a leaked one is worth little. Re-minted well before it lapses
 /// — see [`REFRESH_MARGIN_SECS`].
-const TTL_SECS: u64 = 30 * 60;
+pub const TTL_SECS: u64 = 30 * 60;
 
 /// Re-mint this long before expiry, so a token is never handed out with less
 /// life left than a slow run might need.
@@ -76,6 +76,10 @@ pub enum TokenSource {
     Minted {
         signer: Signer,
         subject: String,
+        /// How long each minted bearer lives. Configurable so a test can
+        /// outlive one in seconds rather than half an hour — the only way to
+        /// prove a long-running loop actually re-mints.
+        ttl_secs: u64,
         /// `(token, expires_at_unix)`.
         cached: Mutex<Option<(String, u64)>>,
     },
@@ -105,17 +109,21 @@ impl TokenSource {
             Self::Minted {
                 signer,
                 subject,
+                ttl_secs,
                 cached,
             } => {
+                let ttl = *ttl_secs;
                 let now = now_secs();
                 let mut slot = cached.lock().unwrap_or_else(|e| e.into_inner());
+                // A TTL at or under the margin re-mints every call, which is
+                // exactly what a short-lived test TTL should do.
                 if let Some((token, exp)) = slot.as_ref()
-                    && *exp > now + REFRESH_MARGIN_SECS
+                    && *exp > now + REFRESH_MARGIN_SECS.min(ttl / 2)
                 {
                     return Ok(token.clone());
                 }
-                let token = signer.mint(subject, TTL_SECS)?;
-                *slot = Some((token.clone(), now + TTL_SECS));
+                let token = signer.mint(subject, ttl)?;
+                *slot = Some((token.clone(), now + ttl));
                 Ok(token)
             }
         }
@@ -311,6 +319,7 @@ mod tests {
         let stale = signer.mint("escurel-runner", 60).expect("mint");
         let source = TokenSource::Minted {
             signer,
+            ttl_secs: TTL_SECS,
             subject: "escurel-runner".into(),
             // Expires inside the refresh margin: still valid, not valid
             // enough to hand to a run that may take minutes.
