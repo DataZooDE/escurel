@@ -1039,14 +1039,34 @@ async fn dispatch_loop(
         // `/mcp` to CONFIRM the effect, retrying transient failures with
         // backoff up to the attempts cap (#155).
         let report = run_with_retry(&config, |attempt| {
-            attempt_run(
+            // BOUNDED. The gateway client times out one request at 60s, but a
+            // run is not one request — a dozen model turns, each with tool
+            // calls, times the attempts cap. A run that stalled sat `pending`
+            // holding an in-flight quota slot, not terminal enough to block a
+            // re-delivery and not re-drivable either, because the poller's
+            // seen-set already holds its event id.
+            //
+            // A timeout is a TRANSIENT failure: the retry policy already
+            // knows what to do with one, and a stalled attempt is exactly
+            // what a retry is for.
+            let fut = attempt_run(
                 &trigger,
                 &client,
                 &config,
                 &tokens,
                 harness.as_ref(),
                 attempt,
-            )
+            );
+            let bound = config.run_timeout;
+            async move {
+                match tokio::time::timeout(bound, fut).await {
+                    Ok(result) => result,
+                    Err(_) => Err(ReconcileError::Transient(format!(
+                        "run attempt exceeded {}s and was abandoned",
+                        bound.as_secs()
+                    ))),
+                }
+            }
         })
         .await;
 
