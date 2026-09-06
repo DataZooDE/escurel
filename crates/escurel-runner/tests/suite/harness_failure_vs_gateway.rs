@@ -190,13 +190,24 @@ async fn run_until_terminal(draft: bool) -> (Value, EscurelProcess, String) {
     // suite another process can take it first. That used to surface as this
     // test waiting out its whole deadline on a ledger nobody was writing —
     // a mystery timeout instead of a diagnosis.
+    // ONE client, reused for every poll below.
+    //
+    // `reqwest::get` builds a fresh Client — and its connection pool — per
+    // call. Polling every 250ms for the deadline built ~960 of them, which
+    // under a loaded CI runner exhausts file descriptors for the whole test
+    // process, including the stub model server the harness is waiting on.
+    // That is consistent with what CI reported: the run created and enqueued
+    // (`total: 1`) and then never reaching a verdict.
+    let http = reqwest::Client::new();
     let health = format!("http://127.0.0.1:{port}/healthz");
     let up_by = Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(status) = runner.0.try_wait().expect("try_wait") {
             panic!("the runner exited before serving /healthz: {status}");
         }
-        if reqwest::get(&health)
+        if http
+            .get(&health)
+            .send()
             .await
             .is_ok_and(|r| r.status().is_success())
         {
@@ -220,7 +231,7 @@ async fn run_until_terminal(draft: bool) -> (Value, EscurelProcess, String) {
         // here ends `failed`, so waiting on `terminal` waits for something
         // that will never happen, and the test times out saying nothing.
         // Wait for a VERDICT of any kind instead.
-        if let Ok(resp) = reqwest::get(&ledger_url).await
+        if let Ok(resp) = http.get(&ledger_url).send().await
             && let Ok(v) = resp.json::<Value>().await
             && ["succeeded", "failed", "dead_letter"]
                 .iter()
@@ -235,7 +246,9 @@ async fn run_until_terminal(draft: bool) -> (Value, EscurelProcess, String) {
         // never enqueued; a row with no verdict means the run is still in
         // flight.
         if Instant::now() >= deadline {
-            let last = reqwest::get(&ledger_url)
+            let last = http
+                .get(&ledger_url)
+                .send()
                 .await
                 .ok()
                 .map(|r| async { r.text().await.unwrap_or_default() });
@@ -249,7 +262,7 @@ async fn run_until_terminal(draft: bool) -> (Value, EscurelProcess, String) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_draft_that_landed_outlives_the_harness_saying_it_failed() {
     let (ledger, gateway, page_id) = run_until_terminal(true).await;
 
@@ -284,7 +297,7 @@ async fn a_draft_that_landed_outlives_the_harness_saying_it_failed() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn running_out_of_turns_with_nothing_drafted_is_still_a_failure() {
     // The control. Same model, same cap, same everything — it just never
     // drafts. If this passed as success too, the fix would be "believe
