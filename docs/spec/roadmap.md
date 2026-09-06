@@ -144,15 +144,26 @@ ships with its spec/contract/ADR update):
   inbound; this is a new platform surface).
 - **External-agent projection.** The fold event→state is performed by an
   **external** agent (using the event's `label_skill` as context); the
-  server stays automation-free, consistent with the v1 contract. The
-  reference implementation is the **`escurel-demo-agent`** crate — it
-  reads the inbox (notified by the capture webhook, or polling), routes
-  each event to its instance (pre-flag, else a `label_skill → instance`
-  table), and folds it in via `assign_event`. v1.5's in-server
-  projection rules-engine remains out (see below).
+  server stays automation-free, consistent with the v1 contract. v1.5's
+  in-server projection rules-engine remains out (see below).
+
+  The processor is **`escurel-runner`** (shipped and deployed
+  2026-09-06; see
+  [`../contract/agent-orchestration.md`](../contract/agent-orchestration.md)).
+  It drives a real agent harness on each inbox element — the event's
+  `label_skill` page is the harness's instructions and `/mcp` its toolset
+  — and the resulting write can **cascade** into further runs under
+  depth, cycle, budget and quota controls backed by a durable ledger.
+  It honours each skill's `autonomy:`: anything but `auto` produces a
+  **draft** for a human to promote, and a draft does not cascade.
+
+  `escurel-demo-agent` is the earlier reference projection, kept for
+  illustration: it only routes events via `assign_event`, materialises no
+  new state, and has no cascade. Read `escurel-runner` for what actually
+  runs.
 
 The reference consumer is the `escurel-explore` event/instance workspace;
-the reference processor is the `escurel-demo-agent` crate.
+the processor is the `escurel-runner` crate.
 
 ### M8 — Project-memory: the provenance graph (post-v1)
 
