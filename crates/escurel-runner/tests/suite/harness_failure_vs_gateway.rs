@@ -143,6 +143,34 @@ async fn spawn_stub_model(page_id: String, draft: bool) -> String {
     format!("http://{addr}")
 }
 
+/// A model that accepts the request and never answers, so the harness waits.
+///
+/// The failure this reproduces is not hypothetical: in CI a single harness
+/// call did not return, and the run sat `pending` — holding an in-flight
+/// quota slot, not idempotency-terminal so it blocked nothing, and not
+/// re-drivable either because the poller's seen-set already held its event
+/// id. `{"total":1,"terminal":0,"succeeded":0,"failed":0}` after four
+/// minutes.
+async fn spawn_stalling_model() -> String {
+    use axum::{Router, response::IntoResponse};
+
+    async fn never() -> impl IntoResponse {
+        // Longer than any bound this test sets; the connection stays open.
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        axum::Json(json!({}))
+    }
+
+    let app = Router::new().fallback(axum::routing::any(never));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stalling model");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}")
+}
+
 /// Run one event to a terminal ledger state and return the runner's counts.
 async fn run_until_terminal(draft: bool) -> (Value, EscurelProcess, String) {
     let gateway = EscurelProcess::spawn(Opts {
@@ -330,4 +358,114 @@ async fn running_out_of_turns_with_nothing_drafted_is_still_a_failure() {
         0,
         "control: this model drafts nothing, so there is nothing to confirm: {drafts}"
     );
+}
+
+/// A stalled run gets a VERDICT; it does not sit `pending` for ever.
+///
+/// The gateway client bounds one request at 60s, but a run is not one
+/// request — a dozen model turns, each with tool calls, times the attempts
+/// cap. Nothing bounded the total, so a run whose harness call never returned
+/// held its quota slot for the life of the process while looking, to every
+/// operator surface, like work still in progress.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_that_stalls_is_abandoned_rather_than_held_for_ever() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(SKILL, SKILL_BODY)
+                .instance(SKILL, INSTANCE_ID, INSTANCE_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let page_id = format!("markdown/instances/{SKILL}/{INSTANCE_ID}.md");
+
+    call_mcp(
+        &gateway,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": SKILL,
+            "instance_page_id": page_id,
+            "title": "renewal",
+            "body": "they want to renew",
+        }),
+    )
+    .await;
+
+    let model_base = spawn_stalling_model().await;
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let port = free_port();
+    let ledger = std::env::temp_dir().join(format!(
+        "escurel-runner-stall-{}-{port}.sqlite",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&ledger);
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", format!("127.0.0.1:{port}"))
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_LEDGER_PATH", &ledger)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env("ESCUREL_GEMINI_API_KEY", "test-key-not-a-real-credential")
+        .env("ESCUREL_RUNNER_GEMINI_BASE_URL", &model_base)
+        // Seconds, not the five-minute default: the BOUND is what is under
+        // test, not how long anyone is willing to wait for it.
+        .env("ESCUREL_RUNNER_RUN_TIMEOUT", "2s")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "1")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let mut runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    let http = reqwest::Client::new();
+    let health = format!("http://127.0.0.1:{port}/healthz");
+    let up_by = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = runner.0.try_wait().expect("try_wait") {
+            panic!("the runner exited before serving /healthz: {status}");
+        }
+        if http
+            .get(&health)
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success())
+        {
+            break;
+        }
+        assert!(Instant::now() < up_by, "the runner never served /healthz");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Generously more than the 2s bound, and far less than the hour the model
+    // would otherwise hold the call open for.
+    let ledger_url = format!("http://127.0.0.1:{port}/debug/ledger");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if let Ok(resp) = http.get(&ledger_url).send().await
+            && let Ok(v) = resp.json::<Value>().await
+            && ["succeeded", "failed", "dead_letter"]
+                .iter()
+                .any(|k| v[*k].as_i64().unwrap_or(0) > 0)
+        {
+            // A verdict of any kind is the point. Which one it is belongs to
+            // the retry policy, not to this test.
+            assert_eq!(
+                v["succeeded"].as_i64().unwrap_or(0),
+                0,
+                "a stalled run must not be credited with an effect: {v}"
+            );
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the stalled run never reached a verdict — it is still pending, \
+             holding its quota slot, which is the bug"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }

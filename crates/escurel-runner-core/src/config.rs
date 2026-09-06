@@ -60,6 +60,23 @@ pub const DEFAULT_ADK_BIN: &str = "datazoo-agent-adk-runner";
 /// burns the whole cap is almost certainly permanently broken.
 pub const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
+/// Wall-clock bound on ONE run attempt.
+///
+/// The gateway client already times out a single request at 60s, but a run is
+/// not one request: the harness may take a dozen model turns, each with its
+/// own tool calls, and the whole thing repeats up to [`DEFAULT_MAX_ATTEMPTS`]
+/// times. Nothing bounded the total, so a run that stalled sat `pending` —
+/// not idempotency-terminal, so it blocked nothing, and not re-drivable
+/// either, because the poller's seen-set already holds its event id — while
+/// holding an in-flight quota slot for the life of the process.
+///
+/// Observed in CI: `{"total":1,"terminal":0,"succeeded":0,"failed":0}` after
+/// four minutes, with one harness call that never returned.
+///
+/// Five minutes is generous for a real run (the measured ones finish in
+/// seconds) and short enough that a stuck one gives its slot back.
+pub const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Default base backoff between reconciler retry attempts. Backoff grows
 /// per attempt (the reconciler applies a simple exponential), so this is the
 /// delay before the first retry.
@@ -144,6 +161,12 @@ pub enum ConfigError {
     /// `ESCUREL_RUNNER_RETRY_BACKOFF` was set but is not a valid duration.
     #[error("invalid ESCUREL_RUNNER_RETRY_BACKOFF {value:?}: expected e.g. 500ms, 2s")]
     InvalidRetryBackoff {
+        /// The offending value.
+        value: String,
+    },
+    /// `ESCUREL_RUNNER_RUN_TIMEOUT` was set but is not a valid duration.
+    #[error("invalid ESCUREL_RUNNER_RUN_TIMEOUT {value:?}: expected e.g. 300s, 5m")]
+    InvalidRunTimeout {
         /// The offending value.
         value: String,
     },
@@ -327,6 +350,14 @@ pub struct RunnerConfig {
     /// Always at least `1` (one attempt is made even with retries disabled).
     /// Source: `ESCUREL_RUNNER_MAX_ATTEMPTS` (default [`DEFAULT_MAX_ATTEMPTS`]).
     pub max_attempts: u32,
+
+    /// Wall-clock bound on one run attempt.
+    ///
+    /// Source: `ESCUREL_RUNNER_RUN_TIMEOUT` (default
+    /// [`DEFAULT_RUN_TIMEOUT`]). On expiry the attempt is a TRANSIENT
+    /// failure: the retry policy already knows what to do with one, and a
+    /// stalled attempt is exactly the case a retry exists for.
+    pub run_timeout: Duration,
     /// Base backoff before the first reconciler retry; grows per attempt.
     /// Source: `ESCUREL_RUNNER_RETRY_BACKOFF` (default
     /// [`DEFAULT_RETRY_BACKOFF`]).
@@ -501,6 +532,10 @@ impl RunnerConfig {
         let gemini_model = lookup("ESCUREL_RUNNER_GEMINI_MODEL").filter(|s| !s.is_empty());
         let gemini_base_url = lookup("ESCUREL_RUNNER_GEMINI_BASE_URL").filter(|s| !s.is_empty());
 
+        let run_timeout = match lookup("ESCUREL_RUNNER_RUN_TIMEOUT") {
+            Some(v) => parse_duration(&v).ok_or(ConfigError::InvalidRunTimeout { value: v })?,
+            None => DEFAULT_RUN_TIMEOUT,
+        };
         let max_attempts = match lookup("ESCUREL_RUNNER_MAX_ATTEMPTS") {
             Some(raw) if !raw.is_empty() => match raw.parse::<u32>() {
                 Ok(n) if n >= 1 => n,
@@ -583,6 +618,7 @@ impl RunnerConfig {
             adk_bin,
             adk_model,
             max_attempts,
+            run_timeout,
             retry_backoff,
             max_depth,
             max_runs_per_root,
