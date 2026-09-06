@@ -110,8 +110,22 @@ async fn spawn_stub_model(page_id: String, draft: bool) -> String {
                 "event_id": event_id,
             } } }])
         } else {
-            // Busywork, forever. Never a final answer.
-            json!([{ "functionCall": { "name": "search", "args": { "q": "globex" } } }])
+            // A draft the gateway will REFUSE — unparseable frontmatter (an
+            // unquoted colon), which `create_draft` blocks. So the model
+            // tries, fails, and never produces a confirmable effect, which is
+            // exactly the story this control tells.
+            //
+            // Deliberately not `search`: that made the control depend on a
+            // full-text read completing, and in CI a gateway call under load
+            // did not return — `mcp.request.start` outnumbered
+            // `tool.completed` by 53, and this test's harness was the one run
+            // of 63 that never logged "harness completed". A refused write is
+            // the cheapest round trip available and needs no corpus.
+            json!([{ "functionCall": { "name": "create_draft", "args": {
+                "target_page_id": page_id,
+                "content": "---\ntype: instance\nid: globex\nskill: customer\n\
+                            subject: Re: this colon makes it invalid\n---\nBody.\n",
+            } } }])
         };
         axum::Json(json!({ "candidates": [{ "content": { "parts": parts } }] }))
     }
