@@ -415,7 +415,21 @@ impl Indexer {
 
         // required_frontmatter — only when the draft's declared
         // skill resolves to a skill page that declares required keys.
-        if let Some(skill) = declared_skill {
+        //
+        // INSTANCES only. `required_frontmatter` describes what a skill's
+        // instances must carry, not what the skill page itself does, and
+        // `declared_skill` resolves to a skill page's OWN id — so applying it
+        // here made every skill fail its own rule. Measured while seeding the
+        // deployed corpus: `markdown/skills/calendar.md` was reported as
+        // missing `at`, `source` and `channel`, which are the fields a
+        // calendar ENTRY has. The write path accepts the page (it blocks only
+        // a missing `id`/`skill`), so `page validate` said REJECTED about
+        // content `page update` then wrote — a dry run that disagrees with
+        // the real thing is worse than no dry run, because it teaches people
+        // to ignore it.
+        if let Some(skill) = declared_skill
+            && parsed.frontmatter.page_type == PageType::Instance
+        {
             match skills.get(skill) {
                 // A `skill:` on an instance that names a non-existent
                 // skill is itself an unknown-skill error.

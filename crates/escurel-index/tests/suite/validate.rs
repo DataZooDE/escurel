@@ -76,6 +76,54 @@ async fn seed(h: &Harness, pages: &[(&str, &'static str)]) {
     }
 }
 
+/// A skill page is not an instance of itself.
+///
+/// `required_frontmatter` says what a skill's INSTANCES must carry. The skill
+/// page declaring it carries none of those fields and should not be expected
+/// to: `customer` requires `tier` and `status`, which are facts about a
+/// customer, not about the page that defines what a customer is.
+///
+/// Found while seeding a deployed corpus, where `page validate` reported
+/// every capture skill as REJECTED — `markdown/skills/calendar.md` missing
+/// `at`, `source` and `channel` — for content `page update` then accepted
+/// without complaint. A dry run that disagrees with the real write is worse
+/// than none, because it teaches people to ignore validation output.
+#[tokio::test]
+async fn a_skill_page_does_not_have_to_satisfy_its_own_required_frontmatter() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER]).await;
+
+    // The seeded skill itself, re-validated exactly as a seed script does.
+    let issues = h.indexer.validate(None, SKILL_CUSTOMER.1).await.unwrap();
+    assert!(
+        !issues
+            .iter()
+            .any(|i| i.code == "frontmatter_required_key_missing"),
+        "a skill page must not be held to the rules it sets for its \
+         instances: {issues:?}"
+    );
+
+    // POSITIVE CONTROL: an INSTANCE of that skill missing the same keys IS
+    // still an error, so the assertion above is about the page type and not
+    // about the check having been switched off.
+    let instance = "---\n\
+                    type: instance\n\
+                    skill: customer\n\
+                    id: acme\n\
+                    ---\n\
+                    # Acme\n";
+    let issues = h.indexer.validate(None, instance).await.unwrap();
+    let missing: Vec<&str> = issues
+        .iter()
+        .filter(|i| i.code == "frontmatter_required_key_missing")
+        .map(|i| i.location.as_str())
+        .collect();
+    assert!(
+        missing.contains(&"frontmatter.tier") && missing.contains(&"frontmatter.status"),
+        "control: an instance must still be held to them: {issues:?}"
+    );
+}
+
 #[tokio::test]
 async fn validate_clean_draft_has_no_issues() {
     let h = fresh_harness();
