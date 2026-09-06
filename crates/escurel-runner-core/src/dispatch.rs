@@ -153,9 +153,7 @@ impl DispatchQueue {
         }
     }
 
-    /// Snapshot of the seen-set's `event_id`s in insertion order. Backs the
-    /// runner's `GET /debug/seen` introspection endpoint.
-     /// Forget `event_id`, so the next trigger for it is enqueued rather than
+    /// Forget `event_id`, so the next trigger for it is enqueued rather than
     /// dropped as a duplicate.
     ///
     /// The seen-set is a cheap in-memory front for the ledger's
@@ -173,7 +171,9 @@ impl DispatchQueue {
             .forget(event_id)
     }
 
-   pub fn seen_event_ids(&self) -> Vec<String> {
+    /// Snapshot of the seen-set's `event_id`s in insertion order. Backs the
+    /// runner's `GET /debug/seen` introspection endpoint.
+    pub fn seen_event_ids(&self) -> Vec<String> {
         self.seen
             .lock()
             .expect("dispatch seen-set mutex")
