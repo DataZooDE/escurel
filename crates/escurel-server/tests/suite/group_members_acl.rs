@@ -216,6 +216,7 @@ async fn duckdb_membership_admits_a_groupless_token_to_a_group_granted_write() {
             // The deployed posture. Without it the ACL is not consulted and
             // both halves below would pass for the wrong reason.
             write_acl: Some(escurel_server::WriteAclMode::Enforce),
+            ..Default::default()
         },
         fixtures: Some(
             FixtureBuilder::new()
@@ -232,7 +233,6 @@ async fn duckdb_membership_admits_a_groupless_token_to_a_group_granted_write() {
                 )
                 .done(),
         ),
-        ..Default::default()
     })
     .await;
 
