@@ -19,6 +19,7 @@
 
 mod adk_end_to_end;
 mod adk_live;
+mod autonomy_gate;
 mod cascade_lineage;
 mod cascade_trace;
 mod claude_live;
@@ -30,6 +31,7 @@ mod gemini_live;
 mod healthz;
 mod inbox_poll;
 mod loop_controls;
+mod minted_credential;
 mod packager;
 mod quota_throttle;
 mod reconcile_retry;

@@ -2776,7 +2776,9 @@ dependencies = [
  "escurel-test-support",
  "escurel-types",
  "hmac 0.12.1",
+ "rand 0.8.6",
  "reqwest 0.12.28",
+ "rsa",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -2789,9 +2791,13 @@ dependencies = [
 name = "escurel-runner-core"
 version = "1.0.0"
 dependencies = [
+ "base64 0.22.1",
  "escurel-client",
  "escurel-runner-workflow",
  "escurel-types",
+ "jsonwebtoken 9.3.1",
+ "rand 0.8.6",
+ "rsa",
  "rusqlite",
  "secrecy",
  "serde_json",

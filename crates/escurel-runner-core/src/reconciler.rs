@@ -50,10 +50,20 @@ use crate::{RunnerConfig, Trigger};
 /// event landed on and that instance's version *after* the write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmedEffect {
-    /// The instance page the triggering event is now bound to.
+    /// The instance page the triggering event is now bound to — or, for a
+    /// held write, the page the draft is FOR.
     pub instance_page_id: String,
-    /// That instance's confirmed version after the run.
+    /// That instance's confirmed version after the run — or, for a held
+    /// write, the draft's `content_sha256`.
     pub version: String,
+    /// `true` when the confirmed effect is a DRAFT: real, read back, and
+    /// **not landed**.
+    ///
+    /// The distinction is load-bearing rather than informational. A cascade
+    /// says "this page changed, so re-examine what depends on it", and
+    /// nothing has changed yet — cascading a held write would spend the
+    /// budget of an entire lineage on a change a human may still refuse.
+    pub held: bool,
 }
 
 /// A reconcile/attempt failure, classified for the retry policy.
@@ -95,6 +105,50 @@ pub fn classify_client_error(err: &escurel_client::Error) -> ReconcileError {
         // live-session — re-running the same request won't change the answer.
         _ => ReconcileError::Permanent(err.to_string()),
     }
+}
+
+/// Read back over `/mcp` that the run produced a DRAFT for this event.
+///
+/// The confirmation for a run whose skill declares `autonomy: review`. The
+/// event deliberately stays in the inbox — so the landed-write read-back
+/// would never converge, and running it would dead-letter every review run
+/// after burning its retries.
+///
+/// No open draft carrying this `event_id` is the not-yet-converged case
+/// (transient): the harness re-run is idempotent and can still produce one.
+/// The caller decides, exactly as it does for a landed write, that a clean
+/// harness run plus nothing on the gateway is a converged no-op.
+///
+/// # Errors
+/// When the `/mcp` call fails, or no draft for this event is visible yet.
+pub async fn confirm_draft(
+    client: &Client,
+    trigger: &Trigger,
+) -> Result<ConfirmedEffect, ReconcileError> {
+    let drafts = client
+        .list_drafts(escurel_client::ListDraftsRequest { limit: 200 })
+        .await
+        .map_err(|e| classify_client_error(&e))?;
+    let found = drafts
+        .drafts
+        .into_iter()
+        .find(|d| d.event_id == trigger.event_id);
+    let Some(draft) = found else {
+        return Err(ReconcileError::Transient(format!(
+            "no open draft for event {} yet",
+            trigger.event_id
+        )));
+    };
+    Ok(ConfirmedEffect {
+        // The page the draft is FOR. It may not exist yet — that is the
+        // ordinary case for a capture being filed for the first time — so
+        // this is deliberately NOT read back through `expand`.
+        instance_page_id: draft.target_page_id,
+        // The bytes a human will approve. It advances whenever the agent
+        // re-drafts, which is exactly what a version is for here.
+        version: draft.content_sha256,
+        held: true,
+    })
 }
 
 /// Read back over `/mcp` that the triggering event's effect actually landed:
@@ -203,6 +257,7 @@ pub async fn confirm_effect(
     let version = content_version(&expanded.body);
 
     Ok(ConfirmedEffect {
+        held: false,
         instance_page_id,
         version,
     })
@@ -378,6 +433,7 @@ mod tests {
         ConfirmedEffect {
             instance_page_id: "inst".into(),
             version: "v1".into(),
+            held: false,
         }
     }
 

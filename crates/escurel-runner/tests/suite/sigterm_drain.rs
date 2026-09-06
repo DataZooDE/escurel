@@ -28,7 +28,8 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 const SKILL: &str = "note";
-const SKILL_BODY: &str = "---\ntype: skill\nid: note\n---\n# note\n\nFold the note.\n";
+const SKILL_BODY: &str =
+    "---\ntype: skill\nid: note\nautonomy: auto\n---\n# note\n\nFold the note.\n";
 const INSTANCE_BODY: &str = "---\ntype: instance\nid: log\nskill: note\n---\n# Log\n\nBASELINE.\n";
 
 struct ChildGuard(Child);

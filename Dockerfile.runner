@@ -1,0 +1,71 @@
+# escurel-runner image — the agent runner (webhook + inbox poller on :8088).
+#
+# A SEPARATE image from the gateway, not a second entrypoint on it. The two
+# have almost nothing in common at runtime: the gateway links libduckdb, bakes
+# ~137MB of DuckDB extensions and mounts the corpus; the runner links neither
+# and needs egress to a model API instead. Sharing one image would make every
+# runner rollout carry the gateway's extension cache, and every gateway
+# rollout carry the runner.
+#
+# Deliberately CLI-less. The `claude` / `codex` / `adk` harness adapters spawn
+# a CLI, and none of them can work here: a container has no interactive auth
+# and no node runtime. Baking one in would produce an image that looks like it
+# supports those harnesses and fails at the first dispatch. The harness this
+# image can run is `gemini`, which needs only an API key and egress
+# (`ESCUREL_GEMINI_API_KEY`), plus `echo` for a smoke test.
+#
+# See crates/escurel-runner-core/src/config.rs for the full ESCUREL_RUNNER_*
+# surface.
+
+# ---- builder -------------------------------------------------------------
+# Pinned to the workspace toolchain (rust-toolchain.toml: 1.91.0). rusqlite is
+# `bundled`, so the ledger's SQLite is compiled from source here — the base
+# image's cc is enough, and nothing is needed at runtime. reqwest uses rustls,
+# so there is no OpenSSL either.
+FROM rust:1.91-bookworm AS builder
+WORKDIR /build
+COPY . .
+# Serialised codegen for the same reason the gateway image does it: a default
+# parallelism release build OOMs a 7GB CI runner.
+ENV CARGO_BUILD_JOBS=1
+# `escurel-echo-harness` ships alongside the runner deliberately: it is the
+# deterministic real harness the runner's own end-to-end test uses, and having
+# it in the image makes "is dispatch wired at all?" answerable in the cluster
+# without a model API key.
+RUN --mount=type=cache,target=/build/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release -p escurel-runner \
+    && cp target/release/escurel-runner /usr/local/bin/escurel-runner \
+    && cp target/release/escurel-echo-harness /usr/local/bin/escurel-echo-harness
+
+# ---- runtime -------------------------------------------------------------
+FROM debian:bookworm-slim AS runtime
+# ca-certificates: TLS to the gateway and the model API. curl: HEALTHCHECK.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/local/bin/escurel-runner /usr/local/bin/escurel-runner
+COPY --from=builder /usr/local/bin/escurel-echo-harness /usr/local/bin/escurel-echo-harness
+
+ARG SERVICE_LABEL=escurel-runner
+LABEL service="${SERVICE_LABEL}"
+
+# The ledger is the runner's DURABILITY, not a cache: a terminal run row is
+# what makes a re-delivered event idempotent, and losing it means every event
+# still in the inbox is dispatched again. Default it into /data so a
+# deployment that mounts a volume keeps it, and so one that does not is at
+# least obvious about where it went.
+ENV ESCUREL_RUNNER_LISTEN=0.0.0.0:8088 \
+    ESCUREL_RUNNER_LEDGER_PATH=/data/escurel-runner-ledger.sqlite
+EXPOSE 8088
+VOLUME ["/data"]
+
+# `/healthz` is dependency-free by design (it does not probe the gateway), so
+# it answers during a gateway outage — which is what a liveness probe should
+# do: restarting the runner does not fix an unreachable gateway.
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s \
+  CMD curl -fsS http://127.0.0.1:8088/healthz || exit 1
+
+# Exec directly so the runner is PID 1 and receives SIGTERM — it drains the
+# dispatch queue on that signal, and a shell wrapper would swallow it.
+ENTRYPOINT ["/usr/local/bin/escurel-runner"]

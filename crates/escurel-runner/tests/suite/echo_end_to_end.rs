@@ -33,8 +33,7 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 const SKILL: &str = "customer";
-const SKILL_BODY: &str =
-    "---\ntype: skill\nid: customer\n---\n# customer\n\nFold the event into a customer instance.\n";
+const SKILL_BODY: &str = "---\ntype: skill\nid: customer\nautonomy: auto\n---\n# customer\n\nFold the event into a customer instance.\n";
 const INSTANCE_ID: &str = "globex";
 const INSTANCE_BODY: &str =
     "---\ntype: instance\nid: globex\nskill: customer\n---\n# Globex\n\nBASELINE account state.\n";

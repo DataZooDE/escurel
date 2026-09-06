@@ -10,9 +10,15 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+# Minting the runner's own gateway bearer (see src/auth.rs). Same claim shape
+# and same `kid` scheme as the platform's other workloads, because this
+# borrows that signing identity rather than becoming a second issuer.
+base64 = "0.22"
 escurel-client = { path = "../escurel-client" }
+jsonwebtoken = "9"
 escurel-runner-workflow = { path = "../escurel-runner-workflow" }
 escurel-types = { path = "../escurel-types" }
+rsa = { version = "0.9", features = ["pem"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 secrecy = "0.10"
 serde_json = "1"
@@ -23,6 +29,7 @@ tracing = "0.1"
 ulid = "1"
 
 [dev-dependencies]
+rand = "0.8"
 tempfile = "3"
 
 [lints]

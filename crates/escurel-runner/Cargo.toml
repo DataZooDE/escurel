@@ -39,6 +39,8 @@ ulid = "1"
 [dev-dependencies]
 escurel-runner-workflow = { path = "../escurel-runner-workflow" }
 escurel-test-support = { path = "../escurel-test-support" }
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
 hmac = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
 sha2 = "0.10"

@@ -14,6 +14,7 @@
 //! [`docs/contract/agent-orchestration.md`]: https://github.com/DataZooDE/escurel/blob/main/docs/contract/agent-orchestration.md
 
 mod admit;
+mod auth;
 mod cascade;
 mod config;
 mod dispatch;
@@ -26,17 +27,20 @@ mod trigger;
 mod workflow;
 
 pub use admit::{Admission, LoopLimits, admit};
+pub use auth::{AuthError, Signer, TokenSource};
 pub use cascade::{CascadeError, CascadeOutcome, emit_cascade};
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
 pub use ledger::{
     DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
 };
-pub use packager::{ALLOWED_TOOLS, PackageError, TaskContext, WORKFLOW_STEP_TOOLS, package};
+pub use packager::{
+    ALLOWED_TOOLS, Autonomy, PackageError, REVIEW_TOOLS, TaskContext, WORKFLOW_STEP_TOOLS, package,
+};
 pub use quota::{Governor, QuotaDecision, QuotaLimits, RunSlot, ThrottleReason};
 pub use reconciler::{
-    ConfirmedEffect, ReconcileError, RunFailure, RunReport, classify_client_error, confirm_effect,
-    run_with_retry,
+    ConfirmedEffect, ReconcileError, RunFailure, RunReport, classify_client_error, confirm_draft,
+    confirm_effect, run_with_retry,
 };
 pub use recovery::{RecoveryReport, recover_pending};
 pub use secrecy::SecretString;

@@ -38,11 +38,11 @@ use axum::routing::{get, post};
 use escurel_client::{Client, SecretString};
 use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
 use escurel_runner_core::{
-    Admission, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue, EnqueueOutcome,
-    Governor, Ledger, LedgerDecision, LoopLimits, QuotaDecision, QuotaLimits, ReconcileError,
-    RunFailure, RunStatus, RunnerConfig, TaskContext, Trigger, admit, classify_client_error,
-    confirm_effect, drive_workflow, emit_cascade, package, recover_pending, recover_workflows,
-    run_with_retry,
+    Admission, Autonomy, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue,
+    EnqueueOutcome, Governor, Ledger, LedgerDecision, LoopLimits, QuotaDecision, QuotaLimits,
+    ReconcileError, RunFailure, RunStatus, RunnerConfig, TaskContext, Trigger, admit,
+    classify_client_error, confirm_draft, confirm_effect, drive_workflow, emit_cascade, package,
+    recover_pending, recover_workflows, run_with_retry,
 };
 use escurel_runner_core::{DeadLetterReason, RunId};
 use escurel_runner_harness::{
@@ -149,6 +149,33 @@ async fn main() -> anyhow::Result<()> {
     // while in-flight runs finish.
     let draining = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+    // The runner's gateway credential, built once. A static
+    // ESCUREL_RUNNER_TOKEN still wins; otherwise, given an issuer and a
+    // signing key, the runner mints and re-mints its own — a pasted bearer
+    // expires silently, and a runner whose token has lapsed still answers
+    // /healthz while quietly filing nothing.
+    //
+    // The key is read HERE rather than carried on `RunnerConfig`, so it
+    // cannot reach a log through that struct's derived `Debug`.
+    let tokens: Option<Arc<escurel_runner_core::TokenSource>> = match config.token_source(
+        std::env::var("ESCUREL_RUNNER_AUTH_SIGNING_KEY")
+            .ok()
+            .as_deref(),
+    ) {
+        Some(Ok(source)) => Some(Arc::new(source)),
+        Some(Err(e)) => {
+            // Refusing to start beats starting without a credential: the
+            // second is indistinguishable from an empty inbox.
+            tracing::error!(
+                target: "escurel_runner",
+                error = %e,
+                "ESCUREL_RUNNER_AUTH_SIGNING_KEY is configured but unusable; refusing to start"
+            );
+            std::process::exit(2);
+        }
+        None => None,
+    };
+
     // In-flight quota slots, shared gate → dispatch loop (#158).
     let inflight: InflightSlots = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
 
@@ -156,7 +183,9 @@ async fn main() -> anyhow::Result<()> {
     // orphaned `pending` rows left by a previous crash. A confirmed effect is
     // marked processed; an unconfirmed row is reset to retriable so the poller
     // backstops it. Best-effort, bounded; only runs with a gateway client.
-    if let (Some(_), Some(token)) = (config.tenant.clone(), config.token.clone()) {
+    if let (Some(_), Some(source)) = (config.tenant.clone(), tokens.clone())
+        && let Ok(token) = source.current()
+    {
         match Client::connect(&config.gateway_url, SecretString::from(token)).await {
             Ok(client) => {
                 let report = recover_pending(&ledger, &client).await;
@@ -203,14 +232,14 @@ async fn main() -> anyhow::Result<()> {
     // Notified once the dispatch loop observes the queue closed AND finished
     // its in-flight run — the drain-complete signal SIGTERM waits on.
     let drained = Arc::new(Notify::new());
-    match (config.tenant.clone(), config.token.clone()) {
-        (Some(_), Some(token)) => {
+    match (config.tenant.clone(), tokens.clone()) {
+        (Some(_), Some(source)) => {
             let harness = build_harness(&config);
             tokio::spawn(dispatch_loop(
                 consumer,
                 Arc::clone(&ledger),
                 config.clone(),
-                token,
+                source,
                 harness,
                 governor.clone(),
                 Arc::clone(&metrics),
@@ -234,12 +263,12 @@ async fn main() -> anyhow::Result<()> {
 
     // The inbox poller: the self-healing fallback for missed webhooks.
     // Enabled only when both a tenant and a token are configured.
-    match (config.tenant.clone(), config.token.clone()) {
-        (Some(tenant), Some(token)) => {
+    match (config.tenant.clone(), tokens.clone()) {
+        (Some(tenant), Some(source)) => {
             tokio::spawn(poll_loop(
                 config.gateway_url.clone(),
                 tenant,
-                token,
+                source,
                 config.poll_interval,
                 queue.clone(),
                 Arc::clone(&ledger),
@@ -262,16 +291,12 @@ async fn main() -> anyhow::Result<()> {
     // pass. Every `lint_interval` the runner synthesizes a `lint` invocation
     // with a deterministic per-window id so the reactive loop drives it exactly
     // once per window. Disabled unless ESCUREL_RUNNER_LINT_INTERVAL is set.
-    match (
-        config.lint_interval,
-        config.tenant.clone(),
-        config.token.clone(),
-    ) {
-        (Some(interval), Some(tenant), Some(token)) => {
+    match (config.lint_interval, config.tenant.clone(), tokens.clone()) {
+        (Some(interval), Some(tenant), Some(source)) => {
             tokio::spawn(lint_tick_loop(
                 config.gateway_url.clone(),
                 tenant,
-                token,
+                source,
                 interval,
                 Arc::clone(&draining),
             ));
@@ -857,6 +882,32 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
     }
 }
 
+/// A gateway client built with a CURRENT bearer.
+///
+/// Called wherever a loop is about to use its client, not once at boot: a
+/// minted token is re-minted before it lapses, and a client holding an
+/// expired one fails every call while the process stays healthy. Rebuilding
+/// is cheap — the client is an HTTP client and a string.
+async fn connect_now(
+    gateway_url: &str,
+    tokens: &escurel_runner_core::TokenSource,
+) -> Option<Client> {
+    let token = match tokens.current() {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(target: "escurel_runner", error = %e, "could not mint a gateway bearer");
+            return None;
+        }
+    };
+    match Client::connect(gateway_url, SecretString::from(token)).await {
+        Ok(client) => Some(client),
+        Err(e) => {
+            tracing::error!(target: "escurel_runner", error = %e, "could not build a gateway client");
+            None
+        }
+    }
+}
+
 /// The real dispatch loop (lifecycle steps 5-7): consume each `Trigger`,
 /// `package` it ("skill body = instructions, `/mcp` = tools"), run the
 /// selected `harness` (a real subprocess that makes the escurel writes via
@@ -872,19 +923,19 @@ async fn dispatch_loop(
     mut consumer: DispatchConsumer,
     ledger: Arc<Ledger>,
     config: RunnerConfig,
-    token: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
     harness: Arc<dyn Harness>,
     governor: Governor,
     metrics: Arc<Metrics>,
     inflight: InflightSlots,
     drained: Arc<Notify>,
 ) {
-    let client = match Client::connect(&config.gateway_url, SecretString::from(token)).await {
-        Ok(client) => client,
-        Err(e) => {
+    let client = match connect_now(&config.gateway_url, &tokens).await {
+        Some(client) => client,
+        None => {
+            // `connect_now` already logged which half failed.
             tracing::error!(
                 target: "escurel_runner",
-                error = %e,
                 "dispatch loop could not build a gateway client; dispatch disabled"
             );
             drained.notify_one();
@@ -957,7 +1008,14 @@ async fn dispatch_loop(
         // `/mcp` to CONFIRM the effect, retrying transient failures with
         // backoff up to the attempts cap (#155).
         let report = run_with_retry(&config, |attempt| {
-            attempt_run(&trigger, &client, &config, harness.as_ref(), attempt)
+            attempt_run(
+                &trigger,
+                &client,
+                &config,
+                &tokens,
+                harness.as_ref(),
+                attempt,
+            )
         })
         .await;
 
@@ -1011,6 +1069,28 @@ async fn dispatch_loop(
                     version = %effect.version,
                     "dispatch: run succeeded; recorded processed with produced instance + version"
                 );
+                // A HELD write ends here. It is a real, read-back effect —
+                // recorded in the ledger with the draft's hash as its version
+                // — but nothing has landed, so there is nothing for a
+                // follow-on agent to react to and nothing for a workflow
+                // reducer to advance. Cascading it would spend a whole
+                // lineage's budget on a change a human may still refuse, and
+                // would do it BEFORE they were asked.
+                if effect.held {
+                    // No second `record_run_terminal`: this arm already
+                    // counted the run `processed`, and counting it twice
+                    // would quietly inflate the metric the absorption curve
+                    // is read from.
+                    tracing::info!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        target = %effect.instance_page_id,
+                        draft_sha256 = %effect.version,
+                        "dispatch: run produced a DRAFT awaiting a human; no cascade"
+                    );
+                    continue;
+                }
                 // Dynamic workflows: a confirmed write whose trigger carries a
                 // `provenance.workflow` block drives the reducer instead of the
                 // cascade — the cascade is the width-≤1 special case, the
@@ -1154,19 +1234,22 @@ async fn attempt_run(
     trigger: &Trigger,
     client: &Client,
     config: &RunnerConfig,
+    tokens: &escurel_runner_core::TokenSource,
     harness: &dyn Harness,
     attempt: u32,
 ) -> Result<ConfirmedEffect, ReconcileError> {
-    let task: TaskContext = package(trigger, client, config).await.map_err(|e| {
-        tracing::warn!(
-            target: "escurel_runner",
-            event_id = %trigger.event_id,
-            attempt,
-            error = %e,
-            "dispatch: packaging failed"
-        );
-        package_error_to_reconcile(e)
-    })?;
+    let task: TaskContext = package(trigger, client, config, Some(tokens))
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                attempt,
+                error = %e,
+                "dispatch: packaging failed"
+            );
+            package_error_to_reconcile(e)
+        })?;
 
     // Carried past the match so the read-back below can tell "the harness
     // named a page" from "it named nothing" — the latter is only meaningful
@@ -1223,7 +1306,15 @@ async fn attempt_run(
     // processed + bound and the instance's version advanced (#155). For an
     // unflagged trigger this now resolves the instance the agent chose, via
     // the by-event lookup — `assign_event` recorded the binding.
-    match confirm_effect(client, trigger).await {
+    // WHAT to confirm depends on what the skill allowed the run to do. A
+    // review run leaves the event in the inbox on purpose, so the landed-write
+    // read-back would never converge — it would burn every retry and
+    // dead-letter each held write.
+    let confirmed = match task.autonomy {
+        Autonomy::Auto => confirm_effect(client, trigger).await,
+        Autonomy::Review => confirm_draft(client, trigger).await,
+    };
+    match confirmed {
         Ok(effect) => Ok(effect),
         // Read-back could not confirm anything, the harness reported no
         // produced instance, and nothing was pre-flagged: the agent ran
@@ -1327,7 +1418,7 @@ async fn drain_loop(mut consumer: DispatchConsumer, ledger: Arc<Ledger>) {
 async fn poll_loop(
     gateway_url: String,
     tenant: String,
-    token: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
     interval: std::time::Duration,
     queue: DispatchQueue,
     ledger: Arc<Ledger>,
@@ -1337,12 +1428,11 @@ async fn poll_loop(
     inflight: InflightSlots,
     draining: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let client = match Client::connect(&gateway_url, SecretString::from(token)).await {
-        Ok(client) => client,
-        Err(e) => {
+    let client = match connect_now(&gateway_url, &tokens).await {
+        Some(client) => client,
+        None => {
             tracing::error!(
                 target: "escurel_runner",
-                error = %e,
                 "inbox poller could not build a gateway client; poller disabled"
             );
             return;
@@ -1407,14 +1497,14 @@ fn lint_window_id(tenant: &str, window: u64) -> String {
 async fn lint_tick_loop(
     gateway_url: String,
     tenant: String,
-    token: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
     interval: std::time::Duration,
     draining: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let client = match Client::connect(&gateway_url, SecretString::from(token)).await {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::error!(target: "escurel_runner", error = %e, "lint tick could not build a gateway client; disabled");
+    let client = match connect_now(&gateway_url, &tokens).await {
+        Some(client) => client,
+        None => {
+            tracing::error!(target: "escurel_runner", "lint tick could not build a gateway client; disabled");
             return;
         }
     };

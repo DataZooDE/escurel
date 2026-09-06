@@ -45,11 +45,11 @@ use serde_json::{Value, json};
 const TENANT: &str = "acme";
 
 const MEETING_SKILL: &str = "meeting";
-const MEETING_SKILL_BODY: &str = "---\ntype: skill\nid: meeting\n---\n# meeting\n\n\
+const MEETING_SKILL_BODY: &str = "---\ntype: skill\nid: meeting\nautonomy: auto\n---\n# meeting\n\n\
      Fold the meeting note into the decision-record instance it concerns.\n";
 
 const DECISION_SKILL: &str = "decision-record";
-const DECISION_SKILL_BODY: &str = "---\ntype: skill\nid: decision-record\n---\n# decision-record\n\n\
+const DECISION_SKILL_BODY: &str = "---\ntype: skill\nid: decision-record\nautonomy: auto\n---\n# decision-record\n\n\
      Maintain the running decision record.\n";
 
 const DECISION_INSTANCE_ID: &str = "q3-roadmap";
