@@ -292,6 +292,13 @@ pub struct RunnerConfig {
     /// runner acts on events whose author has gone home.
     /// Source: `ESCUREL_RUNNER_AUTH_SUBJECT` (default `escurel-runner`).
     pub auth_subject: String,
+
+    /// How long each minted gateway bearer lives, in seconds.
+    ///
+    /// Source: `ESCUREL_RUNNER_AUTH_TTL_SECS` (default 30 minutes). Exists so
+    /// a test can outlive a bearer in seconds and prove the long-running
+    /// loops re-mint rather than freezing one at boot.
+    pub auth_ttl_secs: u64,
     /// API key for the Gemini adapter — the one harness that needs no CLI,
     /// no node runtime and no interactive login, which is what makes it the
     /// harness a container can actually run.
@@ -380,6 +387,7 @@ impl RunnerConfig {
             .map(|signer| crate::TokenSource::Minted {
                 signer,
                 subject: self.auth_subject.clone(),
+                ttl_secs: self.auth_ttl_secs,
                 cached: std::sync::Mutex::new(None),
             }),
         )
@@ -470,6 +478,10 @@ impl RunnerConfig {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "escurel".to_owned());
         let auth_kid = lookup("ESCUREL_RUNNER_AUTH_KID").filter(|s| !s.is_empty());
+        let auth_ttl_secs = lookup("ESCUREL_RUNNER_AUTH_TTL_SECS")
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(crate::auth::TTL_SECS);
         let auth_subject = lookup("ESCUREL_RUNNER_AUTH_SUBJECT")
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "escurel-runner".to_owned());
@@ -550,6 +562,7 @@ impl RunnerConfig {
             auth_audience,
             auth_kid,
             auth_subject,
+            auth_ttl_secs,
             gemini_api_key,
             gemini_model,
             gemini_base_url,

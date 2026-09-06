@@ -695,6 +695,11 @@ async fn dlq_requeue(
                 lineage: escurel_runner_core::Lineage::root(event_id.clone()),
                 workflow: None,
             };
+            // Evict from the in-memory seen-set FIRST. `enqueue` drops a
+            // trigger whose event_id it has seen, so without this the
+            // requeue below is a no-op for the life of the process — the
+            // ledger says pending, the DLQ says clean, and nothing runs.
+            state.queue.forget(&event_id);
             // The row is already pending; enqueue onto the queue and take a
             // quota slot so the dispatch loop runs it.
             match state.governor.try_admit(&tenant) {
@@ -930,18 +935,23 @@ async fn dispatch_loop(
     inflight: InflightSlots,
     drained: Arc<Notify>,
 ) {
-    let client = match connect_now(&config.gateway_url, &tokens).await {
-        Some(client) => client,
-        None => {
-            // `connect_now` already logged which half failed.
-            tracing::error!(
-                target: "escurel_runner",
-                "dispatch loop could not build a gateway client; dispatch disabled"
-            );
-            drained.notify_one();
-            return;
-        }
-    };
+    // A PROBE, not the client this loop will use.
+    //
+    // Failing to build one at boot is a configuration fault worth refusing
+    // on. Keeping one is a different thing entirely: a minted bearer lives 30
+    // minutes, so a client hoisted out of this loop starts 401ing half an
+    // hour after every restart and never recovers — measured in the cluster,
+    // where the runner answered /healthz for hours while every dispatch
+    // failed `ExpiredSignature`. The client is rebuilt per trigger below.
+    if connect_now(&config.gateway_url, &tokens).await.is_none() {
+        // `connect_now` already logged which half failed.
+        tracing::error!(
+            target: "escurel_runner",
+            "dispatch loop could not build a gateway client; dispatch disabled"
+        );
+        drained.notify_one();
+        return;
+    }
     tracing::info!(
         target: "escurel_runner",
         harness = %harness.name(),
@@ -953,6 +963,23 @@ async fn dispatch_loop(
         metrics.set_runner_queue_depth(0);
         // Cascade-depth high-water (#158).
         metrics.observe_runner_cascade_depth(trigger.lineage.depth as i64);
+
+        // Fresh credential for THIS run (see the probe above).
+        let client = match connect_now(&config.gateway_url, &tokens).await {
+            Some(client) => client,
+            None => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    "dispatch: no gateway client for this trigger; leaving it for the poller"
+                );
+                inflight
+                    .lock()
+                    .expect("inflight slots mutex")
+                    .remove(&trigger.event_id);
+                continue;
+            }
+        };
 
         let run_id = match ledger.get_run(&trigger.tenant, &trigger.event_id) {
             Ok(Some(record)) => RunId(record.run_id),
@@ -1428,16 +1455,17 @@ async fn poll_loop(
     inflight: InflightSlots,
     draining: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let client = match connect_now(&gateway_url, &tokens).await {
-        Some(client) => client,
-        None => {
-            tracing::error!(
-                target: "escurel_runner",
-                "inbox poller could not build a gateway client; poller disabled"
-            );
-            return;
-        }
-    };
+    // A boot probe only — the per-tick client is built inside the loop.
+    // A hoisted one carries a 30-minute minted bearer for the life of the
+    // process, which is how the poller came to log `ExpiredSignature` on
+    // every tick for hours while /healthz stayed green.
+    if connect_now(&gateway_url, &tokens).await.is_none() {
+        tracing::error!(
+            target: "escurel_runner",
+            "inbox poller could not build a gateway client; poller disabled"
+        );
+        return;
+    }
     tracing::info!(
         target: "escurel_runner",
         gateway = %gateway_url,
@@ -1459,6 +1487,11 @@ async fn poll_loop(
             );
             return;
         }
+        let Some(client) = connect_now(&gateway_url, &tokens).await else {
+            // Already logged. The next tick is the retry; the poller's whole
+            // job is to be the self-healing fallback.
+            continue;
+        };
         match client.list_inbox(ListInboxRequest::default()).await {
             Ok(resp) => {
                 for event in &resp.events {
@@ -1501,13 +1534,12 @@ async fn lint_tick_loop(
     interval: std::time::Duration,
     draining: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let client = match connect_now(&gateway_url, &tokens).await {
-        Some(client) => client,
-        None => {
-            tracing::error!(target: "escurel_runner", "lint tick could not build a gateway client; disabled");
-            return;
-        }
-    };
+    // Boot probe; the client is rebuilt each tick so the minted bearer stays
+    // live (see `connect_now`).
+    if connect_now(&gateway_url, &tokens).await.is_none() {
+        tracing::error!(target: "escurel_runner", "lint tick could not build a gateway client; disabled");
+        return;
+    }
     let secs = interval.as_secs().max(1);
     tracing::info!(target: "escurel_runner", tenant = %tenant, interval_ms = interval.as_millis() as u64, "lint tick started");
     let mut ticker = tokio::time::interval(interval);
@@ -1516,6 +1548,10 @@ async fn lint_tick_loop(
         if draining.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
+        let Some(client) = connect_now(&gateway_url, &tokens).await else {
+            // Already logged; the next tick retries.
+            continue;
+        };
         // Wall-clock window (stable across restarts — the tick is I/O, not the
         // reducer, so reading the clock here is fine).
         let window = std::time::SystemTime::now()

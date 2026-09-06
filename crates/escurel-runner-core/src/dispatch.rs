@@ -79,6 +79,15 @@ impl Seen {
         true
     }
 
+    /// Drop one id so a later trigger for it is admitted again.
+    fn forget(&mut self, id: &str) -> bool {
+        if !self.set.remove(id) {
+            return false;
+        }
+        self.order.retain(|x| x != id);
+        true
+    }
+
     fn snapshot(&self) -> Vec<String> {
         self.order.iter().cloned().collect()
     }
@@ -146,7 +155,25 @@ impl DispatchQueue {
 
     /// Snapshot of the seen-set's `event_id`s in insertion order. Backs the
     /// runner's `GET /debug/seen` introspection endpoint.
-    pub fn seen_event_ids(&self) -> Vec<String> {
+     /// Forget `event_id`, so the next trigger for it is enqueued rather than
+    /// dropped as a duplicate.
+    ///
+    /// The seen-set is a cheap in-memory front for the ledger's
+    /// effectively-once authority, and an operator requeue clears the ledger
+    /// only. Without this, `/dlq/requeue` reports success and nothing is ever
+    /// dispatched again in the life of the process — and because the row
+    /// leaves the DLQ, the operator surface then shows a clean queue while
+    /// the event is permanently stalled.
+    ///
+    /// Returns whether the id was present.
+    pub fn forget(&self, event_id: &str) -> bool {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .forget(event_id)
+    }
+
+   pub fn seen_event_ids(&self) -> Vec<String> {
         self.seen
             .lock()
             .expect("dispatch seen-set mutex")
@@ -263,5 +290,31 @@ mod tests {
             EnqueueOutcome::Enqueued,
             "an evicted event_id is no longer collapsed"
         );
+    }
+
+    #[test]
+    fn a_forgotten_event_is_admitted_again_in_the_same_process() {
+        // `/dlq/requeue` clears the ledger's terminal block. If the seen-set
+        // is not also cleared, the requeue is a no-op until a RESTART — and a
+        // restart clears the set anyway, which is exactly how this hid.
+        let (q, mut consumer) = DispatchQueue::new(16, 64);
+        assert_eq!(q.enqueue(trigger("E1")), EnqueueOutcome::Enqueued);
+        consumer.try_recv().expect("first delivery");
+
+        // The control: without forgetting, a redelivery is dropped.
+        assert_eq!(q.enqueue(trigger("E1")), EnqueueOutcome::Duplicate);
+        assert!(consumer.try_recv().is_none());
+
+        assert!(q.forget("E1"), "E1 was in the seen-set");
+        assert_eq!(q.enqueue(trigger("E1")), EnqueueOutcome::Enqueued);
+        assert_eq!(
+            consumer.try_recv().map(|t| t.event_id),
+            Some("E1".to_owned()),
+            "a requeued event must reach the dispatch loop"
+        );
+
+        // Forgetting something never seen is not an error, and does not
+        // resurrect anything.
+        assert!(!q.forget("NEVER-SEEN"));
     }
 }
