@@ -193,3 +193,105 @@ async fn list_group_members_returns_seeded_rows() {
         "got {subjects:?}"
     );
 }
+
+/// Membership grants **write**, not only read — the property a deployment
+/// depends on when its callers' tokens carry no groups at all.
+///
+/// heron mints exactly such a token: it shares the platform's signing
+/// identity and emits no groups claim, so for its consultants every
+/// group-granted write rests on DuckDB membership alone. Measured on the
+/// device before this existed: the Approve button called through and the
+/// store answered `caller ... does not own instance ...`, because nothing
+/// had granted the subject anything.
+///
+/// The read case above cannot stand in for this one. `may_read_instance` and
+/// `may_write_instance` resolve different verbs against different defaults —
+/// a public skill reads for everyone and writes for nobody — so "membership
+/// is visible to reads" says nothing about whether a write policy sees it.
+#[tokio::test]
+async fn duckdb_membership_admits_a_groupless_token_to_a_group_granted_write() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: escurel_test_support::ConfigOverrides {
+            // The deployed posture. Without it the ACL is not consulted and
+            // both halves below would pass for the wrong reason.
+            write_acl: Some(escurel_server::WriteAclMode::Enforce),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(
+                    "shared_note",
+                    "---\ntype: skill\nid: shared_note\ndescription: A note the team may edit.\n\
+                     acl:\n  read: [public]\n  create: [team-acme]\n  update: [team-acme]\n---\n# shared_note\n",
+                )
+                .instance(
+                    "shared_note",
+                    "q3",
+                    "---\ntype: instance\nskill: shared_note\nid: q3\n---\n# Q3\nOriginal.\n",
+                )
+                .done(),
+        ),
+    })
+    .await;
+
+    // A token with NO groups — what heron mints for a consultant.
+    let groupless = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+    let page = "markdown/instances/shared_note/q3.md";
+    let revised = "---\ntype: instance\nskill: shared_note\nid: q3\n---\n# Q3\nRevised.\n";
+
+    let refused = call_ok(
+        &p,
+        &groupless,
+        "update_page",
+        json!({ "page_id": page, "content": revised }),
+    )
+    .await;
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "a groupless token must not pass a group-granted write: {refused}"
+    );
+    assert_eq!(
+        refused["issues"][0]["code"],
+        json!("forbidden"),
+        "{refused}"
+    );
+
+    // The ONE change: membership, granted server-side by an admin.
+    let admin = p.mint_token(TENANT, Role::Admin);
+    call_ok(
+        &p,
+        &admin,
+        "add_group_member",
+        json!({ "group_id": "team-acme", "subject": BOB }),
+    )
+    .await;
+
+    let allowed = call_ok(
+        &p,
+        &groupless,
+        "update_page",
+        json!({ "page_id": page, "content": revised }),
+    )
+    .await;
+    assert_eq!(
+        allowed["ok"],
+        json!(true),
+        "membership must admit the same token to the same write: {allowed}"
+    );
+
+    // ...and it really landed, rather than answering ok on a write that did
+    // nothing. Read back through `expand`, as any client would.
+    let body = call_ok(&p, &groupless, "expand", json!({ "page_id": page })).await;
+    assert!(
+        body["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Revised."),
+        "the write must be in the page: {body}"
+    );
+
+    p.shutdown().await;
+}
