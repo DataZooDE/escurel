@@ -367,6 +367,37 @@ impl Indexer {
             ));
         }
 
+        // An instance with no `skill:` is a typed page with no type.
+        //
+        // It indexes, it expands, its wikilinks resolve — and
+        // `list_instances` cannot find it, because that is the query that
+        // reads this field. So the page is real, linked, and invisible to
+        // every catalogue view a reader actually browses.
+        //
+        // Found end to end: an agent drafted a `note` under
+        // `markdown/instances/note/…`, a human approved it, the `about:`
+        // edge into the customer was there — and the note was not in
+        // `list_instances --skill note`, so it could never appear in the
+        // client's Browse. The page id LOOKS like it declares the skill and
+        // does not.
+        //
+        // Symmetric with the `id` rule above, and for the same reason: both
+        // are identity failures rather than completeness ones.
+        if parsed.frontmatter.page_type == PageType::Instance
+            && fields
+                .get("skill")
+                .and_then(YamlValue::as_str)
+                .is_none_or(str::is_empty)
+        {
+            issues.push(Issue::error(
+                "frontmatter_required_key_missing",
+                "frontmatter.skill",
+                "an instance page requires a non-empty `skill` — without it the \
+                 page indexes but `list_instances` cannot find it, so no \
+                 catalogue view will ever show it",
+            ));
+        }
+
         // required_frontmatter — only when the draft's declared
         // skill resolves to a skill page that declares required keys.
         if let Some(skill) = declared_skill {

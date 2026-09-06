@@ -25,6 +25,7 @@ mod admin;
 mod agent;
 mod chat;
 mod core;
+mod drafts;
 mod events;
 mod null;
 // Public as a MODULE (not glob-re-exported functions): the pack
@@ -39,6 +40,7 @@ pub use admin::*;
 pub use agent::*;
 pub use chat::*;
 pub use core::*;
+pub use drafts::*;
 pub use events::*;
 pub use pack::*;
 pub use session::*;

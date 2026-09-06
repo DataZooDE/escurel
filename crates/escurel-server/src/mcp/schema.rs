@@ -207,6 +207,80 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
+                "create_draft",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Hold a finished write for a human instead of landing it — the \
+                 gate a skill's `autonomy: review` asks for. Takes the whole \
+                 proposed markdown for `target_page_id` (which need not exist \
+                 yet) plus the `base_sha256` it was drafted against (\"\" = \
+                 expect no page). The write ACL and validation run HERE, so a \
+                 draft cannot stage a write its author could never make, nor \
+                 one that would refuse at promotion. A draft is not a page: it \
+                 never appears in `expand`, `search`, `list_instances` or \
+                 `neighbours`, and it does not cascade — nothing has landed. \
+                 Immutable; a revision is a new draft.",
+                json!({
+                    "type": "object",
+                    "required": ["target_page_id", "content"],
+                    "properties": {
+                        "target_page_id": { "type": "string", "description": "The page this write is FOR, e.g. `markdown/instances/<skill>/<slug>.md`." },
+                        "content": { "type": "string" },
+                        "base_sha256": { "type": "string", "description": "The target's content_sha256 when drafted, from `expand`; \"\" = approve-create (expect no page). Carried into `update_page`'s CAS at promotion." },
+                        "event_id": { "type": "string", "description": "The inbox event this draft answers, when it answers one." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_drafts",
+                Execution::Deterministic,
+                Scope::Agent,
+                "Every held write still waiting for a decision, newest first, \
+                 with its `content`, `content_sha256`, `author` and the \
+                 `event_id` it answers. This is the answer to \"what is waiting \
+                 for me?\" — a question that, before drafts existed, only the \
+                 consumer that invented its own pending-change convention could \
+                 answer.",
+                json!({
+                    "type": "object",
+                    "properties": { "limit": { "type": "integer" } }
+                }),
+            ),
+            tool_entry(
+                "promote_draft",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Land a held write, under the approver's identity. Re-enters \
+                 `update_page` with the draft's exact bytes and its \
+                 `base_sha256`, so every guard, the validation and the CAS \
+                 apply at the moment the write lands: a target that changed \
+                 since drafting returns `{ok:false, issues:[{code:conflict}], \
+                 head_content}` and the draft stays OPEN to be re-drafted. A \
+                 draft already promoted or discarded returns \
+                 `{code:already_decided}`.",
+                json!({
+                    "type": "object",
+                    "required": ["draft_id"],
+                    "properties": { "draft_id": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "discard_draft",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Refuse a held write. Nothing is written to the target. The row \
+                 is kept with the reason and the deciding subject — \"did I \
+                 already deal with that?\" must stay answerable.",
+                json!({
+                    "type": "object",
+                    "required": ["draft_id"],
+                    "properties": {
+                        "draft_id": { "type": "string" },
+                        "reason": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
                 "update_page",
                 Execution::Orchestration,
                 Scope::Agent,
@@ -1290,7 +1364,8 @@ fn output_schema_for(name: &str) -> Option<Value> {
     let obj = |props: Value| json!({ "type": "object", "properties": props, "additionalProperties": true });
     Some(match name {
         "update_page" | "delete_page" | "move_page" | "purge_page" | "write_instance"
-        | "apply_op" | "close_session" | "import_pack" | "rebase_pack" => write_envelope_schema(),
+        | "create_draft" | "promote_draft" | "discard_draft" | "apply_op" | "close_session"
+        | "import_pack" | "rebase_pack" => write_envelope_schema(),
         "validate" => obj(json!({ "issues": { "type": "array" } })),
         "search" => obj(json!({
             "hits": { "type": "array" },
@@ -1301,6 +1376,7 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "instances": { "type": "array" },
             "next_cursor": { "type": ["string", "null"], "description": "string = more rows (pass back as cursor); null = done" }
         })),
+        "list_drafts" => obj(json!({ "drafts": { "type": "array" } })),
         "list_inbox" | "list_events" => obj(json!({
             "events": { "type": "array" },
             "next_cursor": { "type": "string", "description": "present iff rows lie past the page; absence (only) means done" }

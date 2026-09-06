@@ -168,7 +168,41 @@ Writes are layer-aware (`references/01` §Layer/stability axis):
 - a non-admin draft carrying a truthy `promotable:` refuses
   `promotable_requires_curator` (the promotion marker is curator-set).
 
-Note this list is **curated, not exhaustive** — the server exposes 66 tools
+## Held writes (the `autonomy: review` gate)
+
+A skill page may declare `autonomy: auto | review | confirm`, and
+`list_skills` publishes it — but until drafts existed, nothing could act on
+the declaration: an agent could write or not write, and there was nowhere to
+put a change that is finished and not yet wanted. Consumers filled that gap
+privately, which put consumer-shaped objects in the knowledge base and made
+"what is waiting for me?" a question only that consumer could answer.
+
+| tool | what it does |
+|---|---|
+| `create_draft` | Hold the whole proposed markdown for `target_page_id` (which need not exist yet), with the `base_sha256` it was drafted against (`""` = expect no page). Returns the draft with its `draft_id` and `content_sha256`. |
+| `list_drafts` | Everything still waiting, newest first — the answer to "what is waiting for me?". |
+| `promote_draft` | Land it, under the approver's identity. |
+| `discard_draft` | Refuse it, with a `reason`. Nothing is written. |
+
+Three properties are worth relying on:
+
+- **A draft is not a page.** It never appears in `expand`, `search`,
+  `list_instances` or `neighbours`, and it does not cascade — nothing has
+  landed. It is stored outside `pages`, so that is true by construction
+  rather than by an exclusion rule in every read path.
+- **The write ACL and validation run at `create_draft`**, not only at
+  promotion: a draft cannot stage a write its author could never make, and a
+  human never reviews something that would refuse when landed.
+- **Promotion is an `update_page`.** It re-enters that handler with the
+  draft's exact bytes and its `base_sha256`, so a target that moved
+  underneath returns `{ok:false, issues:[{code:conflict}], head_content}` and
+  the draft **stays open** to be re-drafted. Drafts are immutable; a revision
+  is a new draft, because a human approves specific bytes.
+
+A draft already decided answers `{code: already_decided}` naming which
+decision was taken — deciding twice is not expressible.
+
+Note this list is **curated, not exhaustive** — the server exposes 70 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,

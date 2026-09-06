@@ -7,11 +7,12 @@ use std::io::Read as _;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use escurel_client::{
-    AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, DeletePageRequest,
-    ExpandRequest, ListEventsRequest, ListInboxRequest, ListInstancesRequest, ListMessagesRequest,
-    ListSkillsRequest, MovePageRequest, NeighboursRequest, ProvenanceAncestryRequest,
-    ProvenancePathRequest, ProvenanceReportRequest, PurgePageRequest, QueryInstanceRequest,
-    ResolveRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
+    AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, CreateDraftRequest,
+    DecideDraftRequest, DeletePageRequest, ExpandRequest, ListDraftsRequest, ListEventsRequest,
+    ListInboxRequest, ListInstancesRequest, ListMessagesRequest, ListSkillsRequest,
+    MovePageRequest, NeighboursRequest, ProvenanceAncestryRequest, ProvenancePathRequest,
+    ProvenanceReportRequest, PurgePageRequest, QueryInstanceRequest, ResolveRequest, SearchRequest,
+    UpdatePageRequest, ValidateRequest,
 };
 use serde_json::{Value, json};
 
@@ -270,6 +271,53 @@ pub struct CaptureArgs {
     pub provenance: Option<String>,
 }
 
+/// Held writes — the review queue for `autonomy: review` skills.
+#[derive(Subcommand, Debug)]
+pub enum DraftCmd {
+    /// Hold a finished write for a human instead of landing it. Content is
+    /// read from stdin unless `--content` is given.
+    Create(CreateDraftArgs),
+    /// Everything still waiting for a decision, newest first.
+    List {
+        /// 0 means the server's default.
+        #[arg(long, default_value_t = 0)]
+        limit: u32,
+        /// Print each draft's full proposed markdown, not just its head.
+        #[arg(long)]
+        full: bool,
+    },
+    /// Land a held write. A target that moved since drafting conflicts and
+    /// leaves the draft open.
+    Promote {
+        #[arg(long)]
+        draft: String,
+    },
+    /// Refuse a held write. Nothing is written to the target.
+    Discard {
+        #[arg(long)]
+        draft: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct CreateDraftArgs {
+    /// The page this write is FOR. It need not exist yet.
+    #[arg(long)]
+    pub target: String,
+    /// The whole proposed markdown. If absent, read from stdin.
+    #[arg(long)]
+    pub content: Option<String>,
+    /// The target's `content_sha256` at drafting time, from `page expand`.
+    /// Pass an empty string to mean "I expect no page yet".
+    #[arg(long)]
+    pub base_sha256: Option<String>,
+    /// The inbox event this draft answers.
+    #[arg(long)]
+    pub event: Option<String>,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum QueryCmd {
     /// Run a `[[query::<id>]]` report (declaring `target: [[skill::id]]`)
@@ -373,6 +421,7 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Provenance(ProvenanceCmd::Abandoned(a)) => abandoned_paths(client, a).await,
         Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
+        Command::Draft(c) => draft_cmd(client, c).await,
         Command::Query(QueryCmd::Instance(a)) => query_instance(client, a).await,
         Command::Chat(ChatCmd::Append(a)) => chat_append(client, a).await,
         Command::Chat(ChatCmd::List(a)) => chat_list(client, a).await,
@@ -810,6 +859,84 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
                 "event_id": ack.event_id,
                 "instance_page_id": ack.instance_page_id,
             }))
+        }
+    }
+}
+
+/// Render one draft. The proposed markdown is elided by default: a review
+/// queue printed in full is unreadable, and `--full` (or `draft promote`'s
+/// own conflict output) is where the bytes belong.
+fn draft_json(d: escurel_client::Draft, full: bool) -> Value {
+    let content = if full {
+        json!(d.content)
+    } else {
+        json!(d.content.lines().take(1).collect::<String>())
+    };
+    json!({
+        "draft_id": d.draft_id,
+        "target_page_id": d.target_page_id,
+        "content": content,
+        "content_sha256": d.content_sha256,
+        "base_sha256": d.base_sha256,
+        "author": d.author,
+        "event_id": d.event_id,
+        "status": d.status,
+        "created_at": d.created_at,
+    })
+}
+
+async fn draft_cmd(client: &Client, cmd: DraftCmd) -> Result<Value> {
+    match cmd {
+        DraftCmd::Create(a) => {
+            let content = match a.content {
+                Some(c) => c,
+                None => read_stdin("draft content")?,
+            };
+            let resp = client
+                .create_draft(CreateDraftRequest {
+                    target_page_id: a.target,
+                    content,
+                    base_sha256: a.base_sha256,
+                    event_id: a.event.unwrap_or_default(),
+                })
+                .await?;
+            Ok(json!({
+                "ok": resp.ok,
+                "draft": resp.draft.map(|d| draft_json(d, true)),
+                "issues": resp.issues,
+            }))
+        }
+        DraftCmd::List { limit, full } => {
+            let resp = client.list_drafts(ListDraftsRequest { limit }).await?;
+            Ok(json!({
+                "drafts": resp
+                    .drafts
+                    .into_iter()
+                    .map(|d| draft_json(d, full))
+                    .collect::<Vec<_>>(),
+            }))
+        }
+        DraftCmd::Promote { draft } => {
+            let resp = client
+                .promote_draft(DecideDraftRequest {
+                    draft_id: draft,
+                    reason: String::new(),
+                })
+                .await?;
+            Ok(json!({
+                "ok": resp.ok,
+                "issues": resp.issues,
+                "head_content": resp.head_content,
+            }))
+        }
+        DraftCmd::Discard { draft, reason } => {
+            let resp = client
+                .discard_draft(DecideDraftRequest {
+                    draft_id: draft,
+                    reason,
+                })
+                .await?;
+            Ok(json!({ "ok": resp.ok, "issues": resp.issues }))
         }
     }
 }

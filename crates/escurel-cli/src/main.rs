@@ -78,6 +78,9 @@ enum Command {
     /// Event-sourcing surface: inbox, history, capture, assign.
     #[command(subcommand)]
     Event(agent::EventCmd),
+    /// Held writes: the review queue for `autonomy: review` skills.
+    #[command(subcommand)]
+    Draft(agent::DraftCmd),
     /// Stored queries.
     #[command(subcommand)]
     Query(agent::QueryCmd),

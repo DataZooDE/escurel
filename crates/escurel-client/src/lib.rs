@@ -76,6 +76,13 @@ pub use escurel_types::{
     SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse,
     ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
 };
+// Held writes (the `autonomy: review` gate): a draft is a finished change
+// that has not landed, and these are how an app shows a human what is
+// waiting and lands it under their identity.
+pub use escurel_types::{
+    CreateDraftRequest, CreateDraftResponse, DecideDraftRequest, DecideDraftResponse, Draft,
+    ListDraftsRequest, ListDraftsResponse,
+};
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
 // Typed shapes for the previously call_raw-only agent tools: the blob /
@@ -539,6 +546,63 @@ impl Client {
                 }),
             )
             .await
+    }
+
+    /// Hold a finished write for a human instead of landing it.
+    ///
+    /// The write ACL and validation run at the gateway HERE, not at
+    /// promotion — a draft cannot stage a write its author could never make,
+    /// and a human never reviews something that would refuse when landed.
+    pub async fn create_draft(
+        &self,
+        req: CreateDraftRequest,
+    ) -> Result<CreateDraftResponse, Error> {
+        let mut args = json!({
+            "target_page_id": req.target_page_id,
+            "content": req.content,
+        });
+        if let Some(base) = req.base_sha256 {
+            args["base_sha256"] = json!(base);
+        }
+        if !req.event_id.is_empty() {
+            args["event_id"] = json!(req.event_id);
+        }
+        self.transport.call_typed("create_draft", args).await
+    }
+
+    /// Everything still waiting for a decision, newest first.
+    pub async fn list_drafts(&self, req: ListDraftsRequest) -> Result<ListDraftsResponse, Error> {
+        let mut args = json!({});
+        if req.limit > 0 {
+            args["limit"] = json!(req.limit);
+        }
+        self.transport.call_typed("list_drafts", args).await
+    }
+
+    /// Land a held write, under the caller's identity.
+    ///
+    /// Answers with the underlying `update_page` envelope: a target that
+    /// moved since drafting returns `{ok:false, issues:[{code:"conflict"}]}`
+    /// plus `head_content`, and the draft stays OPEN to be re-drafted.
+    pub async fn promote_draft(
+        &self,
+        req: DecideDraftRequest,
+    ) -> Result<DecideDraftResponse, Error> {
+        self.transport
+            .call_typed("promote_draft", json!({ "draft_id": req.draft_id }))
+            .await
+    }
+
+    /// Refuse a held write. Nothing is written to the target.
+    pub async fn discard_draft(
+        &self,
+        req: DecideDraftRequest,
+    ) -> Result<DecideDraftResponse, Error> {
+        let mut args = json!({ "draft_id": req.draft_id });
+        if !req.reason.is_empty() {
+            args["reason"] = json!(req.reason);
+        }
+        self.transport.call_typed("discard_draft", args).await
     }
 
     /// Open a live CRDT co-editing session on `page_id` over the

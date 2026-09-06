@@ -152,6 +152,74 @@ pub(super) async fn resolve_base_version(
     }
 }
 
+/// The validation issues that REFUSE a write, out of everything `validate`
+/// reported.
+///
+/// Extracted from `tool_update_page` so `create_draft` refuses exactly what
+/// the eventual `update_page` would refuse. Two lists that "obviously agree"
+/// are how a draft becomes approvable and then unlandable — the reviewer
+/// approves bytes, and promotion is the wrong moment to discover they were
+/// never writable.
+pub(super) fn blocking_issues<'a>(
+    state: &crate::server::AppState,
+    issues: &'a [Issue],
+) -> Vec<&'a Issue> {
+    issues
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .filter(|i| match i.code.as_str() {
+            // Content whose frontmatter does not PARSE. Not previously here
+            // because `update_page` never needed it: the write path hits the
+            // parse error itself and raises a -32603 internal error, so no
+            // amount of validation filtering changed the outcome.
+            //
+            // `create_draft` made the omission matter. It stores content for
+            // a HUMAN to approve, and it accepted a document that could never
+            // land — found end-to-end, with a real model: an unquoted
+            // `subject: Re: Workshop…` is invalid YAML, the draft was queued,
+            // the reviewer saw a perfectly ordinary card, and promotion died
+            // with an internal error naming a line number.
+            //
+            // Blocking it here also upgrades `update_page`'s answer for the
+            // same content from that -32603 to `{ok:false, issues:[…]}` —
+            // a refusal a client can act on, which an internal error is not.
+            "frontmatter_parse" => true,
+            // A link that names a type or a page that does not exist. This is
+            // the hole being closed: an agent could cite
+            // `[[customer::invented-gmbh]]` and the graph would carry it.
+            "dangling_wikilink" => true,
+            // ...but only for a WIKILINK. The same code also fires at
+            // `frontmatter.skill` when a page declares a skill that is not
+            // seeded yet, which is ordering-sensitive: a bulk seed may write
+            // instances before their skill page, and escurel's own snapshot
+            // tests do exactly that. Pre-existing, not this change's business.
+            "unknown_skill" => i.location.starts_with("wikilink"),
+            // A page with no `id` indexes but can neither be expanded nor
+            // resolved — an identity failure, not a completeness one.
+            // Identity, not completeness: a page with no `id` can neither be
+            // expanded nor resolved, and one with no `skill` is invisible to
+            // `list_instances` — real, linked and unbrowsable. Everything
+            // else `required_frontmatter` declares stays non-blocking, for
+            // the migration reason above.
+            "frontmatter_required_key_missing" => {
+                i.location == "frontmatter.id" || i.location == "frontmatter.skill"
+            }
+            // A skill page declaring an unrecognised `autonomy:` policy
+            // (heron#5 / CR-1). GATED, unlike every other arm above, because
+            // `autonomy:` has been unvalidated free-form frontmatter: a tenant
+            // whose page already carries junk there would find the page
+            // unwritable — for any edit, not just an edit to that field —
+            // the moment the server upgraded. Off (default) → Log → Enforce
+            // lets an operator find those pages first, the same rollout the
+            // write ACL gets. `validate` reports it in every mode.
+            "frontmatter_autonomy_unknown" => {
+                state.autonomy_lint == crate::server::AutonomyLintMode::Enforce
+            }
+            _ => false,
+        })
+        .collect()
+}
+
 pub(super) async fn tool_update_page(
     state: &crate::server::AppState,
     indexer: &Indexer,
@@ -359,7 +427,8 @@ pub(super) async fn tool_update_page(
                          (send an empty base_sha256 to approve a create)"
                             .to_owned()
                     } else {
-                        "base_sha256 is stale — the page changed since the held                          write was drafted; re-diff against head_content"
+                        "base_sha256 is stale — the page changed since the \
+                         held write was drafted; re-diff against head_content"
                             .to_owned()
                     },
                 }],
@@ -458,37 +527,7 @@ pub(super) async fn tool_update_page(
     // is a separate migration with its own blast radius, and it must not
     // gate closing the link-integrity hole. `page validate` still reports it,
     // as it always has.
-    let blocking: Vec<_> = issues
-        .iter()
-        .filter(|i| i.severity == Severity::Error)
-        .filter(|i| match i.code.as_str() {
-            // A link that names a type or a page that does not exist. This is
-            // the hole being closed: an agent could cite
-            // `[[customer::invented-gmbh]]` and the graph would carry it.
-            "dangling_wikilink" => true,
-            // ...but only for a WIKILINK. The same code also fires at
-            // `frontmatter.skill` when a page declares a skill that is not
-            // seeded yet, which is ordering-sensitive: a bulk seed may write
-            // instances before their skill page, and escurel's own snapshot
-            // tests do exactly that. Pre-existing, not this change's business.
-            "unknown_skill" => i.location.starts_with("wikilink"),
-            // A page with no `id` indexes but can neither be expanded nor
-            // resolved — an identity failure, not a completeness one.
-            "frontmatter_required_key_missing" => i.location == "frontmatter.id",
-            // A skill page declaring an unrecognised `autonomy:` policy
-            // (heron#5 / CR-1). GATED, unlike every other arm above, because
-            // `autonomy:` has been unvalidated free-form frontmatter: a tenant
-            // whose page already carries junk there would find the page
-            // unwritable — for any edit, not just an edit to that field —
-            // the moment the server upgraded. Off (default) → Log → Enforce
-            // lets an operator find those pages first, the same rollout the
-            // write ACL gets. `validate` reports it in every mode.
-            "frontmatter_autonomy_unknown" => {
-                state.autonomy_lint == crate::server::AutonomyLintMode::Enforce
-            }
-            _ => false,
-        })
-        .collect();
+    let blocking = blocking_issues(state, &issues);
 
     // Log mode: tell the operator, allow the write, and leave the response
     // identical to an unlinted server's — the point of the middle rung is to

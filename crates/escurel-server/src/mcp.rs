@@ -64,12 +64,14 @@ mod backend_view;
 mod ingest;
 mod schema;
 mod tools_admin;
+mod tools_drafts;
 mod tools_read;
 mod tools_write;
 pub(crate) use ingest::{blob_get, ingest, ingest_upload};
 pub(crate) use schema::openapi_document;
 use schema::page_type_str;
 use tools_admin::*;
+use tools_drafts::*;
 use tools_read::*;
 pub(crate) use tools_write::event_to_json;
 
@@ -494,7 +496,8 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         // slot (semaphore, not a token bucket) inside the tool
         // body; `close_session` is a cleanup and does not debit.
         "update_page" | "delete_page" | "move_page" | "purge_page" | "apply_op"
-        | "append_message" | "capture_event" | "assign_event" => Dimension::Writes,
+        | "append_message" | "capture_event" | "assign_event" | "create_draft"
+        | "promote_draft" | "discard_draft" => Dimension::Writes,
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -590,6 +593,13 @@ fn is_rejected_payload(tool: &str, payload: &Value) -> bool {
 /// is the only mutation path; a reader is read-only by construction.
 const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     "update_page",
+    // `promote_draft` IS an `update_page` — it re-enters that handler with
+    // the draft's bytes. It therefore belongs in this bucket and not merely
+    // behind the drafts gate: on a reader with a shared drafts table the
+    // gate would pass and the page write would land in a throwaway index.
+    // Creating and discarding drafts stay servable there; only the landing
+    // is writer-only.
+    "promote_draft",
     "delete_page",
     "move_page",
     "purge_page",
@@ -651,6 +661,18 @@ const CHAT_TOOLS: &[&str] = &[
 /// backend attached (see [`escurel_index::Indexer::has_shared_events`]).
 const EVENTS_TOOLS: &[&str] = &["capture_event", "assign_event", "list_events", "list_inbox"];
 
+/// The held-write surface, gated exactly like [`EVENTS_TOOLS`]: a replica
+/// serves it only when the CURRENT indexer has a SHARED drafts table
+/// attached. A `Local` drafts table on a pod with no persistent volume is a
+/// review queue that empties itself on rollout — refusing the surface is the
+/// honest answer, and the one an operator notices.
+const DRAFTS_TOOLS: &[&str] = &[
+    "create_draft",
+    "list_drafts",
+    "promote_draft",
+    "discard_draft",
+];
+
 /// The CRDT/session tool surface `dispatch_tools_call`'s dynamic reader
 /// gate covers (DuckLake PR 10, Phase B) — mirrors [`CHAT_TOOLS`] /
 /// [`EVENTS_TOOLS`] exactly: reader-rejected only when the CURRENT
@@ -699,6 +721,7 @@ type SharedSurfaceGate = (&'static [&'static str], fn(&Indexer) -> bool);
 const SHARED_SURFACE_GATES: &[SharedSurfaceGate] = &[
     (CHAT_TOOLS, Indexer::has_shared_chat),
     (EVENTS_TOOLS, Indexer::has_shared_events),
+    (DRAFTS_TOOLS, Indexer::has_shared_drafts),
     (CRDT_TOOLS, Indexer::has_shared_crdt),
 ];
 
@@ -908,6 +931,16 @@ async fn dispatch_tools_call(
         // deprecation (2026-08-14 API review, minimalism finding 3).
         "query_instance" => tool_query_instance(indexer, caller, params.arguments).await,
         "validate" => tool_validate(indexer, params.arguments).await,
+        // Held writes (the `autonomy: review` gate). Agent-shaped like the
+        // event surface, and write-ACL'd at CREATE — see `tools_drafts`.
+        "create_draft" => {
+            tool_create_draft(state, indexer, caller, state.write_acl, params.arguments).await
+        }
+        "list_drafts" => tool_list_drafts(indexer, caller, params.arguments).await,
+        "promote_draft" => {
+            tool_promote_draft(state, indexer, caller, state.write_acl, params.arguments).await
+        }
+        "discard_draft" => tool_discard_draft(indexer, caller, params.arguments).await,
         "update_page" => {
             tool_update_page(state, indexer, caller, state.write_acl, params.arguments).await
         }

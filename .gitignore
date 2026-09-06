@@ -54,3 +54,6 @@ Thumbs.db
 
 # escurel-eval datasets + persisted indexes (not committed)
 /datasets/
+
+# agent-crew run artifacts (reports, patches, scoreboard)
+.crew/
