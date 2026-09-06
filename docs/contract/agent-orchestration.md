@@ -1,8 +1,36 @@
 # Agent-harness orchestration design
 
-**Date:** 2026-06-07.
-**Status:** Proposal. High-level design; the epic + sub-issue split
-follows from the §"Work-item breakdown" below.
+**Date:** 2026-06-07. **Shipped and deployed 2026-09-06.**
+**Status:** Implemented. Every item in the §"Work-item breakdown" below
+shipped; the component is called `escurel-runner`, not the working name
+`escurel-agent-runner` used throughout this document. It runs in the lab
+cluster, taking a webhook from `heron-escurel` with the inbox poller as
+its self-heal.
+
+What the deployment changed about this design, recorded here because a
+contract that outlives its code is how compensations accumulate:
+
+- **`autonomy:` is honoured.** A skill declaring `review` (or anything
+  unrecognised, or nothing at all) is packaged with a toolset whose write
+  verb produces a **draft** — escurel's own held write — instead of
+  committing. A draft is a confirmed effect for the reconciler but does
+  **not** cascade; cascade fires on promotion, because until a human
+  promotes it nothing has landed.
+- **The `gemini` harness** was added for the cluster: a container has no
+  interactive auth and no node runtime, so the CLI-driving adapters
+  (`claude`, `codex`, `adk`) cannot run there.
+- **The runner mints its own gateway bearer** rather than carrying a
+  pasted `ESCUREL_RUNNER_TOKEN`, borrowing the platform's existing
+  signing identity. Two defects found by deploying it are worth knowing
+  about, both fixed: a client built once outside a loop freezes that
+  bearer for the life of the process (#442), and `/dlq/requeue` cleared
+  the ledger but not the in-memory seen-set, so a requeue could not
+  re-dispatch in the same process (#441).
+
+The per-run short-TTL token described below remains an **unimplemented
+seam** (`packager.rs`'s `token` field): every run for every principal
+currently shares one privilege. That is the weakest part of the boundary
+and is named here rather than left to be discovered.
 **Scope:** A new standalone component — working name
 `escurel-agent-runner` — that turns escurel's M7 inbox into a cascading,
 **agent-harness-driven** event→instance projection loop. It triggers a
@@ -341,9 +369,15 @@ first green) → 8/9/10 in parallel (the three real adapters) → 11→12→13
 
 ## Open follow-up
 
-This design introduces orchestration automation that the current spec
+~~This design introduces orchestration automation that the current spec
 explicitly defers to v1.5 ("event-derived state projection"). We keep the
 **gateway** automation-free by housing all automation in the separate
 runner, but the roadmap/contract should be updated to record that the
 projection now exists *as an external runner* (one small doc PR alongside
-item 3), so the spec and the code don't diverge.
+item 3), so the spec and the code don't diverge.~~
+
+**Done 2026-09-06** — the roadmap's §M7 now names `escurel-runner` as the
+projection processor. The invariant this worried about still holds and is
+worth restating: the **gateway** remains automation-free. Every decision to
+act lives in the runner, which is a separate process with its own
+credential; the gateway only ever answers calls.
