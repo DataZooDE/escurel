@@ -74,6 +74,18 @@ pub enum HarnessError {
         /// Captured stderr (truncated) for diagnosis.
         stderr: String,
     },
+    /// An in-process (non-subprocess) harness could not reach, or was
+    /// refused by, an upstream it depends on — the model API or the gateway
+    /// `/mcp`. Distinct from [`HarnessError::NonZeroExit`], which is a
+    /// subprocess concept and says nothing about which upstream failed.
+    #[error("harness {harness:?} upstream error: {message}")]
+    Upstream {
+        /// The adapter name.
+        harness: &'static str,
+        /// What failed, carrying the upstream's own message where there is
+        /// one — a bare status code has cost real debugging time here.
+        message: String,
+    },
     /// The harness stdout was not the expected JSON outcome.
     #[error("could not parse harness {harness:?} outcome: {source}")]
     BadOutcome {

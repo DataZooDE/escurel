@@ -275,6 +275,22 @@ pub struct RunnerConfig {
     /// configured default.
     /// Source: `ESCUREL_RUNNER_ADK_MODEL` (unset → `None`).
     pub adk_model: Option<String>,
+    /// API key for the Gemini adapter — the one harness that needs no CLI,
+    /// no node runtime and no interactive login, which is what makes it the
+    /// harness a container can actually run.
+    /// Source: `ESCUREL_GEMINI_API_KEY` (unset → `None`; selecting the
+    /// `gemini` harness without it is a startup refusal, not a silent
+    /// fallback to a harness that does nothing).
+    pub gemini_api_key: Option<String>,
+    /// Optional model id for the Gemini adapter; `None` uses the adapter's
+    /// default.
+    /// Source: `ESCUREL_RUNNER_GEMINI_MODEL` (unset → `None`).
+    pub gemini_model: Option<String>,
+    /// Optional Generative Language API base for the Gemini adapter. Exists
+    /// so a deterministic test can point the adapter at a real local server
+    /// that speaks the wire shape.
+    /// Source: `ESCUREL_RUNNER_GEMINI_BASE_URL` (unset → `None`).
+    pub gemini_base_url: Option<String>,
     /// Cap on reconciler attempts per run before recording `failed` (#155).
     /// Always at least `1` (one attempt is made even with retries disabled).
     /// Source: `ESCUREL_RUNNER_MAX_ATTEMPTS` (default [`DEFAULT_MAX_ATTEMPTS`]).
@@ -386,6 +402,14 @@ impl RunnerConfig {
             .unwrap_or_else(|| DEFAULT_ADK_BIN.to_owned());
         let adk_model = lookup("ESCUREL_RUNNER_ADK_MODEL").filter(|s| !s.is_empty());
 
+        // `ESCUREL_GEMINI_API_KEY` (not `ESCUREL_RUNNER_…`) is the name the
+        // deployment already binds from Secret Manager for `heron-escurel`;
+        // inventing a runner-prefixed twin would mean two names for one
+        // secret and a rotation that updates one of them.
+        let gemini_api_key = lookup("ESCUREL_GEMINI_API_KEY").filter(|s| !s.is_empty());
+        let gemini_model = lookup("ESCUREL_RUNNER_GEMINI_MODEL").filter(|s| !s.is_empty());
+        let gemini_base_url = lookup("ESCUREL_RUNNER_GEMINI_BASE_URL").filter(|s| !s.is_empty());
+
         let max_attempts = match lookup("ESCUREL_RUNNER_MAX_ATTEMPTS") {
             Some(raw) if !raw.is_empty() => match raw.parse::<u32>() {
                 Ok(n) if n >= 1 => n,
@@ -454,6 +478,9 @@ impl RunnerConfig {
             harness,
             claude_bin,
             claude_model,
+            gemini_api_key,
+            gemini_model,
+            gemini_base_url,
             codex_bin,
             codex_model,
             adk_bin,
