@@ -46,6 +46,10 @@ pub const DEFAULT_CLAUDE_BIN: &str = "claude";
 /// resolves on `PATH`; a deterministic test overrides it to a stub.
 pub const DEFAULT_CODEX_BIN: &str = "codex";
 
+/// Default `agy` (Antigravity) binary the agy adapter spawns. A bare name
+/// resolves on `PATH`; a deterministic test overrides it to a stub.
+pub const DEFAULT_AGY_BIN: &str = "agy";
+
 /// Default adk-rust runner binary the Google ADK adapter (#154) spawns.
 /// There is no sensible default on `PATH` (the heavy adk-rust runtime lives
 /// in an external binary built from the `datazoo-agent-template`), so a
@@ -289,6 +293,19 @@ pub struct RunnerConfig {
     /// default.
     /// Source: `ESCUREL_RUNNER_CODEX_MODEL` (unset → `None`).
     pub codex_model: Option<String>,
+    /// Path to the `agy` binary the Antigravity adapter spawns.
+    /// Source: `ESCUREL_RUNNER_AGY_BIN` (default [`DEFAULT_AGY_BIN`]).
+    pub agy_bin: String,
+    /// Optional `--model` the agy adapter passes to `agy`. Worth setting:
+    /// without it `agy` follows whatever `/model` last selected
+    /// interactively, which is not a property a deployment should inherit.
+    /// Source: `ESCUREL_RUNNER_AGY_MODEL` (unset → `None`).
+    pub agy_model: Option<String>,
+    /// The home directory holding `agy`'s credentials (`~/.gemini`). Each
+    /// run gets a private `HOME` linked over this one so the scoped bearer
+    /// never lands in the operator's own MCP config.
+    /// Source: `ESCUREL_RUNNER_AGY_HOME` (unset → the process's `HOME`).
+    pub agy_home: Option<String>,
     /// Path to the adk-rust runner binary the Google ADK adapter (#154)
     /// spawns.
     /// Source: `ESCUREL_RUNNER_ADK_BIN` (default [`DEFAULT_ADK_BIN`]).
@@ -500,6 +517,12 @@ impl RunnerConfig {
             .unwrap_or_else(|| DEFAULT_CODEX_BIN.to_owned());
         let codex_model = lookup("ESCUREL_RUNNER_CODEX_MODEL").filter(|s| !s.is_empty());
 
+        let agy_bin = lookup("ESCUREL_RUNNER_AGY_BIN")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_AGY_BIN.to_owned());
+        let agy_model = lookup("ESCUREL_RUNNER_AGY_MODEL").filter(|s| !s.is_empty());
+        let agy_home = lookup("ESCUREL_RUNNER_AGY_HOME").filter(|s| !s.is_empty());
+
         let adk_bin = lookup("ESCUREL_RUNNER_ADK_BIN")
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_ADK_BIN.to_owned());
@@ -613,6 +636,9 @@ impl RunnerConfig {
             gemini_api_key,
             gemini_model,
             gemini_base_url,
+            agy_bin,
+            agy_model,
+            agy_home,
             codex_bin,
             codex_model,
             adk_bin,
