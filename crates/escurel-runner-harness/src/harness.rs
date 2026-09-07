@@ -95,6 +95,23 @@ pub enum HarnessError {
         #[source]
         source: serde_json::Error,
     },
+    /// The adapter cannot run THIS task safely, though the harness itself is
+    /// available. Raised before anything is spawned.
+    ///
+    /// It exists for [`crate::AgyHarness`]: `agy` offers no way to narrow the
+    /// tool surface, so a run packaged under
+    /// [`REVIEW_TOOLS`](escurel_runner_core::REVIEW_TOOLS) would reach the
+    /// committing verbs anyway. Refusing is the only way the autonomy gate
+    /// stays a gate. Distinct from every other variant here, which report
+    /// that the harness FAILED — this one reports it was never asked.
+    #[error("harness {harness:?} cannot run this task: {reason}")]
+    Unsupported {
+        /// The adapter name.
+        harness: &'static str,
+        /// Why, in terms the operator can act on — including which harness
+        /// can run the task instead.
+        reason: String,
+    },
     /// An I/O error writing the task to / reading the result from the child.
     #[error("harness {harness:?} I/O error: {source}")]
     Io {

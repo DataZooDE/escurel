@@ -46,7 +46,7 @@ use escurel_runner_core::{
 };
 use escurel_runner_core::{DeadLetterReason, RunId};
 use escurel_runner_harness::{
-    AdkHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness,
+    AdkHarness, AgyHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness,
 };
 use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
@@ -850,6 +850,15 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
         "codex" => Arc::new(
             CodexHarness::new(config.codex_bin.clone()).with_model(config.codex_model.clone()),
         ),
+        // A CLI harness for a HOST with agy installed and logged in — not for
+        // the cluster, which has neither. It runs `autonomy: auto` skills
+        // only: see `AgyHarness`, which refuses a narrowed surface rather
+        // than pretending to enforce one.
+        "agy" => Arc::new(
+            AgyHarness::new(config.agy_bin.clone())
+                .with_model(config.agy_model.clone())
+                .with_home(config.agy_home.clone()),
+        ),
         "adk" => {
             Arc::new(AdkHarness::new(config.adk_bin.clone()).with_model(config.adk_model.clone()))
         }
@@ -1446,7 +1455,11 @@ fn harness_error_to_reconcile(e: &escurel_runner_harness::HarnessError) -> Recon
             ReconcileError::Transient(e.to_string())
         }
         H::BadOutcome { .. } => ReconcileError::BadOutput(e.to_string()),
-        H::NonZeroExit { .. } => ReconcileError::Permanent(e.to_string()),
+        // Permanent, and deliberately so: the harness refused this task
+        // before running it, and a retry re-runs the same refusal. The
+        // dead-letter carries the reason, which names the harness that can
+        // run it — the operator changes the selector, not the retry budget.
+        H::NonZeroExit { .. } | H::Unsupported { .. } => ReconcileError::Permanent(e.to_string()),
     }
 }
 
