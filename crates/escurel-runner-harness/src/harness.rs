@@ -132,8 +132,8 @@ pub enum HarnessError {
 /// only process management + outcome capture.
 #[async_trait]
 pub trait Harness: Send + Sync {
-    /// The adapter's stable name (`"echo"`, later `"claude"` / `"codex"` /
-    /// `"adk"`). Used for harness selection (`ESCUREL_RUNNER_HARNESS`) and
+    /// The adapter's stable name (`"echo"`, `"claude"`, `"codex"`, `"agy"`,
+    /// `"gemini"`). Used for harness selection (`ESCUREL_RUNNER_HARNESS`) and
     /// logging.
     fn name(&self) -> &str;
 

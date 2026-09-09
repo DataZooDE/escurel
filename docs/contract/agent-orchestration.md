@@ -201,6 +201,19 @@ in-corpus, not hardcoded.
 
 ## Cascade + loop control (the run ledger)
 
+- **Binding is the runner's, not the agent's.** When a trigger names its
+  target instance and the gateway confirms that page was written (its
+  content-addressed version advanced), the runner calls `assign_event` itself
+  if the agent did not. The page was chosen by the runner before the agent
+  ran, so which event a page absorbed is bookkeeping rather than judgement —
+  the same reasoning that makes cascade the runner's decision. It is narrow by
+  construction: never for an unflagged trigger (only `assign_event` records
+  where the agent put anything), never without a version advance (an unchanged
+  instance means nothing happened), never over an assignment the agent already
+  made. This is the ONE escurel effect the runner performs on an agent's
+  behalf; every other one is still a tool the model chose. Without it a real
+  harness that wrote the right page and stopped had its work dead-lettered as
+  unfinished.
 - **Change → event bridge.** `update_page` emits no event, so the cascade
   emitter calls `capture_event` after a confirmed write. The *runner*, not
   the server, decides a write should cascade → the gateway stays

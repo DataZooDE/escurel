@@ -3,7 +3,7 @@
 //! This crate holds the single async [`Harness`] adapter trait
 //! (`name()` + `run(&self, task: &TaskContext) -> Result<HarnessOutcome,
 //! HarnessError>`) and — as the harness work-items land — its concrete
-//! adapters (**Claude Code CLI**, **Codex CLI**, **Google ADK**) per
+//! adapters (**Claude Code CLI**, **Codex CLI**, **Antigravity**) per
 //! [`docs/contract/agent-orchestration.md`] §"Harness-adapter trait".
 //!
 //! Most adapters are a thin process-management shell: they spawn the chosen
@@ -33,7 +33,6 @@
 //!
 //! [`docs/contract/agent-orchestration.md`]: https://github.com/DataZooDE/escurel/blob/main/docs/contract/agent-orchestration.md
 
-mod adk;
 mod agy;
 mod claude;
 mod codex;
@@ -42,7 +41,6 @@ mod gemini;
 mod harness;
 mod task;
 
-pub use adk::{AdkHarness, AdkTask};
 pub use agy::AgyHarness;
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;

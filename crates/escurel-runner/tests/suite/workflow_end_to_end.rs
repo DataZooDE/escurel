@@ -339,9 +339,11 @@ async fn verify_barrier_runs_to_completion_via_echo() {
 }
 
 /// LIVE test: drive the workflow through a real **Gemini** harness (env-guarded
-/// on GEMINI_API_KEY, like the other `*_live` adapters). The `scripts/
-/// gemini-workflow-runner.py` runner speaks the ADK adapter contract; each
-/// phase's instance body is authored by Gemini over the real `/mcp` surface.
+/// on GEMINI_API_KEY, like the other `*_live` adapters). It runs the SHIPPED
+/// `gemini` adapter — the one the cluster dispatches with — so each phase's
+/// instance body is authored by Gemini over the real `/mcp` surface, through
+/// the same in-process tool loop production uses. It used to drive a Python
+/// runner through the ADK adapter, which tested a harness nobody deploys.
 /// Run with:  GEMINI_API_KEY=… cargo test -p escurel-runner --test
 /// workflow_end_to_end deep_research_runs_against_gemini -- --nocapture
 #[tokio::test]
@@ -350,11 +352,6 @@ async fn deep_research_runs_against_gemini() {
         eprintln!("skipping: GEMINI_API_KEY not set");
         return;
     }
-    let script = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../scripts/gemini-workflow-runner.py"
-    );
-
     let gateway = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
@@ -398,9 +395,11 @@ async fn deep_research_runs_against_gemini() {
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
         .env("ESCUREL_RUNNER_TENANT", TENANT)
         .env("ESCUREL_RUNNER_TOKEN", &token)
-        .env("ESCUREL_RUNNER_HARNESS", "adk")
-        .env("ESCUREL_RUNNER_ADK_BIN", script)
-        .env("ESCUREL_RUNNER_ADK_MODEL", "gemini-2.5-flash")
+        .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env(
+            "ESCUREL_GEMINI_API_KEY",
+            std::env::var("GEMINI_API_KEY").expect("guarded above"),
+        )
         .env(
             "ESCUREL_RUNNER_LEDGER_PATH",
             ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
@@ -504,11 +503,6 @@ async fn verify_barrier_runs_against_gemini() {
         eprintln!("skipping: GEMINI_API_KEY not set");
         return;
     }
-    let script = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../scripts/gemini-workflow-runner.py"
-    );
-
     let gateway = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
@@ -553,9 +547,11 @@ async fn verify_barrier_runs_against_gemini() {
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
         .env("ESCUREL_RUNNER_TENANT", TENANT)
         .env("ESCUREL_RUNNER_TOKEN", &token)
-        .env("ESCUREL_RUNNER_HARNESS", "adk")
-        .env("ESCUREL_RUNNER_ADK_BIN", script)
-        .env("ESCUREL_RUNNER_ADK_MODEL", "gemini-2.5-flash")
+        .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env(
+            "ESCUREL_GEMINI_API_KEY",
+            std::env::var("GEMINI_API_KEY").expect("guarded above"),
+        )
         .env(
             "ESCUREL_RUNNER_LEDGER_PATH",
             ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),

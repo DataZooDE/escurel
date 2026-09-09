@@ -39,8 +39,8 @@ pub use packager::{
 };
 pub use quota::{Governor, QuotaDecision, QuotaLimits, RunSlot, ThrottleReason};
 pub use reconciler::{
-    ConfirmedEffect, ReconcileError, RunFailure, RunReport, classify_client_error, confirm_draft,
-    confirm_effect, run_with_retry,
+    ConfirmedEffect, ReconcileError, RunFailure, RunReport, assign_confirmed_write,
+    classify_client_error, confirm_draft, confirm_effect, instance_version, run_with_retry,
 };
 pub use recovery::{RecoveryReport, recover_pending};
 pub use secrecy::SecretString;

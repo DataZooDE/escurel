@@ -34,8 +34,8 @@ pub const DEFAULT_SEEN_CAP: usize = 4096;
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Default harness adapter the runner dispatches each packaged trigger to.
-/// `echo` is the deterministic real harness (#151); `claude` / `codex` /
-/// `adk` arrive in later work-items and are selected by the same env var.
+/// `echo` is the deterministic real harness (#151); `claude`, `codex`, `agy`
+/// and `gemini` are selected by the same env var.
 pub const DEFAULT_HARNESS: &str = "echo";
 
 /// Default `claude` binary the Claude Code adapter (#152) spawns. A bare
@@ -49,13 +49,6 @@ pub const DEFAULT_CODEX_BIN: &str = "codex";
 /// Default `agy` (Antigravity) binary the agy adapter spawns. A bare name
 /// resolves on `PATH`; a deterministic test overrides it to a stub.
 pub const DEFAULT_AGY_BIN: &str = "agy";
-
-/// Default adk-rust runner binary the Google ADK adapter (#154) spawns.
-/// There is no sensible default on `PATH` (the heavy adk-rust runtime lives
-/// in an external binary built from the `datazoo-agent-template`), so a
-/// deployment MUST point `ESCUREL_RUNNER_ADK_BIN` at its built runner; the
-/// deterministic test overrides it to a real scripted runner.
-pub const DEFAULT_ADK_BIN: &str = "datazoo-agent-adk-runner";
 
 /// Default cap on how many times the reconciler (#155) attempts a single
 /// run before recording it `failed`. The first try plus retries: e.g. `3`
@@ -273,8 +266,8 @@ pub struct RunnerConfig {
     /// [`DEFAULT_LEDGER_PATH`]).
     pub ledger_path: String,
     /// Which harness adapter dispatches each packaged trigger (`echo` /
-    /// `claude` / `codex` / `adk`). Data-driven selection so later
-    /// work-items add adapters without touching the dispatch path.
+    /// `claude` / `codex` / `agy` / `gemini`). Data-driven selection so a new
+    /// adapter arrives without touching the dispatch path.
     /// Source: `ESCUREL_RUNNER_HARNESS` (default [`DEFAULT_HARNESS`]).
     pub harness: String,
     /// Path to the `claude` binary the Claude Code adapter (#152) spawns.
@@ -306,15 +299,6 @@ pub struct RunnerConfig {
     /// never lands in the operator's own MCP config.
     /// Source: `ESCUREL_RUNNER_AGY_HOME` (unset → the process's `HOME`).
     pub agy_home: Option<String>,
-    /// Path to the adk-rust runner binary the Google ADK adapter (#154)
-    /// spawns.
-    /// Source: `ESCUREL_RUNNER_ADK_BIN` (default [`DEFAULT_ADK_BIN`]).
-    pub adk_bin: String,
-    /// Optional LLM model id the Google ADK adapter passes to the runner via
-    /// `LLM_MODEL` (e.g. `gemini-3.5-flash`); `None` lets the runner pick its
-    /// configured default.
-    /// Source: `ESCUREL_RUNNER_ADK_MODEL` (unset → `None`).
-    pub adk_model: Option<String>,
     /// Issuer for a bearer the runner MINTS for itself, instead of holding
     /// a static one. Absent means "not configured", never "guess": an issuer
     /// the gateway does not trust mints tokens that are silently rejected,
@@ -523,11 +507,6 @@ impl RunnerConfig {
         let agy_model = lookup("ESCUREL_RUNNER_AGY_MODEL").filter(|s| !s.is_empty());
         let agy_home = lookup("ESCUREL_RUNNER_AGY_HOME").filter(|s| !s.is_empty());
 
-        let adk_bin = lookup("ESCUREL_RUNNER_ADK_BIN")
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| DEFAULT_ADK_BIN.to_owned());
-        let adk_model = lookup("ESCUREL_RUNNER_ADK_MODEL").filter(|s| !s.is_empty());
-
         // `ESCUREL_GEMINI_API_KEY` (not `ESCUREL_RUNNER_…`) is the name the
         // deployment already binds from Secret Manager for `heron-escurel`;
         // inventing a runner-prefixed twin would mean two names for one
@@ -641,8 +620,6 @@ impl RunnerConfig {
             agy_home,
             codex_bin,
             codex_model,
-            adk_bin,
-            adk_model,
             max_attempts,
             run_timeout,
             retry_backoff,
@@ -734,8 +711,6 @@ mod tests {
         assert_eq!(cfg.claude_model, None);
         assert_eq!(cfg.codex_bin, DEFAULT_CODEX_BIN);
         assert_eq!(cfg.codex_model, None);
-        assert_eq!(cfg.adk_bin, DEFAULT_ADK_BIN);
-        assert_eq!(cfg.adk_model, None);
         assert_eq!(cfg.max_attempts, DEFAULT_MAX_ATTEMPTS);
         assert_eq!(cfg.retry_backoff, DEFAULT_RETRY_BACKOFF);
         assert_eq!(cfg.max_depth, DEFAULT_MAX_DEPTH);
@@ -829,30 +804,6 @@ mod tests {
             bad_backoff,
             ConfigError::InvalidRetryBackoff { .. }
         ));
-    }
-
-    #[test]
-    fn adk_bin_and_model_load_when_set_and_ignore_empty() {
-        let set = RunnerConfig::from_env_with(|key| match key {
-            "ESCUREL_RUNNER_ADK_BIN" => Some("/opt/datazoo-agent".to_owned()),
-            "ESCUREL_RUNNER_ADK_MODEL" => Some("gemini-3.5-flash".to_owned()),
-            _ => None,
-        })
-        .expect("adk config must parse");
-        assert_eq!(set.adk_bin, "/opt/datazoo-agent");
-        assert_eq!(set.adk_model, Some("gemini-3.5-flash".to_owned()));
-
-        let empty = RunnerConfig::from_env_with(|key| match key {
-            "ESCUREL_RUNNER_ADK_BIN" => Some(String::new()),
-            "ESCUREL_RUNNER_ADK_MODEL" => Some(String::new()),
-            _ => None,
-        })
-        .expect("empty adk config must parse");
-        assert_eq!(
-            empty.adk_bin, DEFAULT_ADK_BIN,
-            "empty adk bin falls back to the default"
-        );
-        assert_eq!(empty.adk_model, None, "empty model is treated as unset");
     }
 
     #[test]
