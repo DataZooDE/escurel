@@ -542,11 +542,144 @@ fn build_instructions(
             skill = trigger.label_skill,
         ),
     };
+    // **The trigger already chose the page. Say so in the INSTRUCTIONS.**
+    //
+    // "Fold it into the appropriate instance" invites the model to pick one,
+    // and the target page id was only ever stated in the input, under a
+    // heading among several. Measured 2026-09-09 against the shipped Gemini
+    // harness: a workflow phase assigned to one page wrote
+    // `deep-research/workflow-run/gem.md` on its first attempt and
+    // `deep-research/<event_id>.md` on its second, self-reported `ok` both
+    // times, and the workflow never converged — the next phase reads the page
+    // the runner NAMED. This was invisible for as long as it was, because the
+    // harness those tests drove was a script that took the page id from the
+    // event and never asked the model.
+    let target = match &trigger.instance_page_id {
+        Some(page) => {
+            // `markdown/instances/<skill>/<id>.md`. Derived from the PAGE, not
+            // from `label_skill`: a workflow board is `workflow-run/<run>.md`
+            // while the trigger's skill is the workflow's own — telling the
+            // agent to stamp the trigger's skill there would author an invalid
+            // page in the one place it matters most.
+            // **The completion step, said out loud on the auto path.**
+            //
+            // The reconciler's definition of done is "the event is processed
+            // ON that page" — nothing else ends the run, and an agent that
+            // writes the page and stops leaves a run that retries, exhausts
+            // its attempts and dead-letters work that actually landed. The
+            // review gate has always stated its own protocol (draft, do not
+            // assign); this is the same courtesy for the path that commits.
+            // Measured 2026-09-09: with the page finally valid, every attempt
+            // still failed `not yet processed`, because nobody had told the
+            // agent that assigning is how a run finishes.
+            let finish = match autonomy {
+                Autonomy::Auto => format!(
+                    "\n\nWhen the write has landed, call `assign_event` with this \
+                     event's id and `{page}` — that is what marks the event \
+                     processed and ends the run. A page written without it reads \
+                     as unfinished work and will be re-run."
+                ),
+                Autonomy::Review => String::new(),
+            };
+            // The verb this run actually has. Naming `update_page` to a
+            // review run is worse than useless: it has no such tool, and the
+            // gate directly below tells it to draft instead — so the page
+            // contract has to be stated in terms of the write it CAN make.
+            let (verb, write) = match autonomy {
+                Autonomy::Auto => ("`update_page`", "write"),
+                Autonomy::Review => ("`create_draft`", "draft"),
+            };
+            let fields = match page
+                .strip_prefix("markdown/instances/")
+                .and_then(|rest| rest.strip_suffix(".md"))
+                .and_then(|rest| rest.split_once('/'))
+            {
+                Some((skill, id)) => format!(
+                    " `type: instance`, `skill: {skill}` and `id: {id}` (from that \
+                     page id),"
+                ),
+                None => " `type: instance` and a `skill` and `id` matching that \
+                          page id,"
+                    .to_owned(),
+            };
+            format!(
+                "\n\n## Write to this page, and only this page\n\n\
+             This event is already assigned to `{page}`. That id IS the answer \
+             to \"which instance?\" — use it exactly, as the `page_id` of your \
+             write (or the `target_page_id` of your draft). Do not shorten it, \
+             derive one from the event id, or invent a new one, even if the \
+             skill's procedure describes how ids are normally chosen: that \
+             choice was already made. A write to any other id is lost work — it \
+             looks like success and nothing downstream reads it.\n\n\
+             The page you {write} must be a VALID instance page or the store \
+             refuses it: it starts with a `---` frontmatter block that is a \
+             YAML mapping, and that block carries at least{fields} plus every \
+             key the skill declares in `required_frontmatter`. {verb} \
+             VALIDATES: a refusal comes back as `{{ok:false, issues:[…]}}` \
+             naming exactly what is wrong. Fix that and call it again — a \
+             rejected write left unfixed is not a page, however the run reads.\
+             {finish}"
+            )
+        }
+        None => String::new(),
+    };
+    // **A workflow step's coordinates, spelled out as frontmatter it must
+    // stamp.**
+    //
+    // The reducer advances a run by READING the pages its steps produced:
+    // `vote_from_instance` tallies `COUNT(DISTINCT vote_index)` off each
+    // `verify-vote`'s frontmatter, and a vote missing `claim`/`vote_index` is
+    // ignored rather than counted. `WorkflowProvenance::vote_index` says so in
+    // its own doc comment — "the index a `verify-vote` harness MUST stamp into
+    // its instance" — and nothing ever told the agent. The Python runner this
+    // replaced stamped them itself, which is why the requirement could go
+    // unstated for as long as it did: measured 2026-09-09, three skeptics
+    // authored three real votes, none carried a slot, the barrier never closed
+    // and the run stopped with no error anywhere.
+    let coordinates = match (&trigger.workflow, autonomy) {
+        (Some(wf), Autonomy::Auto) => {
+            let mut lines = format!(
+                "\n\n## You are one step of a workflow\n\n\
+                 Phase `{phase}` of `{wf_skill}`, run board `{run}`. Carry \
+                 `workflow_run: {run}` in the frontmatter of the page you write.",
+                phase = wf.phase,
+                wf_skill = wf.wf_skill,
+                run = wf.run,
+            );
+            if let Some(index) = wf.vote_index {
+                // The element this step votes on, as the tally keys it: the
+                // last path segment of `over`, without the `.md`.
+                let claim = wf
+                    .over
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(wf.over.as_str())
+                    .trim_end_matches(".md");
+                lines.push_str(&format!(
+                    "\n\nYou are skeptic #{index} of several, each reviewing the \
+                     same material independently. Your page MUST carry, in its \
+                     frontmatter:\n\n\
+                     - `vote_index: {index}` — your slot. It is not derivable \
+                     from anything you can see, and two skeptics sharing a slot \
+                     count as one vote.\n\
+                     - `claim: {claim}` — what is under review.\n\
+                     - `verdict: valid` | `refuted` | `unverified` — your \
+                     judgement, and the only one of the three that is yours to \
+                     decide.\n\n\
+                     A vote missing any of them is not counted, the barrier \
+                     never closes, and the whole run stops with no error \
+                     reported anywhere."
+                ));
+            }
+            lines
+        }
+        _ => String::new(),
+    };
     format!(
         "A new event of type `{skill}` arrived (event `{event_id}`{title}). Fold it into \
          the appropriate `{skill}` instance per the skill below. The event itself is in \
          the task input.\n\n\
-         ## Skill: {skill}\n\n{skill_body}{gate}",
+         ## Skill: {skill}\n\n{skill_body}{coordinates}{target}{gate}",
         skill = trigger.label_skill,
         event_id = trigger.event_id,
         title = if title.is_empty() {
@@ -707,6 +840,136 @@ mod tests {
     /// It is also the right split on its own terms: the system prompt should
     /// carry the PROCEDURE (the skill body), and the user prompt the DATA
     /// (the event payload).
+    /// An assigned trigger must name its page IN the instructions.
+    ///
+    /// Stating it only in the input left the model free to pick, and it did:
+    /// two attempts, two invented page ids, both self-reported `ok`, and a
+    /// workflow that never converged.
+    /// A barrier step must be told its slot, because nothing it can read
+    /// carries one — the step id is content-addressed and the material under
+    /// review is identical for every skeptic.
+    #[test]
+    fn a_barrier_step_is_told_the_slot_the_tally_reads() {
+        let mut wf = escurel_types::WorkflowProvenance {
+            run: "markdown/instances/workflow-run/vfy.md".into(),
+            wf_skill: "verify-wf".into(),
+            phase: "verify".into(),
+            step: "STEP1".into(),
+            barrier: "verify".into(),
+            over: "markdown/instances/claims/vfy-extract-abc.md".into(),
+            vote_index: Some(2),
+        };
+        let trigger = |wf: Option<escurel_types::WorkflowProvenance>| Trigger {
+            tenant: "acme".into(),
+            event_id: "EVT1".into(),
+            label_skill: "verify-vote".into(),
+            instance_page_id: Some("markdown/instances/verify-vote/vfy-verify-abc.md".into()),
+            lineage: crate::Lineage::root("EVT1"),
+            workflow: wf,
+        };
+
+        let vote = build_instructions(
+            &trigger(Some(wf.clone())),
+            "SKILLBODY",
+            None,
+            Autonomy::Auto,
+        );
+        assert!(vote.contains("`vote_index: 2`"), "the slot: {vote}");
+        assert!(
+            vote.contains("`claim: vfy-extract-abc`"),
+            "the tally key, as the reducer reads it — the last segment of \
+             `over`, no directory and no .md: {vote}"
+        );
+        assert!(vote.contains("verdict"), "{vote}");
+
+        // CONTROL: a non-barrier step of the same workflow is told its run and
+        // phase but never invents a slot — a `vote_index` on a page the tally
+        // does not read is noise, and a wrong one would skew a barrier.
+        wf.vote_index = None;
+        let plain = build_instructions(&trigger(Some(wf)), "SKILLBODY", None, Autonomy::Auto);
+        assert!(plain.contains("workflow_run:"), "{plain}");
+        assert!(!plain.contains("vote_index"), "{plain}");
+
+        // CONTROL: an ordinary event is not a workflow step at all.
+        let ordinary = build_instructions(&trigger(None), "SKILLBODY", None, Autonomy::Auto);
+        assert!(!ordinary.contains("one step of a workflow"), "{ordinary}");
+    }
+
+    #[test]
+    fn an_assigned_trigger_names_its_target_page_in_the_instructions() {
+        let page = "markdown/instances/deep-research/dr-42.md";
+        let mut trigger = Trigger {
+            tenant: "acme".into(),
+            event_id: "EVT1".into(),
+            label_skill: "deep-research".into(),
+            instance_page_id: Some(page.to_owned()),
+            lineage: crate::Lineage::root("EVT1"),
+            workflow: None,
+        };
+        let assigned = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Auto);
+        assert!(
+            assigned.contains(page),
+            "the assigned page id must be in the instructions: {assigned}"
+        );
+        assert!(
+            assigned.contains("only this page"),
+            "and it must be stated as a constraint, not a mention: {assigned}"
+        );
+
+        // The page contract, derived from the PAGE id and not from
+        // `label_skill` — a workflow board is `workflow-run/<run>.md` while
+        // the trigger's skill is the workflow's own. Stamping the trigger's
+        // skill there authors an invalid page in the one place it matters
+        // most: nothing downstream reads a board that would not validate.
+        assert!(
+            assigned.contains("`skill: deep-research`") && assigned.contains("`id: dr-42`"),
+            "the frontmatter the store demands must be spelled out: {assigned}"
+        );
+
+        // The completion protocol: assigning is what ends an auto run, and a
+        // run that only writes is re-run until it dead-letters.
+        assert!(
+            assigned.contains("assign_event"),
+            "the auto path must say how a run finishes: {assigned}"
+        );
+
+        // …and under review, where the write is a draft, the same page is the
+        // draft's target: the constraint must survive the gate text — but the
+        // assign instruction must NOT, because a review run has no such verb
+        // and the event stays in the inbox for a human on purpose.
+        let review = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Review);
+        assert!(review.contains(page), "{review}");
+        assert!(review.contains("target_page_id"), "{review}");
+        assert!(
+            !review.contains("call `assign_event`"),
+            "a review run must not be told to assign: {review}"
+        );
+        // …and it must never be pointed at a verb it does not have. Naming
+        // `update_page` here cost a real run: the model spent its turns on a
+        // tool the packager had already denied it, drafted nothing, and the
+        // run reached no verdict at all.
+        assert!(
+            !review.contains("`update_page`"),
+            "a review run has no update_page; the page contract must be \
+             stated in terms of create_draft: {review}"
+        );
+        assert!(review.contains("`create_draft` VALIDATES"), "{review}");
+        assert!(
+            assigned.contains("`update_page` VALIDATES"),
+            "control: the auto path still names its own verb: {assigned}"
+        );
+
+        // CONTROL: a trigger with no instance yet must NOT carry the section —
+        // there is no page to pin, and telling an agent to write to "only this
+        // page" when none was chosen would be a contradiction.
+        trigger.instance_page_id = None;
+        let unassigned = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Auto);
+        assert!(
+            !unassigned.contains("only this page"),
+            "an unassigned trigger must still be free to create one: {unassigned}"
+        );
+    }
+
     #[test]
     fn a_large_event_body_does_not_ride_in_the_instructions() {
         const MAX_ARG_STRLEN: usize = 32 * 4096;

@@ -42,7 +42,7 @@
 
 use std::time::Duration;
 
-use escurel_client::{Client, ExpandRequest, ListEventsRequest};
+use escurel_client::{AssignEventRequest, Client, ExpandRequest, ListEventsRequest};
 
 use crate::{RunnerConfig, Trigger};
 
@@ -166,6 +166,96 @@ pub async fn confirm_draft(
 /// bound) is a [`ReconcileError::Transient`] — the idempotent harness re-run
 /// can finish it. A `/mcp` call failure is classified via
 /// [`classify_client_error`].
+/// The content-addressed version of an instance as the gateway holds it now,
+/// or `None` when the page does not exist yet.
+///
+/// Read BEFORE a run so [`assign_confirmed_write`] can tell a write that
+/// landed from a run that touched nothing.
+pub async fn instance_version(
+    client: &Client,
+    page_id: &str,
+) -> Result<Option<String>, ReconcileError> {
+    let expanded = client
+        .expand(ExpandRequest {
+            page_id: page_id.to_owned(),
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| classify_client_error(&e))?;
+    Ok(expanded
+        .page
+        .is_some()
+        .then(|| content_version(&expanded.body)))
+}
+
+/// Bind the trigger's event to the page it was flagged for, once the gateway
+/// confirms the agent actually wrote that page.
+///
+/// **Why the runner does this and not the agent.** Assignment is bookkeeping —
+/// "this event is now absorbed by that page" — and the page was chosen by the
+/// runner before the agent ever ran. Leaving it to the model meant a run that
+/// wrote the right page, validated, and then stopped: the read-back saw an
+/// unprocessed event, retried, exhausted its attempts and dead-lettered work
+/// that had landed. Measured 2026-09-09 against the shipped Gemini harness,
+/// repeatedly, with the completion step spelled out in the instructions. The
+/// runner already owns the equivalent decision for cascade (`emit_cascade`
+/// fires after a confirmed write, not because an agent asked), so this is the
+/// same rule applied to the same moment.
+///
+/// It is deliberately narrow:
+///
+/// - **Only a pre-flagged trigger.** With no `instance_page_id` the runner has
+///   no idea where the agent put anything; `assign_event` is the only record
+///   of that choice, and inventing one would bind an event to a page nobody
+///   wrote.
+/// - **Only after the version advances.** An unchanged instance means the run
+///   touched nothing, and marking the event processed would retire it for work
+///   that never happened.
+/// - **Only when it is still unassigned**, so an agent that did assign is left
+///   alone and a retry is a no-op.
+///
+/// Returns whether it assigned.
+pub async fn assign_confirmed_write(
+    client: &Client,
+    trigger: &Trigger,
+    version_before: Option<&str>,
+) -> Result<bool, ReconcileError> {
+    let Some(page_id) = &trigger.instance_page_id else {
+        return Ok(false);
+    };
+    let Some(version_now) = instance_version(client, page_id).await? else {
+        return Ok(false);
+    };
+    if Some(version_now.as_str()) == version_before {
+        return Ok(false);
+    }
+
+    let events = client
+        .list_events(ListEventsRequest {
+            event_id: Some(trigger.event_id.clone()),
+            limit: 1,
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| classify_client_error(&e))?;
+    if events
+        .events
+        .iter()
+        .any(|e| e.status == "processed" && !e.instance_page_id.is_empty())
+    {
+        return Ok(false);
+    }
+
+    client
+        .assign_event(AssignEventRequest {
+            event_id: trigger.event_id.clone(),
+            instance_page_id: page_id.clone(),
+        })
+        .await
+        .map_err(|e| classify_client_error(&e))?;
+    Ok(true)
+}
+
 pub async fn confirm_effect(
     client: &Client,
     trigger: &Trigger,

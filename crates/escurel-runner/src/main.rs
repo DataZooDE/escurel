@@ -46,7 +46,7 @@ use escurel_runner_core::{
 };
 use escurel_runner_core::{DeadLetterReason, RunId};
 use escurel_runner_harness::{
-    AdkHarness, AgyHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness,
+    AgyHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness,
 };
 use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
@@ -837,10 +837,10 @@ fn echo_harness_path() -> String {
 
 /// Build the configured harness adapter. `echo` is the deterministic real
 /// harness (#151); `claude` drives the real Claude Code CLI (#152); `codex`
-/// drives the real Codex CLI (#153); `adk` drives an external adk-rust runner
-/// binary (#154); `gemini` drives Gemini over HTTP in process. Unknown
-/// selectors fall back to `echo` with a warning so a typo never silently
-/// disables dispatch.
+/// drives the real Codex CLI (#153); `agy` drives the Antigravity CLI for
+/// `autonomy: auto` runs; `gemini` drives Gemini over HTTP in process — the
+/// one a container can run. Unknown selectors fall back to `echo` with a
+/// warning so a typo never silently disables dispatch.
 fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
     match config.harness.as_str() {
         "echo" => Arc::new(EchoHarness::new(echo_harness_path())),
@@ -859,9 +859,6 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
                 .with_model(config.agy_model.clone())
                 .with_home(config.agy_home.clone()),
         ),
-        "adk" => {
-            Arc::new(AdkHarness::new(config.adk_bin.clone()).with_model(config.adk_model.clone()))
-        }
         // The one harness a container can run: HTTP to the model, no CLI, no
         // node runtime, no interactive login.
         "gemini" => match config.gemini_api_key.clone() {
@@ -1311,6 +1308,14 @@ async fn attempt_run(
             package_error_to_reconcile(e)
         })?;
 
+    // The instance as it stands BEFORE the agent runs, so a write can be told
+    // from a run that touched nothing. Only for a pre-flagged auto run, which
+    // is the only shape `assign_confirmed_write` acts on.
+    let version_before = match (&trigger.instance_page_id, task.autonomy) {
+        (Some(page), Autonomy::Auto) => escurel_runner_core::instance_version(client, page).await?,
+        _ => None,
+    };
+
     // Carried past the match so the read-back below can tell "the harness
     // named a page" from "it named nothing" — the latter is only meaningful
     // once the gateway has also been asked.
@@ -1379,6 +1384,39 @@ async fn attempt_run(
     // review run leaves the event in the inbox on purpose, so the landed-write
     // read-back would never converge — it would burn every retry and
     // dead-letter each held write.
+    //
+    // First, finish the bookkeeping the agent may not have: bind the event to
+    // the page the runner flagged, when the gateway confirms that page was
+    // actually written. See `assign_confirmed_write` for why this is the
+    // runner's job and how narrow it is.
+    if task.autonomy == Autonomy::Auto {
+        match escurel_runner_core::assign_confirmed_write(
+            client,
+            trigger,
+            version_before.as_deref(),
+        )
+        .await
+        {
+            Ok(true) => tracing::info!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                harness = %harness.name(),
+                attempt,
+                "dispatch: the write landed and the agent did not assign; runner bound the event"
+            ),
+            Ok(false) => {}
+            // Not fatal on its own: the read-back below decides. If the
+            // assignment was genuinely needed it will report the event
+            // unprocessed, which is the same transient it always was.
+            Err(e) => tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                error = %e,
+                "dispatch: could not bind the event after a confirmed write"
+            ),
+        }
+    }
+
     let confirmed = match task.autonomy {
         Autonomy::Auto => confirm_effect(client, trigger).await,
         Autonomy::Review => confirm_draft(client, trigger).await,

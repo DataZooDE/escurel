@@ -9,7 +9,7 @@
 //! honest.
 //!
 //! The echo harness is deterministic: it is the test stand-in for an LLM,
-//! but its escurel effects are 100% real. The richer Claude/Codex/ADK
+//! but its escurel effects are 100% real. The richer Claude/Codex/Gemini
 //! adapters (#152-154) reuse this exact spawn-and-capture shape.
 
 use std::process::Stdio;
