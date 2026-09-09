@@ -48,7 +48,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::Trigger;
 
@@ -184,6 +184,12 @@ pub enum LedgerDecision {
     /// (in-flight). The trigger is a concurrent/overlapping delivery →
     /// drop (dedup).
     InFlight,
+    /// A DIFFERENT event carrying the same content was already folded into
+    /// the same instance. The trigger is the same material captured twice —
+    /// a thread forwarded again, an upstream replaying with a fresh id — so
+    /// running it would fold the same thing in twice and cost a model call to
+    /// do it. Carries the run that already did the work.
+    DuplicateContent(RunId),
 }
 
 /// Errors raised by the run ledger.
@@ -363,6 +369,66 @@ impl Ledger {
             }
         }
 
+        // A different event, the same content, the same instance, already
+        // PROCESSED.
+        //
+        // Deliberately only `processed`. A `pending` twin is the in-flight
+        // case above for its own event id and may still fail; a `failed` one
+        // is re-claimable and suppressing it would wedge the retry. Only a run
+        // that actually landed proves the content is already in the corpus.
+        //
+        // Instance-scoped, so the same boilerplate arriving for two different
+        // customers still runs twice — which is right: they are different
+        // records, and the tally of what each one knows is not shared.
+        //
+        // **Never for a workflow step.** A plan's phases are framed by the
+        // runner, so two steps of one run legitimately carry the same words —
+        // a re-verify after a fix, a fan-out over one page — and they already
+        // have a stronger identity than content: the deterministic `step_key`
+        // event id, plus the reducer's `emitted` set. Content-deduping them
+        // silently dropped phases and stalled seven real workflows.
+        if trigger.workflow.is_none()
+            && let (Some(instance), Some(hash)) = (&trigger.instance_page_id, &trigger.content_hash)
+            && let Some(prior) = tx
+                .query_row(
+                    "SELECT run_id FROM runs
+                      WHERE tenant = ?1 AND instance_page_id = ?2
+                        AND content_hash = ?3 AND status = 'processed'
+                      LIMIT 1",
+                    rusqlite::params![trigger.tenant, instance, hash],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+        {
+            // Record a TERMINAL row for this event id rather than dropping it
+            // bare. Without one the poller re-pulls the same inbox event every
+            // tick, re-derives the same verdict and drops it again, for ever;
+            // with one, the next delivery takes the `AlreadyTerminal` fast
+            // path above. It also leaves the decision visible in
+            // `/debug/ledger` instead of only in a log line.
+            let run_id = RunId::new();
+            let now = now_iso();
+            tx.execute(
+                "INSERT INTO runs
+                     (run_id, tenant, event_id, instance_page_id, content_hash,
+                      status, depth, root_event_id, created_at, updated_at, reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'dead_letter', ?6, ?7, ?8, ?8, 'duplicate_content')
+                 ON CONFLICT(tenant, event_id) DO NOTHING",
+                rusqlite::params![
+                    run_id.as_str(),
+                    trigger.tenant,
+                    trigger.event_id,
+                    trigger.instance_page_id,
+                    trigger.content_hash,
+                    trigger.lineage.depth,
+                    trigger.lineage.root_event_id,
+                    now,
+                ],
+            )?;
+            tx.commit()?;
+            return Ok(LedgerDecision::DuplicateContent(RunId(prior)));
+        }
+
         // No row yet: try to claim it. ON CONFLICT DO NOTHING means a
         // racing winner who committed between our read and this insert wins;
         // we detect that by the changed-row count.
@@ -372,13 +438,14 @@ impl Ledger {
             "INSERT INTO runs
                  (run_id, tenant, event_id, instance_page_id, content_hash,
                   status, depth, root_event_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, NULL, 'pending', ?5, ?6, ?7, ?7)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?8)
              ON CONFLICT(tenant, event_id) DO NOTHING",
             rusqlite::params![
                 run_id.as_str(),
                 trigger.tenant,
                 trigger.event_id,
                 trigger.instance_page_id,
+                trigger.content_hash,
                 trigger.lineage.depth,
                 trigger.lineage.root_event_id,
                 now,
@@ -733,7 +800,137 @@ mod tests {
             instance_page_id: None,
             lineage: Lineage::root(event_id),
             workflow: None,
+            content_hash: None,
         }
+    }
+
+    /// The same material, captured twice, does not run twice — and the ways
+    /// it must NOT fire are the point of the test.
+    ///
+    /// `(tenant, event_id)` idempotency never covered this: a thread forwarded
+    /// again, or an upstream replaying with a fresh id, arrives as a genuinely
+    /// new event and used to cost a second model call and a second fold of the
+    /// same content.
+    #[test]
+    fn identical_content_folded_into_the_same_instance_does_not_run_twice() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ledger = Ledger::open(dir.path().join("l.sqlite").to_str().unwrap()).expect("open");
+
+        let with = |event_id: &str, instance: Option<&str>, hash: Option<&str>| Trigger {
+            tenant: "acme".to_owned(),
+            event_id: event_id.to_owned(),
+            label_skill: "email".to_owned(),
+            instance_page_id: instance.map(str::to_owned),
+            lineage: Lineage::root(event_id),
+            workflow: None,
+            content_hash: hash.map(str::to_owned),
+        };
+        let page = Some("markdown/instances/email/thread-1.md");
+        let hash = Some("sha256:deadbeef");
+
+        // The first capture runs and lands.
+        let LedgerDecision::Created(first) =
+            ledger.begin_run(&with("E1", page, hash)).expect("begin")
+        else {
+            panic!("the first capture must run");
+        };
+        ledger.mark(&first, RunStatus::Processed).expect("mark");
+
+        // The same thread, forwarded again: a new event id, same content, same
+        // instance.
+        assert!(
+            matches!(
+                ledger.begin_run(&with("E2", page, hash)).expect("begin"),
+                LedgerDecision::DuplicateContent(prior) if prior == first
+            ),
+            "a re-capture of folded content must not run again, and must name \
+             the run that did the work"
+        );
+        // …and it left a terminal row of its own, or the poller would re-pull
+        // that inbox event and re-decide it every tick, for ever.
+        assert!(matches!(
+            ledger.begin_run(&with("E2", page, hash)).expect("begin"),
+            LedgerDecision::AlreadyTerminal
+        ));
+
+        // CONTROL 1: the same content for a DIFFERENT instance still runs.
+        // Two customers can receive the same boilerplate, and each record
+        // knows it independently.
+        assert!(matches!(
+            ledger
+                .begin_run(&with(
+                    "E3",
+                    Some("markdown/instances/email/thread-2.md"),
+                    hash
+                ))
+                .expect("begin"),
+            LedgerDecision::Created(_)
+        ));
+
+        // CONTROL 2: different content for the same instance still runs.
+        assert!(matches!(
+            ledger
+                .begin_run(&with("E4", page, Some("sha256:0ther")))
+                .expect("begin"),
+            LedgerDecision::Created(_)
+        ));
+
+        // CONTROL 3: a FAILED twin must not suppress its own retry — the
+        // dedup keys on `processed` only, or a transient failure would wedge
+        // the event for ever.
+        let LedgerDecision::Created(failed) = ledger
+            .begin_run(&with(
+                "E5",
+                Some("markdown/instances/email/thread-3.md"),
+                Some("sha256:f"),
+            ))
+            .expect("begin")
+        else {
+            panic!("control");
+        };
+        ledger.mark(&failed, RunStatus::Failed).expect("mark");
+        assert!(
+            matches!(
+                ledger
+                    .begin_run(&with(
+                        "E6",
+                        Some("markdown/instances/email/thread-3.md"),
+                        Some("sha256:f")
+                    ))
+                    .expect("begin"),
+                LedgerDecision::Created(_)
+            ),
+            "only a run that LANDED proves the content is already in the corpus"
+        );
+
+        // CONTROL 4: no hash (a trigger built without the event body) means no
+        // content dedup at all — the event-id idempotency still applies.
+        assert!(matches!(
+            ledger.begin_run(&with("E7", page, None)).expect("begin"),
+            LedgerDecision::Created(_)
+        ));
+
+        // CONTROL 5: a WORKFLOW step is never content-deduped. The runner
+        // frames a plan's phases, so two steps of one run legitimately say the
+        // same thing — a re-verify after a fix reads exactly like the verify
+        // before it — and they already have a stronger identity in the
+        // deterministic step id. Suppressing them stalled seven real
+        // workflows before this guard existed.
+        let mut step = with("E8", page, hash);
+        step.workflow = Some(escurel_types::WorkflowProvenance {
+            run: "markdown/instances/workflow-run/r1.md".to_owned(),
+            wf_skill: "eval".to_owned(),
+            phase: "verify".to_owned(),
+            step: "E8".to_owned(),
+            ..Default::default()
+        });
+        assert!(
+            matches!(
+                ledger.begin_run(&step).expect("begin"),
+                LedgerDecision::Created(_)
+            ),
+            "a workflow step must run even when its content repeats"
+        );
     }
 
     /// The #149 core DoD, against a **real SQLite file in a tempdir** (not

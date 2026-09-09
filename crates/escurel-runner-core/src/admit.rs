@@ -118,6 +118,7 @@ mod tests {
                 trace_id: None,
             },
             workflow: None,
+            content_hash: None,
         }
     }
 

@@ -226,7 +226,10 @@ in-corpus, not hardcoded.
   root_event_id, parent_run_id, produced_instance, produced_version,
   attempts, created_at, finished_at, reason`.
 - **Controls at the dispatch gate:** idempotency (unique `(tenant,
-  trigger_event_id)`); dedup (in-flight + `(instance, content_hash)`);
+  trigger_event_id)`); dedup (in-flight + `(instance, content_hash)`, where
+  the hash covers what the event SAYS — `label_skill`, title, body — and
+  suppresses only against a run that reached `processed`, so a failed twin
+  still retries);
   depth/budget (`ESCUREL_RUNNER_MAX_DEPTH`, per-root run budget →
   dead-letter `depth_exceeded`); cycle prevention (candidate instance
   already in `lineage_path` → stop `cycle`); per-tenant rate/concurrency

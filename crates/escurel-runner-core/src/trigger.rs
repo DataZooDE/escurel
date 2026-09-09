@@ -94,6 +94,19 @@ pub struct Trigger {
     /// non-workflow trigger — the dispatch loop routes a `Some` to the
     /// reducer where it otherwise calls `emit_cascade`.
     pub workflow: Option<WorkflowProvenance>,
+    /// A content address for what this event SAYS — `label_skill`, title and
+    /// body — as distinct from which event record said it.
+    ///
+    /// The ledger's `(tenant, event_id)` key makes a re-DELIVERY of one event
+    /// idempotent. It does nothing for the same material captured twice: a
+    /// thread forwarded again, a webhook replayed by an upstream that minted a
+    /// fresh id. Those arrive as genuinely new events and, before this, ran
+    /// the model again and folded the same content in twice.
+    ///
+    /// `None` for a trigger built without the event body (a bare wire payload
+    /// carries no content to hash), which simply means no content dedup — the
+    /// event-id idempotency still applies.
+    pub content_hash: Option<String>,
 }
 
 impl Trigger {
@@ -127,8 +140,30 @@ impl Trigger {
             instance_page_id,
             lineage,
             workflow,
+            content_hash: Some(content_hash(event)),
         }
     }
+}
+
+/// Hash what the event says: skill, title, body.
+///
+/// Deliberately NOT the whole record. `event_id`, timestamps and provenance
+/// differ between two captures of the same thread — hashing them would make
+/// every event unique and the dedup inert, which is the state this replaces.
+#[must_use]
+pub fn content_hash(event: &Event) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    // Length-delimited so ("a", "bc") and ("ab", "c") cannot collide.
+    for field in [
+        event.label_skill.as_str(),
+        event.title.as_str(),
+        event.body.as_str(),
+    ] {
+        hasher.update(field.len().to_le_bytes());
+        hasher.update(field.as_bytes());
+    }
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 /// Read this hop's [`Lineage`] back out of a cascaded event's

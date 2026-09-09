@@ -260,6 +260,7 @@ mod tests {
             instance_page_id: Some("markdown/instances/decision-record/x.md".into()),
             lineage,
             workflow: None,
+            content_hash: None,
         }
     }
 

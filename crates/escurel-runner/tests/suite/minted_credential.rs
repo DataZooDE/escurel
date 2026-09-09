@@ -153,6 +153,13 @@ async fn the_runner_mints_its_own_bearer_and_the_gateway_accepts_it() {
     let issuer = gateway.issuer_url();
 
     let listen = format!("127.0.0.1:{}", free_port());
+    // Its OWN ledger. Without this the runner falls back to
+    // `./escurel-runner-ledger.sqlite` in the crate directory — one file
+    // shared by every test in the suite AND by every previous run of it. A
+    // row another test left behind is a row this one inherits: the content
+    // dedup saw its fixture already folded in and correctly declined to run
+    // it again, which is right behaviour reading wrong state.
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
     cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
@@ -163,6 +170,10 @@ async fn the_runner_mints_its_own_bearer_and_the_gateway_accepts_it() {
         .env("ESCUREL_RUNNER_AUTH_KID", kid)
         .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
         .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
         .env("ESCUREL_GEMINI_API_KEY", "test-key-not-a-real-credential")
         .env("ESCUREL_RUNNER_GEMINI_BASE_URL", &model_base)
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
@@ -250,6 +261,13 @@ async fn a_bearer_minted_with_the_wrong_key_is_refused() {
     };
 
     let listen = format!("127.0.0.1:{}", free_port());
+    // Its OWN ledger. Without this the runner falls back to
+    // `./escurel-runner-ledger.sqlite` in the crate directory — one file
+    // shared by every test in the suite AND by every previous run of it. A
+    // row another test left behind is a row this one inherits: the content
+    // dedup saw its fixture already folded in and correctly declined to run
+    // it again, which is right behaviour reading wrong state.
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
     cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
@@ -259,6 +277,10 @@ async fn a_bearer_minted_with_the_wrong_key_is_refused() {
         .env("ESCUREL_RUNNER_AUTH_KID", kid)
         .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &wrong_key)
         .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
         .env("ESCUREL_GEMINI_API_KEY", "test-key-not-a-real-credential")
         .env("ESCUREL_RUNNER_GEMINI_BASE_URL", &model_base)
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
@@ -332,6 +354,13 @@ async fn a_bearer_that_lapses_is_re_minted_by_the_running_loops() {
     let issuer = gateway.issuer_url();
 
     let listen = format!("127.0.0.1:{}", free_port());
+    // Its OWN ledger. Without this the runner falls back to
+    // `./escurel-runner-ledger.sqlite` in the crate directory — one file
+    // shared by every test in the suite AND by every previous run of it. A
+    // row another test left behind is a row this one inherits: the content
+    // dedup saw its fixture already folded in and correctly declined to run
+    // it again, which is right behaviour reading wrong state.
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
     cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
@@ -342,6 +371,10 @@ async fn a_bearer_that_lapses_is_re_minted_by_the_running_loops() {
         .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
         .env("ESCUREL_RUNNER_AUTH_TTL_SECS", TTL_SECS.to_string())
         .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
         .env("ESCUREL_GEMINI_API_KEY", "test-key-not-a-real-credential")
         .env("ESCUREL_RUNNER_GEMINI_BASE_URL", &model_base)
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");

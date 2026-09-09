@@ -207,6 +207,7 @@ mod tests {
             instance_page_id: None,
             lineage: Lineage::root(event_id),
             workflow: None,
+            content_hash: None,
         }
     }
 

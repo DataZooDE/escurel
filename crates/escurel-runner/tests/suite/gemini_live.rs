@@ -107,12 +107,23 @@ async fn real_gemini_folds_a_real_event_over_real_mcp() {
 
     let token = gateway.mint_token(TENANT, Role::Agent);
     let listen = format!("127.0.0.1:{}", free_port());
+    // Its OWN ledger. Without this the runner falls back to
+    // `./escurel-runner-ledger.sqlite` in the crate directory — one file
+    // shared by every test in the suite AND by every previous run of it. A
+    // row another test left behind is a row this one inherits: the content
+    // dedup saw its fixture already folded in and correctly declined to run
+    // it again, which is right behaviour reading wrong state.
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
     cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
         .env("ESCUREL_RUNNER_TENANT", TENANT)
         .env("ESCUREL_RUNNER_TOKEN", &token)
         .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
         .env("ESCUREL_GEMINI_API_KEY", api_key)
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
     if let Ok(model) = std::env::var("ESCUREL_RUNNER_GEMINI_MODEL") {

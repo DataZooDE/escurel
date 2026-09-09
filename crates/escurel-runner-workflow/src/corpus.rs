@@ -15,13 +15,26 @@
 //! frontmatter uses inline-flow YAML to sidestep block-indent pitfalls; the
 //! per-phase markdown sections are the instructions a harness reads.
 
+// **These plans declare no `harness:`, deliberately.**
+//
+// They used to say `harness: claude`, which was inert — the key was parsed and
+// propagated by nobody. The moment it was wired through, every step of every
+// shipped example routed at the real Claude CLI, and the suite spent 45s per
+// test waiting for a binary that is not there. A harness is a property of the
+// DEPLOYMENT (which CLIs are installed, which credentials exist), not of a
+// plan: `deep-research` is the same plan whether it runs on gemini in a
+// container or on claude at a desk. A corpus that pins one only runs where
+// that one is installed.
+//
+// The key still works, and a plan that genuinely needs a specific brain for a
+// specific phase can still say so.
+
 /// The `deep-research` workflow plan (`kind: workflow`).
 pub const DEEP_RESEARCH_PLAN: &str = "---\n\
 type: skill\n\
 id: deep-research\n\
 description: Fan-out web search, adversarially verify claims, synthesize a cited report. Invoke on an underspecified research question.\n\
 backend: {kind: workflow}\n\
-harness: claude\n\
 run_skill: workflow-run\n\
 phases: [\
 {id: scope, produces: research-angle, fan_out: 1}, \
@@ -171,7 +184,6 @@ type: skill\n\
 id: distill\n\
 description: Weave a new source's claims into the existing entity/concept pages they touch. Invoke on an ingested source.\n\
 backend: {kind: workflow}\n\
-harness: claude\n\
 run_skill: workflow-run\n\
 phases: [\
 {id: extract, produces: distill-claim, fan_out: 1}, \
@@ -272,7 +284,6 @@ type: skill\n\
 id: lint\n\
 description: Scheduled whole-corpus health pass — flag contradictions, stale claims, orphans, and missing cross-references as issues. Proposes, never rewrites.\n\
 backend: {kind: workflow}\n\
-harness: claude\n\
 run_skill: workflow-run\n\
 phases: [{id: scan, produces: issue, fan_out: 1}]\n\
 ---\n\
@@ -342,7 +353,6 @@ type: skill\n\
 id: curate\n\
 description: Regenerate the curated by-category index of the knowledge base. Generated then agent-curated; stays derivable.\n\
 backend: {kind: workflow}\n\
-harness: claude\n\
 run_skill: workflow-run\n\
 phases: [{id: curate, produces: index, fan_out: 1}]\n\
 ---\n\
@@ -413,7 +423,6 @@ type: skill\n\
 id: eval\n\
 description: Score how well the knowledge base answers a task set and, in the same run, weave the fix for each failure into the implicated document or skill. Re-run to confirm.\n\
 backend: {kind: workflow}\n\
-harness: claude\n\
 run_skill: workflow-run\n\
 phases: [\
 {id: score, produces: eval-result, fan_out: {over: eval-task}}, \

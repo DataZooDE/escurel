@@ -595,6 +595,24 @@ fn gate_and_enqueue(
             );
             matches!(outcome, EnqueueOutcome::Enqueued)
         }
+        // Worth a line of its own, at info: a duplicate is a MODEL CALL not
+        // made and a page not written twice, and it is the one drop that is
+        // about the content rather than about the delivery. It names the run
+        // that already did the work so "why did nothing happen?" is one
+        // lookup.
+        Ok(LedgerDecision::DuplicateContent(prior)) => {
+            tracing::info!(
+                target: "escurel_runner",
+                via,
+                tenant = %trigger.tenant,
+                event_id = %trigger.event_id,
+                instance = ?trigger.instance_page_id,
+                already_run = %prior,
+                "gate: identical content is already folded into this instance; not running again"
+            );
+            record_run_terminal(metrics, &trigger.tenant, "dead_letter");
+            false
+        }
         Ok(decision) => {
             tracing::debug!(
                 target: "escurel_runner",
@@ -694,6 +712,10 @@ async fn dlq_requeue(
                 instance_page_id: None,
                 lineage: escurel_runner_core::Lineage::root(event_id.clone()),
                 workflow: None,
+                // A requeue is an OPERATOR saying "run this again". Carrying a
+                // content hash here would let the content dedup refuse the one
+                // request that is explicitly a re-run.
+                content_hash: None,
             };
             // Evict from the in-memory seen-set FIRST. `enqueue` drops a
             // trigger whose event_id it has seen, so without this the
