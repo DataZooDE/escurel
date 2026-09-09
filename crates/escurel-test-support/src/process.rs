@@ -152,6 +152,14 @@ pub struct ConfigOverrides {
     /// since `state.lake` is a separate field the ingest/write-tool
     /// handlers read directly, not derived from the indexer.
     pub lake: Option<escurel_index::snapshot::LakeConfig>,
+    /// Baked DuckDB extensions to `LOAD` on the default indexer connection —
+    /// absolute `.duckdb_extension` paths, the harness equivalent of production
+    /// `ESCUREL_INDEX_EXTENSIONS`. When non-empty the default connection is
+    /// opened with `allow_unsigned_extensions` (locally-built extensions are
+    /// unsigned), so a fleet test can bake e.g. `anofox_inventory` and reach it
+    /// through a curator query page. Empty (default) ⇒ no extensions.
+    /// Ignored when `indexer` is `Some` (the test owns that connection).
+    pub index_extensions: Vec<String>,
 }
 
 impl std::fmt::Debug for ConfigOverrides {
@@ -177,6 +185,7 @@ impl std::fmt::Debug for ConfigOverrides {
             )
             .field("reader_mode", &self.reader_mode)
             .field("lake_overridden", &self.lake.is_some())
+            .field("index_extensions", &self.index_extensions)
             .finish()
     }
 }
@@ -303,7 +312,12 @@ impl EscurelProcess {
             } else {
                 let store_dir = TempDir::new().expect("tempdir for store");
                 let db_dir = TempDir::new().expect("tempdir for duckdb");
-                let (indexer, store) = build_indexer(&store_dir, &db_dir, &served_tenant);
+                let (indexer, store) = build_indexer(
+                    &store_dir,
+                    &db_dir,
+                    &served_tenant,
+                    &overrides.index_extensions,
+                );
                 // Match production: every served tenant ships the
                 // mandatory `escurel` meta-skill (locked decision 3).
                 // Done here rather than in the sync `build_indexer`
@@ -792,12 +806,24 @@ fn build_indexer(
     store_dir: &TempDir,
     db_dir: &TempDir,
     tenant: &str,
+    index_extensions: &[String],
 ) -> (Arc<Indexer>, Arc<dyn LaneStore>) {
     let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
     let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
-    let conn =
-        Connection::open(db_dir.path().join("escurel.duckdb")).expect("open per-spawn duckdb");
+    let db_path = db_dir.path().join("escurel.duckdb");
+    // Unsigned load must be permitted at OPEN time for a locally-built
+    // extension, so open with the allow-unsigned config whenever the test bakes
+    // one (mirrors production `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS`).
+    let conn = if index_extensions.is_empty() {
+        Connection::open(&db_path).expect("open per-spawn duckdb")
+    } else {
+        let config = duckdb::Config::default()
+            .allow_unsigned_extensions()
+            .expect("allow-unsigned config");
+        Connection::open_with_flags(&db_path, config).expect("open per-spawn duckdb (unsigned)")
+    };
     Migrator::up(&conn).expect("duckdb migrations");
+    Migrator::load_extension_paths(&conn, index_extensions).expect("load baked extensions");
     // The harness is single-tenant per spawn: the Indexer, the seeded fixtures,
     // and the minted tokens all share `tenant` (derived from the fixture's
     // `.tenant(...)` scope, or the "acme" default). The gateway enforces this
