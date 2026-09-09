@@ -842,7 +842,60 @@ fn echo_harness_path() -> String {
 /// one a container can run. Unknown selectors fall back to `echo` with a
 /// warning so a typo never silently disables dispatch.
 fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
-    match config.harness.as_str() {
+    match build_harness_named(config, &config.harness) {
+        Some(h) => h,
+        None => {
+            tracing::warn!(
+                target: "escurel_runner",
+                selector = %config.harness,
+                "unknown ESCUREL_RUNNER_HARNESS; falling back to echo"
+            );
+            Arc::new(EchoHarness::new(echo_harness_path()))
+        }
+    }
+}
+
+/// The harness a workflow step declared, or the runner's own when it declared
+/// none — the `harness:` key parsed at plan and phase level since the workflow
+/// spec landed and, until now, propagated by nobody.
+///
+/// **An unbuildable override falls back rather than failing the run.** A plan
+/// naming `claude` on a runner that has no `claude` is a corpus mistake, and
+/// dead-lettering every step of that workflow would be a strange way to say
+/// so. The default harness is a working one by construction — the process
+/// refused to start otherwise — so the step runs and the log names the plan
+/// that asked for something this deployment cannot give it.
+fn resolve_harness(
+    config: &RunnerConfig,
+    default: &Arc<dyn Harness>,
+    trigger: &Trigger,
+) -> Arc<dyn Harness> {
+    let declared = trigger
+        .workflow
+        .as_ref()
+        .map(|wf| wf.harness.as_str())
+        .filter(|h| !h.is_empty() && *h != default.name());
+    let Some(name) = declared else {
+        return Arc::clone(default);
+    };
+    match build_harness_named(config, name) {
+        Some(h) => h,
+        None => {
+            tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                declared = %name,
+                using = %default.name(),
+                "the workflow declares a harness this runner cannot build; using the default"
+            );
+            Arc::clone(default)
+        }
+    }
+}
+
+/// Build one adapter by name, or `None` when the name is unknown.
+fn build_harness_named(config: &RunnerConfig, name: &str) -> Option<Arc<dyn Harness>> {
+    let built: Arc<dyn Harness> = match name {
         "echo" => Arc::new(EchoHarness::new(echo_harness_path())),
         "claude" => Arc::new(
             ClaudeHarness::new(config.claude_bin.clone()).with_model(config.claude_model.clone()),
@@ -886,15 +939,9 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
                 std::process::exit(2);
             }
         },
-        other => {
-            tracing::warn!(
-                target: "escurel_runner",
-                selector = %other,
-                "unknown ESCUREL_RUNNER_HARNESS; falling back to echo"
-            );
-            Arc::new(EchoHarness::new(echo_harness_path()))
-        }
-    }
+        _ => return None,
+    };
+    Some(built)
 }
 
 /// A gateway client built with a CURRENT bearer.
@@ -1044,6 +1091,11 @@ async fn dispatch_loop(
         // Reconcile with retry: package + run the harness + read back over
         // `/mcp` to CONFIRM the effect, retrying transient failures with
         // backoff up to the attempts cap (#155).
+        // The harness for THIS trigger, resolved once: a workflow step may
+        // declare its own (`harness:` on the phase, else on the plan) and the
+        // runner's configured one answers for everything else. Outside the
+        // retry closure because a retry is the same step, not a new choice.
+        let step_harness = resolve_harness(&config, &harness, &trigger);
         let report = run_with_retry(&config, |attempt| {
             // BOUNDED. The gateway client times out one request at 60s, but a
             // run is not one request — a dozen model turns, each with tool
@@ -1055,12 +1107,15 @@ async fn dispatch_loop(
             // A timeout is a TRANSIENT failure: the retry policy already
             // knows what to do with one, and a stalled attempt is exactly
             // what a retry is for.
+            // The harness for THIS trigger: a workflow step may declare its
+            // own, and the runner's configured one answers for everything
+            // else.
             let fut = attempt_run(
                 &trigger,
                 &client,
                 &config,
                 &tokens,
-                harness.as_ref(),
+                step_harness.as_ref(),
                 attempt,
             );
             let bound = config.run_timeout;

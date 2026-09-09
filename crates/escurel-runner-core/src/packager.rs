@@ -858,6 +858,7 @@ mod tests {
             barrier: "verify".into(),
             over: "markdown/instances/claims/vfy-extract-abc.md".into(),
             vote_index: Some(2),
+            harness: String::new(),
         };
         let trigger = |wf: Option<escurel_types::WorkflowProvenance>| Trigger {
             tenant: "acme".into(),
