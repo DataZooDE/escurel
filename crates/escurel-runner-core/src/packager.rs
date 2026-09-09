@@ -761,6 +761,7 @@ mod tests {
             instance_page_id: None,
             lineage: crate::Lineage::root("EVT1"),
             workflow: None,
+            content_hash: None,
         };
         let routed = Event {
             event_id: "EVT1".into(),
@@ -858,6 +859,7 @@ mod tests {
             barrier: "verify".into(),
             over: "markdown/instances/claims/vfy-extract-abc.md".into(),
             vote_index: Some(2),
+            harness: String::new(),
         };
         let trigger = |wf: Option<escurel_types::WorkflowProvenance>| Trigger {
             tenant: "acme".into(),
@@ -866,6 +868,7 @@ mod tests {
             instance_page_id: Some("markdown/instances/verify-vote/vfy-verify-abc.md".into()),
             lineage: crate::Lineage::root("EVT1"),
             workflow: wf,
+            content_hash: None,
         };
 
         let vote = build_instructions(
@@ -905,6 +908,7 @@ mod tests {
             instance_page_id: Some(page.to_owned()),
             lineage: crate::Lineage::root("EVT1"),
             workflow: None,
+            content_hash: None,
         };
         let assigned = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Auto);
         assert!(
@@ -980,6 +984,7 @@ mod tests {
             instance_page_id: None,
             lineage: crate::Lineage::root("EVT1"),
             workflow: None,
+            content_hash: None,
         };
         let event = Event {
             event_id: "EVT1".into(),
@@ -1013,6 +1018,7 @@ mod tests {
             instance_page_id: None,
             lineage: crate::Lineage::root("EVT1"),
             workflow: None,
+            content_hash: None,
         };
         let event = Event {
             event_id: "EVT1".into(),
@@ -1056,6 +1062,7 @@ mod tests {
             instance_page_id: None,
             lineage: crate::Lineage::root("EVT1"),
             workflow: None,
+            content_hash: None,
         };
         let input = build_input_for_new_instance(&trigger, None);
         assert!(input.contains("create a new"));

@@ -50,6 +50,10 @@ pub struct StepIntent {
     /// so the event is pre-flagged onto — and reconciliation confirms on — the
     /// durable target rather than a fresh run-scoped instance.
     pub target_page: Option<String>,
+    /// The harness this step runs on: the phase's `harness:` if it declares
+    /// one, else the plan's. `None` leaves the choice to the runner's own
+    /// configuration, which is the ordinary case.
+    pub harness: Option<String>,
 }
 
 impl StepIntent {
@@ -88,6 +92,7 @@ impl StepIntent {
             barrier: self.barrier.clone().unwrap_or_default(),
             over: self.over.clone().unwrap_or_default(),
             vote_index: self.vote_index,
+            harness: self.harness.clone().unwrap_or_default(),
         }
     }
 }
@@ -107,6 +112,7 @@ mod tests {
             over: Some("[[claim::c12]]".to_owned()),
             vote_index: Some(0),
             target_page: None,
+            harness: None,
         }
     }
 

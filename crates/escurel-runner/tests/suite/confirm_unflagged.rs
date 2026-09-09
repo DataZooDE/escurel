@@ -113,6 +113,7 @@ async fn unflagged_trigger_resolves_the_instance_the_agent_assigned() {
         instance_page_id: None, // <- the whole point
         lineage: Lineage::root(&event_id),
         workflow: None,
+        content_hash: None,
     };
 
     let effect = confirm_effect(&client, &trigger)
@@ -174,6 +175,7 @@ async fn unassigned_event_is_not_a_confirmed_effect() {
         instance_page_id: None,
         lineage: Lineage::root(&event_id),
         workflow: None,
+        content_hash: None,
     };
 
     assert!(

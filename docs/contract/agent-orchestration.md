@@ -52,10 +52,10 @@ an instance's state is the *projection of its event sequence, mediated by
 the skills* that describe how to process each event. The M7 surface ships
 the plumbing (`events`/inbox table, `capture_event` / `list_inbox` /
 `list_events` / `assign_event`, an opt-in outbound capture webhook), but the
-*projection* is deliberately left to an external processor, and the
-reference one ([`escurel-demo-agent`](../../crates/escurel-demo-agent/))
-only folds events via `assign_event` — it never materialises new state, and
-there is no cascade. The locked spec principle is **the gateway stays
+*projection* is deliberately left to an external processor —
+[`escurel-runner`](../../crates/escurel-runner/), which materialises
+instance state, honours each skill's `autonomy:` and cascades under a
+durable ledger. The locked spec principle is **the gateway stays
 automation-free**; "event-derived state projection" is explicitly deferred
 to v1.5 (roadmap §"Notes on deferred items").
 
@@ -226,7 +226,10 @@ in-corpus, not hardcoded.
   root_event_id, parent_run_id, produced_instance, produced_version,
   attempts, created_at, finished_at, reason`.
 - **Controls at the dispatch gate:** idempotency (unique `(tenant,
-  trigger_event_id)`); dedup (in-flight + `(instance, content_hash)`);
+  trigger_event_id)`); dedup (in-flight + `(instance, content_hash)`, where
+  the hash covers what the event SAYS — `label_skill`, title, body — and
+  suppresses only against a run that reached `processed`, so a failed twin
+  still retries);
   depth/budget (`ESCUREL_RUNNER_MAX_DEPTH`, per-root run budget →
   dead-letter `depth_exceeded`); cycle prevention (candidate instance
   already in `lineage_path` → stop `cycle`); per-tenant rate/concurrency
@@ -365,7 +368,6 @@ first green) → 8/9/10 in parallel (the three real adapters) → 11→12→13
 
 ## Critical files (for the implementer)
 
-- [`../../crates/escurel-demo-agent/src/lib.rs`](../../crates/escurel-demo-agent/src/lib.rs)
   — the `McpClient` + `process_inbox_once` pattern the runner core extends
   (fold-only → harness materialisation).
 - [`../../crates/escurel-server/src/webhook.rs`](../../crates/escurel-server/src/webhook.rs)

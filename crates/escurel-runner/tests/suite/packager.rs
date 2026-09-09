@@ -125,6 +125,7 @@ async fn packages_skill_body_as_instructions_with_event_and_instance() {
         instance_page_id: Some(instance_page_id.clone()),
         lineage: Lineage::root(event_id.clone()),
         workflow: None,
+        content_hash: None,
     };
 
     let tokens = escurel_runner_core::TokenSource::Static(cfg.token.clone().expect("token"));
@@ -260,6 +261,7 @@ async fn workflow_step_trigger_is_packaged_without_the_event_surface() {
             step: "STEP-EVT".to_owned(),
             ..Default::default()
         }),
+        content_hash: None,
     };
 
     let tokens = escurel_runner_core::TokenSource::Static(cfg.token.clone().expect("token"));

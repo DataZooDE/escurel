@@ -77,6 +77,9 @@ pub async fn recover_pending(ledger: &Arc<Ledger>, client: &Client) -> RecoveryR
             instance_page_id: rec.instance_page_id.clone(),
             lineage: crate::Lineage::root(rec.event_id.clone()),
             workflow: None,
+            // Recovery only READS this run back; it never claims a new one, so
+            // there is nothing to dedup against.
+            content_hash: None,
         };
         match confirm_effect(client, &trigger).await {
             Ok(effect) => {

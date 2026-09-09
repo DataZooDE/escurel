@@ -128,12 +128,23 @@ async fn claude_harness_folds_event_into_instance_end_to_end() {
     let token = gateway.mint_token(TENANT, Role::Agent);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
+    // Its OWN ledger. Without this the runner falls back to
+    // `./escurel-runner-ledger.sqlite` in the crate directory — one file
+    // shared by every test in the suite AND by every previous run of it. A
+    // row another test left behind is a row this one inherits: the content
+    // dedup saw its fixture already folded in and correctly declined to run
+    // it again, which is right behaviour reading wrong state.
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
     cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
         .env("ESCUREL_RUNNER_TENANT", TENANT)
         .env("ESCUREL_RUNNER_TOKEN", &token)
         .env("ESCUREL_RUNNER_HARNESS", "claude")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "1s");
     // Honour an explicit model override if the operator set one.
     if let Ok(model) = std::env::var("ESCUREL_RUNNER_CLAUDE_MODEL") {

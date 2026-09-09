@@ -320,6 +320,11 @@ fn intent(
         over,
         vote_index,
         target_page,
+        // The phase wins over the plan: a plan says "run this workflow on
+        // gemini" and one phase says "this step needs claude". Parsed at both
+        // levels since the spec landed and propagated by nobody until now —
+        // a config key that silently did nothing.
+        harness: phase.harness.clone().or_else(|| spec.harness.clone()),
     }
 }
 
@@ -410,6 +415,53 @@ mod tests {
             emitted: emitted.iter().map(|s| (*s).to_owned()).collect(),
             ..Default::default()
         }
+    }
+
+    /// The `harness:` key reaches the step. It was parsed at plan and phase
+    /// level from the day the spec landed and read by nothing — a declaration
+    /// that silently did nothing, which is worse than an absent one.
+    #[test]
+    fn a_phase_harness_wins_over_the_plans_and_both_reach_the_step() {
+        let spec = WorkflowSkill::parse(&json!({
+            "id": "deep-research",
+            "harness": "gemini",
+            "phases": [
+                { "id": "scope", "produces": "research-angle", "fan_out": 1 },
+                { "id": "synthesize", "produces": "research-report", "fan_out": 1,
+                  "harness": "claude" }
+            ]
+        }))
+        .unwrap();
+
+        let first = reduce(&spec, &state_with(&[], &[]));
+        assert_eq!(
+            first[0].harness.as_deref(),
+            Some("gemini"),
+            "a phase that declares none inherits the plan's"
+        );
+
+        let scope_step = first[0].clone();
+        let second = reduce(
+            &spec,
+            &state_with(
+                &[("research-angle", &[&scope_step.instance_page_id()])],
+                &[&scope_step.event_id()],
+            ),
+        );
+        assert_eq!(
+            second[0].phase, "synthesize",
+            "the run advanced: {second:?}"
+        );
+        assert_eq!(
+            second[0].harness.as_deref(),
+            Some("claude"),
+            "the phase overrides the plan"
+        );
+
+        // CONTROL: a plan declaring nothing leaves the choice to the runner's
+        // own configuration, rather than pinning some default into the corpus.
+        let bare = linear_spec();
+        assert_eq!(reduce(&bare, &state_with(&[], &[]))[0].harness, None);
     }
 
     #[test]

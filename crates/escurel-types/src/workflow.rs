@@ -45,6 +45,15 @@ pub struct WorkflowProvenance {
     /// one vote. `None` for any non-barrier step.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vote_index: Option<u32>,
+    /// The harness this step declared (`harness:` on the phase, else on the
+    /// plan). Empty when the plan declares none, which means the runner's own
+    /// `ESCUREL_RUNNER_HARNESS` decides — the ordinary case.
+    ///
+    /// Carried on the EVENT rather than looked up at dispatch because the plan
+    /// that chose it is read once, when the step is emitted: a plan edited
+    /// mid-run must not re-route steps already in flight.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub harness: String,
 }
 
 impl WorkflowProvenance {
@@ -75,6 +84,7 @@ mod tests {
             barrier: "verify".to_owned(),
             over: "[[claim::c12]]".to_owned(),
             vote_index: Some(2),
+            harness: "claude".to_owned(),
         };
         let provenance = json!({ "workflow": wf });
         assert_eq!(
@@ -125,6 +135,7 @@ mod tests {
             barrier: "verify".to_owned(),
             over: "markdown/instances/claims/r1-extract-abc.md".to_owned(),
             vote_index: Some(1),
+            harness: String::new(),
         };
         let v = serde_json::to_value(&wf).unwrap();
         assert_eq!(v.get("vote_index").and_then(|x| x.as_u64()), Some(1));

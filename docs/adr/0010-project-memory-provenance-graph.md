@@ -106,7 +106,7 @@ only genuinely new engineering.
 5. **escurel stays automation-free (locked contract preserved).** escurel
    *serves* the provenance/drift/abandoned-path read queries — the raw
    materials. Synthesizing "the most promising next steps" is an **external
-   agent's** job (the `escurel-demo-agent` pattern), fed by these queries. There
+   agent's** job (the `escurel-runner` pattern), fed by these queries. There
    is no server-side rules engine; state is recorded, not derived.
 
 ## Considered alternatives

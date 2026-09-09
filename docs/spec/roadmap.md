@@ -157,10 +157,10 @@ ships with its spec/contract/ADR update):
   It honours each skill's `autonomy:`: anything but `auto` produces a
   **draft** for a human to promote, and a draft does not cascade.
 
-  `escurel-demo-agent` is the earlier reference projection, kept for
-  illustration: it only routes events via `assign_event`, materialises no
-  new state, and has no cascade. Read `escurel-runner` for what actually
-  runs.
+  The earlier reference projection (`escurel-demo-agent`) is gone: it only
+  routed events via `assign_event`, materialised no new state and had no
+  cascade, so it described a shape the runner had already replaced. Read
+  `escurel-runner` for what runs.
 
 The reference consumer is the `escurel-explore` event/instance workspace;
 the processor is the `escurel-runner` crate.
