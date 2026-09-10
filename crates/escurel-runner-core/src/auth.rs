@@ -153,6 +153,39 @@ impl TokenSource {
             } => Ok(Some(signer.mint_scoped(subject, groups, *ttl_secs)?)),
         }
     }
+
+    /// The subject this source authenticates AS — the identity the gateway
+    /// stamps as `provenance.captured_by` on events this runner captures. The
+    /// runner uses it to recognise its OWN emitted events (whose lineage it may
+    /// trust for loop control) versus a caller's (whose forged lineage it must
+    /// not — the runner-lineage-forge guard). For a minted source it is the
+    /// configured subject; for a static bearer it is the JWT `sub`, read
+    /// WITHOUT verification — we are only recognising our own token, not
+    /// trusting a third party. `None` when a static token has no readable `sub`.
+    #[must_use]
+    pub fn subject(&self) -> Option<String> {
+        match self {
+            Self::Minted { subject, .. } => Some(subject.clone()),
+            Self::Static(token) => jwt_sub(token),
+        }
+    }
+}
+
+/// Read the `sub` claim from a JWT WITHOUT verifying the signature. Used only to
+/// learn this runner's OWN subject from its configured static bearer — never to
+/// authenticate a third party.
+fn jwt_sub(token: &str) -> Option<String> {
+    let payload_b64 = token.split('.').nth(1)?;
+    // JWT segments are base64url without padding; be tolerant of either.
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64.trim_end_matches('='))
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims
+        .get("sub")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 /// The RSA signing identity, built once at boot.

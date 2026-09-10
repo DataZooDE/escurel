@@ -104,6 +104,11 @@ struct AppState {
     /// name another tenant. `None` only on the dev/legacy path with no tenant
     /// configured, where the body value is accepted as before.
     tenant: Option<Arc<str>>,
+    /// The runner's own subject — the identity a runner-emitted event is
+    /// captured as. An inbound `/trigger` event's cascade lineage is trusted for
+    /// loop control only when it was captured by this subject (runner-lineage-
+    /// forge fix); `None` (static token with no readable `sub`) → trust-all.
+    lineage_trust_subject: Option<Arc<str>>,
 }
 
 #[tokio::main]
@@ -326,6 +331,7 @@ async fn main() -> anyhow::Result<()> {
         inflight: Arc::clone(&inflight),
         draining: Arc::clone(&draining),
         tenant: config.tenant.clone().map(Arc::from),
+        lineage_trust_subject: tokens.as_ref().and_then(|t| t.subject()).map(Arc::from),
     };
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -465,7 +471,10 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         }
     };
 
-    let trigger = Trigger::from_event(&event, tenant);
+    let trigger = match state.lineage_trust_subject.as_deref() {
+        Some(subj) => Trigger::from_event_gated(&event, tenant, subj),
+        None => Trigger::from_event(&event, tenant),
+    };
     // Loop-control gate (lifecycle step 4): the durable ledger is the
     // idempotency authority; the in-memory seen-set is a cheap fast-path in
     // front of it. Either way we acknowledge 202 immediately so the
@@ -1906,6 +1915,12 @@ async fn poll_loop(
         "inbox poller started"
     );
 
+    // The runner's own identity: the cascade lineage on an inbox event is
+    // trusted for loop control only when the event was captured by THIS subject
+    // (a runner-emitted hop), so a caller cannot forge a shallow depth/root/path
+    // (runner-lineage-forge fix). `None` (a static token with no readable `sub`)
+    // falls back to trust-all — the pre-fix behaviour.
+    let self_subject = tokens.subject();
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
@@ -1927,7 +1942,10 @@ async fn poll_loop(
         match client.list_inbox(ListInboxRequest::default()).await {
             Ok(resp) => {
                 for event in &resp.events {
-                    let trigger = Trigger::from_event(event, tenant.clone());
+                    let trigger = match self_subject.as_deref() {
+                        Some(subj) => Trigger::from_event_gated(event, tenant.clone(), subj),
+                        None => Trigger::from_event(event, tenant.clone()),
+                    };
                     // Route through the same loop-control + quota gate the
                     // webhook uses: the durable ledger decides create-vs-drop,
                     // the depth/cycle/budget controls admit-or-dead-letter, and
