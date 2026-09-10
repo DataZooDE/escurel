@@ -44,7 +44,7 @@ use escurel_runner_core::{
     classify_client_error, confirm_draft, confirm_effect, drive_workflow, emit_cascade, package,
     recover_pending, recover_workflows, run_with_retry,
 };
-use escurel_runner_core::{DeadLetterReason, RunId};
+use escurel_runner_core::{DeadLetterReason, RunId, StepTerminal};
 use escurel_runner_harness::{
     AgyHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness,
 };
@@ -656,6 +656,82 @@ fn record_run_terminal(metrics: &Metrics, tenant: &str, status: &str) {
     metrics.inc_runner_run(tenant, status);
 }
 
+/// Drive the workflow reducer on a run's terminal transition, dead-lettering
+/// the run if the reducer pass errors (async-ops Phase 0.3, Bug B).
+///
+/// Called on EVERY terminal transition of a `trigger.workflow` run — not just a
+/// confirmed non-held write — so a converged no-op, a held draft, or a failed
+/// step advances (or terminates) the parent operation instead of wedging it at
+/// `running`. On an `Advanced`/`Held` terminal the run's own effect already
+/// landed and was recorded `processed`; if the reducer then fails, the run is
+/// dead-lettered (`ReducerFailed`) so the stall surfaces to the DLQ rather than
+/// masquerading as a clean success. On a `Failed` terminal the run is already
+/// terminal, so a reducer error is only logged.
+#[allow(clippy::too_many_arguments)]
+async fn drive_workflow_or_deadletter(
+    client: &escurel_client::Client,
+    ledger: &Ledger,
+    metrics: &Metrics,
+    trigger: &Trigger,
+    run_id: &escurel_runner_core::RunId,
+    effect: Option<&escurel_runner_core::ConfirmedEffect>,
+    terminal: StepTerminal,
+    max_runs_per_root: u64,
+) {
+    match drive_workflow(
+        client,
+        trigger,
+        &run_id.0,
+        effect,
+        terminal,
+        max_runs_per_root,
+    )
+    .await
+    {
+        Ok(outcome) => tracing::info!(
+            target: "escurel_runner",
+            event_id = %trigger.event_id,
+            run_id = %run_id,
+            terminal = ?terminal,
+            emitted = outcome.emitted.len(),
+            "workflow: reducer drove operation on terminal transition"
+        ),
+        Err(e) => {
+            let progressed = matches!(terminal, StepTerminal::Advanced | StepTerminal::Held);
+            if progressed {
+                if let Err(dl) = ledger.dead_letter(run_id, DeadLetterReason::ReducerFailed) {
+                    tracing::error!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        error = %dl,
+                        "workflow: could not dead-letter run after a reducer failure"
+                    );
+                } else {
+                    record_run_terminal(metrics, &trigger.tenant, "dead_letter");
+                }
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    run_id = %run_id,
+                    error = %e,
+                    "workflow: reducer pass failed; run dead-lettered (Bug B)"
+                );
+            } else {
+                // A `Failed` terminal is already terminal in the ledger; the
+                // reducer error is at most a missed best-effort status write.
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    run_id = %run_id,
+                    error = %e,
+                    "workflow: reducer status pass on a failed run errored (run already terminal)"
+                );
+            }
+        }
+    }
+}
+
 /// Operator DLQ list (#158): every dead-lettered run with its reason +
 /// originating event/instance. An ops/debug surface (like `/debug/*`), not
 /// part of the gateway-facing contract.
@@ -1237,6 +1313,23 @@ async fn dispatch_loop(
                         draft_sha256 = %effect.version,
                         "dispatch: run produced a DRAFT awaiting a human; no cascade"
                     );
+                    // A held draft in a WORKFLOW step pauses the operation for
+                    // human approval (async-ops Phase 0.3): drive the reducer
+                    // with a `Held` terminal so it records `awaiting_human` and
+                    // does not advance the plan past the unapproved draft.
+                    if trigger.workflow.is_some() {
+                        drive_workflow_or_deadletter(
+                            &client,
+                            &ledger,
+                            &metrics,
+                            &trigger,
+                            &run_id,
+                            None,
+                            StepTerminal::Held,
+                            config.max_runs_per_root,
+                        )
+                        .await;
+                    }
                     continue;
                 }
                 // Dynamic workflows: a confirmed write whose trigger carries a
@@ -1246,29 +1339,17 @@ async fn dispatch_loop(
                 // step events (each a §3.6-idempotent, lineage-tagged
                 // `capture_event`), guarded by the same `admit` controls.
                 if trigger.workflow.is_some() {
-                    match drive_workflow(
+                    drive_workflow_or_deadletter(
                         &client,
+                        &ledger,
+                        &metrics,
                         &trigger,
-                        &run_id.0,
-                        effect,
+                        &run_id,
+                        Some(effect),
+                        StepTerminal::Advanced,
                         config.max_runs_per_root,
                     )
-                    .await
-                    {
-                        Ok(outcome) => tracing::info!(
-                            target: "escurel_runner",
-                            event_id = %trigger.event_id,
-                            run_id = %run_id,
-                            emitted = outcome.emitted.len(),
-                            "workflow: reducer emitted next-step events"
-                        ),
-                        Err(e) => tracing::warn!(
-                            target: "escurel_runner",
-                            event_id = %trigger.event_id,
-                            error = %e,
-                            "workflow: reducer pass failed (run already recorded processed)"
-                        ),
-                    }
+                    .await;
                     continue;
                 }
                 // The "change → event" bridge (#156): a CONFIRMED successful
@@ -1305,6 +1386,31 @@ async fn dispatch_loop(
                 }
             }
             (None, Ok(())) => {
+                // Dynamic workflows (async-ops Phase 0.3, Bug A): a non-success
+                // terminal must still advance or terminate the parent operation
+                // — previously only a confirmed write drove the reducer, so
+                // these wedged the operation at `running` forever. A converged
+                // no-op advances the plan; a real failure is resolved by the
+                // failed phase's authored `on_exhausted` policy (→ `failed` or
+                // `awaiting_human`). Additive to the metrics/logging below.
+                if trigger.workflow.is_some() {
+                    let terminal = if report.converged_no_op {
+                        StepTerminal::Advanced
+                    } else {
+                        StepTerminal::Failed
+                    };
+                    drive_workflow_or_deadletter(
+                        &client,
+                        &ledger,
+                        &metrics,
+                        &trigger,
+                        &run_id,
+                        None,
+                        terminal,
+                        config.max_runs_per_root,
+                    )
+                    .await;
+                }
                 // Not confirmed, not converged: a dead-letter (retries/bad
                 // output, already metered above) or a retriable `failed`.
                 match report.failure {

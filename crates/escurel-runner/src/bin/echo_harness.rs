@@ -308,6 +308,22 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    // Test-only failure injection (async-ops Phase 0.3 DoD): when
+    // `ESCUREL_ECHO_FAIL_SKILL` matches this event's `label_skill`, fail
+    // deterministically. The run then exhausts its retries and dead-letters —
+    // the terminal a failing workflow step must propagate to its parent
+    // operation. Off unless the env var is set, so production is unaffected.
+    if let Ok(fail_skill) = std::env::var("ESCUREL_ECHO_FAIL_SKILL") {
+        let label = event
+            .get("label_skill")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !fail_skill.is_empty() && label == fail_skill {
+            return Err(format!(
+                "echo: injected failure for label_skill `{label}` (ESCUREL_ECHO_FAIL_SKILL)"
+            ));
+        }
+    }
     // A workflow step carries a `provenance.workflow` block. For those, the
     // harness stamps `source_event: <event_id>` on the instance it writes — the
     // freshness/provenance field (compile-first-wiki G3) and, for a durable

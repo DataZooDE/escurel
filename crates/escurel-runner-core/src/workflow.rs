@@ -27,8 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use escurel_client::Client;
 use escurel_runner_workflow::{
-    BudgetExceeded, FanOut, ProducedInstance, RunState, StepIntent, Vote, WorkflowSkill, WriteMode,
-    check_budget, is_complete, key, reduce,
+    BudgetExceeded, Fallback, FanOut, OutcomePolicy, ProducedInstance, RunState, StepIntent, Vote,
+    WorkflowSkill, WriteMode, check_budget, is_complete, key, reduce,
 };
 use escurel_types::{
     AssignEventRequest, CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest,
@@ -91,15 +91,48 @@ fn vote_from_instance(inst: &InstanceInfo) -> Option<Vote> {
     })
 }
 
-/// Run one reducer pass for the workflow the confirmed `trigger` belongs to,
-/// emitting the next batch of step events. Returns an empty outcome when the
-/// run has no more steps (the plan is complete) or the labelled skill is not
-/// a workflow plan.
+/// How the step whose terminal transition is driving this reducer pass ended
+/// (async-ops Phase 0.3). The pure reducer plans from the run's produced
+/// instances alone; this tells the *driver* whether the terminating step made
+/// progress or failed, so a failure can be turned into the operation's terminal
+/// status per the failed phase's authored [`OutcomePolicy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepTerminal {
+    /// A confirmed write or a converged no-op — the step made progress;
+    /// advance the plan.
+    Advanced,
+    /// The step produced a **held draft** awaiting human approval; the plan
+    /// must not advance past it — the operation pauses at `awaiting_human`.
+    Held,
+    /// The step failed terminally (retries exhausted, bad output, or a
+    /// permanent failure). The failed phase's `on_exhausted` policy decides
+    /// the operation's fate.
+    Failed,
+}
+
+/// Run one reducer pass for the workflow the `trigger` belongs to on a terminal
+/// ledger transition (async-ops Phase 0.3 — Bug A: previously the reducer ran
+/// only on a confirmed, non-held write, so a converged no-op, a held draft, or
+/// a failed step left the parent operation wedged at `running` forever).
+///
+/// - [`StepTerminal::Advanced`]: build state, emit the next batch, record
+///   `running`/`succeeded`. `effect` is `Some` for a confirmed write (the
+///   emitted steps' provenance extends its instance path) and `None` for a
+///   converged/held terminal.
+/// - [`StepTerminal::Failed`]: the failed phase's `on_exhausted` decides —
+///   `Stop` ⇒ operation `failed`; `AskHuman` ⇒ `awaiting_human`; `Skip` is not
+///   yet honoured (it needs the reducer to advance past a dead-lettered phase,
+///   Phase 0.3b) so it **fails closed** as `failed` rather than silently
+///   dropping the step's output.
+///
+/// Returns an empty outcome when the run has no more steps (complete) or the
+/// labelled skill is not a workflow plan.
 pub async fn drive_workflow(
     client: &Client,
     trigger: &Trigger,
     parent_run_id: &str,
-    effect: &ConfirmedEffect,
+    effect: Option<&ConfirmedEffect>,
+    terminal: StepTerminal,
     max_runs_per_root: u64,
 ) -> Result<WorkflowDriveOutcome, WorkflowDriveError> {
     let Some(wf) = &trigger.workflow else {
@@ -117,6 +150,42 @@ pub async fn drive_workflow(
     let Some(spec) = WorkflowSkill::parse(&expanded.frontmatter) else {
         return Ok(WorkflowDriveOutcome::default());
     };
+
+    // A held draft pauses the operation for human approval; the plan must not
+    // advance past it, so record `awaiting_human` and emit nothing.
+    if terminal == StepTerminal::Held {
+        record_status_best_effort(client, &wf.run, "awaiting_human").await;
+        return Ok(WorkflowDriveOutcome::default());
+    }
+
+    // A terminal FAILURE is resolved from the failed phase's authored policy
+    // BEFORE any emit — a Stop/AskHuman step must not re-emit itself into a
+    // retry loop. `is_complete` guards the rare race where the failing step's
+    // output nonetheless landed and every phase is already done.
+    if terminal == StepTerminal::Failed {
+        let state = build_run_state(client, wf, &spec).await?;
+        if is_complete(&spec, &state) {
+            record_status_best_effort(client, &wf.run, "succeeded").await;
+            return Ok(WorkflowDriveOutcome::default());
+        }
+        let policy = phase_outcome(&spec, &wf.phase);
+        let status = match policy.on_exhausted {
+            Fallback::AskHuman => "awaiting_human",
+            // Skip is not yet honoured (Phase 0.3b); fail closed rather than
+            // silently advance past a dropped step.
+            Fallback::Stop | Fallback::Skip => "failed",
+        };
+        if policy.on_exhausted == Fallback::Skip {
+            tracing::warn!(
+                target: "escurel_runner",
+                operation = %wf.run,
+                phase = %wf.phase,
+                "workflow: authored `skip` fallback not yet honoured (Phase 0.3b); failing closed"
+            );
+        }
+        record_status_best_effort(client, &wf.run, status).await;
+        return Ok(WorkflowDriveOutcome::default());
+    }
 
     // Reserve the plan's projected fan-out against the budget BEFORE emitting
     // anything (`§7`). Checked every pass (the projection is constant), but it
@@ -141,19 +210,35 @@ pub async fn drive_workflow(
     } else {
         "running"
     };
-    // Best-effort (F6): the status record is an observability side-channel for
-    // `get_operation`, not the control path. A gateway hiccup writing it must
-    // NOT dead-letter a run that actually made progress — log and carry on.
-    if let Err(e) = record_status(client, &wf.run, status).await {
+    record_status_best_effort(client, &wf.run, status).await;
+    Ok(WorkflowDriveOutcome { emitted })
+}
+
+/// The [`OutcomePolicy`] of the plan phase named `phase_id`; the default
+/// (`retries: 0, on_exhausted: Stop`) when the id is not a plan phase (e.g. the
+/// synthetic `invoke`/`recover` phases) — a conservative fail-closed default.
+fn phase_outcome(spec: &WorkflowSkill, phase_id: &str) -> OutcomePolicy {
+    spec.phases
+        .iter()
+        .find(|p| p.id == phase_id)
+        .map(|p| p.outcome)
+        .unwrap_or_default()
+}
+
+/// Record the operation status, best-effort (F6): the status record is an
+/// observability side-channel for `get_operation`, not the control path. A
+/// gateway hiccup writing it must not derail a run that made progress — log and
+/// carry on.
+async fn record_status_best_effort(client: &Client, operation: &str, status: &str) {
+    if let Err(e) = record_status(client, operation, status).await {
         tracing::warn!(
             target: "escurel_runner",
-            operation = %wf.run,
+            operation = %operation,
             status,
             error = %e,
             "workflow: recording operation status failed (best-effort); run unaffected"
         );
     }
-    Ok(WorkflowDriveOutcome { emitted })
 }
 
 /// Record the operation's status as a **processed, assigned** event on the run
@@ -266,14 +351,26 @@ pub async fn recover_workflows(
         };
         check_budget(&spec, max_runs_per_root)?;
         let state = build_run_state(client, &wf, &spec).await?;
+        // F7: re-establish the operation status on recovery — a run that
+        // completed (or advanced) before a crash may never have recorded it.
+        // A complete run records `succeeded`; a run with more steps `running`.
+        // (A terminal `failed` is only known from the failing step's own
+        // transition, not derivable from the run board here, so recovery never
+        // overwrites a real terminal with `running`: it emits `running` only
+        // when there is genuinely more to do.)
+        if is_complete(&spec, &state) {
+            record_status_best_effort(client, &wf.run, "succeeded").await;
+            continue; // run already complete — nothing to re-emit
+        }
         let intents = reduce(&spec, &state);
         if intents.is_empty() {
-            continue; // run already complete
+            continue; // no steps to emit this pass (e.g. a barrier awaiting votes)
         }
         // Recovery has no parent trigger; each re-emitted step is its own
         // root at depth 0 (a fresh lineage), which `admit` treats like any
         // webhook-origin event. §3.6 keys keep the re-emit idempotent.
         emit_intents(client, &intents, |intent| root_provenance(&wf, intent)).await?;
+        record_status_best_effort(client, &wf.run, "running").await;
         resumed += 1;
     }
     Ok(resumed)
@@ -440,7 +537,7 @@ fn root_provenance(wf: &WorkflowProvenance, intent: &StepIntent) -> serde_json::
 fn build_step_provenance(
     parent_trigger: &Trigger,
     parent_run_id: &str,
-    effect: &ConfirmedEffect,
+    effect: Option<&ConfirmedEffect>,
     intent: &StepIntent,
 ) -> serde_json::Value {
     let parent = &parent_trigger.lineage;
@@ -449,8 +546,12 @@ fn build_step_provenance(
     if lineage_path.last().map(String::as_str) != Some(parent_trigger.event_id.as_str()) {
         lineage_path.push(parent_trigger.event_id.clone());
     }
+    // A confirmed write extends the instance path with the page it produced; a
+    // converged/held terminal has no such page, so the path is inherited as-is.
     let mut instance_path = parent.instance_path.clone();
-    if instance_path.last() != Some(&effect.instance_page_id) {
+    if let Some(effect) = effect
+        && instance_path.last() != Some(&effect.instance_page_id)
+    {
         instance_path.push(effect.instance_page_id.clone());
     }
     let mut runner = serde_json::Map::new();

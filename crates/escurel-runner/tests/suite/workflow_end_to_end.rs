@@ -267,6 +267,112 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     );
 }
 
+/// Poll the run board's event history for an operation-status event whose
+/// `provenance.run_status` matches `want`, up to `secs`. Returns whether it
+/// appeared.
+async fn await_operation_status(p: &EscurelProcess, run_page: &str, want: &str, secs: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let events = call_mcp(
+            p,
+            Role::Agent,
+            "list_events",
+            json!({ "instance_page_id": run_page }),
+        )
+        .await;
+        let found = events["events"].as_array().is_some_and(|es| {
+            es.iter()
+                .any(|e| e["provenance"]["run_status"].as_str() == Some(want))
+        });
+        if found {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Phase 0.3 DoD (no mock): a workflow whose FIRST phase's harness fails must
+/// drive the operation to a terminal `failed` status — not wedge at `running`
+/// forever. The scope step's echo run is made to fail deterministically
+/// (`ESCUREL_ECHO_FAIL_SKILL=research-angle`); it exhausts its retries and
+/// dead-letters, and the reducer — driven on that terminal transition, per the
+/// step's authored `Stop` outcome — records the operation `failed`.
+#[tokio::test]
+async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let run_page = "markdown/instances/workflow-run/rfail.md";
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke deep-research (fail scope)",
+            "body": "Answer the research question.",
+            "provenance": {
+                "workflow": { "run": run_page, "wf_skill": WF_SKILL, "phase": "invoke" }
+            }
+        }),
+    )
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        // Make the scope step (produces research-angle) fail every attempt.
+        .env("ESCUREL_ECHO_FAIL_SKILL", "research-angle")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    let failed = await_operation_status(&gateway, run_page, "failed", 30).await;
+    assert!(
+        failed,
+        "a workflow whose first step fails must reach a terminal `failed` status on {run_page}, \
+         not wedge at `running`"
+    );
+    // And it must NOT report success.
+    let succeeded = await_operation_status(&gateway, run_page, "succeeded", 1).await;
+    assert!(
+        !succeeded,
+        "a failed operation must not also report succeeded"
+    );
+}
+
 #[tokio::test]
 async fn verify_barrier_runs_to_completion_via_echo() {
     // The width-3 adversarial **verify barrier**, driven DETERMINISTICALLY by
