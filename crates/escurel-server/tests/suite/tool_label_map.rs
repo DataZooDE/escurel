@@ -88,6 +88,7 @@ const EXPECTED: &[&str] = &[
     "remove_group_member:orchestration",
     "resolve:deterministic",
     "search:deterministic",
+    "start_operation:orchestration",
     "submit_promotion:orchestration",
     "tenant_create:orchestration",
     "tenant_delete:orchestration",

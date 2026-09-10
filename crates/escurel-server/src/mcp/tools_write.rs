@@ -1427,6 +1427,173 @@ pub(super) async fn tool_capture_event(
     Ok(event)
 }
 
+#[derive(Deserialize)]
+pub(super) struct StartOperationArgs {
+    /// The `kind: workflow` plan skill id to run.
+    wf_skill: String,
+    /// The invocation body handed to the plan's first step (the question /
+    /// task). Optional; defaults to empty.
+    #[serde(default)]
+    input: String,
+    /// A caller-chosen idempotency key: two `start_operation`s with the same
+    /// key (from the same caller) map to ONE operation — a retry re-attaches
+    /// rather than starting a second run. Absent ⇒ a fresh operation each call.
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    /// An opaque channel reference stored on the operation for the terminal
+    /// delivery (async-ops Phase 3); the facade never interprets it.
+    #[serde(default)]
+    conversation_ref: Option<Value>,
+}
+
+/// Deterministic run-board slug for an idempotency key, scoped to the caller so
+/// two callers' keys never collide. A stable, page-safe id (hex of a salted
+/// hash) so a retry resolves to the same operation.
+fn operation_slug_for_key(subject: &str, key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(subject.as_bytes());
+    h.update([0u8]);
+    h.update(key.as_bytes());
+    let digest = h.finalize();
+    let mut slug = String::from("op-");
+    for b in &digest[..16] {
+        slug.push_str(&format!("{b:02x}"));
+    }
+    slug
+}
+
+/// `start_operation` — begin an async workflow operation (async-ops Phase 2b).
+///
+/// The **server-owned** entry point for an async run. The server constructs the
+/// operation's identity and its `provenance.workflow` block itself, so a caller
+/// can neither forge a workflow invocation nor aim a run at another operation —
+/// which is what lets `capture_event` reject a caller-supplied
+/// `provenance.workflow` (Phase 2c). It:
+///
+/// 1. derives the operation id (deterministic from `idempotency_key` for
+///    exactly-once, else a fresh ULID);
+/// 2. on a key collision returns the existing operation (a retry re-attaches,
+///    no second run) — gated by the same read ACL as `get_operation`;
+/// 3. creates the owner-scoped run board (`status: pending`, `requested_by` +
+///    `requester_groups` for the eventual per-run caller token), stamping the
+///    verified subject as the page principal (unforgeable);
+/// 4. captures the invocation event with server-built `provenance.workflow`.
+///
+/// Returns `{operation_id, status:"pending"}` fast; the runner drives the plan
+/// from the inbox and `get_operation` polls the status.
+pub(super) async fn tool_start_operation(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    webhook: Option<&crate::webhook::Webhook>,
+    events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<EventInfo>>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: StartOperationArgs = parse_args(args, "start_operation")?;
+    if a.wf_skill.trim().is_empty() {
+        return Err(JsonRpcError::invalid_params(
+            "start_operation: `wf_skill` is required".to_owned(),
+        ));
+    }
+    let slug = match a
+        .idempotency_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(key) => operation_slug_for_key(caller.subject, key),
+        None => ulid::Ulid::new().to_string().to_ascii_lowercase(),
+    };
+    let operation_id = format!("markdown/instances/workflow-run/{slug}.md");
+
+    // Idempotency: an existing board means this operation already started. Only
+    // its owner (or admin) may re-attach — a non-owner gets the same not-found
+    // shape `get_operation` returns, never a peek at another caller's run.
+    if let Some(existing) = indexer
+        .expand(&operation_id, None, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("start_operation: {e}")))?
+    {
+        let readable = indexer
+            .may_read_instance(&caller, &existing.page.skill, &existing.frontmatter)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("start_operation acl: {e}")))?;
+        if !readable {
+            return Err(JsonRpcError::invalid_params(
+                "start_operation: idempotency_key collides with another operation".to_owned(),
+            ));
+        }
+        return Ok(json!({
+            "operation_id": operation_id,
+            "status": "pending",
+            "idempotent": true,
+        }));
+    }
+
+    // Create the owner-scoped run board. `requested_by`/`requester_groups` are
+    // the identity the per-run caller token is later minted from (Phase 2c);
+    // the verified subject is ALSO the page principal via `update_page_as`.
+    let groups_yaml = if caller.token_groups.is_empty() {
+        "[]".to_owned()
+    } else {
+        format!(
+            "[{}]",
+            caller
+                .token_groups
+                .iter()
+                .map(|g| format!("\"{}\"", g.replace('\\', "\\\\").replace('"', "\\\"")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let mut content = format!(
+        "---\ntype: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {}\n\
+         status: pending\nrequested_by: {}\nrequester_groups: {groups_yaml}\n",
+        a.wf_skill, caller.subject,
+    );
+    if let Some(key) = a.idempotency_key.as_deref().filter(|s| !s.trim().is_empty()) {
+        content.push_str(&format!("idempotency_key: {key}\n"));
+    }
+    if let Some(cref) = &a.conversation_ref {
+        content.push_str(&format!("conversation_ref: {}\n", cref));
+    }
+    content.push_str("---\n# operation\n\nAsync operation run board.\n");
+    indexer
+        .update_page_as(&operation_id, &content, Some(caller.subject))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("start_operation: create board: {e}")))?;
+
+    // The invocation event, with SERVER-constructed provenance.workflow — the
+    // caller never supplies it, so it cannot forge a workflow hop or its target.
+    let provenance = stamp_captured_by(
+        Some(json!({
+            "workflow": { "run": operation_id, "wf_skill": a.wf_skill, "phase": "invoke" }
+        })),
+        caller.subject,
+    );
+    let requested = NewEvent {
+        event_id: None,
+        at: None,
+        source: "escurel:start_operation".to_owned(),
+        mime: "text/plain".to_owned(),
+        label_skill: a.wf_skill.clone(),
+        instance_page_id: Some(operation_id.clone()),
+        title: format!("operation: {}", a.wf_skill),
+        body: a.input,
+        provenance,
+    };
+    let stored = indexer
+        .capture_event(requested)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("start_operation: capture: {e}")))?;
+    if let Some(hook) = webhook {
+        hook.notify(event_to_json(&stored), indexer.tenant());
+    }
+    let _ = events_tx.send(std::sync::Arc::new(stored));
+
+    Ok(json!({ "operation_id": operation_id, "status": "pending" }))
+}
+
 /// The response for an idempotent re-capture the caller may NOT read: its
 /// own submission, wearing the stored `event_id` and `status`.
 ///

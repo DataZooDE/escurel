@@ -509,6 +509,119 @@ async fn prose_authored_ask_a_human_fallback_reaches_awaiting_human() {
     assert!(!failed, "an AskHuman fallback must not record `failed`");
 }
 
+/// async-ops Phase 2b (no mock): the `start_operation` facade begins a workflow
+/// server-side — the caller names only a plan skill; the server builds the
+/// operation id + its workflow provenance and creates the run board — and
+/// `get_operation` polls it to `succeeded`. A second call with the same
+/// `idempotency_key` re-attaches to the SAME operation (exactly-one-run).
+#[tokio::test]
+async fn start_operation_begins_a_workflow_and_polls_to_succeeded() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // Start via the facade — no caller-supplied provenance, no pre-chosen id.
+    let started = call_mcp(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({
+            "wf_skill": WF_SKILL,
+            "input": "Answer the research question.",
+            "idempotency_key": "op-key-1"
+        }),
+    )
+    .await;
+    assert_eq!(started["status"], json!("pending"), "starts pending: {started}");
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
+    assert!(
+        operation_id.starts_with("markdown/instances/workflow-run/"),
+        "operation id is a run board page: {operation_id}"
+    );
+
+    // Immediately readable via get_operation (found, not-yet-terminal).
+    let now = call_mcp(
+        &gateway,
+        Role::Agent,
+        "get_operation",
+        json!({ "operation_id": operation_id }),
+    )
+    .await;
+    assert_eq!(now["found"], json!(true), "operation is found right after start: {now}");
+
+    // Idempotency: the same key re-attaches to the same operation.
+    let again = call_mcp(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({ "wf_skill": WF_SKILL, "idempotency_key": "op-key-1" }),
+    )
+    .await;
+    assert_eq!(
+        again["operation_id"], json!(operation_id),
+        "same idempotency_key → same operation: {again}"
+    );
+    assert_eq!(again["idempotent"], json!(true), "re-attach flagged idempotent: {again}");
+
+    // The runner drives the plan (echo, no injected failure) → succeeded.
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    let succeeded = loop {
+        let op = call_mcp(
+            &gateway,
+            Role::Agent,
+            "get_operation",
+            json!({ "operation_id": operation_id }),
+        )
+        .await;
+        if op["status"] == json!("succeeded") {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
+    assert!(
+        succeeded,
+        "the facade-started operation must poll to `succeeded` on {operation_id}"
+    );
+}
+
 #[tokio::test]
 async fn verify_barrier_runs_to_completion_via_echo() {
     // The width-3 adversarial **verify barrier**, driven DETERMINISTICALLY by

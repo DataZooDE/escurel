@@ -481,6 +481,28 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
+                "start_operation",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Begin an async workflow operation: run the `wf_skill` plan in the \
+                 background and return `{operation_id, status:'pending'}` fast. The \
+                 server owns the operation's identity and its workflow provenance \
+                 (you cannot forge either), creates an owner-scoped run board, and \
+                 captures the invocation. Poll progress with `get_operation`. Pass \
+                 `idempotency_key` to make a retry re-attach to the same operation \
+                 rather than start a second run.",
+                json!({
+                    "type": "object",
+                    "required": ["wf_skill"],
+                    "properties": {
+                        "wf_skill": { "type": "string", "description": "The kind:workflow plan skill id to run." },
+                        "input": { "type": "string", "description": "The invocation body handed to the plan's first step." },
+                        "idempotency_key": { "type": "string", "description": "Retry key: same key (same caller) → one operation, not a second run." },
+                        "conversation_ref": { "type": "object", "description": "Opaque channel reference stored for terminal delivery (Phase 3); not interpreted." }
+                    }
+                }),
+            ),
+            tool_entry(
                 "list_inbox",
                 Execution::Deterministic,
                 Scope::Agent,
