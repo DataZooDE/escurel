@@ -152,6 +152,51 @@ pub(super) async fn tool_create_draft(
         }
     }
 
+    // **An empty base means "no page here yet". Check that it is true.**
+    //
+    // `base_sha256: ""` is the approve-CREATE sentinel: promotion passes it
+    // to `update_page`, which lands only if the target still does not exist.
+    // Against a page that DOES exist it can never promote — it is a draft
+    // born un-approvable, and the only place that shows up is a human tapping
+    // Approve and watching nothing happen.
+    //
+    // Measured in the lab on 2026-09-09: seven runs, seven drafts, every one
+    // with an empty base against a page written days earlier. Every approve
+    // refused `conflict`, correctly, and the review feed just sat there. The
+    // agent had taken the escape hatch in its instructions ("an empty string
+    // when no page exists yet") without reading the target first.
+    //
+    // So refuse it HERE, while the agent is still running and can fix it: the
+    // message names `expand` and the field to carry. This is the same rule as
+    // the validation below, one field earlier — a draft that cannot be
+    // promoted is worse than a refused write, because it costs a human a
+    // review before anyone finds out.
+    if a.base_sha256.as_deref() == Some("")
+        && indexer
+            .expand(&a.target_page_id, None, None)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("create_draft head: {e}")))?
+            .is_some()
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "conflict",
+                "location": "base_sha256",
+                "message": format!(
+                    "`{}` already exists, so an empty `base_sha256` (the \
+                     create sentinel) can never promote. Call `expand` on it \
+                     and pass its `content_sha256` as `base_sha256` — that is \
+                     what makes the approval refuse if the page moves under \
+                     your draft, and it is the base a reviewer approves \
+                     against.",
+                    a.target_page_id
+                ),
+            }],
+        }));
+    }
+
     // Validate at DRAFT time, with the same blocking set promotion will
     // apply. A draft that cannot be promoted is worse than a refused write:
     // it costs a human a review before anyone finds out.
