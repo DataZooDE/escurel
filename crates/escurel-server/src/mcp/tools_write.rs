@@ -1609,9 +1609,16 @@ pub(super) async fn tool_start_operation(
 
     // The invocation event, with SERVER-constructed provenance.workflow — the
     // caller never supplies it, so it cannot forge a workflow hop or its target.
-    // Its id is DETERMINISTIC in the operation (crew Phase-2 F-6): two concurrent
-    // same-key starts both create the (identical) board but `capture_event`'s
-    // ON CONFLICT collapses the invocation to one → one run, not two.
+    //
+    // The id is a fresh SERVER ULID, deliberately NOT a deterministic function
+    // of the (caller-computable) operation slug: a guessable invocation id would
+    // let a caller pre-`capture_event` that id with forged content so this
+    // server capture no-ops onto the caller's row (ON CONFLICT), hijacking the
+    // invocation — including poisoning another caller's keyed operation before
+    // they start it. Plan-level exactly-once does NOT depend on this id: the
+    // board-existence idempotency check above collapses sequential retries, and
+    // for a rare concurrent same-key race the reducer's content-addressed step
+    // ids (§3.6) collapse the plan to one execution even if two invoke folds land.
     let provenance = stamp_captured_by(
         Some(json!({
             "workflow": { "run": operation_id, "wf_skill": a.wf_skill, "phase": "invoke" }
@@ -1619,7 +1626,7 @@ pub(super) async fn tool_start_operation(
         caller.subject,
     );
     let requested = NewEvent {
-        event_id: Some(format!("{slug}-invoke")),
+        event_id: None,
         at: None,
         source: "escurel:start_operation".to_owned(),
         mime: "text/plain".to_owned(),
