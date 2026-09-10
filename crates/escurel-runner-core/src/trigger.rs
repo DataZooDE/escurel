@@ -174,6 +174,22 @@ pub fn content_hash(event: &Event) -> String {
 ///
 /// Returns `None` when the event carries no `provenance.runner` (a
 /// webhook-origin event) so the caller falls back to a depth-0 root.
+///
+/// SECURITY — runner-lineage-forge (async-ops, dedicated-review item). These
+/// fields drive LOOP CONTROL (admit's depth cap, per-root budget, cycle check)
+/// and are authoritative only on a RUNNER-emitted hop. A non-admin CALLER can
+/// also `capture_event` a `provenance.runner` block — the 2c-ii guard narrowly
+/// blocks only `provenance.workflow`, and `caller_supplied_captured_by_is_overwritten`
+/// deliberately preserves a caller's `runner` block as stored data — so a forged
+/// block could claim depth 0 to slip the depth cap, a chosen `root_event_id` to
+/// evade/exhaust a root's budget, or a crafted `instance_path` to defeat the
+/// cycle check. The reconciled fix (NOT landed here): trust this block for loop
+/// control only when the event's server-stamped `provenance.captured_by` is the
+/// runner's OWN identity, treating every other event as a fresh root, while
+/// still storing the caller's block unchanged. Left for a dedicated review
+/// because it needs the runner's authoritative identity (which differs between
+/// static-token and minted modes) and a naive "reset to root" would make the
+/// runner distrust its own static-mode cascades.
 fn lineage_from_provenance(provenance: &serde_json::Value, event_id: &str) -> Option<Lineage> {
     let runner = provenance.get("runner")?.as_object()?;
     let root_event_id = runner.get("root_event_id")?.as_str()?.to_owned();

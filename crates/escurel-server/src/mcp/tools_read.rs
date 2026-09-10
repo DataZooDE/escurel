@@ -252,23 +252,19 @@ pub(super) async fn derive_operation_status(
     indexer: &Indexer,
     operation_id: &str,
 ) -> Result<escurel_types::OperationStatus, JsonRpcError> {
-    // Status events are few (one per transition) and all carry `at`, so a single
-    // page well within the cap holds the whole history in order.
-    let page = indexer
-        .list_events_page(operation_id, escurel_index::EVENTS_MAX_LIMIT, None)
+    // The single most-recent status event (crew Phase-4 F-6): a newest-first
+    // `LIMIT 1` lookup, so the derivation cannot report a stale status for a
+    // board whose history exceeds the page cap.
+    let latest = indexer
+        .latest_labeled_event(operation_id, escurel_types::OPERATION_STATUS_LABEL)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("get_operation: {e}")))?;
-    let latest = page
-        .events
-        .iter()
-        .filter(|ev| ev.label_skill == escurel_types::OPERATION_STATUS_LABEL)
-        .filter_map(|ev| {
+        .map_err(|e| JsonRpcError::internal(format!("get_operation: {e}")))?
+        .and_then(|ev| {
             ev.provenance
                 .get("run_status")
                 .and_then(Value::as_str)
                 .and_then(escurel_types::OperationStatus::from_wire)
-        })
-        .next_back();
+        });
     Ok(latest.unwrap_or(escurel_types::OperationStatus::Pending))
 }
 

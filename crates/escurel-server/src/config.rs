@@ -635,6 +635,10 @@ pub struct EscurelConfig {
     /// the pack surface fail-closed: `export_pack` refuses rather than
     /// emit an unverifiable bundle.
     pub pack_secret: Option<String>,
+    /// Per-tenant secret keying the async-operation idempotency slug
+    /// (`ESCUREL_OPERATION_SLUG_SECRET`, async-ops Phase-4 F-4). `Some` → the
+    /// slug is an HMAC a peer cannot compute; `None` (dev) → peer-computable.
+    pub operation_slug_secret: Option<String>,
     /// Dedicated Prometheus `/metrics` listener
     /// (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default
     /// `0.0.0.0:9090`). `None` when explicitly emptied — disables
@@ -811,6 +815,11 @@ impl EscurelConfig {
         // empty value is treated as unset — the pack surface stays off.
         let pack_secret = env
             .get("ESCUREL_PACK_SECRET")
+            .filter(|s| !s.trim().is_empty());
+        // Optional per-tenant secret keying the async-operation slug (F-4). An
+        // empty value is unset — the slug degrades to a peer-computable hash.
+        let operation_slug_secret = env
+            .get("ESCUREL_OPERATION_SLUG_SECRET")
             .filter(|s| !s.trim().is_empty());
         // Dedicated Prometheus `/metrics` listener. Default
         // `0.0.0.0:9090`; an explicitly-empty value disables scraping.
@@ -1296,6 +1305,7 @@ impl EscurelConfig {
             webhook_url,
             webhook_secret,
             pack_secret,
+            operation_slug_secret,
             metrics_listen,
             ingest_contextualize,
             rebuild_index_on_boot,
@@ -1985,6 +1995,7 @@ impl EscurelConfig {
             webhook_url: self.webhook_url.clone(),
             webhook_secret: self.webhook_secret.clone(),
             pack_secret: self.pack_secret.clone(),
+            operation_slug_secret: self.operation_slug_secret.clone(),
             metrics_listen: self.metrics_listen.clone(),
         };
 

@@ -127,6 +127,10 @@ pub struct ConfigOverrides {
     /// (production `ESCUREL_PACK_SECRET`). `None` (default) keeps the
     /// pack surface off — `export_pack` refuses fail-closed.
     pub pack_secret: Option<String>,
+    /// Per-tenant secret keying the async-operation idempotency slug
+    /// (production `ESCUREL_OPERATION_SLUG_SECRET`, async-ops Phase-4 F-4).
+    /// `None` (default) → the slug degrades to a peer-computable hash.
+    pub operation_slug_secret: Option<String>,
     /// JWT claim the verifier reads the subject's group memberships from
     /// (production `ESCUREL_AUTH_GROUPS_CLAIM`; e.g. `triton_sender_groups`
     /// in the Triton-fronted topology). `None` keeps the default (`roles`).
@@ -436,6 +440,7 @@ impl EscurelProcess {
             webhook_url: overrides.webhook_url.clone(),
             webhook_secret: overrides.webhook_secret.clone(),
             pack_secret: overrides.pack_secret.clone(),
+            operation_slug_secret: overrides.operation_slug_secret.clone(),
             // Metrics on their own random port, mirroring production's
             // dedicated listener (production defaults to :9090).
             metrics_listen: Some("127.0.0.1:0".to_owned()),

@@ -988,6 +988,7 @@ async fn dispatch_tools_call(
                 caller,
                 state.webhook.as_ref(),
                 &state.events_tx,
+                state.operation_slug_secret.as_deref(),
                 params.arguments,
             )
             .await

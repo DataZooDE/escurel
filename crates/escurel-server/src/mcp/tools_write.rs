@@ -1484,17 +1484,40 @@ pub(super) struct StartOperationArgs {
 /// Deterministic run-board slug for an idempotency key, scoped to
 /// `(subject, wf_skill, key)` so two callers' keys never collide AND the same
 /// key under a DIFFERENT plan is a distinct operation rather than silently
-/// re-attaching to the old plan (crew Phase-2 F-4). A stable, page-safe id (hex
-/// of a salted hash) so a retry of the same request resolves to the same op.
-fn operation_slug_for_key(subject: &str, wf_skill: &str, key: &str) -> String {
+/// re-attaching to the old plan (crew Phase-2 F-4). A stable, page-safe id so a
+/// retry of the same request resolves to the same op.
+///
+/// When a server `secret` is configured (crew Phase-2 F-4 hardening) the slug is
+/// an **HMAC-SHA256** keyed by it, so a peer who knows the (public-ish) subject,
+/// plan and key still cannot COMPUTE another caller's slug and squat their board
+/// (a silent pending-forever DoS, or a redirected Phase-3 delivery). Without a
+/// secret (dev) it degrades to an unkeyed SHA-256 — deterministic but
+/// peer-computable; production sets the secret (from the tenant's GCP SM key).
+fn operation_slug_for_key(
+    subject: &str,
+    wf_skill: &str,
+    key: &str,
+    secret: Option<&str>,
+) -> String {
     use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(subject.as_bytes());
-    h.update([0u8]);
-    h.update(wf_skill.as_bytes());
-    h.update([0u8]);
-    h.update(key.as_bytes());
-    let digest = h.finalize();
+    // A single message with 0x00 separators so `(a,"b","c")` and `("a","b",c)`
+    // never collide.
+    let mut msg = Vec::new();
+    msg.extend_from_slice(subject.as_bytes());
+    msg.push(0);
+    msg.extend_from_slice(wf_skill.as_bytes());
+    msg.push(0);
+    msg.extend_from_slice(key.as_bytes());
+    let digest: [u8; 32] = match secret {
+        Some(secret) if !secret.is_empty() => {
+            use hmac::{Hmac, Mac};
+            let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+                .expect("HMAC accepts a key of any size");
+            mac.update(&msg);
+            mac.finalize().into_bytes().into()
+        }
+        _ => Sha256::digest(&msg).into(),
+    };
     let mut slug = String::from("op-");
     for b in &digest[..16] {
         slug.push_str(&format!("{b:02x}"));
@@ -1536,6 +1559,7 @@ pub(super) async fn tool_start_operation(
     caller: AclCaller<'_>,
     webhook: Option<&crate::webhook::Webhook>,
     events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<EventInfo>>,
+    slug_secret: Option<&str>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: StartOperationArgs = parse_args(args, "start_operation")?;
@@ -1618,7 +1642,7 @@ pub(super) async fn tool_start_operation(
         ));
     }
     let slug = match idem_key {
-        Some(key) => operation_slug_for_key(caller.subject, &a.wf_skill, key),
+        Some(key) => operation_slug_for_key(caller.subject, &a.wf_skill, key, slug_secret),
         None => ulid::Ulid::new().to_string().to_ascii_lowercase(),
     };
     let operation_id = format!("markdown/instances/workflow-run/{slug}.md");
@@ -1657,8 +1681,8 @@ pub(super) async fn tool_start_operation(
     // append-only status events (one source of truth, F-3); the board carries
     // only durable request facts. Every interpolated value is either a verified
     // identity or a validated/JSON-encoded scalar (F-1).
-    let groups_json = serde_json::to_string(caller.token_groups)
-        .unwrap_or_else(|_| "[]".to_owned());
+    let groups_json =
+        serde_json::to_string(caller.token_groups).unwrap_or_else(|_| "[]".to_owned());
     let mut content = format!(
         "---\ntype: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {}\n\
          requested_by: {}\nrequester_groups: {groups_json}\n",
@@ -2211,5 +2235,48 @@ pub(super) async fn tool_purge_page(
             }],
         })),
         Err(e) => Err(JsonRpcError::internal(format!("purge_page: {e}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F-4 hardening: with a server secret the operation slug is an HMAC — a
+    /// peer who knows the (guessable) subject, plan and key STILL cannot compute
+    /// another caller's slug without the secret (so cannot squat their board).
+    /// It stays deterministic (idempotent retries) and scoped to (subject,
+    /// wf_skill, key).
+    #[test]
+    fn operation_slug_hmac_depends_on_the_secret() {
+        let a = operation_slug_for_key("alice", "plan", "k1", Some("secret-A"));
+        let again = operation_slug_for_key("alice", "plan", "k1", Some("secret-A"));
+        let other_secret = operation_slug_for_key("alice", "plan", "k1", Some("secret-B"));
+        let unkeyed = operation_slug_for_key("alice", "plan", "k1", None);
+
+        assert_eq!(
+            a, again,
+            "same inputs + secret ⇒ same slug (idempotent retry)"
+        );
+        assert_ne!(
+            a, other_secret,
+            "a different server secret ⇒ a different slug — a peer without THE secret cannot compute it"
+        );
+        assert_ne!(a, unkeyed, "keyed differs from the dev unkeyed hash");
+        assert!(a.starts_with("op-") && a.len() == "op-".len() + 32);
+
+        // Still scoped: subject / plan / key each change the slug.
+        assert_ne!(
+            a,
+            operation_slug_for_key("bob", "plan", "k1", Some("secret-A"))
+        );
+        assert_ne!(
+            a,
+            operation_slug_for_key("alice", "plan2", "k1", Some("secret-A"))
+        );
+        assert_ne!(
+            a,
+            operation_slug_for_key("alice", "plan", "k2", Some("secret-A"))
+        );
     }
 }
