@@ -40,17 +40,17 @@ use crate::reconciler::ConfirmedEffect;
 use crate::trigger::Trigger;
 
 /// The reserved `label_skill` under which an operation's status is recorded on
-/// its run board (async-ops Phase 0.2). It is a KB-visible record, **never a
-/// dispatchable run**: the runner's enqueue chokepoint (`gate_and_enqueue`)
-/// drops any trigger carrying this label before a ledger row is created, so a
-/// status event can neither spawn a run nor re-enter the reducer.
+/// its run board (async-ops Phase 0.2). Defined in `escurel-types` as shared
+/// wire vocabulary (the runner writes it, the gateway's `get_operation` reads
+/// it); re-exported so `escurel_runner_core::OPERATION_STATUS_LABEL` resolves.
 ///
-/// The `escurel:` prefix puts it in a **reserved namespace** a tenant cannot
-/// author (crew F-7): a plain `run-status` skill would have collided with a
-/// real tenant skill of that name and had its events silently dropped. Phase 1
-/// adds the capture-layer backstop that rejects a *caller* who tries to write
-/// this label; until then the single enqueue chokepoint is the guard.
-pub const OPERATION_STATUS_LABEL: &str = "escurel:run-status";
+/// It is a KB-visible record, **never a dispatchable run**: the runner's enqueue
+/// chokepoint (`gate_and_enqueue`) drops any trigger carrying this label before
+/// a ledger row is created. The `escurel:` prefix is a **reserved namespace** a
+/// tenant cannot author (crew F-7). Phase 1 adds the capture-layer backstop that
+/// rejects a *caller* who tries to write it; until then the single enqueue
+/// chokepoint is the guard.
+pub use escurel_types::OPERATION_STATUS_LABEL;
 
 /// Outcome of driving one reducer pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -69,6 +69,76 @@ impl WorkflowProvenance {
     }
 }
 
+/// The reserved `label_skill` an operation's status events are recorded under.
+/// A KB-visible record, never a dispatchable run — the runner's enqueue
+/// chokepoint drops any trigger carrying it, and the `escurel:` prefix is a
+/// reserved namespace a tenant cannot author. Shared vocabulary: the runner
+/// writes it, the gateway's `get_operation` reads it.
+pub const OPERATION_STATUS_LABEL: &str = "escurel:run-status";
+
+/// The status of an async operation, as recorded on its run board (as
+/// `provenance.run_status` on a reserved status event) and read back by
+/// `get_operation`. One shared vocabulary for the writer (the runner's driver)
+/// and every reader (the gateway's `get_operation`), living here in
+/// `escurel-types` so neither depends on the other (crew F-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationStatus {
+    /// Accepted, not yet running.
+    Pending,
+    /// At least one phase is in flight (or awaiting re-drive).
+    Running,
+    /// Every phase is complete.
+    Succeeded,
+    /// A step failed terminally and its phase's policy is to stop.
+    Failed,
+    /// Paused for a human decision (a held draft, or an `AskHuman` fallback).
+    AwaitingHuman,
+}
+
+impl OperationStatus {
+    /// The stable wire/KB string (the `provenance.run_status` value + title).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OperationStatus::Pending => "pending",
+            OperationStatus::Running => "running",
+            OperationStatus::Succeeded => "succeeded",
+            OperationStatus::Failed => "failed",
+            OperationStatus::AwaitingHuman => "awaiting_human",
+        }
+    }
+
+    /// Parse the wire string back (the inverse of [`Self::as_str`]); `None`
+    /// for an unrecognised value, so a reader ignores a status it does not know.
+    #[must_use]
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "pending" => OperationStatus::Pending,
+            "running" => OperationStatus::Running,
+            "succeeded" => OperationStatus::Succeeded,
+            "failed" => OperationStatus::Failed,
+            "awaiting_human" => OperationStatus::AwaitingHuman,
+            _ => return None,
+        })
+    }
+
+    /// Terminal precedence for `get_operation`'s derivation: when an operation's
+    /// append-only history carries several statuses, the highest rank is the
+    /// current one. `Failed` outranks `Succeeded` (a failed phase means the plan
+    /// did not wholly succeed); `AwaitingHuman` outranks `Running` (a pause is
+    /// more specific than "in flight"); `Running` outranks `Pending`.
+    #[must_use]
+    pub fn precedence(self) -> u8 {
+        match self {
+            OperationStatus::Pending => 0,
+            OperationStatus::Running => 1,
+            OperationStatus::AwaitingHuman => 2,
+            OperationStatus::Succeeded => 3,
+            OperationStatus::Failed => 4,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

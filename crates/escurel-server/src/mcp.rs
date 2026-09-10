@@ -917,6 +917,7 @@ async fn dispatch_tools_call(
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer, caller).await,
         "list_instances" => tool_list_instances(indexer, caller, params.arguments).await,
+        "get_operation" => tool_get_operation(indexer, caller, params.arguments).await,
         "resolve" => tool_resolve(indexer, caller, params.arguments).await,
         "expand" => tool_expand(state, indexer, caller, params.arguments).await,
         "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,

@@ -106,51 +106,10 @@ impl Default for OutcomePolicy {
     }
 }
 
-/// The status of an async operation, as recorded on its run board and read
-/// back by `get_operation` (async-ops Phase 0.2/0.3/2). One shared vocabulary
-/// for the writer (the driver) and every reader, so the two cannot drift
-/// (crew F-10). The wire/KB form is [`OperationStatus::as_str`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperationStatus {
-    /// Accepted, not yet running.
-    Pending,
-    /// At least one phase is in flight (or awaiting re-drive).
-    Running,
-    /// Every phase is complete.
-    Succeeded,
-    /// A step failed terminally and its phase's policy is to stop.
-    Failed,
-    /// Paused for a human decision (a `Held` draft, or an `AskHuman` fallback).
-    AwaitingHuman,
-}
-
-impl OperationStatus {
-    /// The stable wire/KB string (the `provenance.run_status` value + title).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OperationStatus::Pending => "pending",
-            OperationStatus::Running => "running",
-            OperationStatus::Succeeded => "succeeded",
-            OperationStatus::Failed => "failed",
-            OperationStatus::AwaitingHuman => "awaiting_human",
-        }
-    }
-
-    /// Terminal precedence for `get_operation`'s tie-break (Phase 2): a higher
-    /// rank wins when two status records coexist. `Failed` outranks
-    /// `Succeeded` (a failed phase means the plan did not wholly succeed);
-    /// `AwaitingHuman` outranks `Running` (a pause is more specific than "in
-    /// flight"); `Running` outranks `Pending`.
-    pub fn precedence(self) -> u8 {
-        match self {
-            OperationStatus::Pending => 0,
-            OperationStatus::Running => 1,
-            OperationStatus::AwaitingHuman => 2,
-            OperationStatus::Succeeded => 3,
-            OperationStatus::Failed => 4,
-        }
-    }
-}
+/// The status of an async operation. Defined in `escurel-types` (shared by the
+/// writer here and the gateway's `get_operation` reader); re-exported so
+/// `escurel_runner_workflow::OperationStatus` keeps resolving.
+pub use escurel_types::OperationStatus;
 
 /// The fallback once a step's retries are exhausted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

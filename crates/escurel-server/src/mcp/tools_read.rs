@@ -192,6 +192,75 @@ pub(super) async fn tool_list_instances(
 }
 
 #[derive(Deserialize)]
+pub(super) struct GetOperationArgs {
+    /// The operation id — the `workflow-run` instance page id `start_operation`
+    /// returned.
+    operation_id: String,
+}
+
+/// `get_operation` — read the current status of an async operation (async-ops
+/// Phase 2). An **ordinary ACL'd read** of the operation's run board: a caller
+/// who may not read the instance gets the same `found: false` shape as a
+/// non-existent operation (denial as absence — no cross-caller existence
+/// oracle, matching every sibling read verb).
+///
+/// The status is DERIVED from the board's append-only status events (the
+/// reserved [`escurel_types::OPERATION_STATUS_LABEL`] the runner records): the
+/// current status is the one of highest [`OperationStatus::precedence`] present
+/// (a `failed` outranks a stale `running`; `awaiting_human` outranks
+/// `running`). No status events yet ⇒ `pending`.
+pub(super) async fn tool_get_operation(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: GetOperationArgs = parse_args(args, "get_operation")?;
+    // ACL: the run board is an instance; a non-owner is denied by ABSENCE.
+    let readable = match indexer
+        .expand(&a.operation_id, None, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("get_operation acl: {e}")))?
+    {
+        Some(e) if e.page.page_type == PageType::Instance => indexer
+            .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("get_operation acl: {e}")))?,
+        // No such page ⇒ not found; a non-instance page id is not an operation.
+        _ => false,
+    };
+    if !readable {
+        return Ok(json!({ "operation_id": a.operation_id, "found": false }));
+    }
+    let page = indexer
+        .list_events_page(&a.operation_id, escurel_index::EVENTS_MAX_LIMIT, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("get_operation: {e}")))?;
+    let mut current: Option<escurel_types::OperationStatus> = None;
+    for ev in &page.events {
+        if ev.label_skill != escurel_types::OPERATION_STATUS_LABEL {
+            continue;
+        }
+        let Some(status) = ev
+            .provenance
+            .get("run_status")
+            .and_then(Value::as_str)
+            .and_then(escurel_types::OperationStatus::from_wire)
+        else {
+            continue;
+        };
+        if current.is_none_or(|c| status.precedence() > c.precedence()) {
+            current = Some(status);
+        }
+    }
+    let status = current.unwrap_or(escurel_types::OperationStatus::Pending);
+    Ok(json!({
+        "operation_id": a.operation_id,
+        "found": true,
+        "status": status.as_str(),
+    }))
+}
+
+#[derive(Deserialize)]
 pub(super) struct ResolveArgs {
     wikilink: String,
     /// Scenario overlay to resolve against; null/absent = base only.

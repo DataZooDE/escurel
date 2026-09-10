@@ -30,6 +30,7 @@ section below.
 | `list_instances` | `cursor?` (pass back the response next-cursor; ONLY a null one means done), `skill_id`, `order_by='at asc'\|'at desc'?`, `limit?`, `frontmatter_key?`+`frontmatter_value?`, `as_of?`, `scenario?` | list of `{page_id, skill, frontmatter, at}` | enumerate instances of a skill (event-log scans, chain heads); NB the filter param is `skill_id` here but `skill` on `search` |
 | `fetch_blob` | `page_id` (a document instance) | `{blob: {page_id, content_type, size, bytes_base64} \| null}` | the raw bytes behind a document/RAG instance; capped at 25 MiB. For browsers/large files prefer `GET /blob/{page_id}` — same ACL, raw bytes, real `Content-Type`, no cap |
 | `query_instance` | `ref` (a query-page id; `query_id` accepted as an alias), `params` (typed object) | `{rows, schema[], truncated}` | **the one query surface**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side. (The legacy admin-gated `run_stored_query` was removed in the 2026-08-14 surface consolidation.) |
+| `get_operation` | `operation_id` (the run-board page id start_operation returned) | `{operation_id, found, status?}` where `status` ∈ `pending\|running\|succeeded\|failed\|awaiting_human` | poll an async operation's current status, derived from its run board by precedence (a `failed` outranks a stale `running`); an ACL'd read — an unknown or unreadable operation is `{found: false}` (denial as absence) |
 
 Notes:
 - **`list_skills` is caller-scoped, and never carries group names.** A
@@ -202,7 +203,7 @@ Three properties are worth relying on:
 A draft already decided answers `{code: already_decided}` naming which
 decision was taken — deciding twice is not expressible.
 
-Note this list is **curated, not exhaustive** — the server exposes 70 tools
+Note this list is **curated, not exhaustive** — the server exposes 71 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,

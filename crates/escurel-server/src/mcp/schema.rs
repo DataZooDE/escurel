@@ -45,6 +45,19 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
+                "get_operation",
+                Execution::Deterministic,
+                Scope::Agent,
+                "Read the current status of an async operation (pending|running|succeeded|failed|awaiting_human), derived from its run board. Returns {found:false} for an unknown or unreadable operation.",
+                json!({
+                    "type": "object",
+                    "required": ["operation_id"],
+                    "properties": {
+                        "operation_id": { "type": "string", "description": "The operation id returned by start_operation (its run-board page id)." }
+                    }
+                }),
+            ),
+            tool_entry(
                 "resolve",
                 Execution::Deterministic,
                 Scope::Agent,

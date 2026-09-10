@@ -265,6 +265,36 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
         succeeded,
         "the operation must reach a terminal `succeeded` status event on {run_page}"
     );
+
+    // async-ops Phase 2: the `get_operation` facade derives that terminal state
+    // from the append-only status events (by precedence), so a caller polls one
+    // read instead of scanning the event log.
+    let op = call_mcp(
+        &gateway,
+        Role::Agent,
+        "get_operation",
+        json!({ "operation_id": run_page }),
+    )
+    .await;
+    assert_eq!(op["found"], json!(true), "get_operation found the run board");
+    assert_eq!(
+        op["status"], json!("succeeded"),
+        "get_operation derives `succeeded` for a completed workflow: {op}"
+    );
+
+    // A bogus operation id is `found: false` — the same shape a cross-caller
+    // denial returns, so existence never leaks.
+    let missing = call_mcp(
+        &gateway,
+        Role::Agent,
+        "get_operation",
+        json!({ "operation_id": "markdown/instances/workflow-run/does-not-exist.md" }),
+    )
+    .await;
+    assert_eq!(
+        missing["found"], json!(false),
+        "get_operation on an unknown id is not-found, not an error: {missing}"
+    );
 }
 
 /// Poll the run board's event history for an operation-status event whose
@@ -370,6 +400,19 @@ async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
     assert!(
         !succeeded,
         "a failed operation must not also report succeeded"
+    );
+
+    // async-ops Phase 2: `get_operation` derives the terminal `failed`.
+    let op = call_mcp(
+        &gateway,
+        Role::Agent,
+        "get_operation",
+        json!({ "operation_id": run_page }),
+    )
+    .await;
+    assert_eq!(
+        op["status"], json!("failed"),
+        "get_operation derives `failed` for a failed workflow: {op}"
     );
 }
 
