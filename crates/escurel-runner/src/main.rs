@@ -718,6 +718,7 @@ async fn drive_workflow_or_deadletter(
     effect: Option<&escurel_runner_core::ConfirmedEffect>,
     terminal: StepTerminal,
     max_runs_per_root: u64,
+    outbound_url: Option<&str>,
 ) {
     match drive_workflow(
         client,
@@ -729,14 +730,23 @@ async fn drive_workflow_or_deadletter(
     )
     .await
     {
-        Ok(outcome) => tracing::info!(
-            target: "escurel_runner",
-            event_id = %trigger.event_id,
-            run_id = %run_id,
-            terminal = ?terminal,
-            emitted = outcome.emitted.len(),
-            "workflow: reducer drove operation on terminal transition"
-        ),
+        Ok(outcome) => {
+            tracing::info!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                run_id = %run_id,
+                terminal = ?terminal,
+                emitted = outcome.emitted.len(),
+                "workflow: reducer drove operation on terminal transition"
+            );
+            // Channel delivery (async-ops Phase 3): a terminal operation with a
+            // stored conversation reference is delivered to the channel's
+            // proactive seam. Fire-and-forget, best-effort — never derails the
+            // run; at-least-once, the courier dedups on operation_id.
+            if let (Some(delivery), Some(url)) = (outcome.delivery, outbound_url) {
+                deliver_terminal(url, &delivery).await;
+            }
+        }
         Err(e) => {
             let progressed = matches!(terminal, StepTerminal::Advanced | StepTerminal::Held);
             if progressed {
@@ -784,6 +794,44 @@ async fn drive_workflow_or_deadletter(
                 );
             }
         }
+    }
+}
+
+/// Deliver a terminal operation result to the channel courier's proactive seam
+/// (async-ops Phase 3). Best-effort fire-and-forget: a `POST <outbound_url>`
+/// with `{operation_id, status, conversation_ref}`. A delivery failure is
+/// logged, never propagated — the run already reached its terminal, and the
+/// delivery is at-least-once (the courier dedups on `operation_id`).
+async fn deliver_terminal(outbound_url: &str, delivery: &escurel_runner_core::TerminalDelivery) {
+    let body = serde_json::json!({
+        "operation_id": delivery.operation_id,
+        "status": delivery.status,
+        "conversation_ref": delivery.conversation_ref,
+    });
+    match reqwest::Client::new()
+        .post(outbound_url)
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => tracing::info!(
+            target: "escurel_runner",
+            operation = %delivery.operation_id,
+            status = %delivery.status,
+            "delivery: terminal operation delivered to channel courier"
+        ),
+        Ok(resp) => tracing::warn!(
+            target: "escurel_runner",
+            operation = %delivery.operation_id,
+            http_status = resp.status().as_u16(),
+            "delivery: courier rejected the terminal delivery (best-effort; not retried here)"
+        ),
+        Err(e) => tracing::warn!(
+            target: "escurel_runner",
+            operation = %delivery.operation_id,
+            error = %e,
+            "delivery: could not reach the channel courier (best-effort)"
+        ),
     }
 }
 
@@ -1382,6 +1430,7 @@ async fn dispatch_loop(
                             None,
                             StepTerminal::Held,
                             config.max_runs_per_root,
+                            config.outbound_url.as_deref(),
                         )
                         .await;
                     }
@@ -1403,6 +1452,7 @@ async fn dispatch_loop(
                         Some(effect),
                         StepTerminal::Advanced,
                         config.max_runs_per_root,
+                        config.outbound_url.as_deref(),
                     )
                     .await;
                     continue;
@@ -1484,6 +1534,7 @@ async fn dispatch_loop(
                             None,
                             terminal,
                             config.max_runs_per_root,
+                            config.outbound_url.as_deref(),
                         )
                         .await;
                     }
@@ -2108,20 +2159,14 @@ mod tests {
             resolve_trigger_tenant(Some("acme"), Some("acme")).unwrap(),
             "acme"
         );
-        assert_eq!(
-            resolve_trigger_tenant(Some("acme"), None).unwrap(),
-            "acme"
-        );
+        assert_eq!(resolve_trigger_tenant(Some("acme"), None).unwrap(), "acme");
         // A body naming a DIFFERENT tenant is rejected (mis-routed / forged).
         assert_eq!(
             resolve_trigger_tenant(Some("acme"), Some("evil")),
             Err("evil".to_owned())
         );
         // Dev/legacy: no configured tenant → body value (or empty) passes.
-        assert_eq!(
-            resolve_trigger_tenant(None, Some("acme")).unwrap(),
-            "acme"
-        );
+        assert_eq!(resolve_trigger_tenant(None, Some("acme")).unwrap(), "acme");
         assert_eq!(resolve_trigger_tenant(None, None).unwrap(), "");
     }
 

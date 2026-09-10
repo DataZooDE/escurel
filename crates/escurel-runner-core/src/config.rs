@@ -230,6 +230,15 @@ pub struct RunnerConfig {
     /// open (dev mode).
     /// Source: `ESCUREL_WEBHOOK_SECRET` (unset → `None`).
     pub webhook_secret: Option<String>,
+    /// The channel courier's proactive-delivery endpoint (async-ops Phase 3).
+    /// When set, the runner POSTs a terminal operation's result here — keyed on
+    /// the `conversation_ref` the caller stored at `start_operation` — so the
+    /// agent's `/v1/outbound` seam can deliver it to the originating chat
+    /// channel. Delivery is at-least-once (the courier dedups on
+    /// `operation_id`). `None` disables outbound delivery (e.g. an A2A/pull
+    /// deployment where callers poll `get_operation`/`tasks/get`).
+    /// Source: `ESCUREL_RUNNER_OUTBOUND_URL` (unset → `None`).
+    pub outbound_url: Option<String>,
     /// Tenant the runner polls and stamps onto every normalised
     /// [`crate::Trigger`]. The gateway is single-tenant per indexer, so
     /// this is the tenant whose inbox the poller drains.
@@ -460,6 +469,7 @@ impl RunnerConfig {
             lookup("ESCUREL_RUNNER_GATEWAY_URL").unwrap_or_else(|| DEFAULT_GATEWAY_URL.to_owned());
         let env = lookup("ESCUREL_RUNNER_ENV").unwrap_or_else(|| DEFAULT_ENV.to_owned());
         let webhook_secret = lookup("ESCUREL_WEBHOOK_SECRET").filter(|s| !s.is_empty());
+        let outbound_url = lookup("ESCUREL_RUNNER_OUTBOUND_URL").filter(|s| !s.is_empty());
 
         let tenant = lookup("ESCUREL_RUNNER_TENANT").filter(|s| !s.is_empty());
         let token = lookup("ESCUREL_RUNNER_TOKEN").filter(|s| !s.is_empty());
@@ -596,6 +606,7 @@ impl RunnerConfig {
             env,
             version: env!("CARGO_PKG_VERSION").to_owned(),
             webhook_secret,
+            outbound_url,
             tenant,
             token,
             queue_cap,

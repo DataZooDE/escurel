@@ -106,6 +106,35 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// A stub channel courier: an in-process `/v1/outbound` sink that records every
+/// terminal-delivery POST (async-ops Phase 3). Returns its URL and the shared
+/// buffer of received bodies.
+async fn spawn_outbound_sink() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+    use axum::extract::State;
+    use axum::routing::post;
+    use axum::{Json, Router};
+
+    type Buf = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
+    let received: Buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    async fn handler(State(buf): State<Buf>, Json(body): Json<Value>) -> axum::http::StatusCode {
+        buf.lock().expect("sink mutex").push(body);
+        axum::http::StatusCode::OK
+    }
+
+    let app = Router::new()
+        .route("/v1/outbound", post(handler))
+        .with_state(received.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind sink");
+    let addr = listener.local_addr().expect("sink addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}/v1/outbound"), received)
+}
+
 async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value {
     let token = p.mint_token(TENANT, role);
     let resp = reqwest::Client::new()
@@ -129,7 +158,13 @@ async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Va
 
 /// Like [`call_mcp`] but signs the token with an explicit `subject` — for
 /// cross-caller ACL tests (caller B reading caller A's owner-scoped operation).
-async fn call_mcp_as(p: &EscurelProcess, role: Role, subject: &str, name: &str, args: Value) -> Value {
+async fn call_mcp_as(
+    p: &EscurelProcess,
+    role: Role,
+    subject: &str,
+    name: &str,
+    args: Value,
+) -> Value {
     let token = p.mint_token_with_sub(TENANT, role, subject);
     let resp = reqwest::Client::new()
         .post(p.mcp_url())
@@ -336,9 +371,14 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
         json!({ "operation_id": run_page }),
     )
     .await;
-    assert_eq!(op["found"], json!(true), "get_operation found the run board");
     assert_eq!(
-        op["status"], json!("succeeded"),
+        op["found"],
+        json!(true),
+        "get_operation found the run board"
+    );
+    assert_eq!(
+        op["status"],
+        json!("succeeded"),
         "get_operation derives `succeeded` for a completed workflow: {op}"
     );
 
@@ -352,7 +392,8 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     )
     .await;
     assert_eq!(
-        missing["found"], json!(false),
+        missing["found"],
+        json!(false),
         "get_operation on an unknown id is not-found, not an error: {missing}"
     );
 }
@@ -482,7 +523,8 @@ async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
     )
     .await;
     assert_eq!(
-        op["status"], json!("failed"),
+        op["status"],
+        json!("failed"),
         "get_operation derives `failed` for a failed workflow: {op}"
     );
 }
@@ -675,7 +717,10 @@ async fn facade_refuses_forged_status_and_unknown_plan() {
     )
     .await;
     assert!(
-        err["message"].as_str().unwrap_or("").contains("server-owned"),
+        err["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("server-owned"),
         "a forged provenance.workflow must be refused: {err}"
     );
 }
@@ -714,7 +759,11 @@ async fn start_operation_begins_a_workflow_and_polls_to_succeeded() {
         }),
     )
     .await;
-    assert_eq!(started["status"], json!("pending"), "starts pending: {started}");
+    assert_eq!(
+        started["status"],
+        json!("pending"),
+        "starts pending: {started}"
+    );
     let operation_id = started["operation_id"]
         .as_str()
         .expect("operation_id")
@@ -732,7 +781,11 @@ async fn start_operation_begins_a_workflow_and_polls_to_succeeded() {
         json!({ "operation_id": operation_id }),
     )
     .await;
-    assert_eq!(now["found"], json!(true), "operation is found right after start: {now}");
+    assert_eq!(
+        now["found"],
+        json!(true),
+        "operation is found right after start: {now}"
+    );
 
     // Cross-caller denial (crew Phase-2 F3): a DIFFERENT subject must not read
     // this owner-scoped operation — it gets the not-found shape, no leak.
@@ -745,7 +798,8 @@ async fn start_operation_begins_a_workflow_and_polls_to_succeeded() {
     )
     .await;
     assert_eq!(
-        intruder["found"], json!(false),
+        intruder["found"],
+        json!(false),
         "another caller must not read this operation: {intruder}"
     );
 
@@ -758,10 +812,15 @@ async fn start_operation_begins_a_workflow_and_polls_to_succeeded() {
     )
     .await;
     assert_eq!(
-        again["operation_id"], json!(operation_id),
+        again["operation_id"],
+        json!(operation_id),
         "same idempotency_key → same operation: {again}"
     );
-    assert_eq!(again["idempotent"], json!(true), "re-attach flagged idempotent: {again}");
+    assert_eq!(
+        again["idempotent"],
+        json!(true),
+        "re-attach flagged idempotent: {again}"
+    );
 
     // The runner drives the plan (echo, no injected failure) → succeeded.
     // The runner authenticates as an admin identity (in production it mints its
@@ -847,7 +906,10 @@ async fn a_run_executes_under_the_requesters_identity_not_the_runners() {
         json!({ "wf_skill": WF_SKILL, "input": "Answer the question." }),
     )
     .await;
-    let operation_id = started["operation_id"].as_str().expect("operation_id").to_owned();
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
     let run_slug = operation_id
         .strip_prefix("markdown/instances/workflow-run/")
         .and_then(|s| s.strip_suffix(".md"))
@@ -901,6 +963,104 @@ async fn a_run_executes_under_the_requesters_identity_not_the_runners() {
     assert_ne!(
         written_by, "escurel-runner",
         "the produced page must not be attributed to the runner's own identity"
+    );
+}
+
+/// async-ops Phase 3 (no mock): a terminal operation is delivered back to the
+/// channel that started it. An operation is started with a `conversation_ref`
+/// (a simulated Teams turn); when the runner drives it to `succeeded`, it POSTs
+/// the terminal result to the channel courier's `/v1/outbound` seam — a stub
+/// sink here — keyed on that stored conversation reference.
+#[tokio::test]
+async fn a_terminal_operation_is_delivered_to_the_channel_courier() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let (sink_url, received) = spawn_outbound_sink().await;
+
+    // Start the operation with a channel reference (a simulated Teams turn).
+    let conversation_ref = json!({
+        "channel": "msteams",
+        "conversation": { "id": "19:meeting_abc@thread.v2" },
+        "service_url": "https://smba.example/teams"
+    });
+    let started = call_mcp(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({
+            "wf_skill": WF_SKILL,
+            "input": "Answer the question.",
+            "conversation_ref": conversation_ref,
+        }),
+    )
+    .await;
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
+
+    // Runner wired to the channel courier's outbound seam.
+    let token = gateway.mint_token(TENANT, Role::Admin);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env("ESCUREL_RUNNER_OUTBOUND_URL", &sink_url)
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The courier receives the terminal delivery, keyed on the conversation ref.
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let delivered = loop {
+        let hit = received
+            .lock()
+            .expect("sink mutex")
+            .iter()
+            .find(|d| d["operation_id"].as_str() == Some(operation_id.as_str()))
+            .cloned();
+        if let Some(d) = hit {
+            break Some(d);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let delivery = delivered.expect("the terminal operation must be delivered to the courier");
+    assert_eq!(
+        delivery["status"],
+        json!("succeeded"),
+        "delivery carries the terminal status: {delivery}"
+    );
+    assert_eq!(
+        delivery["conversation_ref"], conversation_ref,
+        "delivery carries the stored conversation reference verbatim: {delivery}"
     );
 }
 

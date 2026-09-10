@@ -58,6 +58,27 @@ pub struct WorkflowDriveOutcome {
     /// The event ids emitted this pass (empty when the run is complete or the
     /// trigger's skill is not a workflow plan).
     pub emitted: Vec<String>,
+    /// A channel delivery to make when this pass drove the operation to a
+    /// TERMINAL state and the run board carries a `conversation_ref` (async-ops
+    /// Phase 3). The driver only surfaces the delivery; the runner performs the
+    /// outbound POST. `None` for a non-terminal pass or an operation with no
+    /// stored conversation reference (e.g. an A2A/pull operation).
+    pub delivery: Option<TerminalDelivery>,
+}
+
+/// A terminal result to deliver back to the channel that started the operation
+/// (async-ops Phase 3). The runner POSTs it to the channel's proactive seam
+/// (`/v1/outbound`), keyed on the stored `conversation_ref`. Delivery is
+/// at-least-once — the courier dedups on `operation_id` — so a re-driven
+/// terminal never doubles a user-visible message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalDelivery {
+    /// The operation's run board page id (the dedup key for the courier).
+    pub operation_id: String,
+    /// The terminal status being delivered (`succeeded`/`failed`/`awaiting_human`).
+    pub status: String,
+    /// The opaque channel reference the caller supplied at `start_operation`.
+    pub conversation_ref: serde_json::Value,
 }
 
 /// Errors driving a workflow reducer pass.
@@ -181,7 +202,11 @@ pub async fn drive_workflow(
             "held_draft",
         )
         .await;
-        return Ok(WorkflowDriveOutcome::default());
+        let delivery = maybe_delivery(client, &wf.run, OperationStatus::AwaitingHuman).await;
+        return Ok(WorkflowDriveOutcome {
+            delivery,
+            ..Default::default()
+        });
     }
 
     // A terminal FAILURE is resolved from the failed phase's authored policy
@@ -200,7 +225,11 @@ pub async fn drive_workflow(
                 "",
             )
             .await;
-            return Ok(WorkflowDriveOutcome::default());
+            let delivery = maybe_delivery(client, &wf.run, OperationStatus::Succeeded).await;
+            return Ok(WorkflowDriveOutcome {
+                delivery,
+                ..Default::default()
+            });
         }
         let policy = phase_outcome(&spec, &wf.phase);
         let (status, reason) = match policy.on_exhausted {
@@ -220,7 +249,11 @@ pub async fn drive_workflow(
             Fallback::Stop => (OperationStatus::Failed, fail_reason),
         };
         record_status_best_effort(client, &wf.run, transition, status, &wf.phase, reason).await;
-        return Ok(WorkflowDriveOutcome::default());
+        let delivery = maybe_delivery(client, &wf.run, status).await;
+        return Ok(WorkflowDriveOutcome {
+            delivery,
+            ..Default::default()
+        });
     }
 
     // Reserve the plan's projected fan-out against the budget BEFORE emitting
@@ -247,7 +280,52 @@ pub async fn drive_workflow(
         OperationStatus::Running
     };
     record_status_best_effort(client, &wf.run, transition, status, &wf.phase, "").await;
-    Ok(WorkflowDriveOutcome { emitted })
+    // A completed plan (Succeeded) delivers; a `Running` pass does not.
+    let delivery = maybe_delivery(client, &wf.run, status).await;
+    Ok(WorkflowDriveOutcome { emitted, delivery })
+}
+
+/// Build the channel delivery for a TERMINAL operation status (async-ops Phase
+/// 3), or `None` when there is nothing to deliver: a non-terminal status
+/// (`running`), an operation whose board carries no `conversation_ref` (an
+/// A2A/pull operation, delivered by polling `tasks/get`), or a best-effort read
+/// failure (delivery must never derail the run — logged and skipped).
+async fn maybe_delivery(
+    client: &Client,
+    operation: &str,
+    status: OperationStatus,
+) -> Option<TerminalDelivery> {
+    let is_terminal = matches!(
+        status,
+        OperationStatus::Succeeded | OperationStatus::Failed | OperationStatus::AwaitingHuman
+    );
+    if !is_terminal {
+        return None;
+    }
+    let board = match client
+        .expand(ExpandRequest {
+            page_id: operation.to_owned(),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                operation = %operation,
+                error = %e,
+                "workflow: could not read board for channel delivery (best-effort); skipping"
+            );
+            return None;
+        }
+    };
+    let conversation_ref = board.frontmatter.get("conversation_ref").cloned()?;
+    Some(TerminalDelivery {
+        operation_id: operation.to_owned(),
+        status: status.as_str().to_owned(),
+        conversation_ref,
+    })
 }
 
 /// The [`OutcomePolicy`] of the plan phase named `phase_id`; the default

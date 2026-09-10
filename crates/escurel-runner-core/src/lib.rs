@@ -47,6 +47,6 @@ pub use recovery::{RecoveryReport, recover_pending};
 pub use secrecy::SecretString;
 pub use trigger::{Lineage, Trigger};
 pub use workflow::{
-    OPERATION_STATUS_LABEL, StepTerminal, WorkflowDriveError, WorkflowDriveOutcome, drive_workflow,
-    record_status_best_effort, recover_workflows,
+    OPERATION_STATUS_LABEL, StepTerminal, TerminalDelivery, WorkflowDriveError,
+    WorkflowDriveOutcome, drive_workflow, record_status_best_effort, recover_workflows,
 };
