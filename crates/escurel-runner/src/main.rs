@@ -97,6 +97,13 @@ struct AppState {
     /// Set once shutdown begins: the ingress paths stop admitting new triggers
     /// while in-flight runs drain.
     draining: Arc<std::sync::atomic::AtomicBool>,
+    /// The runner's own tenant (async-ops Phase 1, `/trigger` binding). This
+    /// runner process is single-tenant by deployment (one runner per customer
+    /// stack), so the authoritative tenant of an inbound webhook is THIS, never
+    /// the request body — a party holding the webhook secret must not be able to
+    /// name another tenant. `None` only on the dev/legacy path with no tenant
+    /// configured, where the body value is accepted as before.
+    tenant: Option<Arc<str>>,
 }
 
 #[tokio::main]
@@ -318,6 +325,7 @@ async fn main() -> anyhow::Result<()> {
         metrics: Arc::clone(&metrics),
         inflight: Arc::clone(&inflight),
         draining: Arc::clone(&draining),
+        tenant: config.tenant.clone().map(Arc::from),
     };
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -431,17 +439,31 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         }
     };
 
-    // 3. The authoritative tenant rides in the payload (#147). Read it
-    //    from the raw JSON (it is not a field of `Event`); fall back to
-    //    empty when absent (dev / legacy senders).
-    let tenant = serde_json::from_slice::<serde_json::Value>(&body)
+    // 3. The authoritative tenant is THIS runner's own (async-ops Phase 1):
+    //    the process is single-tenant by deployment, so the tenant is never
+    //    taken from the request body — a party holding the webhook secret must
+    //    not be able to drive another tenant's runs through this runner. The
+    //    body's `tenant_id` is only cross-checked: if present and disagreeing
+    //    with the runner's tenant, the delivery was mis-routed → reject.
+    let body_tenant = serde_json::from_slice::<serde_json::Value>(&body)
         .ok()
         .and_then(|v| {
             v.get("tenant_id")
                 .and_then(|t| t.as_str())
                 .map(str::to_owned)
-        })
-        .unwrap_or_default();
+        });
+    let tenant = match resolve_trigger_tenant(state.tenant.as_deref(), body_tenant.as_deref()) {
+        Ok(tenant) => tenant,
+        Err(claimed) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                own_tenant = ?state.tenant,
+                claimed_tenant = %claimed,
+                "POST /trigger rejected: body tenant_id does not match this runner's tenant"
+            );
+            return StatusCode::FORBIDDEN;
+        }
+    };
 
     let trigger = Trigger::from_event(&event, tenant);
     // Loop-control gate (lifecycle step 4): the durable ledger is the
@@ -654,6 +676,25 @@ fn gate_and_enqueue(
 /// Keeps cardinality sane: only tenant + status labels.
 fn record_run_terminal(metrics: &Metrics, tenant: &str, status: &str) {
     metrics.inc_runner_run(tenant, status);
+}
+
+/// Resolve the authoritative tenant for an inbound `POST /trigger` (async-ops
+/// Phase 1). The runner is single-tenant by deployment, so its own configured
+/// tenant is authoritative and the request body can never *name* a tenant — it
+/// may only match. Returns the tenant to use, or `Err(claimed)` (the offending
+/// body value) when the body names a different tenant than this runner serves.
+///
+/// - runner tenant set, body absent or equal → the runner's tenant;
+/// - runner tenant set, body differs → `Err` (mis-routed / forged delivery);
+/// - no runner tenant (dev/legacy) → the body value, or empty.
+fn resolve_trigger_tenant(own: Option<&str>, body_tenant: Option<&str>) -> Result<String, String> {
+    match own {
+        Some(own) => match body_tenant {
+            Some(claimed) if claimed != own => Err(claimed.to_owned()),
+            _ => Ok(own.to_owned()),
+        },
+        None => Ok(body_tenant.unwrap_or_default().to_owned()),
+    }
 }
 
 /// Drive the workflow reducer on a run's terminal transition, dead-lettering
@@ -2053,6 +2094,35 @@ mod tests {
             0,
             "a status event must create no ledger row"
         );
+    }
+
+    /// Phase 1 (`/trigger` binding): a single-tenant runner takes its OWN
+    /// tenant as authoritative and refuses a body that names a different one, so
+    /// a party holding the webhook secret cannot drive another tenant's runs
+    /// through this runner. Absent/equal body tenant is accepted; with no
+    /// configured tenant the body value passes through (dev/legacy).
+    #[test]
+    fn trigger_tenant_is_bound_to_the_runner_not_the_body() {
+        // Configured runner: own tenant wins; a matching or absent body is fine.
+        assert_eq!(
+            resolve_trigger_tenant(Some("acme"), Some("acme")).unwrap(),
+            "acme"
+        );
+        assert_eq!(
+            resolve_trigger_tenant(Some("acme"), None).unwrap(),
+            "acme"
+        );
+        // A body naming a DIFFERENT tenant is rejected (mis-routed / forged).
+        assert_eq!(
+            resolve_trigger_tenant(Some("acme"), Some("evil")),
+            Err("evil".to_owned())
+        );
+        // Dev/legacy: no configured tenant → body value (or empty) passes.
+        assert_eq!(
+            resolve_trigger_tenant(None, Some("acme")).unwrap(),
+            "acme"
+        );
+        assert_eq!(resolve_trigger_tenant(None, None).unwrap(), "");
     }
 
     /// Positive control: an ordinary labelled trigger is NOT dropped by the
