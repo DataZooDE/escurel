@@ -220,7 +220,13 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     let run_page = "markdown/instances/workflow-run/r1.md";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -404,7 +410,13 @@ async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
     let run_page = "markdown/instances/workflow-run/rfail.md";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -517,7 +529,13 @@ async fn prose_authored_ask_a_human_fallback_reaches_awaiting_human() {
     let run_page = "markdown/instances/workflow-run/rprose.md";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -592,7 +610,8 @@ async fn facade_refuses_forged_status_and_unknown_plan() {
     })
     .await;
 
-    // F1: a non-admin caller may not capture a reserved `escurel:` label.
+    // F1: a non-admin caller may not capture a reserved `escurel:` label
+    // (deliberately Role::Agent — the negative case being proven).
     let err = call_mcp_err(
         &gateway,
         Role::Agent,
@@ -636,6 +655,28 @@ async fn facade_refuses_forged_status_and_unknown_plan() {
     assert!(
         err["message"].as_str().unwrap_or("").contains("workflow"),
         "unknown plan must be refused with the same error: {err}"
+    );
+
+    // 2c-ii: a non-admin caller cannot forge `provenance.workflow` on a raw
+    // capture_event (which would inject a workflow step). The legitimate path is
+    // start_operation; the runner emits steps as admin. (A caller's
+    // `provenance.runner` block still survives — the narrower guard.)
+    let err = call_mcp_err(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "research-angle",
+            "instance_page_id": "markdown/instances/workflow-run/forged.md",
+            "provenance": { "workflow": { "run": "markdown/instances/workflow-run/forged.md", "wf_skill": WF_SKILL, "phase": "invoke" } }
+        }),
+    )
+    .await;
+    assert!(
+        err["message"].as_str().unwrap_or("").contains("server-owned"),
+        "a forged provenance.workflow must be refused: {err}"
     );
 }
 
@@ -894,7 +935,13 @@ async fn verify_barrier_runs_to_completion_via_echo() {
     let run_page = "markdown/instances/workflow-run/echobar.md";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -1005,7 +1052,13 @@ async fn deep_research_runs_against_gemini() {
                     Give the physics (Rayleigh scattering) and the key factors.";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -1161,7 +1214,13 @@ async fn verify_barrier_runs_against_gemini() {
                     State the factual claims and the physics of human visual acuity.";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -1429,7 +1488,13 @@ async fn over_budget_plan_fails_fast_at_invocation_emitting_no_steps() {
     let run_page = "markdown/instances/workflow-run/rb.md";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -1571,7 +1636,13 @@ async fn distill_weaves_one_source_into_two_existing_pages() {
     // workflow provenance so the dispatch loop routes to the reducer.
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -1715,7 +1786,13 @@ async fn lint_flags_orphan_stale_contradiction_without_rewriting() {
 
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -1903,7 +1980,9 @@ fn spawn_echo_runner(gateway: &EscurelProcess, ledger_dir: &std::path::Path) -> 
 async fn invoke_curate(gateway: &EscurelProcess, run_page: &str) {
     call_mcp(
         gateway,
-        Role::Agent,
+        // Workflow invocation → admin/system identity (async-ops 2c-ii;
+        // `provenance.workflow` is server-owned for non-admin callers).
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -2006,7 +2085,13 @@ async fn distill_stamps_last_verified_on_the_woven_page() {
 
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual", "mime": "text/plain", "label_skill": "distill",
@@ -2032,7 +2117,9 @@ async fn distill_stamps_last_verified_on_the_woven_page() {
 async fn invoke_eval(gateway: &EscurelProcess, run_page: &str) {
     call_mcp(
         gateway,
-        Role::Agent,
+        // Workflow invocation → admin/system identity (async-ops 2c-ii;
+        // `provenance.workflow` is server-owned for non-admin callers).
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual", "mime": "text/plain", "label_skill": "eval",

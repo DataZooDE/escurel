@@ -1367,6 +1367,28 @@ pub(super) async fn tool_capture_event(
             "capture_event: the `escurel:` label namespace is reserved".to_owned(),
         ));
     }
+    // Provenance sanitisation (async-ops 2c-ii): `provenance.workflow` is the
+    // block that ROUTES an event into the runner's reducer and grants a step
+    // its workflow autonomy/tools — so a non-admin CALLER must not forge one and
+    // inject a workflow step. The legitimate producers set it another way: the
+    // `start_operation` facade constructs it server-side (via the indexer, not
+    // this tool), and the runner emits steps under its own admin identity.
+    // Deliberately NARROW (owner decision 2026-09-10): only `workflow` is
+    // rejected — a caller's `provenance.runner` lineage block still survives, as
+    // the capture contract (and `event_acl::caller_supplied_captured_by_is_overwritten`)
+    // has always allowed.
+    if !caller.is_admin
+        && a.provenance
+            .as_ref()
+            .and_then(Value::as_object)
+            .is_some_and(|p| p.contains_key("workflow"))
+    {
+        return Err(JsonRpcError::invalid_params(
+            "capture_event: `provenance.workflow` is server-owned \
+             (use start_operation to begin a workflow)"
+                .to_owned(),
+        ));
+    }
     // #390: `event_id` is the idempotency key, so "" would make EVERY
     // id-less capture the same event — first writer wins, each later one
     // silently discarded with a success receipt. An empty/whitespace key
