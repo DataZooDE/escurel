@@ -75,6 +75,19 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("open_session", Agent(&["session", "open"])),
     ("apply_op", Agent(&["session", "apply"])),
     ("close_session", Agent(&["session", "close"])),
+    // --- async-operation facade: agent/chat-callable via MCP ------------
+    // `start_operation`/`get_operation` are the async-ops surface a running
+    // agent drives (kick a long job; poll its status), not an operator CLI
+    // verb. Operator inspection of a run goes through `workflow run/status`.
+    // If a dedicated `operation` CLI ever earns its keep, move these to Agent.
+    (
+        "start_operation",
+        Excluded("async-ops facade; agent/chat-callable via MCP"),
+    ),
+    (
+        "get_operation",
+        Excluded("async-ops facade; agent/chat-callable via MCP"),
+    ),
     // --- admin surface with a CLI command -------------------------------
     ("admin_quota", Admin(&["quota"])),
     ("admin_audit", Admin(&["audit"])),
