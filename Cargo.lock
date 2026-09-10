@@ -2678,6 +2678,7 @@ dependencies = [
  "escurel-embed",
  "escurel-md",
  "escurel-storage",
+ "escurel-types",
  "html-to-markdown-rs",
  "kreuzberg",
  "regex",

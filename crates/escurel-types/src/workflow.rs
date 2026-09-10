@@ -69,6 +69,26 @@ impl WorkflowProvenance {
     }
 }
 
+/// Where an operation's result lives — a **closed, server-resolved** reference
+/// (async-ops Phase 4). It is deliberately NOT a path or URL: a caller/harness
+/// names the result only by a bounded id, and the server maps it to a location
+/// under its own data root. This shape makes path-traversal and remote-scheme
+/// injection unrepresentable — there is no field to carry `../…` or `s3://…`.
+/// The resolver (`escurel_index::result_ref`) validates the id and enforces a
+/// torn-publish manifest gate before any `read_parquet`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResultRef {
+    /// A scenario what-if result materialised as parquet under
+    /// `<data_root>/<tenant>/<scenario_id>/`, addressed only by its bounded
+    /// `scenario_id` (async-ops Phase 4 / B′).
+    ScenarioParquet {
+        /// The scenario's server-assigned id — a bounded slug
+        /// (`[A-Za-z0-9_.-]`, not `.`/`..`), never a path or URL.
+        scenario_id: String,
+    },
+}
+
 /// The reserved `label_skill` an operation's status events are recorded under.
 /// A KB-visible record, never a dispatchable run — the runner's enqueue
 /// chokepoint drops any trigger carrying it, and the `escurel:` prefix is a
