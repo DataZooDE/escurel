@@ -271,6 +271,56 @@ fn mcp_endpoint(gateway_url: &str) -> String {
     format!("{}/mcp", gateway_url.trim_end_matches('/'))
 }
 
+/// Mint a per-run, caller-scoped bearer for a WORKFLOW trigger (async-ops Phase
+/// 2c-i), or `None` to fall back to the runner's own identity.
+///
+/// The run board (`trigger.workflow.run`, created by `start_operation`) carries
+/// the verified requester as `requested_by` and their RBAC groups as
+/// `requester_groups`. This reads them (through the runner's client) and mints a
+/// short-lived token scoped to that identity, so the harness executes as the
+/// requester. Returns `None` for a non-workflow trigger, a board with no
+/// recorded requester, or a token source that cannot mint (a static bearer).
+async fn caller_scoped_token(
+    trigger: &Trigger,
+    client: &Client,
+    tokens: &crate::TokenSource,
+) -> Result<Option<String>, PackageError> {
+    let Some(wf) = &trigger.workflow else {
+        return Ok(None);
+    };
+    let board = client
+        .expand(ExpandRequest {
+            page_id: wf.run.clone(),
+            ..Default::default()
+        })
+        .await
+        .map_err(|source| PackageError::Client {
+            call: "expand",
+            source,
+        })?;
+    let Some(subject) = board
+        .frontmatter
+        .get("requested_by")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
+    let groups: Vec<String> = board
+        .frontmatter
+        .get("requester_groups")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|g| g.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    tokens
+        .mint_scoped(subject, &groups)
+        .map_err(|e| PackageError::Auth(e.to_string()))
+}
+
 /// Package a [`Trigger`] into a [`TaskContext`].
 ///
 /// Reads (only) through `client`: `resolve("[[<label_skill>]]")` →
@@ -285,11 +335,21 @@ pub async fn package(
     // Taken from the source at PACKAGE time, not held from boot: a minted
     // bearer is re-minted before it lapses, and a run packaged with an
     // expired one fails every `/mcp` call while the process looks healthy.
-    let token = tokens
-        .ok_or(PackageError::MissingToken)?
-        .current()
-        .map_err(|e| PackageError::Auth(e.to_string()))
-        .map(SecretString::from)?;
+    let tokens = tokens.ok_or(PackageError::MissingToken)?;
+    // Per-run caller token (async-ops Phase 2c-i): a WORKFLOW run executes under
+    // the REQUESTER's identity — the subject + RBAC groups the facade stamped on
+    // the run board — not the runner's admin bearer, so the harness reads and
+    // writes only what the requester may (closing the confused deputy). Falls
+    // back to the runner's own identity when there is no requester on record or
+    // the token source cannot mint (a static bearer); production runs minted
+    // (ADR-0012: the runner mints from a per-tenant GCP Secret Manager key).
+    let token = match caller_scoped_token(trigger, client, tokens).await? {
+        Some(scoped) => SecretString::from(scoped),
+        None => tokens
+            .current()
+            .map_err(|e| PackageError::Auth(e.to_string()))
+            .map(SecretString::from)?,
+    };
 
     // ── Instructions: resolve the skill wikilink → expand its body. ──
     let resolved = client

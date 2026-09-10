@@ -128,6 +128,31 @@ impl TokenSource {
             }
         }
     }
+
+    /// Mint a **per-run, caller-scoped** bearer (async-ops Phase 2c-i) for the
+    /// verified requester `subject` with their RBAC `groups`. Not cached — each
+    /// run scopes its own.
+    ///
+    /// Returns `None` for a [`Self::Static`] source: it holds a bearer, not a
+    /// signing key, so it cannot mint a scoped token. The caller then falls back
+    /// to the runner's own identity — the confused deputy persists until the
+    /// runner runs in **minted** mode, which production does (ADR-0012: the
+    /// runner mints its own bearer from a per-tenant GCP Secret Manager key).
+    ///
+    /// # Errors
+    /// When signing fails.
+    pub fn mint_scoped(
+        &self,
+        subject: &str,
+        groups: &[String],
+    ) -> Result<Option<String>, AuthError> {
+        match self {
+            Self::Static(_) => Ok(None),
+            Self::Minted {
+                signer, ttl_secs, ..
+            } => Ok(Some(signer.mint_scoped(subject, groups, *ttl_secs)?)),
+        }
+    }
 }
 
 /// The RSA signing identity, built once at boot.
@@ -197,15 +222,44 @@ impl Signer {
     /// # Errors
     /// When signing fails.
     pub fn mint(&self, subject: &str, ttl_secs: u64) -> Result<String, AuthError> {
+        // The runner's own orchestration identity: admin. Its writes include
+        // the reserved `escurel:run-status` status events, which the gateway
+        // admits only for admin (async-ops F1). This is NOT the identity a
+        // background RUN executes under — that is [`Self::mint_scoped`].
+        self.mint_with_roles(subject, &["escurel:admin".to_owned()], ttl_secs)
+    }
+
+    /// Mint a **per-run, caller-scoped** bearer (async-ops Phase 2c-i): the
+    /// verified requester's `subject` and their RBAC `groups` as the `roles`
+    /// claim — deliberately NOT `escurel:admin`. A background run's harness
+    /// executes under this token, so its `/mcp` reads and writes are ACL'd to
+    /// exactly what the requester may do, closing the confused deputy (a run
+    /// previously executed with the runner's admin identity).
+    ///
+    /// # Errors
+    /// When signing fails.
+    pub fn mint_scoped(
+        &self,
+        subject: &str,
+        groups: &[String],
+        ttl_secs: u64,
+    ) -> Result<String, AuthError> {
+        self.mint_with_roles(subject, groups, ttl_secs)
+    }
+
+    fn mint_with_roles(
+        &self,
+        subject: &str,
+        roles: &[String],
+        ttl_secs: u64,
+    ) -> Result<String, AuthError> {
         let now = now_secs();
         let claims = json!({
             "iss": self.issuer,
             "aud": self.audience,
             "sub": subject,
             TENANT_CLAIM: self.tenant,
-            // See the module note: a minted token carries no engagement
-            // groups, and the gateway's write ACL matches on groups.
-            "roles": ["escurel:admin"],
+            "roles": roles,
             "iat": now,
             "exp": now + ttl_secs,
         });

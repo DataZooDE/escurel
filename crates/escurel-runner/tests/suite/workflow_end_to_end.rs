@@ -771,6 +771,98 @@ async fn start_operation_begins_a_workflow_and_polls_to_succeeded() {
     );
 }
 
+/// async-ops Phase 2c-i (no mock): a background run executes under the
+/// REQUESTER's per-run caller token, not the runner's admin identity (the
+/// confused-deputy fix). The runner runs in MINTED mode (its own signing key,
+/// as in production) so it can mint a short-lived token scoped to the requester
+/// the facade stamped on the board; the harness then writes the produced
+/// instance under that identity — so the page's `last_written_by` is the
+/// requester (`alice-requester`), NOT the runner's own subject (`escurel-runner`).
+#[tokio::test]
+async fn a_run_executes_under_the_requesters_identity_not_the_runners() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // The requester is a distinct subject, so it is distinguishable from the
+    // runner's own `escurel-runner` identity on the produced page.
+    let requester = "alice-requester";
+    let started = call_mcp_as(
+        &gateway,
+        Role::Agent,
+        requester,
+        "start_operation",
+        json!({ "wf_skill": WF_SKILL, "input": "Answer the question." }),
+    )
+    .await;
+    let operation_id = started["operation_id"].as_str().expect("operation_id").to_owned();
+    let run_slug = operation_id
+        .strip_prefix("markdown/instances/workflow-run/")
+        .and_then(|s| s.strip_suffix(".md"))
+        .expect("operation id shape")
+        .to_owned();
+
+    // Runner in MINTED mode (production shape) so it can mint the per-run token.
+    let (signing_key, kid) = gateway.signing_material();
+    let issuer = gateway.issuer_url().to_owned();
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", &issuer)
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_AUTH_SUBJECT", "escurel-runner")
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The scope step produces a run-scoped research-angle instance.
+    let angle = await_instance(
+        &gateway,
+        "research-angle",
+        &format!("markdown/instances/research-angle/{run_slug}-scope-"),
+        45,
+    )
+    .await;
+
+    // The decisive assertion: the produced page was written by the REQUESTER's
+    // per-run token, not the runner's own admin identity.
+    let expanded = call_mcp(&gateway, Role::Admin, "expand", json!({ "page_id": angle })).await;
+    let written_by = expanded["page"]["last_written_by"].as_str().unwrap_or("");
+    assert_eq!(
+        written_by, requester,
+        "the run must write as the requester (per-run caller token), not the runner: {expanded}"
+    );
+    assert_ne!(
+        written_by, "escurel-runner",
+        "the produced page must not be attributed to the runner's own identity"
+    );
+}
+
 #[tokio::test]
 async fn verify_barrier_runs_to_completion_via_echo() {
     // The width-3 adversarial **verify barrier**, driven DETERMINISTICALLY by
