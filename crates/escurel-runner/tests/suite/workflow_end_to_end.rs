@@ -232,6 +232,39 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     )
     .await;
     assert!(report.ends_with(".md"), "report page id: {report}");
+
+    // Operation status (async-ops Phase 0.2), event-sourced: once every phase is
+    // complete the runner records a terminal `succeeded` status as an assigned
+    // event on the run board — the record `get_operation` will read. Poll the
+    // board's event history for it.
+    let run_page = "markdown/instances/workflow-run/r1.md";
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let succeeded = loop {
+        let events = call_mcp(
+            &gateway,
+            Role::Agent,
+            "list_events",
+            json!({ "instance_page_id": run_page }),
+        )
+        .await;
+        let found = events["events"].as_array().is_some_and(|es| {
+            es.iter().any(|e| {
+                e["title"].as_str() == Some("status: succeeded")
+                    || e["provenance"]["run_status"].as_str() == Some("succeeded")
+            })
+        });
+        if found {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
+    assert!(
+        succeeded,
+        "the operation must reach a terminal `succeeded` status event on {run_page}"
+    );
 }
 
 #[tokio::test]

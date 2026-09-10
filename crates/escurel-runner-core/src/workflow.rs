@@ -28,10 +28,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use escurel_client::Client;
 use escurel_runner_workflow::{
     BudgetExceeded, FanOut, ProducedInstance, RunState, StepIntent, Vote, WorkflowSkill, WriteMode,
-    check_budget, key, reduce,
+    check_budget, is_complete, key, reduce,
 };
 use escurel_types::{
-    CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest, WorkflowProvenance,
+    AssignEventRequest, CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest,
+    WorkflowProvenance,
 };
 use serde_json::json;
 
@@ -122,7 +123,53 @@ pub async fn drive_workflow(
         build_step_provenance(trigger, parent_run_id, effect, intent)
     })
     .await?;
+    // Operation status (async-ops Phase 0.2), event-sourced: record the
+    // operation's status as an assigned event on the run board — `succeeded`
+    // once every phase is complete, else `running`. `get_operation` (Phase 2)
+    // derives the current status as the latest such event.
+    let status = if is_complete(&spec, &state) {
+        "succeeded"
+    } else {
+        "running"
+    };
+    record_status(client, &wf.run, status).await?;
     Ok(WorkflowDriveOutcome { emitted })
+}
+
+/// Record the operation's status as an **assigned** event on the run board.
+/// The id is a deterministic function of `(operation, status)` so
+/// `capture_event`'s `ON CONFLICT DO NOTHING` makes it emit-once per status;
+/// `assign_event` marks it processed immediately so the inbox poller never
+/// dispatches it. Even a stray dispatch in the sub-poll window is harmless — the
+/// event carries no `provenance.workflow`, so it can never re-enter the reducer.
+async fn record_status(
+    client: &Client,
+    operation: &str,
+    status: &str,
+) -> Result<(), WorkflowDriveError> {
+    let event_id = key::step_event_id(operation, "run-status", status);
+    client
+        .capture_event(CaptureEventRequest {
+            event_id: event_id.clone(),
+            source: "escurel-runner".to_owned(),
+            mime: "text/plain".to_owned(),
+            label_skill: "run-status".to_owned(),
+            instance_page_id: operation.to_owned(),
+            title: format!("status: {status}"),
+            body: String::new(),
+            provenance: json!({ "run_status": status }),
+            ..Default::default()
+        })
+        .await
+        .map_err(WorkflowDriveError::Capture)?;
+    client
+        .assign_event(AssignEventRequest {
+            event_id,
+            instance_page_id: operation.to_owned(),
+        })
+        .await
+        .map_err(WorkflowDriveError::Capture)?;
+    Ok(())
 }
 
 /// The workflow-run instance skill — its instances are the run boards the
