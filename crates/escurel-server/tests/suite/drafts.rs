@@ -278,6 +278,83 @@ async fn a_draft_that_could_never_land_is_refused_at_draft_time() {
     assert_eq!(ok["ok"], json!(true), "valid draft must be accepted: {ok}");
 }
 
+/// The create sentinel has to be TRUE. An empty `base_sha256` says "there is
+/// no page here yet"; against a page that exists it is a draft born
+/// un-approvable, and the only place that shows up is a human tapping Approve
+/// and watching nothing happen.
+///
+/// Measured in the lab on 2026-09-09: seven runs, seven drafts, every one with
+/// an empty base against a page written days earlier. Every approve refused
+/// `conflict` — correctly — and the review feed just sat there.
+#[tokio::test]
+async fn an_empty_base_against_an_existing_page_is_refused_at_draft_time() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let refused = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": body("plan", "drafted without reading the target."),
+            "base_sha256": "",
+        }),
+    )
+    .await;
+    assert_eq!(refused["ok"], json!(false), "must refuse: {refused}");
+    let issue = &refused["issues"][0];
+    assert_eq!(issue["code"], json!("conflict"), "{refused}");
+    assert_eq!(issue["location"], json!("base_sha256"), "{refused}");
+    assert!(
+        issue["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("expand") && m.contains("content_sha256")),
+        "the refusal must say what to do instead, while the agent can still \
+         do it: {refused}"
+    );
+    let waiting = call(&p, &token, "list_drafts", json!({})).await;
+    assert!(
+        waiting["drafts"].as_array().expect("drafts").is_empty(),
+        "a draft nobody could approve must not reach the review queue: {waiting}"
+    );
+
+    // CONTROL 1: the same empty base is CORRECT for a page that does not
+    // exist — that is what the sentinel is for, and refusing it would break
+    // every first write.
+    let fresh = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": "markdown/instances/plan/brand-new.md",
+            "content": body("brand-new", "the first draft of a page nobody wrote."),
+            "base_sha256": "",
+        }),
+    )
+    .await;
+    assert_eq!(
+        fresh["ok"],
+        json!(true),
+        "an empty base against a page that really is absent must be accepted: {fresh}"
+    );
+
+    // CONTROL 2: the real head hash against the existing page is accepted, so
+    // the refusal above is about the SENTINEL and not about that page.
+    let ok = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": body("plan", "drafted against what expand returned."),
+            "base_sha256": sha(BASE),
+        }),
+    )
+    .await;
+    assert_eq!(ok["ok"], json!(true), "{ok}");
+}
+
 /// A decision is taken once. A discarded draft writes nothing, and neither a
 /// second discard nor a promotion can resurrect it.
 #[tokio::test]

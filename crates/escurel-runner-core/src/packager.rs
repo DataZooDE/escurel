@@ -517,11 +517,22 @@ fn build_instructions(
              `{skill}` declares `autonomy: review`, so you do not write pages. \
              Follow the procedure above as written, and wherever it tells you to \
              WRITE a page, create a draft of that page instead:\n\n\
-             - read the target with `expand`;\n\
+             - read the target with `expand` — ALWAYS, and FIRST. It is the \
+             only way to learn the `content_sha256` below, and a draft made \
+             without it cannot be approved;\n\
              - compose the WHOLE markdown you would have written;\n\
              - call `create_draft` with `target_page_id`, that `content`, and \
-             `base_sha256` set to the target's `content_sha256` from `expand` (an \
-             empty string when no page exists yet).\n\n\
+             `base_sha256` set to the `content_sha256` that `expand` just \
+             returned.\n\n\
+             **The empty string is not a shortcut.** `base_sha256: \"\"` says \
+             \"I looked, and there is no page there yet\" — it is the one \
+             value that means CREATE. Send it when `expand` returned no page, \
+             and only then. Against a page that DOES exist it is a draft that \
+             can never be promoted: the approval refuses `conflict`, and the \
+             human who tapped Approve is left with a card that will not go \
+             away and no reason why. Measured in production on 2026-09-09: \
+             seven runs, seven drafts, every one un-approvable, because the \
+             read was skipped.\n\n\
              **One draft per page.** If the procedure produces several pages — an \
              artifact and a typed fact promoted out of it, say — draft each of \
              them. Do not collapse them into one document.\n\n\
@@ -958,6 +969,14 @@ mod tests {
              stated in terms of create_draft: {review}"
         );
         assert!(review.contains("`create_draft` VALIDATES"), "{review}");
+        // The base a draft is approved against. An agent that skips the read
+        // and sends the create sentinel produces a draft nobody can approve —
+        // seven in a row, in production, before this said so.
+        assert!(
+            review.contains("ALWAYS, and FIRST") && review.contains("not a shortcut"),
+            "the read must be stated as unconditional, and the empty string as \
+             the exception it is: {review}"
+        );
         assert!(
             assigned.contains("`update_page` VALIDATES"),
             "control: the auto path still names its own verb: {assigned}"
