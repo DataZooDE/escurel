@@ -2778,6 +2778,7 @@ name = "escurel-runner-core"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "escurel-client",
  "escurel-runner-workflow",
  "escurel-types",

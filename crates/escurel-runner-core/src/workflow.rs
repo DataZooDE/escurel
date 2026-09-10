@@ -39,6 +39,15 @@ use serde_json::json;
 use crate::reconciler::ConfirmedEffect;
 use crate::trigger::Trigger;
 
+/// The reserved `label_skill` under which an operation's status is recorded on
+/// its run board (async-ops Phase 0.2). It is a KB-visible record, **never a
+/// dispatchable run**: the runner's enqueue chokepoint (`gate_and_enqueue`)
+/// drops any trigger carrying this label before a ledger row is created, so a
+/// status event can neither spawn a run nor re-enter the reducer. No authored
+/// skill may use this label (Phase 1 sanitisation will reject a caller who
+/// tries to capture one).
+pub const OPERATION_STATUS_LABEL: &str = "run-status";
+
 /// Outcome of driving one reducer pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkflowDriveOutcome {
@@ -132,33 +141,63 @@ pub async fn drive_workflow(
     } else {
         "running"
     };
-    record_status(client, &wf.run, status).await?;
+    // Best-effort (F6): the status record is an observability side-channel for
+    // `get_operation`, not the control path. A gateway hiccup writing it must
+    // NOT dead-letter a run that actually made progress — log and carry on.
+    if let Err(e) = record_status(client, &wf.run, status).await {
+        tracing::warn!(
+            target: "escurel_runner",
+            operation = %wf.run,
+            status,
+            error = %e,
+            "workflow: recording operation status failed (best-effort); run unaffected"
+        );
+    }
     Ok(WorkflowDriveOutcome { emitted })
 }
 
-/// Record the operation's status as an **assigned** event on the run board.
+/// Record the operation's status as a **processed, assigned** event on the run
+/// board — the record `get_operation` reads.
+///
+/// Two properties make this safe, and neither may be silently dropped:
+///
+/// - **Fail-closed against dispatch (F1).** The event is captured under the
+///   reserved [`OPERATION_STATUS_LABEL`], which the runner's enqueue chokepoint
+///   (`gate_and_enqueue`) refuses before creating a ledger row. The prior code
+///   relied on `assign_event` racing ahead of the poller/webhook to move the
+///   event out of the inbox; it does not — `capture_event` lands it `inbox`,
+///   and the webhook's synchronous notify (and the next poll tick) enqueue it
+///   before `assign_event` runs, spawning a dead-lettered run per transition.
+///   The label guard closes that window regardless of timing.
+/// - **Time-ordered (F2).** `at` is stamped so the board's history orders by
+///   wall-clock, not by the status event's content-addressed id (which is not
+///   monotonic). `get_operation` still resolves ties by status precedence
+///   rather than trusting last-write ordering alone.
+///
 /// The id is a deterministic function of `(operation, status)` so
-/// `capture_event`'s `ON CONFLICT DO NOTHING` makes it emit-once per status;
-/// `assign_event` marks it processed immediately so the inbox poller never
-/// dispatches it. Even a stray dispatch in the sub-poll window is harmless — the
-/// event carries no `provenance.workflow`, so it can never re-enter the reducer.
+/// `capture_event`'s `ON CONFLICT DO NOTHING` makes it emit-once per status.
 async fn record_status(
     client: &Client,
     operation: &str,
     status: &str,
 ) -> Result<(), WorkflowDriveError> {
-    let event_id = key::step_event_id(operation, "run-status", status);
+    let event_id = key::step_event_id(operation, OPERATION_STATUS_LABEL, status);
+    // DuckDB casts this via `TRY_CAST(? AS TIMESTAMP)`; match the space-separated
+    // microsecond format `paged_events` reads back so the round-trip is exact.
+    let at = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.6f")
+        .to_string();
     client
         .capture_event(CaptureEventRequest {
             event_id: event_id.clone(),
+            at,
             source: "escurel-runner".to_owned(),
             mime: "text/plain".to_owned(),
-            label_skill: "run-status".to_owned(),
+            label_skill: OPERATION_STATUS_LABEL.to_owned(),
             instance_page_id: operation.to_owned(),
             title: format!("status: {status}"),
             body: String::new(),
             provenance: json!({ "run_status": status }),
-            ..Default::default()
         })
         .await
         .map_err(WorkflowDriveError::Capture)?;

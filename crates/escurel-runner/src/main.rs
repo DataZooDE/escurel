@@ -488,6 +488,20 @@ fn gate_and_enqueue(
     trigger: Trigger,
     via: &str,
 ) -> bool {
+    // Fail-closed (async-ops F1): an operation-status record is a KB-visible
+    // event, never a dispatchable run. Drop it BEFORE `begin_run` so it creates
+    // no ledger row — the reducer writes one such event per status transition,
+    // and without this each would spawn (and dead-letter) a run. This is the
+    // single chokepoint both the poller and the webhook route through.
+    if trigger.label_skill == escurel_runner_core::OPERATION_STATUS_LABEL {
+        tracing::debug!(
+            target: "escurel_runner",
+            via,
+            event_id = %trigger.event_id,
+            "gate: dropping reserved operation-status event (not dispatchable)"
+        );
+        return false;
+    }
     match ledger.begin_run(&trigger) {
         Ok(LedgerDecision::Created(run_id)) => {
             // Loop controls: depth/cycle/budget. The `pending` row already
@@ -1820,4 +1834,106 @@ async fn wait_for_shutdown(draining: Arc<std::sync::atomic::AtomicBool>) {
 async fn wait_for_shutdown(draining: Arc<std::sync::atomic::AtomicBool>) {
     let _ = tokio::signal::ctrl_c().await;
     draining.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use escurel_runner_core::{Lineage, OPERATION_STATUS_LABEL, QuotaLimits};
+
+    /// Build the minimal `gate_and_enqueue` dependency set with limits generous
+    /// enough that only the reserved-label guard can reject a trigger. The
+    /// [`DispatchConsumer`] is returned so the caller keeps it alive — dropping
+    /// it closes the queue channel and every `enqueue` then reports not-sent.
+    #[allow(clippy::type_complexity)]
+    fn gate_deps() -> (
+        Ledger,
+        DispatchQueue,
+        LoopLimits,
+        Governor,
+        Metrics,
+        InflightSlots,
+        DispatchConsumer,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Leak the tempdir so the sqlite file outlives the test body; the
+        // process exits at test end and reclaims it.
+        let path = dir.keep().join("ledger.sqlite");
+        let ledger = Ledger::open(path).expect("open ledger");
+        let (queue, consumer) = DispatchQueue::new(16, 256);
+        let limits = LoopLimits {
+            max_depth: 16,
+            max_runs_per_root: 64,
+        };
+        let governor = Governor::new(QuotaLimits {
+            runs_per_min: 1000,
+            max_concurrent: 1000,
+            max_harness_procs: 1000,
+        });
+        let metrics = Metrics::new();
+        let inflight: InflightSlots =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        (ledger, queue, limits, governor, metrics, inflight, consumer)
+    }
+
+    fn trigger_with_label(event_id: &str, label: &str) -> Trigger {
+        Trigger {
+            tenant: "acme".to_owned(),
+            event_id: event_id.to_owned(),
+            label_skill: label.to_owned(),
+            instance_page_id: None,
+            lineage: Lineage::root(event_id.to_owned()),
+            workflow: None,
+            content_hash: None,
+        }
+    }
+
+    /// F1: a reserved operation-status event is dropped at the enqueue
+    /// chokepoint and creates NO ledger row — so recording a status can never
+    /// spawn (and dead-letter) a run. Deterministic: exercises the guard
+    /// directly, independent of the poller/webhook timing race that hid the bug.
+    #[test]
+    fn operation_status_event_creates_no_ledger_row() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let admitted = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-status-1", OPERATION_STATUS_LABEL),
+            "test",
+        );
+        assert!(!admitted, "a status event must not be admitted");
+        assert_eq!(
+            ledger.count_all_runs().expect("count runs"),
+            0,
+            "a status event must create no ledger row"
+        );
+    }
+
+    /// Positive control: an ordinary labelled trigger is NOT dropped by the
+    /// guard — it creates exactly one ledger row. Proves the guard is scoped to
+    /// the reserved label and does not swallow real work.
+    #[test]
+    fn ordinary_event_creates_one_ledger_row() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let admitted = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-real-1", "research-angle"),
+            "test",
+        );
+        assert!(admitted, "an ordinary event must be admitted");
+        assert_eq!(
+            ledger.count_all_runs().expect("count runs"),
+            1,
+            "an ordinary event must create exactly one ledger row"
+        );
+    }
 }

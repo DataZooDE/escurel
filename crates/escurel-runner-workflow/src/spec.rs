@@ -17,6 +17,14 @@ use serde_json::Value;
 /// The default instance skill each run of a workflow materialises.
 pub const DEFAULT_RUN_SKILL: &str = "workflow-run";
 
+/// The instance skill a **human-in-the-loop** gate produces (dialect F5). A
+/// gate is a real phase whose instance a *human* writes — the approval — so it
+/// carries a concrete, non-empty `produces` the reducer waits on exactly as it
+/// waits on any phase's output; it is never an empty label the gateway rejects.
+/// The pause-at-`awaiting_human` status this implies is derived by
+/// `get_operation` (async-ops Phase 2), not the reducer.
+pub const HUMAN_GATE_SKILL: &str = "human-approval";
+
 /// A parsed workflow plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowSkill {
