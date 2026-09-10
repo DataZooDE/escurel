@@ -121,23 +121,11 @@ impl OperationStatus {
             _ => return None,
         })
     }
-
-    /// Terminal precedence for `get_operation`'s derivation: when an operation's
-    /// append-only history carries several statuses, the highest rank is the
-    /// current one. `Failed` outranks `Succeeded` (a failed phase means the plan
-    /// did not wholly succeed); `AwaitingHuman` outranks `Running` (a pause is
-    /// more specific than "in flight"); `Running` outranks `Pending`.
-    #[must_use]
-    pub fn precedence(self) -> u8 {
-        match self {
-            OperationStatus::Pending => 0,
-            OperationStatus::Running => 1,
-            OperationStatus::AwaitingHuman => 2,
-            OperationStatus::Succeeded => 3,
-            OperationStatus::Failed => 4,
-        }
-    }
 }
+// NOTE: how to pick the "current" status among an operation's append-only
+// history is a READER policy (latest-wins by event time), not part of this
+// shared vocabulary — it lives in the gateway's `derive_operation_status`
+// (crew Phase-2 F-7), so no reader is coupled to a fixed tie-break here.
 
 #[cfg(test)]
 mod tests {

@@ -305,8 +305,9 @@ pub async fn record_status_best_effort(
 ///   *re-drive of the same transition* idempotent.
 /// - **Time-ordered (F2).** `at` is stamped so the board's history orders by
 ///   wall-clock, not by the status event's content-addressed id (which is not
-///   monotonic). `get_operation` resolves the current status by
-///   [`OperationStatus::precedence`] over these events.
+///   monotonic). `get_operation` derives the current status as the LATEST such
+///   event by `at` — so a re-driven operation reports its current state, not a
+///   stale terminal.
 async fn record_status(
     client: &Client,
     operation: &str,

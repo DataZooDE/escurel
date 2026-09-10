@@ -1446,13 +1446,17 @@ pub(super) struct StartOperationArgs {
     conversation_ref: Option<Value>,
 }
 
-/// Deterministic run-board slug for an idempotency key, scoped to the caller so
-/// two callers' keys never collide. A stable, page-safe id (hex of a salted
-/// hash) so a retry resolves to the same operation.
-fn operation_slug_for_key(subject: &str, key: &str) -> String {
+/// Deterministic run-board slug for an idempotency key, scoped to
+/// `(subject, wf_skill, key)` so two callers' keys never collide AND the same
+/// key under a DIFFERENT plan is a distinct operation rather than silently
+/// re-attaching to the old plan (crew Phase-2 F-4). A stable, page-safe id (hex
+/// of a salted hash) so a retry of the same request resolves to the same op.
+fn operation_slug_for_key(subject: &str, wf_skill: &str, key: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(subject.as_bytes());
+    h.update([0u8]);
+    h.update(wf_skill.as_bytes());
     h.update([0u8]);
     h.update(key.as_bytes());
     let digest = h.finalize();
@@ -1461,6 +1465,16 @@ fn operation_slug_for_key(subject: &str, key: &str) -> String {
         slug.push_str(&format!("{b:02x}"));
     }
     slug
+}
+
+/// A skill id is a safe, bounded slug — letters, digits, `_`, `-`, `.`. Used to
+/// reject a `wf_skill` before it is interpolated into board frontmatter (crew
+/// Phase-2 F-1) and as a cheap shape check before resolving it.
+fn is_safe_skill_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
 /// `start_operation` — begin an async workflow operation (async-ops Phase 2b).
@@ -1490,25 +1504,58 @@ pub(super) async fn tool_start_operation(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: StartOperationArgs = parse_args(args, "start_operation")?;
-    if a.wf_skill.trim().is_empty() {
+    // Validate + RESOLVE the plan (crew Phase-2 F-5): a `wf_skill` that is not a
+    // real `kind: workflow` skill would create an orphan board + an invocation
+    // that never drives (fail-slow, `pending` forever). Fail fast instead. The
+    // charset check also makes `wf_skill` safe to interpolate into frontmatter
+    // (F-1).
+    if !is_safe_skill_id(&a.wf_skill) {
         return Err(JsonRpcError::invalid_params(
-            "start_operation: `wf_skill` is required".to_owned(),
+            "start_operation: `wf_skill` must be a skill id (letters, digits, _-.)".to_owned(),
         ));
     }
-    let slug = match a
+    let plan = indexer
+        .expand(&format!("markdown/skills/{}.md", a.wf_skill), None, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("start_operation: {e}")))?;
+    let is_workflow = plan.as_ref().is_some_and(|p| {
+        p.frontmatter
+            .get("backend")
+            .and_then(|b| b.get("kind"))
+            .and_then(Value::as_str)
+            == Some("workflow")
+    });
+    if !is_workflow {
+        return Err(JsonRpcError::invalid_params(format!(
+            "start_operation: `{}` is not a `kind: workflow` plan skill",
+            a.wf_skill
+        )));
+    }
+    // Validate the idempotency key charset (crew Phase-2 F-1): it is
+    // interpolated into board frontmatter, so a newline could forge keys.
+    let idem_key = a
         .idempotency_key
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty());
+    if let Some(key) = idem_key
+        && !is_safe_idempotency_key(key)
     {
-        Some(key) => operation_slug_for_key(caller.subject, key),
+        return Err(JsonRpcError::invalid_params(
+            "start_operation: `idempotency_key` must be 1-128 chars of [A-Za-z0-9_.:-]".to_owned(),
+        ));
+    }
+    let slug = match idem_key {
+        Some(key) => operation_slug_for_key(caller.subject, &a.wf_skill, key),
         None => ulid::Ulid::new().to_string().to_ascii_lowercase(),
     };
     let operation_id = format!("markdown/instances/workflow-run/{slug}.md");
 
     // Idempotency: an existing board means this operation already started. Only
-    // its owner (or admin) may re-attach — a non-owner gets the same not-found
-    // shape `get_operation` returns, never a peek at another caller's run.
+    // its owner (or admin) may re-attach — a non-owner gets a collision error,
+    // never a peek at another caller's run. The re-attach reports the DERIVED
+    // status (F-3), not a hardcoded `pending` a post-completion retry would lie
+    // with.
     if let Some(existing) = indexer
         .expand(&operation_id, None, None)
         .await
@@ -1523,39 +1570,36 @@ pub(super) async fn tool_start_operation(
                 "start_operation: idempotency_key collides with another operation".to_owned(),
             ));
         }
+        let status = super::tools_read::derive_operation_status(indexer, &operation_id).await?;
         return Ok(json!({
             "operation_id": operation_id,
-            "status": "pending",
+            "status": status.as_str(),
             "idempotent": true,
         }));
     }
 
     // Create the owner-scoped run board. `requested_by`/`requester_groups` are
-    // the identity the per-run caller token is later minted from (Phase 2c);
-    // the verified subject is ALSO the page principal via `update_page_as`.
-    let groups_yaml = if caller.token_groups.is_empty() {
-        "[]".to_owned()
-    } else {
-        format!(
-            "[{}]",
-            caller
-                .token_groups
-                .iter()
-                .map(|g| format!("\"{}\"", g.replace('\\', "\\\\").replace('"', "\\\"")))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
+    // the identity the per-run caller token is later minted from (Phase 2c); the
+    // verified subject is ALSO the page principal via `update_page_as`. The
+    // operation's *status* is NOT stored here — it is derived from the
+    // append-only status events (one source of truth, F-3); the board carries
+    // only durable request facts. Every interpolated value is either a verified
+    // identity or a validated/JSON-encoded scalar (F-1).
+    let groups_json = serde_json::to_string(caller.token_groups)
+        .unwrap_or_else(|_| "[]".to_owned());
     let mut content = format!(
         "---\ntype: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {}\n\
-         status: pending\nrequested_by: {}\nrequester_groups: {groups_yaml}\n",
-        a.wf_skill, caller.subject,
+         requested_by: {}\nrequester_groups: {groups_json}\n",
+        a.wf_skill,
+        json_scalar(caller.subject),
     );
-    if let Some(key) = a.idempotency_key.as_deref().filter(|s| !s.trim().is_empty()) {
-        content.push_str(&format!("idempotency_key: {key}\n"));
+    if let Some(key) = idem_key {
+        content.push_str(&format!("idempotency_key: {}\n", json_scalar(key)));
     }
     if let Some(cref) = &a.conversation_ref {
-        content.push_str(&format!("conversation_ref: {}\n", cref));
+        // Compact JSON is newline-free and a valid YAML flow scalar/collection.
+        let encoded = serde_json::to_string(cref).unwrap_or_else(|_| "null".to_owned());
+        content.push_str(&format!("conversation_ref: {encoded}\n"));
     }
     content.push_str("---\n# operation\n\nAsync operation run board.\n");
     indexer
@@ -1565,6 +1609,9 @@ pub(super) async fn tool_start_operation(
 
     // The invocation event, with SERVER-constructed provenance.workflow — the
     // caller never supplies it, so it cannot forge a workflow hop or its target.
+    // Its id is DETERMINISTIC in the operation (crew Phase-2 F-6): two concurrent
+    // same-key starts both create the (identical) board but `capture_event`'s
+    // ON CONFLICT collapses the invocation to one → one run, not two.
     let provenance = stamp_captured_by(
         Some(json!({
             "workflow": { "run": operation_id, "wf_skill": a.wf_skill, "phase": "invoke" }
@@ -1572,7 +1619,7 @@ pub(super) async fn tool_start_operation(
         caller.subject,
     );
     let requested = NewEvent {
-        event_id: None,
+        event_id: Some(format!("{slug}-invoke")),
         at: None,
         source: "escurel:start_operation".to_owned(),
         mime: "text/plain".to_owned(),
@@ -1591,7 +1638,23 @@ pub(super) async fn tool_start_operation(
     }
     let _ = events_tx.send(std::sync::Arc::new(stored));
 
-    Ok(json!({ "operation_id": operation_id, "status": "pending" }))
+    Ok(json!({ "operation_id": operation_id, "status": "pending", "idempotent": false }))
+}
+
+/// An idempotency key is a short, bounded token safe to interpolate into
+/// frontmatter (crew Phase-2 F-1): 1-128 chars of `[A-Za-z0-9_.:-]`.
+fn is_safe_idempotency_key(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':'))
+}
+
+/// Encode a string as a JSON scalar (double-quoted, escaped) — a newline-free,
+/// injection-safe value valid in YAML frontmatter. Used for any value that is a
+/// verified identity but still worth encoding rather than interpolating raw.
+fn json_scalar(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_owned())
 }
 
 /// The response for an idempotent re-capture the caller may NOT read: its

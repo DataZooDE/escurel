@@ -205,10 +205,9 @@ pub(super) struct GetOperationArgs {
 /// oracle, matching every sibling read verb).
 ///
 /// The status is DERIVED from the board's append-only status events (the
-/// reserved [`escurel_types::OPERATION_STATUS_LABEL`] the runner records): the
-/// current status is the one of highest [`OperationStatus::precedence`] present
-/// (a `failed` outranks a stale `running`; `awaiting_human` outranks
-/// `running`). No status events yet ⇒ `pending`.
+/// reserved [`escurel_types::OPERATION_STATUS_LABEL`] the runner records) by
+/// [`derive_operation_status`] — latest-wins by event time, so a re-driven
+/// operation reports its current state rather than a stale terminal.
 pub(super) async fn tool_get_operation(
     indexer: &Indexer,
     caller: AclCaller<'_>,
@@ -231,33 +230,46 @@ pub(super) async fn tool_get_operation(
     if !readable {
         return Ok(json!({ "operation_id": a.operation_id, "found": false }));
     }
-    let page = indexer
-        .list_events_page(&a.operation_id, escurel_index::EVENTS_MAX_LIMIT, None)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("get_operation: {e}")))?;
-    let mut current: Option<escurel_types::OperationStatus> = None;
-    for ev in &page.events {
-        if ev.label_skill != escurel_types::OPERATION_STATUS_LABEL {
-            continue;
-        }
-        let Some(status) = ev
-            .provenance
-            .get("run_status")
-            .and_then(Value::as_str)
-            .and_then(escurel_types::OperationStatus::from_wire)
-        else {
-            continue;
-        };
-        if current.is_none_or(|c| status.precedence() > c.precedence()) {
-            current = Some(status);
-        }
-    }
-    let status = current.unwrap_or(escurel_types::OperationStatus::Pending);
+    let status = derive_operation_status(indexer, &a.operation_id).await?;
     Ok(json!({
         "operation_id": a.operation_id,
         "found": true,
         "status": status.as_str(),
     }))
+}
+
+/// Derive an operation's current status from its run board's append-only status
+/// events — the single source of truth shared by `get_operation` and
+/// `start_operation`'s idempotent re-attach (crew Phase-2 F-2/F-3).
+///
+/// **Latest-wins by event time, not max-precedence.** The status writer stamps a
+/// real `at` on each transition and `list_events_page` returns them in `(at,
+/// event_id)` order, so the LAST recognised `run-status` event is the current
+/// one. Max-precedence would be sticky — a `failed` would pin the operation
+/// forever even after an operator re-drive drove it back to `running` →
+/// `succeeded`. No status events yet ⇒ `pending`.
+pub(super) async fn derive_operation_status(
+    indexer: &Indexer,
+    operation_id: &str,
+) -> Result<escurel_types::OperationStatus, JsonRpcError> {
+    // Status events are few (one per transition) and all carry `at`, so a single
+    // page well within the cap holds the whole history in order.
+    let page = indexer
+        .list_events_page(operation_id, escurel_index::EVENTS_MAX_LIMIT, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("get_operation: {e}")))?;
+    let latest = page
+        .events
+        .iter()
+        .filter(|ev| ev.label_skill == escurel_types::OPERATION_STATUS_LABEL)
+        .filter_map(|ev| {
+            ev.provenance
+                .get("run_status")
+                .and_then(Value::as_str)
+                .and_then(escurel_types::OperationStatus::from_wire)
+        })
+        .next_back();
+    Ok(latest.unwrap_or(escurel_types::OperationStatus::Pending))
 }
 
 #[derive(Deserialize)]
