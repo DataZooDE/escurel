@@ -113,6 +113,9 @@ impl IndexStore for SingleFileStore {
         // `INSTALL` is idempotent.
         Migrator::load_extensions(&conn)?;
         Migrator::enable_hnsw_persistence(&conn)?;
+        // Baked anofox extensions (ESCUREL_INDEX_EXTENSIONS) — per-connection
+        // session state like vss/fts, so load on EVERY boot. Unset ⇒ no-op.
+        Migrator::load_baked_extensions(&conn)?;
         if fresh {
             Migrator::up(&conn)?;
         }
@@ -165,6 +168,7 @@ impl IndexStore for SingleFileStore {
             })?;
         Migrator::load_extensions(&crdt_conn)?;
         Migrator::enable_hnsw_persistence(&crdt_conn)?;
+        Migrator::load_baked_extensions(&crdt_conn)?;
 
         // Build the indexer, then attach the retrieval stages via the
         // injected hook (reranker load is degraded-start in the server —

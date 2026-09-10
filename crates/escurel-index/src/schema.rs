@@ -55,6 +55,35 @@ impl Migrator {
         Ok(())
     }
 
+    /// `LOAD` the baked DuckDB extensions named by `ESCUREL_INDEX_EXTENSIONS`
+    /// (a comma-separated list of absolute `.duckdb_extension` paths), in
+    /// order. This is how the anofox extensions (optimize/inventory/bayes/
+    /// forecast/scenario) reach query pages: baked into the image by digest and
+    /// loaded by absolute path — never installed by name, never autoinstalled.
+    ///
+    /// Like [`Migrator::load_extensions`] this is **per-connection session
+    /// state**, so it MUST run on every connection that touches the index, on
+    /// every boot. A locally-built, unsigned build additionally requires
+    /// `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS` (the open-time Config flag in
+    /// [`Migrator::connection_config`]); without it the engine refuses the
+    /// `LOAD`. Unset ⇒ no-op (the default: bake nothing).
+    pub fn load_baked_extensions(conn: &Connection) -> Result<(), MigrationError> {
+        Self::load_extension_paths(conn, &baked_extension_paths())
+    }
+
+    /// `LOAD` each `.duckdb_extension` at the given absolute paths, in order.
+    /// The env-free core of [`Migrator::load_baked_extensions`] (which supplies
+    /// the paths from `ESCUREL_INDEX_EXTENSIONS`) — split out so the load can be
+    /// driven directly from a test without touching process env.
+    pub fn load_extension_paths(conn: &Connection, paths: &[String]) -> Result<(), MigrationError> {
+        for path in paths {
+            // Single-quote-escape for the SQL string literal.
+            let escaped = path.replace('\'', "''");
+            conn.execute_batch(&format!("LOAD '{escaped}';"))?;
+        }
+        Ok(())
+    }
+
     /// The [`duckdb::Config`] every connection in this crate is opened with.
     ///
     /// Identical to the default except when
@@ -303,6 +332,42 @@ fn allow_unsigned_extensions() -> bool {
             "true" | "1" | "yes" | "on"
         )
     })
+}
+
+/// Absolute `.duckdb_extension` paths from `ESCUREL_INDEX_EXTENSIONS`
+/// (comma-separated), in order; blank entries skipped. Unset ⇒ empty.
+fn baked_extension_paths() -> Vec<String> {
+    parse_extension_paths(std::env::var("ESCUREL_INDEX_EXTENSIONS").ok().as_deref())
+}
+
+/// Pure parser for `ESCUREL_INDEX_EXTENSIONS` (comma-separated absolute paths),
+/// order-preserving, blanks skipped. `None`/blank ⇒ empty.
+fn parse_extension_paths(raw: Option<&str>) -> Vec<String> {
+    raw.map(|s| {
+        s.split(',')
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod extension_path_tests {
+    use super::parse_extension_paths;
+
+    #[test]
+    fn parses_ordered_and_skips_blanks() {
+        assert_eq!(parse_extension_paths(None), Vec::<String>::new());
+        assert_eq!(parse_extension_paths(Some("  ")), Vec::<String>::new());
+        assert_eq!(
+            parse_extension_paths(Some("/a/x.duckdb_extension, /b/y.duckdb_extension , ")),
+            vec![
+                "/a/x.duckdb_extension".to_string(),
+                "/b/y.duckdb_extension".to_string()
+            ]
+        );
+    }
 }
 
 const STAGE_1_AUTOLOAD: &str = include_str!("../sql/0001_a_autoload.sql");
