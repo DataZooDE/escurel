@@ -27,6 +27,7 @@
 pub mod barrier;
 pub mod budget;
 pub mod corpus;
+pub mod dialect;
 pub mod key;
 pub mod reduce;
 pub mod spec;

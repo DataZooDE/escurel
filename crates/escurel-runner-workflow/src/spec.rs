@@ -62,6 +62,46 @@ pub struct Phase {
     pub max_targets: Option<usize>,
     /// Optional per-phase harness override (`harness:` on the phase).
     pub harness: Option<String>,
+    /// Authored outcome policy for this step (the workflow dialect's
+    /// `on failure: retry N, then <fallback>`). YAML-authored phases default to
+    /// `{ retries: 0, on_exhausted: Stop }` — fail on error, the pre-dialect
+    /// behaviour.
+    pub outcome: OutcomePolicy,
+    /// A human-in-the-loop gate: the operation pauses at `awaiting_human` on
+    /// this step until a human approves before the plan continues. Authored via
+    /// `(human-in-the-loop)` / "a human approves …" in the dialect.
+    pub human_gate: bool,
+}
+
+/// What happens when a step's runs are exhausted without success — authored
+/// per-step in the workflow dialect (`on failure: retry N, then <fallback>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutcomePolicy {
+    /// How many times the step may be retried before the fallback applies.
+    pub retries: u32,
+    /// What to do once retries are exhausted.
+    pub on_exhausted: Fallback,
+}
+
+impl Default for OutcomePolicy {
+    fn default() -> Self {
+        Self {
+            retries: 0,
+            on_exhausted: Fallback::Stop,
+        }
+    }
+}
+
+/// The fallback once a step's retries are exhausted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fallback {
+    /// Pause the whole operation at `awaiting_human`.
+    AskHuman,
+    /// Fail the operation (the default — matches pre-dialect behaviour).
+    #[default]
+    Stop,
+    /// Advance the plan without this step's output.
+    Skip,
 }
 
 /// Where a phase's steps write their output (`§3.4`, the compile-first-wiki
@@ -175,6 +215,10 @@ fn parse_phase(p: &Value, verify: &VerifyPolicy) -> Option<Phase> {
             .get("harness")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        // YAML-authored phases keep the pre-dialect behaviour (fail on error,
+        // no human gate); the dialect front-end (dialect.rs) sets these.
+        outcome: OutcomePolicy::default(),
+        human_gate: false,
     })
 }
 
