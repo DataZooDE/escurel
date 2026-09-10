@@ -115,11 +115,19 @@ optional_frontmatter: [question, workflow_run]\n\
 # research-report\n";
 
 /// The run board each invocation materialises.
+///
+/// Owner-scoped (async-ops crew Phase-2 F3): a board created by `start_operation`
+/// carries `requested_by` (the verified requester) as its owning principal, so
+/// only that requester — and admin, i.e. the runner's own orchestration identity
+/// — may read it. Without this the board is tenant-public and leaks
+/// `requester_groups`, `conversation_ref` and the raw `input`.
 pub const WORKFLOW_RUN: &str = "---\n\
 type: skill\n\
 id: workflow-run\n\
 description: A dynamic-workflow run board — its per-phase progress and status.\n\
-optional_frontmatter: [wf_skill, status]\n\
+visibility: owner\n\
+owner_field: requested_by\n\
+optional_frontmatter: [wf_skill, status, requested_by, requester_groups, idempotency_key, conversation_ref]\n\
 ---\n\
 # workflow-run\n";
 

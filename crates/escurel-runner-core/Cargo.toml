@@ -14,6 +14,10 @@ homepage.workspace = true
 # and same `kid` scheme as the platform's other workloads, because this
 # borrows that signing identity rather than becoming a second issuer.
 base64 = "0.22"
+# Stamping a real `at` on the operation-status event (record_status) so the
+# run board's event history is time-ordered, not ordered by the status
+# event's hash-derived id (which is content-addressed, not monotonic).
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 escurel-client = { path = "../escurel-client" }
 jsonwebtoken = "9"
 escurel-runner-workflow = { path = "../escurel-runner-workflow" }

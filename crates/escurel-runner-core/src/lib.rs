@@ -31,6 +31,7 @@ pub use auth::{AuthError, Signer, TokenSource};
 pub use cascade::{CascadeError, CascadeOutcome, emit_cascade};
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
+pub use escurel_runner_workflow::OperationStatus;
 pub use ledger::{
     DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
 };
@@ -45,4 +46,7 @@ pub use reconciler::{
 pub use recovery::{RecoveryReport, recover_pending};
 pub use secrecy::SecretString;
 pub use trigger::{Lineage, Trigger};
-pub use workflow::{WorkflowDriveError, WorkflowDriveOutcome, drive_workflow, recover_workflows};
+pub use workflow::{
+    OPERATION_STATUS_LABEL, StepTerminal, TerminalDelivery, WorkflowDriveError,
+    WorkflowDriveOutcome, drive_workflow, record_status_best_effort, recover_workflows,
+};

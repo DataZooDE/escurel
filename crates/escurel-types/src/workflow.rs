@@ -69,6 +69,84 @@ impl WorkflowProvenance {
     }
 }
 
+/// Where an operation's result lives — a **closed, server-resolved** reference
+/// (async-ops Phase 4). It is deliberately NOT a path or URL: a caller/harness
+/// names the result only by a bounded id, and the server maps it to a location
+/// under its own data root. This shape makes path-traversal and remote-scheme
+/// injection unrepresentable — there is no field to carry `../…` or `s3://…`.
+/// The resolver (`escurel_index::result_ref`) validates the id and enforces a
+/// torn-publish manifest gate before any `read_parquet`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResultRef {
+    /// A scenario what-if result materialised as parquet under
+    /// `<data_root>/<tenant>/<scenario_id>/`, addressed only by its bounded
+    /// `scenario_id` (async-ops Phase 4 / B′).
+    ScenarioParquet {
+        /// The scenario's server-assigned id — a bounded slug
+        /// (`[A-Za-z0-9_.-]`, not `.`/`..`), never a path or URL.
+        scenario_id: String,
+    },
+}
+
+/// The reserved `label_skill` an operation's status events are recorded under.
+/// A KB-visible record, never a dispatchable run — the runner's enqueue
+/// chokepoint drops any trigger carrying it, and the `escurel:` prefix is a
+/// reserved namespace a tenant cannot author. Shared vocabulary: the runner
+/// writes it, the gateway's `get_operation` reads it.
+pub const OPERATION_STATUS_LABEL: &str = "escurel:run-status";
+
+/// The status of an async operation, as recorded on its run board (as
+/// `provenance.run_status` on a reserved status event) and read back by
+/// `get_operation`. One shared vocabulary for the writer (the runner's driver)
+/// and every reader (the gateway's `get_operation`), living here in
+/// `escurel-types` so neither depends on the other (crew F-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationStatus {
+    /// Accepted, not yet running.
+    Pending,
+    /// At least one phase is in flight (or awaiting re-drive).
+    Running,
+    /// Every phase is complete.
+    Succeeded,
+    /// A step failed terminally and its phase's policy is to stop.
+    Failed,
+    /// Paused for a human decision (a held draft, or an `AskHuman` fallback).
+    AwaitingHuman,
+}
+
+impl OperationStatus {
+    /// The stable wire/KB string (the `provenance.run_status` value + title).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OperationStatus::Pending => "pending",
+            OperationStatus::Running => "running",
+            OperationStatus::Succeeded => "succeeded",
+            OperationStatus::Failed => "failed",
+            OperationStatus::AwaitingHuman => "awaiting_human",
+        }
+    }
+
+    /// Parse the wire string back (the inverse of [`Self::as_str`]); `None`
+    /// for an unrecognised value, so a reader ignores a status it does not know.
+    #[must_use]
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "pending" => OperationStatus::Pending,
+            "running" => OperationStatus::Running,
+            "succeeded" => OperationStatus::Succeeded,
+            "failed" => OperationStatus::Failed,
+            "awaiting_human" => OperationStatus::AwaitingHuman,
+            _ => return None,
+        })
+    }
+}
+// NOTE: how to pick the "current" status among an operation's append-only
+// history is a READER policy (latest-wins by event time), not part of this
+// shared vocabulary — it lives in the gateway's `derive_operation_status`
+// (crew Phase-2 F-7), so no reader is coupled to a fixed tie-break here.
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -81,8 +81,14 @@ const ANGLE_SKILL_BODY: &str =
     "---\ntype: skill\nid: research-angle\n---\n# research-angle\n\nOne search angle.\n";
 const REPORT_SKILL_BODY: &str =
     "---\ntype: skill\nid: research-report\n---\n# research-report\n\nThe cited report.\n";
-const RUN_SKILL_BODY: &str =
-    "---\ntype: skill\nid: workflow-run\n---\n# workflow-run\n\nThe run board.\n";
+// Owner-scoped (crew Phase-2 F3): a `start_operation` board carries
+// `requested_by` and is readable only by that requester (+admin). Boards created
+// directly via `capture_event` in the reducer-focused tests carry no
+// `requested_by`, so their `get_operation` reads use an admin token.
+const RUN_SKILL_BODY: &str = "---\ntype: skill\nid: workflow-run\n\
+visibility: owner\nowner_field: requested_by\n\
+optional_frontmatter: [wf_skill, status, requested_by, requester_groups, idempotency_key, conversation_ref]\n\
+---\n# workflow-run\n\nThe run board.\n";
 
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
@@ -98,6 +104,35 @@ fn free_port() -> u16 {
         .local_addr()
         .expect("read local_addr")
         .port()
+}
+
+/// A stub channel courier: an in-process `/v1/outbound` sink that records every
+/// terminal-delivery POST (async-ops Phase 3). Returns its URL and the shared
+/// buffer of received bodies.
+async fn spawn_outbound_sink() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+    use axum::extract::State;
+    use axum::routing::post;
+    use axum::{Json, Router};
+
+    type Buf = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
+    let received: Buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    async fn handler(State(buf): State<Buf>, Json(body): Json<Value>) -> axum::http::StatusCode {
+        buf.lock().expect("sink mutex").push(body);
+        axum::http::StatusCode::OK
+    }
+
+    let app = Router::new()
+        .route("/v1/outbound", post(handler))
+        .with_state(received.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind sink");
+    let addr = listener.local_addr().expect("sink addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}/v1/outbound"), received)
 }
 
 async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value {
@@ -119,6 +154,54 @@ async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Va
     assert!(body.get("error").is_none(), "tool {name} error: {body}");
     let result = body["result"].clone();
     result.get("structuredContent").cloned().unwrap_or(result)
+}
+
+/// Like [`call_mcp`] but signs the token with an explicit `subject` — for
+/// cross-caller ACL tests (caller B reading caller A's owner-scoped operation).
+async fn call_mcp_as(
+    p: &EscurelProcess,
+    role: Role,
+    subject: &str,
+    name: &str,
+    args: Value,
+) -> Value {
+    let token = p.mint_token_with_sub(TENANT, role, subject);
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": args },
+        }))
+        .send()
+        .await
+        .expect("post /mcp");
+    let body: Value = resp.json().await.unwrap();
+    assert!(body.get("error").is_none(), "tool {name} error: {body}");
+    let result = body["result"].clone();
+    result.get("structuredContent").cloned().unwrap_or(result)
+}
+
+/// Like [`call_mcp`] but asserts the tool returned a JSON-RPC ERROR, and returns
+/// the error object. Used for negative security cases.
+async fn call_mcp_err(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value {
+    let token = p.mint_token(TENANT, role);
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": args },
+        }))
+        .send()
+        .await
+        .expect("post /mcp");
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body.get("error").is_some(),
+        "expected {name} to error, got: {body}"
+    );
+    body["error"].clone()
 }
 
 /// Poll `list_instances(skill)` until an instance whose page id starts with
@@ -172,7 +255,13 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     let run_page = "markdown/instances/workflow-run/r1.md";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -189,7 +278,11 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     .await;
 
     // 3. Spawn the real runner (echo harness), generous loop limits, fast poll.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -232,6 +325,840 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     )
     .await;
     assert!(report.ends_with(".md"), "report page id: {report}");
+
+    // Operation status (async-ops Phase 0.2), event-sourced: once every phase is
+    // complete the runner records a terminal `succeeded` status as an assigned
+    // event on the run board — the record `get_operation` will read. Poll the
+    // board's event history for it.
+    let run_page = "markdown/instances/workflow-run/r1.md";
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let succeeded = loop {
+        let events = call_mcp(
+            &gateway,
+            Role::Agent,
+            "list_events",
+            json!({ "instance_page_id": run_page }),
+        )
+        .await;
+        let found = events["events"].as_array().is_some_and(|es| {
+            es.iter().any(|e| {
+                e["title"].as_str() == Some("status: succeeded")
+                    || e["provenance"]["run_status"].as_str() == Some("succeeded")
+            })
+        });
+        if found {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
+    assert!(
+        succeeded,
+        "the operation must reach a terminal `succeeded` status event on {run_page}"
+    );
+
+    // async-ops Phase 2: the `get_operation` facade derives that terminal state
+    // from the append-only status events (by precedence), so a caller polls one
+    // read instead of scanning the event log. This board was created directly
+    // via capture_event (no `requested_by`), so an admin token reads it; the
+    // owner-scoped facade path is covered by the start_operation tests below.
+    let op = call_mcp(
+        &gateway,
+        Role::Admin,
+        "get_operation",
+        json!({ "operation_id": run_page }),
+    )
+    .await;
+    assert_eq!(
+        op["found"],
+        json!(true),
+        "get_operation found the run board"
+    );
+    assert_eq!(
+        op["status"],
+        json!("succeeded"),
+        "get_operation derives `succeeded` for a completed workflow: {op}"
+    );
+
+    // A bogus operation id is `found: false` — the same shape a cross-caller
+    // denial returns, so existence never leaks.
+    let missing = call_mcp(
+        &gateway,
+        Role::Agent,
+        "get_operation",
+        json!({ "operation_id": "markdown/instances/workflow-run/does-not-exist.md" }),
+    )
+    .await;
+    assert_eq!(
+        missing["found"],
+        json!(false),
+        "get_operation on an unknown id is not-found, not an error: {missing}"
+    );
+}
+
+/// Poll the run board's event history for an operation-status event whose
+/// `provenance.run_status` matches `want`, up to `secs`. Returns whether it
+/// appeared.
+async fn await_operation_status(p: &EscurelProcess, run_page: &str, want: &str, secs: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let events = call_mcp(
+            p,
+            Role::Agent,
+            "list_events",
+            json!({ "instance_page_id": run_page }),
+        )
+        .await;
+        let found = events["events"].as_array().is_some_and(|es| {
+            es.iter()
+                .any(|e| e["provenance"]["run_status"].as_str() == Some(want))
+        });
+        if found {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Phase 0.3 DoD (no mock): a workflow whose FIRST phase's harness fails must
+/// drive the operation to a terminal `failed` status — not wedge at `running`
+/// forever. The scope step's echo run is made to fail deterministically
+/// (`ESCUREL_ECHO_FAIL_SKILL=research-angle`); it exhausts its retries and
+/// dead-letters, and the reducer — driven on that terminal transition, per the
+/// step's authored `Stop` outcome — records the operation `failed`.
+#[tokio::test]
+async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let run_page = "markdown/instances/workflow-run/rfail.md";
+    call_mcp(
+        &gateway,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke deep-research (fail scope)",
+            "body": "Answer the research question.",
+            "provenance": {
+                "workflow": { "run": run_page, "wf_skill": WF_SKILL, "phase": "invoke" }
+            }
+        }),
+    )
+    .await;
+
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        // Make the scope step (produces research-angle) fail every attempt.
+        .env("ESCUREL_ECHO_FAIL_SKILL", "research-angle")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    let failed = await_operation_status(&gateway, run_page, "failed", 30).await;
+    assert!(
+        failed,
+        "a workflow whose first step fails must reach a terminal `failed` status on {run_page}, \
+         not wedge at `running`"
+    );
+    // And it must NOT report success.
+    let succeeded = await_operation_status(&gateway, run_page, "succeeded", 1).await;
+    assert!(
+        !succeeded,
+        "a failed operation must not also report succeeded"
+    );
+
+    // async-ops Phase 2: `get_operation` derives the terminal `failed`. Admin
+    // read: this board was created via capture_event (no `requested_by`).
+    let op = call_mcp(
+        &gateway,
+        Role::Admin,
+        "get_operation",
+        json!({ "operation_id": run_page }),
+    )
+    .await;
+    assert_eq!(
+        op["status"],
+        json!("failed"),
+        "get_operation derives `failed` for a failed workflow: {op}"
+    );
+}
+
+// A workflow authored in the PROSE DIALECT (numbered steps in the page body, no
+// `phases:` frontmatter), whose single step's authored fallback is `then ask a
+// human`. Proves the dialect is actually wired into `WorkflowSkill::parse_page`
+// (crew F-1) and that an `AskHuman` fallback drives the operation to
+// `awaiting_human` — unreachable before, because YAML phases always defaulted
+// to `Stop`.
+const PROSE_WF_SKILL: &str = "reorder-flow";
+const PROSE_WF_BODY: &str = "---\n\
+type: skill\n\
+id: reorder-flow\n\
+description: Prose-authored workflow test plan.\n\
+backend: {kind: workflow}\n\
+run_skill: workflow-run\n\
+---\n\
+# reorder-flow\n\n\
+1. Compute the reorder with [[skill::research-angle]].\n   \
+on failure: retry once, then ask a human.\n\n\
+on any unrecoverable failure: stop and report.\n";
+
+/// Phase 0.3 / crew F-1 + F-3 (no mock): a PROSE-authored workflow whose step
+/// fails and authors `then ask a human` drives the operation to
+/// `awaiting_human` (not `failed`), proving the dialect front-end is wired in
+/// and the authored `AskHuman` policy is honoured end to end.
+#[tokio::test]
+async fn prose_authored_ask_a_human_fallback_reaches_awaiting_human() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(PROSE_WF_SKILL, PROSE_WF_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let run_page = "markdown/instances/workflow-run/rprose.md";
+    call_mcp(
+        &gateway,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": PROSE_WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke reorder-flow",
+            "body": "Compute a reorder.",
+            "provenance": {
+                "workflow": { "run": run_page, "wf_skill": PROSE_WF_SKILL, "phase": "invoke" }
+            }
+        }),
+    )
+    .await;
+
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        // The step (produces research-angle) fails every attempt → dead-letter
+        // → the authored `then ask a human` fallback applies.
+        .env("ESCUREL_ECHO_FAIL_SKILL", "research-angle")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    let awaiting = await_operation_status(&gateway, run_page, "awaiting_human", 30).await;
+    assert!(
+        awaiting,
+        "a prose-authored `ask a human` fallback must drive the operation to `awaiting_human` \
+         on {run_page} — proving the dialect is wired in and AskHuman is honoured"
+    );
+    // It must NOT fail closed to `failed` (that is the Stop path, not AskHuman).
+    let failed = await_operation_status(&gateway, run_page, "failed", 1).await;
+    assert!(!failed, "an AskHuman fallback must not record `failed`");
+}
+
+/// Phase-2 crew security fixes (no mock): F1 — a non-admin agent cannot author a
+/// reserved `escurel:run-status` event (which would forge an operation's status);
+/// F2 — start_operation refuses a `wf_skill` that is not a readable kind:workflow
+/// plan (denial and absence look identical).
+#[tokio::test]
+async fn facade_refuses_forged_status_and_unknown_plan() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // F1: a non-admin caller may not capture a reserved `escurel:` label
+    // (deliberately Role::Agent — the negative case being proven).
+    let err = call_mcp_err(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "escurel:run-status",
+            "instance_page_id": "markdown/instances/workflow-run/victim.md",
+            "title": "status: succeeded",
+            "provenance": { "run_status": "succeeded" }
+        }),
+    )
+    .await;
+    assert!(
+        err["message"].as_str().unwrap_or("").contains("reserved"),
+        "forged reserved-label capture must be refused: {err}"
+    );
+
+    // F2: `wf_skill` that is not a readable kind:workflow plan is refused. A
+    // plain skill (`research-angle`, not a workflow) exercises the same gate as
+    // an unknown/unreadable id — one error either way.
+    let err = call_mcp_err(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({ "wf_skill": "research-angle" }),
+    )
+    .await;
+    assert!(
+        err["message"].as_str().unwrap_or("").contains("workflow"),
+        "non-workflow plan must be refused: {err}"
+    );
+    let err = call_mcp_err(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({ "wf_skill": "no-such-plan" }),
+    )
+    .await;
+    assert!(
+        err["message"].as_str().unwrap_or("").contains("workflow"),
+        "unknown plan must be refused with the same error: {err}"
+    );
+
+    // 2c-ii: a non-admin caller cannot forge `provenance.workflow` on a raw
+    // capture_event (which would inject a workflow step). The legitimate path is
+    // start_operation; the runner emits steps as admin. (A caller's
+    // `provenance.runner` block still survives — the narrower guard.)
+    let err = call_mcp_err(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "research-angle",
+            "instance_page_id": "markdown/instances/workflow-run/forged.md",
+            "provenance": { "workflow": { "run": "markdown/instances/workflow-run/forged.md", "wf_skill": WF_SKILL, "phase": "invoke" } }
+        }),
+    )
+    .await;
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("server-owned"),
+        "a forged provenance.workflow must be refused: {err}"
+    );
+}
+
+/// async-ops Phase 2b (no mock): the `start_operation` facade begins a workflow
+/// server-side — the caller names only a plan skill; the server builds the
+/// operation id + its workflow provenance and creates the run board — and
+/// `get_operation` polls it to `succeeded`. A second call with the same
+/// `idempotency_key` re-attaches to the SAME operation (exactly-one-run).
+#[tokio::test]
+async fn start_operation_begins_a_workflow_and_polls_to_succeeded() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // Start via the facade — no caller-supplied provenance, no pre-chosen id.
+    let started = call_mcp(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({
+            "wf_skill": WF_SKILL,
+            "input": "Answer the research question.",
+            "idempotency_key": "op-key-1"
+        }),
+    )
+    .await;
+    assert_eq!(
+        started["status"],
+        json!("pending"),
+        "starts pending: {started}"
+    );
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
+    assert!(
+        operation_id.starts_with("markdown/instances/workflow-run/"),
+        "operation id is a run board page: {operation_id}"
+    );
+
+    // Immediately readable via get_operation (found, not-yet-terminal).
+    let now = call_mcp(
+        &gateway,
+        Role::Agent,
+        "get_operation",
+        json!({ "operation_id": operation_id }),
+    )
+    .await;
+    assert_eq!(
+        now["found"],
+        json!(true),
+        "operation is found right after start: {now}"
+    );
+
+    // Cross-caller denial (crew Phase-2 F3): a DIFFERENT subject must not read
+    // this owner-scoped operation — it gets the not-found shape, no leak.
+    let intruder = call_mcp_as(
+        &gateway,
+        Role::Agent,
+        "intruder-subject",
+        "get_operation",
+        json!({ "operation_id": operation_id }),
+    )
+    .await;
+    assert_eq!(
+        intruder["found"],
+        json!(false),
+        "another caller must not read this operation: {intruder}"
+    );
+
+    // Idempotency: the same key re-attaches to the same operation.
+    let again = call_mcp(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({ "wf_skill": WF_SKILL, "idempotency_key": "op-key-1" }),
+    )
+    .await;
+    assert_eq!(
+        again["operation_id"],
+        json!(operation_id),
+        "same idempotency_key → same operation: {again}"
+    );
+    assert_eq!(
+        again["idempotent"],
+        json!(true),
+        "re-attach flagged idempotent: {again}"
+    );
+
+    // The runner drives the plan (echo, no injected failure) → succeeded.
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    let succeeded = loop {
+        let op = call_mcp(
+            &gateway,
+            Role::Agent,
+            "get_operation",
+            json!({ "operation_id": operation_id }),
+        )
+        .await;
+        if op["status"] == json!("succeeded") {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
+    assert!(
+        succeeded,
+        "the facade-started operation must poll to `succeeded` on {operation_id}"
+    );
+}
+
+/// async-ops Phase 2c-i (no mock): a background run executes under the
+/// REQUESTER's per-run caller token, not the runner's admin identity (the
+/// confused-deputy fix). The runner runs in MINTED mode (its own signing key,
+/// as in production) so it can mint a short-lived token scoped to the requester
+/// the facade stamped on the board; the harness then writes the produced
+/// instance under that identity — so the page's `last_written_by` is the
+/// requester (`alice-requester`), NOT the runner's own subject (`escurel-runner`).
+#[tokio::test]
+async fn a_run_executes_under_the_requesters_identity_not_the_runners() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // The requester is a distinct subject, so it is distinguishable from the
+    // runner's own `escurel-runner` identity on the produced page.
+    let requester = "alice-requester";
+    let started = call_mcp_as(
+        &gateway,
+        Role::Agent,
+        requester,
+        "start_operation",
+        json!({ "wf_skill": WF_SKILL, "input": "Answer the question." }),
+    )
+    .await;
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
+    let run_slug = operation_id
+        .strip_prefix("markdown/instances/workflow-run/")
+        .and_then(|s| s.strip_suffix(".md"))
+        .expect("operation id shape")
+        .to_owned();
+
+    // Runner in MINTED mode (production shape) so it can mint the per-run token.
+    let (signing_key, kid) = gateway.signing_material();
+    let issuer = gateway.issuer_url().to_owned();
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", &issuer)
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_AUTH_SUBJECT", "escurel-runner")
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The scope step produces a run-scoped research-angle instance.
+    let angle = await_instance(
+        &gateway,
+        "research-angle",
+        &format!("markdown/instances/research-angle/{run_slug}-scope-"),
+        45,
+    )
+    .await;
+
+    // The decisive assertion: the produced page was written by the REQUESTER's
+    // per-run token, not the runner's own admin identity.
+    let expanded = call_mcp(&gateway, Role::Admin, "expand", json!({ "page_id": angle })).await;
+    let written_by = expanded["page"]["last_written_by"].as_str().unwrap_or("");
+    assert_eq!(
+        written_by, requester,
+        "the run must write as the requester (per-run caller token), not the runner: {expanded}"
+    );
+    assert_ne!(
+        written_by, "escurel-runner",
+        "the produced page must not be attributed to the runner's own identity"
+    );
+}
+
+/// async-ops crew final-review F2 (no mock): a **minting** runner refuses to run
+/// a workflow whose board carries NO requester, rather than falling open to its
+/// own admin identity. This is the confused-deputy the per-run token closes: the
+/// board's `requested_by` is owner-writable, so a non-admin who stripped it
+/// mid-operation must not thereby escalate the remaining phases to the runner's
+/// authority. Here the board is injected (as the reducer tests do) WITHOUT a
+/// requester while the runner runs in minted mode — the packager fails closed,
+/// so the scope harness never runs and no `research-angle` instance appears.
+#[tokio::test]
+async fn a_minting_runner_refuses_a_run_with_no_requester_instead_of_running_as_admin() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // Inject the invocation as a system/admin identity onto a fixed board that
+    // carries NO `requested_by` (a start_operation board always would).
+    let run_page = "markdown/instances/workflow-run/rf2-no-requester.md";
+    call_mcp(
+        &gateway,
+        Role::Admin,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke deep-research (no requester)",
+            "body": "Answer the research question.",
+            "provenance": {
+                "workflow": { "run": run_page, "wf_skill": WF_SKILL, "phase": "invoke" }
+            }
+        }),
+    )
+    .await;
+
+    // Runner in MINTED mode (production shape): it CAN mint a per-run token, so a
+    // board with no requester is the fail-closed case — not the dev-only static
+    // fallback.
+    let (signing_key, kid) = gateway.signing_material();
+    let issuer = gateway.issuer_url().to_owned();
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", &issuer)
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_AUTH_SUBJECT", "escurel-runner")
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The decisive assertion: over a window in which a permitted run would have
+    // produced the scope output, NO `research-angle` instance appears — the run
+    // fails closed at packaging (dead-letter, `Permanent`), never executing under
+    // the runner's admin identity.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        let r = call_mcp(
+            &gateway,
+            Role::Admin,
+            "list_instances",
+            json!({ "skill_id": "research-angle" }),
+        )
+        .await;
+        let produced = r["instances"].as_array().is_some_and(|is| !is.is_empty());
+        assert!(
+            !produced,
+            "a minting runner must NOT execute a requester-less run: it produced {r}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// async-ops Phase 3 (no mock): a terminal operation is delivered back to the
+/// channel that started it. An operation is started with a `conversation_ref`
+/// (a simulated Teams turn); when the runner drives it to `succeeded`, it POSTs
+/// the terminal result to the channel courier's `/v1/outbound` seam — a stub
+/// sink here — keyed on that stored conversation reference.
+#[tokio::test]
+async fn a_terminal_operation_is_delivered_to_the_channel_courier() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let (sink_url, received) = spawn_outbound_sink().await;
+
+    // Start the operation with a channel reference (a simulated Teams turn).
+    let conversation_ref = json!({
+        "channel": "msteams",
+        "conversation": { "id": "19:meeting_abc@thread.v2" },
+        "service_url": "https://smba.example/teams"
+    });
+    let started = call_mcp(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({
+            "wf_skill": WF_SKILL,
+            "input": "Answer the question.",
+            "conversation_ref": conversation_ref,
+        }),
+    )
+    .await;
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
+
+    // Runner wired to the channel courier's outbound seam.
+    let token = gateway.mint_token(TENANT, Role::Admin);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env("ESCUREL_RUNNER_OUTBOUND_URL", &sink_url)
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The courier receives the terminal delivery, keyed on the conversation ref.
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let delivered = loop {
+        let hit = received
+            .lock()
+            .expect("sink mutex")
+            .iter()
+            .find(|d| d["operation_id"].as_str() == Some(operation_id.as_str()))
+            .cloned();
+        if let Some(d) = hit {
+            break Some(d);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let delivery = delivered.expect("the terminal operation must be delivered to the courier");
+    assert_eq!(
+        delivery["status"],
+        json!("succeeded"),
+        "delivery carries the terminal status: {delivery}"
+    );
+    assert_eq!(
+        delivery["conversation_ref"], conversation_ref,
+        "delivery carries the stored conversation reference verbatim: {delivery}"
+    );
 }
 
 #[tokio::test]
@@ -265,7 +1192,13 @@ async fn verify_barrier_runs_to_completion_via_echo() {
     let run_page = "markdown/instances/workflow-run/echobar.md";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -279,7 +1212,11 @@ async fn verify_barrier_runs_to_completion_via_echo() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -372,7 +1309,13 @@ async fn deep_research_runs_against_gemini() {
                     Give the physics (Rayleigh scattering) and the key factors.";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -386,7 +1329,11 @@ async fn deep_research_runs_against_gemini() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -524,7 +1471,13 @@ async fn verify_barrier_runs_against_gemini() {
                     State the factual claims and the physics of human visual acuity.";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -538,7 +1491,11 @@ async fn verify_barrier_runs_against_gemini() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -727,7 +1684,11 @@ async fn recovery_re_drives_a_non_terminal_run_to_completion() {
     assert_eq!(before["instances"].as_array().map_or(0, Vec::len), 0);
 
     // Start the runner fresh — recovery runs at startup.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -784,7 +1745,13 @@ async fn over_budget_plan_fails_fast_at_invocation_emitting_no_steps() {
     let run_page = "markdown/instances/workflow-run/rb.md";
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -800,7 +1767,11 @@ async fn over_budget_plan_fails_fast_at_invocation_emitting_no_steps() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -922,7 +1893,13 @@ async fn distill_weaves_one_source_into_two_existing_pages() {
     // workflow provenance so the dispatch loop routes to the reducer.
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -936,7 +1913,11 @@ async fn distill_weaves_one_source_into_two_existing_pages() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen = format!("127.0.0.1:{}", free_port());
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
@@ -1062,7 +2043,13 @@ async fn lint_flags_orphan_stale_contradiction_without_rewriting() {
 
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -1076,7 +2063,11 @@ async fn lint_flags_orphan_stale_contradiction_without_rewriting() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen = format!("127.0.0.1:{}", free_port());
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
@@ -1177,7 +2168,11 @@ async fn lint_tick_schedules_a_scan_without_manual_invocation() {
     })
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen = format!("127.0.0.1:{}", free_port());
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
@@ -1215,7 +2210,11 @@ async fn lint_tick_schedules_a_scan_without_manual_invocation() {
 
 /// Spawn the real runner (echo harness) against `gateway` and return its guard.
 fn spawn_echo_runner(gateway: &EscurelProcess, ledger_dir: &std::path::Path) -> ChildGuard {
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen = format!("127.0.0.1:{}", free_port());
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
     cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
@@ -1238,7 +2237,9 @@ fn spawn_echo_runner(gateway: &EscurelProcess, ledger_dir: &std::path::Path) -> 
 async fn invoke_curate(gateway: &EscurelProcess, run_page: &str) {
     call_mcp(
         gateway,
-        Role::Agent,
+        // Workflow invocation → admin/system identity (async-ops 2c-ii;
+        // `provenance.workflow` is server-owned for non-admin callers).
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual",
@@ -1341,7 +2342,13 @@ async fn distill_stamps_last_verified_on_the_woven_page() {
 
     call_mcp(
         &gateway,
-        Role::Agent,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual", "mime": "text/plain", "label_skill": "distill",
@@ -1367,7 +2374,9 @@ async fn distill_stamps_last_verified_on_the_woven_page() {
 async fn invoke_eval(gateway: &EscurelProcess, run_page: &str) {
     call_mcp(
         gateway,
-        Role::Agent,
+        // Workflow invocation → admin/system identity (async-ops 2c-ii;
+        // `provenance.workflow` is server-owned for non-admin callers).
+        Role::Admin,
         "capture_event",
         json!({
             "source": "manual", "mime": "text/plain", "label_skill": "eval",

@@ -128,6 +128,78 @@ impl TokenSource {
             }
         }
     }
+
+    /// Mint a **per-run, caller-scoped** bearer (async-ops Phase 2c-i) for the
+    /// verified requester `subject` with their RBAC `groups`. Not cached — each
+    /// run scopes its own.
+    ///
+    /// Returns `None` for a [`Self::Static`] source: it holds a bearer, not a
+    /// signing key, so it cannot mint a scoped token. The caller then falls back
+    /// to the runner's own identity — the confused deputy persists until the
+    /// runner runs in **minted** mode, which production does (ADR-0012: the
+    /// runner mints its own bearer from a per-tenant GCP Secret Manager key).
+    ///
+    /// # Errors
+    /// When signing fails.
+    pub fn mint_scoped(
+        &self,
+        subject: &str,
+        groups: &[String],
+    ) -> Result<Option<String>, AuthError> {
+        match self {
+            Self::Static(_) => Ok(None),
+            Self::Minted {
+                signer, ttl_secs, ..
+            } => Ok(Some(signer.mint_scoped(subject, groups, *ttl_secs)?)),
+        }
+    }
+
+    /// Whether this source can mint per-run, caller-scoped tokens — true only in
+    /// **minted** mode (a signing key), false for a [`Self::Static`] bearer.
+    ///
+    /// The fail-closed on a missing requester (crew final-review F2) is gated on
+    /// this: only a minting runner actually scopes each run to its requester, so
+    /// only there does a run board with no requester signal the strip-mid-run
+    /// escalation to refuse. A static-bearer runner cannot scope any run — the
+    /// confused deputy is a documented dev-only limitation until minted mode
+    /// (ADR-0012) — so a missing requester there is not a new hole to fail on.
+    #[must_use]
+    pub fn can_mint(&self) -> bool {
+        matches!(self, Self::Minted { .. })
+    }
+
+    /// The subject this source authenticates AS — the identity the gateway
+    /// stamps as `provenance.captured_by` on events this runner captures. The
+    /// runner uses it to recognise its OWN emitted events (whose lineage it may
+    /// trust for loop control) versus a caller's (whose forged lineage it must
+    /// not — the runner-lineage-forge guard). For a minted source it is the
+    /// configured subject; for a static bearer it is the JWT `sub`, read
+    /// WITHOUT verification — we are only recognising our own token, not
+    /// trusting a third party. `None` when a static token has no readable `sub`.
+    #[must_use]
+    pub fn subject(&self) -> Option<String> {
+        match self {
+            Self::Minted { subject, .. } => Some(subject.clone()),
+            Self::Static(token) => jwt_sub(token),
+        }
+    }
+}
+
+/// Read the `sub` claim from a JWT WITHOUT verifying the signature. Used only to
+/// learn this runner's OWN subject from its configured static bearer — never to
+/// authenticate a third party.
+fn jwt_sub(token: &str) -> Option<String> {
+    let payload_b64 = token.split('.').nth(1)?;
+    // JWT segments are base64url without padding; be tolerant of either.
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64.trim_end_matches('='))
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims
+        .get("sub")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 /// The RSA signing identity, built once at boot.
@@ -197,15 +269,58 @@ impl Signer {
     /// # Errors
     /// When signing fails.
     pub fn mint(&self, subject: &str, ttl_secs: u64) -> Result<String, AuthError> {
+        // The runner's own orchestration identity: admin. Its writes include
+        // the reserved `escurel:run-status` status events, which the gateway
+        // admits only for admin (async-ops F1). This is NOT the identity a
+        // background RUN executes under — that is [`Self::mint_scoped`].
+        self.mint_with_roles(subject, &["escurel:admin".to_owned()], ttl_secs)
+    }
+
+    /// Mint a **per-run, caller-scoped** bearer (async-ops Phase 2c-i): the
+    /// verified requester's `subject` and their RBAC `groups` as the `roles`
+    /// claim — deliberately NOT `escurel:admin`. A background run's harness
+    /// executes under this token, so its `/mcp` reads and writes are ACL'd to
+    /// exactly what the requester may do, closing the confused deputy (a run
+    /// previously executed with the runner's admin identity).
+    ///
+    /// **Privilege ceiling (crew final-review F1).** Any `escurel:`-prefixed
+    /// role in `groups` is STRIPPED before signing — most critically
+    /// `escurel:admin`, the value the gateway reads for admin. The requester's
+    /// groups reach this from the run board's *mutable* frontmatter, so without
+    /// this a requester who overwrote their board with
+    /// `requester_groups: ["escurel:admin"]` would get the harness running as
+    /// tenant admin. A per-run token can only ever carry a caller's own
+    /// engagement groups, never a reserved/privileged role.
+    ///
+    /// # Errors
+    /// When signing fails.
+    pub fn mint_scoped(
+        &self,
+        subject: &str,
+        groups: &[String],
+        ttl_secs: u64,
+    ) -> Result<String, AuthError> {
+        let scoped: Vec<String> = groups
+            .iter()
+            .filter(|g| !g.starts_with("escurel:"))
+            .cloned()
+            .collect();
+        self.mint_with_roles(subject, &scoped, ttl_secs)
+    }
+
+    fn mint_with_roles(
+        &self,
+        subject: &str,
+        roles: &[String],
+        ttl_secs: u64,
+    ) -> Result<String, AuthError> {
         let now = now_secs();
         let claims = json!({
             "iss": self.issuer,
             "aud": self.audience,
             "sub": subject,
             TENANT_CLAIM: self.tenant,
-            // See the module note: a minted token carries no engagement
-            // groups, and the gateway's write ACL matches on groups.
-            "roles": ["escurel:admin"],
+            "roles": roles,
             "iat": now,
             "exp": now + ttl_secs,
         });

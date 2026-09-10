@@ -45,6 +45,19 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
+                "get_operation",
+                Execution::Deterministic,
+                Scope::Agent,
+                "Read the current status of an async operation (pending|running|succeeded|failed|awaiting_human), derived from its run board. Returns {found:false} for an unknown or unreadable operation.",
+                json!({
+                    "type": "object",
+                    "required": ["operation_id"],
+                    "properties": {
+                        "operation_id": { "type": "string", "description": "The operation id returned by start_operation (its run-board page id)." }
+                    }
+                }),
+            ),
+            tool_entry(
                 "resolve",
                 Execution::Deterministic,
                 Scope::Agent,
@@ -464,6 +477,28 @@ pub(super) fn tools_list_payload() -> Value {
                         "title": { "type": "string" },
                         "body": { "type": "string" },
                         "provenance": { "type": "object" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "start_operation",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Begin an async workflow operation: run the `wf_skill` plan in the \
+                 background and return `{operation_id, status:'pending'}` fast. The \
+                 server owns the operation's identity and its workflow provenance \
+                 (you cannot forge either), creates an owner-scoped run board, and \
+                 captures the invocation. Poll progress with `get_operation`. Pass \
+                 `idempotency_key` to make a retry re-attach to the same operation \
+                 rather than start a second run.",
+                json!({
+                    "type": "object",
+                    "required": ["wf_skill"],
+                    "properties": {
+                        "wf_skill": { "type": "string", "description": "The kind:workflow plan skill id to run." },
+                        "input": { "type": "string", "description": "The invocation body handed to the plan's first step." },
+                        "idempotency_key": { "type": "string", "description": "Retry key: same key (same caller) → one operation, not a second run." },
+                        "conversation_ref": { "type": "object", "description": "Opaque channel reference stored for terminal delivery (Phase 3); not interpreted." }
                     }
                 }),
             ),

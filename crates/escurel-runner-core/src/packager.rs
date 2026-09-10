@@ -178,6 +178,15 @@ pub enum PackageError {
     /// A credential is configured but could not be minted.
     #[error("could not mint the runner's gateway bearer: {0}")]
     Auth(String),
+    /// A WORKFLOW run's board carries no `requested_by` (crew final-review F2):
+    /// the run must execute as the requester, and falling back to the runner's
+    /// admin bearer would reinstate the confused deputy. Fail the run instead of
+    /// running it with more authority than the requester had.
+    #[error("workflow run {run:?} has no requester on its board; refusing to run as the runner")]
+    MissingRequester {
+        /// The run board page id.
+        run: String,
+    },
 }
 
 /// The packaged unit of work handed to a harness adapter: the skill body as
@@ -271,6 +280,84 @@ fn mcp_endpoint(gateway_url: &str) -> String {
     format!("{}/mcp", gateway_url.trim_end_matches('/'))
 }
 
+/// The per-run credential decision for a trigger (async-ops Phase 2c-i / crew
+/// final-review F2).
+enum CallerToken {
+    /// Not a workflow trigger — legitimately use the runner's own identity.
+    NotWorkflow,
+    /// A workflow run with a resolved requester and a minted, caller-scoped
+    /// token — the harness executes as the requester.
+    Scoped(String),
+    /// A workflow run the token source cannot scope — a static dev bearer (which
+    /// cannot mint at all), whether or not a requester is on record. Dev-only
+    /// fallback to the runner's identity; production runs minted (ADR-0012), so
+    /// this never occurs there.
+    CannotMint,
+    /// A workflow run whose board carries NO requester, on a **minting** runner
+    /// that would otherwise scope it — fail closed (F2), never fall open to the
+    /// runner's admin bearer (the strip-mid-run escalation).
+    MissingRequester,
+}
+
+/// Decide the per-run credential for `trigger`. A workflow run must execute as
+/// its requester (read from the run board's `requested_by`/`requester_groups`,
+/// which `start_operation` stamped); a board with no requester fails closed
+/// rather than running as the runner.
+async fn caller_scoped_token(
+    trigger: &Trigger,
+    client: &Client,
+    tokens: &crate::TokenSource,
+) -> Result<CallerToken, PackageError> {
+    let Some(wf) = &trigger.workflow else {
+        return Ok(CallerToken::NotWorkflow);
+    };
+    let board = client
+        .expand(ExpandRequest {
+            page_id: wf.run.clone(),
+            ..Default::default()
+        })
+        .await
+        .map_err(|source| PackageError::Client {
+            call: "expand",
+            source,
+        })?;
+    let Some(subject) = board
+        .frontmatter
+        .get("requested_by")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        // A minting runner scopes every run to its requester, so a board with no
+        // requester is the strip-mid-run escalation — fail closed (F2). A
+        // static-bearer runner cannot scope any run regardless (dev-only), so it
+        // falls back to its own identity as it always has, not a new hole.
+        return Ok(if tokens.can_mint() {
+            CallerToken::MissingRequester
+        } else {
+            CallerToken::CannotMint
+        });
+    };
+    let groups: Vec<String> = board
+        .frontmatter
+        .get("requester_groups")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|g| g.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    // `mint_scoped` strips any privileged (`escurel:`) role (F1), so a caller
+    // can never mint an admin token even if the mutable board says otherwise.
+    match tokens
+        .mint_scoped(subject, &groups)
+        .map_err(|e| PackageError::Auth(e.to_string()))?
+    {
+        Some(scoped) => Ok(CallerToken::Scoped(scoped)),
+        None => Ok(CallerToken::CannotMint),
+    }
+}
+
 /// Package a [`Trigger`] into a [`TaskContext`].
 ///
 /// Reads (only) through `client`: `resolve("[[<label_skill>]]")` →
@@ -285,11 +372,35 @@ pub async fn package(
     // Taken from the source at PACKAGE time, not held from boot: a minted
     // bearer is re-minted before it lapses, and a run packaged with an
     // expired one fails every `/mcp` call while the process looks healthy.
-    let token = tokens
-        .ok_or(PackageError::MissingToken)?
-        .current()
-        .map_err(|e| PackageError::Auth(e.to_string()))
-        .map(SecretString::from)?;
+    let tokens = tokens.ok_or(PackageError::MissingToken)?;
+    // Per-run caller token (async-ops Phase 2c-i): a WORKFLOW run executes under
+    // the REQUESTER's identity — the subject + RBAC groups the facade stamped on
+    // the run board — not the runner's admin bearer, so the harness reads and
+    // writes only what the requester may (closing the confused deputy). Falls
+    // back to the runner's own identity when there is no requester on record or
+    // the token source cannot mint (a static bearer); production runs minted
+    // (ADR-0012: the runner mints from a per-tenant GCP Secret Manager key).
+    let token = match caller_scoped_token(trigger, client, tokens).await? {
+        CallerToken::Scoped(scoped) => SecretString::from(scoped),
+        // Non-workflow cascades (orchestration writes) legitimately use the
+        // runner's own identity; a static dev bearer that cannot mint falls
+        // back to it too (production runs minted, so it scopes).
+        CallerToken::NotWorkflow | CallerToken::CannotMint => tokens
+            .current()
+            .map_err(|e| PackageError::Auth(e.to_string()))
+            .map(SecretString::from)?,
+        // F2: a workflow run with no requester must NOT fall open to the
+        // runner's admin bearer — fail the run.
+        CallerToken::MissingRequester => {
+            return Err(PackageError::MissingRequester {
+                run: trigger
+                    .workflow
+                    .as_ref()
+                    .map(|w| w.run.clone())
+                    .unwrap_or_default(),
+            });
+        }
+    };
 
     // ── Instructions: resolve the skill wikilink → expand its body. ──
     let resolved = client

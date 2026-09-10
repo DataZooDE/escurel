@@ -44,7 +44,7 @@ use escurel_runner_core::{
     classify_client_error, confirm_draft, confirm_effect, drive_workflow, emit_cascade, package,
     recover_pending, recover_workflows, run_with_retry,
 };
-use escurel_runner_core::{DeadLetterReason, RunId};
+use escurel_runner_core::{DeadLetterReason, RunId, StepTerminal};
 use escurel_runner_harness::{
     AgyHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness,
 };
@@ -97,6 +97,18 @@ struct AppState {
     /// Set once shutdown begins: the ingress paths stop admitting new triggers
     /// while in-flight runs drain.
     draining: Arc<std::sync::atomic::AtomicBool>,
+    /// The runner's own tenant (async-ops Phase 1, `/trigger` binding). This
+    /// runner process is single-tenant by deployment (one runner per customer
+    /// stack), so the authoritative tenant of an inbound webhook is THIS, never
+    /// the request body — a party holding the webhook secret must not be able to
+    /// name another tenant. `None` only on the dev/legacy path with no tenant
+    /// configured, where the body value is accepted as before.
+    tenant: Option<Arc<str>>,
+    /// The runner's own subject — the identity a runner-emitted event is
+    /// captured as. An inbound `/trigger` event's cascade lineage is trusted for
+    /// loop control only when it was captured by this subject (runner-lineage-
+    /// forge fix); `None` (static token with no readable `sub`) → trust-all.
+    lineage_trust_subject: Option<Arc<str>>,
 }
 
 #[tokio::main]
@@ -318,6 +330,8 @@ async fn main() -> anyhow::Result<()> {
         metrics: Arc::clone(&metrics),
         inflight: Arc::clone(&inflight),
         draining: Arc::clone(&draining),
+        tenant: config.tenant.clone().map(Arc::from),
+        lineage_trust_subject: tokens.as_ref().and_then(|t| t.subject()).map(Arc::from),
     };
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -431,19 +445,36 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         }
     };
 
-    // 3. The authoritative tenant rides in the payload (#147). Read it
-    //    from the raw JSON (it is not a field of `Event`); fall back to
-    //    empty when absent (dev / legacy senders).
-    let tenant = serde_json::from_slice::<serde_json::Value>(&body)
+    // 3. The authoritative tenant is THIS runner's own (async-ops Phase 1):
+    //    the process is single-tenant by deployment, so the tenant is never
+    //    taken from the request body — a party holding the webhook secret must
+    //    not be able to drive another tenant's runs through this runner. The
+    //    body's `tenant_id` is only cross-checked: if present and disagreeing
+    //    with the runner's tenant, the delivery was mis-routed → reject.
+    let body_tenant = serde_json::from_slice::<serde_json::Value>(&body)
         .ok()
         .and_then(|v| {
             v.get("tenant_id")
                 .and_then(|t| t.as_str())
                 .map(str::to_owned)
-        })
-        .unwrap_or_default();
+        });
+    let tenant = match resolve_trigger_tenant(state.tenant.as_deref(), body_tenant.as_deref()) {
+        Ok(tenant) => tenant,
+        Err(claimed) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                own_tenant = ?state.tenant,
+                claimed_tenant = %claimed,
+                "POST /trigger rejected: body tenant_id does not match this runner's tenant"
+            );
+            return StatusCode::FORBIDDEN;
+        }
+    };
 
-    let trigger = Trigger::from_event(&event, tenant);
+    let trigger = match state.lineage_trust_subject.as_deref() {
+        Some(subj) => Trigger::from_event_gated(&event, tenant, subj),
+        None => Trigger::from_event(&event, tenant),
+    };
     // Loop-control gate (lifecycle step 4): the durable ledger is the
     // idempotency authority; the in-memory seen-set is a cheap fast-path in
     // front of it. Either way we acknowledge 202 immediately so the
@@ -488,6 +519,20 @@ fn gate_and_enqueue(
     trigger: Trigger,
     via: &str,
 ) -> bool {
+    // Fail-closed (async-ops F1): an operation-status record is a KB-visible
+    // event, never a dispatchable run. Drop it BEFORE `begin_run` so it creates
+    // no ledger row — the reducer writes one such event per status transition,
+    // and without this each would spawn (and dead-letter) a run. This is the
+    // single chokepoint both the poller and the webhook route through.
+    if trigger.label_skill == escurel_runner_core::OPERATION_STATUS_LABEL {
+        tracing::debug!(
+            target: "escurel_runner",
+            via,
+            event_id = %trigger.event_id,
+            "gate: dropping reserved operation-status event (not dispatchable)"
+        );
+        return false;
+    }
     match ledger.begin_run(&trigger) {
         Ok(LedgerDecision::Created(run_id)) => {
             // Loop controls: depth/cycle/budget. The `pending` row already
@@ -640,6 +685,163 @@ fn gate_and_enqueue(
 /// Keeps cardinality sane: only tenant + status labels.
 fn record_run_terminal(metrics: &Metrics, tenant: &str, status: &str) {
     metrics.inc_runner_run(tenant, status);
+}
+
+/// Resolve the authoritative tenant for an inbound `POST /trigger` (async-ops
+/// Phase 1). The runner is single-tenant by deployment, so its own configured
+/// tenant is authoritative and the request body can never *name* a tenant — it
+/// may only match. Returns the tenant to use, or `Err(claimed)` (the offending
+/// body value) when the body names a different tenant than this runner serves.
+///
+/// - runner tenant set, body absent or equal → the runner's tenant;
+/// - runner tenant set, body differs → `Err` (mis-routed / forged delivery);
+/// - no runner tenant (dev/legacy) → the body value, or empty.
+fn resolve_trigger_tenant(own: Option<&str>, body_tenant: Option<&str>) -> Result<String, String> {
+    match own {
+        Some(own) => match body_tenant {
+            Some(claimed) if claimed != own => Err(claimed.to_owned()),
+            _ => Ok(own.to_owned()),
+        },
+        None => Ok(body_tenant.unwrap_or_default().to_owned()),
+    }
+}
+
+/// Drive the workflow reducer on a run's terminal transition, dead-lettering
+/// the run if the reducer pass errors (async-ops Phase 0.3, Bug B).
+///
+/// Called on EVERY terminal transition of a `trigger.workflow` run — not just a
+/// confirmed non-held write — so a converged no-op, a held draft, or a failed
+/// step advances (or terminates) the parent operation instead of wedging it at
+/// `running`. On an `Advanced`/`Held` terminal the run's own effect already
+/// landed and was recorded `processed`; if the reducer then fails, the run is
+/// dead-lettered (`ReducerFailed`) so the stall surfaces to the DLQ rather than
+/// masquerading as a clean success. On a `Failed` terminal the run is already
+/// terminal, so a reducer error is only logged.
+#[allow(clippy::too_many_arguments)]
+async fn drive_workflow_or_deadletter(
+    client: &escurel_client::Client,
+    ledger: &Ledger,
+    metrics: &Metrics,
+    trigger: &Trigger,
+    run_id: &escurel_runner_core::RunId,
+    effect: Option<&escurel_runner_core::ConfirmedEffect>,
+    terminal: StepTerminal,
+    max_runs_per_root: u64,
+    outbound_url: Option<&str>,
+) {
+    match drive_workflow(
+        client,
+        trigger,
+        &run_id.0,
+        effect,
+        terminal,
+        max_runs_per_root,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            tracing::info!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                run_id = %run_id,
+                terminal = ?terminal,
+                emitted = outcome.emitted.len(),
+                "workflow: reducer drove operation on terminal transition"
+            );
+            // Channel delivery (async-ops Phase 3): a terminal operation with a
+            // stored conversation reference is delivered to the channel's
+            // proactive seam. Fire-and-forget, best-effort — never derails the
+            // run; at-least-once, the courier dedups on operation_id.
+            if let (Some(delivery), Some(url)) = (outcome.delivery, outbound_url) {
+                deliver_terminal(url, &delivery).await;
+            }
+        }
+        Err(e) => {
+            let progressed = matches!(terminal, StepTerminal::Advanced | StepTerminal::Held);
+            if progressed {
+                if let Err(dl) = ledger.dead_letter(run_id, DeadLetterReason::ReducerFailed) {
+                    tracing::error!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        error = %dl,
+                        "workflow: could not dead-letter run after a reducer failure"
+                    );
+                } else {
+                    record_run_terminal(metrics, &trigger.tenant, "dead_letter");
+                }
+                // F-4: record a terminal operation status so the run board and
+                // the DLQ agree — otherwise the operation stays at whatever it
+                // last reported (typically `running`) while a DLQ row exists.
+                if let Some(wf) = &trigger.workflow {
+                    escurel_runner_core::record_status_best_effort(
+                        client,
+                        &wf.run,
+                        &trigger.event_id,
+                        escurel_runner_core::OperationStatus::Failed,
+                        &wf.phase,
+                        "reducer_failed",
+                    )
+                    .await;
+                }
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    run_id = %run_id,
+                    error = %e,
+                    "workflow: reducer pass failed; run dead-lettered (Bug B)"
+                );
+            } else {
+                // A `Failed` terminal is already terminal in the ledger; the
+                // reducer error is at most a missed best-effort status write.
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    run_id = %run_id,
+                    error = %e,
+                    "workflow: reducer status pass on a failed run errored (run already terminal)"
+                );
+            }
+        }
+    }
+}
+
+/// Deliver a terminal operation result to the channel courier's proactive seam
+/// (async-ops Phase 3). Best-effort fire-and-forget: a `POST <outbound_url>`
+/// with `{operation_id, status, conversation_ref}`. A delivery failure is
+/// logged, never propagated — the run already reached its terminal, and the
+/// delivery is at-least-once (the courier dedups on `operation_id`).
+async fn deliver_terminal(outbound_url: &str, delivery: &escurel_runner_core::TerminalDelivery) {
+    let body = serde_json::json!({
+        "operation_id": delivery.operation_id,
+        "status": delivery.status,
+        "conversation_ref": delivery.conversation_ref,
+    });
+    match reqwest::Client::new()
+        .post(outbound_url)
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => tracing::info!(
+            target: "escurel_runner",
+            operation = %delivery.operation_id,
+            status = %delivery.status,
+            "delivery: terminal operation delivered to channel courier"
+        ),
+        Ok(resp) => tracing::warn!(
+            target: "escurel_runner",
+            operation = %delivery.operation_id,
+            http_status = resp.status().as_u16(),
+            "delivery: courier rejected the terminal delivery (best-effort; not retried here)"
+        ),
+        Err(e) => tracing::warn!(
+            target: "escurel_runner",
+            operation = %delivery.operation_id,
+            error = %e,
+            "delivery: could not reach the channel courier (best-effort)"
+        ),
+    }
 }
 
 /// Operator DLQ list (#158): every dead-lettered run with its reason +
@@ -1223,6 +1425,24 @@ async fn dispatch_loop(
                         draft_sha256 = %effect.version,
                         "dispatch: run produced a DRAFT awaiting a human; no cascade"
                     );
+                    // A held draft in a WORKFLOW step pauses the operation for
+                    // human approval (async-ops Phase 0.3): drive the reducer
+                    // with a `Held` terminal so it records `awaiting_human` and
+                    // does not advance the plan past the unapproved draft.
+                    if trigger.workflow.is_some() {
+                        drive_workflow_or_deadletter(
+                            &client,
+                            &ledger,
+                            &metrics,
+                            &trigger,
+                            &run_id,
+                            None,
+                            StepTerminal::Held,
+                            config.max_runs_per_root,
+                            config.outbound_url.as_deref(),
+                        )
+                        .await;
+                    }
                     continue;
                 }
                 // Dynamic workflows: a confirmed write whose trigger carries a
@@ -1232,29 +1452,18 @@ async fn dispatch_loop(
                 // step events (each a §3.6-idempotent, lineage-tagged
                 // `capture_event`), guarded by the same `admit` controls.
                 if trigger.workflow.is_some() {
-                    match drive_workflow(
+                    drive_workflow_or_deadletter(
                         &client,
+                        &ledger,
+                        &metrics,
                         &trigger,
-                        &run_id.0,
-                        effect,
+                        &run_id,
+                        Some(effect),
+                        StepTerminal::Advanced,
                         config.max_runs_per_root,
+                        config.outbound_url.as_deref(),
                     )
-                    .await
-                    {
-                        Ok(outcome) => tracing::info!(
-                            target: "escurel_runner",
-                            event_id = %trigger.event_id,
-                            run_id = %run_id,
-                            emitted = outcome.emitted.len(),
-                            "workflow: reducer emitted next-step events"
-                        ),
-                        Err(e) => tracing::warn!(
-                            target: "escurel_runner",
-                            event_id = %trigger.event_id,
-                            error = %e,
-                            "workflow: reducer pass failed (run already recorded processed)"
-                        ),
-                    }
+                    .await;
                     continue;
                 }
                 // The "change → event" bridge (#156): a CONFIRMED successful
@@ -1291,6 +1500,54 @@ async fn dispatch_loop(
                 }
             }
             (None, Ok(())) => {
+                // Dynamic workflows (async-ops Phase 0.3, Bug A): a non-success
+                // terminal must still advance or terminate the parent operation
+                // — previously only a confirmed write drove the reducer, so
+                // these wedged the operation at `running` forever. A converged
+                // no-op advances the plan; every real failure resolves via the
+                // failed phase's authored `on_exhausted` policy.
+                //
+                // On crew F-2: this arm is only reached once a run has hit a
+                // LEDGER TERMINAL (dead-letter or fail-fast `failed`). A merely
+                // *transient* error is retried WITHIN the run by the reconciler
+                // (up to MAX_ATTEMPTS) and either clears (→ a confirmed write,
+                // handled above) or exhausts (→ `RetriesExhausted`); it never
+                // arrives here mid-retry. `Permanent` is a fail-fast terminal
+                // with no automatic recovery (the seen-set blocks the poller's
+                // re-claim within a process), so it too terminates the
+                // operation rather than wedging it at `running`. The reason slug
+                // rides into the status provenance (F-5). Additive to the
+                // metrics/logging below.
+                if trigger.workflow.is_some() {
+                    let terminal = if report.converged_no_op {
+                        Some(StepTerminal::Advanced)
+                    } else {
+                        match report.failure {
+                            Some(RunFailure::RetriesExhausted) => {
+                                Some(StepTerminal::Failed("retries_exhausted"))
+                            }
+                            Some(RunFailure::BadOutput) => Some(StepTerminal::Failed("bad_output")),
+                            Some(RunFailure::Permanent) => Some(StepTerminal::Failed("permanent")),
+                            // No failure and not converged: not a real terminal
+                            // (should not occur) — leave the operation running.
+                            None => None,
+                        }
+                    };
+                    if let Some(terminal) = terminal {
+                        drive_workflow_or_deadletter(
+                            &client,
+                            &ledger,
+                            &metrics,
+                            &trigger,
+                            &run_id,
+                            None,
+                            terminal,
+                            config.max_runs_per_root,
+                            config.outbound_url.as_deref(),
+                        )
+                        .await;
+                    }
+                }
                 // Not confirmed, not converged: a dead-letter (retries/bad
                 // output, already metered above) or a retriable `failed`.
                 match report.failure {
@@ -1658,6 +1915,12 @@ async fn poll_loop(
         "inbox poller started"
     );
 
+    // The runner's own identity: the cascade lineage on an inbox event is
+    // trusted for loop control only when the event was captured by THIS subject
+    // (a runner-emitted hop), so a caller cannot forge a shallow depth/root/path
+    // (runner-lineage-forge fix). `None` (a static token with no readable `sub`)
+    // falls back to trust-all — the pre-fix behaviour.
+    let self_subject = tokens.subject();
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
@@ -1679,7 +1942,10 @@ async fn poll_loop(
         match client.list_inbox(ListInboxRequest::default()).await {
             Ok(resp) => {
                 for event in &resp.events {
-                    let trigger = Trigger::from_event(event, tenant.clone());
+                    let trigger = match self_subject.as_deref() {
+                        Some(subj) => Trigger::from_event_gated(event, tenant.clone(), subj),
+                        None => Trigger::from_event(event, tenant.clone()),
+                    };
                     // Route through the same loop-control + quota gate the
                     // webhook uses: the durable ledger decides create-vs-drop,
                     // the depth/cycle/budget controls admit-or-dead-letter, and
@@ -1820,4 +2086,129 @@ async fn wait_for_shutdown(draining: Arc<std::sync::atomic::AtomicBool>) {
 async fn wait_for_shutdown(draining: Arc<std::sync::atomic::AtomicBool>) {
     let _ = tokio::signal::ctrl_c().await;
     draining.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use escurel_runner_core::{Lineage, OPERATION_STATUS_LABEL, QuotaLimits};
+
+    /// Build the minimal `gate_and_enqueue` dependency set with limits generous
+    /// enough that only the reserved-label guard can reject a trigger. The
+    /// [`DispatchConsumer`] is returned so the caller keeps it alive — dropping
+    /// it closes the queue channel and every `enqueue` then reports not-sent.
+    #[allow(clippy::type_complexity)]
+    fn gate_deps() -> (
+        Ledger,
+        DispatchQueue,
+        LoopLimits,
+        Governor,
+        Metrics,
+        InflightSlots,
+        DispatchConsumer,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Leak the tempdir so the sqlite file outlives the test body; the
+        // process exits at test end and reclaims it.
+        let path = dir.keep().join("ledger.sqlite");
+        let ledger = Ledger::open(path).expect("open ledger");
+        let (queue, consumer) = DispatchQueue::new(16, 256);
+        let limits = LoopLimits {
+            max_depth: 16,
+            max_runs_per_root: 64,
+        };
+        let governor = Governor::new(QuotaLimits {
+            runs_per_min: 1000,
+            max_concurrent: 1000,
+            max_harness_procs: 1000,
+        });
+        let metrics = Metrics::new();
+        let inflight: InflightSlots =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        (ledger, queue, limits, governor, metrics, inflight, consumer)
+    }
+
+    fn trigger_with_label(event_id: &str, label: &str) -> Trigger {
+        Trigger {
+            tenant: "acme".to_owned(),
+            event_id: event_id.to_owned(),
+            label_skill: label.to_owned(),
+            instance_page_id: None,
+            lineage: Lineage::root(event_id.to_owned()),
+            workflow: None,
+            content_hash: None,
+        }
+    }
+
+    /// F1: a reserved operation-status event is dropped at the enqueue
+    /// chokepoint and creates NO ledger row — so recording a status can never
+    /// spawn (and dead-letter) a run. Deterministic: exercises the guard
+    /// directly, independent of the poller/webhook timing race that hid the bug.
+    #[test]
+    fn operation_status_event_creates_no_ledger_row() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let admitted = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-status-1", OPERATION_STATUS_LABEL),
+            "test",
+        );
+        assert!(!admitted, "a status event must not be admitted");
+        assert_eq!(
+            ledger.count_all_runs().expect("count runs"),
+            0,
+            "a status event must create no ledger row"
+        );
+    }
+
+    /// Phase 1 (`/trigger` binding): a single-tenant runner takes its OWN
+    /// tenant as authoritative and refuses a body that names a different one, so
+    /// a party holding the webhook secret cannot drive another tenant's runs
+    /// through this runner. Absent/equal body tenant is accepted; with no
+    /// configured tenant the body value passes through (dev/legacy).
+    #[test]
+    fn trigger_tenant_is_bound_to_the_runner_not_the_body() {
+        // Configured runner: own tenant wins; a matching or absent body is fine.
+        assert_eq!(
+            resolve_trigger_tenant(Some("acme"), Some("acme")).unwrap(),
+            "acme"
+        );
+        assert_eq!(resolve_trigger_tenant(Some("acme"), None).unwrap(), "acme");
+        // A body naming a DIFFERENT tenant is rejected (mis-routed / forged).
+        assert_eq!(
+            resolve_trigger_tenant(Some("acme"), Some("evil")),
+            Err("evil".to_owned())
+        );
+        // Dev/legacy: no configured tenant → body value (or empty) passes.
+        assert_eq!(resolve_trigger_tenant(None, Some("acme")).unwrap(), "acme");
+        assert_eq!(resolve_trigger_tenant(None, None).unwrap(), "");
+    }
+
+    /// Positive control: an ordinary labelled trigger is NOT dropped by the
+    /// guard — it creates exactly one ledger row. Proves the guard is scoped to
+    /// the reserved label and does not swallow real work.
+    #[test]
+    fn ordinary_event_creates_one_ledger_row() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let admitted = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-real-1", "research-angle"),
+            "test",
+        );
+        assert!(admitted, "an ordinary event must be admitted");
+        assert_eq!(
+            ledger.count_all_runs().expect("count runs"),
+            1,
+            "an ordinary event must create exactly one ledger row"
+        );
+    }
 }

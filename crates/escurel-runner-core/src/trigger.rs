@@ -125,12 +125,45 @@ impl Trigger {
     /// the cascaded event re-enters the exact same pipeline as a deeper
     /// hop, never a fresh root.
     pub fn from_event(event: &Event, tenant: impl Into<String>) -> Self {
+        Self::from_event_core(event, tenant, None)
+    }
+
+    /// Like [`Self::from_event`] but **gates the cascade lineage** (runner-
+    /// lineage-forge fix): the `provenance.runner` block is trusted for loop
+    /// control (depth cap, per-root budget, cycle check) only when the event was
+    /// captured by `trusted_subject` — the runner's OWN identity, i.e. a genuine
+    /// runner-emitted hop. Any other event (a caller's `capture_event`, which
+    /// may carry a forged `runner` block) is treated as a fresh depth-0 root, so
+    /// a caller cannot spoof a shallow depth, a chosen root, or an instance path.
+    /// The forged block is still stored on the event; it just isn't trusted here.
+    pub fn from_event_gated(
+        event: &Event,
+        tenant: impl Into<String>,
+        trusted_subject: &str,
+    ) -> Self {
+        Self::from_event_core(event, tenant, Some(trusted_subject))
+    }
+
+    fn from_event_core(
+        event: &Event,
+        tenant: impl Into<String>,
+        trusted_subject: Option<&str>,
+    ) -> Self {
         let instance_page_id = if event.instance_page_id.is_empty() {
             None
         } else {
             Some(event.instance_page_id.clone())
         };
+        // Trust a parsed cascade lineage only when the source is trusted:
+        // `None` = trust-all (a unit test, or a caller that constructed a known
+        // event); `Some(subj)` = trust only if the server-stamped
+        // `provenance.captured_by` is that subject (the runner's own).
+        let trust_lineage = match trusted_subject {
+            None => true,
+            Some(subj) => captured_by(&event.provenance) == Some(subj),
+        };
         let lineage = lineage_from_provenance(&event.provenance, &event.event_id)
+            .filter(|_| trust_lineage)
             .unwrap_or_else(|| Lineage::root(event.event_id.clone()));
         let workflow = WorkflowProvenance::from_provenance(&event.provenance);
         Self {
@@ -143,6 +176,12 @@ impl Trigger {
             content_hash: Some(content_hash(event)),
         }
     }
+}
+
+/// The server-stamped `provenance.captured_by` — the verified subject that
+/// captured the event, or `None` on an unauthenticated/legacy event.
+fn captured_by(provenance: &serde_json::Value) -> Option<&str> {
+    provenance.get("captured_by").and_then(|v| v.as_str())
 }
 
 /// Hash what the event says: skill, title, body.
@@ -174,6 +213,22 @@ pub fn content_hash(event: &Event) -> String {
 ///
 /// Returns `None` when the event carries no `provenance.runner` (a
 /// webhook-origin event) so the caller falls back to a depth-0 root.
+///
+/// SECURITY — runner-lineage-forge (async-ops, dedicated-review item). These
+/// fields drive LOOP CONTROL (admit's depth cap, per-root budget, cycle check)
+/// and are authoritative only on a RUNNER-emitted hop. A non-admin CALLER can
+/// also `capture_event` a `provenance.runner` block — the 2c-ii guard narrowly
+/// blocks only `provenance.workflow`, and `caller_supplied_captured_by_is_overwritten`
+/// deliberately preserves a caller's `runner` block as stored data — so a forged
+/// block could claim depth 0 to slip the depth cap, a chosen `root_event_id` to
+/// evade/exhaust a root's budget, or a crafted `instance_path` to defeat the
+/// cycle check. The reconciled fix (NOT landed here): trust this block for loop
+/// control only when the event's server-stamped `provenance.captured_by` is the
+/// runner's OWN identity, treating every other event as a fresh root, while
+/// still storing the caller's block unchanged. Left for a dedicated review
+/// because it needs the runner's authoritative identity (which differs between
+/// static-token and minted modes) and a naive "reset to root" would make the
+/// runner distrust its own static-mode cascades.
 fn lineage_from_provenance(provenance: &serde_json::Value, event_id: &str) -> Option<Lineage> {
     let runner = provenance.get("runner")?.as_object()?;
     let root_event_id = runner.get("root_event_id")?.as_str()?.to_owned();
@@ -262,6 +317,42 @@ mod tests {
         assert_eq!(trigger.lineage.root_event_id, "01ABCDEF");
         assert_eq!(trigger.lineage.depth, 0);
         assert_eq!(trigger.lineage.lineage_path, vec!["01ABCDEF".to_owned()]);
+    }
+
+    #[test]
+    fn a_forged_caller_lineage_is_gated_to_a_fresh_root() {
+        // A deep lineage forged on an event captured by a NON-runner subject.
+        let mut event = sample_event();
+        event.provenance = serde_json::json!({
+            "captured_by": "alice",
+            "runner": {
+                "root_event_id": "forged-root",
+                "depth": 3,
+                "lineage_path": ["a", "b", "c"],
+                "instance_path": ["victim-instance"]
+            }
+        });
+
+        // Gated to the runner's OWN subject: the forged block is NOT trusted —
+        // the event becomes a fresh depth-0 root (so a caller cannot slip the
+        // depth cap, evade a root's budget, or defeat the cycle check).
+        let gated = Trigger::from_event_gated(&event, "acme", "escurel-runner");
+        assert_eq!(gated.lineage.depth, 0, "forged depth is ignored");
+        assert_eq!(gated.lineage.root_event_id, event.event_id);
+        assert_eq!(gated.lineage.instance_path, Vec::<String>::new());
+
+        // A GENUINE runner-emitted hop (captured_by == the runner) is trusted.
+        let mut mine = event.clone();
+        mine.provenance["captured_by"] = serde_json::json!("escurel-runner");
+        let trusted = Trigger::from_event_gated(&mine, "acme", "escurel-runner");
+        assert_eq!(
+            trusted.lineage.depth, 3,
+            "the runner's own lineage is trusted"
+        );
+        assert_eq!(trusted.lineage.root_event_id, "forged-root");
+
+        // Trust-all (`from_event`) preserves the block — test/legacy behaviour.
+        assert_eq!(Trigger::from_event(&event, "acme").lineage.depth, 3);
     }
 
     #[test]

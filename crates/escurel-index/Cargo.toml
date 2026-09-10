@@ -57,6 +57,9 @@ async-trait = "0.1"
 # cycle (escurel-crdt does not depend on escurel-index).
 escurel-crdt = { path = "../escurel-crdt" }
 escurel-embed = { path = "../escurel-embed" }
+# Shared vocabulary only (`ResultRef` for async-ops Phase 4); escurel-types is
+# the base crate and depends on nothing here, so this adds no cycle.
+escurel-types = { path = "../escurel-types" }
 escurel-md = { path = "../escurel-md" }
 escurel-storage = { path = "../escurel-storage" }
 bytes = "1"

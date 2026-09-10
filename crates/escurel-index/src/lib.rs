@@ -37,6 +37,7 @@ pub mod meta_skill;
 pub mod pack;
 pub mod query;
 pub mod read;
+pub mod result_ref;
 pub mod retrieval;
 pub mod schema;
 pub mod search;

@@ -17,6 +17,14 @@ use serde_json::Value;
 /// The default instance skill each run of a workflow materialises.
 pub const DEFAULT_RUN_SKILL: &str = "workflow-run";
 
+/// The instance skill a **human-in-the-loop** gate produces (dialect F5). A
+/// gate is a real phase whose instance a *human* writes — the approval — so it
+/// carries a concrete, non-empty `produces` the reducer waits on exactly as it
+/// waits on any phase's output; it is never an empty label the gateway rejects.
+/// The pause-at-`awaiting_human` status this implies is derived by
+/// `get_operation` (async-ops Phase 2), not the reducer.
+pub const HUMAN_GATE_SKILL: &str = "human-approval";
+
 /// A parsed workflow plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowSkill {
@@ -62,6 +70,57 @@ pub struct Phase {
     pub max_targets: Option<usize>,
     /// Optional per-phase harness override (`harness:` on the phase).
     pub harness: Option<String>,
+    /// Authored outcome policy for this step (the workflow dialect's
+    /// `on failure: retry N, then <fallback>`). YAML-authored phases default to
+    /// `{ retries: 0, on_exhausted: Stop }` — fail on error, the pre-dialect
+    /// behaviour.
+    pub outcome: OutcomePolicy,
+    /// A human-in-the-loop gate, authored via `(human-in-the-loop)` / "a human
+    /// approves …" in the dialect.
+    ///
+    /// **Forward declaration (crew F-9):** as of Phase 0.3 this flag is parsed
+    /// and carried but not yet read by the reducer/driver — the `awaiting_human`
+    /// pause today comes from an `AskHuman` *fallback* or a `Held` draft, not
+    /// from this flag. Phase 2 gives it reducer semantics (a gate phase waits
+    /// for a `human-approval` instance before advancing). Do not branch on it as
+    /// if it were honoured yet.
+    pub human_gate: bool,
+}
+
+/// What happens when a step's runs are exhausted without success — authored
+/// per-step in the workflow dialect (`on failure: retry N, then <fallback>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutcomePolicy {
+    /// How many times the step may be retried before the fallback applies.
+    pub retries: u32,
+    /// What to do once retries are exhausted.
+    pub on_exhausted: Fallback,
+}
+
+impl Default for OutcomePolicy {
+    fn default() -> Self {
+        Self {
+            retries: 0,
+            on_exhausted: Fallback::Stop,
+        }
+    }
+}
+
+/// The status of an async operation. Defined in `escurel-types` (shared by the
+/// writer here and the gateway's `get_operation` reader); re-exported so
+/// `escurel_runner_workflow::OperationStatus` keeps resolving.
+pub use escurel_types::OperationStatus;
+
+/// The fallback once a step's retries are exhausted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fallback {
+    /// Pause the whole operation at `awaiting_human`.
+    AskHuman,
+    /// Fail the operation (the default — matches pre-dialect behaviour).
+    #[default]
+    Stop,
+    /// Advance the plan without this step's output.
+    Skip,
 }
 
 /// Where a phase's steps write their output (`§3.4`, the compile-first-wiki
@@ -139,6 +198,30 @@ impl WorkflowSkill {
             verify,
         })
     }
+
+    /// Parse a `kind: workflow` skill page into a plan — the entry point the
+    /// driver uses (crew F-1: wires the prose dialect in). A page authored in
+    /// YAML (`phases:` frontmatter) takes precedence; otherwise the page body is
+    /// parsed as the prose [`crate::dialect`] ("numbered prose + inline
+    /// directives"), so an authored `on failure: … ask a human` reaches the
+    /// runtime instead of every phase defaulting to `Stop`. `id` is the plan
+    /// skill id (the YAML path reads its own `id:` when present).
+    /// `Ok(Some)` = a parsed plan; `Ok(None)` = a YAML page whose `phases:` are
+    /// all malformed (lenient, as the rest of the frontmatter surface); `Err` =
+    /// a prose plan that FAILED to parse. The dialect's fail-closed error is
+    /// PROPAGATED, never swallowed (crew final-review F3): an unparseable
+    /// `kind: workflow` page must reach a terminal `failed` status, not wedge
+    /// the operation at `pending` with no status, DLQ row or log.
+    pub fn parse_page(
+        id: &str,
+        fm: &Value,
+        body: &str,
+    ) -> Result<Option<Self>, crate::dialect::DialectError> {
+        if fm.get("phases").and_then(Value::as_array).is_some() {
+            return Ok(Self::parse(fm));
+        }
+        crate::dialect::parse_workflow_dialect(id, body).map(Some)
+    }
 }
 
 fn parse_verify(v: Option<&Value>) -> VerifyPolicy {
@@ -175,7 +258,39 @@ fn parse_phase(p: &Value, verify: &VerifyPolicy) -> Option<Phase> {
             .get("harness")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        // A YAML phase may also author the outcome policy + gate (crew F-1) —
+        // absent ⇒ the pre-dialect default (fail on error, no human gate). The
+        // prose dialect (dialect.rs) sets the same fields.
+        outcome: parse_outcome(obj.get("outcome")),
+        human_gate: obj
+            .get("human_gate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
+}
+
+/// Parse a YAML `outcome:` block — `{retries: <u32>, on_exhausted: ask_human |
+/// stop | skip}` — into an [`OutcomePolicy`]. Absent or malformed ⇒ the default
+/// (`retries: 0, on_exhausted: Stop`).
+fn parse_outcome(v: Option<&Value>) -> OutcomePolicy {
+    let Some(obj) = v.and_then(Value::as_object) else {
+        return OutcomePolicy::default();
+    };
+    let retries = obj
+        .get("retries")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(u32::MAX as u64) as u32;
+    let on_exhausted = match obj.get("on_exhausted").and_then(Value::as_str) {
+        Some("ask_human") => Fallback::AskHuman,
+        Some("skip") => Fallback::Skip,
+        // "stop", anything else, or absent ⇒ the fail-closed default.
+        _ => Fallback::Stop,
+    };
+    OutcomePolicy {
+        retries,
+        on_exhausted,
+    }
 }
 
 /// Parse `fan_out:`. Absent or a bare integer ⇒ [`FanOut::Fixed`]; an object

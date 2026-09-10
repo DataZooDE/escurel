@@ -497,7 +497,7 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         // body; `close_session` is a cleanup and does not debit.
         "update_page" | "delete_page" | "move_page" | "purge_page" | "apply_op"
         | "append_message" | "capture_event" | "assign_event" | "create_draft"
-        | "promote_draft" | "discard_draft" => Dimension::Writes,
+        | "promote_draft" | "discard_draft" | "start_operation" => Dimension::Writes,
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -917,6 +917,7 @@ async fn dispatch_tools_call(
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer, caller).await,
         "list_instances" => tool_list_instances(indexer, caller, params.arguments).await,
+        "get_operation" => tool_get_operation(indexer, caller, params.arguments).await,
         "resolve" => tool_resolve(indexer, caller, params.arguments).await,
         "expand" => tool_expand(state, indexer, caller, params.arguments).await,
         "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,
@@ -977,6 +978,17 @@ async fn dispatch_tools_call(
                 state.event_acl,
                 state.webhook.as_ref(),
                 &state.events_tx,
+                params.arguments,
+            )
+            .await
+        }
+        "start_operation" => {
+            tool_start_operation(
+                indexer,
+                caller,
+                state.webhook.as_ref(),
+                &state.events_tx,
+                state.operation_slug_secret.as_deref(),
                 params.arguments,
             )
             .await

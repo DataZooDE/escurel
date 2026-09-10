@@ -1354,6 +1354,41 @@ pub(super) async fn tool_capture_event(
             "capture_event: `label_skill` is required (the label→skill routing key)".to_owned(),
         ));
     }
+    // Reserved namespace (async-ops crew Phase-2 F1): the `escurel:` label prefix
+    // is server/runner-owned. An operation's status events live under
+    // `escurel:run-status`, and `get_operation` trusts them — so a non-admin
+    // caller must not be able to author one (a forged terminal status would move
+    // `get_operation`'s answer, and becomes an actuator once Phase 3 delivers on
+    // terminal status). Enforced unconditionally, independent of the event ACL
+    // mode (which defaults Off): the runner records status with its own admin
+    // identity, so only a non-admin caller is refused.
+    if a.label_skill.starts_with("escurel:") && !caller.is_admin {
+        return Err(JsonRpcError::invalid_params(
+            "capture_event: the `escurel:` label namespace is reserved".to_owned(),
+        ));
+    }
+    // Provenance sanitisation (async-ops 2c-ii): `provenance.workflow` is the
+    // block that ROUTES an event into the runner's reducer and grants a step
+    // its workflow autonomy/tools — so a non-admin CALLER must not forge one and
+    // inject a workflow step. The legitimate producers set it another way: the
+    // `start_operation` facade constructs it server-side (via the indexer, not
+    // this tool), and the runner emits steps under its own admin identity.
+    // Deliberately NARROW (owner decision 2026-09-10): only `workflow` is
+    // rejected — a caller's `provenance.runner` lineage block still survives, as
+    // the capture contract (and `event_acl::caller_supplied_captured_by_is_overwritten`)
+    // has always allowed.
+    if !caller.is_admin
+        && a.provenance
+            .as_ref()
+            .and_then(Value::as_object)
+            .is_some_and(|p| p.contains_key("workflow"))
+    {
+        return Err(JsonRpcError::invalid_params(
+            "capture_event: `provenance.workflow` is server-owned \
+             (use start_operation to begin a workflow)"
+                .to_owned(),
+        ));
+    }
     // #390: `event_id` is the idempotency key, so "" would make EVERY
     // id-less capture the same event — first writer wins, each later one
     // silently discarded with a success receipt. An empty/whitespace key
@@ -1425,6 +1460,314 @@ pub(super) async fn tool_capture_event(
     // ACL filter runs at delivery, not here.
     let _ = events_tx.send(std::sync::Arc::new(stored));
     Ok(event)
+}
+
+#[derive(Deserialize)]
+pub(super) struct StartOperationArgs {
+    /// The `kind: workflow` plan skill id to run.
+    wf_skill: String,
+    /// The invocation body handed to the plan's first step (the question /
+    /// task). Optional; defaults to empty.
+    #[serde(default)]
+    input: String,
+    /// A caller-chosen idempotency key: two `start_operation`s with the same
+    /// key (from the same caller) map to ONE operation — a retry re-attaches
+    /// rather than starting a second run. Absent ⇒ a fresh operation each call.
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    /// An opaque channel reference stored on the operation for the terminal
+    /// delivery (async-ops Phase 3); the facade never interprets it.
+    #[serde(default)]
+    conversation_ref: Option<Value>,
+}
+
+/// Deterministic run-board slug for an idempotency key, scoped to
+/// `(subject, wf_skill, key)` so two callers' keys never collide AND the same
+/// key under a DIFFERENT plan is a distinct operation rather than silently
+/// re-attaching to the old plan (crew Phase-2 F-4). A stable, page-safe id so a
+/// retry of the same request resolves to the same op.
+///
+/// When a server `secret` is configured (crew Phase-2 F-4 hardening) the slug is
+/// an **HMAC-SHA256** keyed by it, so a peer who knows the (public-ish) subject,
+/// plan and key still cannot COMPUTE another caller's slug and squat their board
+/// (a silent pending-forever DoS, or a redirected Phase-3 delivery). Without a
+/// secret (dev) it degrades to an unkeyed SHA-256 — deterministic but
+/// peer-computable; production sets the secret (from the tenant's GCP SM key).
+fn operation_slug_for_key(
+    subject: &str,
+    wf_skill: &str,
+    key: &str,
+    secret: Option<&str>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    // A single message with 0x00 separators so `(a,"b","c")` and `("a","b",c)`
+    // never collide.
+    let mut msg = Vec::new();
+    msg.extend_from_slice(subject.as_bytes());
+    msg.push(0);
+    msg.extend_from_slice(wf_skill.as_bytes());
+    msg.push(0);
+    msg.extend_from_slice(key.as_bytes());
+    let digest: [u8; 32] = match secret {
+        Some(secret) if !secret.is_empty() => {
+            use hmac::{Hmac, Mac};
+            let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+                .expect("HMAC accepts a key of any size");
+            mac.update(&msg);
+            mac.finalize().into_bytes().into()
+        }
+        _ => Sha256::digest(&msg).into(),
+    };
+    let mut slug = String::from("op-");
+    for b in &digest[..16] {
+        slug.push_str(&format!("{b:02x}"));
+    }
+    slug
+}
+
+/// A skill id is a safe, bounded slug — letters, digits, `_`, `-`, `.`. Used to
+/// reject a `wf_skill` before it is interpolated into board frontmatter (crew
+/// Phase-2 F-1) and as a cheap shape check before resolving it.
+fn is_safe_skill_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+/// `start_operation` — begin an async workflow operation (async-ops Phase 2b).
+///
+/// The **server-owned** entry point for an async run. The server constructs the
+/// operation's identity and its `provenance.workflow` block itself, so a caller
+/// can neither forge a workflow invocation nor aim a run at another operation —
+/// which is what lets `capture_event` reject a caller-supplied
+/// `provenance.workflow` (Phase 2c). It:
+///
+/// 1. derives the operation id (deterministic from `idempotency_key` for
+///    exactly-once, else a fresh ULID);
+/// 2. on a key collision returns the existing operation (a retry re-attaches,
+///    no second run) — gated by the same read ACL as `get_operation`;
+/// 3. creates the owner-scoped run board (`status: pending`, `requested_by` +
+///    `requester_groups` for the eventual per-run caller token), stamping the
+///    verified subject as the page principal (unforgeable);
+/// 4. captures the invocation event with server-built `provenance.workflow`.
+///
+/// Returns `{operation_id, status:"pending"}` fast; the runner drives the plan
+/// from the inbox and `get_operation` polls the status.
+pub(super) async fn tool_start_operation(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    webhook: Option<&crate::webhook::Webhook>,
+    events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<EventInfo>>,
+    slug_secret: Option<&str>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: StartOperationArgs = parse_args(args, "start_operation")?;
+    // Validate + RESOLVE the plan (crew Phase-2 F-5): a `wf_skill` that is not a
+    // real `kind: workflow` skill would create an orphan board + an invocation
+    // that never drives (fail-slow, `pending` forever). Fail fast instead. The
+    // charset check also makes `wf_skill` safe to interpolate into frontmatter
+    // (F-1).
+    if !is_safe_skill_id(&a.wf_skill) {
+        return Err(JsonRpcError::invalid_params(
+            "start_operation: `wf_skill` must be a skill id (letters, digits, _-.)".to_owned(),
+        ));
+    }
+    let plan = indexer
+        .expand(&format!("markdown/skills/{}.md", a.wf_skill), None, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("start_operation: {e}")))?;
+    let is_workflow = plan.as_ref().is_some_and(|p| {
+        p.frontmatter
+            .get("backend")
+            .and_then(|b| b.get("kind"))
+            .and_then(Value::as_str)
+            == Some("workflow")
+    });
+    // Read-ACL the plan (crew Phase-2 F2): until the per-run caller token (2c),
+    // an accepted plan runs under the RUNNER's admin identity, so an agent
+    // naming a group-private plan it cannot even list — a skill-editing `eval`
+    // plan, a plan that reads another group's data — would get it executed as
+    // admin. Plan SELECTION is the confused-deputy boundary and does not wait
+    // for 2c. Denial and absence return the identical error (no existence oracle).
+    let may_read_plan = if caller.is_admin {
+        true
+    } else {
+        let all = indexer
+            .list_skills()
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("start_operation: {e}")))?;
+        let readable = indexer
+            .filter_readable_skills(&caller, all)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("start_operation acl: {e}")))?;
+        readable.iter().any(|s| s.id == a.wf_skill)
+    };
+    if !is_workflow || !may_read_plan {
+        return Err(JsonRpcError::invalid_params(format!(
+            "start_operation: `{}` is not a `kind: workflow` plan skill",
+            a.wf_skill
+        )));
+    }
+    // Bound `conversation_ref` + `input` (crew Phase-2 F5): one start_operation
+    // (one Writes quota unit) must not persist a multi-MB / deeply nested blob
+    // that every later parse + re-index of the board pays for.
+    const MAX_CONVERSATION_REF_BYTES: usize = 4 * 1024;
+    const MAX_INPUT_BYTES: usize = 64 * 1024;
+    if let Some(cref) = &a.conversation_ref {
+        let encoded = serde_json::to_string(cref).unwrap_or_default();
+        if encoded.len() > MAX_CONVERSATION_REF_BYTES || json_depth(cref) > 8 {
+            return Err(JsonRpcError::invalid_params(
+                "start_operation: `conversation_ref` too large or too deeply nested".to_owned(),
+            ));
+        }
+    }
+    if a.input.len() > MAX_INPUT_BYTES {
+        return Err(JsonRpcError::invalid_params(
+            "start_operation: `input` exceeds the size limit".to_owned(),
+        ));
+    }
+    // Validate the idempotency key charset (crew Phase-2 F-1): it is
+    // interpolated into board frontmatter, so a newline could forge keys.
+    let idem_key = a
+        .idempotency_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(key) = idem_key
+        && !is_safe_idempotency_key(key)
+    {
+        return Err(JsonRpcError::invalid_params(
+            "start_operation: `idempotency_key` must be 1-128 chars of [A-Za-z0-9_.:-]".to_owned(),
+        ));
+    }
+    let slug = match idem_key {
+        Some(key) => operation_slug_for_key(caller.subject, &a.wf_skill, key, slug_secret),
+        None => ulid::Ulid::new().to_string().to_ascii_lowercase(),
+    };
+    let operation_id = format!("markdown/instances/workflow-run/{slug}.md");
+
+    // Idempotency: an existing board means this operation already started. Only
+    // its owner (or admin) may re-attach — a non-owner gets a collision error,
+    // never a peek at another caller's run. The re-attach reports the DERIVED
+    // status (F-3), not a hardcoded `pending` a post-completion retry would lie
+    // with.
+    if let Some(existing) = indexer
+        .expand(&operation_id, None, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("start_operation: {e}")))?
+    {
+        let readable = indexer
+            .may_read_instance(&caller, &existing.page.skill, &existing.frontmatter)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("start_operation acl: {e}")))?;
+        if !readable {
+            return Err(JsonRpcError::invalid_params(
+                "start_operation: idempotency_key collides with another operation".to_owned(),
+            ));
+        }
+        let status = super::tools_read::derive_operation_status(indexer, &operation_id).await?;
+        return Ok(json!({
+            "operation_id": operation_id,
+            "status": status.as_str(),
+            "idempotent": true,
+        }));
+    }
+
+    // Create the owner-scoped run board. `requested_by`/`requester_groups` are
+    // the identity the per-run caller token is later minted from (Phase 2c); the
+    // verified subject is ALSO the page principal via `update_page_as`. The
+    // operation's *status* is NOT stored here — it is derived from the
+    // append-only status events (one source of truth, F-3); the board carries
+    // only durable request facts. Every interpolated value is either a verified
+    // identity or a validated/JSON-encoded scalar (F-1).
+    let groups_json =
+        serde_json::to_string(caller.token_groups).unwrap_or_else(|_| "[]".to_owned());
+    let mut content = format!(
+        "---\ntype: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {}\n\
+         requested_by: {}\nrequester_groups: {groups_json}\n",
+        a.wf_skill,
+        json_scalar(caller.subject),
+    );
+    if let Some(key) = idem_key {
+        content.push_str(&format!("idempotency_key: {}\n", json_scalar(key)));
+    }
+    if let Some(cref) = &a.conversation_ref {
+        // Compact JSON is newline-free and a valid YAML flow scalar/collection.
+        let encoded = serde_json::to_string(cref).unwrap_or_else(|_| "null".to_owned());
+        content.push_str(&format!("conversation_ref: {encoded}\n"));
+    }
+    content.push_str("---\n# operation\n\nAsync operation run board.\n");
+    indexer
+        .update_page_as(&operation_id, &content, Some(caller.subject))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("start_operation: create board: {e}")))?;
+
+    // The invocation event, with SERVER-constructed provenance.workflow — the
+    // caller never supplies it, so it cannot forge a workflow hop or its target.
+    //
+    // The id is a fresh SERVER ULID, deliberately NOT a deterministic function
+    // of the (caller-computable) operation slug: a guessable invocation id would
+    // let a caller pre-`capture_event` that id with forged content so this
+    // server capture no-ops onto the caller's row (ON CONFLICT), hijacking the
+    // invocation — including poisoning another caller's keyed operation before
+    // they start it. Plan-level exactly-once does NOT depend on this id: the
+    // board-existence idempotency check above collapses sequential retries, and
+    // for a rare concurrent same-key race the reducer's content-addressed step
+    // ids (§3.6) collapse the plan to one execution even if two invoke folds land.
+    let provenance = stamp_captured_by(
+        Some(json!({
+            "workflow": { "run": operation_id, "wf_skill": a.wf_skill, "phase": "invoke" }
+        })),
+        caller.subject,
+    );
+    let requested = NewEvent {
+        event_id: None,
+        at: None,
+        source: "escurel:start_operation".to_owned(),
+        mime: "text/plain".to_owned(),
+        label_skill: a.wf_skill.clone(),
+        instance_page_id: Some(operation_id.clone()),
+        title: format!("operation: {}", a.wf_skill),
+        body: a.input,
+        provenance,
+    };
+    let stored = indexer
+        .capture_event(requested)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("start_operation: capture: {e}")))?;
+    if let Some(hook) = webhook {
+        hook.notify(event_to_json(&stored), indexer.tenant());
+    }
+    let _ = events_tx.send(std::sync::Arc::new(stored));
+
+    Ok(json!({ "operation_id": operation_id, "status": "pending", "idempotent": false }))
+}
+
+/// An idempotency key is a short, bounded token safe to interpolate into
+/// frontmatter (crew Phase-2 F-1): 1-128 chars of `[A-Za-z0-9_.:-]`.
+fn is_safe_idempotency_key(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':'))
+}
+
+/// Encode a string as a JSON scalar (double-quoted, escaped) — a newline-free,
+/// injection-safe value valid in YAML frontmatter. Used for any value that is a
+/// verified identity but still worth encoding rather than interpolating raw.
+fn json_scalar(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_owned())
+}
+
+/// Maximum nesting depth of a JSON value (a scalar is depth 0). Used to bound
+/// `conversation_ref` so a caller cannot persist a pathologically nested blob.
+fn json_depth(v: &Value) -> usize {
+    match v {
+        Value::Array(items) => 1 + items.iter().map(json_depth).max().unwrap_or(0),
+        Value::Object(map) => 1 + map.values().map(json_depth).max().unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// The response for an idempotent re-capture the caller may NOT read: its
@@ -1892,5 +2235,48 @@ pub(super) async fn tool_purge_page(
             }],
         })),
         Err(e) => Err(JsonRpcError::internal(format!("purge_page: {e}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F-4 hardening: with a server secret the operation slug is an HMAC — a
+    /// peer who knows the (guessable) subject, plan and key STILL cannot compute
+    /// another caller's slug without the secret (so cannot squat their board).
+    /// It stays deterministic (idempotent retries) and scoped to (subject,
+    /// wf_skill, key).
+    #[test]
+    fn operation_slug_hmac_depends_on_the_secret() {
+        let a = operation_slug_for_key("alice", "plan", "k1", Some("secret-A"));
+        let again = operation_slug_for_key("alice", "plan", "k1", Some("secret-A"));
+        let other_secret = operation_slug_for_key("alice", "plan", "k1", Some("secret-B"));
+        let unkeyed = operation_slug_for_key("alice", "plan", "k1", None);
+
+        assert_eq!(
+            a, again,
+            "same inputs + secret ⇒ same slug (idempotent retry)"
+        );
+        assert_ne!(
+            a, other_secret,
+            "a different server secret ⇒ a different slug — a peer without THE secret cannot compute it"
+        );
+        assert_ne!(a, unkeyed, "keyed differs from the dev unkeyed hash");
+        assert!(a.starts_with("op-") && a.len() == "op-".len() + 32);
+
+        // Still scoped: subject / plan / key each change the slug.
+        assert_ne!(
+            a,
+            operation_slug_for_key("bob", "plan", "k1", Some("secret-A"))
+        );
+        assert_ne!(
+            a,
+            operation_slug_for_key("alice", "plan2", "k1", Some("secret-A"))
+        );
+        assert_ne!(
+            a,
+            operation_slug_for_key("alice", "plan", "k2", Some("secret-A"))
+        );
     }
 }
