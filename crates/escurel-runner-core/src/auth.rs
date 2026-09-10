@@ -154,6 +154,20 @@ impl TokenSource {
         }
     }
 
+    /// Whether this source can mint per-run, caller-scoped tokens — true only in
+    /// **minted** mode (a signing key), false for a [`Self::Static`] bearer.
+    ///
+    /// The fail-closed on a missing requester (crew final-review F2) is gated on
+    /// this: only a minting runner actually scopes each run to its requester, so
+    /// only there does a run board with no requester signal the strip-mid-run
+    /// escalation to refuse. A static-bearer runner cannot scope any run — the
+    /// confused deputy is a documented dev-only limitation until minted mode
+    /// (ADR-0012) — so a missing requester there is not a new hole to fail on.
+    #[must_use]
+    pub fn can_mint(&self) -> bool {
+        matches!(self, Self::Minted { .. })
+    }
+
     /// The subject this source authenticates AS — the identity the gateway
     /// stamps as `provenance.captured_by` on events this runner captures. The
     /// runner uses it to recognise its OWN emitted events (whose lineage it may
@@ -269,6 +283,15 @@ impl Signer {
     /// exactly what the requester may do, closing the confused deputy (a run
     /// previously executed with the runner's admin identity).
     ///
+    /// **Privilege ceiling (crew final-review F1).** Any `escurel:`-prefixed
+    /// role in `groups` is STRIPPED before signing — most critically
+    /// `escurel:admin`, the value the gateway reads for admin. The requester's
+    /// groups reach this from the run board's *mutable* frontmatter, so without
+    /// this a requester who overwrote their board with
+    /// `requester_groups: ["escurel:admin"]` would get the harness running as
+    /// tenant admin. A per-run token can only ever carry a caller's own
+    /// engagement groups, never a reserved/privileged role.
+    ///
     /// # Errors
     /// When signing fails.
     pub fn mint_scoped(
@@ -277,7 +300,12 @@ impl Signer {
         groups: &[String],
         ttl_secs: u64,
     ) -> Result<String, AuthError> {
-        self.mint_with_roles(subject, groups, ttl_secs)
+        let scoped: Vec<String> = groups
+            .iter()
+            .filter(|g| !g.starts_with("escurel:"))
+            .cloned()
+            .collect();
+        self.mint_with_roles(subject, &scoped, ttl_secs)
     }
 
     fn mint_with_roles(

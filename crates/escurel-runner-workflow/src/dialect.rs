@@ -11,23 +11,24 @@
 //! 1. Draft a proposal with [[skill::reorder_policy]].
 //! 2. Validate service levels with [[skill::validate_service_level]].
 //!    on failure: retry once, then ask a human.
-//! 3. A human approves the proposal.   (human-in-the-loop)
-//! 4. Place the order with [[skill::place_order]].
+//! 3. Place the order with [[skill::place_order]].
 //!
 //! on any unrecoverable failure: stop and report.
 //! ```
 //!
 //! Grammar (v1): an optional `Goal:` line; a numbered list where each item is a
 //! step and the first `[[skill::<id>]]` link is its skill; indented outcome
-//! directives (`on failure: retry <N>[, then <ask a human|stop|skip>]`); a step
-//! marked `(human-in-the-loop)` (or phrased "a human approves/reviews …") is a
-//! human gate; a trailing `on any unrecoverable failure: <fallback>` sets the
-//! workflow default. Steps run in order (v1 is sequential — `fan_out: Fixed(1)`,
-//! `writes: New`).
+//! directives (`on failure: retry <N>[, then <ask a human|stop>]`); a trailing
+//! `on any unrecoverable failure: <fallback>` sets the workflow default. Steps
+//! run in order (v1 is sequential — `fan_out: Fixed(1)`, `writes: New`).
+//!
+//! **Fail-closed on unsupported features (crew final-review F4/F10):** the
+//! runtime does not yet honour `(human-in-the-loop)` gates or a `skip` fallback,
+//! so the parser *rejects* both rather than compiling a plan that would silently
+//! mis-execute. A YAML `WorkflowSkill` may still set `human_gate` directly; the
+//! prose front-end simply will not mint one until the runtime supports it.
 
-use crate::spec::{
-    Fallback, FanOut, HUMAN_GATE_SKILL, OutcomePolicy, Phase, VerifyPolicy, WorkflowSkill,
-};
+use crate::spec::{Fallback, FanOut, OutcomePolicy, Phase, VerifyPolicy, WorkflowSkill};
 
 /// The workflow-level fallback line — its fallback becomes the default
 /// `on_exhausted` for any step that does not author its own `on failure`.
@@ -141,11 +142,22 @@ fn build_step(
     directives: &[&str],
     default_fallback: Fallback,
 ) -> Result<Phase, DialectError> {
-    let human_gate = is_human_gate(text);
-    let skill = first_skill(text);
-    if skill.is_none() && !human_gate {
+    // A human-in-the-loop gate is REJECTED at parse (crew final-review F4): the
+    // reducer honours it nowhere yet, so compiling one to an ordinary phase
+    // would dispatch it to an agent — letting the agent "approve" its own
+    // proposal, or hard-failing the plan when no gate skill resolves. Fail
+    // closed (like the rest of the dialect) until the reducer gains pause
+    // semantics, rather than ship a marker that silently does the wrong thing.
+    if is_human_gate(text) {
         return Err(DialectError(format!(
-            "step {n} has no [[skill::…]] link and is not a human-in-the-loop gate: {text:?}"
+            "step {n}: `(human-in-the-loop)` / \"a human approves\" is not yet supported — the \
+             runtime does not pause on it; remove the gate until human-gate reducer semantics land"
+        )));
+    }
+    let skill = first_skill(text);
+    if skill.is_none() {
+        return Err(DialectError(format!(
+            "step {n} has no [[skill::…]] link: {text:?}"
         )));
     }
     let mut outcome: Option<OutcomePolicy> = None;
@@ -169,16 +181,9 @@ fn build_step(
         retries: 0,
         on_exhausted: default_fallback,
     });
-    // F5: a human gate is a real phase whose instance a human writes; give it a
-    // concrete, non-empty `produces` (the gateway rejects an empty label). An
-    // explicit skill link on the same step still wins.
-    let produces = match skill {
-        Some(s) => s,
-        None => HUMAN_GATE_SKILL.to_owned(),
-    };
     Ok(Phase {
         id: format!("step-{n}"),
-        produces,
+        produces: skill.expect("a non-gate step has a skill link (checked above)"),
         fan_out: FanOut::Fixed(1),
         writes: crate::spec::WriteMode::New,
         dedup_by: None,
@@ -186,7 +191,9 @@ fn build_step(
         max_targets: None,
         harness: None,
         outcome,
-        human_gate,
+        // Human gates are rejected at parse (above), so a compiled phase never
+        // carries one until the reducer honours it.
+        human_gate: false,
     })
 }
 
@@ -241,9 +248,16 @@ fn parse_fallback(s: &str, n: usize) -> Result<Fallback, DialectError> {
     match (human, stop, skip) {
         (true, false, false) => Ok(Fallback::AskHuman),
         (false, true, false) => Ok(Fallback::Stop),
-        (false, false, true) => Ok(Fallback::Skip),
+        // `skip` is REJECTED at parse (crew final-review F10): the driver does
+        // not advance past a dead-lettered phase yet, so it fails closed to
+        // `failed` — an authored `then skip` would not mean what it says. Refuse
+        // it until skip-advance semantics land, rather than silently substitute.
+        (false, false, true) => Err(DialectError(format!(
+            "{where_}: `skip` fallback is not yet supported — the runtime cannot advance past a \
+             failed step; use `stop` or `ask a human`"
+        ))),
         (false, false, false) => Err(DialectError(format!(
-            "{where_}: unknown failure fallback {s:?} (expected ask a human | stop | skip)"
+            "{where_}: unknown failure fallback {s:?} (expected ask a human | stop)"
         ))),
         _ => Err(DialectError(format!(
             "{where_}: contradictory fallback {s:?} (names more than one of human/stop/skip)"
@@ -313,7 +327,7 @@ Goal: propose and place a safe reorder.
 1. Draft a proposal with [[skill::reorder_policy]].
 2. Validate service levels with [[skill::validate_service_level]].
    on failure: retry once, then ask a human.
-3. A human approves the proposal.   (human-in-the-loop)
+3. Record the decision with [[skill::record_decision]].
 4. Place the order with [[skill::place_order]].
 
 on any unrecoverable failure: stop and report.
@@ -335,19 +349,27 @@ on any unrecoverable failure: stop and report.
         assert_eq!(wf.phases[1].outcome.retries, 1);
         assert_eq!(wf.phases[1].outcome.on_exhausted, Fallback::AskHuman);
 
-        // 3: human-in-the-loop gate (no skill link) — F5: it carries the
-        // non-empty sentinel `produces`, never an empty label.
-        assert!(wf.phases[2].human_gate, "step 3 is a human gate");
-        assert_eq!(wf.phases[2].produces, HUMAN_GATE_SKILL);
-        assert!(
-            !wf.phases[2].produces.is_empty(),
-            "a human gate must not compile to an empty produces"
-        );
+        // 3: a plain skill step.
+        assert_eq!(wf.phases[2].produces, "record_decision");
+        assert!(!wf.phases[2].human_gate);
 
         // 4: plain step; the global fallback ("stop and report") is Stop, and an
         // un-annotated step inherits it (F8 — the global line is actually used).
         assert_eq!(wf.phases[3].produces, "place_order");
         assert_eq!(wf.phases[3].outcome.on_exhausted, Fallback::Stop);
+    }
+
+    /// F4/F10 (crew final-review): the dialect refuses features the runtime does
+    /// not honour, rather than silently mis-executing them.
+    #[test]
+    fn human_gate_and_skip_are_rejected_at_parse() {
+        let gate = "1. A human approves the plan. (human-in-the-loop)\n";
+        let err = parse_workflow_dialect("w", gate).unwrap_err();
+        assert!(err.0.contains("human-in-the-loop"), "got: {}", err.0);
+
+        let skip = "1. Do it with [[skill::x]].\n   on failure: retry once, then skip.\n";
+        let err = parse_workflow_dialect("w", skip).unwrap_err();
+        assert!(err.0.contains("`skip`"), "got: {}", err.0);
     }
 
     /// F8: the global `on any unrecoverable failure:` line is APPLIED — an
@@ -369,10 +391,10 @@ on any unrecoverable failure: stop and report.
     /// F8: a step's own `on failure` still wins over the global default.
     #[test]
     fn per_step_on_failure_overrides_the_global_fallback() {
-        let body = "1. A with [[skill::x]].\n   on failure: retry once, then skip.\n2. B with [[skill::y]].\n\non any unrecoverable failure: ask a human.\n";
+        let body = "1. A with [[skill::x]].\n   on failure: retry once, then stop.\n2. B with [[skill::y]].\n\non any unrecoverable failure: ask a human.\n";
         let wf = parse_workflow_dialect("w", body).unwrap();
-        // Step 1 authored its own fallback → Skip; step 2 inherits the global.
-        assert_eq!(wf.phases[0].outcome.on_exhausted, Fallback::Skip);
+        // Step 1 authored its own fallback → Stop; step 2 inherits the global.
+        assert_eq!(wf.phases[0].outcome.on_exhausted, Fallback::Stop);
         assert_eq!(wf.phases[1].outcome.on_exhausted, Fallback::AskHuman);
     }
 
@@ -413,17 +435,17 @@ on any unrecoverable failure: stop and report.
     /// F11: two global fallback lines are rejected, not silently last-won.
     #[test]
     fn a_duplicate_global_fallback_fails_closed() {
-        let body = "1. Do it with [[skill::x]].\n\non any unrecoverable failure: stop.\non any unrecoverable failure: skip.\n";
+        let body = "1. Do it with [[skill::x]].\n\non any unrecoverable failure: stop.\non any unrecoverable failure: ask a human.\n";
         let err = parse_workflow_dialect("w", body).unwrap_err();
         assert!(err.0.contains("more than one global"), "got: {}", err.0);
     }
 
     #[test]
     fn retry_count_words_and_digits() {
-        let twice = "1. Do it with [[skill::x]].\n   on failure: retry twice, then skip.\n";
+        let twice = "1. Do it with [[skill::x]].\n   on failure: retry twice, then ask a human.\n";
         let wf = parse_workflow_dialect("w", twice).unwrap();
         assert_eq!(wf.phases[0].outcome.retries, 2);
-        assert_eq!(wf.phases[0].outcome.on_exhausted, Fallback::Skip);
+        assert_eq!(wf.phases[0].outcome.on_exhausted, Fallback::AskHuman);
 
         let three = "1. Do it with [[skill::x]].\n   on failure: retry 3, then stop.\n";
         let wf = parse_workflow_dialect("w", three).unwrap();

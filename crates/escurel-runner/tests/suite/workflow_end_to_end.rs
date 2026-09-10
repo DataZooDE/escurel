@@ -966,6 +966,103 @@ async fn a_run_executes_under_the_requesters_identity_not_the_runners() {
     );
 }
 
+/// async-ops crew final-review F2 (no mock): a **minting** runner refuses to run
+/// a workflow whose board carries NO requester, rather than falling open to its
+/// own admin identity. This is the confused-deputy the per-run token closes: the
+/// board's `requested_by` is owner-writable, so a non-admin who stripped it
+/// mid-operation must not thereby escalate the remaining phases to the runner's
+/// authority. Here the board is injected (as the reducer tests do) WITHOUT a
+/// requester while the runner runs in minted mode — the packager fails closed,
+/// so the scope harness never runs and no `research-angle` instance appears.
+#[tokio::test]
+async fn a_minting_runner_refuses_a_run_with_no_requester_instead_of_running_as_admin() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // Inject the invocation as a system/admin identity onto a fixed board that
+    // carries NO `requested_by` (a start_operation board always would).
+    let run_page = "markdown/instances/workflow-run/rf2-no-requester.md";
+    call_mcp(
+        &gateway,
+        Role::Admin,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke deep-research (no requester)",
+            "body": "Answer the research question.",
+            "provenance": {
+                "workflow": { "run": run_page, "wf_skill": WF_SKILL, "phase": "invoke" }
+            }
+        }),
+    )
+    .await;
+
+    // Runner in MINTED mode (production shape): it CAN mint a per-run token, so a
+    // board with no requester is the fail-closed case — not the dev-only static
+    // fallback.
+    let (signing_key, kid) = gateway.signing_material();
+    let issuer = gateway.issuer_url().to_owned();
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", &issuer)
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_AUTH_SUBJECT", "escurel-runner")
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The decisive assertion: over a window in which a permitted run would have
+    // produced the scope output, NO `research-angle` instance appears — the run
+    // fails closed at packaging (dead-letter, `Permanent`), never executing under
+    // the runner's admin identity.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        let r = call_mcp(
+            &gateway,
+            Role::Admin,
+            "list_instances",
+            json!({ "skill_id": "research-angle" }),
+        )
+        .await;
+        let produced = r["instances"].as_array().is_some_and(|is| !is.is_empty());
+        assert!(
+            !produced,
+            "a minting runner must NOT execute a requester-less run: it produced {r}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
 /// async-ops Phase 3 (no mock): a terminal operation is delivered back to the
 /// channel that started it. An operation is started with a `conversation_ref`
 /// (a simulated Teams turn); when the runner drives it to `succeeded`, it POSTs

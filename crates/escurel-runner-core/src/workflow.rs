@@ -179,16 +179,40 @@ pub async fn drive_workflow(
         })
         .await
         .map_err(WorkflowDriveError::Read)?;
-    let Some(spec) = WorkflowSkill::parse_page(&wf.wf_skill, &expanded.frontmatter, &expanded.body)
-    else {
-        return Ok(WorkflowDriveOutcome::default());
-    };
-
     // The event that triggered this drive — the transition key that makes the
     // status history append-only (crew F-3): a status event id is a function of
     // (operation, triggering event, status), so `running → awaiting_human →
     // running` records three ordered rows rather than collapsing onto one.
     let transition = trigger.event_id.as_str();
+
+    let spec = match WorkflowSkill::parse_page(&wf.wf_skill, &expanded.frontmatter, &expanded.body)
+    {
+        Ok(Some(spec)) => spec,
+        // Not a workflow plan (no phases, empty prose) — nothing to drive.
+        Ok(None) => return Ok(WorkflowDriveOutcome::default()),
+        // A plan that FAILED to parse (crew final-review F3): record a terminal
+        // `failed` with the reason so the operation reaches a terminal status —
+        // never the silent `pending` wedge (Bug-A) that a swallowed error caused.
+        Err(e) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                operation = %wf.run,
+                wf_skill = %wf.wf_skill,
+                error = %e,
+                "workflow: plan is unparseable; recording terminal failed"
+            );
+            record_status_best_effort(
+                client,
+                &wf.run,
+                transition,
+                OperationStatus::Failed,
+                &wf.phase,
+                "plan_unparseable",
+            )
+            .await;
+            return Ok(WorkflowDriveOutcome::default());
+        }
+    };
 
     // A held draft pauses the operation for human approval; the plan must not
     // advance past it, so record `awaiting_human` and emit nothing.
@@ -495,7 +519,9 @@ pub async fn recover_workflows(
             })
             .await
             .map_err(WorkflowDriveError::Read)?;
-        let Some(spec) =
+        // Recovery skips a run whose plan is missing or unparseable — the
+        // failing-plan status is recorded on the live drive (F3), not here.
+        let Ok(Some(spec)) =
             WorkflowSkill::parse_page(&wf.wf_skill, &expanded.frontmatter, &expanded.body)
         else {
             continue;

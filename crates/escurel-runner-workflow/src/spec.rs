@@ -206,11 +206,21 @@ impl WorkflowSkill {
     /// directives"), so an authored `on failure: … ask a human` reaches the
     /// runtime instead of every phase defaulting to `Stop`. `id` is the plan
     /// skill id (the YAML path reads its own `id:` when present).
-    pub fn parse_page(id: &str, fm: &Value, body: &str) -> Option<Self> {
+    /// `Ok(Some)` = a parsed plan; `Ok(None)` = a YAML page whose `phases:` are
+    /// all malformed (lenient, as the rest of the frontmatter surface); `Err` =
+    /// a prose plan that FAILED to parse. The dialect's fail-closed error is
+    /// PROPAGATED, never swallowed (crew final-review F3): an unparseable
+    /// `kind: workflow` page must reach a terminal `failed` status, not wedge
+    /// the operation at `pending` with no status, DLQ row or log.
+    pub fn parse_page(
+        id: &str,
+        fm: &Value,
+        body: &str,
+    ) -> Result<Option<Self>, crate::dialect::DialectError> {
         if fm.get("phases").and_then(Value::as_array).is_some() {
-            return Self::parse(fm);
+            return Ok(Self::parse(fm));
         }
-        crate::dialect::parse_workflow_dialect(id, body).ok()
+        crate::dialect::parse_workflow_dialect(id, body).map(Some)
     }
 }
 
