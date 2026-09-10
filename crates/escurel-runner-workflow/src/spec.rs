@@ -75,9 +75,15 @@ pub struct Phase {
     /// `{ retries: 0, on_exhausted: Stop }` — fail on error, the pre-dialect
     /// behaviour.
     pub outcome: OutcomePolicy,
-    /// A human-in-the-loop gate: the operation pauses at `awaiting_human` on
-    /// this step until a human approves before the plan continues. Authored via
-    /// `(human-in-the-loop)` / "a human approves …" in the dialect.
+    /// A human-in-the-loop gate, authored via `(human-in-the-loop)` / "a human
+    /// approves …" in the dialect.
+    ///
+    /// **Forward declaration (crew F-9):** as of Phase 0.3 this flag is parsed
+    /// and carried but not yet read by the reducer/driver — the `awaiting_human`
+    /// pause today comes from an `AskHuman` *fallback* or a `Held` draft, not
+    /// from this flag. Phase 2 gives it reducer semantics (a gate phase waits
+    /// for a `human-approval` instance before advancing). Do not branch on it as
+    /// if it were honoured yet.
     pub human_gate: bool,
 }
 
@@ -96,6 +102,52 @@ impl Default for OutcomePolicy {
         Self {
             retries: 0,
             on_exhausted: Fallback::Stop,
+        }
+    }
+}
+
+/// The status of an async operation, as recorded on its run board and read
+/// back by `get_operation` (async-ops Phase 0.2/0.3/2). One shared vocabulary
+/// for the writer (the driver) and every reader, so the two cannot drift
+/// (crew F-10). The wire/KB form is [`OperationStatus::as_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationStatus {
+    /// Accepted, not yet running.
+    Pending,
+    /// At least one phase is in flight (or awaiting re-drive).
+    Running,
+    /// Every phase is complete.
+    Succeeded,
+    /// A step failed terminally and its phase's policy is to stop.
+    Failed,
+    /// Paused for a human decision (a `Held` draft, or an `AskHuman` fallback).
+    AwaitingHuman,
+}
+
+impl OperationStatus {
+    /// The stable wire/KB string (the `provenance.run_status` value + title).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OperationStatus::Pending => "pending",
+            OperationStatus::Running => "running",
+            OperationStatus::Succeeded => "succeeded",
+            OperationStatus::Failed => "failed",
+            OperationStatus::AwaitingHuman => "awaiting_human",
+        }
+    }
+
+    /// Terminal precedence for `get_operation`'s tie-break (Phase 2): a higher
+    /// rank wins when two status records coexist. `Failed` outranks
+    /// `Succeeded` (a failed phase means the plan did not wholly succeed);
+    /// `AwaitingHuman` outranks `Running` (a pause is more specific than "in
+    /// flight"); `Running` outranks `Pending`.
+    pub fn precedence(self) -> u8 {
+        match self {
+            OperationStatus::Pending => 0,
+            OperationStatus::Running => 1,
+            OperationStatus::AwaitingHuman => 2,
+            OperationStatus::Succeeded => 3,
+            OperationStatus::Failed => 4,
         }
     }
 }
@@ -187,6 +239,20 @@ impl WorkflowSkill {
             verify,
         })
     }
+
+    /// Parse a `kind: workflow` skill page into a plan — the entry point the
+    /// driver uses (crew F-1: wires the prose dialect in). A page authored in
+    /// YAML (`phases:` frontmatter) takes precedence; otherwise the page body is
+    /// parsed as the prose [`crate::dialect`] ("numbered prose + inline
+    /// directives"), so an authored `on failure: … ask a human` reaches the
+    /// runtime instead of every phase defaulting to `Stop`. `id` is the plan
+    /// skill id (the YAML path reads its own `id:` when present).
+    pub fn parse_page(id: &str, fm: &Value, body: &str) -> Option<Self> {
+        if fm.get("phases").and_then(Value::as_array).is_some() {
+            return Self::parse(fm);
+        }
+        crate::dialect::parse_workflow_dialect(id, body).ok()
+    }
 }
 
 fn parse_verify(v: Option<&Value>) -> VerifyPolicy {
@@ -223,11 +289,39 @@ fn parse_phase(p: &Value, verify: &VerifyPolicy) -> Option<Phase> {
             .get("harness")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        // YAML-authored phases keep the pre-dialect behaviour (fail on error,
-        // no human gate); the dialect front-end (dialect.rs) sets these.
-        outcome: OutcomePolicy::default(),
-        human_gate: false,
+        // A YAML phase may also author the outcome policy + gate (crew F-1) —
+        // absent ⇒ the pre-dialect default (fail on error, no human gate). The
+        // prose dialect (dialect.rs) sets the same fields.
+        outcome: parse_outcome(obj.get("outcome")),
+        human_gate: obj
+            .get("human_gate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
+}
+
+/// Parse a YAML `outcome:` block — `{retries: <u32>, on_exhausted: ask_human |
+/// stop | skip}` — into an [`OutcomePolicy`]. Absent or malformed ⇒ the default
+/// (`retries: 0, on_exhausted: Stop`).
+fn parse_outcome(v: Option<&Value>) -> OutcomePolicy {
+    let Some(obj) = v.and_then(Value::as_object) else {
+        return OutcomePolicy::default();
+    };
+    let retries = obj
+        .get("retries")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(u32::MAX as u64) as u32;
+    let on_exhausted = match obj.get("on_exhausted").and_then(Value::as_str) {
+        Some("ask_human") => Fallback::AskHuman,
+        Some("skip") => Fallback::Skip,
+        // "stop", anything else, or absent ⇒ the fail-closed default.
+        _ => Fallback::Stop,
+    };
+    OutcomePolicy {
+        retries,
+        on_exhausted,
+    }
 }
 
 /// Parse `fan_out:`. Absent or a bare integer ⇒ [`FanOut::Fixed`]; an object

@@ -373,6 +373,99 @@ async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
     );
 }
 
+// A workflow authored in the PROSE DIALECT (numbered steps in the page body, no
+// `phases:` frontmatter), whose single step's authored fallback is `then ask a
+// human`. Proves the dialect is actually wired into `WorkflowSkill::parse_page`
+// (crew F-1) and that an `AskHuman` fallback drives the operation to
+// `awaiting_human` — unreachable before, because YAML phases always defaulted
+// to `Stop`.
+const PROSE_WF_SKILL: &str = "reorder-flow";
+const PROSE_WF_BODY: &str = "---\n\
+type: skill\n\
+id: reorder-flow\n\
+description: Prose-authored workflow test plan.\n\
+backend: {kind: workflow}\n\
+run_skill: workflow-run\n\
+---\n\
+# reorder-flow\n\n\
+1. Compute the reorder with [[skill::research-angle]].\n   \
+on failure: retry once, then ask a human.\n\n\
+on any unrecoverable failure: stop and report.\n";
+
+/// Phase 0.3 / crew F-1 + F-3 (no mock): a PROSE-authored workflow whose step
+/// fails and authors `then ask a human` drives the operation to
+/// `awaiting_human` (not `failed`), proving the dialect front-end is wired in
+/// and the authored `AskHuman` policy is honoured end to end.
+#[tokio::test]
+async fn prose_authored_ask_a_human_fallback_reaches_awaiting_human() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(PROSE_WF_SKILL, PROSE_WF_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let run_page = "markdown/instances/workflow-run/rprose.md";
+    call_mcp(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": PROSE_WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke reorder-flow",
+            "body": "Compute a reorder.",
+            "provenance": {
+                "workflow": { "run": run_page, "wf_skill": PROSE_WF_SKILL, "phase": "invoke" }
+            }
+        }),
+    )
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Agent);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        // The step (produces research-angle) fails every attempt → dead-letter
+        // → the authored `then ask a human` fallback applies.
+        .env("ESCUREL_ECHO_FAIL_SKILL", "research-angle")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    let awaiting = await_operation_status(&gateway, run_page, "awaiting_human", 30).await;
+    assert!(
+        awaiting,
+        "a prose-authored `ask a human` fallback must drive the operation to `awaiting_human` \
+         on {run_page} — proving the dialect is wired in and AskHuman is honoured"
+    );
+    // It must NOT fail closed to `failed` (that is the Stop path, not AskHuman).
+    let failed = await_operation_status(&gateway, run_page, "failed", 1).await;
+    assert!(!failed, "an AskHuman fallback must not record `failed`");
+}
+
 #[tokio::test]
 async fn verify_barrier_runs_to_completion_via_echo() {
     // The width-3 adversarial **verify barrier**, driven DETERMINISTICALLY by

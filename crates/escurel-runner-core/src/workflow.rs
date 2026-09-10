@@ -27,8 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use escurel_client::Client;
 use escurel_runner_workflow::{
-    BudgetExceeded, Fallback, FanOut, OutcomePolicy, ProducedInstance, RunState, StepIntent, Vote,
-    WorkflowSkill, WriteMode, check_budget, is_complete, key, reduce,
+    BudgetExceeded, Fallback, FanOut, OperationStatus, OutcomePolicy, ProducedInstance, RunState,
+    StepIntent, Vote, WorkflowSkill, WriteMode, check_budget, is_complete, key, reduce,
 };
 use escurel_types::{
     AssignEventRequest, CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest,
@@ -43,10 +43,14 @@ use crate::trigger::Trigger;
 /// its run board (async-ops Phase 0.2). It is a KB-visible record, **never a
 /// dispatchable run**: the runner's enqueue chokepoint (`gate_and_enqueue`)
 /// drops any trigger carrying this label before a ledger row is created, so a
-/// status event can neither spawn a run nor re-enter the reducer. No authored
-/// skill may use this label (Phase 1 sanitisation will reject a caller who
-/// tries to capture one).
-pub const OPERATION_STATUS_LABEL: &str = "run-status";
+/// status event can neither spawn a run nor re-enter the reducer.
+///
+/// The `escurel:` prefix puts it in a **reserved namespace** a tenant cannot
+/// author (crew F-7): a plain `run-status` skill would have collided with a
+/// real tenant skill of that name and had its events silently dropped. Phase 1
+/// adds the capture-layer backstop that rejects a *caller* who tries to write
+/// this label; until then the single enqueue chokepoint is the guard.
+pub const OPERATION_STATUS_LABEL: &str = "escurel:run-status";
 
 /// Outcome of driving one reducer pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -104,10 +108,15 @@ pub enum StepTerminal {
     /// The step produced a **held draft** awaiting human approval; the plan
     /// must not advance past it — the operation pauses at `awaiting_human`.
     Held,
-    /// The step failed terminally (retries exhausted, bad output, or a
-    /// permanent failure). The failed phase's `on_exhausted` policy decides
-    /// the operation's fate.
-    Failed,
+    /// The step reached a **failure terminal** — dead-lettered (retries
+    /// exhausted / bad output), a fail-fast `Permanent` error, or a reducer
+    /// failure. The `&'static str` is a stable reason slug recorded in the
+    /// status provenance (crew F-5). Construct this only from a run that has
+    /// actually hit a ledger terminal: a genuinely *transient* error is retried
+    /// within the run by the reconciler (→ a confirmed write, or
+    /// `RetriesExhausted`) and never arrives here mid-retry (crew F-2). The
+    /// failed phase's `on_exhausted` policy decides the operation's fate.
+    Failed(&'static str),
 }
 
 /// Run one reducer pass for the workflow the `trigger` belongs to on a terminal
@@ -139,7 +148,9 @@ pub async fn drive_workflow(
         return Ok(WorkflowDriveOutcome::default());
     };
 
-    // 1. Load the immutable plan from the workflow skill page's frontmatter.
+    // 1. Load the immutable plan — YAML `phases:` frontmatter or the prose
+    //    dialect in the page body (crew F-1: the dialect is now wired in, so an
+    //    authored `on failure: … ask a human` reaches the driver).
     let expanded = client
         .expand(ExpandRequest {
             page_id: skill_page_id(&wf.wf_skill),
@@ -147,14 +158,29 @@ pub async fn drive_workflow(
         })
         .await
         .map_err(WorkflowDriveError::Read)?;
-    let Some(spec) = WorkflowSkill::parse(&expanded.frontmatter) else {
+    let Some(spec) = WorkflowSkill::parse_page(&wf.wf_skill, &expanded.frontmatter, &expanded.body)
+    else {
         return Ok(WorkflowDriveOutcome::default());
     };
+
+    // The event that triggered this drive — the transition key that makes the
+    // status history append-only (crew F-3): a status event id is a function of
+    // (operation, triggering event, status), so `running → awaiting_human →
+    // running` records three ordered rows rather than collapsing onto one.
+    let transition = trigger.event_id.as_str();
 
     // A held draft pauses the operation for human approval; the plan must not
     // advance past it, so record `awaiting_human` and emit nothing.
     if terminal == StepTerminal::Held {
-        record_status_best_effort(client, &wf.run, "awaiting_human").await;
+        record_status_best_effort(
+            client,
+            &wf.run,
+            transition,
+            OperationStatus::AwaitingHuman,
+            &wf.phase,
+            "held_draft",
+        )
+        .await;
         return Ok(WorkflowDriveOutcome::default());
     }
 
@@ -162,28 +188,38 @@ pub async fn drive_workflow(
     // BEFORE any emit — a Stop/AskHuman step must not re-emit itself into a
     // retry loop. `is_complete` guards the rare race where the failing step's
     // output nonetheless landed and every phase is already done.
-    if terminal == StepTerminal::Failed {
+    if let StepTerminal::Failed(fail_reason) = terminal {
         let state = build_run_state(client, wf, &spec).await?;
         if is_complete(&spec, &state) {
-            record_status_best_effort(client, &wf.run, "succeeded").await;
+            record_status_best_effort(
+                client,
+                &wf.run,
+                transition,
+                OperationStatus::Succeeded,
+                &wf.phase,
+                "",
+            )
+            .await;
             return Ok(WorkflowDriveOutcome::default());
         }
         let policy = phase_outcome(&spec, &wf.phase);
-        let status = match policy.on_exhausted {
-            Fallback::AskHuman => "awaiting_human",
+        let (status, reason) = match policy.on_exhausted {
+            Fallback::AskHuman => (OperationStatus::AwaitingHuman, fail_reason),
             // Skip is not yet honoured (Phase 0.3b); fail closed rather than
-            // silently advance past a dropped step.
-            Fallback::Stop | Fallback::Skip => "failed",
+            // silently advance past a dropped step — recorded so the operator
+            // sees the substitution in the KB, not only in a runner log.
+            Fallback::Skip => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    operation = %wf.run,
+                    phase = %wf.phase,
+                    "workflow: authored `skip` fallback not yet honoured (Phase 0.3b); failing closed"
+                );
+                (OperationStatus::Failed, "skip_unsupported")
+            }
+            Fallback::Stop => (OperationStatus::Failed, fail_reason),
         };
-        if policy.on_exhausted == Fallback::Skip {
-            tracing::warn!(
-                target: "escurel_runner",
-                operation = %wf.run,
-                phase = %wf.phase,
-                "workflow: authored `skip` fallback not yet honoured (Phase 0.3b); failing closed"
-            );
-        }
-        record_status_best_effort(client, &wf.run, status).await;
+        record_status_best_effort(client, &wf.run, transition, status, &wf.phase, reason).await;
         return Ok(WorkflowDriveOutcome::default());
     }
 
@@ -204,13 +240,13 @@ pub async fn drive_workflow(
     // Operation status (async-ops Phase 0.2), event-sourced: record the
     // operation's status as an assigned event on the run board — `succeeded`
     // once every phase is complete, else `running`. `get_operation` (Phase 2)
-    // derives the current status as the latest such event.
+    // derives the current status from these append-only events.
     let status = if is_complete(&spec, &state) {
-        "succeeded"
+        OperationStatus::Succeeded
     } else {
-        "running"
+        OperationStatus::Running
     };
-    record_status_best_effort(client, &wf.run, status).await;
+    record_status_best_effort(client, &wf.run, transition, status, &wf.phase, "").await;
     Ok(WorkflowDriveOutcome { emitted })
 }
 
@@ -228,13 +264,21 @@ fn phase_outcome(spec: &WorkflowSkill, phase_id: &str) -> OutcomePolicy {
 /// Record the operation status, best-effort (F6): the status record is an
 /// observability side-channel for `get_operation`, not the control path. A
 /// gateway hiccup writing it must not derail a run that made progress — log and
-/// carry on.
-async fn record_status_best_effort(client: &Client, operation: &str, status: &str) {
-    if let Err(e) = record_status(client, operation, status).await {
+/// carry on. `transition` is the triggering event id (or a synthetic marker
+/// like `recover`); `phase`/`reason` are empty to omit.
+pub async fn record_status_best_effort(
+    client: &Client,
+    operation: &str,
+    transition: &str,
+    status: OperationStatus,
+    phase: &str,
+    reason: &str,
+) {
+    if let Err(e) = record_status(client, operation, transition, status, phase, reason).await {
         tracing::warn!(
             target: "escurel_runner",
             operation = %operation,
-            status,
+            status = status.as_str(),
             error = %e,
             "workflow: recording operation status failed (best-effort); run unaffected"
         );
@@ -242,9 +286,9 @@ async fn record_status_best_effort(client: &Client, operation: &str, status: &st
 }
 
 /// Record the operation's status as a **processed, assigned** event on the run
-/// board — the record `get_operation` reads.
+/// board — the append-only record `get_operation` reads.
 ///
-/// Two properties make this safe, and neither may be silently dropped:
+/// Three properties make this safe, and none may be silently dropped:
 ///
 /// - **Fail-closed against dispatch (F1).** The event is captured under the
 ///   reserved [`OPERATION_STATUS_LABEL`], which the runner's enqueue chokepoint
@@ -254,24 +298,50 @@ async fn record_status_best_effort(client: &Client, operation: &str, status: &st
 ///   and the webhook's synchronous notify (and the next poll tick) enqueue it
 ///   before `assign_event` runs, spawning a dead-lettered run per transition.
 ///   The label guard closes that window regardless of timing.
+/// - **Append-only (F3).** The event id is a function of `(operation,
+///   transition, status)` — `transition` being the triggering event id — so a
+///   later `running` after an `awaiting_human` does NOT collapse onto the first
+///   `running`'s row. `capture_event`'s `ON CONFLICT DO NOTHING` still makes a
+///   *re-drive of the same transition* idempotent.
 /// - **Time-ordered (F2).** `at` is stamped so the board's history orders by
 ///   wall-clock, not by the status event's content-addressed id (which is not
-///   monotonic). `get_operation` still resolves ties by status precedence
-///   rather than trusting last-write ordering alone.
-///
-/// The id is a deterministic function of `(operation, status)` so
-/// `capture_event`'s `ON CONFLICT DO NOTHING` makes it emit-once per status.
+///   monotonic). `get_operation` resolves the current status by
+///   [`OperationStatus::precedence`] over these events.
 async fn record_status(
     client: &Client,
     operation: &str,
-    status: &str,
+    transition: &str,
+    status: OperationStatus,
+    phase: &str,
+    reason: &str,
 ) -> Result<(), WorkflowDriveError> {
-    let event_id = key::step_event_id(operation, OPERATION_STATUS_LABEL, status);
+    let status_str = status.as_str();
+    let event_id = key::step_event_id(
+        operation,
+        OPERATION_STATUS_LABEL,
+        &format!("{transition}:{status_str}"),
+    );
     // DuckDB casts this via `TRY_CAST(? AS TIMESTAMP)`; match the space-separated
     // microsecond format `paged_events` reads back so the round-trip is exact.
     let at = chrono::Utc::now()
         .format("%Y-%m-%d %H:%M:%S%.6f")
         .to_string();
+    // Provenance carries the cause so a status is diagnosable from the KB alone
+    // (crew F-5): phase, reason and the triggering event id.
+    let mut prov = serde_json::Map::new();
+    prov.insert("run_status".to_owned(), json!(status_str));
+    prov.insert("transition_event".to_owned(), json!(transition));
+    if !phase.is_empty() {
+        prov.insert("phase".to_owned(), json!(phase));
+    }
+    if !reason.is_empty() {
+        prov.insert("reason".to_owned(), json!(reason));
+    }
+    let title = match (phase.is_empty(), reason.is_empty()) {
+        (false, false) => format!("status: {status_str} (phase {phase}, {reason})"),
+        (false, true) => format!("status: {status_str} (phase {phase})"),
+        _ => format!("status: {status_str}"),
+    };
     client
         .capture_event(CaptureEventRequest {
             event_id: event_id.clone(),
@@ -280,9 +350,9 @@ async fn record_status(
             mime: "text/plain".to_owned(),
             label_skill: OPERATION_STATUS_LABEL.to_owned(),
             instance_page_id: operation.to_owned(),
-            title: format!("status: {status}"),
+            title,
             body: String::new(),
-            provenance: json!({ "run_status": status }),
+            provenance: serde_json::Value::Object(prov),
         })
         .await
         .map_err(WorkflowDriveError::Capture)?;
@@ -346,7 +416,9 @@ pub async fn recover_workflows(
             })
             .await
             .map_err(WorkflowDriveError::Read)?;
-        let Some(spec) = WorkflowSkill::parse(&expanded.frontmatter) else {
+        let Some(spec) =
+            WorkflowSkill::parse_page(&wf.wf_skill, &expanded.frontmatter, &expanded.body)
+        else {
             continue;
         };
         check_budget(&spec, max_runs_per_root)?;
@@ -359,7 +431,15 @@ pub async fn recover_workflows(
         // overwrites a real terminal with `running`: it emits `running` only
         // when there is genuinely more to do.)
         if is_complete(&spec, &state) {
-            record_status_best_effort(client, &wf.run, "succeeded").await;
+            record_status_best_effort(
+                client,
+                &wf.run,
+                "recover",
+                OperationStatus::Succeeded,
+                "",
+                "",
+            )
+            .await;
             continue; // run already complete — nothing to re-emit
         }
         let intents = reduce(&spec, &state);
@@ -370,7 +450,8 @@ pub async fn recover_workflows(
         // root at depth 0 (a fresh lineage), which `admit` treats like any
         // webhook-origin event. §3.6 keys keep the re-emit idempotent.
         emit_intents(client, &intents, |intent| root_provenance(&wf, intent)).await?;
-        record_status_best_effort(client, &wf.run, "running").await;
+        record_status_best_effort(client, &wf.run, "recover", OperationStatus::Running, "", "")
+            .await;
         resumed += 1;
     }
     Ok(resumed)

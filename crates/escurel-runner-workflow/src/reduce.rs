@@ -145,11 +145,18 @@ pub fn reduce(spec: &WorkflowSkill, state: &RunState) -> Vec<StepIntent> {
 }
 
 /// Whether the whole plan is complete — every phase has finished all the work
-/// it will ever do. This is the precise "the operation is done" predicate the
-/// runtime needs to stamp a terminal `succeeded` status: `reduce` returning an
-/// empty batch is NOT sufficient (a quorum barrier mid-flight has emitted every
-/// vote slot yet is not complete until the tally closes), so the runtime must
-/// ask this rather than infer completeness from an empty batch.
+/// it will ever do. This is the "the operation is done" predicate the runtime
+/// needs to stamp a terminal `succeeded` status: `reduce` returning an empty
+/// batch is NOT sufficient (a quorum barrier mid-flight has emitted every vote
+/// slot yet is not complete until the tally closes), so the runtime must ask
+/// this rather than infer completeness from an empty batch.
+///
+/// **Approximation (crew F-12 / deferred F3):** a barrier phase closes partly
+/// via `RunState::deadlettered`, which the driver does not yet populate from the
+/// ledger. So this is *false-negative* for a barrier that could close only by
+/// counting its dead-lettered votes: it never returns `true` while such a
+/// barrier has an un-tallied dead-letter. It is never false-*positive*, so a
+/// `succeeded` it reports is always real. Phase 0.3b populates `deadlettered`.
 #[must_use]
 pub fn is_complete(spec: &WorkflowSkill, state: &RunState) -> bool {
     !spec.phases.is_empty() && spec.phases.iter().all(|p| phase_complete(spec, p, state))

@@ -56,11 +56,20 @@ pub fn parse_workflow_dialect(id: &str, body: &str) -> Result<WorkflowSkill, Dia
     let lines: Vec<&str> = body.lines().collect();
 
     // Pass 1: the workflow-level default fallback (F8). Absent ⇒ Stop, matching
-    // the per-step default. A malformed global fallback fails the whole parse.
+    // the per-step default. A malformed global fallback fails the whole parse;
+    // a duplicate is rejected rather than silently last-winning (crew F-11,
+    // mirroring the per-step `on failure:` duplicate check).
     let mut default_fallback = Fallback::Stop;
+    let mut seen_global = false;
     for line in &lines {
         let t = line.trim();
         if let Some(rest) = strip_prefix_ci(t, GLOBAL_FALLBACK_PREFIX) {
+            if seen_global {
+                return Err(DialectError(
+                    "more than one global `on any unrecoverable failure:` fallback".to_owned(),
+                ));
+            }
+            seen_global = true;
             default_fallback = parse_fallback(rest, 0)?;
         }
     }
@@ -399,6 +408,14 @@ on any unrecoverable failure: stop and report.
     fn a_contradictory_global_fallback_fails_closed() {
         let body = "1. Do it with [[skill::x]].\n\non any unrecoverable failure: stop, or skip.\n";
         assert!(parse_workflow_dialect("w", body).is_err());
+    }
+
+    /// F11: two global fallback lines are rejected, not silently last-won.
+    #[test]
+    fn a_duplicate_global_fallback_fails_closed() {
+        let body = "1. Do it with [[skill::x]].\n\non any unrecoverable failure: stop.\non any unrecoverable failure: skip.\n";
+        let err = parse_workflow_dialect("w", body).unwrap_err();
+        assert!(err.0.contains("more than one global"), "got: {}", err.0);
     }
 
     #[test]

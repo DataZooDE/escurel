@@ -710,6 +710,20 @@ async fn drive_workflow_or_deadletter(
                 } else {
                     record_run_terminal(metrics, &trigger.tenant, "dead_letter");
                 }
+                // F-4: record a terminal operation status so the run board and
+                // the DLQ agree — otherwise the operation stays at whatever it
+                // last reported (typically `running`) while a DLQ row exists.
+                if let Some(wf) = &trigger.workflow {
+                    escurel_runner_core::record_status_best_effort(
+                        client,
+                        &wf.run,
+                        &trigger.event_id,
+                        escurel_runner_core::OperationStatus::Failed,
+                        &wf.phase,
+                        "reducer_failed",
+                    )
+                    .await;
+                }
                 tracing::warn!(
                     target: "escurel_runner",
                     event_id = %trigger.event_id,
@@ -1390,26 +1404,48 @@ async fn dispatch_loop(
                 // terminal must still advance or terminate the parent operation
                 // — previously only a confirmed write drove the reducer, so
                 // these wedged the operation at `running` forever. A converged
-                // no-op advances the plan; a real failure is resolved by the
-                // failed phase's authored `on_exhausted` policy (→ `failed` or
-                // `awaiting_human`). Additive to the metrics/logging below.
+                // no-op advances the plan; every real failure resolves via the
+                // failed phase's authored `on_exhausted` policy.
+                //
+                // On crew F-2: this arm is only reached once a run has hit a
+                // LEDGER TERMINAL (dead-letter or fail-fast `failed`). A merely
+                // *transient* error is retried WITHIN the run by the reconciler
+                // (up to MAX_ATTEMPTS) and either clears (→ a confirmed write,
+                // handled above) or exhausts (→ `RetriesExhausted`); it never
+                // arrives here mid-retry. `Permanent` is a fail-fast terminal
+                // with no automatic recovery (the seen-set blocks the poller's
+                // re-claim within a process), so it too terminates the
+                // operation rather than wedging it at `running`. The reason slug
+                // rides into the status provenance (F-5). Additive to the
+                // metrics/logging below.
                 if trigger.workflow.is_some() {
                     let terminal = if report.converged_no_op {
-                        StepTerminal::Advanced
+                        Some(StepTerminal::Advanced)
                     } else {
-                        StepTerminal::Failed
+                        match report.failure {
+                            Some(RunFailure::RetriesExhausted) => {
+                                Some(StepTerminal::Failed("retries_exhausted"))
+                            }
+                            Some(RunFailure::BadOutput) => Some(StepTerminal::Failed("bad_output")),
+                            Some(RunFailure::Permanent) => Some(StepTerminal::Failed("permanent")),
+                            // No failure and not converged: not a real terminal
+                            // (should not occur) — leave the operation running.
+                            None => None,
+                        }
                     };
-                    drive_workflow_or_deadletter(
-                        &client,
-                        &ledger,
-                        &metrics,
-                        &trigger,
-                        &run_id,
-                        None,
-                        terminal,
-                        config.max_runs_per_root,
-                    )
-                    .await;
+                    if let Some(terminal) = terminal {
+                        drive_workflow_or_deadletter(
+                            &client,
+                            &ledger,
+                            &metrics,
+                            &trigger,
+                            &run_id,
+                            None,
+                            terminal,
+                            config.max_runs_per_root,
+                        )
+                        .await;
+                    }
                 }
                 // Not confirmed, not converged: a dead-letter (retries/bad
                 // output, already metered above) or a retriable `failed`.
