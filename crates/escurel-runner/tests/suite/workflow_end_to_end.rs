@@ -121,6 +121,28 @@ async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Va
     result.get("structuredContent").cloned().unwrap_or(result)
 }
 
+/// Like [`call_mcp`] but asserts the tool returned a JSON-RPC ERROR, and returns
+/// the error object. Used for negative security cases.
+async fn call_mcp_err(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value {
+    let token = p.mint_token(TENANT, role);
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": args },
+        }))
+        .send()
+        .await
+        .expect("post /mcp");
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body.get("error").is_some(),
+        "expected {name} to error, got: {body}"
+    );
+    body["error"].clone()
+}
+
 /// Poll `list_instances(skill)` until an instance whose page id starts with
 /// `prefix` appears, or the deadline passes (returns its page id).
 async fn await_instance(p: &EscurelProcess, skill: &str, prefix: &str, secs: u64) -> String {
@@ -189,7 +211,11 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     .await;
 
     // 3. Spawn the real runner (echo harness), generous loop limits, fast poll.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -366,7 +392,11 @@ async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -474,7 +504,11 @@ async fn prose_authored_ask_a_human_fallback_reaches_awaiting_human() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -507,6 +541,73 @@ async fn prose_authored_ask_a_human_fallback_reaches_awaiting_human() {
     // It must NOT fail closed to `failed` (that is the Stop path, not AskHuman).
     let failed = await_operation_status(&gateway, run_page, "failed", 1).await;
     assert!(!failed, "an AskHuman fallback must not record `failed`");
+}
+
+/// Phase-2 crew security fixes (no mock): F1 — a non-admin agent cannot author a
+/// reserved `escurel:run-status` event (which would forge an operation's status);
+/// F2 — start_operation refuses a `wf_skill` that is not a readable kind:workflow
+/// plan (denial and absence look identical).
+#[tokio::test]
+async fn facade_refuses_forged_status_and_unknown_plan() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // F1: a non-admin caller may not capture a reserved `escurel:` label.
+    let err = call_mcp_err(
+        &gateway,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "escurel:run-status",
+            "instance_page_id": "markdown/instances/workflow-run/victim.md",
+            "title": "status: succeeded",
+            "provenance": { "run_status": "succeeded" }
+        }),
+    )
+    .await;
+    assert!(
+        err["message"].as_str().unwrap_or("").contains("reserved"),
+        "forged reserved-label capture must be refused: {err}"
+    );
+
+    // F2: `wf_skill` that is not a readable kind:workflow plan is refused. A
+    // plain skill (`research-angle`, not a workflow) exercises the same gate as
+    // an unknown/unreadable id — one error either way.
+    let err = call_mcp_err(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({ "wf_skill": "research-angle" }),
+    )
+    .await;
+    assert!(
+        err["message"].as_str().unwrap_or("").contains("workflow"),
+        "non-workflow plan must be refused: {err}"
+    );
+    let err = call_mcp_err(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({ "wf_skill": "no-such-plan" }),
+    )
+    .await;
+    assert!(
+        err["message"].as_str().unwrap_or("").contains("workflow"),
+        "unknown plan must be refused with the same error: {err}"
+    );
 }
 
 /// async-ops Phase 2b (no mock): the `start_operation` facade begins a workflow
@@ -578,7 +679,11 @@ async fn start_operation_begins_a_workflow_and_polls_to_succeeded() {
     assert_eq!(again["idempotent"], json!(true), "re-attach flagged idempotent: {again}");
 
     // The runner drives the plan (echo, no injected failure) → succeeded.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -667,7 +772,11 @@ async fn verify_barrier_runs_to_completion_via_echo() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -774,7 +883,11 @@ async fn deep_research_runs_against_gemini() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -926,7 +1039,11 @@ async fn verify_barrier_runs_against_gemini() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -1115,7 +1232,11 @@ async fn recovery_re_drives_a_non_terminal_run_to_completion() {
     assert_eq!(before["instances"].as_array().map_or(0, Vec::len), 0);
 
     // Start the runner fresh — recovery runs at startup.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -1188,7 +1309,11 @@ async fn over_budget_plan_fails_fast_at_invocation_emitting_no_steps() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -1324,7 +1449,11 @@ async fn distill_weaves_one_source_into_two_existing_pages() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen = format!("127.0.0.1:{}", free_port());
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
@@ -1464,7 +1593,11 @@ async fn lint_flags_orphan_stale_contradiction_without_rewriting() {
     )
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen = format!("127.0.0.1:{}", free_port());
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
@@ -1565,7 +1698,11 @@ async fn lint_tick_schedules_a_scan_without_manual_invocation() {
     })
     .await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen = format!("127.0.0.1:{}", free_port());
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
@@ -1603,7 +1740,11 @@ async fn lint_tick_schedules_a_scan_without_manual_invocation() {
 
 /// Spawn the real runner (echo harness) against `gateway` and return its guard.
 fn spawn_echo_runner(gateway: &EscurelProcess, ledger_dir: &std::path::Path) -> ChildGuard {
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner authenticates as an admin identity (in production it mints its
+    // own `escurel:admin` bearer): its orchestration writes include the reserved
+    // `escurel:run-status` status events, which the capture guard admits only for
+    // admin. (The per-run HARNESS token is the separate caller-scoped one, 2c.)
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen = format!("127.0.0.1:{}", free_port());
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
     cmd.env("ESCUREL_RUNNER_LISTEN", &listen)

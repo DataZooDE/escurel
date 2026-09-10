@@ -1354,6 +1354,19 @@ pub(super) async fn tool_capture_event(
             "capture_event: `label_skill` is required (the label→skill routing key)".to_owned(),
         ));
     }
+    // Reserved namespace (async-ops crew Phase-2 F1): the `escurel:` label prefix
+    // is server/runner-owned. An operation's status events live under
+    // `escurel:run-status`, and `get_operation` trusts them — so a non-admin
+    // caller must not be able to author one (a forged terminal status would move
+    // `get_operation`'s answer, and becomes an actuator once Phase 3 delivers on
+    // terminal status). Enforced unconditionally, independent of the event ACL
+    // mode (which defaults Off): the runner records status with its own admin
+    // identity, so only a non-admin caller is refused.
+    if a.label_skill.starts_with("escurel:") && !caller.is_admin {
+        return Err(JsonRpcError::invalid_params(
+            "capture_event: the `escurel:` label namespace is reserved".to_owned(),
+        ));
+    }
     // #390: `event_id` is the idempotency key, so "" would make EVERY
     // id-less capture the same event — first writer wins, each later one
     // silently discarded with a success receipt. An empty/whitespace key
@@ -1525,11 +1538,48 @@ pub(super) async fn tool_start_operation(
             .and_then(Value::as_str)
             == Some("workflow")
     });
-    if !is_workflow {
+    // Read-ACL the plan (crew Phase-2 F2): until the per-run caller token (2c),
+    // an accepted plan runs under the RUNNER's admin identity, so an agent
+    // naming a group-private plan it cannot even list — a skill-editing `eval`
+    // plan, a plan that reads another group's data — would get it executed as
+    // admin. Plan SELECTION is the confused-deputy boundary and does not wait
+    // for 2c. Denial and absence return the identical error (no existence oracle).
+    let may_read_plan = if caller.is_admin {
+        true
+    } else {
+        let all = indexer
+            .list_skills()
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("start_operation: {e}")))?;
+        let readable = indexer
+            .filter_readable_skills(&caller, all)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("start_operation acl: {e}")))?;
+        readable.iter().any(|s| s.id == a.wf_skill)
+    };
+    if !is_workflow || !may_read_plan {
         return Err(JsonRpcError::invalid_params(format!(
             "start_operation: `{}` is not a `kind: workflow` plan skill",
             a.wf_skill
         )));
+    }
+    // Bound `conversation_ref` + `input` (crew Phase-2 F5): one start_operation
+    // (one Writes quota unit) must not persist a multi-MB / deeply nested blob
+    // that every later parse + re-index of the board pays for.
+    const MAX_CONVERSATION_REF_BYTES: usize = 4 * 1024;
+    const MAX_INPUT_BYTES: usize = 64 * 1024;
+    if let Some(cref) = &a.conversation_ref {
+        let encoded = serde_json::to_string(cref).unwrap_or_default();
+        if encoded.len() > MAX_CONVERSATION_REF_BYTES || json_depth(cref) > 8 {
+            return Err(JsonRpcError::invalid_params(
+                "start_operation: `conversation_ref` too large or too deeply nested".to_owned(),
+            ));
+        }
+    }
+    if a.input.len() > MAX_INPUT_BYTES {
+        return Err(JsonRpcError::invalid_params(
+            "start_operation: `input` exceeds the size limit".to_owned(),
+        ));
     }
     // Validate the idempotency key charset (crew Phase-2 F-1): it is
     // interpolated into board frontmatter, so a newline could forge keys.
@@ -1662,6 +1712,16 @@ fn is_safe_idempotency_key(s: &str) -> bool {
 /// verified identity but still worth encoding rather than interpolating raw.
 fn json_scalar(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_owned())
+}
+
+/// Maximum nesting depth of a JSON value (a scalar is depth 0). Used to bound
+/// `conversation_ref` so a caller cannot persist a pathologically nested blob.
+fn json_depth(v: &Value) -> usize {
+    match v {
+        Value::Array(items) => 1 + items.iter().map(json_depth).max().unwrap_or(0),
+        Value::Object(map) => 1 + map.values().map(json_depth).max().unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// The response for an idempotent re-capture the caller may NOT read: its
