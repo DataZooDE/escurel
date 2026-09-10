@@ -81,8 +81,14 @@ const ANGLE_SKILL_BODY: &str =
     "---\ntype: skill\nid: research-angle\n---\n# research-angle\n\nOne search angle.\n";
 const REPORT_SKILL_BODY: &str =
     "---\ntype: skill\nid: research-report\n---\n# research-report\n\nThe cited report.\n";
-const RUN_SKILL_BODY: &str =
-    "---\ntype: skill\nid: workflow-run\n---\n# workflow-run\n\nThe run board.\n";
+// Owner-scoped (crew Phase-2 F3): a `start_operation` board carries
+// `requested_by` and is readable only by that requester (+admin). Boards created
+// directly via `capture_event` in the reducer-focused tests carry no
+// `requested_by`, so their `get_operation` reads use an admin token.
+const RUN_SKILL_BODY: &str = "---\ntype: skill\nid: workflow-run\n\
+visibility: owner\nowner_field: requested_by\n\
+optional_frontmatter: [wf_skill, status, requested_by, requester_groups, idempotency_key, conversation_ref]\n\
+---\n# workflow-run\n\nThe run board.\n";
 
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
@@ -115,6 +121,26 @@ async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Va
         .await
         .expect("post /mcp");
     assert_eq!(resp.status(), 200, "http status");
+    let body: Value = resp.json().await.unwrap();
+    assert!(body.get("error").is_none(), "tool {name} error: {body}");
+    let result = body["result"].clone();
+    result.get("structuredContent").cloned().unwrap_or(result)
+}
+
+/// Like [`call_mcp`] but signs the token with an explicit `subject` — for
+/// cross-caller ACL tests (caller B reading caller A's owner-scoped operation).
+async fn call_mcp_as(p: &EscurelProcess, role: Role, subject: &str, name: &str, args: Value) -> Value {
+    let token = p.mint_token_with_sub(TENANT, role, subject);
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": args },
+        }))
+        .send()
+        .await
+        .expect("post /mcp");
     let body: Value = resp.json().await.unwrap();
     assert!(body.get("error").is_none(), "tool {name} error: {body}");
     let result = body["result"].clone();
@@ -294,10 +320,12 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
 
     // async-ops Phase 2: the `get_operation` facade derives that terminal state
     // from the append-only status events (by precedence), so a caller polls one
-    // read instead of scanning the event log.
+    // read instead of scanning the event log. This board was created directly
+    // via capture_event (no `requested_by`), so an admin token reads it; the
+    // owner-scoped facade path is covered by the start_operation tests below.
     let op = call_mcp(
         &gateway,
-        Role::Agent,
+        Role::Admin,
         "get_operation",
         json!({ "operation_id": run_page }),
     )
@@ -432,10 +460,11 @@ async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
         "a failed operation must not also report succeeded"
     );
 
-    // async-ops Phase 2: `get_operation` derives the terminal `failed`.
+    // async-ops Phase 2: `get_operation` derives the terminal `failed`. Admin
+    // read: this board was created via capture_event (no `requested_by`).
     let op = call_mcp(
         &gateway,
-        Role::Agent,
+        Role::Admin,
         "get_operation",
         json!({ "operation_id": run_page }),
     )
@@ -663,6 +692,21 @@ async fn start_operation_begins_a_workflow_and_polls_to_succeeded() {
     )
     .await;
     assert_eq!(now["found"], json!(true), "operation is found right after start: {now}");
+
+    // Cross-caller denial (crew Phase-2 F3): a DIFFERENT subject must not read
+    // this owner-scoped operation — it gets the not-found shape, no leak.
+    let intruder = call_mcp_as(
+        &gateway,
+        Role::Agent,
+        "intruder-subject",
+        "get_operation",
+        json!({ "operation_id": operation_id }),
+    )
+    .await;
+    assert_eq!(
+        intruder["found"], json!(false),
+        "another caller must not read this operation: {intruder}"
+    );
 
     // Idempotency: the same key re-attaches to the same operation.
     let again = call_mcp(
