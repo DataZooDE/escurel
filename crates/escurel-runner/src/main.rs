@@ -830,6 +830,13 @@ async fn deliver_terminal(
     if let Some(note) = &delivery.note {
         body["result"] = serde_json::json!({ "text": note });
     }
+    // The CHANNEL's tenant, as recorded when the operation started. Present
+    // only when the operation recorded one — omitted rather than null, so a
+    // courier can distinguish "no binding available" (started before this
+    // existed, or off-chat) from "a binding that says nothing".
+    if let Some(tenant) = &delivery.channel_tenant {
+        body["channel_tenant"] = serde_json::json!(tenant);
+    }
     // The agent's delivery receiver (`AGENT_ASYNC_CALLBACK_BEARER`) refuses a
     // callback with no/ wrong bearer (401). Attach it when configured; a sink
     // that requires none (a pull-only deploy, a test stub) leaves it unset.

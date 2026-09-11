@@ -127,7 +127,7 @@ id: workflow-run\n\
 description: A dynamic-workflow run board — its per-phase progress and status.\n\
 visibility: owner\n\
 owner_field: requested_by\n\
-optional_frontmatter: [wf_skill, status, requested_by, requester_groups, idempotency_key, conversation_ref]\n\
+optional_frontmatter: [wf_skill, status, requested_by, requester_groups, idempotency_key, conversation_ref, channel_tenant]\n\
 ---\n\
 # workflow-run\n";
 

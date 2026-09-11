@@ -1479,6 +1479,17 @@ pub(super) struct StartOperationArgs {
     /// delivery (async-ops Phase 3); the facade never interprets it.
     #[serde(default)]
     conversation_ref: Option<Value>,
+    /// The CHANNEL's tenant (the chat platform's, e.g. an Entra tenant id) —
+    /// NOT escurel's, which is the indexer's own and a different namespace.
+    ///
+    /// Recorded here so the terminal delivery can carry a tenant that did
+    /// NOT come out of `conversation_ref`. The delivery side's tenant check
+    /// otherwise compares two values the caller supplied — the reference's
+    /// tenant against the caller's own — which binds nothing
+    /// (DataZooDE/triton#332). Fixing it when the operation STARTS is what
+    /// makes it a second, independent side.
+    #[serde(default)]
+    channel_tenant: Option<String>,
 }
 
 /// Deterministic run-board slug for an idempotency key, scoped to
@@ -1696,6 +1707,9 @@ pub(super) async fn tool_start_operation(
         // Compact JSON is newline-free and a valid YAML flow scalar/collection.
         let encoded = serde_json::to_string(cref).unwrap_or_else(|_| "null".to_owned());
         content.push_str(&format!("conversation_ref: {encoded}\n"));
+    }
+    if let Some(tenant) = &a.channel_tenant {
+        content.push_str(&format!("channel_tenant: {}\n", json_scalar(tenant)));
     }
     content.push_str("---\n# operation\n\nAsync operation run board.\n");
     indexer

@@ -86,6 +86,15 @@ pub struct TerminalDelivery {
     /// on *signals* (2 of 4)"). `None` for a terminal delivery, where the courier
     /// renders the operation's own result (or a terse status fallback).
     pub note: Option<String>,
+    /// The CHANNEL's tenant as recorded when the operation STARTED —
+    /// deliberately NOT read out of `conversation_ref`.
+    ///
+    /// The delivery side needs a tenant the redeemer did not write. Without
+    /// it a courier can only check the reference's tenant against the
+    /// caller's own, and the caller supplies both, so the check binds
+    /// nothing (DataZooDE/triton#332). `None` for an operation started
+    /// before this field existed, or off-chat.
+    pub channel_tenant: Option<String>,
 }
 
 /// Errors driving a workflow reducer pass.
@@ -358,11 +367,20 @@ async fn maybe_delivery(
         }
     };
     let conversation_ref = board.frontmatter.get("conversation_ref").cloned()?;
+    // From the BOARD, not from the reference beside it: the board was written
+    // when the operation started, by the server, and whoever redeems the
+    // delivery cannot rewrite it.
+    let channel_tenant = board
+        .frontmatter
+        .get("channel_tenant")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
     Some(TerminalDelivery {
         operation_id: operation.to_owned(),
         status: status.as_str().to_owned(),
         conversation_ref,
         note: None,
+        channel_tenant,
     })
 }
 
@@ -397,6 +415,14 @@ async fn maybe_progress_delivery(
         .await
         .ok()?;
     let conversation_ref = board.frontmatter.get("conversation_ref").cloned()?;
+    // From the BOARD, not from the reference beside it: the board was written
+    // when the operation started, by the server, and whoever redeems the
+    // delivery cannot rewrite it.
+    let channel_tenant = board
+        .frontmatter
+        .get("channel_tenant")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
     // 1-based position of the phase in the plan, for a "(n of m)" hint.
     let total = spec.phases.len();
     let idx = spec
@@ -415,6 +441,7 @@ async fn maybe_progress_delivery(
         status: OperationStatus::Running.as_str().to_owned(),
         conversation_ref,
         note: Some(note),
+        channel_tenant,
     })
 }
 
