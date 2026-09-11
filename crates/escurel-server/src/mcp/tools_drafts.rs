@@ -54,6 +54,52 @@ pub(super) struct DecideDraftArgs {
     /// Why it was discarded. Ignored by `promote_draft`.
     #[serde(default)]
     reason: String,
+    /// The HUMAN who decided, when the caller is deciding on their behalf.
+    ///
+    /// A gateway in front of escurel authenticates a person and then writes
+    /// with its OWN credential, because escurel's write ACL matches on groups
+    /// and a person's minted bearer carries none (heron#100). Without this
+    /// field the decision is recorded against that service identity and the
+    /// person who actually approved is stored nowhere — which is what heron's
+    /// BR-HIL-6 ("every change carries an approver") asks for and what the
+    /// draft path silently stopped providing when it replaced the proposal
+    /// path. Measured on lab: pages promoted from drafts read
+    /// `last_written_by: heron-onbehalf`, and no record named the consultant.
+    ///
+    /// **Admin only.** The claim is "I verified this person", which is exactly
+    /// the claim a caller must not be able to make about itself; a non-admin
+    /// sending it is refused rather than ignored, so a client cannot quietly
+    /// forge an audit trail and believe it worked.
+    ///
+    /// `last_written_by` on the page is untouched and still says who WROTE —
+    /// the service — because that field is stamped from the verified token and
+    /// must keep meaning exactly that (#357).
+    #[serde(default)]
+    decided_by: Option<String>,
+}
+
+/// Who to record as having decided: the human the caller vouches for, or the
+/// caller itself.
+///
+/// See [`DecideDraftArgs::decided_by`] for why the field exists. The admin
+/// check is the whole of its security: "this person approved it" is a claim
+/// about someone else, and a caller that could make it about itself could
+/// write any name into the audit trail. Refused rather than ignored — a
+/// gateway that silently lost the attribution is how this was missed the
+/// first time.
+fn decided_by_or_caller(
+    a: &DecideDraftArgs,
+    caller: &AclCaller<'_>,
+) -> Result<String, JsonRpcError> {
+    match a.decided_by.as_deref().map(str::trim) {
+        None | Some("") => Ok(caller.subject.to_owned()),
+        Some(_) if !caller.is_admin => Err(JsonRpcError::invalid_params(
+            "`decided_by` names the human a gateway verified, and only an \
+             admin may vouch for another subject"
+                .to_owned(),
+        )),
+        Some(human) => Ok(human.to_owned()),
+    }
 }
 
 /// Whether `caller` may SEE this draft, decided from the proposed content's
@@ -308,7 +354,7 @@ pub(super) async fn tool_promote_draft(
     // not a copy of it. `base_sha256` travels as the draft recorded it — a
     // target that moved since drafting conflicts here rather than silently
     // overwriting what the reviewer never saw.
-    let subject = caller.subject.to_owned();
+    let subject = decided_by_or_caller(&a, &caller)?;
     let target_page_id = draft.target_page_id.clone();
     let mut write_args = json!({
         "page_id": draft.target_page_id,
@@ -370,6 +416,13 @@ pub(super) async fn tool_promote_draft(
             }
         }
     }
+    // Name the decider back to the caller. A gateway that vouched for a human
+    // can log what the store recorded rather than what it hoped the store
+    // recorded — and a test can assert it without a second read path.
+    let mut result = result;
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("decided_by".to_owned(), json!(subject));
+    }
     Ok(result)
 }
 
@@ -400,7 +453,12 @@ pub(super) async fn tool_discard_draft(
         }));
     }
     let closed = indexer
-        .close_draft(&a.draft_id, "discarded", caller.subject, &a.reason)
+        .close_draft(
+            &a.draft_id,
+            "discarded",
+            &decided_by_or_caller(&a, &caller)?,
+            &a.reason,
+        )
         .await
         .map_err(|e| JsonRpcError::internal(format!("discard_draft: {e}")))?;
     if !closed {
