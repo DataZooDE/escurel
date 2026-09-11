@@ -141,6 +141,62 @@ impl Migrator {
         Ok(())
     }
 
+    /// The vector-index DDL, as `ESCUREL_INDEX_HNSW` asks for it.
+    ///
+    /// **Off by default, and that is the fix for #431.** `vss` corrupts its own
+    /// state under the delete-then-insert cycle that every page write performs
+    /// (`materialise::replace_blocks`): the 192nd cycle blocks for ever inside
+    /// `usearch::index_dense_gt::remove`, and a rebuilt index segfaults instead
+    /// (`HNSWIndex::Append`). In the lab that was container exit 139 during a
+    /// seeding burst. Measured variants and stacks:
+    /// `docs/notes/discovered/2026-09-11-vss-hnsw-churn-hangs-then-segfaults.md`.
+    ///
+    /// Dropping it costs nothing anyone can measure. Every vector search
+    /// carries at least one filter (`build_filters` always appends
+    /// `scenario IS NULL`), so the plan is a filtered semi-join either way:
+    /// 10k blocks ran 29.6ms indexed vs 30.6ms scanned, and 100k ran ~0.29s
+    /// both ways in steady state. What the index actually bought was a
+    /// write-path budget of ~192 pages per boot.
+    ///
+    /// Run on EVERY boot, like the other `ensure_*`, and in BOTH directions:
+    /// a tenant DB provisioned while the index still existed drops it here,
+    /// and setting the flag brings it back without a rebuild. Keeping the DDL
+    /// (rather than deleting it) is deliberate — it is how we re-test when vss
+    /// is fixed, and it is one `SET` away from being exercised again.
+    ///
+    /// # Errors
+    ///
+    /// When the DDL fails. A `CREATE` needs `vss` loaded and, on a file-backed
+    /// database, [`Migrator::enable_hnsw_persistence`] on this connection.
+    pub fn ensure_vector_index(conn: &Connection) -> Result<(), MigrationError> {
+        Self::set_vector_index(conn, hnsw_enabled())
+    }
+
+    /// [`Migrator::ensure_vector_index`] with the decision made by the caller
+    /// rather than by the environment — the shape a test can drive, since this
+    /// workspace forbids `unsafe` and `set_var` is `unsafe`.
+    ///
+    /// # Errors
+    ///
+    /// When the DDL fails. See [`Migrator::ensure_vector_index`].
+    pub fn set_vector_index(conn: &Connection, enabled: bool) -> Result<(), MigrationError> {
+        conn.execute_batch(if enabled { HNSW_CREATE } else { HNSW_DROP })?;
+        Ok(())
+    }
+
+    /// The DDL [`Migrator::ensure_vector_index`] runs — the `CREATE`s when
+    /// `ESCUREL_INDEX_HNSW` is set, the `DROP`s when it is not. Exposed so the
+    /// bulk-load paths can execute it on a connection they already hold
+    /// without threading a second error type through `IndexerError`.
+    #[must_use]
+    pub fn vector_index_ddl() -> &'static str {
+        if hnsw_enabled() {
+            HNSW_CREATE
+        } else {
+            HNSW_DROP
+        }
+    }
+
     /// Ensure the `drafts` table (held writes awaiting a human) exists.
     /// Idempotent (`CREATE TABLE IF NOT EXISTS`) and run on EVERY connection
     /// like [`Migrator::ensure_group_members`]: drafts arrived after the
@@ -325,6 +381,30 @@ impl Migrator {
 /// Whether `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS` opts this process into
 /// loading unsigned extensions. Accepts the same truthy spellings as the
 /// server's other boolean vars.
+/// The vector-index DDL, kept in one place so [`Migrator::ensure_vector_index`]
+/// and the bulk-load paths in `indexer.rs` cannot drift apart.
+pub(crate) const HNSW_CREATE: &str = "\
+    CREATE INDEX IF NOT EXISTS hnsw_blocks_vec ON blocks USING HNSW (dense_vec) \
+        WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16); \
+    CREATE INDEX IF NOT EXISTS hnsw_chat_vec ON chat_messages USING HNSW (dense_vec) \
+        WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);";
+
+/// The inverse. `IF EXISTS` so it is a no-op on a database that never had one.
+pub(crate) const HNSW_DROP: &str = "\
+    DROP INDEX IF EXISTS hnsw_blocks_vec; \
+    DROP INDEX IF EXISTS hnsw_chat_vec;";
+
+/// Whether to build the `vss` HNSW indexes. Default **off** — see
+/// [`Migrator::ensure_vector_index`] for why, and for what it costs.
+pub(crate) fn hnsw_enabled() -> bool {
+    std::env::var("ESCUREL_INDEX_HNSW").is_ok_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        )
+    })
+}
+
 fn allow_unsigned_extensions() -> bool {
     std::env::var("ESCUREL_ALLOW_UNSIGNED_EXTENSIONS").is_ok_and(|raw| {
         matches!(

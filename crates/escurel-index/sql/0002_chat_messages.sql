@@ -27,10 +27,8 @@ CREATE TABLE chat_messages (
 CREATE INDEX chat_group_ts ON chat_messages (chat_group_id, ts DESC);
 CREATE INDEX chat_msg_id   ON chat_messages (msg_id);
 
--- HNSW on the embedded subset. The vss extension accepts NULL rows
--- (probed 2026-05-25); similarity queries must filter
--- `WHERE dense_vec IS NOT NULL` so the non-embedded rows don't leak
--- into the result.
-CREATE INDEX hnsw_chat_vec
-    ON chat_messages USING HNSW (dense_vec)
-    WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);
+-- No HNSW here either, for the reason in `0001_b_tables.sql` (#431).
+-- Similarity queries scan; they must still filter `WHERE dense_vec IS NOT
+-- NULL` so the non-embedded rows don't leak into the result, exactly as they
+-- did when the index existed. `Migrator::ensure_vector_index` recreates it
+-- when ESCUREL_INDEX_HNSW is set.

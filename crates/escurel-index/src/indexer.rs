@@ -16,6 +16,7 @@ use duckdb::{Connection, params};
 use escurel_embed::{EmbedError, Embedder, NoopReranker, Reranker};
 
 use crate::retrieval::RetrievalConfig;
+use crate::schema::Migrator;
 use escurel_md::wikilink::parse_wikilinks;
 use escurel_md::{PageType, parse};
 use escurel_storage::{Key, LaneStore};
@@ -1354,19 +1355,17 @@ impl Indexer {
         Ok(())
     }
 
-    /// Drop + recreate the `blocks` HNSW vector index. Per-row HNSW
-    /// maintenance is the slow path on a large bulk load (the offline batch
-    /// loader, or a DuckDB→DuckDB merge); the fast pattern is to insert all
-    /// rows first and rebuild the index once at the end. Vector search stays
-    /// *correct* throughout — `search_with` ranks by `array_cosine_distance`,
-    /// the HNSW index only accelerates it — so this is purely a speed knob.
+    /// Bring the HNSW vector indexes in line with `ESCUREL_INDEX_HNSW` —
+    /// rebuilding them when it is set, dropping them when it is not.
+    ///
+    /// Vector search stays *correct* either way: `search_with` ranks by
+    /// `array_cosine_distance`, which the index only ever accelerated. Since
+    /// #431 it does not even do that measurably (every search carries a
+    /// filter), while it does hang the writer after ~192 page writes — so the
+    /// default is no index at all. See [`Migrator::ensure_vector_index`].
     pub async fn reindex_vectors(&self) -> Result<(), IndexerError> {
         let conn = self.conn.lock().await;
-        conn.execute_batch(
-            "DROP INDEX IF EXISTS hnsw_blocks_vec; \
-             CREATE INDEX hnsw_blocks_vec ON blocks USING HNSW (dense_vec) \
-             WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);",
-        )?;
+        conn.execute_batch(Migrator::vector_index_ddl())?;
         Ok(())
     }
 
@@ -1478,12 +1477,10 @@ impl Indexer {
         }
         tx.commit()?;
 
-        // Rebuild the vector index (same DDL as the schema), then drop the lock
-        // before refreshing FTS (which re-locks the connection).
-        conn.execute_batch(
-            "CREATE INDEX hnsw_blocks_vec ON blocks USING HNSW (dense_vec) \
-             WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);",
-        )?;
+        // Rebuild the vector index if this deployment asks for one (#431: by
+        // default it does not), then drop the lock before refreshing FTS
+        // (which re-locks the connection).
+        conn.execute_batch(Migrator::vector_index_ddl())?;
         drop(conn);
         self.refresh_fts().await?;
         self.bump_mutation_epoch();

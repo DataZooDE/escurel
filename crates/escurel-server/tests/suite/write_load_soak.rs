@@ -3,9 +3,9 @@
 //! Lab, 2026-08-30: `dz-escurel` died with container exit **139** — SIGSEGV —
 //! inside a seeding burst of paced `update_page` writes.
 //!
-//! This test reproduces the same defect deterministically in about two seconds
-//! of load, and it does not need the lab: drive ordinary page writes through
-//! the real gateway and the write path stops returning. The stack under the
+//! This test reproduced that defect deterministically in about two seconds of
+//! load, without needing the lab: drive ordinary page writes through the real
+//! gateway and the write path stopped returning. The stack under the
 //! stuck `tx.commit()` ends in the `vss` extension —
 //! `usearch::index_dense_gt::remove` — and the minimal repro needs no escurel
 //! at all: an HNSW index created on an empty table blocks for ever on the
@@ -21,14 +21,11 @@
 //! That default is why no existing test in this suite could have found this:
 //! its own comment says the production clone "is not reachable from here".
 //!
-//! **`#[ignore]` until #431 is fixed**, for two reasons. The first is that a
-//! test known to fail earns nothing by running. The second is worse and worth
-//! stating: the per-request timeout below does panic with a clear message, but
-//! the *process still cannot exit* — a runtime worker is parked inside
-//! `libduckdb` for ever, so the harness waits on a thread that will never
-//! return and the run has to be killed from outside. Run it by hand with
-//! `cargo test -p escurel-server --test suite write_load_soak -- --ignored`,
-//! and delete the attribute in the commit that fixes the index.
+//! **It passes now** — the fix is that `blocks` carries no HNSW index
+//! (`Migrator::ensure_vector_index`, off unless `ESCUREL_INDEX_HNSW` is set).
+//! Put the index back and this test hangs again, which is the point of keeping
+//! it: it is the only thing standing between that flag and a writer that dies
+//! after 192 page writes.
 //!
 //! Scale is env-tunable: `ESCUREL_SOAK_PAGES` (default 24),
 //! `ESCUREL_SOAK_REVISIONS` (default 6) and `ESCUREL_SOAK_BURST` (default 4,
@@ -104,8 +101,6 @@ async fn call_inner(p: &EscurelProcess, name: &str, args: Value) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "reproduces #431: the vss HNSW index hangs the write path; \
-            remove this attribute in the commit that fixes it"]
 async fn sustained_update_page_load_does_not_take_the_writer_down() {
     let pages = env_count("ESCUREL_SOAK_PAGES", 24);
     let revisions = env_count("ESCUREL_SOAK_REVISIONS", 6);
@@ -199,7 +194,7 @@ async fn sustained_update_page_load_does_not_take_the_writer_down() {
     // string that advanced past content that never landed.
     for i in 0..pages {
         let out = call(&process, "expand", json!({ "page_id": page_id(i) })).await;
-        let content = out["result"]["structuredContent"]["content"]
+        let content = out["result"]["structuredContent"]["body"]
             .as_str()
             .unwrap_or_else(|| panic!("page {i} must still be readable: {out}"));
         assert!(
