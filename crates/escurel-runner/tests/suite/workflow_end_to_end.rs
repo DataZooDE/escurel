@@ -277,6 +277,62 @@ async fn await_instance(p: &EscurelProcess, skill: &str, prefix: &str, secs: u64
     }
 }
 
+/// Wait until the spawned runner answers `GET /healthz` — which it binds only
+/// AFTER startup `recover_workflows` has run. Creating the board + invocation
+/// only after this guarantees startup recovery scanned an EMPTY corpus, so the
+/// invocation has a single driver (the poller), exactly as in production where
+/// the long-running runner never sees a fresh board at boot. Without it, a
+/// slow-booting runner (under parallel test load) can scan the board mid-flight
+/// and race the invocation.
+async fn wait_for_runner_ready(listen: &str) {
+    let url = format!("http://{listen}/healthz");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if reqwest::Client::new()
+            .get(&url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("runner did not become ready (healthz) within 20s");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Materialise the run board a `start_operation` would have created before its
+/// invocation event. These reducer/barrier tests inject the invocation as a raw
+/// admin `capture_event` (to keep a fixed run-board id), but the invocation no
+/// longer folds the board through the harness — the reducer owns the board and
+/// the runner drives it directly — so a test that later reads the board via
+/// `get_operation` must create the page itself, exactly as the facade does.
+async fn create_run_board(p: &EscurelProcess, run_page: &str, wf_skill: &str) {
+    let slug = run_page
+        .strip_prefix("markdown/instances/workflow-run/")
+        .and_then(|s| s.strip_suffix(".md"))
+        .expect("run board page id shape");
+    let content = format!(
+        "---\ntype: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {wf_skill}\n\
+         ---\n# operation\n\nAsync operation run board.\n"
+    );
+    let written = call_mcp(
+        p,
+        Role::Admin,
+        "update_page",
+        json!({ "page_id": run_page, "content": content }),
+    )
+    .await;
+    assert_eq!(
+        written["ok"],
+        json!(true),
+        "run board must write cleanly: {written}"
+    );
+}
+
 #[tokio::test]
 async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     // 1. Real gateway with the workflow plan + its two produced skills + the
@@ -298,8 +354,11 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
 
     // 2. Capture the workflow INVOCATION: label the plan skill, pre-flag the
     //    run-board instance, and carry a `provenance.workflow` block so the
-    //    dispatch loop routes the confirmed write to the reducer.
+    //    dispatch loop routes the invocation to the reducer.
     let run_page = "markdown/instances/workflow-run/r1.md";
+    // The facade creates the board before the invocation; mirror that here (the
+    // invocation no longer folds it via the harness).
+    create_run_board(&gateway, run_page, WF_SKILL).await;
     call_mcp(
         &gateway,
         // A workflow invocation carries `provenance.workflow`, which the gateway
@@ -472,6 +531,98 @@ async fn await_operation_status(p: &EscurelProcess, run_page: &str, want: &str, 
     }
 }
 
+/// Red/green regression for the invocation-routing fix: a workflow INVOCATION
+/// must be driven by the reducer (admin), NEVER handed to the caller-scoped
+/// harness to "fold" into the run board — the harness does not own the board and
+/// cannot `assign_event` (`WORKFLOW_STEP_TOOLS` denies it), so folding the
+/// invocation there dead-lettered EVERY live `start_operation` ("event not yet
+/// processed"). The echo suite missed it because echo's requester owns the board
+/// and folds it cleanly.
+///
+/// The discriminator: `ESCUREL_ECHO_FAIL_SKILL` fails any harness run whose
+/// `label_skill` matches. Set it to the PLAN skill — the invocation event's own
+/// label. WITH the fix the harness is never handed the invocation, so the
+/// injected failure is inert and the plan runs to `succeeded`; WITHOUT the fix
+/// the invocation is dispatched to the harness, the failure fires, and the
+/// operation dead-letters before any phase — so this test fails.
+#[tokio::test]
+async fn workflow_invocation_is_reducer_driven_not_folded_by_the_harness() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let token = gateway.mint_token(TENANT, Role::Admin);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        // Fail any harness run for the PLAN skill — the invocation event's label.
+        // With the fix the invocation never reaches the harness, so this is inert;
+        // without it, the invocation's harness fold fails and the run dead-letters.
+        .env("ESCUREL_ECHO_FAIL_SKILL", WF_SKILL)
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // Board + invocation created after the runner is READY (startup recovery has
+    // run on an empty corpus), so the invocation has a single driver.
+    wait_for_runner_ready(&listen).await;
+    let run_page = "markdown/instances/workflow-run/rinv.md";
+    create_run_board(&gateway, run_page, WF_SKILL).await;
+    call_mcp(
+        &gateway,
+        Role::Admin,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke deep-research",
+            "body": "Answer the research question.",
+            "provenance": {
+                "workflow": { "run": run_page, "wf_skill": WF_SKILL, "phase": "invoke" }
+            }
+        }),
+    )
+    .await;
+
+    // The reducer emits scope then synthesize; echo runs those (their labels are
+    // the produced skills, not the plan skill, so the injected failure never
+    // fires). Reaching `succeeded` proves the invocation was reducer-driven —
+    // the harness was never handed the run-board fold.
+    let succeeded = await_operation_status(&gateway, run_page, "succeeded", 45).await;
+    assert!(
+        succeeded,
+        "the invocation must be reducer-driven: the plan reaches `succeeded` even though \
+         the harness is set to fail on the PLAN skill, because the harness is never handed \
+         the invocation to fold into the run board"
+    );
+}
+
 /// Phase 0.3 DoD (no mock): a workflow whose FIRST phase's harness fails must
 /// drive the operation to a terminal `failed` status — not wedge at `running`
 /// forever. The scope step's echo run is made to fail deterministically
@@ -496,29 +647,11 @@ async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
     .await;
 
     let run_page = "markdown/instances/workflow-run/rfail.md";
-    call_mcp(
-        &gateway,
-        // A workflow invocation carries `provenance.workflow`, which the gateway
-        // now accepts only from an admin/system identity (async-ops 2c-ii — a
-        // non-admin caller starts a workflow via `start_operation`, not a raw
-        // capture_event). These reducer/barrier tests inject the invocation as
-        // that system identity to keep a fixed run-board id for their prefix
-        // assertions; the facade path is covered by the start_operation tests.
-        Role::Admin,
-        "capture_event",
-        json!({
-            "source": "manual",
-            "mime": "text/plain",
-            "label_skill": WF_SKILL,
-            "instance_page_id": run_page,
-            "title": "invoke deep-research (fail scope)",
-            "body": "Answer the research question.",
-            "provenance": {
-                "workflow": { "run": run_page, "wf_skill": WF_SKILL, "phase": "invoke" }
-            }
-        }),
-    )
-    .await;
+    // Board + invocation are created AFTER the runner spawns (below) — startup
+    // `recover_workflows` re-drives any non-terminal board that exists at boot,
+    // which would race the invocation and re-record `running` after the scope
+    // failure's `failed`. In production the runner is long-running and the board
+    // never pre-exists at startup; creating it after boot mirrors that.
 
     // The runner authenticates as an admin identity (in production it mints its
     // own `escurel:admin` bearer): its orchestration writes include the reserved
@@ -546,6 +679,35 @@ async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
         .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
     let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // Now that the runner is READY (startup recovery has run on an empty corpus),
+    // create the board and inject the invocation — the facade's order, and the
+    // one that keeps startup recovery from racing the invocation.
+    wait_for_runner_ready(&listen).await;
+    create_run_board(&gateway, run_page, WF_SKILL).await;
+    call_mcp(
+        &gateway,
+        // A workflow invocation carries `provenance.workflow`, which the gateway
+        // now accepts only from an admin/system identity (async-ops 2c-ii — a
+        // non-admin caller starts a workflow via `start_operation`, not a raw
+        // capture_event). These reducer/barrier tests inject the invocation as
+        // that system identity to keep a fixed run-board id for their prefix
+        // assertions; the facade path is covered by the start_operation tests.
+        Role::Admin,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke deep-research (fail scope)",
+            "body": "Answer the research question.",
+            "provenance": {
+                "workflow": { "run": run_page, "wf_skill": WF_SKILL, "phase": "invoke" }
+            }
+        }),
+    )
+    .await;
 
     let failed = await_operation_status(&gateway, run_page, "failed", 30).await;
     assert!(

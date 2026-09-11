@@ -31,8 +31,8 @@ use escurel_runner_workflow::{
     StepIntent, Vote, WorkflowSkill, WriteMode, check_budget, is_complete, key, reduce,
 };
 use escurel_types::{
-    AssignEventRequest, CaptureEventRequest, ExpandRequest, InstanceInfo, ListInstancesRequest,
-    WorkflowProvenance,
+    AssignEventRequest, CaptureEventRequest, ExpandRequest, InstanceInfo, ListEventsRequest,
+    ListInstancesRequest, WorkflowProvenance,
 };
 use serde_json::json;
 
@@ -387,6 +387,40 @@ pub async fn record_status_best_effort(
     }
 }
 
+/// Whether the operation's LATEST recorded status event is a terminal
+/// failure/hold (`failed` / `awaiting_human`). Used to leave such an operation
+/// alone — its terminal is authoritative and not re-derivable from the run
+/// state: [`recover_workflows`] must not re-emit a failed step, and the runner's
+/// invocation-pass driver must not re-record `running` over a terminal that a
+/// concurrent driver (crash recovery) already reached. Best-effort: an
+/// unreadable event log returns `false` (the caller then proceeds as before).
+/// Matches the wire string directly so it does not depend on the status parser.
+pub async fn operation_has_terminal_status(client: &Client, run: &str) -> bool {
+    let Ok(resp) = client
+        .list_events(ListEventsRequest {
+            instance_page_id: run.to_owned(),
+            limit: 200,
+            ..Default::default()
+        })
+        .await
+    else {
+        return false;
+    };
+    let latest = resp
+        .events
+        .iter()
+        .filter(|e| e.label_skill == OPERATION_STATUS_LABEL)
+        .filter_map(|e| {
+            e.provenance
+                .get("run_status")
+                .and_then(|v| v.as_str())
+                .map(|s| (e.at.as_str(), s))
+        })
+        .max_by(|a, b| a.0.cmp(b.0))
+        .map(|(_, s)| s.to_owned());
+    matches!(latest.as_deref(), Some("failed") | Some("awaiting_human"))
+}
+
 /// Record the operation's status as a **processed, assigned** event on the run
 /// board — the append-only record `get_operation` reads.
 ///
@@ -527,6 +561,16 @@ pub async fn recover_workflows(
             continue;
         };
         check_budget(&spec, max_runs_per_root)?;
+        // Never re-drive an operation that already recorded a TERMINAL failure or
+        // human hold. Its failing step's authored Stop/AskHuman transition is the
+        // truth, and recovery cannot see that from the run STATE alone — an
+        // incomplete state (a step that failed and stopped) looks identical to
+        // "not started yet". Without this guard, recovery re-emits the failing
+        // step and records `running`, overwriting the real terminal — so a
+        // `failed`/`awaiting_human` operation silently flips back to `running`.
+        if operation_has_terminal_status(client, &wf.run).await {
+            continue;
+        }
         let state = build_run_state(client, &wf, &spec).await?;
         // F7: re-establish the operation status on recovery — a run that
         // completed (or advanced) before a crash may never have recorded it.

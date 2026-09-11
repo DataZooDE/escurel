@@ -36,14 +36,14 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use escurel_client::{Client, SecretString};
+use escurel_client::{AssignEventRequest, Client, SecretString};
 use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
 use escurel_runner_core::{
     Admission, Autonomy, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue,
     EnqueueOutcome, Governor, Ledger, LedgerDecision, LoopLimits, QuotaDecision, QuotaLimits,
     ReconcileError, RunFailure, RunStatus, RunnerConfig, TaskContext, Trigger, admit,
-    classify_client_error, confirm_draft, confirm_effect, drive_workflow, emit_cascade, package,
-    recover_pending, recover_workflows, run_with_retry,
+    classify_client_error, confirm_draft, confirm_effect, drive_workflow, emit_cascade,
+    operation_has_terminal_status, package, recover_pending, recover_workflows, run_with_retry,
 };
 use escurel_runner_core::{DeadLetterReason, RunId, StepTerminal};
 use escurel_runner_harness::{
@@ -1398,6 +1398,111 @@ async fn dispatch_loop(
         // Acquire a global harness-subprocess permit (#158): bounds concurrent
         // harness spawns across all tenants. Held across the whole run.
         let _harness_permit = governor.acquire_harness().await;
+
+        // ── async-ops: the workflow INVOCATION event is a control kick, not
+        //    harness work ────────────────────────────────────────────────────
+        // `start_operation` stamps the kick with a server-owned `phase: "invoke"`
+        // targeting the run board. Dispatching it to the caller-scoped harness
+        // makes the harness try to FOLD the event into the run board — a control
+        // instance it must not write (the run board is the reducer's, and
+        // `WORKFLOW_STEP_TOOLS` even denies the harness `assign_event`) — so the
+        // event was never marked `processed` and EVERY operation dead-lettered
+        // "event not yet processed". The echo suite missed it: echo's requester
+        // owns the board and folds it cleanly, so only a real caller-scoped run
+        // (the requester ≠ the runner) exposed it.
+        //
+        // Drive the reducer as the runner (admin): the "invocation pass" builds
+        // an empty run state, emits the plan's first phase, and records
+        // `running` (or `succeeded` + delivery for a one-phase plan); then the
+        // runner (admin) assigns the invocation event to the run board so it is
+        // `processed` and never re-triggers. Only the emitted phase STEPS run
+        // under the caller-scoped harness, and those write their own produced
+        // instances, which the requester owns.
+        if let Some(wf) = trigger.workflow.clone().filter(|w| w.phase == "invoke") {
+            // If a concurrent driver (crash recovery) already drove this
+            // operation to a terminal state, do NOT re-drive it back to
+            // `running`; just close the kick. (Normal operation has a single
+            // driver — this only bites when a fresh runner's startup recovery
+            // races the invocation of a board that already exists.)
+            if operation_has_terminal_status(&client, &wf.run).await {
+                let _ = client
+                    .assign_event(AssignEventRequest {
+                        event_id: trigger.event_id.clone(),
+                        instance_page_id: wf.run.clone(),
+                    })
+                    .await;
+                let _ = ledger.complete(&run_id, RunStatus::Processed, None);
+                record_run_terminal(&metrics, &trigger.tenant, "processed");
+                inflight
+                    .lock()
+                    .expect("inflight slots mutex")
+                    .remove(&trigger.event_id);
+                continue;
+            }
+            match drive_workflow(
+                &client,
+                &trigger,
+                &run_id.0,
+                None,
+                StepTerminal::Advanced,
+                config.max_runs_per_root,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    // A one-phase plan completes on the invocation pass and
+                    // carries a terminal delivery; a multi-phase plan is now
+                    // `running` with `delivery: None`.
+                    if let (Some(delivery), Some(url)) =
+                        (outcome.delivery, config.outbound_url.as_deref())
+                    {
+                        deliver_terminal(url, config.outbound_bearer.as_deref(), &delivery).await;
+                    }
+                    // Close the kick: mark the invocation event processed on the
+                    // run board (admin) so the poller stops re-delivering it.
+                    if let Err(e) = client
+                        .assign_event(AssignEventRequest {
+                            event_id: trigger.event_id.clone(),
+                            instance_page_id: wf.run.clone(),
+                        })
+                        .await
+                    {
+                        tracing::warn!(
+                            target: "escurel_runner",
+                            event_id = %trigger.event_id,
+                            run_id = %run_id,
+                            error = %e,
+                            "workflow: could not mark the invocation event processed"
+                        );
+                    }
+                    let _ = ledger.complete(&run_id, RunStatus::Processed, None);
+                    record_run_terminal(&metrics, &trigger.tenant, "processed");
+                    tracing::info!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        emitted = outcome.emitted.len(),
+                        "workflow: invocation drove the reducer; first phase emitted"
+                    );
+                }
+                Err(e) => {
+                    let _ = ledger.dead_letter(&run_id, DeadLetterReason::ReducerFailed);
+                    record_run_terminal(&metrics, &trigger.tenant, "dead_letter");
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        error = %e,
+                        "workflow: invocation reducer pass failed; run dead-lettered"
+                    );
+                }
+            }
+            inflight
+                .lock()
+                .expect("inflight slots mutex")
+                .remove(&trigger.event_id);
+            continue;
+        }
 
         // Reconcile with retry: package + run the harness + read back over
         // `/mcp` to CONFIRM the effect, retrying transient failures with

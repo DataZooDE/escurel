@@ -48,5 +48,6 @@ pub use secrecy::SecretString;
 pub use trigger::{Lineage, Trigger};
 pub use workflow::{
     OPERATION_STATUS_LABEL, StepTerminal, TerminalDelivery, WorkflowDriveError,
-    WorkflowDriveOutcome, drive_workflow, record_status_best_effort, recover_workflows,
+    WorkflowDriveOutcome, drive_workflow, operation_has_terminal_status, record_status_best_effort,
+    recover_workflows,
 };
