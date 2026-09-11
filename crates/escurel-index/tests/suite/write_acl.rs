@@ -393,3 +393,74 @@ async fn owner_resolved_through_wikilink_for_write() {
         "bob must NOT write alice's event_profile"
     );
 }
+
+// ── async-ops: a workflow step writes its produced instance ────────────────
+const SKILL_WORKFLOW_RUN: (&str, &str) = (
+    "markdown/skills/workflow-run.md",
+    "---\ntype: skill\nid: workflow-run\ndescription: run board.\n\
+     visibility: owner\nowner_field: requested_by\n\
+     optional_frontmatter: [requested_by]\n---\n# workflow-run\n",
+);
+// A PRODUCED skill with NO owner_field — public/no-owner, i.e. admin-write-only
+// by the base rule. This is the shape the supplier-risk demo skills have, and
+// the exact case that blocked the scoped (non-admin) workflow harness.
+const SKILL_SUPPLIER_WATCH: (&str, &str) = (
+    "markdown/skills/supplier-watch.md",
+    "---\ntype: skill\nid: supplier-watch\ndescription: produced by a step.\n---\n# supplier-watch\n",
+);
+// The run board `start_operation` created, owned by ALICE (its requester).
+const RUN_BOARD_ALICE: (&str, &str) = (
+    "markdown/instances/workflow-run/op-abc.md",
+    "---\ntype: instance\nskill: workflow-run\nid: op-abc\n\
+     requested_by: \"whatsapp:111\"\n---\n# operation\n",
+);
+// The produced-instance page id a scope step mints (…/<run_slug>-<phase>-<hash12>.md).
+const PRODUCED_PAGE: &str = "markdown/instances/supplier-watch/op-abc-scope-0123456789ab.md";
+const PRODUCED_CONTENT: &str = "---\ntype: instance\nskill: supplier-watch\n\
+    id: op-abc-scope-0123456789ab\n---\n# suppliers\n";
+
+/// The run's requester (the identity the per-run scoped token carries) may write
+/// its own produced instance, even though the produced skill is no-owner
+/// (admin-write-only by the base rule) — else a `start_operation` workflow could
+/// never write its own outputs under the Phase-1 caller-scoped harness.
+#[tokio::test]
+async fn workflow_requester_may_write_its_produced_instance() {
+    let h = fresh_harness();
+    seed(
+        &h,
+        &[SKILL_WORKFLOW_RUN, SKILL_SUPPLIER_WATCH, RUN_BOARD_ALICE],
+    )
+    .await;
+
+    assert!(
+        h.indexer
+            .may_write_page(&member(ALICE), PRODUCED_PAGE, PRODUCED_CONTENT)
+            .await
+            .unwrap(),
+        "the run's requester (ALICE) must write her operation's produced instance"
+    );
+    // A different subject is NOT the requester → the no-owner base rule stands.
+    assert!(
+        !h.indexer
+            .may_write_page(&member(BOB), PRODUCED_PAGE, PRODUCED_CONTENT)
+            .await
+            .unwrap(),
+        "a non-requester must NOT write another operation's produced instance"
+    );
+}
+
+/// The allowance is gated on a REAL run board that names the caller: a produced
+/// page whose run board does not exist falls through to the base (admin-only)
+/// rule. No forged-page-id write.
+#[tokio::test]
+async fn a_produced_page_with_no_run_board_stays_admin_only() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_SUPPLIER_WATCH]).await; // no run board seeded
+    assert!(
+        !h.indexer
+            .may_write_page(&member(ALICE), PRODUCED_PAGE, PRODUCED_CONTENT)
+            .await
+            .unwrap(),
+        "without a matching run board, a no-owner produced instance stays admin-only"
+    );
+}
