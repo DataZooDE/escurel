@@ -1341,14 +1341,19 @@ async fn a_terminal_operation_is_delivered_to_the_channel_courier() {
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
     let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
 
-    // The courier receives the terminal delivery, keyed on the conversation ref.
+    // The courier receives the TERMINAL delivery, keyed on the conversation ref.
+    // (Selective progress deliveries — status `running` — also arrive for this
+    // operation now; find the terminal one specifically.)
     let deadline = Instant::now() + Duration::from_secs(45);
     let delivered = loop {
         let hit = received
             .lock()
             .expect("sink mutex")
             .iter()
-            .find(|d| d["operation_id"].as_str() == Some(operation_id.as_str()))
+            .find(|d| {
+                d["operation_id"].as_str() == Some(operation_id.as_str())
+                    && d["status"].as_str() == Some("succeeded")
+            })
             .cloned();
         if let Some(d) = hit {
             break Some(d);
@@ -1368,6 +1373,122 @@ async fn a_terminal_operation_is_delivered_to_the_channel_courier() {
         delivery["conversation_ref"], conversation_ref,
         "delivery carries the stored conversation reference verbatim: {delivery}"
     );
+}
+
+/// async-ops Phase 3b (no mock): a multi-phase operation pushes SELECTIVE
+/// progress back to the channel — one delivery per PHASE BOUNDARY (status
+/// `running`, carrying a "⏳ Working on *<phase>*…" note the courier renders),
+/// never one per step. The 2-phase plan yields a progress push for `scope` and
+/// one for `synthesize`, alongside the terminal — so a user watching the chat
+/// sees the operation advance instead of only its final result.
+#[tokio::test]
+async fn a_multi_phase_operation_pushes_selective_progress() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let (sink_url, received) = spawn_outbound_sink().await;
+
+    // Spawn the runner FIRST and let startup recovery run on an empty corpus, so
+    // the operation has a SINGLE driver (the poller) — otherwise startup recovery
+    // races the invocation and the per-phase progress boundary is hit twice /
+    // silently, exactly like the reducer tests.
+    let token = gateway.mint_token(TENANT, Role::Admin);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env("ESCUREL_RUNNER_OUTBOUND_URL", &sink_url)
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+    wait_for_runner_ready(&listen).await;
+
+    let conversation_ref = json!({
+        "channel": "msteams",
+        "conversation": { "id": "19:progress@thread.v2" },
+        "service_url": "https://smba.example/teams"
+    });
+    let started = call_mcp(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({
+            "wf_skill": WF_SKILL,
+            "input": "Answer the question.",
+            "conversation_ref": conversation_ref,
+        }),
+    )
+    .await;
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
+
+    // Wait until the terminal arrives, then inspect the whole delivery stream.
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let has_terminal = received.lock().expect("sink mutex").iter().any(|d| {
+            d["operation_id"].as_str() == Some(operation_id.as_str())
+                && d["status"].as_str() == Some("succeeded")
+        });
+        if has_terminal {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("the operation never reached a terminal delivery");
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    let deliveries = received.lock().expect("sink mutex").clone();
+    let notes: Vec<String> = deliveries
+        .iter()
+        .filter(|d| {
+            d["operation_id"].as_str() == Some(operation_id.as_str())
+                && d["status"].as_str() == Some("running")
+        })
+        .filter_map(|d| d["result"]["text"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        notes.iter().any(|n| n.contains("scope")),
+        "a progress push announced the scope phase: {notes:?}"
+    );
+    assert!(
+        notes.iter().any(|n| n.contains("synthesize")),
+        "a progress push announced the synthesize phase: {notes:?}"
+    );
+    // Selective: one push per phase boundary, not a flood per step.
+    assert!(
+        notes.len() <= 3,
+        "progress is per-phase, not per-step ({} pushes): {notes:?}",
+        notes.len()
+    );
+
+    gateway.shutdown().await;
 }
 
 /// async-ops Phase 3 (no mock): the terminal delivery carries the configured
@@ -1442,13 +1563,17 @@ async fn a_terminal_delivery_carries_the_configured_bearer() {
     let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
 
     // The bearer-gated sink only records the POST if the runner authenticated.
+    // Find the TERMINAL delivery (progress `running` deliveries also arrive).
     let deadline = Instant::now() + Duration::from_secs(45);
     let delivered = loop {
         let hit = received
             .lock()
             .expect("sink mutex")
             .iter()
-            .find(|d| d["operation_id"].as_str() == Some(operation_id.as_str()))
+            .find(|d| {
+                d["operation_id"].as_str() == Some(operation_id.as_str())
+                    && d["status"].as_str() == Some("succeeded")
+            })
             .cloned();
         if let Some(d) = hit {
             break Some(d);

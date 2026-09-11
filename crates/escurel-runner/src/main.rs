@@ -818,11 +818,18 @@ async fn deliver_terminal(
     outbound_bearer: Option<&str>,
     delivery: &escurel_runner_core::TerminalDelivery,
 ) {
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "operation_id": delivery.operation_id,
         "status": delivery.status,
         "conversation_ref": delivery.conversation_ref,
     });
+    // A selective PROGRESS delivery carries a human note; hand it to the receiver
+    // as the `result` it already renders, so the courier posts the note verbatim
+    // ("⏳ Working on …"). A terminal delivery has no note — the receiver renders
+    // the operation's own result (or a terse status fallback) as before.
+    if let Some(note) = &delivery.note {
+        body["result"] = serde_json::json!({ "text": note });
+    }
     // The agent's delivery receiver (`AGENT_ASYNC_CALLBACK_BEARER`) refuses a
     // callback with no/ wrong bearer (401). Attach it when configured; a sink
     // that requires none (a pull-only deploy, a test stub) leaves it unset.
