@@ -151,6 +151,7 @@ mod tests {
     #[test]
     fn outcome_wire_contract_round_trips() {
         let outcome = HarnessOutcome {
+            result_ref: None,
             ok: true,
             status: HarnessStatus::Ok,
             summary: "folded".to_owned(),

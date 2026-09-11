@@ -224,6 +224,7 @@ pub async fn drive_workflow(
                 OperationStatus::Failed,
                 &wf.phase,
                 "plan_unparseable",
+                None,
             )
             .await;
             return Ok(WorkflowDriveOutcome::default());
@@ -240,6 +241,7 @@ pub async fn drive_workflow(
             OperationStatus::AwaitingHuman,
             &wf.phase,
             "held_draft",
+            None,
         )
         .await;
         let delivery = maybe_delivery(client, &wf.run, OperationStatus::AwaitingHuman).await;
@@ -263,6 +265,7 @@ pub async fn drive_workflow(
                 OperationStatus::Succeeded,
                 &wf.phase,
                 "",
+                effect.and_then(|e| e.result_ref.as_ref()),
             )
             .await;
             let delivery = maybe_delivery(client, &wf.run, OperationStatus::Succeeded).await;
@@ -288,7 +291,8 @@ pub async fn drive_workflow(
             }
             Fallback::Stop => (OperationStatus::Failed, fail_reason),
         };
-        record_status_best_effort(client, &wf.run, transition, status, &wf.phase, reason).await;
+        record_status_best_effort(client, &wf.run, transition, status, &wf.phase, reason, None)
+            .await;
         let delivery = maybe_delivery(client, &wf.run, status).await;
         return Ok(WorkflowDriveOutcome {
             delivery,
@@ -319,7 +323,23 @@ pub async fn drive_workflow(
     } else {
         OperationStatus::Running
     };
-    record_status_best_effort(client, &wf.run, transition, status, &wf.phase, "").await;
+    // Stamp the harness's produced result_ref only on the terminal `succeeded`
+    // pass — a `running` progress event carries none.
+    let terminal_result_ref = if matches!(status, OperationStatus::Succeeded) {
+        effect.and_then(|e| e.result_ref.as_ref())
+    } else {
+        None
+    };
+    record_status_best_effort(
+        client,
+        &wf.run,
+        transition,
+        status,
+        &wf.phase,
+        "",
+        terminal_result_ref,
+    )
+    .await;
     // A completed plan (Succeeded) delivers its terminal; a `Running` pass
     // delivers a SELECTIVE progress note, but only when it opens a NEW phase
     // (async-ops Phase 3b) — one push per phase boundary, never per step.
@@ -468,8 +488,13 @@ pub async fn record_status_best_effort(
     status: OperationStatus,
     phase: &str,
     reason: &str,
+    result_ref: Option<&serde_json::Value>,
 ) {
-    if let Err(e) = record_status(client, operation, transition, status, phase, reason).await {
+    if let Err(e) = record_status(
+        client, operation, transition, status, phase, reason, result_ref,
+    )
+    .await
+    {
         tracing::warn!(
             target: "escurel_runner",
             operation = %operation,
@@ -544,6 +569,7 @@ async fn record_status(
     status: OperationStatus,
     phase: &str,
     reason: &str,
+    result_ref: Option<&serde_json::Value>,
 ) -> Result<(), WorkflowDriveError> {
     let status_str = status.as_str();
     let event_id = key::step_event_id(
@@ -566,6 +592,14 @@ async fn record_status(
     }
     if !reason.is_empty() {
         prov.insert("reason".to_owned(), json!(reason));
+    }
+    // The produced artifact reference (async-ops Phase 4), stamped only on the
+    // terminal `succeeded` event by the driver. `get_operation` reads it back
+    // and validates it into the closed `ResultRef` enum, so an ill-formed value
+    // here is dropped on read rather than trusted — but the runner only ever
+    // passes a harness-produced `result_ref` through, never a caller's.
+    if let Some(rr) = result_ref {
+        prov.insert("result_ref".to_owned(), rr.clone());
     }
     let title = match (phase.is_empty(), reason.is_empty()) {
         (false, false) => format!("status: {status_str} (phase {phase}, {reason})"),
@@ -680,6 +714,9 @@ pub async fn recover_workflows(
                 OperationStatus::Succeeded,
                 "",
                 "",
+                // Recovery cannot reconstruct a harness's produced result_ref; the
+                // original terminal event (if it recorded) already carries it.
+                None,
             )
             .await;
             continue; // run already complete — nothing to re-emit
@@ -692,8 +729,16 @@ pub async fn recover_workflows(
         // root at depth 0 (a fresh lineage), which `admit` treats like any
         // webhook-origin event. §3.6 keys keep the re-emit idempotent.
         emit_intents(client, &intents, |intent| root_provenance(&wf, intent)).await?;
-        record_status_best_effort(client, &wf.run, "recover", OperationStatus::Running, "", "")
-            .await;
+        record_status_best_effort(
+            client,
+            &wf.run,
+            "recover",
+            OperationStatus::Running,
+            "",
+            "",
+            None,
+        )
+        .await;
         resumed += 1;
     }
     Ok(resumed)

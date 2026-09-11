@@ -783,6 +783,7 @@ async fn drive_workflow_or_deadletter(
                         escurel_runner_core::OperationStatus::Failed,
                         &wf.phase,
                         "reducer_failed",
+                        None,
                     )
                     .await;
                 }
@@ -1862,62 +1863,69 @@ async fn attempt_run(
     // Carried past the match so the read-back below can tell "the harness
     // named a page" from "it named nothing" — the latter is only meaningful
     // once the gateway has also been asked.
-    let (harness_produced, harness_reported_failure) = match harness.run(&task).await {
-        Ok(outcome) => {
-            tracing::info!(
-                target: "escurel_runner",
-                event_id = %trigger.event_id,
-                harness = %harness.name(),
-                attempt,
-                ok = outcome.ok,
-                tool_calls = outcome.tool_calls,
-                produced_instance = ?outcome.produced_instance,
-                summary = %outcome.summary,
-                "dispatch: harness completed"
-            );
-            // A self-reported FAILURE is not evidence either.
-            //
-            // This used to return here, before the read-back — which
-            // contradicted the rule stated eight lines below and enforced
-            // everywhere else in this function: the gateway is the authority,
-            // never the harness's own account of itself. Measured in the
-            // cluster on 2026-09-06: a Gemini run created a draft
-            // (`create_draft` → `status: ok`), kept talking, hit the turn cap,
-            // and reported failure. The run was recorded `failed
-            // (retriable re-drive)` for work that had landed — and a re-drive
-            // would have produced a SECOND draft for a page whose rule is
-            // one draft per page.
-            //
-            // So carry the report past the read-back and let it decide. If
-            // the gateway confirms an effect, the run succeeded whatever the
-            // model said; if it confirms nothing, this becomes the permanent
-            // failure it always was, with the harness's own words attached.
-            let reported_failure = (!outcome.ok).then(|| outcome.summary.clone());
-            // NB: "produced no instance + no pre-flagged target" is NOT by
-            // itself a no-op, and treating it as one was a real bug. Both
-            // real LLM adapters hardcode `produced_instance: None` — their
-            // envelopes do not name the page the model wrote — so this fired
-            // on every unflagged `claude`/`codex` run, including ones that
-            // had just written a page and assigned the event. The run was
-            // recorded `processed` with no effect, and never cascaded. Only
-            // the `echo` stub reports a produced instance, which is why the
-            // suite never saw it.
-            //
-            // The gateway is the authority, so ask it first (below) and
-            // decide afterwards.
-            (outcome.produced_instance, reported_failure)
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "escurel_runner",
-                event_id = %trigger.event_id,
-                attempt,
-                error = %e,
-                "dispatch: harness run failed"
-            );
-            return Err(harness_error_to_reconcile(&e));
-        }
-    };
+    let (harness_produced, harness_reported_failure, harness_result_ref) =
+        match harness.run(&task).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    harness = %harness.name(),
+                    attempt,
+                    ok = outcome.ok,
+                    tool_calls = outcome.tool_calls,
+                    produced_instance = ?outcome.produced_instance,
+                    summary = %outcome.summary,
+                    "dispatch: harness completed"
+                );
+                // A self-reported FAILURE is not evidence either.
+                //
+                // This used to return here, before the read-back — which
+                // contradicted the rule stated eight lines below and enforced
+                // everywhere else in this function: the gateway is the authority,
+                // never the harness's own account of itself. Measured in the
+                // cluster on 2026-09-06: a Gemini run created a draft
+                // (`create_draft` → `status: ok`), kept talking, hit the turn cap,
+                // and reported failure. The run was recorded `failed
+                // (retriable re-drive)` for work that had landed — and a re-drive
+                // would have produced a SECOND draft for a page whose rule is
+                // one draft per page.
+                //
+                // So carry the report past the read-back and let it decide. If
+                // the gateway confirms an effect, the run succeeded whatever the
+                // model said; if it confirms nothing, this becomes the permanent
+                // failure it always was, with the harness's own words attached.
+                let reported_failure = (!outcome.ok).then(|| outcome.summary.clone());
+                // NB: "produced no instance + no pre-flagged target" is NOT by
+                // itself a no-op, and treating it as one was a real bug. Both
+                // real LLM adapters hardcode `produced_instance: None` — their
+                // envelopes do not name the page the model wrote — so this fired
+                // on every unflagged `claude`/`codex` run, including ones that
+                // had just written a page and assigned the event. The run was
+                // recorded `processed` with no effect, and never cascaded. Only
+                // the `echo` stub reports a produced instance, which is why the
+                // suite never saw it.
+                //
+                // The gateway is the authority, so ask it first (below) and
+                // decide afterwards. `result_ref` is the harness's own — a produced
+                // artifact the gateway read-back cannot observe — so it rides
+                // through to the confirmed effect verbatim.
+                (
+                    outcome.produced_instance,
+                    reported_failure,
+                    outcome.result_ref,
+                )
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    attempt,
+                    error = %e,
+                    "dispatch: harness run failed"
+                );
+                return Err(harness_error_to_reconcile(&e));
+            }
+        };
 
     // Don't trust the harness: read back over `/mcp` to confirm the event is
     // processed + bound and the instance's version advanced (#155). For an
@@ -1965,7 +1973,12 @@ async fn attempt_run(
         Autonomy::Review => confirm_draft(client, trigger).await,
     };
     match confirmed {
-        Ok(effect) => {
+        Ok(mut effect) => {
+            // Carry the harness's produced-artifact reference onto the confirmed
+            // effect (async-ops Phase 4): the gateway read-back cannot observe it,
+            // so it comes only from the harness's own outcome. The driver stamps
+            // it onto the terminal `succeeded` status event.
+            effect.result_ref = harness_result_ref;
             if let Some(summary) = &harness_reported_failure {
                 // Worth a line: the model said it failed and the gateway
                 // disagrees. The gateway wins, and someone should know the

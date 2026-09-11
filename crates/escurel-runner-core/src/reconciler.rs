@@ -64,6 +64,11 @@ pub struct ConfirmedEffect {
     /// nothing has changed yet — cascading a held write would spend the
     /// budget of an entire lineage on a change a human may still refuse.
     pub held: bool,
+    /// The out-of-band result the harness produced, verbatim from its
+    /// [`HarnessOutcome::result_ref`] (a serialized `escurel_types::ResultRef`).
+    /// Carried through so the driver can stamp it onto the terminal `succeeded`
+    /// status event (async-ops Phase 4). `None` for every non-producing run.
+    pub result_ref: Option<serde_json::Value>,
 }
 
 /// A reconcile/attempt failure, classified for the retry policy.
@@ -156,6 +161,7 @@ pub async fn confirm_draft(
         )));
     };
     Ok(ConfirmedEffect {
+        result_ref: None,
         // The page the draft is FOR. It may not exist yet — that is the
         // ordinary case for a capture being filed for the first time — so
         // this is deliberately NOT read back through `expand`.
@@ -363,6 +369,7 @@ pub async fn confirm_effect(
     let version = content_version(&expanded.body);
 
     Ok(ConfirmedEffect {
+        result_ref: None,
         held: false,
         instance_page_id,
         version,
@@ -591,6 +598,7 @@ mod tests {
 
     fn effect() -> ConfirmedEffect {
         ConfirmedEffect {
+            result_ref: None,
             instance_page_id: "inst".into(),
             version: "v1".into(),
             held: false,

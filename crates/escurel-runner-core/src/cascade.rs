@@ -266,6 +266,7 @@ mod tests {
 
     fn effect() -> ConfirmedEffect {
         ConfirmedEffect {
+            result_ref: None,
             instance_page_id: "markdown/instances/decision-record/q3.md".into(),
             version: "sha256:abc".into(),
             held: false,

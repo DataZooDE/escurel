@@ -230,12 +230,28 @@ pub(super) async fn tool_get_operation(
     if !readable {
         return Ok(json!({ "operation_id": a.operation_id, "found": false }));
     }
-    let status = derive_operation_status(indexer, &a.operation_id).await?;
-    Ok(json!({
+    // Status AND result_ref both come from the SAME latest status event, so fetch
+    // it once. The runner stamps `result_ref` onto the terminal `succeeded`
+    // event's provenance (async-ops Phase 4); surface it here so a caller that
+    // polled to `succeeded` can resolve the produced artifact. Validated by
+    // round-tripping through the closed `ResultRef` enum — a malformed or absent
+    // ref is simply omitted (never a raw, unvalidated path leaks out).
+    let latest = latest_run_status_event(indexer, &a.operation_id).await?;
+    let status = run_status_of(latest.as_ref());
+    let mut out = json!({
         "operation_id": a.operation_id,
         "found": true,
         "status": status.as_str(),
-    }))
+    });
+    if let Some(result_ref) = latest
+        .as_ref()
+        .and_then(|ev| ev.provenance.get("result_ref"))
+        .and_then(|v| serde_json::from_value::<escurel_types::ResultRef>(v.clone()).ok())
+    {
+        out["result_ref"] = serde_json::to_value(result_ref)
+            .map_err(|e| JsonRpcError::internal(format!("get_operation result_ref: {e}")))?;
+    }
+    Ok(out)
 }
 
 /// Derive an operation's current status from its run board's append-only status
@@ -252,20 +268,35 @@ pub(super) async fn derive_operation_status(
     indexer: &Indexer,
     operation_id: &str,
 ) -> Result<escurel_types::OperationStatus, JsonRpcError> {
-    // The single most-recent status event (crew Phase-4 F-6): a newest-first
-    // `LIMIT 1` lookup, so the derivation cannot report a stale status for a
-    // board whose history exceeds the page cap.
-    let latest = indexer
+    let latest = latest_run_status_event(indexer, operation_id).await?;
+    Ok(run_status_of(latest.as_ref()))
+}
+
+/// The single most-recent `run-status` event for an operation (crew Phase-4 F-6):
+/// a newest-first `LIMIT 1` lookup, so a derivation cannot report a stale status
+/// for a board whose history exceeds the page cap. Shared by `get_operation`
+/// (status + result_ref) and `derive_operation_status` (status only) so both read
+/// the exact same event.
+async fn latest_run_status_event(
+    indexer: &Indexer,
+    operation_id: &str,
+) -> Result<Option<escurel_index::EventInfo>, JsonRpcError> {
+    indexer
         .latest_labeled_event(operation_id, escurel_types::OPERATION_STATUS_LABEL)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("get_operation: {e}")))?
-        .and_then(|ev| {
-            ev.provenance
-                .get("run_status")
-                .and_then(Value::as_str)
-                .and_then(escurel_types::OperationStatus::from_wire)
-        });
-    Ok(latest.unwrap_or(escurel_types::OperationStatus::Pending))
+        .map_err(|e| JsonRpcError::internal(format!("get_operation: {e}")))
+}
+
+/// Latest-wins status from a `run-status` event's `provenance.run_status`; no
+/// event ⇒ `pending`.
+fn run_status_of(ev: Option<&escurel_index::EventInfo>) -> escurel_types::OperationStatus {
+    ev.and_then(|ev| {
+        ev.provenance
+            .get("run_status")
+            .and_then(Value::as_str)
+            .and_then(escurel_types::OperationStatus::from_wire)
+    })
+    .unwrap_or(escurel_types::OperationStatus::Pending)
 }
 
 #[derive(Deserialize)]
