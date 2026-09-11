@@ -222,6 +222,30 @@ impl Indexer {
         if parsed.frontmatter.page_type != PageType::Instance {
             return Ok(true); // P1: gate instance writes only
         }
+        // Async-ops: a workflow STEP runs under a caller-scoped (non-admin)
+        // token and must be able to write the instance its step PRODUCES — a
+        // run-scoped, deterministic page id. The produced skills are often
+        // no-owner (admin-write-only below), which would forbid the scoped
+        // harness, so a `start_operation` workflow could never write its own
+        // outputs. Allow it precisely when the target is a produced instance
+        // whose RUN BOARD names THIS caller as the requester (`requested_by`,
+        // stamped server-side by `start_operation` — the identity the per-run
+        // token was minted from). Server-verified end to end: the run-board id
+        // is derived from the (server-minted) produced page id, its
+        // `requested_by` was written by the gateway, and the subject comes from
+        // the verified token. A page id that merely looks produced but has no
+        // matching run board falls through — this only ever GRANTS.
+        if !caller.subject.is_empty()
+            && let Some(run_board) = workflow_produced_run_board(page_id)
+            && let Some(board) = self.expand(&run_board, None, None).await?
+            && board
+                .frontmatter
+                .get("requested_by")
+                .and_then(Value::as_str)
+                == Some(caller.subject)
+        {
+            return Ok(true);
+        }
         let skill = parsed
             .frontmatter
             .fields
@@ -600,4 +624,27 @@ fn instance_acl(fm: &Value) -> Option<AclPolicy> {
 /// deny (fail-closed). No deny rules in v1.
 fn intersects(policy: &[String], effective: &HashSet<String>) -> bool {
     policy.iter().any(|g| effective.contains(g))
+}
+
+/// If `page_id` is a workflow step's PRODUCED-instance page id — the
+/// deterministic shape `escurel_runner_workflow::key::step_instance_page_id`
+/// mints, `markdown/instances/<produces>/<run_slug>-<phase>-<hash12>.md` — return
+/// the run board page id (`markdown/instances/workflow-run/<run_slug>.md`) it
+/// belongs to. `None` for anything else.
+///
+/// Parsing peels the trailing `-<phase>-<hash12>` (hash12 = 12 hex chars) off
+/// the filename stem; the remainder (internal `-` kept) is the run slug. A page
+/// id that merely resembles the shape but has no such run board is harmless: the
+/// caller only checks this to GRANT a write, gated on a real run board that
+/// names them as requester.
+fn workflow_produced_run_board(page_id: &str) -> Option<String> {
+    let stem = page_id.strip_suffix(".md")?.rsplit('/').next()?;
+    let mut it = stem.rsplitn(3, '-');
+    let hash12 = it.next()?;
+    let _phase = it.next()?;
+    let run_slug = it.next()?;
+    if hash12.len() != 12 || !hash12.bytes().all(|b| b.is_ascii_hexdigit()) || run_slug.is_empty() {
+        return None;
+    }
+    Some(format!("markdown/instances/workflow-run/{run_slug}.md"))
 }
