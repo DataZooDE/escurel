@@ -93,6 +93,14 @@ fn decided_by_or_caller(
 ) -> Result<String, JsonRpcError> {
     match a.decided_by.as_deref().map(str::trim) {
         None | Some("") => Ok(caller.subject.to_owned()),
+        // Naming YOURSELF is not vouching for anyone — it is the same fact the
+        // token already carries, and refusing it made the argument unusable by
+        // any caller that decides on its own behalf. heron sends it
+        // unconditionally (its service credential is optional, and when it is
+        // absent the consultant's own bearer does the write), so the strict
+        // rule turned every approval in that shape into `invalid_params`.
+        // Caught by heron's `draft_verbs` suite the moment the field shipped.
+        Some(human) if human == caller.subject => Ok(human.to_owned()),
         Some(_) if !caller.is_admin => Err(JsonRpcError::invalid_params(
             "`decided_by` names the human a gateway verified, and only an \
              admin may vouch for another subject"
