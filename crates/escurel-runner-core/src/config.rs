@@ -239,6 +239,15 @@ pub struct RunnerConfig {
     /// deployment where callers poll `get_operation`/`tasks/get`).
     /// Source: `ESCUREL_RUNNER_OUTBOUND_URL` (unset → `None`).
     pub outbound_url: Option<String>,
+    /// Shared server-to-server bearer presented on the outbound delivery POST
+    /// (async-ops Phase 3). The agent's delivery receiver
+    /// (`AGENT_ASYNC_CALLBACK_BEARER`) requires it — the callback carries a
+    /// delivery instruction, not an end-user identity, so a static shared secret
+    /// between the runner deploy and the agent is the whole auth. `None` sends no
+    /// `Authorization` header (a sink that does not require one, e.g. a pull-only
+    /// deployment or a test stub).
+    /// Source: `ESCUREL_RUNNER_OUTBOUND_BEARER` (unset → `None`).
+    pub outbound_bearer: Option<String>,
     /// Tenant the runner polls and stamps onto every normalised
     /// [`crate::Trigger`]. The gateway is single-tenant per indexer, so
     /// this is the tenant whose inbox the poller drains.
@@ -470,6 +479,7 @@ impl RunnerConfig {
         let env = lookup("ESCUREL_RUNNER_ENV").unwrap_or_else(|| DEFAULT_ENV.to_owned());
         let webhook_secret = lookup("ESCUREL_WEBHOOK_SECRET").filter(|s| !s.is_empty());
         let outbound_url = lookup("ESCUREL_RUNNER_OUTBOUND_URL").filter(|s| !s.is_empty());
+        let outbound_bearer = lookup("ESCUREL_RUNNER_OUTBOUND_BEARER").filter(|s| !s.is_empty());
 
         let tenant = lookup("ESCUREL_RUNNER_TENANT").filter(|s| !s.is_empty());
         let token = lookup("ESCUREL_RUNNER_TOKEN").filter(|s| !s.is_empty());
@@ -607,6 +617,7 @@ impl RunnerConfig {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             webhook_secret,
             outbound_url,
+            outbound_bearer,
             tenant,
             token,
             queue_cap,
