@@ -492,5 +492,30 @@ async fn a_session_cannot_be_opened_on_a_page_that_does_not_exist() {
          head version of v0: {ghost}"
     );
 
+    // …and it must be refused in the SAME words as a denial. #416 asked for
+    // this in as many words: a refusal that distinguishes "no such page" from
+    // "not yours" is an existence oracle, and in a tenant shared across
+    // customers the existence of a page is itself the disclosure — the page
+    // ids carry customer slugs. Two callers, two reasons, one answer.
+    let outsider = p.mint_token_with_groups(TENANT, "consultant:bob", &["team-blue"], false);
+    let denied = call(
+        &p,
+        &outsider,
+        "open_session",
+        json!({ "page_id": RED_PAGE }),
+    )
+    .await;
+    assert!(
+        denied["result"]["structuredContent"]["session"]
+            .as_str()
+            .is_none(),
+        "premise: the outsider must be refused too, or this compares one \
+         refusal with a success: {denied}"
+    );
+    assert_eq!(
+        ghost["error"]["data"]["code"], denied["error"]["data"]["code"],
+        "absence and denial must carry the same code: {ghost} vs {denied}"
+    );
+
     p.shutdown().await;
 }

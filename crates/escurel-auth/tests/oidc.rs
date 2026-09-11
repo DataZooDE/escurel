@@ -120,6 +120,66 @@ async fn verifies_a_well_formed_token_to_agent_role() {
     assert_eq!(ctx.role, Role::Agent);
 }
 
+/// An expired bearer is refused the second it expires, not a minute later.
+///
+/// `jsonwebtoken` defaults `leeway` to 60 seconds. Inherited, that accepted a
+/// dead credential for a full minute — and, worse, made a broken
+/// re-authentication path look correct: the first version of the expiry test
+/// in escurel#442 minted a 5-second bearer, slept, and passed against a runner
+/// that provably never re-minted.
+///
+/// The window is what matters, so the test uses one: a token 30 seconds past
+/// `exp` is inside the old default and outside the new policy. A token merely
+/// one second past would pass under either if this regressed to a small
+/// non-zero leeway, which is exactly the change this must catch.
+#[tokio::test]
+async fn a_token_past_its_exp_is_refused_without_a_minute_of_grace() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let expired = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "user-42",
+            "tenant": "acme",
+            "iat": now - 630,
+            "exp": now - 30,
+            "roles": ["regular-user"]
+        }),
+    );
+    let err = v
+        .verify(&expired)
+        .await
+        .expect_err("a token 30s past exp must be refused");
+    assert!(
+        format!("{err}").to_lowercase().contains("expired"),
+        "the refusal must name the expiry, or a caller cannot tell it from a \
+         bad signature and will not know to re-authenticate: {err}"
+    );
+
+    // POSITIVE CONTROL: the same claims, still live, verify — so the refusal
+    // above is the clock and not the issuer, audience or key.
+    let live = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "user-42",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+            "roles": ["regular-user"]
+        }),
+    );
+    assert_eq!(v.verify(&live).await.expect("control").subject, "user-42");
+}
+
 #[tokio::test]
 async fn admin_role_is_detected_when_role_value_in_claim_array() {
     let server = MockServer::start().await;
