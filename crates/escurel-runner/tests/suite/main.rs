@@ -25,6 +25,7 @@ mod claude_live;
 mod codex_live;
 mod confirm_unflagged;
 mod echo_end_to_end;
+mod gateway_not_ready;
 mod gemini_end_to_end;
 mod gemini_live;
 mod harness_failure_vs_gateway;

@@ -28,6 +28,7 @@
 //! later work-item, so for now a drain task empties the queue.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Bytes;
@@ -1201,6 +1202,63 @@ async fn connect_now(
     }
 }
 
+/// Block until the gateway answers a real call, or the process is draining.
+///
+/// The call is `list_skills`: a read every runner is already allowed to make
+/// (it is in `ALLOWED_TOOLS`), cheap, and — unlike building a client — it
+/// proves the far end is serving rather than merely addressable.
+///
+/// Backoff climbs to a ceiling rather than hammering: the thing being waited
+/// for takes minutes by design, and a tight loop against a booting DuckLake
+/// index is load on exactly the process that needs the CPU.
+async fn await_gateway(
+    config: &RunnerConfig,
+    tokens: &escurel_runner_core::TokenSource,
+    drained: &Arc<Notify>,
+) {
+    let mut backoff = Duration::from_secs(1);
+    let ceiling = Duration::from_secs(30);
+    let mut waited = Duration::ZERO;
+    loop {
+        if let Some(client) = connect_now(&config.gateway_url, tokens).await
+            && client
+                .list_skills(escurel_types::ListSkillsRequest::default())
+                .await
+                .is_ok()
+        {
+            if waited > Duration::ZERO {
+                tracing::info!(
+                    target: "escurel_runner",
+                    waited_ms = waited.as_millis() as u64,
+                    "gateway answered; dispatch starting"
+                );
+            }
+            return;
+        }
+        // Said once, at the wait's start: a line every second for sixteen
+        // minutes buries whatever else the boot has to say.
+        if waited == Duration::ZERO {
+            tracing::info!(
+                target: "escurel_runner",
+                gateway = %config.gateway_url,
+                "gateway not answering yet; holding dispatch rather than \
+                 spending run attempts on it"
+            );
+        }
+        // A SIGTERM during the wait must not be ignored — draining is the one
+        // thing more urgent than starting.
+        tokio::select! {
+            () = tokio::time::sleep(backoff) => {}
+            () = drained.notified() => {
+                drained.notify_one();
+                return;
+            }
+        }
+        waited += backoff;
+        backoff = (backoff * 2).min(ceiling);
+    }
+}
+
 /// The real dispatch loop (lifecycle steps 5-7): consume each `Trigger`,
 /// `package` it ("skill body = instructions, `/mcp` = tools"), run the
 /// selected `harness` (a real subprocess that makes the escurel writes via
@@ -1240,6 +1298,28 @@ async fn dispatch_loop(
         drained.notify_one();
         return;
     }
+    // **Wait for the gateway to ANSWER before spending anything on it.**
+    //
+    // Building a client proves the config, not the dependency: it mints a
+    // bearer and constructs an HTTP client without touching the far end. The
+    // gateway rebuilds a DuckLake index over Google Drive at boot and its own
+    // platform budgets 29 minutes for that; measured in the lab, 16.
+    //
+    // A runner started in the same rollout found six real inbox events
+    // immediately and dead-lettered every one of them within seconds —
+    // `max_attempts` is 3 with a short backoff, which is a sensible policy
+    // for a run that FAILED and the wrong one entirely for a dependency that
+    // has not started yet. Three attempts over a few seconds against
+    // something allowed half an hour to boot.
+    //
+    // So the loop does not begin until one call has succeeded. Triggers wait
+    // in the bounded queue and the inbox poller backstops whatever the queue
+    // drops; nothing is consumed, nothing is dead-lettered, and the events
+    // are still there when the gateway is. After first contact this stops
+    // mattering: a gateway that has answered once and then fails is a genuine
+    // transient failure, which is exactly what the retry policy is for.
+    await_gateway(&config, &tokens, &drained).await;
+
     tracing::info!(
         target: "escurel_runner",
         harness = %harness.name(),
