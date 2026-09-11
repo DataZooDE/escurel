@@ -118,9 +118,80 @@ impl Embedder for GeminiEmbedder {
     }
 }
 
+/// Whether an upstream failure is worth waiting out.
+///
+/// Matched on the message because that is what the transport hands back — the
+/// status is already formatted into it by `embed_batch_once`, and threading a
+/// typed status through `EmbedError` for this one decision would change a
+/// public error shape every backend shares.
+fn is_retryable(message: &str) -> bool {
+    message.contains("HTTP 429")
+        || message.contains("RESOURCE_EXHAUSTED")
+        // The gateway is talking to a service that is up but unwell: worth a
+        // wait, unlike a 4xx which will answer the same way for ever.
+        || message.contains("HTTP 500")
+        || message.contains("HTTP 502")
+        || message.contains("HTTP 503")
+        || message.contains("HTTP 504")
+    // Deliberately NOT transport errors. `embed_batch_once` already bounds
+    // each call with its own timeout, and retrying a timeout multiplies that
+    // bound by the attempt count — `slow_upstream_response_times_out_...`
+    // catches exactly that: a 200ms budget became 16s the moment send
+    // failures were retried here.
+}
+
+/// How many times a rate-limited batch is retried before giving up.
+///
+/// Five attempts at 1s, 2s, 4s, 8s is about fifteen seconds of patience. The
+/// thing being waited out is a per-minute quota, so seconds are the right
+/// unit; a minute of retrying would turn one slow boot into a very slow one.
+const RATE_LIMIT_ATTEMPTS: u32 = 5;
+
 impl GeminiEmbedder {
-    /// Embed a single ≤[`MAX_BATCH`] batch via one `batchEmbedContents` call.
+    /// Embed one batch, waiting out a rate limit rather than failing on it.
+    ///
+    /// **429 is the error this will see most, and the least alarming one it
+    /// can get**: it means the key works and is busy. Without this, one of
+    /// them anywhere in a boot-time re-index aborts the whole start:
+    /// `ESCUREL_REBUILD_INDEX_ON_BOOT` defaults to `always` in the container and
+    /// re-embeds the corpus on every start, so a single batch coming back
+    /// `RESOURCE_EXHAUSTED` fails the boot with `building indexer: embedder
+    /// error` on a dependency that was merely busy (issue #449).
+    ///
+    /// It is worse than it sounds on this deployment: the same Gemini key
+    /// serves the runner's harness, so a burst of drafting makes a gateway
+    /// restart MORE likely to fail — the two compete for one quota, and the
+    /// restart is when the gateway is least able to tolerate it.
+    ///
+    /// Only 429 and 5xx are retried. A 400, a 401 or a dimension mismatch
+    /// will answer identically however long you wait, and retrying those
+    /// would turn a clear configuration error into a slow one. Timeouts are
+    /// not retried either: each call already carries its own deadline, and
+    /// retrying multiplies it.
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {
+        let mut backoff = std::time::Duration::from_secs(1);
+        for attempt in 1..=RATE_LIMIT_ATTEMPTS {
+            match self.embed_batch_once(texts).await {
+                Err(EmbedError::Backend(msg))
+                    if attempt < RATE_LIMIT_ATTEMPTS && is_retryable(&msg) =>
+                {
+                    tracing::warn!(
+                        attempt,
+                        backoff_ms = backoff.as_millis() as u64,
+                        error = %msg,
+                        "gemini embedder is rate-limited or unavailable; waiting"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+                other => return other,
+            }
+        }
+        unreachable!("the loop returns on the final attempt")
+    }
+
+    /// Embed a single ≤[`MAX_BATCH`] batch via one `batchEmbedContents` call.
+    async fn embed_batch_once(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {
         let requests: Vec<_> = texts
             .iter()
             .map(|t| {
