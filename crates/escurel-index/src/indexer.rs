@@ -686,7 +686,7 @@ impl Indexer {
     /// tail of every write path that changed `pages`/`links`/`blocks`
     /// (AFTER the transaction committed — a rolled-back write must not
     /// dirty the epoch).
-    fn bump_mutation_epoch(&self) {
+    pub(crate) fn bump_mutation_epoch(&self) {
         self.mutation_epoch.fetch_add(1, Ordering::Release);
     }
 
