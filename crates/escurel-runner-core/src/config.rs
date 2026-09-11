@@ -478,8 +478,16 @@ impl RunnerConfig {
             lookup("ESCUREL_RUNNER_GATEWAY_URL").unwrap_or_else(|| DEFAULT_GATEWAY_URL.to_owned());
         let env = lookup("ESCUREL_RUNNER_ENV").unwrap_or_else(|| DEFAULT_ENV.to_owned());
         let webhook_secret = lookup("ESCUREL_WEBHOOK_SECRET").filter(|s| !s.is_empty());
-        let outbound_url = lookup("ESCUREL_RUNNER_OUTBOUND_URL").filter(|s| !s.is_empty());
-        let outbound_bearer = lookup("ESCUREL_RUNNER_OUTBOUND_BEARER").filter(|s| !s.is_empty());
+        // Trim both: a secret piped from `openssl rand -base64 32 | ...` carries a
+        // trailing newline, and a newline in the URL or in the `Bearer` header value
+        // makes reqwest's request builder fail ("builder error") so no delivery is
+        // ever sent. Whitespace is never meaningful in either of these.
+        let outbound_url = lookup("ESCUREL_RUNNER_OUTBOUND_URL")
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        let outbound_bearer = lookup("ESCUREL_RUNNER_OUTBOUND_BEARER")
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
 
         let tenant = lookup("ESCUREL_RUNNER_TENANT").filter(|s| !s.is_empty());
         let token = lookup("ESCUREL_RUNNER_TOKEN").filter(|s| !s.is_empty());
@@ -741,6 +749,34 @@ mod tests {
         assert_eq!(cfg.tenant_max_concurrent, DEFAULT_TENANT_MAX_CONCURRENT);
         assert_eq!(cfg.max_harness_procs, DEFAULT_MAX_HARNESS_PROCS);
         assert_eq!(cfg.drain_timeout, DEFAULT_DRAIN_TIMEOUT);
+    }
+
+    #[test]
+    fn outbound_url_and_bearer_are_trimmed() {
+        // A secret produced by `openssl rand -base64 32 | gcloud secrets create`
+        // carries a trailing newline. Left in the `Bearer` header value (or the
+        // URL), reqwest's request builder fails ("builder error") and no delivery
+        // is ever sent. The config must strip surrounding whitespace.
+        let cfg = RunnerConfig::from_env_with(|key| match key {
+            "ESCUREL_RUNNER_OUTBOUND_URL" => {
+                Some("https://agent.example/async/outbound\n".to_owned())
+            }
+            "ESCUREL_RUNNER_OUTBOUND_BEARER" => Some("c2VjcmV0LXRva2Vu\n".to_owned()),
+            _ => None,
+        })
+        .expect("config must parse");
+        assert_eq!(
+            cfg.outbound_url.as_deref(),
+            Some("https://agent.example/async/outbound")
+        );
+        assert_eq!(cfg.outbound_bearer.as_deref(), Some("c2VjcmV0LXRva2Vu"));
+
+        // Whitespace-only collapses to None (same as empty), not a blank header.
+        let blank = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_OUTBOUND_BEARER").then(|| "   \n".to_owned())
+        })
+        .expect("config must parse");
+        assert_eq!(blank.outbound_bearer, None);
     }
 
     #[test]
