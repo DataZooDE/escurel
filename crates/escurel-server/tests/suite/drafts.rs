@@ -1012,3 +1012,120 @@ async fn a_draft_missing_a_key_its_skill_requires_is_refused() {
 
     p.shutdown().await;
 }
+
+// ===========================================================================
+// Who decided (heron's BR-HIL-6).
+// ===========================================================================
+
+/// A gateway that verified a human can say WHICH human approved.
+///
+/// A service in front of escurel authenticates a person and then writes with
+/// its own credential, because escurel's write ACL matches on groups and a
+/// person's minted bearer carries none. That is correct, and it had a cost
+/// nobody had noticed: the decision was recorded against the SERVICE, so the
+/// person who actually approved was stored nowhere. Measured on lab —
+/// every page promoted from a draft read `last_written_by: heron-onbehalf`,
+/// and no record named a consultant.
+///
+/// The assertion is that the stamp MOVES. A single approval recording
+/// "consultant:alice" is equally satisfied by a field nobody writes and by a
+/// constant, so two people decide two drafts and the record has to follow.
+#[tokio::test]
+async fn an_admin_can_name_the_human_who_decided_and_the_record_follows() {
+    let p = start().await;
+    let gateway = p.mint_token(TENANT, Role::Admin);
+
+    let mut decided = Vec::new();
+    for (page, who) in [("plan", "consultant:alice"), ("plan", "consultant:bob")] {
+        let head = page_sha(&p, &gateway, &format!("markdown/instances/note/{page}.md")).await;
+        let created = call(
+            &p,
+            &gateway,
+            "create_draft",
+            json!({
+                "target_page_id": format!("markdown/instances/note/{page}.md"),
+                "content": body(page, &format!("Revised for {who}.")),
+                "base_sha256": head,
+            }),
+        )
+        .await;
+        let id = created["draft"]["draft_id"].as_str().expect("draft_id");
+        let out = call(
+            &p,
+            &gateway,
+            "promote_draft",
+            json!({ "draft_id": id, "decided_by": who }),
+        )
+        .await;
+        assert_eq!(out["ok"], json!(true), "promotion landed: {out}");
+        decided.push(out["decided_by"].as_str().unwrap_or_default().to_owned());
+    }
+
+    assert_eq!(
+        decided,
+        vec!["consultant:alice".to_owned(), "consultant:bob".to_owned()],
+        "the record must follow the person who decided, not the service that \
+         wrote — a constant or an unwritten field satisfies one approval and \
+         fails this pair"
+    );
+}
+
+/// …and a caller may not vouch for someone else unless it is trusted to.
+///
+/// "This person approved it" is a claim ABOUT SOMEONE ELSE. A caller able to
+/// make it about itself could write any name into the audit trail, which is
+/// worse than no audit trail because it reads as one. Refused, not ignored:
+/// a gateway that silently lost the attribution is how this went missing in
+/// the first place.
+#[tokio::test]
+async fn an_ordinary_caller_may_not_vouch_for_another_subject() {
+    let p = start().await;
+    let agent = p.mint_token_with_sub(TENANT, Role::Agent, "agent:solo");
+
+    let created = call(
+        &p,
+        &agent,
+        "create_draft",
+        json!({
+            "target_page_id": "markdown/instances/note/plan.md",
+            "content": body("plan", "Revised."),
+            "base_sha256": page_sha(&p, &agent, "markdown/instances/note/plan.md").await,
+        }),
+    )
+    .await;
+    let id = created["draft"]["draft_id"]
+        .as_str()
+        .expect("draft_id")
+        .to_owned();
+
+    let refused: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {agent}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "promote_draft", "arguments": {
+                "draft_id": &id, "decided_by": "consultant:alice",
+            }},
+        }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+    assert!(
+        refused.get("error").is_some(),
+        "a non-admin naming another subject must be refused: {refused}"
+    );
+
+    // Control: the same caller, the same draft, without the claim — so the
+    // refusal above is about vouching and not about this caller's right to
+    // promote at all.
+    let out = call(&p, &agent, "promote_draft", json!({ "draft_id": &id })).await;
+    assert_eq!(out["ok"], json!(true), "control: {out}");
+    assert_eq!(
+        out["decided_by"].as_str(),
+        Some("agent:solo"),
+        "with no claim, the decider is the caller itself: {out}"
+    );
+}
