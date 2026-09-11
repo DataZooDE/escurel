@@ -229,6 +229,23 @@ impl Indexer {
             )?;
         }
         drop(conn);
+        // A draft is a change a subscriber must be able to see (#474).
+        //
+        // escurel has two notions of "something happened": a bus event, and an
+        // INDEX mutation — and a draft is a row, not a page, so it was neither.
+        // Consumers therefore never woke for one. That mattered the moment
+        // drafts became the main producer: `escurel-runner` drafts every
+        // sorted-in capture, and heron's review feed subscribes to exactly
+        // these two signals, so the queue grew in silence and the consultant's
+        // screen read "nothing waiting" — indistinguishable from a runner that
+        // never ran.
+        //
+        // The epoch is the right lever precisely because a wake is a SIGNAL,
+        // not data: every subscriber re-reads its own scoped query and decides
+        // for itself whether anything it cares about moved. The cost of a
+        // spurious wake is one read; the cost of a missing one is a queue
+        // nobody is told about.
+        self.bump_mutation_epoch();
 
         self.get_draft(&draft_id)
             .await?
@@ -342,6 +359,13 @@ impl Indexer {
                 duckdb::params![status, decided_by, reason, draft_id],
             )?,
         };
+        // Same signal on the way out (#474). A queue that shrinks unannounced
+        // is the mirror of one that grows unannounced: two reviewers on two
+        // devices, and the card the other one just decided stays on your
+        // screen until something unrelated moves the index.
+        if n > 0 {
+            self.bump_mutation_epoch();
+        }
         Ok(n > 0)
     }
 }
