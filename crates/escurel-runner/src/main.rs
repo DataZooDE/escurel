@@ -728,6 +728,7 @@ async fn drive_workflow_or_deadletter(
     terminal: StepTerminal,
     max_runs_per_root: u64,
     outbound_url: Option<&str>,
+    outbound_bearer: Option<&str>,
 ) {
     match drive_workflow(
         client,
@@ -753,7 +754,7 @@ async fn drive_workflow_or_deadletter(
             // proactive seam. Fire-and-forget, best-effort — never derails the
             // run; at-least-once, the courier dedups on operation_id.
             if let (Some(delivery), Some(url)) = (outcome.delivery, outbound_url) {
-                deliver_terminal(url, &delivery).await;
+                deliver_terminal(url, outbound_bearer, &delivery).await;
             }
         }
         Err(e) => {
@@ -811,18 +812,24 @@ async fn drive_workflow_or_deadletter(
 /// with `{operation_id, status, conversation_ref}`. A delivery failure is
 /// logged, never propagated — the run already reached its terminal, and the
 /// delivery is at-least-once (the courier dedups on `operation_id`).
-async fn deliver_terminal(outbound_url: &str, delivery: &escurel_runner_core::TerminalDelivery) {
+async fn deliver_terminal(
+    outbound_url: &str,
+    outbound_bearer: Option<&str>,
+    delivery: &escurel_runner_core::TerminalDelivery,
+) {
     let body = serde_json::json!({
         "operation_id": delivery.operation_id,
         "status": delivery.status,
         "conversation_ref": delivery.conversation_ref,
     });
-    match reqwest::Client::new()
-        .post(outbound_url)
-        .json(&body)
-        .send()
-        .await
-    {
+    // The agent's delivery receiver (`AGENT_ASYNC_CALLBACK_BEARER`) refuses a
+    // callback with no/ wrong bearer (401). Attach it when configured; a sink
+    // that requires none (a pull-only deploy, a test stub) leaves it unset.
+    let mut req = reqwest::Client::new().post(outbound_url).json(&body);
+    if let Some(bearer) = outbound_bearer {
+        req = req.bearer_auth(bearer);
+    }
+    match req.send().await {
         Ok(resp) if resp.status().is_success() => tracing::info!(
             target: "escurel_runner",
             operation = %delivery.operation_id,
@@ -1440,6 +1447,7 @@ async fn dispatch_loop(
                             StepTerminal::Held,
                             config.max_runs_per_root,
                             config.outbound_url.as_deref(),
+                            config.outbound_bearer.as_deref(),
                         )
                         .await;
                     }
@@ -1462,6 +1470,7 @@ async fn dispatch_loop(
                         StepTerminal::Advanced,
                         config.max_runs_per_root,
                         config.outbound_url.as_deref(),
+                        config.outbound_bearer.as_deref(),
                     )
                     .await;
                     continue;
@@ -1544,6 +1553,7 @@ async fn dispatch_loop(
                             terminal,
                             config.max_runs_per_root,
                             config.outbound_url.as_deref(),
+                            config.outbound_bearer.as_deref(),
                         )
                         .await;
                     }

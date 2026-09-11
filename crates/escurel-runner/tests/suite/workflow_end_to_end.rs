@@ -135,6 +135,53 @@ async fn spawn_outbound_sink() -> (String, std::sync::Arc<std::sync::Mutex<Vec<V
     (format!("http://{addr}/v1/outbound"), received)
 }
 
+/// A stub channel courier that REQUIRES a server-to-server bearer, exactly as the
+/// agent's delivery receiver does (`AGENT_ASYNC_CALLBACK_BEARER`): a POST with a
+/// missing or wrong `Authorization: Bearer` is refused 401 and NOT recorded, so a
+/// runner that fails to present the configured bearer delivers nothing. Returns
+/// the sink URL and the buffer of ACCEPTED bodies.
+async fn spawn_outbound_sink_requiring_bearer(
+    want: &str,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use axum::routing::post;
+    use axum::{Json, Router};
+
+    type Buf = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
+    let received: Buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let want = want.to_owned();
+
+    async fn handler(
+        State((buf, want)): State<(Buf, String)>,
+        headers: HeaderMap,
+        Json(body): Json<Value>,
+    ) -> axum::http::StatusCode {
+        let presented = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .unwrap_or_default();
+        if presented != want {
+            return axum::http::StatusCode::UNAUTHORIZED;
+        }
+        buf.lock().expect("sink mutex").push(body);
+        axum::http::StatusCode::OK
+    }
+
+    let app = Router::new()
+        .route("/v1/outbound", post(handler))
+        .with_state((received.clone(), want));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind sink");
+    let addr = listener.local_addr().expect("sink addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}/v1/outbound"), received)
+}
+
 async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value {
     let token = p.mint_token(TENANT, role);
     let resp = reqwest::Client::new()
@@ -1158,6 +1205,108 @@ async fn a_terminal_operation_is_delivered_to_the_channel_courier() {
     assert_eq!(
         delivery["conversation_ref"], conversation_ref,
         "delivery carries the stored conversation reference verbatim: {delivery}"
+    );
+}
+
+/// async-ops Phase 3 (no mock): the terminal delivery carries the configured
+/// server-to-server bearer. The agent's delivery receiver refuses a callback with
+/// no/wrong `Authorization` header (401), so a runner that does not present
+/// `ESCUREL_RUNNER_OUTBOUND_BEARER` would deliver NOTHING live. The sink here
+/// mirrors that: it records only bearer-authenticated POSTs. This is the
+/// regression guard for the auth gap between the runner (sender) and the agent
+/// receiver.
+#[tokio::test]
+async fn a_terminal_delivery_carries_the_configured_bearer() {
+    const BEARER: &str = "s3cret-callback-bearer";
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(WF_SKILL, WF_SKILL_BODY)
+                .skill("research-angle", ANGLE_SKILL_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let (sink_url, received) = spawn_outbound_sink_requiring_bearer(BEARER).await;
+
+    let conversation_ref = json!({
+        "channel": "msteams",
+        "conversation": { "id": "19:meeting_xyz@thread.v2" },
+        "service_url": "https://smba.example/teams"
+    });
+    let started = call_mcp(
+        &gateway,
+        Role::Agent,
+        "start_operation",
+        json!({
+            "wf_skill": WF_SKILL,
+            "input": "Answer the question.",
+            "conversation_ref": conversation_ref,
+        }),
+    )
+    .await;
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
+
+    let token = gateway.mint_token(TENANT, Role::Admin);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env("ESCUREL_RUNNER_OUTBOUND_URL", &sink_url)
+        .env("ESCUREL_RUNNER_OUTBOUND_BEARER", BEARER)
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The bearer-gated sink only records the POST if the runner authenticated.
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let delivered = loop {
+        let hit = received
+            .lock()
+            .expect("sink mutex")
+            .iter()
+            .find(|d| d["operation_id"].as_str() == Some(operation_id.as_str()))
+            .cloned();
+        if let Some(d) = hit {
+            break Some(d);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let delivery = delivered.expect(
+        "the terminal delivery must authenticate with the configured bearer and be recorded",
+    );
+    assert_eq!(
+        delivery["status"],
+        json!("succeeded"),
+        "the bearer-authenticated delivery carries the terminal status: {delivery}"
+    );
+    assert_eq!(
+        delivery["conversation_ref"], conversation_ref,
+        "the bearer-authenticated delivery carries the conversation reference: {delivery}"
     );
 }
 
