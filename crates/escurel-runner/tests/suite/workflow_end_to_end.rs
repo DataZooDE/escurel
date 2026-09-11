@@ -504,6 +504,110 @@ async fn workflow_invocation_drives_scope_then_synthesize_to_completion() {
     );
 }
 
+/// Seed a succeeded `run-status` event carrying `provenance` onto `run_page`, as
+/// admin (the reserved label is admin-only), and mark it processed so
+/// `latest_labeled_event` sees it. Returns nothing; the caller then reads the
+/// board with `get_operation`.
+async fn seed_succeeded_status(p: &EscurelProcess, run_page: &str, provenance: Value) {
+    let ev = call_mcp(
+        p,
+        Role::Admin,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": escurel_types::OPERATION_STATUS_LABEL,
+            "instance_page_id": run_page,
+            "title": "status: succeeded",
+            "body": "",
+            "provenance": provenance,
+        }),
+    )
+    .await;
+    let event_id = ev["event_id"].as_str().expect("capture returns event_id");
+    call_mcp(
+        p,
+        Role::Admin,
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": run_page }),
+    )
+    .await;
+}
+
+/// async-ops Phase 4 (slice 1): `get_operation` surfaces the operation's
+/// `result_ref` when the terminal status event carries one — the read-side the
+/// agent's `GetOperationTool` already promises. A well-formed `ResultRef` is
+/// returned; a malformed one is omitted (fail-safe — never leak an unvalidated
+/// ref). The producing side (a harness stamping it) is slice 2.
+#[tokio::test]
+async fn get_operation_surfaces_a_result_ref_from_the_terminal_status_event() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    // A completed operation whose terminal status carries a valid ScenarioParquet
+    // result_ref.
+    let good = "markdown/instances/workflow-run/op-with-result.md";
+    create_run_board(&gateway, good, "scenario").await;
+    seed_succeeded_status(
+        &gateway,
+        good,
+        json!({
+            "run_status": "succeeded",
+            "result_ref": { "kind": "scenario_parquet", "scenario_id": "scn-demo-01" }
+        }),
+    )
+    .await;
+    let op = call_mcp(
+        &gateway,
+        Role::Admin,
+        "get_operation",
+        json!({ "operation_id": good }),
+    )
+    .await;
+    assert_eq!(op["found"], json!(true), "{op}");
+    assert_eq!(op["status"], json!("succeeded"), "{op}");
+    assert_eq!(
+        op["result_ref"],
+        json!({ "kind": "scenario_parquet", "scenario_id": "scn-demo-01" }),
+        "get_operation must surface the terminal result_ref verbatim: {op}"
+    );
+
+    // A malformed result_ref (unknown kind) is dropped — the status still reads,
+    // but no unvalidated ref reaches the caller.
+    let bad = "markdown/instances/workflow-run/op-bad-result.md";
+    create_run_board(&gateway, bad, "scenario").await;
+    seed_succeeded_status(
+        &gateway,
+        bad,
+        json!({
+            "run_status": "succeeded",
+            "result_ref": { "kind": "totally-not-a-real-kind", "x": 1 }
+        }),
+    )
+    .await;
+    let op = call_mcp(
+        &gateway,
+        Role::Admin,
+        "get_operation",
+        json!({ "operation_id": bad }),
+    )
+    .await;
+    assert_eq!(op["status"], json!("succeeded"), "{op}");
+    assert!(
+        op.get("result_ref").is_none(),
+        "a malformed result_ref must be omitted, not passed through: {op}"
+    );
+}
+
 /// Poll the run board's event history for an operation-status event whose
 /// `provenance.run_status` matches `want`, up to `secs`. Returns whether it
 /// appeared.
