@@ -289,6 +289,7 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
         .unwrap_or(0) as u32;
 
     Ok(HarnessOutcome {
+        result_ref: None,
         ok,
         status: if ok {
             HarnessStatus::Ok

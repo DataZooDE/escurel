@@ -35,6 +35,17 @@ pub struct HarnessOutcome {
     /// one. `None` when the run made no instance write. The reconciler reads
     /// this to confirm the produced state.
     pub produced_instance: Option<String>,
+    /// The out-of-band artifact a PRODUCING harness materialised, as a
+    /// serialized [`escurel_types::ResultRef`] (`{"kind":…,"scenario_id":…}`) —
+    /// e.g. the scenario what-if harness's parquet result (async-ops Phase 4).
+    /// `None` for every harness that produces no such artifact. The runner
+    /// stamps it onto the operation's terminal `succeeded` status event so
+    /// `get_operation` can surface it. Carried as an opaque JSON value here so
+    /// this wire crate needs no `escurel-types` dependency; the runner validates
+    /// it into the closed enum before stamping. `#[serde(default)]` keeps the
+    /// subprocess wire contract back-compatible with harnesses that omit it.
+    #[serde(default)]
+    pub result_ref: Option<serde_json::Value>,
 }
 
 /// Errors raised by a harness adapter while managing its subprocess.
