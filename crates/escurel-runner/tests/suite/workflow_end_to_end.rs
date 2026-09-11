@@ -87,7 +87,7 @@ const REPORT_SKILL_BODY: &str =
 // `requested_by`, so their `get_operation` reads use an admin token.
 const RUN_SKILL_BODY: &str = "---\ntype: skill\nid: workflow-run\n\
 visibility: owner\nowner_field: requested_by\n\
-optional_frontmatter: [wf_skill, status, requested_by, requester_groups, idempotency_key, conversation_ref]\n\
+optional_frontmatter: [wf_skill, status, requested_by, requester_groups, idempotency_key, conversation_ref, channel_tenant]\n\
 ---\n# workflow-run\n\nThe run board.\n";
 
 struct ChildGuard(Child);
@@ -1310,6 +1310,8 @@ async fn a_terminal_operation_is_delivered_to_the_channel_courier() {
             "wf_skill": WF_SKILL,
             "input": "Answer the question.",
             "conversation_ref": conversation_ref,
+            // The CHANNEL's tenant — the chat platform's, not escurel's.
+            "channel_tenant": "acme-tenant-guid",
         }),
     )
     .await;
@@ -1372,6 +1374,18 @@ async fn a_terminal_operation_is_delivered_to_the_channel_courier() {
     assert_eq!(
         delivery["conversation_ref"], conversation_ref,
         "delivery carries the stored conversation reference verbatim: {delivery}"
+    );
+    // The CHANNEL's tenant, recorded when the operation started and echoed
+    // back independently of the reference.
+    //
+    // Without it the delivery side can only compare fields the caller wrote
+    // with each other: triton's courier checked the reference's tenant
+    // against the caller's own, and the caller supplied both
+    // (DataZooDE/triton#332). A tenant fixed at START is the second,
+    // independent side that check needs.
+    assert_eq!(
+        delivery["channel_tenant"], "acme-tenant-guid",
+        "delivery must carry the channel tenant recorded at start: {delivery}"
     );
 }
 
