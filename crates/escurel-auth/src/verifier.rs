@@ -255,6 +255,29 @@ impl OidcVerifier {
         // the accepted set; `Validation::new(alg)` pins this token to
         // its single, vetted algorithm.
         let mut validation = Validation::new(alg);
+        // **An expired bearer is expired.** `jsonwebtoken` defaults `leeway`
+        // to 60 seconds, and inheriting that meant a token was accepted for a
+        // full minute past its `exp`.
+        //
+        // Set explicitly, and set to zero, for two reasons. The credentials
+        // this gateway sees are short-lived on purpose — a runner's minted
+        // bearer lives 30 minutes and is re-minted before it lapses — so a
+        // 60-second grace is a meaningful fraction of the window an expired
+        // token is usable in, and every caller on this surface already knows
+        // how to get a new one.
+        //
+        // The second reason is worse: leeway HIDES expiry bugs. A test that
+        // minted a 5-second bearer, slept, and passed against a credential
+        // path that provably never re-minted (escurel#442) was green only
+        // because of this default — the same way the production bug it was
+        // written for stayed invisible. A guard that makes broken
+        // re-authentication look correct is worse than no guard.
+        //
+        // Clock skew is the thing this gives up, and it is the right thing to
+        // give up here: the hosts are NTP-synced, the issuers are Google and
+        // our own minter, and a caller refused a second early retries with a
+        // fresh token rather than failing.
+        validation.leeway = 0;
         validation.set_audience(&[self.config.audience.as_str()]);
         validation.set_issuer(&[entry.issuer.as_str()]);
         // Required claims left at default (exp, iat); we add aud + iss above.
