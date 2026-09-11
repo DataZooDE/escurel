@@ -75,10 +75,17 @@ pub struct WorkflowDriveOutcome {
 pub struct TerminalDelivery {
     /// The operation's run board page id (the dedup key for the courier).
     pub operation_id: String,
-    /// The terminal status being delivered (`succeeded`/`failed`/`awaiting_human`).
+    /// The status being delivered — a terminal
+    /// (`succeeded`/`failed`/`awaiting_human`) OR, for a selective PROGRESS
+    /// delivery (async-ops Phase 3b), `running`.
     pub status: String,
     /// The opaque channel reference the caller supplied at `start_operation`.
     pub conversation_ref: serde_json::Value,
+    /// A human progress phrase for a NON-terminal (`running`) delivery — the
+    /// message the courier renders back into the conversation (e.g. "⏳ Working
+    /// on *signals* (2 of 4)"). `None` for a terminal delivery, where the courier
+    /// renders the operation's own result (or a terse status fallback).
+    pub note: Option<String>,
 }
 
 /// Errors driving a workflow reducer pass.
@@ -304,8 +311,14 @@ pub async fn drive_workflow(
         OperationStatus::Running
     };
     record_status_best_effort(client, &wf.run, transition, status, &wf.phase, "").await;
-    // A completed plan (Succeeded) delivers; a `Running` pass does not.
-    let delivery = maybe_delivery(client, &wf.run, status).await;
+    // A completed plan (Succeeded) delivers its terminal; a `Running` pass
+    // delivers a SELECTIVE progress note, but only when it opens a NEW phase
+    // (async-ops Phase 3b) — one push per phase boundary, never per step.
+    let delivery = if matches!(status, OperationStatus::Running) {
+        maybe_progress_delivery(client, wf, &spec, &intents).await
+    } else {
+        maybe_delivery(client, &wf.run, status).await
+    };
     Ok(WorkflowDriveOutcome { emitted, delivery })
 }
 
@@ -349,6 +362,59 @@ async fn maybe_delivery(
         operation_id: operation.to_owned(),
         status: status.as_str().to_owned(),
         conversation_ref,
+        note: None,
+    })
+}
+
+/// Build a selective PROGRESS delivery (async-ops Phase 3b) when this reducer
+/// pass OPENS A NEW PHASE — the operation just advanced from `wf.phase` into the
+/// phase the freshly-emitted `intents` belong to. Returns `None` otherwise: a
+/// pass that emitted nothing new, a pass still inside the same phase (a fan-out
+/// step landing), or an operation with no stored `conversation_ref` (pull-only).
+///
+/// This is deliberately "not every transition" — one push per phase BOUNDARY,
+/// not per step — so a wide fan-out does not spam the conversation. The `invoke`
+/// pass counts as a boundary (it opens phase 1), so the first push is "now
+/// running <first phase>".
+async fn maybe_progress_delivery(
+    client: &Client,
+    wf: &WorkflowProvenance,
+    spec: &WorkflowSkill,
+    intents: &[StepIntent],
+) -> Option<TerminalDelivery> {
+    // The phase the newly-emitted steps belong to. Empty ⇒ nothing emitted.
+    let next_phase = intents.first().map(|i| i.phase.as_str())?;
+    // Only a BOUNDARY: the emitted steps open a phase different from the one that
+    // just completed (`wf.phase`). Within-phase passes re-emit nothing new here.
+    if next_phase == wf.phase {
+        return None;
+    }
+    let board = client
+        .expand(ExpandRequest {
+            page_id: wf.run.clone(),
+            ..Default::default()
+        })
+        .await
+        .ok()?;
+    let conversation_ref = board.frontmatter.get("conversation_ref").cloned()?;
+    // 1-based position of the phase in the plan, for a "(n of m)" hint.
+    let total = spec.phases.len();
+    let idx = spec
+        .phases
+        .iter()
+        .position(|p| p.id == next_phase)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let note = if idx > 0 && total > 0 {
+        format!("⏳ Working on *{next_phase}* ({idx} of {total})…")
+    } else {
+        format!("⏳ Working on *{next_phase}*…")
+    };
+    Some(TerminalDelivery {
+        operation_id: wf.run.clone(),
+        status: OperationStatus::Running.as_str().to_owned(),
+        conversation_ref,
+        note: Some(note),
     })
 }
 
