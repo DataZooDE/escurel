@@ -309,6 +309,7 @@ pub(super) async fn tool_promote_draft(
     // target that moved since drafting conflicts here rather than silently
     // overwriting what the reviewer never saw.
     let subject = caller.subject.to_owned();
+    let target_page_id = draft.target_page_id.clone();
     let mut write_args = json!({
         "page_id": draft.target_page_id,
         "content": draft.content,
@@ -328,6 +329,46 @@ pub(super) async fn tool_promote_draft(
             .close_draft(&draft.draft_id, "promoted", &subject, "")
             .await
             .map_err(|e| JsonRpcError::internal(format!("promote_draft close: {e}")))?;
+
+        // **The event is absorbed the moment the write lands.**
+        //
+        // A draft made under `autonomy: review` deliberately leaves its event
+        // in the inbox: the run produced no state, so the event is still
+        // waiting on a human. Promotion IS that human, and until now nothing
+        // said so — the event stayed unassigned for ever, and every restart
+        // of a runner with an ephemeral ledger re-dispatched it and drafted
+        // the same page again. Measured in the lab on 2026-09-10: seven
+        // approved emails came back as seven fresh drafts, several
+        // byte-identical to the page that had just landed, and a review queue
+        // that refills itself is one nobody can trust to be finished.
+        //
+        // Best effort, and deliberately so. The write has landed; the draft
+        // is closed; a failure to retire the event must not turn a successful
+        // promotion into an error the reviewer sees. It is logged, and the
+        // worst case is the state this replaces.
+        if let Some(event_id) = draft.event_id.as_deref().filter(|e| !e.is_empty()) {
+            let assigned = crate::mcp::tools_write::tool_assign_event(
+                indexer,
+                caller,
+                state.event_acl,
+                json!({
+                    "event_id": event_id,
+                    "instance_page_id": &target_page_id,
+                }),
+            )
+            .await;
+            match assigned {
+                Ok(out) if out.get("ok").and_then(Value::as_bool) != Some(false) => {}
+                other => tracing::warn!(
+                    draft_id = %draft.draft_id,
+                    event_id = %event_id,
+                    page_id = %target_page_id,
+                    outcome = ?other,
+                    "promoted a draft but could not retire its event; it will \
+                     be dispatched again"
+                ),
+            }
+        }
     }
     Ok(result)
 }
