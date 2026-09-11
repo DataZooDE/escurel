@@ -79,6 +79,16 @@ pub const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(300);
 /// delay before the first retry.
 pub const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_millis(500);
 
+/// How long a run waits for a gateway that is not answering at all, before
+/// giving up and dead-lettering ([`RunnerConfig::unavailable_grace`]).
+///
+/// Thirty minutes because that is what the dependency is allowed: the
+/// gateway's own startup probe budgets 29 for adopting its DuckLake index,
+/// and a rollout on 2026-09-11 took 17. A budget shorter than the dependency's
+/// own is a budget that dead-letters healthy work, which is precisely what
+/// happened to eight events that day.
+pub const DEFAULT_UNAVAILABLE_GRACE: Duration = Duration::from_secs(1800);
+
 /// Default cascade depth cap (#157). When a trigger's lineage `depth`
 /// exceeds this, the dispatch gate dead-letters the run `depth_exceeded`
 /// rather than admitting it — the hard backstop that bounds any cascade,
@@ -158,6 +168,12 @@ pub enum ConfigError {
     /// `ESCUREL_RUNNER_RETRY_BACKOFF` was set but is not a valid duration.
     #[error("invalid ESCUREL_RUNNER_RETRY_BACKOFF {value:?}: expected e.g. 500ms, 2s")]
     InvalidRetryBackoff {
+        /// The offending value.
+        value: String,
+    },
+    /// `ESCUREL_RUNNER_UNAVAILABLE_GRACE` was set but is not a valid duration.
+    #[error("invalid ESCUREL_RUNNER_UNAVAILABLE_GRACE {value:?}: expected e.g. 30m, 900s")]
+    InvalidUnavailableGrace {
         /// The offending value.
         value: String,
     },
@@ -381,6 +397,15 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_RETRY_BACKOFF` (default
     /// [`DEFAULT_RETRY_BACKOFF`]).
     pub retry_backoff: Duration,
+    /// How long to keep waiting on a gateway that is not answering at all
+    /// before giving up on the run.
+    ///
+    /// Separate from `max_attempts` on purpose: that one bounds how often a
+    /// RUN is worth trying, and a refused connection is not a fact about the
+    /// run. See [`escurel_runner_core::ReconcileError::Unavailable`].
+    /// Source: `ESCUREL_RUNNER_UNAVAILABLE_GRACE` (default
+    /// [`DEFAULT_UNAVAILABLE_GRACE`]).
+    pub unavailable_grace: Duration,
     /// Cascade depth cap; a trigger deeper than this is dead-lettered
     /// `depth_exceeded` at the dispatch gate (#157).
     /// Source: `ESCUREL_RUNNER_MAX_DEPTH` (default [`DEFAULT_MAX_DEPTH`]).
@@ -572,6 +597,13 @@ impl RunnerConfig {
             _ => DEFAULT_RETRY_BACKOFF,
         };
 
+        let unavailable_grace = match lookup("ESCUREL_RUNNER_UNAVAILABLE_GRACE") {
+            Some(raw) if !raw.is_empty() => {
+                parse_duration(&raw).ok_or(ConfigError::InvalidUnavailableGrace { value: raw })?
+            }
+            _ => DEFAULT_UNAVAILABLE_GRACE,
+        };
+
         let max_depth = match lookup("ESCUREL_RUNNER_MAX_DEPTH") {
             Some(raw) if !raw.is_empty() => raw
                 .parse::<u32>()
@@ -645,6 +677,7 @@ impl RunnerConfig {
             max_attempts,
             run_timeout,
             retry_backoff,
+            unavailable_grace,
             max_depth,
             max_runs_per_root,
             tenant_runs_per_min,
