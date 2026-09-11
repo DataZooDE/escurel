@@ -355,6 +355,120 @@ async fn an_empty_base_against_an_existing_page_is_refused_at_draft_time() {
     assert_eq!(ok["ok"], json!(true), "{ok}");
 }
 
+/// Promotion retires the event that produced the draft.
+///
+/// A `review` run leaves its event in the inbox on purpose — the run produced
+/// no state, so the event is still waiting on a human. Promotion IS that
+/// human. Until this, nothing said so: the event stayed unassigned for ever,
+/// and a runner with an ephemeral ledger re-dispatched it on its next restart
+/// and drafted the same page again. Measured in the lab on 2026-09-10: seven
+/// approved emails came back as seven fresh drafts, several byte-identical to
+/// the page that had just landed.
+#[tokio::test]
+async fn promoting_a_draft_takes_its_event_out_of_the_inbox() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let captured = call(
+        &p,
+        &token,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "note",
+            "title": "a thing that happened",
+            "body": "the body",
+        }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().expect("event_id").to_owned();
+
+    // Still waiting on a human: the run drafted, it did not write.
+    let draft = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": body("plan", "folded in."),
+            "base_sha256": sha(BASE),
+            "event_id": event_id,
+        }),
+    )
+    .await;
+    assert_eq!(draft["ok"], json!(true), "{draft}");
+    let in_inbox = |inbox: &Value| {
+        inbox["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|e| e["event_id"] == json!(event_id))
+    };
+    assert!(
+        in_inbox(&call(&p, &token, "list_inbox", json!({})).await),
+        "a drafted event stays in the inbox until a human decides — that is \
+         the gate, and it must not change"
+    );
+
+    call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": draft["draft"]["draft_id"] }),
+    )
+    .await;
+
+    let inbox = call(&p, &token, "list_inbox", json!({})).await;
+    assert!(
+        !in_inbox(&inbox),
+        "the promoted event must leave the inbox, or every restart drafts it \
+         again: {inbox}"
+    );
+    let bound = call(&p, &token, "list_events", json!({ "event_id": event_id })).await;
+    assert_eq!(
+        bound["events"][0]["instance_page_id"],
+        json!(PAGE),
+        "…onto the page the draft wrote, not merely gone: {bound}"
+    );
+    assert_eq!(bound["events"][0]["status"], json!("processed"), "{bound}");
+}
+
+/// A draft with NO event behind it promotes exactly as before.
+///
+/// Not every draft comes from an event — a consultant editing a page by hand
+/// makes one — and a promotion that required one would refuse the oldest path
+/// this surface has.
+#[tokio::test]
+async fn a_draft_without_an_event_still_promotes() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let draft = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": body("plan", "hand-written."),
+            "base_sha256": sha(BASE),
+        }),
+    )
+    .await;
+    let promoted = call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": draft["draft"]["draft_id"] }),
+    )
+    .await;
+    assert_eq!(promoted["ok"], json!(true), "{promoted}");
+    assert_eq!(
+        page_sha(&p, &token, PAGE).await,
+        Some(sha(&body("plan", "hand-written.")))
+    );
+}
+
 /// A decision is taken once. A discarded draft writes nothing, and neither a
 /// second discard nor a promotion can resurrect it.
 #[tokio::test]

@@ -201,6 +201,15 @@ in-corpus, not hardcoded.
 
 ## Cascade + loop control (the run ledger)
 
+- **Promotion retires the draft's event.** A `review` run leaves its event in
+  the inbox deliberately: the run produced no state, so the event is still
+  waiting on a human. Promotion IS that human, so `promote_draft` assigns the
+  draft's `event_id` onto the page it just wrote. Without it the event stayed
+  unassigned for ever and any runner with an ephemeral ledger re-dispatched it
+  on restart, drafting the same page again — a review queue that refills
+  itself with work already approved. Best-effort by design: the write has
+  landed and the draft is closed, so a failure to retire the event is logged
+  rather than turned into an error the reviewer sees.
 - **Binding is the runner's, not the agent's.** When a trigger names its
   target instance and the gateway confirms that page was written (its
   content-addressed version advanced), the runner calls `assign_event` itself
