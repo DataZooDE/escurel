@@ -20,10 +20,11 @@ use std::sync::Arc;
 
 use duckdb::Connection;
 use escurel_embed::{Embedder, HashEmbedder};
+use escurel_index::backend::{SqlConnector, SqlViewBackend, SqlViewBinding};
 use escurel_index::pack::PackSubscription;
 use escurel_index::snapshot::{
-    LakeConfig, ObjectStoreSecret, SnapshotError, adopt_lake, attach_lake, latest_lake_snapshot_id,
-    publish_lake,
+    LakeConfig, ObjectStoreSecret, SnapshotError, adopt_lake, adopt_lake_for_writer, attach_lake,
+    latest_lake_snapshot_id, publish_lake,
 };
 use escurel_index::{Indexer, Migrator};
 use escurel_storage::{FsStore, LaneStore};
@@ -333,5 +334,79 @@ async fn adopt_rejects_schema_or_model_mismatch() {
             .await
             .unwrap()
             .exists()
+    );
+}
+
+/// A `sql_view`'s DuckDB VIEW object is NOT durable — it lives only in the
+/// writer's local DuckDB, which is a fresh database on every writer boot. The
+/// overlay page (carrying `backend_ref`) IS durable in the lake, so a writer
+/// that adopts the lake must RECONSTRUCT the view from that overlay, or
+/// `SELECT … FROM vw_…` throws a Catalog Error until an admin Rebuild is run.
+///
+/// Regression for the live 2026-09-11 dz-escurel incident: a pod restart onto a
+/// new image lost `vw_supplier_deliveries__all`, which broke the
+/// `supplier_reliability` query page (and every workflow step that reads it).
+/// The fix makes `adopt_lake_for_writer` call `rebuild_sql_views()` after
+/// `load_from_lake`, symmetric with the SingleFileStore fresh-boot rebuild.
+#[tokio::test]
+async fn writer_boot_reconstructs_sql_views_from_the_lake() {
+    // First writer: materialise a sql_view instance over a JSON source, then
+    // publish the corpus (including the view's overlay page) to the lake.
+    let h = fresh_harness();
+    let cfg = lake_config(&h);
+
+    let data_dir = TempDir::new().unwrap();
+    std::fs::write(data_dir.path().join("a.json"), br#"{"name":"Acme"}"#).unwrap();
+    let binding = SqlViewBinding {
+        connector: SqlConnector::JsonDir,
+        attach: None,
+        relation: data_dir.path().to_str().unwrap().to_owned(),
+        filter: None,
+        project: Default::default(),
+        search_text: vec!["name".to_owned()],
+    };
+    let created = SqlViewBackend::new(Arc::clone(&h.indexer))
+        .create_instance("customers", &binding, "eu", "# EU")
+        .await
+        .expect("materialise the sql_view instance");
+    publish_lake(&h.indexer, &cfg, None).await.expect("publish");
+
+    // A FRESH writer boots over the same lake with an EMPTY local DuckDB — a pod
+    // restart. Its local DB has no view object; only reconstruction on adoption
+    // brings `vw_customers__eu` back.
+    let store2_dir = TempDir::new().unwrap();
+    let db2_dir = TempDir::new().unwrap();
+    let store2: Arc<dyn LaneStore> = Arc::new(FsStore::new(store2_dir.path().to_path_buf()));
+    let embedder2: Arc<dyn Embedder> = Arc::new(HashEmbedder::default());
+    let conn2 = Connection::open(db2_dir.path().join("escurel.duckdb")).unwrap();
+    Migrator::up(&conn2).unwrap();
+    let i2 = Arc::new(Indexer::new(store2, embedder2, conn2, TENANT).unwrap());
+    i2.attach_lake(&cfg)
+        .await
+        .expect("attach lake on the fresh writer");
+    let adopt_embedder: Arc<dyn Embedder> = Arc::new(HashEmbedder::default());
+    adopt_lake_for_writer(&i2, adopt_embedder.as_ref())
+        .await
+        .expect("writer adopt")
+        .expect("the lake was published, so adoption returns a snapshot id");
+
+    // The overlay page came back…
+    assert!(
+        i2.resolve("[[customers::eu]]", None)
+            .await
+            .unwrap()
+            .exists(),
+        "the sql_view overlay page must be adopted from the lake"
+    );
+    // …AND the view object was reconstructed, so it is queryable. Without the
+    // fix this errors with `Catalog Error: … vw_customers__eu … does not exist`.
+    let rows = SqlViewBackend::new(Arc::clone(&i2))
+        .project_rows(&created.view, 10)
+        .await
+        .expect("the view must be reconstructed on writer boot, not only on rebuild()");
+    assert_eq!(
+        rows.len(),
+        1,
+        "the reconstructed view returns the source row"
     );
 }
