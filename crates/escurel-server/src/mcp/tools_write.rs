@@ -1529,10 +1529,29 @@ fn operation_slug_for_key(
         }
         _ => Sha256::digest(&msg).into(),
     };
+    // Encode as lowercase Crockford base32, NOT hex. The slug becomes the
+    // run-scoped prefix of every produced page id the workflow harness must
+    // reproduce verbatim (`instances/<skill>/<slug>-<phase>-<hash>`); an LLM
+    // reliably copies a short base32 token (this is the alphabet ULID uses, and
+    // the no-key ULID path already works live) but garbles a long hex string
+    // (observed live 2026-09-11: `op-f90ba…` came back as `…fe789e…`, `…fe789g…`
+    // — `g` is not even hex — so the write missed its board and the step failed).
+    // 80 bits (10 bytes → 16 base32 chars) keeps the HMAC squat-resistance (a
+    // peer still cannot compute another caller's slug without the secret) while
+    // being copy-safe. Deterministic: same inputs ⇒ same slug (idempotent retry).
+    const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
     let mut slug = String::from("op-");
-    for b in &digest[..16] {
-        slug.push_str(&format!("{b:02x}"));
+    let mut bits: u32 = 0;
+    let mut nbits: u32 = 0;
+    for &b in &digest[..10] {
+        bits = (bits << 8) | u32::from(b);
+        nbits += 8;
+        while nbits >= 5 {
+            nbits -= 5;
+            slug.push(CROCKFORD[((bits >> nbits) & 0x1f) as usize] as char);
+        }
     }
+    // 80 bits is an exact multiple of 5 → no leftover bits, no padding.
     slug
 }
 
@@ -2277,7 +2296,16 @@ mod tests {
             "a different server secret ⇒ a different slug — a peer without THE secret cannot compute it"
         );
         assert_ne!(a, unkeyed, "keyed differs from the dev unkeyed hash");
-        assert!(a.starts_with("op-") && a.len() == "op-".len() + 32);
+        // `op-` + 16 lowercase Crockford base32 chars (80 bits) — short and
+        // copy-safe so the workflow harness reproduces it into produced page ids,
+        // unlike the old 32-char hex it garbled live (2026-09-11).
+        let body = a.strip_prefix("op-").expect("op- prefix");
+        assert_eq!(body.len(), 16, "16 base32 chars, not 32 hex");
+        assert!(
+            body.bytes()
+                .all(|b| b"0123456789abcdefghjkmnpqrstvwxyz".contains(&b)),
+            "Crockford base32 lowercase, no ambiguous chars: {a}"
+        );
 
         // Still scoped: subject / plan / key each change the slug.
         assert_ne!(
