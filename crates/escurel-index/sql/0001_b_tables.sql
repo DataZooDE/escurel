@@ -57,10 +57,15 @@ CREATE INDEX blocks_page  ON blocks (page_id);
 CREATE INDEX blocks_skill ON blocks (skill);
 CREATE INDEX blocks_at    ON blocks (at_ts);
 
--- HNSW vector index (vss extension; auto-loaded on this reference).
-CREATE INDEX hnsw_blocks_vec
-    ON blocks USING HNSW (dense_vec)
-    WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);
+-- No HNSW vector index here any more. `vss` corrupts itself under the
+-- delete+insert cycle every page write performs: the index hangs the writer
+-- after ~192 of them and segfaults if it is rebuilt (#431, and
+-- docs/notes/discovered/2026-09-11-vss-hnsw-churn-hangs-then-segfaults.md).
+-- It also bought nothing measurable — at 10k blocks 29.6ms vs 30.6ms, at 100k
+-- ~0.29s either way, because every search carries a filter. Vector search is
+-- an exact `array_cosine_distance` scan (see `search.rs`). `Migrator::
+-- ensure_vector_index` rebuilds the index on boot when ESCUREL_INDEX_HNSW is
+-- set, for the day vss is fixed.
 
 -- CRDT op log.
 CREATE TABLE crdt_ops (
