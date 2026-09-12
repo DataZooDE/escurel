@@ -226,11 +226,8 @@ async fn a_hung_agent_endpoint_times_out_instead_of_blocking_forever() {
     let addr = listener.local_addr().expect("addr");
     tokio::spawn(async move {
         let mut held = Vec::new();
-        loop {
-            match listener.accept().await {
-                Ok((sock, _)) => held.push(sock), // hold the socket open, never reply
-                Err(_) => break,
-            }
+        while let Ok((sock, _)) = listener.accept().await {
+            held.push(sock); // hold the socket open, never reply
         }
     });
 
