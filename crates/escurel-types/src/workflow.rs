@@ -87,6 +87,22 @@ pub enum ResultRef {
         /// (`[A-Za-z0-9_.-]`, not `.`/`..`), never a path or URL.
         scenario_id: String,
     },
+    /// A generalized tabular result materialised as parquet under
+    /// `<data_root>/<tenant>/<producer>/<id>/`, addressed by a bounded
+    /// `producer` namespace + a bounded `id` (async-ops Phase 4 slice 3c). This
+    /// is the domain-agnostic form the delegate seam returns — the producer
+    /// (scenario / forecast / any fleet capability) names its own result, and
+    /// the server maps it to a location it owns. Like every variant it carries
+    /// NO path or URL field, so traversal / remote-scheme injection stays
+    /// unrepresentable; the resolver validates both slugs and enforces the
+    /// same torn-publish manifest gate.
+    ResultTable {
+        /// The producing capability's namespace — a bounded slug
+        /// (`[A-Za-z0-9_.-]`, not `.`/`..`), never a path or URL.
+        producer: String,
+        /// The result's server-assigned id — a bounded slug, never a path/URL.
+        id: String,
+    },
 }
 
 /// The reserved `label_skill` an operation's status events are recorded under.

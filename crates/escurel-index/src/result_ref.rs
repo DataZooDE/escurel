@@ -83,23 +83,30 @@ pub fn resolve_result_ref(
     tenant: &str,
     result_ref: &ResultRef,
 ) -> Result<ResolvedResult, ResultRefError> {
-    match result_ref {
-        ResultRef::ScenarioParquet { scenario_id } => {
-            if !is_bounded_id(tenant) || !is_bounded_id(scenario_id) {
-                return Err(ResultRefError::InvalidId);
-            }
-            let dir = root.join(tenant).join(scenario_id);
-            // Defence in depth: the server built this path from validated
-            // segments, but assert it did not escape `root` regardless.
-            if !dir.starts_with(root) {
-                return Err(ResultRefError::OutsideRoot);
-            }
-            if !dir.join(RESULT_MANIFEST).is_file() {
-                return Err(ResultRefError::NotReady);
-            }
-            Ok(ResolvedResult { dir })
-        }
+    // Every variant resolves to a server-owned directory under `root`; the only
+    // difference is how many bounded segments name it. Validate them all, build
+    // the path from validated segments, then apply the shared root + manifest
+    // gates once.
+    let segments: Vec<&str> = match result_ref {
+        ResultRef::ScenarioParquet { scenario_id } => vec![scenario_id.as_str()],
+        ResultRef::ResultTable { producer, id } => vec![producer.as_str(), id.as_str()],
+    };
+    if !is_bounded_id(tenant) || !segments.iter().all(|s| is_bounded_id(s)) {
+        return Err(ResultRefError::InvalidId);
     }
+    let mut dir = root.join(tenant);
+    for seg in segments {
+        dir.push(seg);
+    }
+    // Defence in depth: the server built this path from validated segments,
+    // but assert it did not escape `root` regardless.
+    if !dir.starts_with(root) {
+        return Err(ResultRefError::OutsideRoot);
+    }
+    if !dir.join(RESULT_MANIFEST).is_file() {
+        return Err(ResultRefError::NotReady);
+    }
+    Ok(ResolvedResult { dir })
 }
 
 #[cfg(test)]
@@ -110,6 +117,57 @@ mod tests {
         ResultRef::ScenarioParquet {
             scenario_id: id.to_owned(),
         }
+    }
+
+    fn tbl(producer: &str, id: &str) -> ResultRef {
+        ResultRef::ResultTable {
+            producer: producer.to_owned(),
+            id: id.to_owned(),
+        }
+    }
+
+    /// The generalized `ResultTable{producer,id}` variant (Phase-4 slice 3c):
+    /// any producer (scenario/forecast/…) names its result by a bounded id
+    /// under a producer-namespaced dir. It is validated and gated EXACTLY like
+    /// `ScenarioParquet` — a bad producer or id is rejected before any fs touch,
+    /// and the torn-publish manifest gate still holds.
+    #[test]
+    fn a_result_table_resolves_under_a_producer_namespace_and_is_traversal_safe() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // A forged producer, id, or tenant is rejected before touching the fs.
+        for (p, id) in [
+            ("../x", "r1"),
+            ("scenario", "../r"),
+            ("s3:", "r1"),
+            ("", "r1"),
+            ("scn", ""),
+        ] {
+            assert_eq!(
+                resolve_result_ref(root.path(), "acme", &tbl(p, id)),
+                Err(ResultRefError::InvalidId),
+                "producer={p:?} id={id:?} must be rejected"
+            );
+        }
+        assert_eq!(
+            resolve_result_ref(root.path(), "../other", &tbl("scenario", "r1")),
+            Err(ResultRefError::InvalidId)
+        );
+
+        // A well-formed reference to an unpublished dir is not-ready (gate holds).
+        let dir = root.path().join("acme").join("scenario").join("r1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("part-0.parquet"), b"x").unwrap();
+        assert_eq!(
+            resolve_result_ref(root.path(), "acme", &tbl("scenario", "r1")),
+            Err(ResultRefError::NotReady)
+        );
+        // The manifest opens the gate; the glob stays under the root, namespaced.
+        std::fs::write(dir.join(RESULT_MANIFEST), b"{}").unwrap();
+        let resolved =
+            resolve_result_ref(root.path(), "acme", &tbl("scenario", "r1")).expect("resolves");
+        assert_eq!(resolved.dir, dir);
+        assert!(resolved.parquet_glob().ends_with("/scenario/r1/*.parquet"));
+        assert!(resolved.dir.starts_with(root.path()));
     }
 
     #[test]
