@@ -36,6 +36,15 @@ use serde_json::json;
 /// The claim the gateway's verifier reads for the tenant.
 const TENANT_CLAIM: &str = "tenant";
 
+/// The `purpose` claim on an internal-delegation token (fleet #801 Phase 4). A
+/// token the runner presents to the AGENT when delegating a domain step — NOT an
+/// escurel token. Shared so the escurel gateway verifier can REJECT a token
+/// carrying it (a delegation bearer must never be accepted back into escurel's
+/// own `/mcp`).
+pub const DELEGATION_PURPOSE: &str = "internal_delegation";
+/// The claim key under which [`DELEGATION_PURPOSE`] is carried.
+pub const PURPOSE_CLAIM: &str = "purpose";
+
 /// How long a minted bearer lives.
 ///
 /// Long enough that a run and its retries never straddle an expiry; short
@@ -308,6 +317,58 @@ impl Signer {
         self.mint_with_roles(subject, &scoped, ttl_secs)
     }
 
+    /// Mint an INTERNAL-DELEGATION bearer (fleet #801 Phase 4, AD-7): the token
+    /// the runner presents to the AGENT's A2A endpoint when it delegates a domain
+    /// step. It reuses the runner's key/kid/JWKS — so the agent verifies it
+    /// against the identity's published JWKS, needing no new issuer — but it is
+    /// deliberately NOT an escurel token:
+    ///
+    /// - `aud` is the AGENT's audience (a parameter), never escurel's own, so an
+    ///   escurel token and a delegation token are never interchangeable.
+    /// - `roles: []` — a delegation carries NO escurel authority. The agent
+    ///   authorizes the runner service principal and resolves the requester's
+    ///   entitlements itself; escurel does not read this token at all.
+    /// - `purpose = internal_delegation` — the escurel gateway verifier REJECTS
+    ///   this purpose, so a leaked/mis-routed delegation token can never be
+    ///   replayed back into escurel's own `/mcp`.
+    /// - `obo` carries the verified requester for AUDIT only (never re-read for
+    ///   an authorization decision); `step` is the delegated step's id; a random
+    ///   `jti` + `nbf` bound replay and validity. TTL should be ≤ the step timeout.
+    ///
+    /// # Errors
+    /// When signing fails.
+    pub fn mint_delegation(
+        &self,
+        subject: &str,
+        audience: &str,
+        on_behalf_of: &str,
+        step: &str,
+        ttl_secs: u64,
+    ) -> Result<String, AuthError> {
+        let now = now_secs();
+        let claims = json!({
+            "iss": self.issuer,
+            "aud": audience,
+            "sub": subject,
+            TENANT_CLAIM: self.tenant,
+            "roles": Vec::<String>::new(),
+            PURPOSE_CLAIM: DELEGATION_PURPOSE,
+            "obo": on_behalf_of,
+            "step": step,
+            "jti": ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            "iat": now,
+            "nbf": now,
+            "exp": now + ttl_secs,
+        });
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(self.kid.clone());
+        Ok(encode(
+            &header,
+            &claims,
+            &EncodingKey::from_rsa_pem(&self.private_pem)?,
+        )?)
+    }
+
     fn mint_with_roles(
         &self,
         subject: &str,
@@ -413,6 +474,64 @@ mod tests {
         assert_eq!(claims["aud"], "escurel", "{claims}");
         assert_eq!(claims["sub"], "escurel-runner", "{claims}");
         assert_eq!(claims["roles"][0], "escurel:admin", "{claims}");
+        assert!(
+            claims["exp"].as_u64().unwrap_or(0) > claims["iat"].as_u64().unwrap_or(0),
+            "{claims}"
+        );
+    }
+
+    #[test]
+    fn a_delegation_token_is_agent_scoped_carries_no_escurel_authority() {
+        let signer = Signer::build(
+            "https://agent-lab.data-zoo.de".into(),
+            "escurel".into(), // escurel's OWN audience
+            "default".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let token = signer
+            .mint_delegation(
+                "escurel-async-runner",
+                "agent-a2a",
+                "msteams:29:alice",
+                "01STEP",
+                120,
+            )
+            .expect("mint delegation");
+
+        let parts: Vec<&str> = token.split('.').collect();
+        let decode = |s: &str| {
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(s)
+                .expect("b64");
+            serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+        };
+        let claims = decode(parts[1]);
+
+        // Agent-scoped, NOT escurel's own audience — never interchangeable.
+        assert_eq!(claims["aud"], "agent-a2a", "{claims}");
+        assert_ne!(
+            claims["aud"], "escurel",
+            "must not carry escurel's audience"
+        );
+        // No escurel authority whatsoever.
+        assert_eq!(
+            claims["roles"],
+            serde_json::json!([]),
+            "a delegation token carries NO roles: {claims}"
+        );
+        // The purpose the gateway verifier rejects.
+        assert_eq!(claims[PURPOSE_CLAIM], DELEGATION_PURPOSE, "{claims}");
+        // Requester rides as audit-only obo; step + jti + nbf bound it.
+        assert_eq!(claims["sub"], "escurel-async-runner", "{claims}");
+        assert_eq!(claims["obo"], "msteams:29:alice", "{claims}");
+        assert_eq!(claims["step"], "01STEP", "{claims}");
+        assert!(
+            claims["jti"].as_str().is_some_and(|j| !j.is_empty()),
+            "{claims}"
+        );
+        assert!(claims["nbf"].as_u64().is_some(), "{claims}");
         assert!(
             claims["exp"].as_u64().unwrap_or(0) > claims["iat"].as_u64().unwrap_or(0),
             "{claims}"
