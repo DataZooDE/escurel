@@ -48,6 +48,16 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// policy governs above it.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Per-HTTP-REQUEST timeout on a single `message/send` / `tasks/get` call.
+///
+/// Distinct from [`DEFAULT_TIMEOUT`], which bounds the whole poll LOOP but is
+/// only checked *between* polls: without a per-request timeout a hung
+/// `send().await` inside [`DelegateHarness::rpc`] blocks forever (the #569 class
+/// — an unbounded `Client::new()` on an LLM path hung a live pod until the
+/// kubelet killed it). Generous enough for a slow agent turn, finite so a dead
+/// endpoint fails instead of wedging the run.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// A harness that delegates a step to the agent over A2A and waits for a result
 /// reference. See the module docs.
 pub struct DelegateHarness {
@@ -63,11 +73,11 @@ impl Default for DelegateHarness {
 }
 
 impl DelegateHarness {
-    /// A delegate harness with the default poll interval + timeout.
+    /// A delegate harness with the default poll interval + timeouts.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: build_client(DEFAULT_REQUEST_TIMEOUT),
             poll_interval: DEFAULT_POLL_INTERVAL,
             timeout: DEFAULT_TIMEOUT,
         }
@@ -79,6 +89,15 @@ impl DelegateHarness {
     pub fn with_timeouts(mut self, poll_interval: Duration, timeout: Duration) -> Self {
         self.poll_interval = poll_interval;
         self.timeout = timeout;
+        self
+    }
+
+    /// Override the per-request HTTP timeout (rebuilds the client). A test points
+    /// this at a hung endpoint with a short value to prove a stalled request
+    /// degrades to an error instead of blocking forever.
+    #[must_use]
+    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.http = build_client(request_timeout);
         self
     }
 
@@ -104,9 +123,20 @@ impl DelegateHarness {
             .json(&body)
             .send()
             .await
-            .map_err(|e| HarnessError::Upstream {
-                harness: NAME,
-                message: format!("A2A {method}: transport error: {e}"),
+            .map_err(|e| {
+                // A per-request timeout must surface as a clean Timeout, never a
+                // silent hang — the point of the bounded client.
+                if e.is_timeout() {
+                    HarnessError::Timeout {
+                        harness: NAME,
+                        timeout_ms: 0,
+                    }
+                } else {
+                    HarnessError::Upstream {
+                        harness: NAME,
+                        message: format!("A2A {method}: transport error: {e}"),
+                    }
+                }
             })?;
         let status = resp.status();
         let text = resp.text().await.map_err(|e| HarnessError::Upstream {
@@ -274,13 +304,49 @@ fn task_id(task: &Value) -> Option<String> {
     task.get("id").and_then(Value::as_str).map(str::to_owned)
 }
 
+/// Build the harness's HTTP client with a per-request timeout so a hung agent
+/// endpoint fails instead of blocking forever (#569 class). Falls back to a
+/// default client only if the builder somehow rejects the timeout.
+fn build_client(request_timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(request_timeout)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 /// Truncate an upstream body for an error message so a large agent response
-/// does not flood the log.
+/// does not flood the log. Cuts on a CHAR boundary — `&s[..MAX]` panics when
+/// MAX lands inside a multi-byte UTF-8 sequence (an agent reply is arbitrary
+/// text, so this is reachable).
 fn truncate(s: &str) -> String {
     const MAX: usize = 400;
     if s.len() <= MAX {
-        s.to_owned()
-    } else {
-        format!("{}…", &s[..MAX])
+        return s.to_owned();
+    }
+    // Largest char boundary at or below MAX.
+    let mut end = MAX;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_cuts_on_a_char_boundary_and_never_panics() {
+        // A short ASCII string is returned unchanged.
+        assert_eq!(truncate("hi"), "hi");
+        // A long multi-byte string whose 400th byte lands mid-codepoint must not
+        // panic and must stay valid UTF-8. '€' is 3 bytes, so 400 is never a
+        // boundary for a run of them.
+        let euros = "€".repeat(500); // 1500 bytes
+        let out = truncate(&euros); // must not panic
+        assert!(out.ends_with('…'));
+        assert!(out.len() <= 400 + '…'.len_utf8());
+        // Every retained byte is still valid UTF-8 (implicit: it's a &str).
+        assert!(out.chars().filter(|c| *c == '€').count() > 0);
     }
 }

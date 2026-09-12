@@ -215,3 +215,46 @@ async fn a_task_without_delegation_params_is_unsupported() {
         "expected Unsupported, got {err:?}"
     );
 }
+
+#[tokio::test]
+async fn a_hung_agent_endpoint_times_out_instead_of_blocking_forever() {
+    // A server that ACCEPTS connections but never responds — the #569 hang
+    // shape. Without a per-request timeout, `send()` would block forever.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind hung server");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((sock, _)) = listener.accept().await {
+            held.push(sock); // hold the socket open, never reply
+        }
+    });
+
+    let harness = DelegateHarness::new()
+        .with_timeouts(Duration::from_millis(10), Duration::from_secs(30))
+        .with_request_timeout(Duration::from_millis(400));
+    let task = delegate_task(format!("http://{addr}/a2a"), "scenario", "run it");
+
+    let started = std::time::Instant::now();
+    let err = harness
+        .run(&task)
+        .await
+        .expect_err("a hung endpoint must error, not hang");
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(
+            err,
+            HarnessError::Timeout {
+                harness: "delegate",
+                ..
+            }
+        ),
+        "expected Timeout, got {err:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "must fail near the per-request timeout, took {elapsed:?}"
+    );
+}

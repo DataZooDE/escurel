@@ -55,6 +55,12 @@ async fn quack_oauth_scoped_policy_enforces_the_boundary_and_shows_where_it_unde
     ))
     .expect("configure quack_oauth");
 
+    // NOTE: the policy rows below are DELIBERATELY the legacy NULL-subject,
+    // scope-bound shape — this matrix probes quack_oauth's raw object/action
+    // enforcement, not the production policy. Production rows are subject-bound
+    // + literal-object; the NORMATIVE builder is
+    // `escurel_index::quack_policy::scoped_session_policy` (which refuses the
+    // NULL-subject/glob shape, crew F3/F5). Do NOT copy this seed into prod.
     conn.execute_batch(
         "CREATE TABLE main.entitled_v AS SELECT 1 AS id, 'ok' AS v; \
          CREATE SCHEMA result; CREATE TABLE result.rows (id INTEGER, v VARCHAR); \
