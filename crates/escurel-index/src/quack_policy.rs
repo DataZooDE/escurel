@@ -150,6 +150,64 @@ pub fn scoped_session_policy(
     Ok(rows)
 }
 
+/// Single-quote-escape a value for a SQL string literal (double every `'`).
+/// Object ids are already validated to `[A-Za-z0-9_.-]`, but `subject` and
+/// scopes come from the token, so escape defensively — a delegation `sub` like
+/// `google:o'brien@acme` must not break the INSERT.
+fn sql_str(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Render a `VARCHAR[]` literal (`['a', 'b']`), each element escaped.
+fn sql_str_array(items: &[String]) -> String {
+    let inner: Vec<String> = items.iter().map(|s| sql_str(s)).collect();
+    format!("[{}]", inner.join(", "))
+}
+
+/// Render one value that is either a SQL string literal or `NULL`.
+fn sql_opt(s: &Option<String>) -> String {
+    match s {
+        Some(v) => sql_str(v),
+        None => "NULL".to_owned(),
+    }
+}
+
+/// Render the `INSERT` that installs `rows` into the quack_oauth policy table
+/// `policy_table` (a validated `schema.table`), or `None` when there are no rows.
+///
+/// Column order matches the 7-column policy schema
+/// `(priority, subject, any_scope, actions, object_pattern, column_pattern, allow)`.
+/// Every string value is single-quote-escaped, so a token-derived `subject`
+/// cannot break out of its literal; the policy table name is validated as a
+/// bounded `schema.table` first (an invalid one yields `None` rather than an
+/// unsafe splice).
+#[must_use]
+pub fn render_policy_inserts(rows: &[PolicyRow], policy_table: &str) -> Option<String> {
+    if rows.is_empty() || !is_qualified_object(policy_table) {
+        return None;
+    }
+    let values: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "({}, {}, {}, {}, {}, {}, {})",
+                r.priority,
+                sql_opt(&r.subject),
+                sql_str_array(&r.any_scope),
+                sql_str_array(&r.actions),
+                sql_opt(&r.object_pattern),
+                sql_opt(&r.column_pattern),
+                r.allow,
+            )
+        })
+        .collect();
+    Some(format!(
+        "INSERT INTO {policy_table} \
+         (priority, subject, any_scope, actions, object_pattern, column_pattern, allow) VALUES {};",
+        values.join(", ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +304,97 @@ mod tests {
             scoped_session_policy("s", &[], "result_acme.res_1"),
             Err(PolicyError::NoEntitledObjects)
         );
+    }
+
+    #[test]
+    fn rendered_inserts_round_trip_into_a_real_policy_table() {
+        let rows = scoped_session_policy(
+            "google:alice@acme",
+            &objs(&["main.vw_orders"]),
+            "result_acme.res_01hx",
+        )
+        .expect("policy");
+        let sql = render_policy_inserts(&rows, "main.policies").expect("sql");
+
+        let conn = duckdb::Connection::open_in_memory().expect("duckdb");
+        conn.execute_batch(
+            "CREATE TABLE main.policies (priority INTEGER NOT NULL, subject VARCHAR, \
+             any_scope VARCHAR[], actions VARCHAR[], object_pattern VARCHAR, \
+             column_pattern VARCHAR, allow BOOLEAN NOT NULL);",
+        )
+        .expect("create policies");
+        // The rendered INSERT is valid, executable SQL.
+        conn.execute_batch(&sql).expect("install policy");
+
+        // Read the rows back and confirm they match what the builder produced:
+        // subject-bound, correct action, literal object, allow.
+        let mut stmt = conn
+            .prepare(
+                "SELECT subject, actions[1], object_pattern, allow \
+                 FROM main.policies ORDER BY object_pattern",
+            )
+            .expect("prepare");
+        let got: Vec<(String, String, String, bool)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .expect("query")
+            .map(|r| r.expect("row"))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "google:alice@acme".to_owned(),
+                    "Scan".to_owned(),
+                    "main.vw_orders".to_owned(),
+                    true
+                ),
+                (
+                    "google:alice@acme".to_owned(),
+                    "Insert".to_owned(),
+                    "result_acme.res_01hx".to_owned(),
+                    true
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_subject_with_a_quote_is_escaped_not_injected() {
+        // A token `sub` carrying a single quote must be escaped into the literal,
+        // never break out of it. If escaping were wrong, this INSERT would be a
+        // syntax error or an injection; instead it stores the value verbatim.
+        let rows =
+            scoped_session_policy("google:o'brien@acme", &objs(&["main.v"]), "result_x.res_1")
+                .expect("policy");
+        let sql = render_policy_inserts(&rows, "main.policies").expect("sql");
+        assert!(
+            sql.contains("'google:o''brien@acme'"),
+            "quote must be doubled: {sql}"
+        );
+
+        let conn = duckdb::Connection::open_in_memory().expect("duckdb");
+        conn.execute_batch(
+            "CREATE TABLE main.policies (priority INTEGER NOT NULL, subject VARCHAR, \
+             any_scope VARCHAR[], actions VARCHAR[], object_pattern VARCHAR, \
+             column_pattern VARCHAR, allow BOOLEAN NOT NULL);",
+        )
+        .expect("create");
+        conn.execute_batch(&sql).expect("install");
+        let subj: String = conn
+            .query_row("SELECT subject FROM main.policies LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .expect("read");
+        assert_eq!(subj, "google:o'brien@acme");
+    }
+
+    #[test]
+    fn render_is_none_for_empty_rows_or_an_invalid_policy_table() {
+        assert!(render_policy_inserts(&[], "main.policies").is_none());
+        let rows =
+            scoped_session_policy("s", &objs(&["main.v"]), "result_x.res_1").expect("policy");
+        // An unqualified / injectable policy-table name is refused (no unsafe splice).
+        assert!(render_policy_inserts(&rows, "main.policies; DROP TABLE x").is_none());
+        assert!(render_policy_inserts(&rows, "notqualified").is_none());
     }
 }
