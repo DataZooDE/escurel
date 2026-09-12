@@ -39,6 +39,7 @@ mod codex;
 mod echo;
 mod gemini;
 mod harness;
+mod refusing;
 mod task;
 
 pub use agy::AgyHarness;
@@ -50,4 +51,5 @@ pub use gemini::{
     GeminiHarness,
 };
 pub use harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus};
+pub use refusing::RefusingHarness;
 pub use task::HarnessTask;

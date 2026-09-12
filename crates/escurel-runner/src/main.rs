@@ -47,7 +47,7 @@ use escurel_runner_core::{
 };
 use escurel_runner_core::{DeadLetterReason, RunId, StepTerminal};
 use escurel_runner_harness::{
-    AgyHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness,
+    AgyHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness, RefusingHarness,
 };
 use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
@@ -1086,18 +1086,23 @@ fn echo_harness_path() -> String {
 /// harness (#151); `claude` drives the real Claude Code CLI (#152); `codex`
 /// drives the real Codex CLI (#153); `agy` drives the Antigravity CLI for
 /// `autonomy: auto` runs; `gemini` drives Gemini over HTTP in process — the
-/// one a container can run. Unknown selectors fall back to `echo` with a
-/// warning so a typo never silently disables dispatch.
+/// one a container can run. An unknown selector REFUSES TO START rather than
+/// falling back to `echo`: a typo'd `ESCUREL_RUNNER_HARNESS` that quietly became
+/// `echo` would dispatch — writing echo's deterministic stand-in text into the
+/// tenant's knowledge base and marking real events processed. Refusing to boot
+/// is the recoverable failure (the same posture the `gemini` arm takes for a
+/// missing key).
 fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
     match build_harness_named(config, &config.harness) {
         Some(h) => h,
         None => {
-            tracing::warn!(
+            tracing::error!(
                 target: "escurel_runner",
                 selector = %config.harness,
-                "unknown ESCUREL_RUNNER_HARNESS; falling back to echo"
+                "unknown ESCUREL_RUNNER_HARNESS; refusing to start rather than falling back to \
+                 the echo harness, which would write stand-in content into a real corpus"
             );
-            Arc::new(EchoHarness::new(echo_harness_path()))
+            std::process::exit(2);
         }
     }
 }
@@ -1106,12 +1111,17 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
 /// none — the `harness:` key parsed at plan and phase level since the workflow
 /// spec landed and, until now, propagated by nobody.
 ///
-/// **An unbuildable override falls back rather than failing the run.** A plan
-/// naming `claude` on a runner that has no `claude` is a corpus mistake, and
-/// dead-lettering every step of that workflow would be a strange way to say
-/// so. The default harness is a working one by construction — the process
-/// refused to start otherwise — so the step runs and the log names the plan
-/// that asked for something this deployment cannot give it.
+/// **An unbuildable declared harness FAILS CLOSED — it does not fall back to
+/// the default.** A plan naming a harness this runner cannot build
+/// (`build_harness_named` → `None`, e.g. `delegate` on a runner without it) must
+/// NOT silently run the default: the default is a DIFFERENT harness, and running
+/// `echo`/`gemini` for a step that asked for `delegate` would write a fabricated
+/// stand-in result into a real corpus and mark the event processed. Instead the
+/// step gets a [`RefusingHarness`] whose refusal maps to a PERMANENT reconcile
+/// failure, so it dead-letters with a reason naming the harness the deployment
+/// lacks — the operator fixes the selector, not the retry budget (the same
+/// posture the `gemini` arm takes when its key is missing). A blank declaration,
+/// or one equal to the runner's own harness, still resolves to the default.
 fn resolve_harness(
     config: &RunnerConfig,
     default: &Arc<dyn Harness>,
@@ -1128,14 +1138,14 @@ fn resolve_harness(
     match build_harness_named(config, name) {
         Some(h) => h,
         None => {
-            tracing::warn!(
+            tracing::error!(
                 target: "escurel_runner",
                 event_id = %trigger.event_id,
                 declared = %name,
-                using = %default.name(),
-                "the workflow declares a harness this runner cannot build; using the default"
+                "the workflow declares a harness this runner cannot build; failing the step \
+                 closed rather than running the default harness, which would fabricate a result"
             );
-            Arc::clone(default)
+            Arc::new(RefusingHarness::new(name))
         }
     }
 }
