@@ -358,8 +358,10 @@ enum CallerToken {
     /// Not a workflow trigger — legitimately use the runner's own identity.
     NotWorkflow,
     /// A workflow run with a resolved requester and a minted, caller-scoped
-    /// token — the harness executes as the requester.
-    Scoped(String),
+    /// token — the harness executes as the requester. Carries the requester
+    /// `subject` too, so a delegate step can name it as the delegation `obo`
+    /// (audit) without re-reading the run board.
+    Scoped { token: String, subject: String },
     /// A workflow run the token source cannot scope — a static dev bearer (which
     /// cannot mint at all), whether or not a requester is on record. Dev-only
     /// fallback to the runner's identity; production runs minted (ADR-0012), so
@@ -425,7 +427,10 @@ async fn caller_scoped_token(
         .mint_scoped(subject, &groups)
         .map_err(|e| PackageError::Auth(e.to_string()))?
     {
-        Some(scoped) => Ok(CallerToken::Scoped(scoped)),
+        Some(scoped) => Ok(CallerToken::Scoped {
+            token: scoped,
+            subject: subject.to_owned(),
+        }),
         None => Ok(CallerToken::CannotMint),
     }
 }
@@ -452,8 +457,14 @@ pub async fn package(
     // back to the runner's own identity when there is no requester on record or
     // the token source cannot mint (a static bearer); production runs minted
     // (ADR-0012: the runner mints from a per-tenant GCP Secret Manager key).
+    // The requester subject, captured when the run is scoped — used as the
+    // delegation `obo` for a delegate step (audit only).
+    let mut requester: Option<String> = None;
     let token = match caller_scoped_token(trigger, client, tokens).await? {
-        CallerToken::Scoped(scoped) => SecretString::from(scoped),
+        CallerToken::Scoped { token, subject } => {
+            requester = Some(subject);
+            SecretString::from(token)
+        }
         // Non-workflow cascades (orchestration writes) legitimately use the
         // runner's own identity; a static dev bearer that cannot mint falls
         // back to it too (production runs minted, so it scopes).
@@ -621,6 +632,16 @@ pub async fn package(
 
     let instructions = build_instructions(trigger, &skill.body, trigger_event.as_ref(), autonomy);
 
+    // Delegate step (async-ops Phase 4 slice 3c): when this step's effective
+    // harness is `delegate`, attach the A2A delegation the DelegateHarness needs
+    // — the agent endpoint + the requested capability + a freshly minted
+    // runner→agent token (aud=agent, obo=requester). Only for a workflow step
+    // (delegation carries the requester + step) whose deploy configured the
+    // endpoint + audience and whose token source can mint; otherwise it stays
+    // `None` and the harness fails closed rather than delegating with no
+    // authority.
+    let delegation = build_delegation(trigger, cfg, tokens, requester.as_deref())?;
+
     Ok(TaskContext {
         instructions,
         input,
@@ -628,8 +649,60 @@ pub async fn package(
         mcp_endpoint: mcp_endpoint(&cfg.gateway_url),
         allowed_tools: tools.iter().map(|s| s.to_string()).collect(),
         token,
-        delegation: None,
+        delegation,
     })
+}
+
+/// The effective harness selector for a step: the workflow's declared `harness`
+/// when non-empty, else the runner's configured default.
+fn effective_harness<'a>(trigger: &'a Trigger, cfg: &'a RunnerConfig) -> &'a str {
+    trigger
+        .workflow
+        .as_ref()
+        .map(|wf| wf.harness.as_str())
+        .filter(|h| !h.is_empty())
+        .unwrap_or(&cfg.harness)
+}
+
+/// Build the A2A [`Delegation`] for a delegate step, or `None` when this is not
+/// a delegate step / not a workflow run / the deploy has no agent endpoint /
+/// the token source cannot mint. A delegate step that lands `None` here fails
+/// closed at the harness (never delegates with the runner's own identity).
+fn build_delegation(
+    trigger: &Trigger,
+    cfg: &RunnerConfig,
+    tokens: &crate::TokenSource,
+    requester: Option<&str>,
+) -> Result<Option<Delegation>, PackageError> {
+    if effective_harness(trigger, cfg) != crate::DELEGATE_HARNESS {
+        return Ok(None);
+    }
+    // Delegation is a workflow-step concept (it carries the requester + step id).
+    let Some(wf) = &trigger.workflow else {
+        return Ok(None);
+    };
+    let (Some(url), Some(audience)) = (&cfg.agent_a2a_url, &cfg.agent_a2a_audience) else {
+        return Ok(None);
+    };
+    // `obo` is audit-only; fall back to the run id when no requester is on record
+    // (a static-bearer dev run cannot scope, but the delegate call still names a
+    // subject for the audit trail).
+    let obo = requester.unwrap_or(&wf.run);
+    // The capability the agent runs for this step = the step's skill id.
+    let capability = trigger.label_skill.clone();
+    match tokens
+        .mint_delegation(audience, obo, &wf.step)
+        .map_err(|e| PackageError::Auth(e.to_string()))?
+    {
+        Some(token) => Ok(Some(Delegation::new(
+            url.clone(),
+            capability,
+            SecretString::from(token),
+        ))),
+        // A static-bearer runner cannot mint a delegation — fail closed at the
+        // harness rather than present the runner's own bearer to the agent.
+        None => Ok(None),
+    }
 }
 
 /// Render the triggering event's payload (title + body when known). When

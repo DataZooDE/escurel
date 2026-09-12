@@ -381,6 +381,19 @@ pub struct RunnerConfig {
     /// that speaks the wire shape.
     /// Source: `ESCUREL_RUNNER_GEMINI_BASE_URL` (unset → `None`).
     pub gemini_base_url: Option<String>,
+    /// The agent's A2A endpoint the `delegate` harness POSTs `message/send` /
+    /// `tasks/get` to (async-ops Phase 4 slice 3c). escurel is the orchestrator;
+    /// a `harness: delegate` step hands the domain work to the agent here.
+    /// `None` disables delegation — a delegate step then fails closed (the
+    /// harness gets no delegation parameters). Required for a delegate deploy.
+    /// Source: `ESCUREL_RUNNER_AGENT_A2A_URL` (unset → `None`).
+    pub agent_a2a_url: Option<String>,
+    /// The `aud` the runner→agent delegation token is minted for (the AGENT's
+    /// audience, never escurel's own — an escurel token and a delegation token
+    /// must never be interchangeable). Paired with [`Self::agent_a2a_url`];
+    /// without it a delegate step cannot be authenticated and fails closed.
+    /// Source: `ESCUREL_RUNNER_AGENT_A2A_AUDIENCE` (unset → `None`).
+    pub agent_a2a_audience: Option<String>,
     /// Cap on reconciler attempts per run before recording `failed` (#155).
     /// Always at least `1` (one attempt is made even with retries disabled).
     /// Source: `ESCUREL_RUNNER_MAX_ATTEMPTS` (default [`DEFAULT_MAX_ATTEMPTS`]).
@@ -586,6 +599,9 @@ impl RunnerConfig {
         let gemini_api_key = lookup("ESCUREL_GEMINI_API_KEY").filter(|s| !s.is_empty());
         let gemini_model = lookup("ESCUREL_RUNNER_GEMINI_MODEL").filter(|s| !s.is_empty());
         let gemini_base_url = lookup("ESCUREL_RUNNER_GEMINI_BASE_URL").filter(|s| !s.is_empty());
+        let agent_a2a_url = lookup("ESCUREL_RUNNER_AGENT_A2A_URL").filter(|s| !s.is_empty());
+        let agent_a2a_audience =
+            lookup("ESCUREL_RUNNER_AGENT_A2A_AUDIENCE").filter(|s| !s.is_empty());
 
         let run_timeout = match lookup("ESCUREL_RUNNER_RUN_TIMEOUT") {
             Some(v) => parse_duration(&v).ok_or(ConfigError::InvalidRunTimeout { value: v })?,
@@ -677,6 +693,8 @@ impl RunnerConfig {
             gemini_api_key,
             gemini_model,
             gemini_base_url,
+            agent_a2a_url,
+            agent_a2a_audience,
             agy_bin,
             agy_model,
             agy_home,

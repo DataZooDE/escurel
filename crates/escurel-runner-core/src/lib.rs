@@ -39,6 +39,12 @@ pub use packager::{
     ALLOWED_TOOLS, Autonomy, Delegation, PackageError, REVIEW_TOOLS, TaskContext,
     WORKFLOW_STEP_TOOLS, package,
 };
+
+/// The harness selector for a step that delegates to the agent over A2A
+/// (async-ops Phase 4 slice 3c). Shared here so the packager (which builds the
+/// [`Delegation`]) and the harness adapter (which consumes it) name it
+/// identically without the core→harness dependency the reverse would require.
+pub const DELEGATE_HARNESS: &str = "delegate";
 pub use quota::{Governor, QuotaDecision, QuotaLimits, RunSlot, ThrottleReason};
 pub use reconciler::{
     ConfirmedEffect, ReconcileError, RunFailure, RunReport, assign_confirmed_write,

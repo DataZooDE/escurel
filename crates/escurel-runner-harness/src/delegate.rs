@@ -35,8 +35,9 @@ use serde_json::{Value, json};
 use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus};
 
 /// The adapter name, used for selection (`ESCUREL_RUNNER_HARNESS=delegate` /
-/// a per-phase `harness: delegate`) and logging.
-pub const NAME: &str = "delegate";
+/// a per-phase `harness: delegate`) and logging. Shared with the packager
+/// (which builds the [`Delegation`]) via `escurel-runner-core`.
+pub const NAME: &str = escurel_runner_core::DELEGATE_HARNESS;
 
 /// How often to poll `tasks/get` while the delegated task is in flight.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
