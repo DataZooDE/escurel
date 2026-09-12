@@ -251,6 +251,91 @@ pub(super) async fn tool_create_draft(
         }));
     }
 
+    // ONE LIVE draft per page.
+    //
+    // Two live drafts against one target are two cards a human cannot both
+    // apply: promoting either moves the page, and from that moment the other's
+    // `base_sha256` is stale for ever. The second is then unapprovable — it
+    // can only be discarded, and only after a reviewer has spent the attention
+    // the queue exists to ration.
+    //
+    // Observed on lab, 2026-09-12: one Gmail thread produced two drafts
+    // against `markdown/instances/email/1a05cfc4ab1cca02.md` from two events.
+    // The consultant approved one, pressed Approve on its twin, and got "this
+    // page changed after the draft was made" on a card that had looked exactly
+    // as ready as the one before it.
+    //
+    // LIVE, not merely open, and the distinction is load-bearing. A draft
+    // whose base no longer matches the page is already dead — a conflicted
+    // promotion leaves exactly that, deliberately, so the work can be
+    // re-drafted against the new head. Refusing the re-draft would strand the
+    // recovery path this store documents. So a stale predecessor is
+    // SUPERSEDED rather than protected: it is discarded with a reason, which
+    // also takes the unapprovable card off the reviewer's screen.
+    let head_sha256 = indexer
+        .read_page_markdown(&a.target_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft head: {e}")))?
+        .map(|stored| {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(stored.as_bytes()))
+        });
+    if let Some(open) = indexer
+        .open_draft_for_page(&a.target_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft open check: {e}")))?
+    {
+        // Superseding requires POSITIVE evidence that the predecessor is
+        // dead: a base that names a head the page no longer has. Anything
+        // else is live, and that includes a draft with NO base at all.
+        //
+        // Not a detail. `base_sha256: None` means "drafted as a create", but
+        // a caller may simply not have sent one — escurel's own runner
+        // harness drafts that way — and such a draft against an existing page
+        // would compare unequal to the head and be discarded as stale. The
+        // first version of this did exactly that: escurel-runner's
+        // `a_draft_that_landed_outlives_the_harness_saying_it_failed` went
+        // red, because the agent's SECOND tool call silently destroyed the
+        // good draft its first call had made, and the run was then recorded
+        // failed for work that had landed.
+        let predecessor_is_dead = open
+            .base_sha256
+            .as_deref()
+            .is_some_and(|base| Some(base) != head_sha256.as_deref());
+        if !predecessor_is_dead {
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "conflict",
+                    "location": "target_page_id",
+                    "message": format!(
+                        "draft `{}` is already open for `{}` and nobody has \
+                         decided it yet. A second draft against the same page \
+                         could never be applied after the first one is: decide \
+                         that one, then draft against the head it leaves.",
+                        open.draft_id, a.target_page_id
+                    ),
+                }],
+            }));
+        }
+        indexer
+            .close_draft(
+                &open.draft_id,
+                "discarded",
+                caller.subject,
+                "superseded: the target moved, and this draft was drafted \
+                 against the old head",
+            )
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("create_draft supersede: {e}")))?;
+        tracing::info!(
+            superseded = %open.draft_id,
+            page_id = %a.target_page_id,
+            "create_draft: discarded a stale draft the new one replaces"
+        );
+    }
+
     // Validate at DRAFT time, with the same blocking set promotion will
     // apply. A draft that cannot be promoted is worse than a refused write:
     // it costs a human a review before anyone finds out.

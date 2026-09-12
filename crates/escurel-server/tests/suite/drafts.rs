@@ -1162,3 +1162,243 @@ async fn an_ordinary_caller_may_not_vouch_for_another_subject() {
         "with no claim, the decider is the caller itself: {out}"
     );
 }
+
+/// One LIVE draft per page — a second is refused rather than queued.
+///
+/// Two open drafts against one target are two cards a human cannot both
+/// apply: promoting either moves the page, and from that moment the other's
+/// `base_sha256` is stale for ever. The second can only be discarded, and
+/// only after a reviewer has spent the attention the queue exists to ration.
+///
+/// Measured on lab, 2026-09-12: one Gmail thread produced two drafts against
+/// the same email page from two events. The consultant approved one, pressed
+/// Approve on its twin, and was told "this page changed after the draft was
+/// made" — on a card that had looked exactly as ready as the one before it.
+///
+/// The work is not lost: the second draft's event stays in the inbox and is
+/// re-dispatched once the open one is decided, against the head that decision
+/// produced.
+#[tokio::test]
+async fn a_second_open_draft_for_the_same_page_is_refused() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+    let head = page_sha(&p, &token, page).await;
+
+    let first = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "The first held rewrite."),
+            "base_sha256": head,
+        }),
+    )
+    .await;
+    assert_eq!(first["ok"], json!(true), "the first draft is held: {first}");
+    let first_id = first["draft"]["draft_id"].as_str().expect("draft_id");
+
+    let second = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "A second rewrite of the same page."),
+            "base_sha256": head,
+        }),
+    )
+    .await;
+    assert_eq!(
+        second["ok"],
+        json!(false),
+        "a second open draft against the same page must be refused: {second}"
+    );
+    assert_eq!(second["issues"][0]["code"], "conflict", "{second}");
+    assert!(
+        second["issues"][0]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(first_id)),
+        "the refusal must name the draft that is in the way, or the caller \
+         cannot act on it: {second}"
+    );
+
+    // …and the page is still draftable once that decision is made. Without
+    // this the rule would be "one draft per page, ever", which would stop the
+    // loop dead after the first approval.
+    let promoted = call(&p, &token, "promote_draft", json!({ "draft_id": first_id })).await;
+    assert_eq!(promoted["ok"], json!(true), "{promoted}");
+
+    let after = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "A rewrite against the new head."),
+            "base_sha256": page_sha(&p, &token, page).await,
+        }),
+    )
+    .await;
+    assert_eq!(
+        after["ok"],
+        json!(true),
+        "once the open draft is decided the page takes a new one: {after}"
+    );
+}
+
+/// …and the rule is per PAGE, not per tenant.
+///
+/// The control for the test above. A check that refused every second draft
+/// anywhere would also satisfy it, and would break the ordinary case the
+/// runner produces all day: several pages drafted in one pass.
+#[tokio::test]
+async fn a_draft_for_a_different_page_is_unaffected() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    for id in ["plan", "other"] {
+        let out = call(
+            &p,
+            &token,
+            "create_draft",
+            json!({
+                "target_page_id": format!("markdown/instances/note/{id}.md"),
+                "content": body(id, "A held rewrite."),
+            }),
+        )
+        .await;
+        assert_eq!(
+            out["ok"],
+            json!(true),
+            "a draft for `{id}` must be held while another page has one: {out}"
+        );
+    }
+}
+
+/// A STALE predecessor is superseded, not protected.
+///
+/// A conflicted promotion deliberately leaves its draft open so the work can
+/// be re-drafted against the new head. If "one live draft per page" refused
+/// that re-draft it would strand the store's own recovery path — and leave an
+/// unapprovable card on a reviewer's screen, which is the thing the rule
+/// exists to prevent.
+#[tokio::test]
+async fn a_stale_open_draft_is_superseded_by_the_redraft() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+
+    let stale = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "Drafted against the old head."),
+            "base_sha256": page_sha(&p, &token, page).await,
+        }),
+    )
+    .await;
+    let stale_id = stale["draft"]["draft_id"]
+        .as_str()
+        .expect("draft_id")
+        .to_owned();
+
+    // Somebody else moves the page. The draft above is now unapprovable — its
+    // base names a head that no longer exists.
+    call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": page, "content": body("plan", "A concurrent change.") }),
+    )
+    .await;
+
+    let redraft = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "Re-drafted against the new head."),
+            "base_sha256": page_sha(&p, &token, page).await,
+        }),
+    )
+    .await;
+    assert_eq!(
+        redraft["ok"],
+        json!(true),
+        "a re-draft against the new head must be accepted: {redraft}"
+    );
+
+    // And the dead one is GONE from the queue rather than sitting there
+    // looking ready.
+    let waiting = call(&p, &token, "list_drafts", json!({})).await;
+    let ids: Vec<&str> = waiting["drafts"]
+        .as_array()
+        .expect("drafts")
+        .iter()
+        .filter_map(|d| d["draft_id"].as_str())
+        .collect();
+    assert!(
+        !ids.contains(&stale_id.as_str()),
+        "the superseded draft must leave the queue — leaving it is exactly \
+         the unapprovable card this rule exists to prevent: {waiting}"
+    );
+    assert_eq!(ids.len(), 1, "and the re-draft is the one left: {waiting}");
+}
+
+/// A predecessor with NO base is live, not stale.
+///
+/// `base_sha256: None` means "drafted as a create" — but a caller may simply
+/// not have sent one, and escurel's own runner harness drafts that way. An
+/// earlier version of the supersede rule compared `None` against a page that
+/// exists, concluded "stale", and DISCARDED a perfectly good draft when the
+/// same agent made a second tool call. The run was then recorded failed for
+/// work that had landed (escurel-runner's
+/// `a_draft_that_landed_outlives_the_harness_saying_it_failed` caught it).
+///
+/// Superseding destroys a human's queue entry, so it requires positive
+/// evidence: a base that names a head the page no longer has.
+#[tokio::test]
+async fn a_draft_with_no_base_is_not_treated_as_stale() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+
+    let first = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": page, "content": body("plan", "No base at all.") }),
+    )
+    .await;
+    assert_eq!(first["ok"], json!(true), "{first}");
+    let first_id = first["draft"]["draft_id"].as_str().expect("id").to_owned();
+
+    let second = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": page, "content": body("plan", "A second one.") }),
+    )
+    .await;
+    assert_eq!(
+        second["ok"],
+        json!(false),
+        "the baseless predecessor is LIVE, so the second is refused: {second}"
+    );
+
+    let waiting = call(&p, &token, "list_drafts", json!({})).await;
+    assert!(
+        waiting["drafts"]
+            .as_array()
+            .expect("drafts")
+            .iter()
+            .any(|d| d["draft_id"].as_str() == Some(first_id.as_str())),
+        "and the first draft must SURVIVE — discarding it would destroy a \
+         queue entry on a guess: {waiting}"
+    );
+}
