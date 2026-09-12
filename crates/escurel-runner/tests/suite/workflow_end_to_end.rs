@@ -36,6 +36,21 @@ phases: [{id: scope, produces: research-angle, fan_out: 1}, {id: synthesize, pro
 ---\n\
 # deep-research\n\nFan out, then synthesize.\n";
 
+// A one-phase plan whose step declares `harness: delegate` — a harness this
+// runner cannot build. Used to prove the step FAILS CLOSED (dead-letters) rather
+// than silently running the default echo harness and fabricating a `succeeded`
+// produced instance (async-ops Phase 4 slice 3a; crew F8).
+const DELEGATE_WF_SKILL: &str = "delegate-plan";
+const DELEGATE_WF_BODY: &str = "---\n\
+type: skill\n\
+id: delegate-plan\n\
+description: A one-phase plan whose step delegates to an unavailable harness.\n\
+backend: {kind: workflow}\n\
+run_skill: workflow-run\n\
+phases: [{id: produce, produces: research-report, fan_out: 1, harness: delegate}]\n\
+---\n\
+# delegate-plan\n\nDelegate the one step to the agent.\n";
+
 // A plan whose first phase alone projects 10 runs — used to prove the
 // up-front budget gate refuses to start it when max_runs_per_root is small.
 const BIG_WF_SKILL: &str = "over-budget";
@@ -689,6 +704,103 @@ async fn a_harness_produced_result_ref_reaches_get_operation() {
         op["result_ref"],
         json!({ "kind": "scenario_parquet", "scenario_id": "scn-e2e-01" }),
         "the harness-produced result_ref must ride through to get_operation: {op}"
+    );
+}
+
+/// async-ops Phase 4 slice 3a (crew F8, a live defect): a workflow phase
+/// declaring `harness: delegate` on a runner that cannot build it must FAIL
+/// CLOSED — the step dead-letters and the operation reaches terminal `failed`,
+/// and the default echo harness must NOT run in its place and fabricate a
+/// `succeeded` produced instance. (Before the fix, `resolve_harness` silently
+/// used the default, so echo wrote a real research-report and the op `succeeded`.)
+#[tokio::test]
+async fn a_step_with_an_unbuildable_declared_harness_dead_letters_not_runs_echo() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(DELEGATE_WF_SKILL, DELEGATE_WF_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let run_page = "markdown/instances/workflow-run/r-delegate.md";
+    create_run_board(&gateway, run_page, DELEGATE_WF_SKILL).await;
+    call_mcp(
+        &gateway,
+        Role::Admin,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": DELEGATE_WF_SKILL,
+            "instance_page_id": run_page,
+            "title": "invoke delegate-plan",
+            "body": "Run the one delegated step.",
+            "provenance": { "workflow": { "run": run_page, "wf_skill": DELEGATE_WF_SKILL, "phase": "invoke" } }
+        }),
+    )
+    .await;
+
+    // A runner whose ONLY harness is the default echo — it cannot build `delegate`.
+    let token = gateway.mint_token(TENANT, Role::Admin);
+    let port = free_port();
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", format!("127.0.0.1:{port}"))
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &token)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        // Fail fast: one attempt, so the delegate step's permanent refusal
+        // dead-letters promptly rather than burning a retry budget.
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "1")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The delegated step refuses (Unsupported → Permanent → dead-letter), and the
+    // reducer drives the operation to a terminal `failed`.
+    assert!(
+        await_operation_status(&gateway, run_page, "failed", 60).await,
+        "a step declaring an unbuildable harness must dead-letter the operation to `failed`, \
+         not run echo and succeed"
+    );
+
+    // And echo must NOT have fabricated the produced research-report instance.
+    let insts = call_mcp(
+        &gateway,
+        Role::Agent,
+        "list_instances",
+        json!({ "skill_id": "research-report" }),
+    )
+    .await;
+    let fabricated = insts["instances"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|i| {
+                    i["page_id"]
+                        .as_str()
+                        .is_some_and(|p| p.contains("r-delegate"))
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(
+        fabricated, 0,
+        "the default harness must not fabricate a produced instance for the refused step: {insts}"
     );
 }
 
