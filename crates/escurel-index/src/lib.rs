@@ -36,6 +36,7 @@ mod materialise;
 pub mod meta_skill;
 pub mod pack;
 pub mod quack_policy;
+pub mod quack_serve;
 pub mod quack_session;
 pub mod query;
 pub mod read;
