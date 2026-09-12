@@ -1402,3 +1402,98 @@ async fn a_draft_with_no_base_is_not_treated_as_stale() {
          queue entry on a guess: {waiting}"
     );
 }
+
+/// Approve with a correction: the reviewer's bytes land, not the agent's.
+///
+/// A reviewer who fixes a wording and then approves has reviewed the fix, and
+/// it is one act rather than two. Without this the only way to land a
+/// correction is discard → re-draft → promote: three calls that can half-fail
+/// and leave a queue entry nobody meant to create. heron offered the gesture —
+/// its approval screen has "Approve with edit" — while the edit was silently
+/// dropped on the way to the store.
+#[tokio::test]
+async fn a_correction_at_approval_time_is_what_lands() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "The agent's wording."),
+            "base_sha256": page_sha(&p, &token, page).await,
+        }),
+    )
+    .await;
+    let id = created["draft"]["draft_id"].as_str().expect("draft_id");
+
+    let out = call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": id, "content": body("plan", "The reviewer's wording.") }),
+    )
+    .await;
+    assert_eq!(out["ok"], json!(true), "{out}");
+
+    let landed = call(&p, &token, "expand", json!({ "page_id": page })).await;
+    let body_text = landed["body"].as_str().unwrap_or_default();
+    assert!(
+        body_text.contains("The reviewer's wording."),
+        "the correction must land: {body_text}"
+    );
+    assert!(
+        !body_text.contains("The agent's wording."),
+        "and the stored draft must NOT: a correction that silently loses is \
+         worse than no correction at all — the reviewer believes they fixed \
+         it: {body_text}"
+    );
+}
+
+/// …and a correction is still validated. An approval is not a way past the
+/// gate the draft had to pass.
+#[tokio::test]
+async fn a_correction_that_would_not_validate_is_refused() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+    let before = page_sha(&p, &token, page).await;
+
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "Fine."),
+            "base_sha256": before.clone(),
+        }),
+    )
+    .await;
+    let id = created["draft"]["draft_id"]
+        .as_str()
+        .expect("draft_id")
+        .to_owned();
+
+    let refused = call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": &id, "content": "# no frontmatter at all\n" }),
+    )
+    .await;
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(
+        page_sha(&p, &token, page).await,
+        before,
+        "and nothing may have landed"
+    );
+
+    // Control: the same draft, promoted WITHOUT a correction, still works — so
+    // the refusal is about the corrected bytes and not about the draft.
+    let ok = call(&p, &token, "promote_draft", json!({ "draft_id": &id })).await;
+    assert_eq!(ok["ok"], json!(true), "control: {ok}");
+}

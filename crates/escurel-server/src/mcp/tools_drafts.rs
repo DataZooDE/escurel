@@ -76,6 +76,21 @@ pub(super) struct DecideDraftArgs {
     /// must keep meaning exactly that (#357).
     #[serde(default)]
     decided_by: Option<String>,
+    /// The bytes to write INSTEAD of the stored draft, when the approver
+    /// corrected them before deciding.
+    ///
+    /// "Approve with an edit" is one act, not two: a reviewer who fixes a
+    /// wording and then approves has reviewed the fix. Without this the only
+    /// way to land a correction is discard → re-draft → promote — three calls
+    /// that can half-fail and leave a queue entry nobody meant to create.
+    ///
+    /// It is NOT a way to write arbitrary bytes through an approval. The
+    /// correction is validated exactly as `create_draft` validates one, and it
+    /// lands against the DRAFT's own `base_sha256`, so a target that moved
+    /// under the reviewer still conflicts. "What you approved is what shipped"
+    /// holds because the approver is the one who typed it.
+    #[serde(default)]
+    content: Option<String>,
 }
 
 /// Who to record as having decided: the human the caller vouches for, or the
@@ -449,9 +464,25 @@ pub(super) async fn tool_promote_draft(
     // overwriting what the reviewer never saw.
     let subject = decided_by_or_caller(&a, &caller)?;
     let target_page_id = draft.target_page_id.clone();
+    // The approver's correction wins over the stored bytes, when there is one.
+    // Validated first, with the same blocking set `create_draft` applies — an
+    // approval is not a way past the gate a draft had to pass.
+    let corrected = a.content.as_deref().filter(|c| !c.trim().is_empty());
+    if let Some(content) = corrected {
+        let issues = indexer
+            .validate(Some(&draft.target_page_id), content)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("promote_draft validate: {e}")))?;
+        if !draft_blocking_issues(state, &issues).is_empty() {
+            return Ok(json!({
+                "ok": false,
+                "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
+            }));
+        }
+    }
     let mut write_args = json!({
         "page_id": draft.target_page_id,
-        "content": draft.content,
+        "content": corrected.unwrap_or(draft.content.as_str()),
     });
     if let Some(base) = &draft.base_sha256 {
         write_args["base_sha256"] = json!(base);
