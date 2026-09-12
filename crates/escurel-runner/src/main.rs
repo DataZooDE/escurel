@@ -47,7 +47,8 @@ use escurel_runner_core::{
 };
 use escurel_runner_core::{DeadLetterReason, RunId, StepTerminal};
 use escurel_runner_harness::{
-    AgyHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness, RefusingHarness,
+    AgyHarness, ClaudeHarness, CodexHarness, DelegateHarness, EchoHarness, GeminiHarness, Harness,
+    RefusingHarness,
 };
 use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
@@ -1154,6 +1155,12 @@ fn resolve_harness(
 fn build_harness_named(config: &RunnerConfig, name: &str) -> Option<Arc<dyn Harness>> {
     let built: Arc<dyn Harness> = match name {
         "echo" => Arc::new(EchoHarness::new(echo_harness_path())),
+        // The A2A delegate harness (async-ops Phase 4 slice 3c): stateless —
+        // the agent endpoint + capability + per-requester delegation token ride
+        // on the TaskContext the packager builds. A delegate step with no
+        // delegation params (unconfigured deploy / static-bearer runner) fails
+        // closed at the harness, never delegating with the runner's identity.
+        n if n == escurel_runner_core::DELEGATE_HARNESS => Arc::new(DelegateHarness::new()),
         "claude" => Arc::new(
             ClaudeHarness::new(config.claude_bin.clone()).with_model(config.claude_model.clone()),
         ),

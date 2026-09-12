@@ -163,6 +163,41 @@ impl TokenSource {
         }
     }
 
+    /// Mint a **runner→agent delegation** bearer (fleet #801 Phase 4, AD-7) for
+    /// a `harness: delegate` step: aud=the agent's audience, empty roles,
+    /// `purpose=internal_delegation`, `obo`=the verified requester (audit only).
+    /// See [`Signer::mint_delegation`].
+    ///
+    /// Returns `None` for a [`Self::Static`] source (a bearer, not a signing
+    /// key). A static-mode runner therefore cannot delegate — the delegate
+    /// harness fails closed rather than presenting the runner's own escurel
+    /// bearer to the agent; production runs minted (ADR-0012).
+    ///
+    /// # Errors
+    /// When signing fails.
+    pub fn mint_delegation(
+        &self,
+        audience: &str,
+        on_behalf_of: &str,
+        step: &str,
+    ) -> Result<Option<String>, AuthError> {
+        match self {
+            Self::Static(_) => Ok(None),
+            Self::Minted {
+                signer,
+                subject,
+                ttl_secs,
+                ..
+            } => Ok(Some(signer.mint_delegation(
+                subject,
+                audience,
+                on_behalf_of,
+                step,
+                *ttl_secs,
+            )?)),
+        }
+    }
+
     /// Whether this source can mint per-run, caller-scoped tokens — true only in
     /// **minted** mode (a signing key), false for a [`Self::Static`] bearer.
     ///
@@ -574,6 +609,59 @@ mod tests {
     fn a_static_token_is_returned_unchanged() {
         let source = TokenSource::Static("pasted-bearer".into());
         assert_eq!(source.current().expect("current"), "pasted-bearer");
+    }
+
+    #[test]
+    fn only_a_minting_source_delegates_and_it_scopes_to_the_agent(// A minting runner mints a delegation for the delegate harness; a static
+        // one cannot and returns None, so a delegate step fails closed rather
+        // than presenting the runner's own bearer to the agent (Phase 4 3c).
+    ) {
+        let signer = Signer::build(
+            "https://agent-lab.data-zoo.de".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let minted = TokenSource::Minted {
+            signer,
+            ttl_secs: 120,
+            subject: "escurel-async-runner".into(),
+            cached: Mutex::new(None),
+        };
+
+        let token = minted
+            .mint_delegation("agent-a2a", "msteams:29:alice", "01STEP")
+            .expect("mint")
+            .expect("a minting source delegates");
+        let claims = {
+            let parts: Vec<&str> = token.split('.').collect();
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(parts[1])
+                .expect("b64");
+            serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+        };
+        assert_eq!(claims["aud"], "agent-a2a", "agent-scoped: {claims}");
+        assert_ne!(claims["aud"], "escurel", "never escurel's own audience");
+        assert_eq!(claims["roles"], serde_json::json!([]), "no authority");
+        assert_eq!(claims[PURPOSE_CLAIM], DELEGATION_PURPOSE);
+        assert_eq!(
+            claims["sub"], "escurel-async-runner",
+            "runner is the subject"
+        );
+        assert_eq!(claims["obo"], "msteams:29:alice", "requester is obo");
+        assert_eq!(claims["step"], "01STEP");
+
+        // A static-bearer source holds no key → cannot delegate → None.
+        let static_src = TokenSource::Static("pasted-bearer".into());
+        assert!(
+            static_src
+                .mint_delegation("agent-a2a", "x", "y")
+                .expect("no error")
+                .is_none(),
+            "a static source cannot mint a delegation; the delegate step fails closed"
+        );
     }
 
     /// Neither the key nor a live bearer may reach a log.

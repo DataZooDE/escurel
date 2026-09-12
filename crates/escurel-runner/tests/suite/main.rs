@@ -24,6 +24,7 @@ mod cascade_trace;
 mod claude_live;
 mod codex_live;
 mod confirm_unflagged;
+mod delegate_a2a;
 mod echo_end_to_end;
 mod gateway_lost_mid_life;
 mod gateway_not_ready;
