@@ -37,6 +37,7 @@
 // The provenance-graph tools (ADR-0010) pushed it past the default 128.
 #![recursion_limit = "256"]
 
+pub mod agent_context;
 mod auth_gate;
 pub mod config;
 mod config_probe;
