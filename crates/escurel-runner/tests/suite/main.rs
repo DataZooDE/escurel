@@ -38,6 +38,7 @@ mod minted_credential;
 mod packager;
 mod quota_throttle;
 mod reconcile_retry;
+mod review_no_op;
 mod run_ledger;
 mod sigterm_drain;
 mod trigger;

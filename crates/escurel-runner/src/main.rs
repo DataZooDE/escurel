@@ -2034,6 +2034,33 @@ async fn attempt_run(
                 "harness ran cleanly and the gateway reports no effect ({reason})"
             )))
         }
+        // The same rule for a REVIEW run, where "produced" means something
+        // different and the two clauses above do not fire.
+        //
+        // Under `autonomy: review` the only effect that counts is a DRAFT,
+        // and `confirm_draft` has just asked the gateway and been told there
+        // is none. A `produced_instance` from the harness is then not
+        // evidence of an effect: an agent that read a page and concluded
+        // nothing needed changing names that page, because naming it is how
+        // it says what the event was about. Requiring `harness_produced` to
+        // be absent therefore never converges a review no-op — it retries it.
+        //
+        // Measured on lab, 2026-09-12. The agent answered "Event already
+        // covered by existing note; no page modification needed" and named
+        // the note. The run was retried, and on the second attempt the agent
+        // did the only thing that would satisfy the read-back: it created a
+        // draft of a page it had just said needed no change. A human then
+        // found that card in their review queue, indistinguishable from real
+        // work until they opened it.
+        //
+        // Asking twice and taking the second answer is not a retry; it is
+        // pressure. An agent given a tool and asked again will use it.
+        Err(ReconcileError::Transient(reason)) if task.autonomy == Autonomy::Review => {
+            Err(ReconcileError::Converged(format!(
+                "review run: the harness ran cleanly and the gateway holds no \
+                 draft for this event ({reason})"
+            )))
+        }
         Err(e) => Err(e),
     }
 }
