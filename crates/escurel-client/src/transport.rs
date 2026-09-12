@@ -29,6 +29,66 @@ use escurel_types::{LiveAck, LiveOp};
 /// which connects over raw `tokio_tungstenite`, not this `reqwest::Client`.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long [`McpTransport::call`] keeps re-dialling a gateway that is not
+/// listening.
+///
+/// Escurel runs `strategy: Recreate` at `replicaCount: 1` — it holds a
+/// single-writer lease on the DuckLake catalog, so a rolling update
+/// deadlocks (the replacement cannot boot while the incumbent holds the
+/// lease). Every deploy is therefore a short window with no listener, and
+/// callers get `Connection refused` rather than a slow response. Observed on
+/// lab 2026-09-11: refusals at 18:25:39 and 18:25:43, replacement serving by
+/// 18:25:45 — about six seconds, and a user was told the service was
+/// unreachable.
+///
+/// Ten seconds covers that with headroom while keeping a genuinely dead
+/// gateway from reading as a hang.
+const CONNECT_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Backoff between re-dials. Short: the window closes in seconds, and a
+/// re-dial against a closed port costs nothing.
+const CONNECT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether a `reqwest` failure means **the request never reached the
+/// server** — the only failure that is safe to replay.
+///
+/// `is_connect()` is true when the connection itself was never established.
+/// Nothing was sent, so no write can have been applied, and re-dialling is
+/// indistinguishable from having dialled a moment later.
+///
+/// Everything else is deliberately excluded, and the exclusion is the point.
+/// A timeout, a dropped response, a body that failed mid-read: the bytes may
+/// already have arrived and `promote_draft` or `start_operation` may already
+/// have run. Replaying those applies them twice. Widening this predicate by
+/// one variant turns every write on this transport into an at-least-once
+/// write, silently.
+fn never_reached_the_server(e: &reqwest::Error) -> bool {
+    if e.is_connect() {
+        return true;
+    }
+    // reqwest reports the connect failure on the SOURCE error when the
+    // failure happened while building the connection (hyper wraps it), so
+    // walk the chain rather than trusting the top-level flags alone.
+    let mut src = std::error::Error::source(e);
+    while let Some(e) = src {
+        if let Some(re) = e.downcast_ref::<reqwest::Error>()
+            && re.is_connect()
+        {
+            return true;
+        }
+        if let Some(io) = e.downcast_ref::<std::io::Error>() {
+            return matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::AddrNotAvailable
+            );
+        }
+        src = std::error::Error::source(e);
+    }
+    false
+}
+
 /// Cheap-to-clone transport handle. Wraps an arc-internal
 /// `reqwest::Client`, the resolved URLs, and the bearer token.
 #[derive(Clone)]
@@ -107,11 +167,23 @@ impl McpTransport {
             "method": "tools/call",
             "params": { "name": tool, "arguments": arguments },
         });
-        let mut req = self.http.post(&self.mcp_url).json(&envelope);
-        if !self.bearer.is_empty() {
-            req = req.header("authorization", &self.bearer);
-        }
-        let resp = req.send().await?;
+        // Re-dial while the gateway is not listening — a deploy window, not a
+        // failure. Only a connection that was never established is replayed;
+        // see `never_reached_the_server`.
+        let deadline = std::time::Instant::now() + CONNECT_RETRY_BUDGET;
+        let resp = loop {
+            let mut req = self.http.post(&self.mcp_url).json(&envelope);
+            if !self.bearer.is_empty() {
+                req = req.header("authorization", &self.bearer);
+            }
+            match req.send().await {
+                Ok(resp) => break resp,
+                Err(e) if never_reached_the_server(&e) && std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(CONNECT_RETRY_DELAY).await;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
         let status = resp.status();
         let body_text = resp.text().await?;
         if !status.is_success() {
