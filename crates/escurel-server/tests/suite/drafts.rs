@@ -1349,3 +1349,56 @@ async fn a_stale_open_draft_is_superseded_by_the_redraft() {
     );
     assert_eq!(ids.len(), 1, "and the re-draft is the one left: {waiting}");
 }
+
+/// A predecessor with NO base is live, not stale.
+///
+/// `base_sha256: None` means "drafted as a create" — but a caller may simply
+/// not have sent one, and escurel's own runner harness drafts that way. An
+/// earlier version of the supersede rule compared `None` against a page that
+/// exists, concluded "stale", and DISCARDED a perfectly good draft when the
+/// same agent made a second tool call. The run was then recorded failed for
+/// work that had landed (escurel-runner's
+/// `a_draft_that_landed_outlives_the_harness_saying_it_failed` caught it).
+///
+/// Superseding destroys a human's queue entry, so it requires positive
+/// evidence: a base that names a head the page no longer has.
+#[tokio::test]
+async fn a_draft_with_no_base_is_not_treated_as_stale() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+
+    let first = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": page, "content": body("plan", "No base at all.") }),
+    )
+    .await;
+    assert_eq!(first["ok"], json!(true), "{first}");
+    let first_id = first["draft"]["draft_id"].as_str().expect("id").to_owned();
+
+    let second = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": page, "content": body("plan", "A second one.") }),
+    )
+    .await;
+    assert_eq!(
+        second["ok"],
+        json!(false),
+        "the baseless predecessor is LIVE, so the second is refused: {second}"
+    );
+
+    let waiting = call(&p, &token, "list_drafts", json!({})).await;
+    assert!(
+        waiting["drafts"]
+            .as_array()
+            .expect("drafts")
+            .iter()
+            .any(|d| d["draft_id"].as_str() == Some(first_id.as_str())),
+        "and the first draft must SURVIVE — discarding it would destroy a \
+         queue entry on a guess: {waiting}"
+    );
+}

@@ -285,7 +285,24 @@ pub(super) async fn tool_create_draft(
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_draft open check: {e}")))?
     {
-        if open.base_sha256.as_deref() == head_sha256.as_deref() {
+        // Superseding requires POSITIVE evidence that the predecessor is
+        // dead: a base that names a head the page no longer has. Anything
+        // else is live, and that includes a draft with NO base at all.
+        //
+        // Not a detail. `base_sha256: None` means "drafted as a create", but
+        // a caller may simply not have sent one — escurel's own runner
+        // harness drafts that way — and such a draft against an existing page
+        // would compare unequal to the head and be discarded as stale. The
+        // first version of this did exactly that: escurel-runner's
+        // `a_draft_that_landed_outlives_the_harness_saying_it_failed` went
+        // red, because the agent's SECOND tool call silently destroyed the
+        // good draft its first call had made, and the run was then recorded
+        // failed for work that had landed.
+        let predecessor_is_dead = open
+            .base_sha256
+            .as_deref()
+            .is_some_and(|base| Some(base) != head_sha256.as_deref());
+        if !predecessor_is_dead {
             return Ok(json!({
                 "ok": false,
                 "issues": [{
