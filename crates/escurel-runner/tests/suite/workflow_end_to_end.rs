@@ -3398,3 +3398,111 @@ async fn a_delegate_step_seals_and_get_operation_surfaces_the_result_ref_end_to_
         "the delegate result_ref must ride through the seal to get_operation: {op}"
     );
 }
+
+/// No-mock (fleet #801, option D — the delivery half): a delegated operation
+/// started from a chat turn delivers its produced `result_ref` on the terminal
+/// `/v1/outbound` callback, so the agent's receiver can resolve + render the
+/// table into the reply. Without this the callback carried only the status and a
+/// delegated op's chat reply was a bare "succeeded".
+#[tokio::test]
+async fn a_delegate_operation_delivers_its_result_ref_on_the_terminal_callback() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(DELEGATE_WF_SKILL, DELEGATE_WF_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let result_ref = json!({ "kind": "scenario_parquet", "scenario_id": "scn-delivery-e2e" });
+    let agent = spawn_stub_delegate_agent(result_ref.clone()).await;
+    let (sink_url, received) = spawn_outbound_sink().await;
+
+    // A chat turn: start with a conversation reference + the channel's tenant.
+    let conversation_ref = json!({
+        "channel": "msteams",
+        "conversation": { "id": "19:deleg_thread@thread.v2" },
+        "service_url": "https://smba.example/teams"
+    });
+    let requester = "alice-requester";
+    let started = call_mcp_as(
+        &gateway,
+        Role::Agent,
+        requester,
+        "start_operation",
+        json!({
+            "wf_skill": DELEGATE_WF_SKILL,
+            "input": "Run the delegated step.",
+            "conversation_ref": conversation_ref,
+            "channel_tenant": "acme-tenant-guid",
+        }),
+    )
+    .await;
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
+
+    // A MINTING runner (per-run scoped token + the delegation token) wired to the
+    // stub agent AND the outbound sink.
+    let (signing_key, kid) = gateway.signing_material();
+    let issuer = gateway.issuer_url().to_owned();
+    let port = free_port();
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", format!("127.0.0.1:{port}"))
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", &issuer)
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_AUTH_SUBJECT", "escurel-runner")
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env("ESCUREL_RUNNER_AGENT_A2A_URL", &agent)
+        .env("ESCUREL_RUNNER_AGENT_A2A_AUDIENCE", "agent-a2a")
+        .env("ESCUREL_RUNNER_OUTBOUND_URL", &sink_url)
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The terminal delivery carries the produced result_ref (find it among any
+    // progress pushes).
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let delivered = loop {
+        let hit = received
+            .lock()
+            .expect("sink mutex")
+            .iter()
+            .find(|d| {
+                d["operation_id"].as_str() == Some(operation_id.as_str())
+                    && d["status"].as_str() == Some("succeeded")
+            })
+            .cloned();
+        if let Some(d) = hit {
+            break Some(d);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let delivery = delivered.expect("the delegate operation must be delivered to the courier");
+    assert_eq!(
+        delivery["result_ref"], result_ref,
+        "the produced result_ref must ride the terminal callback for the agent to render: {delivery}"
+    );
+}

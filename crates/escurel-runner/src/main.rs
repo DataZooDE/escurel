@@ -839,6 +839,13 @@ async fn deliver_terminal(
     if let Some(tenant) = &delivery.channel_tenant {
         body["channel_tenant"] = serde_json::json!(tenant);
     }
+    // A succeeded operation's produced-artifact reference (fleet #801, option D):
+    // a delegated step returns only this, so the receiver resolves + renders it
+    // into the reply when there is no already-rendered `result`. Omitted (not
+    // null) when the operation produced no artifact.
+    if let Some(result_ref) = &delivery.result_ref {
+        body["result_ref"] = result_ref.clone();
+    }
     // The agent's delivery receiver (`AGENT_ASYNC_CALLBACK_BEARER`) refuses a
     // callback with no/ wrong bearer (401). Attach it when configured; a sink
     // that requires none (a pull-only deploy, a test stub) leaves it unset.
