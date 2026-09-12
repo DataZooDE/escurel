@@ -36,6 +36,7 @@
 mod agy;
 mod claude;
 mod codex;
+mod delegate;
 mod echo;
 mod gemini;
 mod harness;
@@ -45,6 +46,10 @@ mod task;
 pub use agy::AgyHarness;
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;
+pub use delegate::{
+    DEFAULT_POLL_INTERVAL as DELEGATE_DEFAULT_POLL_INTERVAL,
+    DEFAULT_TIMEOUT as DELEGATE_DEFAULT_TIMEOUT, DelegateHarness, NAME as DELEGATE_NAME,
+};
 pub use echo::EchoHarness;
 pub use gemini::{
     DEFAULT_BASE_URL as GEMINI_DEFAULT_BASE_URL, DEFAULT_MODEL as GEMINI_DEFAULT_MODEL,

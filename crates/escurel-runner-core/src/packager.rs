@@ -220,6 +220,60 @@ pub struct TaskContext {
     /// minted, short-TTL" token) is a later concern — this field is the
     /// seam where that minting will land without changing the public shape.
     token: SecretString,
+    /// The delegation seam for a `harness: delegate` step (async-ops Phase 4
+    /// slice 3c): where to reach the agent's A2A endpoint, what capability to
+    /// ask it for, and the runner→agent delegation token (aud=agent, minted by
+    /// [`crate::auth::Signer::mint_delegation`]). `None` for every ordinary
+    /// step — only the packager, and only for a delegate step, fills it in. The
+    /// `DelegateHarness` reads it and refuses (fails closed) when it is `None`.
+    delegation: Option<Delegation>,
+}
+
+/// The A2A delegation parameters for a `harness: delegate` step (async-ops
+/// Phase 4 slice 3c). escurel is the orchestrator; the domain implementation
+/// lives next to the agent, so a delegate step hands the work to the agent over
+/// A2A and waits for it to name a result. Carried per-task because the
+/// delegation token is minted fresh per requester.
+#[derive(Clone)]
+pub struct Delegation {
+    /// The agent's A2A endpoint (`AGENT_A2A_URL`) the runner POSTs the
+    /// JSON-RPC `message/send` / `tasks/get` to.
+    pub agent_a2a_url: String,
+    /// The capability the delegated task asks the agent for (e.g. `scenario`).
+    /// Domain-agnostic to the runner — the agent decides what it means.
+    pub capability: String,
+    /// The runner→agent delegation bearer, held opaque (aud=agent, empty roles,
+    /// `purpose=internal_delegation`). Redacted from `Debug`.
+    token: SecretString,
+}
+
+impl Delegation {
+    /// Construct a delegation, wrapping the bearer opaquely.
+    #[must_use]
+    pub fn new(agent_a2a_url: String, capability: String, token: SecretString) -> Self {
+        Self {
+            agent_a2a_url,
+            capability,
+            token,
+        }
+    }
+
+    /// The delegation bearer as a `&str` (the single explicit read path; kept
+    /// out of `Debug` via [`SecretString`]).
+    #[must_use]
+    pub fn token_str(&self) -> &str {
+        self.token.expose_secret()
+    }
+}
+
+impl std::fmt::Debug for Delegation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Delegation")
+            .field("agent_a2a_url", &self.agent_a2a_url)
+            .field("capability", &self.capability)
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 impl TaskContext {
@@ -232,6 +286,23 @@ impl TaskContext {
     /// single, explicit read path.
     pub fn token_str(&self) -> &str {
         self.token.expose_secret()
+    }
+
+    /// The delegation parameters for a `harness: delegate` step, if this task is
+    /// one. `None` for every ordinary step — the `DelegateHarness` treats that
+    /// as "not a delegate task" and refuses.
+    #[must_use]
+    pub fn delegation(&self) -> Option<&Delegation> {
+        self.delegation.as_ref()
+    }
+
+    /// Attach delegation parameters (async-ops Phase 4 slice 3c). Builder-style
+    /// so the packager sets it only for a delegate step and every other
+    /// construction path leaves it `None`.
+    #[must_use]
+    pub fn with_delegation(mut self, delegation: Delegation) -> Self {
+        self.delegation = Some(delegation);
+        self
     }
 
     /// Construct a `TaskContext` directly from its parts.
@@ -257,6 +328,7 @@ impl TaskContext {
             // silently exercises the committing surface.
             autonomy: Autonomy::Review,
             token,
+            delegation: None,
         }
     }
 }
@@ -556,6 +628,7 @@ pub async fn package(
         mcp_endpoint: mcp_endpoint(&cfg.gateway_url),
         allowed_tools: tools.iter().map(|s| s.to_string()).collect(),
         token,
+        delegation: None,
     })
 }
 
@@ -1208,6 +1281,7 @@ mod tests {
             allowed_tools: vec!["update_page".into()],
             autonomy: Autonomy::Auto,
             token: SecretString::from("super-secret-token".to_string()),
+            delegation: None,
         };
         let dbg = format!("{ctx:?}");
         assert!(dbg.contains("<redacted>"));
