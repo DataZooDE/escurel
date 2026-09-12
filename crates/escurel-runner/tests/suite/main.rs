@@ -20,6 +20,7 @@
 mod agy_live;
 mod autonomy_gate;
 mod cascade_lineage;
+mod cascade_produced;
 mod cascade_trace;
 mod claude_live;
 mod codex_live;

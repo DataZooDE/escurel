@@ -71,7 +71,8 @@ event → agent → event projection loop escurel already runs
 
 **The runner is already a reducer — a degenerate one.** On a confirmed
 **cross-skill** write, `emit_cascade` emits **at most one** follow-on event
-(to the produced skill's `cascade_target`, else unassigned); a same-skill
+(to the produced skill's `cascade_target` — a static page id, or `produced`
+for the instance the run just wrote (#502) — else unassigned); a same-skill
 hop emits **zero** and the chain quiesces. That *is* a plan-driven emit
 policy — just a hardwired one, with **width ≤ 1 and no join.** A workflow
 doesn't replace this loop; it **generalizes its emit policy** along exactly
@@ -441,7 +442,7 @@ content-addressed step identity keeps the *event log* replay-safe. It is
 | `opts.model` / `opts.effort` | per-phase `harness:`/model frontmatter on the workflow skill — **new**: today the adapter is one global `RunnerConfig.harness` built at startup; per-`label_skill` selection must be added |
 | `opts.isolation: 'worktree'` | already the default — each harness run gets an isolated per-run working dir (mandatory for the Codex adapter) |
 | `parallel(thunks)` (barrier) | emit the batch with a shared `barrier` id + §3.6 keys; reducer closes the barrier via the agent-safe `list_instances` tally ∪ ledger terminal read (§3.5), not admin SQL |
-| `pipeline(items, ...stages)` (no barrier) | the **reducer** emits per-item step events, carrying per-item routing in `provenance.workflow.over`; independent items advance independently. *Not* `emit_cascade` — that fires only cross-skill, emits ≤1 event, and routes to a single static `cascade_target`, so it cannot express per-item stage routing |
+| `pipeline(items, ...stages)` (no barrier) | the **reducer** emits per-item step events, carrying per-item routing in `provenance.workflow.over`; independent items advance independently. *Not* `emit_cascade` — that fires only cross-skill, emits ≤1 event, and routes to ONE destination (a static `cascade_target`, or `produced` for the instance just written), so it cannot express per-item stage routing |
 | `phase(title)` | `phase` field on step events + a `phase.entered` marker; drives the run-instance board and reducer sequencing |
 | `log(msg)` | append to the run instance overlay (or `append_message` on a run chat group) |
 | `budget` / `budget.remaining()` | `quota::Governor` (runs/min, max concurrent) + `admit::LoopLimits.max_runs_per_root` as the total-fan-out cap (deep-research's "1000 agents/run" analogue) |

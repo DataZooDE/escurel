@@ -57,6 +57,13 @@ pub enum CascadeOutcome {
     NotCrossSkill,
 }
 
+/// The `cascade_target` value meaning "the instance this run just wrote".
+///
+/// A sentinel rather than a second frontmatter key: a skill declares ONE
+/// routing rule, and two keys that could disagree is a way for a corpus to be
+/// quietly self-contradictory.
+pub const PRODUCED_SENTINEL: &str = "produced";
+
 /// Errors raised while emitting a cascade.
 #[derive(Debug, thiserror::Error)]
 pub enum CascadeError {
@@ -112,9 +119,29 @@ pub async fn emit_cascade(
     // hop produces no cross-skill change, so the chain converges (the #156
     // behaviour). This keeps the cascade in-corpus and data-driven, never
     // hardcoded.
-    let cascade_target = resolve_cascade_target(client, &produced_skill)
-        .await
-        .unwrap_or_default();
+    let cascade_target = match resolve_cascade_target(client, &produced_skill).await {
+        // **`produced` — the instance this run just wrote.**
+        //
+        // A static page id cannot express the chain most corpora actually
+        // want. `datazoo-loops` (#502) has 37 emails, 24 contacts and 5
+        // customers, and its skills describe themselves as folding an event
+        // "into the typed entities it concerns" — which contact that is
+        // depends on the content. A static target on `contact` would send all
+        // 24 contacts' follow-ons to one hard-coded page: a cascade that
+        // fires, looks healthy, and files into the wrong record.
+        //
+        // The produced instance is already in hand, so the follow-on lands on
+        // the page that changed and the NEXT skill's own procedure decides
+        // what follows from it — the skill page as the contract, rather than
+        // a routing table in frontmatter.
+        Some(t) if t == PRODUCED_SENTINEL => effect.instance_page_id.clone(),
+        Some(t) => t,
+        // Absent stays unassigned, and that default is deliberate: a
+        // no-target hop produces no cross-skill change, so the chain
+        // converges (#156). Making `produced` the default instead would turn
+        // every cross-skill write in every existing corpus into a chain.
+        None => String::new(),
+    };
 
     let event = client
         .capture_event(CaptureEventRequest {
