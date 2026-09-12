@@ -81,6 +81,7 @@ mod promotion_gate;
 mod provenance_analytics;
 mod provenance_ancestry;
 mod provenance_path;
+mod quack_enforcement;
 mod query_instance_tools;
 mod reader_role;
 mod reader_role_chat;
