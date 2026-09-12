@@ -95,6 +95,13 @@ pub struct TerminalDelivery {
     /// nothing (DataZooDE/triton#332). `None` for an operation started
     /// before this field existed, or off-chat.
     pub channel_tenant: Option<String>,
+    /// The produced-artifact reference for a SUCCEEDED operation (a serialized
+    /// `escurel_types::ResultRef`), when one was stamped — e.g. a `harness:
+    /// delegate` step whose agent produced a table (fleet #801, option D). The
+    /// receiver renders it into the chat reply when the operation carries no
+    /// already-rendered `result`. `None` for a failure/hold, a progress note, or
+    /// an operation that produced no artifact.
+    pub result_ref: Option<serde_json::Value>,
 }
 
 /// Errors driving a workflow reducer pass.
@@ -410,12 +417,22 @@ async fn maybe_delivery(
         .get("channel_tenant")
         .and_then(|v| v.as_str())
         .map(str::to_owned);
+    // A SUCCEEDED operation may carry a produced-artifact ref (e.g. a delegated
+    // table) the receiver renders into the reply — read it from the board's
+    // stamped status the same way `get_operation` does. Only for `succeeded`: a
+    // failure/hold has no artifact.
+    let result_ref = if matches!(status, OperationStatus::Succeeded) {
+        last_stamped_result_ref(client, operation).await
+    } else {
+        None
+    };
     Some(TerminalDelivery {
         operation_id: operation.to_owned(),
         status: status.as_str().to_owned(),
         conversation_ref,
         note: None,
         channel_tenant,
+        result_ref,
     })
 }
 
@@ -477,6 +494,8 @@ async fn maybe_progress_delivery(
         conversation_ref,
         note: Some(note),
         channel_tenant,
+        // A progress note carries no artifact — the run has not produced yet.
+        result_ref: None,
     })
 }
 
