@@ -58,6 +58,12 @@ async fn a_per_schema_policy_isolates_tenants_for_direct_write_to_ducklake() {
     // A per-tenant schema layout: tenant_a is the requester's own data, its
     // result schema is where a delegated result lands, and tenant_b stands in
     // for ANOTHER tenant's data that must stay unreachable.
+    //
+    // NOTE: the policy rows below are DELIBERATELY the legacy NULL-subject,
+    // glob-object shape (`tenant_a.*`) to probe quack_oauth's raw enforcement.
+    // Production rows are subject-bound + LITERAL objects; the NORMATIVE builder
+    // is `escurel_index::quack_policy::scoped_session_policy` (which refuses this
+    // NULL-subject/glob shape, crew F3/F5). Do NOT copy this seed into prod.
     conn.execute_batch(
         "CREATE SCHEMA tenant_a; CREATE SCHEMA result_tenant_a; CREATE SCHEMA tenant_b; \
          CREATE TABLE tenant_a.entitled AS SELECT 1 AS id, 'ok' AS v; \
