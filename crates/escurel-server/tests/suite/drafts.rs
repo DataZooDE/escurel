@@ -1497,3 +1497,197 @@ async fn a_correction_that_would_not_validate_is_refused() {
     let ok = call(&p, &token, "promote_draft", json!({ "draft_id": &id })).await;
     assert_eq!(ok["ok"], json!(true), "control: {ok}");
 }
+
+/// **An interrupted promotion completes instead of wedging the draft.**
+///
+/// A promotion is two writes: the page, then the draft's own row. Between them
+/// the process can die or the client's connection can drop, and on the
+/// deployed gateway the gap is about twelve seconds wide — the markdown lane
+/// and the lake both live on Google Drive, and the promotion waits for both.
+///
+/// What that leaves is a page already carrying the draft's bytes and a draft
+/// still `open`. The retry used to CONFLICT: `base_sha256` names the
+/// pre-promotion head, the page has moved — to exactly these bytes — and the
+/// CAS refused for the wrong reason. The draft could then never be promoted,
+/// only discarded, by a human who first had to work out that their change had
+/// in fact landed. Since #481 it also blocked re-drafting that page at all.
+///
+/// The first half is reproduced here by writing the page directly with the
+/// draft's own content, which is precisely what a promotion that died after
+/// its first write leaves behind.
+#[tokio::test]
+async fn an_interrupted_promotion_completes_instead_of_wedging_the_draft() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let proposed = body("plan", "APPROVED, and the write landed.");
+
+    let captured = call(
+        &p,
+        &token,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "note",
+            "title": "the thread behind the draft",
+            "body": "the body",
+        }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().expect("event_id").to_owned();
+
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": &proposed,
+            "base_sha256": sha(BASE),
+            "event_id": &event_id,
+        }),
+    )
+    .await;
+    assert_eq!(created["ok"], json!(true), "{created}");
+    let draft_id = created["draft"]["draft_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // The first half of the promotion, and nothing after it: the page now
+    // holds the draft's bytes while the draft is still open. The draft's
+    // `base_sha256` is now stale against a head it wrote itself.
+    let landed = call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": PAGE, "content": &proposed }),
+    )
+    .await;
+    assert_eq!(landed["ok"], json!(true), "first half: {landed}");
+    assert_eq!(
+        page_sha(&p, &token, PAGE).await,
+        Some(sha(&proposed)),
+        "precondition: the page must already carry the draft's bytes"
+    );
+
+    // The retry. It must succeed, and say why it did not have to write.
+    let retry = call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": &draft_id }),
+    )
+    .await;
+    assert_eq!(
+        retry["ok"],
+        json!(true),
+        "a promotion whose write already landed must complete, not refuse: {retry}"
+    );
+    assert_eq!(
+        retry["already_applied"],
+        json!(true),
+        "…and must say it recognised the write rather than making a new one: {retry}"
+    );
+
+    // The second half really ran. All three parts, because each fails
+    // differently and each alone leaves the loop broken: a draft that stays
+    // open is a card that never goes away, and an event that stays in the
+    // inbox is re-dispatched and re-drafted on the next runner restart.
+    let decided = call(&p, &token, "list_drafts", json!({})).await;
+    assert!(
+        !decided["drafts"]
+            .as_array()
+            .expect("drafts")
+            .iter()
+            .any(|d| d["draft_id"] == json!(draft_id)),
+        "the draft must be closed: {decided}"
+    );
+    let inbox = call(&p, &token, "list_inbox", json!({})).await;
+    assert!(
+        !inbox["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|e| e["event_id"] == json!(event_id)),
+        "the event must be retired too, or the next restart drafts it again: {inbox}"
+    );
+    assert_eq!(
+        page_sha(&p, &token, PAGE).await,
+        Some(sha(&proposed)),
+        "and the page must be untouched — there was nothing left to write"
+    );
+}
+
+/// A GENUINE stale base is still a conflict, and the draft still survives it.
+///
+/// The control for the test above, and the reason that one is allowed to
+/// exist. "The page moved to exactly my bytes" and "the page moved" are one
+/// condition apart, and widening the first into the second would turn the CAS
+/// off: a reviewer would approve a diff against one base and silently land it
+/// over somebody else's edit.
+#[tokio::test]
+async fn a_page_that_moved_to_other_bytes_is_still_a_conflict() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": body("plan", "DRAFTED against v1."),
+            "base_sha256": sha(BASE),
+        }),
+    )
+    .await;
+    let draft_id = created["draft"]["draft_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // Someone else's edit — NOT this draft's bytes, which is the whole
+    // difference from the interrupted-promotion case above.
+    let moved = body("plan", "somebody else got there first.");
+    let w = call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": PAGE, "content": &moved }),
+    )
+    .await;
+    assert_eq!(w["ok"], json!(true), "{w}");
+
+    let conflict = call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": &draft_id }),
+    )
+    .await;
+    assert_eq!(
+        conflict["ok"],
+        json!(false),
+        "a real stale base must still refuse: {conflict}"
+    );
+    assert_eq!(
+        conflict["issues"][0]["code"],
+        json!("conflict"),
+        "{conflict}"
+    );
+    assert_eq!(
+        page_sha(&p, &token, PAGE).await,
+        Some(sha(&moved)),
+        "and must not have overwritten the other edit"
+    );
+    let waiting = call(&p, &token, "list_drafts", json!({})).await;
+    assert!(
+        waiting["drafts"]
+            .as_array()
+            .expect("drafts")
+            .iter()
+            .any(|d| d["draft_id"] == json!(draft_id)),
+        "the draft stays open so the work can be re-drafted against the head"
+    );
+}

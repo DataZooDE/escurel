@@ -487,9 +487,68 @@ pub(super) async fn tool_promote_draft(
     if let Some(base) = &draft.base_sha256 {
         write_args["base_sha256"] = json!(base);
     }
-    let result =
+    let promoted = corrected.unwrap_or(draft.content.as_str()).to_owned();
+    let mut result =
         crate::mcp::tools_write::tool_update_page(state, indexer, caller, write_acl, write_args)
             .await?;
+
+    // **The interrupted promotion.**
+    //
+    // A promotion is two writes: the page, then the draft's own row. Between
+    // them the process can die, or the client's connection can drop — and on
+    // the deployed gateway the gap is not theoretical, because the markdown
+    // lane and the lake both live on Google Drive and a promotion takes about
+    // twelve seconds.
+    //
+    // What that leaves is a page carrying this draft's bytes and a draft that
+    // is still `open`. The retry then CONFLICTS: `base_sha256` names the
+    // pre-promotion head, the page has moved — to exactly this draft's
+    // content — and the CAS refuses, correctly, for the wrong reason. The
+    // draft can then never be promoted. It can only be discarded, by a human
+    // who first has to work out that the write already landed, and since #481
+    // it blocks any re-draft of that page until they do.
+    //
+    // So: a conflict whose `head_sha256` equals the hash of the bytes being
+    // promoted is not a conflict at all. Nobody else changed anything, there
+    // is nothing to re-review, and what remains is the second half that never
+    // ran. Finish it and report success.
+    //
+    // Deliberately narrow, because every widening is a hole in the CAS:
+    //
+    //  - the code must be `conflict`. A `forbidden` or a validation refusal
+    //    is never "already applied", whatever the page happens to contain.
+    //  - `head_sha256` must be present and NON-EMPTY. Absent is ignorance
+    //    rather than agreement; empty means no page exists, which cannot be
+    //    an applied write.
+    //  - it is compared against the bytes THIS call would write — the
+    //    correction when there is one, the stored draft otherwise — so an
+    //    approval carrying a correction is never absorbed by a page holding
+    //    the uncorrected original.
+    //
+    // Heron carried this fix on its proposal path, where it works; this is
+    // the same rule on the path that is actually live (#489).
+    let already_applied = result.get("ok").and_then(Value::as_bool) == Some(false)
+        && result["issues"].as_array().is_some_and(|issues| {
+            issues
+                .iter()
+                .any(|i| i["code"].as_str() == Some("conflict"))
+        })
+        && result["head_sha256"]
+            .as_str()
+            .filter(|h| !h.is_empty())
+            .is_some_and(|head| {
+                use sha2::{Digest, Sha256};
+                head == format!("{:x}", Sha256::digest(promoted.as_bytes()))
+            });
+    if already_applied {
+        tracing::info!(
+            draft_id = %draft.draft_id,
+            page_id = %target_page_id,
+            "promote_draft: the write had already landed; completing the \
+             decision instead of refusing it"
+        );
+        result = json!({ "ok": true, "already_applied": true });
+    }
 
     // Close the draft ONLY on a landed write. An `ok:false` (a stale CAS, a
     // validation refusal) leaves it open, which is what makes a re-drafted
@@ -543,7 +602,6 @@ pub(super) async fn tool_promote_draft(
     // Name the decider back to the caller. A gateway that vouched for a human
     // can log what the store recorded rather than what it hoped the store
     // recorded — and a test can assert it without a second read path.
-    let mut result = result;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("decided_by".to_owned(), json!(subject));
     }
