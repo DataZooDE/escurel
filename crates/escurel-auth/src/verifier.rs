@@ -151,7 +151,17 @@ pub enum AuthError {
     UnsupportedAlg(Algorithm),
     #[error("token missing required `{tenant_claim}` claim")]
     MissingTenant { tenant_claim: String },
+    #[error("token carries purpose `{0}`, which is not accepted at this surface")]
+    PurposeRefused(String),
 }
+
+/// The `purpose` claim + value on a runner→agent INTERNAL-DELEGATION token
+/// (fleet #801 AD-7). Kept in lock-step with
+/// `escurel_runner_core::auth::{PURPOSE_CLAIM, DELEGATION_PURPOSE}` — escurel-auth
+/// must not depend on runner-core (the dependency runs the other way), so the
+/// strings are duplicated here with this note.
+const DELEGATION_PURPOSE_CLAIM: &str = "purpose";
+const DELEGATION_PURPOSE: &str = "internal_delegation";
 
 #[derive(Debug, Deserialize)]
 struct Claims {
@@ -285,6 +295,23 @@ impl OidcVerifier {
             .map_err(|e| AuthError::Invalid(e.to_string()))?;
 
         let claims = token_data.claims;
+
+        // Defense-in-depth (fleet #801 AD-7): a runner→agent internal-delegation
+        // token is signed by the same issuer and verified against the same JWKS
+        // as a gateway bearer, differing only by `aud` (the AGENT's, not
+        // escurel's) and this `purpose`. The audience gate above already refuses
+        // it, but reject the purpose explicitly and independently so a delegation
+        // token can never authenticate at escurel's own surfaces even if a future
+        // misconfiguration ever widened the accepted audience.
+        if claims
+            .rest
+            .get(DELEGATION_PURPOSE_CLAIM)
+            .and_then(serde_json::Value::as_str)
+            == Some(DELEGATION_PURPOSE)
+        {
+            return Err(AuthError::PurposeRefused(DELEGATION_PURPOSE.to_owned()));
+        }
+
         let tenant_id = claims
             .rest
             .get(&self.config.tenant_claim)

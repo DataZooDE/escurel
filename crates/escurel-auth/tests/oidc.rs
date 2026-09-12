@@ -120,6 +120,79 @@ async fn verifies_a_well_formed_token_to_agent_role() {
     assert_eq!(ctx.role, Role::Agent);
 }
 
+/// A runner→agent internal-delegation token is refused at the gateway surface
+/// even when it carries escurel's OWN audience (fleet #801 AD-7 fail-closed).
+///
+/// The delegation token is signed by the same issuer and verified against the
+/// same JWKS as a gateway bearer; its only intended separation is `aud` (the
+/// agent's). This test mints one with `aud=escurel` on purpose — so it PASSES
+/// the audience gate — and asserts the explicit `purpose` reject refuses it
+/// anyway. That is the defense-in-depth the design promises: a leaked delegation
+/// bearer is not a candidate `/mcp` credential even under an audience
+/// misconfiguration.
+#[tokio::test]
+async fn a_delegation_purpose_token_is_refused_even_with_escurels_own_audience() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let token = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE, // escurel's OWN audience → passes the aud gate
+            "sub": "escurel-async-runner",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+            "roles": [],
+            "purpose": "internal_delegation"
+        }),
+    );
+
+    let err = v
+        .verify(&token)
+        .await
+        .expect_err("delegation purpose must be refused");
+    assert!(
+        matches!(err, AuthError::PurposeRefused(ref p) if p == "internal_delegation"),
+        "expected PurposeRefused, got {err:?}"
+    );
+}
+
+/// Positive control: the SAME token shape WITHOUT the delegation purpose still
+/// verifies — so the test above is about the purpose, not a coincidental
+/// rejection.
+#[tokio::test]
+async fn the_same_token_without_the_delegation_purpose_verifies() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let token = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "escurel-async-runner",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+            "roles": []
+        }),
+    );
+
+    let ctx = v.verify(&token).await.expect("verify without purpose");
+    assert_eq!(ctx.subject, "escurel-async-runner");
+    assert_eq!(ctx.tenant_id, "acme");
+}
+
 /// An expired bearer is refused the second it expires, not a minute later.
 ///
 /// `jsonwebtoken` defaults `leeway` to 60 seconds. Inherited, that accepted a
