@@ -3279,3 +3279,122 @@ async fn eval_regression_is_flagged_when_a_fix_does_not_hold() {
         "an unresolved fix raises an eval_regression for the page: {issues:?}"
     );
 }
+
+/// A stub agent A2A endpoint that completes any delegated task immediately with
+/// the given `result_ref` in `task.metadata.result_ref` (JSON-RPC `message/send`
+/// and `tasks/get` both answer `completed`).
+async fn spawn_stub_delegate_agent(result_ref: Value) -> String {
+    use axum::{Router, routing::post};
+    let task = json!({
+        "id": "task-e2e",
+        "status": { "state": "completed" },
+        "metadata": { "result_ref": result_ref },
+    });
+    let app = Router::new().route(
+        "/a2a",
+        post(move |_body: String| {
+            let task = task.clone();
+            async move { axum::Json(json!({ "jsonrpc": "2.0", "id": 1, "result": task })) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}/a2a")
+}
+
+/// async-ops Phase 4 (crew option D), the full loop end-to-end: a real gateway +
+/// a MINTING runner delegate a `harness: delegate` step to a stub agent, the
+/// agent returns a `result_ref`, the harness SEALS it (writes the step's produced
+/// instance over /mcp with the requester's scoped token), the reducer confirms
+/// the step, and `get_operation` surfaces the `result_ref`. This is the
+/// integration proof that the delegate seal closes the loop.
+#[tokio::test]
+async fn a_delegate_step_seals_and_get_operation_surfaces_the_result_ref_end_to_end() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(DELEGATE_WF_SKILL, DELEGATE_WF_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let result_ref = json!({ "kind": "scenario_parquet", "scenario_id": "scn-delegate-e2e" });
+    let agent = spawn_stub_delegate_agent(result_ref.clone()).await;
+
+    // The requester starts the operation via the facade, so the run board carries
+    // `requested_by` — the minting runner scopes the run to it, and the seal
+    // writes the produced instance as that requester (the #468 produced-write grant).
+    let requester = "alice-requester";
+    let started = call_mcp_as(
+        &gateway,
+        Role::Agent,
+        requester,
+        "start_operation",
+        json!({ "wf_skill": DELEGATE_WF_SKILL, "input": "Run the delegated step." }),
+    )
+    .await;
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
+
+    // A MINTING runner (so it can mint the per-run scoped token AND the delegation
+    // token) pointed at the stub agent.
+    let (signing_key, kid) = gateway.signing_material();
+    let issuer = gateway.issuer_url().to_owned();
+    let port = free_port();
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", format!("127.0.0.1:{port}"))
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", &issuer)
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_AUTH_SUBJECT", "escurel-runner")
+        .env("ESCUREL_RUNNER_HARNESS", "echo") // the plan's step declares `delegate`
+        .env("ESCUREL_RUNNER_AGENT_A2A_URL", &agent)
+        .env("ESCUREL_RUNNER_AGENT_A2A_AUDIENCE", "agent-a2a")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // The delegate step seals its result → the reducer confirms → the operation
+    // reaches terminal `succeeded`.
+    assert!(
+        await_operation_status(&gateway, &operation_id, "succeeded", 60).await,
+        "the delegate operation must reach `succeeded` (seal → confirm → done)"
+    );
+
+    // get_operation surfaces the agent's result_ref, carried by the sealed step.
+    let op = call_mcp_as(
+        &gateway,
+        Role::Agent,
+        requester,
+        "get_operation",
+        json!({ "operation_id": operation_id }),
+    )
+    .await;
+    assert_eq!(op["status"], json!("succeeded"), "{op}");
+    assert_eq!(
+        op["result_ref"], result_ref,
+        "the delegate result_ref must ride through the seal to get_operation: {op}"
+    );
+}
