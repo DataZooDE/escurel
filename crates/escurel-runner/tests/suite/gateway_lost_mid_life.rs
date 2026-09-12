@@ -157,15 +157,32 @@ fn a_gateway_that_disappears_mid_life_does_not_dead_letter_the_work() {
     // Now take the gateway away, exactly as a rollout does.
     stop.store(true, Ordering::SeqCst);
     server.join().expect("stub gateway thread");
-    let refused = TcpStream::connect_timeout(
-        &format!("127.0.0.1:{gateway_port}").parse().unwrap(),
-        Duration::from_millis(250),
-    );
-    assert!(
-        refused.is_err(),
-        "premise: the port must actually be refusing connections now, or the \
-         run below is not facing an absent gateway"
-    );
+    // Poll for the refusal rather than demanding it on the first attempt.
+    //
+    // Joining the thread guarantees the listener was dropped, but not that
+    // the port is refusing THIS instant: the kernel may still be draining the
+    // accept queue, and on a loaded runner another test in this binary can
+    // bind the freed number in the gap. A single attempt turned that into a
+    // red build on 2026-09-12 that passed on re-run — the shape that teaches
+    // people to re-run instead of read.
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{gateway_port}").parse().unwrap();
+    let refusal_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match TcpStream::connect_timeout(&addr, Duration::from_millis(250)) {
+            Err(_) => break,
+            Ok(_) if Instant::now() < refusal_deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(_) => panic!(
+                "premise: port {gateway_port} is still accepting connections \
+                 3s after the stub gateway was stopped and its thread joined, \
+                 so the run below would not be facing an absent gateway. The \
+                 listener is dropped on thread exit, so something ELSE is \
+                 bound here — most likely another test in this binary that \
+                 was handed the same freed port number."
+            ),
+        }
+    }
 
     let accepted = client
         .post(format!("http://{listen}/trigger"))
