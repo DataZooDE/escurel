@@ -18,6 +18,7 @@
 
 mod admin_roundtrip;
 mod client_roundtrip;
+mod connect_retry;
 mod contract_parity;
 mod sql_view_search;
 mod streaming_roundtrip;
