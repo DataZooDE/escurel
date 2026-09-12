@@ -35,6 +35,7 @@ pub mod indexer;
 mod materialise;
 pub mod meta_skill;
 pub mod pack;
+pub mod quack_policy;
 pub mod query;
 pub mod read;
 pub mod result_ref;
