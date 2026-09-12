@@ -258,3 +258,80 @@ async fn a_hung_agent_endpoint_times_out_instead_of_blocking_forever() {
         "must fail near the per-request timeout, took {elapsed:?}"
     );
 }
+
+/// The seal: on success the harness writes the step's produced instance over
+/// /mcp (carrying the result_ref) and returns it — so the reducer confirms the
+/// step and get_operation surfaces the result. Uses a stub /mcp sink.
+#[tokio::test]
+async fn the_seal_writes_the_produced_instance_over_mcp_and_returns_it() {
+    use axum::{Router, extract::State, routing::post};
+
+    // Stub A2A: returns a completed task with a result_ref.
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let expected_ref = json!({ "kind": "result_table", "producer": "scenario", "id": "r1" });
+    let a2a = spawn_stub_agent(expected_ref.clone(), false, seen).await;
+
+    // Stub /mcp: records the update_page it receives, returns success.
+    let mcp_calls: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route(
+            "/mcp",
+            post(
+                |State(calls): State<Arc<Mutex<Vec<Value>>>>, body: String| async move {
+                    let req: Value = serde_json::from_str(&body).expect("mcp json");
+                    calls.lock().unwrap().push(req);
+                    axum::Json(
+                        json!({ "jsonrpc": "2.0", "id": 1, "result": { "structuredContent": {} } }),
+                    )
+                },
+            ),
+        )
+        .with_state(mcp_calls.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let mcp_endpoint = format!("http://{mcp_addr}/mcp");
+
+    let produced = "markdown/instances/research-report/r1-produce-abc.md";
+    let delegation = Delegation::new(
+        a2a,
+        "scenario".to_owned(),
+        SecretString::from("delegation-bearer".to_owned()),
+    )
+    .with_produced_instance(Some(produced.to_owned()));
+    let task = TaskContext::for_test(
+        "instructions".to_owned(),
+        "run it".to_owned(),
+        mcp_endpoint,
+        vec![],
+        SecretString::from("scoped-token".to_owned()),
+    )
+    .with_delegation(delegation);
+
+    let harness =
+        DelegateHarness::new().with_timeouts(Duration::from_millis(10), Duration::from_secs(5));
+    let outcome = harness.run(&task).await.expect("delegate+seal");
+
+    // The outcome reports the produced instance + the result_ref.
+    assert_eq!(outcome.produced_instance.as_deref(), Some(produced));
+    assert_eq!(outcome.result_ref.as_ref(), Some(&expected_ref));
+
+    // The seal actually wrote that instance over /mcp, carrying the result_ref.
+    let calls = mcp_calls.lock().unwrap();
+    let update = calls
+        .iter()
+        .find(|c| c["params"]["name"] == "update_page")
+        .expect("an update_page call was made");
+    assert_eq!(update["params"]["arguments"]["page_id"], produced);
+    let content = update["params"]["arguments"]["content"].as_str().unwrap();
+    assert!(
+        content.contains("result_table"),
+        "content carries the result_ref: {content}"
+    );
+    assert!(
+        content.contains("skill: research-report"),
+        "content is a research-report instance: {content}"
+    );
+}

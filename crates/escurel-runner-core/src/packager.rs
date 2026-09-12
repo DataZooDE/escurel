@@ -245,6 +245,13 @@ pub struct Delegation {
     /// The runner→agent delegation bearer, held opaque (aud=agent, empty roles,
     /// `purpose=internal_delegation`). Redacted from `Debug`.
     token: SecretString,
+    /// The step's produced-instance page id (the pre-flagged
+    /// `markdown/instances/<skill>/<id>.md` the reducer will read back). After
+    /// the agent returns a `result_ref`, the delegate harness writes THIS
+    /// instance over `/mcp` — the "seal" — so the step confirms like every other
+    /// harness's produced instance and the `result_ref` reaches `get_operation`.
+    /// `None` when the step declares no produced instance (nothing to seal).
+    produced_instance: Option<String>,
 }
 
 impl Delegation {
@@ -255,7 +262,22 @@ impl Delegation {
             agent_a2a_url,
             capability,
             token,
+            produced_instance: None,
         }
+    }
+
+    /// Attach the produced-instance page id the seal writes after the agent
+    /// returns a result (see the field docs).
+    #[must_use]
+    pub fn with_produced_instance(mut self, page_id: Option<String>) -> Self {
+        self.produced_instance = page_id;
+        self
+    }
+
+    /// The produced-instance page id the seal must write, if the step declares one.
+    #[must_use]
+    pub fn produced_instance(&self) -> Option<&str> {
+        self.produced_instance.as_deref()
     }
 
     /// The delegation bearer as a `&str` (the single explicit read path; kept
@@ -694,11 +716,13 @@ fn build_delegation(
         .mint_delegation(audience, obo, &wf.step)
         .map_err(|e| PackageError::Auth(e.to_string()))?
     {
-        Some(token) => Ok(Some(Delegation::new(
-            url.clone(),
-            capability,
-            SecretString::from(token),
-        ))),
+        Some(token) => Ok(Some(
+            Delegation::new(url.clone(), capability, SecretString::from(token))
+                // The seal target: the step's pre-flagged produced instance, the
+                // exact page the reducer reads back to confirm the step. The
+                // harness writes it after the agent returns a result_ref.
+                .with_produced_instance(trigger.instance_page_id.clone()),
+        )),
         // A static-bearer runner cannot mint a delegation — fail closed at the
         // harness rather than present the runner's own bearer to the agent.
         None => Ok(None),

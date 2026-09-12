@@ -325,8 +325,23 @@ pub async fn drive_workflow(
     };
     // Stamp the harness's produced result_ref only on the terminal `succeeded`
     // pass — a `running` progress event carries none.
+    // The produced artifact reference is an IMMUTABLE property of the completed
+    // operation — stamped by the step's effect-carrying drive. But a `succeeded`
+    // operation can be re-driven to `succeeded` by an effect-less pass (the
+    // invocation event re-processed by a poll after the last phase already
+    // completed, or a recovery sweep), and that pass carries no `result_ref`.
+    // With `get_operation` reading the single latest status event, a bare later
+    // `succeeded` would drop the ref. So carry it forward: on a `succeeded` stamp
+    // with no ref of its own, reuse the one already on the board.
+    let carried;
     let terminal_result_ref = if matches!(status, OperationStatus::Succeeded) {
-        effect.and_then(|e| e.result_ref.as_ref())
+        match effect.and_then(|e| e.result_ref.as_ref()) {
+            Some(rr) => Some(rr),
+            None => {
+                carried = last_stamped_result_ref(client, &wf.run).await;
+                carried.as_ref()
+            }
+        }
     } else {
         None
     };
@@ -537,6 +552,29 @@ pub async fn operation_has_terminal_status(client: &Client, run: &str) -> bool {
         .max_by(|a, b| a.0.cmp(b.0))
         .map(|(_, s)| s.to_owned());
     matches!(latest.as_deref(), Some("failed") | Some("awaiting_human"))
+}
+
+/// The most recent `result_ref` already stamped on the operation's status board,
+/// if any. Used to CARRY FORWARD a produced-artifact reference when an effect-less
+/// `succeeded` re-drive would otherwise record a bare terminal that drops it
+/// (`get_operation` reads the single latest status event). Best-effort: an
+/// unreadable log returns `None`, and the re-drive records `succeeded` without a
+/// ref exactly as it did before — no regression, just a lost ref in that rare case.
+async fn last_stamped_result_ref(client: &Client, run: &str) -> Option<serde_json::Value> {
+    let resp = client
+        .list_events(ListEventsRequest {
+            instance_page_id: run.to_owned(),
+            limit: 200,
+            ..Default::default()
+        })
+        .await
+        .ok()?;
+    resp.events
+        .iter()
+        .filter(|e| e.label_skill == OPERATION_STATUS_LABEL)
+        .filter_map(|e| e.provenance.get("result_ref").map(|rr| (e.at.as_str(), rr)))
+        .max_by(|a, b| a.0.cmp(b.0))
+        .map(|(_, rr)| rr.clone())
 }
 
 /// Record the operation's status as a **processed, assigned** event on the run

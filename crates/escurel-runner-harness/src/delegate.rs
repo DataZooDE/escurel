@@ -250,12 +250,88 @@ impl DelegateHarness {
             status: HarnessStatus::Ok,
             summary: "delegated task completed".to_owned(),
             tool_calls: 0,
-            // The produced state is the sealed result the runner resolves from
-            // `result_ref`; the delegate step writes no instance itself.
+            // Set later by the seal in `run`, once the produced instance is written.
             produced_instance: None,
             result_ref,
         }
     }
+
+    /// The seal: write the step's produced instance over `/mcp` (`update_page`)
+    /// with the run's scoped token, carrying the `result_ref`. This is what makes
+    /// a delegate step confirm (the reducer reads this instance back) and what
+    /// carries the result to `get_operation`.
+    async fn seal_produced_instance(
+        &self,
+        mcp_endpoint: &str,
+        token: &str,
+        page_id: &str,
+        capability: &str,
+        result_ref: Option<&Value>,
+    ) -> Result<(), HarnessError> {
+        let content = build_instance_content(page_id, capability, result_ref);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "update_page",
+                "arguments": { "page_id": page_id, "content": content },
+            },
+        });
+        let resp = self
+            .http
+            .post(mcp_endpoint)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| HarnessError::Upstream {
+                harness: NAME,
+                message: format!("seal update_page: transport error: {e}"),
+            })?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(HarnessError::Upstream {
+                harness: NAME,
+                message: format!(
+                    "seal update_page: gateway returned {status}: {}",
+                    truncate(&text)
+                ),
+            });
+        }
+        // /mcp returns 200 with a JSON-RPC error object on tool failure.
+        if let Ok(v) = serde_json::from_str::<Value>(&text)
+            && let Some(err) = v.get("error").filter(|e| !e.is_null())
+        {
+            return Err(HarnessError::Upstream {
+                harness: NAME,
+                message: format!("seal update_page: {err}"),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Build the produced-instance markdown for the seal. The page id is
+/// `markdown/instances/<skill>/<id>.md`; the frontmatter mirrors what a normal
+/// harness writes (type/id/skill) so the reducer + readers treat it as an
+/// ordinary instance, and the body records the delegated result reference.
+fn build_instance_content(page_id: &str, capability: &str, result_ref: Option<&Value>) -> String {
+    let rest = page_id
+        .strip_prefix("markdown/instances/")
+        .unwrap_or(page_id);
+    let mut parts = rest.trim_end_matches(".md").splitn(2, '/');
+    let skill = parts.next().unwrap_or(capability);
+    let id = parts.next().unwrap_or("result");
+    let rr = result_ref
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_owned());
+    format!(
+        "---\ntype: instance\nid: {id}\nskill: {skill}\n---\n\
+         # {skill}\n\nDelegated `{capability}` result produced by the agent.\n\n\
+         result_ref: {rr}\n"
+    )
 }
 
 #[async_trait]
@@ -272,7 +348,30 @@ impl Harness for DelegateHarness {
             harness: NAME,
             reason: "task carries no delegation parameters (not a delegate step)".to_owned(),
         })?;
-        self.send_and_poll(delegation, &task.input).await
+        let mut outcome = self.send_and_poll(delegation, &task.input).await?;
+
+        // THE SEAL. The agent produced the result off-instance and named it via
+        // `result_ref`. Every other harness writes its produced instance over
+        // `/mcp`, and the reducer confirms a step by reading that instance back;
+        // a delegate step that wrote nothing would land as a converged no-op and
+        // DROP the result_ref. So on success we write the step's produced
+        // instance (carrying the result_ref) with the run's scoped token — the
+        // step now confirms like any other and the result_ref reaches
+        // `get_operation`.
+        if outcome.ok
+            && let Some(page_id) = delegation.produced_instance()
+        {
+            self.seal_produced_instance(
+                &task.mcp_endpoint,
+                task.token_str(),
+                page_id,
+                &delegation.capability,
+                outcome.result_ref.as_ref(),
+            )
+            .await?;
+            outcome.produced_instance = Some(page_id.to_owned());
+        }
+        Ok(outcome)
     }
 }
 
