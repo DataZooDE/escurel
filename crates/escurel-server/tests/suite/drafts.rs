@@ -1118,9 +1118,42 @@ async fn an_ordinary_caller_may_not_vouch_for_another_subject() {
         "a non-admin naming another subject must be refused: {refused}"
     );
 
-    // Control: the same caller, the same draft, without the claim — so the
+    // …but naming YOURSELF is not vouching for anyone: it is the same fact the
+    // token already carries. An earlier version refused this, which made the
+    // argument unusable by any caller deciding on its own behalf — heron sends
+    // it unconditionally, and its service credential is optional.
+    let mine = call(
+        &p,
+        &agent,
+        "promote_draft",
+        json!({ "draft_id": &id, "decided_by": "agent:solo" }),
+    )
+    .await;
+    assert_eq!(
+        mine["ok"],
+        json!(true),
+        "naming yourself is allowed: {mine}"
+    );
+    assert_eq!(mine["decided_by"].as_str(), Some("agent:solo"), "{mine}");
+
+    // Control: the same caller, a second draft, without the claim — so the
     // refusal above is about vouching and not about this caller's right to
     // promote at all.
+    let second = call(
+        &p,
+        &agent,
+        "create_draft",
+        json!({
+            "target_page_id": "markdown/instances/note/plan.md",
+            "content": body("plan", "Revised again."),
+            "base_sha256": page_sha(&p, &agent, "markdown/instances/note/plan.md").await,
+        }),
+    )
+    .await;
+    let id = second["draft"]["draft_id"]
+        .as_str()
+        .expect("draft_id")
+        .to_owned();
     let out = call(&p, &agent, "promote_draft", json!({ "draft_id": &id })).await;
     assert_eq!(out["ok"], json!(true), "control: {out}");
     assert_eq!(
