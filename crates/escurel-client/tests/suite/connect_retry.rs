@@ -23,6 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use std::sync::Mutex;
+
 use axum::Router;
 use axum::extract::State;
 use axum::routing::post;
@@ -218,5 +220,136 @@ async fn a_request_the_server_read_is_never_replayed() {
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "and it must fail promptly rather than burning the retry budget"
+    );
+}
+
+/// A capturing layer: every event's message field, in order.
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<String>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Captured {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        struct Sink<'a>(&'a mut String);
+        impl tracing::field::Visit for Sink<'_> {
+            fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{}={:?} ", f.name(), v));
+            }
+        }
+        let mut line = String::new();
+        event.record(&mut Sink(&mut line));
+        self.0.lock().unwrap().push(line);
+    }
+}
+
+/// A retry that says nothing is not observable, and an unobservable retry
+/// cannot be verified where it matters — in production, across a real deploy.
+///
+/// This was the gap that made the live fix unprovable: escurel's restart
+/// window is real and bounded, but a successful re-dial left no trace, so a
+/// working retry and a restart that never overlapped a call looked identical
+/// in the logs. The only evidence available was an ABSENCE of failure.
+///
+/// The recovery line is the one that carries the evidence: it is emitted ONLY
+/// when a call actually waited, and it names the tool and how long. That
+/// number is what tells an operator whether the budget is sized for their
+/// rollout.
+///
+/// The `warn!` on the first re-dial is deliberately NOT asserted here.
+/// Callsite interest is cached process-wide, and another test in this shared
+/// binary installs a global subscriber whose verdict for that callsite
+/// outlives it — so asserting it would be green alone and red in the suite,
+/// which is worse than not asserting it. The recovery line is reached first
+/// inside this test and is not affected.
+///
+/// Single-threaded on purpose: `set_default` installs the subscriber for the
+/// CURRENT THREAD, so a multi-thread runtime can run the retry on a worker
+/// where the capture is not installed.
+#[tokio::test]
+async fn a_retry_says_how_long_it_waited() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let port = vacant_port().await;
+    serve_after(port, Duration::from_secs(2));
+
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::registry().with(captured.clone());
+    let guard = tracing::subscriber::set_default(subscriber);
+    tracing::callsite::rebuild_interest_cache();
+
+    let client = Client::connect(&format!("http://127.0.0.1:{port}"), SecretString::from("t"))
+        .await
+        .unwrap();
+    client
+        .call_raw("list_skills", json!({}))
+        .await
+        .expect("the call succeeds");
+    drop(guard);
+
+    let lines = captured.0.lock().unwrap().clone();
+    let recovery: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("gateway came back"))
+        .collect();
+    let joined = lines.join("\n");
+
+    assert_eq!(
+        recovery.len(),
+        1,
+        "a call that waited must say so exactly once: {joined}"
+    );
+    assert!(
+        recovery[0].contains("tool=\"list_skills\""),
+        "it must name the call: {}",
+        recovery[0]
+    );
+    let waited: u64 = recovery[0]
+        .split("waited_ms=")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("waited_ms must be readable: {}", recovery[0]));
+    assert!(
+        (2000..10_000).contains(&waited),
+        "waited_ms must be the real wait (~2s here), not a placeholder: {waited}"
+    );
+}
+
+/// NEGATIVE CONTROL: a call that never waited says nothing.
+///
+/// Without this, the assertion above would pass just as well against a client
+/// that logged "gateway came back" on every single call — which would make the
+/// line useless as evidence that a deploy window was crossed.
+#[tokio::test]
+async fn a_call_that_did_not_wait_stays_quiet() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    // Already listening: no gap to cross.
+    let port = vacant_port().await;
+    serve_after(port, Duration::from_millis(0));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::registry().with(captured.clone());
+    let guard = tracing::subscriber::set_default(subscriber);
+    tracing::callsite::rebuild_interest_cache();
+
+    let client = Client::connect(&format!("http://127.0.0.1:{port}"), SecretString::from("t"))
+        .await
+        .unwrap();
+    client
+        .call_raw("list_skills", json!({}))
+        .await
+        .expect("the call succeeds");
+    drop(guard);
+
+    let lines = captured.0.lock().unwrap().clone();
+    assert!(
+        !lines.iter().any(|l| l.contains("gateway came back")),
+        "a call that crossed no gap must not claim it waited: {}",
+        lines.join("\n")
     );
 }
