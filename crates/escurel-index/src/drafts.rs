@@ -279,6 +279,50 @@ impl Indexer {
         rows.next().transpose().map_err(Into::into)
     }
 
+    /// The OPEN draft against `target_page_id`, if there is one.
+    ///
+    /// Exists so a second draft against a page that already has one can be
+    /// refused at draft time rather than discovered at review time: promoting
+    /// either of two open drafts moves the page, which makes the other's
+    /// `base_sha256` stale for ever. See `tool_create_draft`.
+    ///
+    /// Deliberately unfiltered by reader, like [`Self::list_drafts`]: the
+    /// question is "does this page already have one?", which is a fact about
+    /// the page and not about who is asking. The caller has already been
+    /// admitted to WRITE this page by the time it asks.
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn open_draft_for_page(
+        &self,
+        target_page_id: &str,
+    ) -> Result<Option<DraftInfo>, IndexerError> {
+        let table = self.drafts_table();
+        let tenant = self.drafts_tenant_scope().map(str::to_owned);
+        let conn = self.conn.lock().await;
+        let (sql, params): (String, Vec<String>) = match &tenant {
+            Some(t) => (
+                format!(
+                    "{} WHERE tenant = ? AND target_page_id = ? AND status = 'open' \
+                     ORDER BY created_at DESC LIMIT 1",
+                    select_cols(&table)
+                ),
+                vec![t.clone(), target_page_id.to_owned()],
+            ),
+            None => (
+                format!(
+                    "{} WHERE target_page_id = ? AND status = 'open' \
+                     ORDER BY created_at DESC LIMIT 1",
+                    select_cols(&table)
+                ),
+                vec![target_page_id.to_owned()],
+            ),
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query_map(duckdb::params_from_iter(params.iter()), row_to_draft)?;
+        rows.next().transpose().map_err(Into::into)
+    }
+
     /// Every draft still waiting, newest first.
     ///
     /// Deliberately unfiltered by reader: a draft carries no owner column,
