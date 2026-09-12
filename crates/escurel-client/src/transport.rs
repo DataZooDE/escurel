@@ -170,18 +170,56 @@ impl McpTransport {
         // Re-dial while the gateway is not listening — a deploy window, not a
         // failure. Only a connection that was never established is replayed;
         // see `never_reached_the_server`.
-        let deadline = std::time::Instant::now() + CONNECT_RETRY_BUDGET;
+        //
+        // It SAYS so, both when it starts waiting and when the gateway comes
+        // back. A silent retry cannot be verified where it matters: across a
+        // real deploy, a working retry and a restart that never overlapped a
+        // call leave identical logs, and the only evidence available is an
+        // absence of failure. `waited_ms` on recovery is what tells an
+        // operator whether the budget is sized for their rollout.
+        let began = std::time::Instant::now();
+        let deadline = began + CONNECT_RETRY_BUDGET;
+        let mut waiting = false;
         let resp = loop {
             let mut req = self.http.post(&self.mcp_url).json(&envelope);
             if !self.bearer.is_empty() {
                 req = req.header("authorization", &self.bearer);
             }
             match req.send().await {
-                Ok(resp) => break resp,
+                Ok(resp) => {
+                    if waiting {
+                        tracing::info!(
+                            tool,
+                            waited_ms = began.elapsed().as_millis() as u64,
+                            "escurel gateway came back; the call went through"
+                        );
+                    }
+                    break resp;
+                }
                 Err(e) if never_reached_the_server(&e) && std::time::Instant::now() < deadline => {
+                    if !waiting {
+                        waiting = true;
+                        tracing::warn!(
+                            tool,
+                            budget_ms = CONNECT_RETRY_BUDGET.as_millis() as u64,
+                            "escurel gateway is not listening; re-dialling \
+                             (a restart is stop-first, so this is expected \
+                             during a deploy)"
+                        );
+                    }
                     tokio::time::sleep(CONNECT_RETRY_DELAY).await;
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    if waiting {
+                        tracing::warn!(
+                            tool,
+                            waited_ms = began.elapsed().as_millis() as u64,
+                            "escurel gateway did not come back within the \
+                             re-dial budget; giving up"
+                        );
+                    }
+                    return Err(e.into());
+                }
             }
         };
         let status = resp.status();
