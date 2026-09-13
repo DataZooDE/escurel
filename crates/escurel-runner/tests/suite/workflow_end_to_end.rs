@@ -3325,6 +3325,134 @@ async fn spawn_stub_delegate_agent(result_ref: Value) -> String {
     format!("http://{addr}/a2a")
 }
 
+/// A stub delegate agent that RECORDS each `message/send` body it receives, so a
+/// test can assert what input reached the agent (fleet #801, option D: the
+/// operation input must be threaded into the delegate step so the producer sees
+/// its spec).
+async fn spawn_capturing_delegate_agent(
+    result_ref: Value,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> String {
+    use axum::extract::State;
+    use axum::{Router, routing::post};
+    let task = json!({
+        "id": "task-cap",
+        "status": { "state": "completed" },
+        "metadata": { "result_ref": result_ref },
+    });
+    let app = Router::new()
+        .route(
+            "/a2a",
+            post(
+                move |State(seen): State<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
+                      body: String| {
+                    let task = task.clone();
+                    async move {
+                        seen.lock().unwrap().push(body);
+                        axum::Json(json!({ "jsonrpc": "2.0", "id": 1, "result": task }))
+                    }
+                },
+            ),
+        )
+        .with_state(seen);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}/a2a")
+}
+
+/// No-mock (fleet #801, option D — the input-threading fix): the operation input
+/// supplied at `start_operation` must reach the `harness: delegate` step, so the
+/// agent's producer can read its spec from the step input. Before the fix the
+/// step body was a generic "Workflow … phase … slot …" and the input lived only
+/// on the invocation event — the producer got no spec. This asserts the agent
+/// receives the operation input in its `message/send`.
+#[tokio::test]
+async fn the_operation_input_reaches_the_delegate_step() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill(DELEGATE_WF_SKILL, DELEGATE_WF_BODY)
+                .skill("research-report", REPORT_SKILL_BODY)
+                .skill("workflow-run", RUN_SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let result_ref = json!({ "kind": "scenario_parquet", "scenario_id": "scn-input-e2e" });
+    let agent = spawn_capturing_delegate_agent(result_ref, seen.clone()).await;
+
+    // A distinctive marker in the operation input — it must surface in the agent's
+    // received message if threading works.
+    let marker = "MARKER-op-input-8f3a2b ```json {\"producer\":\"forecast\",\"id\":\"x\",\"sql\":\"SELECT 1\"}```";
+    let requester = "alice-requester";
+    let started = call_mcp_as(
+        &gateway,
+        Role::Agent,
+        requester,
+        "start_operation",
+        json!({ "wf_skill": DELEGATE_WF_SKILL, "input": marker }),
+    )
+    .await;
+    let operation_id = started["operation_id"]
+        .as_str()
+        .expect("operation_id")
+        .to_owned();
+
+    let (signing_key, kid) = gateway.signing_material();
+    let issuer = gateway.issuer_url().to_owned();
+    let port = free_port();
+    let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", format!("127.0.0.1:{port}"))
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", &issuer)
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_AUTH_SUBJECT", "escurel-runner")
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env("ESCUREL_RUNNER_AGENT_A2A_URL", &agent)
+        .env("ESCUREL_RUNNER_AGENT_A2A_AUDIENCE", "agent-a2a")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
+        )
+        .env("ESCUREL_RUNNER_MAX_DEPTH", "16")
+        .env("ESCUREL_RUNNER_MAX_RUNS_PER_ROOT", "64")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+
+    // Wait until the agent has been called, then assert the operation input rode in.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let got = loop {
+        if let Some(b) = seen.lock().unwrap().first().cloned() {
+            break Some(b);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let body = got.expect("the delegate agent must be called");
+    assert!(
+        body.contains("MARKER-op-input-8f3a2b"),
+        "the operation input must reach the delegate step's message: {body}"
+    );
+    // Belt-and-suspenders: it reached a terminal state (seal → confirm).
+    let _ = operation_id;
+}
+
 /// async-ops Phase 4 (crew option D), the full loop end-to-end: a real gateway +
 /// a MINTING runner delegate a `harness: delegate` step to a stub agent, the
 /// agent returns a `result_ref`, the harness SEALS it (writes the step's produced

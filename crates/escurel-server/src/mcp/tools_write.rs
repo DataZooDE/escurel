@@ -1730,6 +1730,13 @@ pub(super) async fn tool_start_operation(
     if let Some(tenant) = &a.channel_tenant {
         content.push_str(&format!("channel_tenant: {}\n", json_scalar(tenant)));
     }
+    // The operation input, stored on the board so the reducer can thread it into
+    // each step's event body (fleet #801, option D): a `harness: delegate` step's
+    // producer — and any LLM harness — reads the original ask (and, for delegate,
+    // the fenced spec) from its step input, which is built from the step event.
+    // Without this the input lives only on the invocation event and never reaches
+    // a step. JSON-encoded (newline-free, YAML-safe).
+    content.push_str(&format!("input: {}\n", json_scalar(&a.input)));
     content.push_str("---\n# operation\n\nAsync operation run board.\n");
     indexer
         .update_page_as(&operation_id, &content, Some(caller.subject))
