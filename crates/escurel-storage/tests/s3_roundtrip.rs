@@ -14,6 +14,7 @@ use bytes::Bytes;
 use escurel_storage::{Key, LaneStore, S3Store, S3StoreConfig, StoreError};
 use testcontainers_modules::minio::MinIO;
 use testcontainers_modules::testcontainers::ContainerAsync;
+use testcontainers_modules::testcontainers::ImageExt;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 mod conformance;
@@ -22,8 +23,24 @@ mod conformance;
 /// the given prefix, creating the bucket first. The container handle
 /// is returned alongside the store so the caller keeps it alive for
 /// the test's duration (drop tears the container down).
+/// MinIO's images are no longer on Docker Hub.
+///
+/// `testcontainers_modules::minio::MinIO` defaults to `minio/minio`, which now
+/// answers 404: "pull access denied … repository does not exist or may require
+/// 'docker login'". MinIO publishes to quay.io instead, under the same tags.
+///
+/// That 404 is why the nightly `live` workflow had been red every morning
+/// since at least 2026-09-10 — every S3 conformance test failed in
+/// `store_and_minio` before touching any code under test, so the redness said
+/// nothing about S3 and there was nothing to learn by reading it.
+const MINIO_REGISTRY: &str = "quay.io";
+
 async fn store_and_minio(prefix: &str) -> (S3Store, ContainerAsync<MinIO>) {
-    let node = MinIO::default().start().await.expect("start minio");
+    let node = MinIO::default()
+        .with_name(format!("{MINIO_REGISTRY}/minio/minio"))
+        .start()
+        .await
+        .expect("start minio");
     let host = node.get_host().await.expect("minio host");
     let port = node.get_host_port_ipv4(9000).await.expect("minio s3 port");
     let endpoint = format!("http://{host}:{port}");

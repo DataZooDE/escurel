@@ -70,11 +70,24 @@ jobs:
       # already present on ubuntu-latest. Pull the images up front so a
       # slow registry shows up as its own step rather than a mysterious
       # per-test timeout.
+      #
+      # MinIO comes from quay.io: `minio/minio` on Docker Hub now answers 404
+      # ("pull access denied … repository does not exist"), which is what made
+      # this workflow red every morning from at least 2026-09-10. Pulling the
+      # SAME tag the test asks for, so a warm cache actually helps it.
+      #
+      # `wait` alone reports success even when a pull failed, which is how a
+      # dead image stayed a per-test panic rather than a failed step; fail the
+      # step on any child's non-zero exit instead.
       - name: Pre-pull test container images
         run: |
+          set -euo pipefail
           docker pull postgres:16-alpine &
-          docker pull minio/minio:latest &
-          wait
+          p1=$!
+          docker pull quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z &
+          p2=$!
+          wait $p1
+          wait $p2
 
       # The S3 LaneStore against real MinIO, including the shared
       # conformance suite (blob layer, size(), delete-missing, versions).
