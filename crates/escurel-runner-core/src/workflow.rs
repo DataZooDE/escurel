@@ -317,7 +317,12 @@ pub async fn drive_workflow(
     //    provenance carries the runner lineage extended from this trigger.
     let state = build_run_state(client, wf, &spec).await?;
     let intents = reduce(&spec, &state);
-    let emitted = emit_intents(client, &intents, |intent| {
+    // The operation's input, threaded into each emitted step's event body so a
+    // step's harness sees the original ask — a `harness: delegate` producer reads
+    // its fenced spec from here (fleet #801, option D). Read from the board where
+    // start_operation stored it; empty when absent (a capture_event-driven run).
+    let op_input = operation_input(client, &wf.run).await;
+    let emitted = emit_intents(client, &intents, &op_input, |intent| {
         build_step_provenance(trigger, parent_run_id, effect, intent)
     })
     .await?;
@@ -785,7 +790,11 @@ pub async fn recover_workflows(
         // Recovery has no parent trigger; each re-emitted step is its own
         // root at depth 0 (a fresh lineage), which `admit` treats like any
         // webhook-origin event. §3.6 keys keep the re-emit idempotent.
-        emit_intents(client, &intents, |intent| root_provenance(&wf, intent)).await?;
+        let op_input = operation_input(client, &wf.run).await;
+        emit_intents(client, &intents, &op_input, |intent| {
+            root_provenance(&wf, intent)
+        })
+        .await?;
         record_status_best_effort(
             client,
             &wf.run,
@@ -913,11 +922,23 @@ async fn build_run_state(
 async fn emit_intents(
     client: &Client,
     intents: &[StepIntent],
+    op_input: &str,
     provenance: impl Fn(&StepIntent) -> serde_json::Value,
 ) -> Result<Vec<String>, WorkflowDriveError> {
     let mut emitted = Vec::with_capacity(intents.len());
     for intent in intents {
         let event_id = intent.event_id();
+        // Carry the operation's input into the step body so the step's harness
+        // (an LLM, or the delegate producer reading its fenced spec) sees the
+        // original ask. The step-identity line stays first for provenance.
+        let mut body = format!(
+            "Workflow {} run {} phase {} slot {}.",
+            intent.wf_skill, intent.run, intent.phase, intent.slot
+        );
+        if !op_input.is_empty() {
+            body.push_str("\n\n## Operation input\n\n");
+            body.push_str(op_input);
+        }
         client
             .capture_event(CaptureEventRequest {
                 event_id: event_id.clone(),
@@ -926,10 +947,7 @@ async fn emit_intents(
                 label_skill: intent.produces.clone(),
                 instance_page_id: intent.instance_page_id(),
                 title: format!("workflow {} · {} step", intent.wf_skill, intent.phase),
-                body: format!(
-                    "Workflow {} run {} phase {} slot {}.",
-                    intent.wf_skill, intent.run, intent.phase, intent.slot
-                ),
+                body,
                 provenance: provenance(intent),
                 ..Default::default()
             })
@@ -938,6 +956,27 @@ async fn emit_intents(
         emitted.push(event_id);
     }
     Ok(emitted)
+}
+
+/// The operation's input as stored on its run board by `start_operation`
+/// (`input:` frontmatter), or empty when absent — a `capture_event`-driven run
+/// (no board input) or a board written before this field existed. Best-effort: a
+/// read failure yields empty, so a step still emits (with no operation input).
+async fn operation_input(client: &Client, run: &str) -> String {
+    client
+        .expand(ExpandRequest {
+            page_id: run.to_owned(),
+            ..Default::default()
+        })
+        .await
+        .ok()
+        .and_then(|b| {
+            b.frontmatter
+                .get("input")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_default()
 }
 
 /// A fresh root `provenance` for a recovery-emitted step: its own event id is
