@@ -1878,28 +1878,48 @@ async fn a_terminal_delivery_carries_the_configured_bearer() {
 
     // The bearer-gated sink only records the POST if the runner authenticated.
     // Find the TERMINAL delivery (progress `running` deliveries also arrive).
-    let deadline = Instant::now() + Duration::from_secs(45);
-    let delivered = loop {
-        let hit = received
-            .lock()
-            .expect("sink mutex")
-            .iter()
-            .find(|d| {
-                d["operation_id"].as_str() == Some(operation_id.as_str())
-                    && d["status"].as_str() == Some("succeeded")
-            })
-            .cloned();
-        if let Some(d) = hit {
-            break Some(d);
+    let began = Instant::now();
+    let deadline = began + Duration::from_secs(45);
+    let delivery = loop {
+        let seen = received.lock().expect("sink mutex").clone();
+        if let Some(d) = seen.iter().find(|d| {
+            d["operation_id"].as_str() == Some(operation_id.as_str())
+                && d["status"].as_str() == Some("succeeded")
+        }) {
+            break d.clone();
         }
         if Instant::now() >= deadline {
-            break None;
+            // Say what DID arrive. The old message blamed the bearer, so a
+            // machine too busy to finish the work in 45s and a runner that
+            // never authenticated produced the same words — and this timed
+            // out under a loaded full-suite run on 2026-09-12, where the
+            // bearer was fine. What the sink holds separates the cases:
+            //   nothing at all      -> the runner never reached the sink
+            //   `running` only      -> it authenticated; the work was slow
+            //   another operation   -> the id under test is wrong
+            let summary: Vec<String> = seen
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}={}",
+                        d["operation_id"].as_str().unwrap_or("?"),
+                        d["status"].as_str().unwrap_or("?")
+                    )
+                })
+                .collect();
+            panic!(
+                "no `succeeded` delivery for {operation_id} after {:?}. The \
+                 sink received {} delivery/deliveries: [{}]. An empty list \
+                 means the runner never authenticated with the configured \
+                 bearer; `running` entries mean it did and the work simply \
+                 had not finished.",
+                began.elapsed(),
+                seen.len(),
+                summary.join(", ")
+            );
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
-    let delivery = delivered.expect(
-        "the terminal delivery must authenticate with the configured bearer and be recorded",
-    );
     assert_eq!(
         delivery["status"],
         json!("succeeded"),
