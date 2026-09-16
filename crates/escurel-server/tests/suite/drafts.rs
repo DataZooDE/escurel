@@ -725,6 +725,43 @@ mod scope {
             "a draft against a readable page must be in the queue: {bobs_queue}"
         );
     }
+
+    /// A draft is not knowledge, and neither is its diff: the same read gate
+    /// that keeps another person's held write out of `list_drafts` keeps its
+    /// contents out of here. Otherwise `diff_draft` is a way to read a draft
+    /// you may not see (#509 §3).
+    #[tokio::test]
+    async fn diff_draft_does_not_leak_a_draft_the_caller_may_not_see() {
+        let p = start_scoped().await;
+        let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+        let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+        let created = call(
+            &p,
+            &alice,
+            "create_draft",
+            json!({ "target_page_id": ALICE_PAGE, "content": ALICE_EDIT }),
+        )
+        .await;
+        let draft_id = created["draft"]["draft_id"]
+            .as_str()
+            .expect("draft_id")
+            .to_owned();
+
+        // Alice sees her own.
+        let mine = call(&p, &alice, "diff_draft", json!({ "draft_id": draft_id })).await;
+        assert_eq!(mine["target_page_id"], json!(ALICE_PAGE), "{mine}");
+
+        // Bob gets absence, not a denial — the same shape the other decide
+        // verbs use, so a probe cannot tell "not yours" from "no such draft".
+        let theirs = call(&p, &bob, "diff_draft", json!({ "draft_id": draft_id })).await;
+        assert_eq!(theirs["ok"], json!(false), "{theirs}");
+        assert_eq!(theirs["issues"][0]["code"], json!("not_found"), "{theirs}");
+        assert!(
+            !theirs.to_string().contains("PRIVATE edit"),
+            "no part of an unreadable draft may leak: {theirs}"
+        );
+    }
 }
 
 /// A draft whose frontmatter does not PARSE must be refused at draft time.
@@ -1689,5 +1726,113 @@ async fn a_page_that_moved_to_other_bytes_is_still_a_conflict() {
             .iter()
             .any(|d| d["draft_id"] == json!(draft_id)),
         "the draft stays open so the work can be re-drafted against the head"
+    );
+}
+
+/// #509 §3: reviewing a draft must not mean reading two markdown files by eye.
+///
+/// `diff_draft` answers the reviewer's actual question — what changes if I
+/// approve this? — as structure: which frontmatter keys move and to what,
+/// what happens to the body, and whether the target has moved since the draft
+/// was taken (the thing that decides whether promotion will conflict).
+#[tokio::test]
+async fn diff_draft_shows_what_approving_would_change() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    // A draft that changes one key, adds another, and rewrites the body.
+    let proposed = "---\ntype: instance\nskill: note\nid: plan\nhotness: hot\n---\n\
+                    # Plan\nv2 body.\n";
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": proposed,
+            "base_sha256": sha(BASE),
+        }),
+    )
+    .await;
+    let draft_id = created["draft"]["draft_id"]
+        .as_str()
+        .expect("draft_id")
+        .to_owned();
+
+    let diff = call(&p, &token, "diff_draft", json!({ "draft_id": draft_id })).await;
+    assert_eq!(diff["target_page_id"], json!(PAGE), "{diff}");
+    assert_eq!(diff["exists"], json!(true), "the target exists: {diff}");
+    assert_eq!(
+        diff["base_moved"],
+        json!(false),
+        "nothing has touched the target since drafting: {diff}"
+    );
+
+    let changes = diff["frontmatter_changes"].as_array().expect("changes");
+    let hotness = changes
+        .iter()
+        .find(|c| c["key"] == json!("hotness"))
+        .unwrap_or_else(|| panic!("hotness must be reported as added: {diff}"));
+    assert_eq!(hotness["from"], Value::Null, "it did not exist before");
+    assert_eq!(hotness["to"], json!("hot"), "{diff}");
+    // Keys that did not move are NOT reported — a diff that lists every key
+    // is the two-files-side-by-side problem with extra steps.
+    assert!(
+        !changes.iter().any(|c| c["key"] == json!("skill")),
+        "unchanged keys must not appear: {diff}"
+    );
+
+    let blocks = diff["block_changes"].as_array().expect("block_changes");
+    assert!(
+        blocks.iter().any(|b| {
+            b["kind"] == json!("replace")
+                && b["preview"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("v2 body")
+        }),
+        "the body rewrite must be visible with a preview of what lands: {diff}"
+    );
+
+    // A draft whose target moved after it was taken says so — that is the
+    // signal that promotion will need a merge (or will conflict), and the
+    // reviewer sees it BEFORE approving rather than as a failed promotion.
+    call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": PAGE, "content": body("plan", "moved underneath.") }),
+    )
+    .await;
+    let diff = call(&p, &token, "diff_draft", json!({ "draft_id": draft_id })).await;
+    assert_eq!(
+        diff["base_moved"],
+        json!(true),
+        "the target moved since drafting: {diff}"
+    );
+
+    // A draft for a page that does not exist yet — the ordinary case for a
+    // capture being filed — is a creation, not a diff against nothing.
+    let create = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": "markdown/instances/note/fresh.md",
+            "content": body("fresh", "brand new."),
+        }),
+    )
+    .await;
+    let fresh_id = create["draft"]["draft_id"].as_str().expect("id").to_owned();
+    let diff = call(&p, &token, "diff_draft", json!({ "draft_id": fresh_id })).await;
+    assert_eq!(diff["exists"], json!(false), "{diff}");
+    assert_eq!(diff["base_moved"], json!(false), "{diff}");
+    assert!(
+        diff["frontmatter_changes"].as_array().is_some_and(|c| c
+            .iter()
+            .any(|c| c["key"] == json!("id")
+                && c["from"] == Value::Null
+                && c["to"] == json!("fresh"))),
+        "a creation reports every key as an addition: {diff}"
     );
 }

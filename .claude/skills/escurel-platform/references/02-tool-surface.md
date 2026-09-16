@@ -183,6 +183,7 @@ privately, which put consumer-shaped objects in the knowledge base and made
 |---|---|
 | `create_draft` | Hold the whole proposed markdown for `target_page_id` (which need not exist yet), with the `base_sha256` it was drafted against (`""` = expect no page). Returns the draft with its `draft_id` and `content_sha256`. |
 | `list_drafts` | Everything still waiting, newest first — the answer to "what is waiting for me?". |
+| `diff_draft` | `draft_id` | `{ok, target_page_id, exists, base_moved, frontmatter_changes:[{key,from,to}], block_changes:[{anchor,kind,preview}]}` | what approving this held write would change — only keys that MOVE, plus whether the target has shifted since the draft was taken (`base_moved`, i.e. promotion will need a merge). Read-only; a draft you may not see answers `ok:false` + `not_found`, never a refusal |
 | `promote_draft` | Land it, under the approver's identity. |
 | `discard_draft` | Refuse it, with a `reason`. Nothing is written. |
 

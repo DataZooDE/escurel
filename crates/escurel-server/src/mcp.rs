@@ -669,6 +669,7 @@ const EVENTS_TOOLS: &[&str] = &["capture_event", "assign_event", "list_events", 
 const DRAFTS_TOOLS: &[&str] = &[
     "create_draft",
     "list_drafts",
+    "diff_draft",
     "promote_draft",
     "discard_draft",
 ];
@@ -938,6 +939,7 @@ async fn dispatch_tools_call(
             tool_create_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }
         "list_drafts" => tool_list_drafts(indexer, caller, params.arguments).await,
+        "diff_draft" => tool_diff_draft(indexer, caller, params.arguments).await,
         "promote_draft" => {
             tool_promote_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }

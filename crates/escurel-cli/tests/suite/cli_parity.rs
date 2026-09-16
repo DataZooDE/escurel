@@ -70,6 +70,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("assign_event", Agent(&["event", "assign"])),
     ("create_draft", Agent(&["draft", "create"])),
     ("list_drafts", Agent(&["draft", "list"])),
+    ("diff_draft", Agent(&["draft", "diff"])),
     ("promote_draft", Agent(&["draft", "promote"])),
     ("discard_draft", Agent(&["draft", "discard"])),
     ("open_session", Agent(&["session", "open"])),
