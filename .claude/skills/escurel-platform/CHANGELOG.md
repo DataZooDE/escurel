@@ -4,6 +4,24 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.31 — promotion merges a head that moved on other keys
+
+- `create_draft` now records the target's CRDT version as well as its
+  `base_sha256`, and `promote_draft` uses it when the target has moved: the
+  approval takes the three-way merge path instead of refusing on the byte
+  CAS. A reviewer's approval no longer fails because somebody else edited a
+  DIFFERENT field of the same page. The response carries
+  `auto_merged: true` when it did.
+- The same key on both sides still conflicts, the draft stays open, and the
+  auto-merged artifact is re-checked against the write guards — a
+  `promotable: true` the head gained cannot ride in through a merge nobody
+  inspected (ADR-0008).
+- `update_page`'s own auto-merge got the same widening: frontmatter changes
+  on disjoint KEYS now merge, where before the union had to equal one side
+  exactly. Same-key divergence is unchanged — still a conflict.
+- With no CRDT backend there is no base snapshot to merge against, and
+  promotion behaves exactly as it did.
+
 ## 0.6.30 — changesets: a run's held writes, decided together
 
 - `create_draft` gains `new_changeset` (start one; the SERVER mints the id

@@ -192,6 +192,7 @@ fn draft_to_json(d: &escurel_index::drafts::DraftInfo) -> Value {
         "decided_by": d.decided_by,
         "created_at": d.created_at,
         "changeset_id": d.changeset_id,
+        "base_version": d.base_version,
     })
 }
 
@@ -384,6 +385,20 @@ pub(super) async fn tool_create_draft(
         _ => None,
     };
 
+    // The target's CRDT version right now (#509 §2). Recorded so promotion
+    // can three-way-merge a head that moved on OTHER keys rather than
+    // refusing on the byte CAS — which made the review path worse at merging
+    // than the unreviewed one. `None` with no CRDT backend: there is then no
+    // base snapshot to merge against, and promotion keeps the byte CAS.
+    let base_version = match state.crdt_backend.as_ref() {
+        Some(backend) => {
+            let hlc =
+                u64::try_from(backend.max_hlc(&a.target_page_id).await.unwrap_or(0)).unwrap_or(0);
+            Some(Version::from_op_count(hlc).as_str().to_owned())
+        }
+        None => None,
+    };
+
     // Validate at DRAFT time, with the same blocking set promotion will
     // apply. A draft that cannot be promoted is worse than a refused write:
     // it costs a human a review before anyone finds out.
@@ -410,6 +425,7 @@ pub(super) async fn tool_create_draft(
             author: caller.subject.to_owned(),
             event_id: a.event_id,
             changeset_id,
+            base_version,
         })
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_draft: {e}")))?;
@@ -518,10 +534,51 @@ pub(super) async fn tool_promote_draft(
         "page_id": draft.target_page_id,
         "content": corrected.unwrap_or(draft.content.as_str()),
     });
-    if let Some(base) = &draft.base_sha256 {
-        write_args["base_sha256"] = json!(base);
-    }
     let promoted = corrected.unwrap_or(draft.content.as_str()).to_owned();
+
+    // **Which guard travels (#509 §2).**
+    //
+    // `base_sha256` is a BYTE CAS: it refuses the moment the target changes at
+    // all, even when the two changes touched different frontmatter keys. The
+    // same content sent straight through `update_page` with a `base_version`
+    // would have been three-way-merged and answered `auto_merged: true`, so
+    // the review path was strictly worse at merging than the unreviewed one —
+    // and an approval could fail for a reason that has nothing to do with the
+    // review.
+    //
+    // So: while the target still hashes to what the drafter saw, send the byte
+    // CAS (exact, cheap, and it needs no snapshot). Once it has moved, send
+    // the recorded `base_version` instead, which is the guard that can merge —
+    // and which still CONFLICTS when both sides changed the same key, or the
+    // merged document no longer parses. Sending both would be pointless: the
+    // byte CAS would refuse before the merge was ever attempted.
+    let head_markdown = indexer
+        .read_page_markdown(&draft.target_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("promote_draft head: {e}")))?;
+    let head_sha = head_markdown
+        .as_deref()
+        .map(escurel_index::drafts::content_hash);
+    let moved = head_sha != draft.base_sha256;
+    match (&draft.base_version, moved) {
+        (Some(version), true) => {
+            write_args["base_version"] = json!(version);
+        }
+        _ => {
+            if let Some(base) = &draft.base_sha256 {
+                write_args["base_sha256"] = json!(base);
+            }
+        }
+    }
+
+    // The interrupted promotion, detected BEFORE the write rather than from
+    // the refusal it would produce (#489). The page already holding exactly
+    // the bytes being promoted is not a conflict — nobody else changed
+    // anything and there is nothing to re-review; what remains is the second
+    // half of a promotion that never ran. Decided here because the merge path
+    // answers with `head_version`, not the `head_sha256` the old detection
+    // read off the refusal.
+    let already_landed = head_markdown.as_deref() == Some(promoted.as_str());
     let mut result =
         crate::mcp::tools_write::tool_update_page(state, indexer, caller, write_acl, write_args)
             .await?;
@@ -561,19 +618,13 @@ pub(super) async fn tool_promote_draft(
     //
     // Heron carried this fix on its proposal path, where it works; this is
     // the same rule on the path that is actually live (#489).
-    let already_applied = result.get("ok").and_then(Value::as_bool) == Some(false)
+    let already_applied = already_landed
+        && result.get("ok").and_then(Value::as_bool) == Some(false)
         && result["issues"].as_array().is_some_and(|issues| {
             issues
                 .iter()
                 .any(|i| i["code"].as_str() == Some("conflict"))
-        })
-        && result["head_sha256"]
-            .as_str()
-            .filter(|h| !h.is_empty())
-            .is_some_and(|head| {
-                use sha2::{Digest, Sha256};
-                head == format!("{:x}", Sha256::digest(promoted.as_bytes()))
-            });
+        });
     if already_applied {
         tracing::info!(
             draft_id = %draft.draft_id,

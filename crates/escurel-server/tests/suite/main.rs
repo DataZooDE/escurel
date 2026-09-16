@@ -79,6 +79,7 @@ mod page_write_events;
 mod project_memory_pack;
 mod project_memory_subprojects;
 mod promotion_gate;
+mod promotion_merge;
 mod provenance_analytics;
 mod provenance_ancestry;
 mod provenance_path;
