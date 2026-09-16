@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.33 — `query_instance` takes `scenario` (corpus traversals)
+
+- A corpus traversal now honours the same `scenario` parameter `expand` /
+  `resolve` / `neighbours` / `search` / `list_instances` already take: absent
+  reads the base timeline, present reads `base ∪ overlay` with the per-slug
+  override, so an overlaid slug appears ONCE and the overlay wins.
+- Without this a counting traversal would double-count the moment an overlay
+  existed — the failure nobody notices, because the number still looks like a
+  number.
+- A `sql_view` query ignores it: an external table has no overlay.
+
 ## 0.6.32 — stored corpus traversals (`target: corpus`)
 
 - A `[[query::*]]` page may now target the **corpus** instead of a `sql_view`

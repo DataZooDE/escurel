@@ -177,6 +177,7 @@ async fn aggregates_rows_with_bound_runtime_param() {
         .query_instance(
             "sales-by-category",
             &args(&[("min", json!(10))]),
+            None,
             &analyst("u1"),
         )
         .await
@@ -194,6 +195,7 @@ async fn aggregates_rows_with_bound_runtime_param() {
         .query_instance(
             "sales-by-category",
             &args(&[("min", json!(0))]),
+            None,
             &analyst("u1"),
         )
         .await
@@ -213,7 +215,12 @@ async fn runtime_param_is_bound_not_interpolated() {
     let injected = json!("hw'; DROP TABLE pages; --");
     let out = h
         .indexer
-        .query_instance("sales-by-name", &args(&[("cat", injected)]), &analyst("u1"))
+        .query_instance(
+            "sales-by-name",
+            &args(&[("cat", injected)]),
+            None,
+            &analyst("u1"),
+        )
         .await
         .expect("injection value binds, does not error");
     assert!(
@@ -227,6 +234,7 @@ async fn runtime_param_is_bound_not_interpolated() {
         .query_instance(
             "sales-by-name",
             &args(&[("cat", json!("hw"))]),
+            None,
             &analyst("u1"),
         )
         .await
@@ -243,7 +251,7 @@ async fn missing_required_param_errors_before_sql() {
 
     let err = h
         .indexer
-        .query_instance("sales-by-category", &args(&[]), &analyst("u1"))
+        .query_instance("sales-by-category", &args(&[]), None, &analyst("u1"))
         .await
         .expect_err("missing required must error");
     assert!(matches!(err, QueryError::MissingParam { .. }), "got {err}");
@@ -255,7 +263,7 @@ async fn query_without_target_is_rejected() {
     seed(&h, &[SKILL_QUERY, QUERY_NO_TARGET]).await;
     let err = h
         .indexer
-        .query_instance("no-target", &args(&[]), &analyst("u1"))
+        .query_instance("no-target", &args(&[]), None, &analyst("u1"))
         .await
         .expect_err("query_instance requires a target");
     assert!(matches!(err, QueryError::MissingTarget { .. }), "got {err}");
@@ -272,7 +280,7 @@ async fn acl_denies_non_owner_on_owner_private_target() {
 
     let err = h
         .indexer
-        .query_instance("secret-by-category", &args(&[]), &analyst("intruder"))
+        .query_instance("secret-by-category", &args(&[]), None, &analyst("intruder"))
         .await
         .expect_err("non-owner must be denied");
     assert!(matches!(err, QueryError::Forbidden { .. }), "got {err}");
@@ -280,7 +288,7 @@ async fn acl_denies_non_owner_on_owner_private_target() {
     // Admin bypasses the per-instance ACL.
     let out = h
         .indexer
-        .query_instance("secret-by-category", &args(&[]), &admin("root"))
+        .query_instance("secret-by-category", &args(&[]), None, &admin("root"))
         .await
         .expect("admin reads");
     assert_eq!(out.rows.len(), 2);

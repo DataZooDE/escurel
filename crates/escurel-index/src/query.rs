@@ -227,6 +227,7 @@ impl Indexer {
         &self,
         query_id: &str,
         args: &serde_json::Map<String, serde_json::Value>,
+        scenario: Option<&str>,
         caller: &AclCaller<'_>,
     ) -> Result<QueryInstanceResult, QueryError> {
         // 1. Resolve the query page and confirm it is a `query` instance.
@@ -263,7 +264,7 @@ impl Indexer {
         if target_raw.trim() == crate::CORPUS_TARGET {
             let declared = declared_params(&fm);
             return self
-                .run_corpus_query(query_id, &fm, &declared, args, caller)
+                .run_corpus_query(query_id, &fm, &declared, args, scenario, caller)
                 .await;
         }
 
@@ -359,6 +360,7 @@ impl Indexer {
         fm: &serde_json::Value,
         declared: &[DeclaredParam],
         args: &serde_json::Map<String, serde_json::Value>,
+        scenario: Option<&str>,
         caller: &AclCaller<'_>,
     ) -> Result<QueryInstanceResult, QueryError> {
         let traversal = crate::parse_traversal(fm)
@@ -385,7 +387,7 @@ impl Indexer {
 
         let start_id = substitute_params(&traversal.start.id, args);
         let (rows, truncated) = self
-            .run_traversal(&traversal, &start_id, caller)
+            .run_traversal(&traversal, &start_id, scenario, caller)
             .await
             .map_err(|e| QueryError::Indexer(Box::new(e)))?;
         Ok(QueryInstanceResult {
