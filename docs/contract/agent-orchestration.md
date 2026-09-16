@@ -19,6 +19,17 @@ contract that outlives its code is how compensations accumulate:
 - **The `gemini` harness** was added for the cluster: a container has no
   interactive auth and no node runtime, so the CLI-driving adapters
   (`claude`, `codex`, `adk`) cannot run there.
+- **The `agy` and `muse` harnesses run `autonomy: auto` skills only.**
+  Neither CLI can enforce a narrowed MCP tool surface — `agy` routes every
+  tool through `call_mcp_tool` with no allow-list, and `muse exec`'s
+  `--permission-profile` selects a named profile from settings rather than an
+  ad-hoc tool list — so both adapters REFUSE a task packaged under
+  `REVIEW_TOOLS` rather than pretending to enforce one. A review run there
+  would commit instead of drafting. Use `gemini` or `claude` for those.
+  (`muse` became possible at Muse Code 1.1.1, which is an MCP client;
+  escurel#451 recorded the 1.0.1 negative, and escurel#450 recorded the agy
+  interop stall that agy 1.2.1 fixed — both are verified by the `#[ignore]`d
+  live tests, which are the things that say when an upstream changes.)
 - **The runner mints its own gateway bearer** rather than carrying a
   pasted `ESCUREL_RUNNER_TOKEN`, borrowing the platform's existing
   signing identity. Two defects found by deploying it are worth knowing
@@ -89,7 +100,7 @@ independent process):
 | crate | concern |
 |---|---|
 | `escurel-runner-core` | trigger lifecycle, dispatch queue, cascade emitter, loop-control/ledger, context packager — harness-agnostic engine |
-| `escurel-runner-harness` | the `Harness` adapter trait + Claude Code / Codex / Google ADK adapters |
+| `escurel-runner-harness` | the `Harness` adapter trait + the Claude Code / Codex / Google ADK / agy / muse / gemini / echo / delegate adapters |
 | `escurel-runner` (bin) | deployable process: webhook listener + poller, config (`ESCUREL_RUNNER_*`), graceful shutdown, observability |
 
 Core internal pieces:
