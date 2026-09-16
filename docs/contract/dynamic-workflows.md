@@ -566,9 +566,11 @@ packager, the whole `Harness` trait + all four adapters, the
 6. **Per-phase harness/model selection** and a **per-phase tool surface**:
    today the adapter is one global `RunnerConfig.harness` and `ALLOWED_TOOLS`
    is one global const — both must become per-`label_skill`/per-phase.
-7. **Per-run minted `Role::Agent` JWT**: today the packager reuses the
-   static `ESCUREL_RUNNER_TOKEN` (the per-run short-TTL JWT is a documented
-   *unimplemented* seam). Needed for true per-run least privilege.
+7. **Per-run least privilege**: the per-run token itself landed in #510 —
+   an ordinary run is packaged as `agent:<label_skill>` (acting for the
+   runner), a workflow run as its requester. Both still carry the
+   authority they had, so what remains here is *narrowing the grant* per
+   skill/phase, which the per-run token makes possible.
 8. Surface: `escurel workflow run|status|stop` (CLI/TUI) and optionally MCP
    `run_workflow` / `list_workflow_runs`.
 

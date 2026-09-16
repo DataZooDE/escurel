@@ -27,10 +27,29 @@ contract that outlives its code is how compensations accumulate:
   the ledger but not the in-memory seen-set, so a requeue could not
   re-dispatch in the same process (#441).
 
-The per-run short-TTL token described below remains an **unimplemented
-seam** (`packager.rs`'s `token` field): every run for every principal
-currently shares one privilege. That is the weakest part of the boundary
-and is named here rather than left to be discovered.
+The per-run short-TTL token described below is **implemented** (#510).
+A minting runner packages every ordinary run with a bearer of its own:
+`sub` = `agent:<label_skill>`, the runner kept as the delegating actor in
+the RFC 8693 `act.sub` claim, and `exp` bounded by the run budget rather
+than the process lifetime. The gateway verifies it like any other token,
+stamps the agent into `pages.last_written_by` / `crdt_ops.principal`, and
+records the chain as `provenance.captured_via` — so "who set this to
+cold?" answers with the agent, and "acting for whom?" still answers with
+the runner. The runner's own cascade-lineage guard trusts either half of
+that chain, so a hop written by a delegated agent is still recognised as
+the runner's own (`trigger.rs`).
+
+Two limits are deliberate and still true. The run's **authority** is
+unchanged — the minted agent token carries the same `escurel:admin` role
+the runner holds, so this is attribution, not least privilege; narrowing
+the grant per skill is the follow-up that only became possible now that
+the token is per-run at all. And a **static-bearer** runner
+(`ESCUREL_RUNNER_TOKEN`, dev-only) cannot mint, so it keeps writing as
+itself; production runs minted (ADR-0012).
+
+A **workflow** run is scoped differently and unchanged: it executes as its
+REQUESTER (async-ops Phase 2c-i), which is a narrowing of authority, not
+just of name.
 **Scope:** A new standalone component — working name
 `escurel-agent-runner` — that turns escurel's M7 inbox into a cascading,
 **agent-harness-driven** event→instance projection loop. It triggers a

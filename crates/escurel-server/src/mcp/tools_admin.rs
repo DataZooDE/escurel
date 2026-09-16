@@ -1347,6 +1347,8 @@ pub(super) async fn tool_submit_promotion(
                     "vertical": a.vertical,
                 })),
                 subject,
+                // An operator submitting a pack acts as themselves.
+                None,
             ),
         })
         .await

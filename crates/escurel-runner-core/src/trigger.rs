@@ -158,9 +158,17 @@ impl Trigger {
         // `None` = trust-all (a unit test, or a caller that constructed a known
         // event); `Some(subj)` = trust only if the server-stamped
         // `provenance.captured_by` is that subject (the runner's own).
+        // A run now executes under a per-run agent identity (#510), so a
+        // genuine hop is stamped `captured_by: agent:<skill>` with the
+        // delegating runner in `captured_via` — both server-stamped. Either
+        // one matching this runner is our own hop; the `agent:` prefix alone
+        // proves nothing (a caller can name themselves anything).
         let trust_lineage = match trusted_subject {
             None => true,
-            Some(subj) => captured_by(&event.provenance) == Some(subj),
+            Some(subj) => {
+                captured_by(&event.provenance) == Some(subj)
+                    || captured_via(&event.provenance) == Some(subj)
+            }
         };
         let lineage = lineage_from_provenance(&event.provenance, &event.event_id)
             .filter(|_| trust_lineage)
@@ -182,6 +190,13 @@ impl Trigger {
 /// captured the event, or `None` on an unauthenticated/legacy event.
 fn captured_by(provenance: &serde_json::Value) -> Option<&str> {
     provenance.get("captured_by").and_then(|v| v.as_str())
+}
+
+/// The server-stamped `provenance.captured_via` — the principal the capturing
+/// subject was acting FOR (#510), i.e. the runner behind a per-run agent
+/// token. `None` on an undelegated or legacy event.
+fn captured_via(provenance: &serde_json::Value) -> Option<&str> {
+    provenance.get("captured_via").and_then(|v| v.as_str())
 }
 
 /// Hash what the event says: skill, title, body.
@@ -353,6 +368,51 @@ mod tests {
 
         // Trust-all (`from_event`) preserves the block — test/legacy behaviour.
         assert_eq!(Trigger::from_event(&event, "acme").lineage.depth, 3);
+    }
+
+    #[test]
+    fn a_hop_emitted_by_a_delegated_agent_is_still_the_runners_own_lineage() {
+        // #510: a run now captures its cascade hops as `agent:<skill>`, not as
+        // the runner. The forge guard keys on the server-stamped identity, so
+        // without reading the delegation chain every cascade would be gated
+        // back to depth 0 — the loop controls (depth cap, per-root budget,
+        // cycle check) would stop seeing the cascade they exist to bound.
+        let mut event = sample_event();
+        event.provenance = serde_json::json!({
+            "captured_by": "agent:crm-hygiene",
+            "captured_via": "escurel-runner",
+            "runner": {
+                "root_event_id": "ROOT0",
+                "depth": 2,
+                "lineage_path": ["ROOT0", "h1"],
+                "instance_path": ["markdown/instances/customer/globex.md"]
+            }
+        });
+        let trusted = Trigger::from_event_gated(&event, "acme", "escurel-runner");
+        assert_eq!(
+            trusted.lineage.depth, 2,
+            "a hop the runner delegated is the runner's own lineage"
+        );
+        assert_eq!(trusted.lineage.root_event_id, "ROOT0");
+
+        // The chain is what earns the trust, not the `agent:` prefix: an agent
+        // acting for SOMEBODY ELSE is a stranger to this runner.
+        let mut theirs = event.clone();
+        theirs.provenance["captured_via"] = serde_json::json!("some-other-runner");
+        let gated = Trigger::from_event_gated(&theirs, "acme", "escurel-runner");
+        assert_eq!(gated.lineage.depth, 0, "another runner's hop is not ours");
+
+        // And a caller who simply names themselves `agent:` is still a caller.
+        let mut forged = event.clone();
+        forged.provenance = serde_json::json!({
+            "captured_by": "agent:crm-hygiene",
+            "runner": { "root_event_id": "forged", "depth": 3, "lineage_path": ["a"] }
+        });
+        let gated = Trigger::from_event_gated(&forged, "acme", "escurel-runner");
+        assert_eq!(
+            gated.lineage.depth, 0,
+            "no server-stamped chain, no trust — the prefix proves nothing"
+        );
     }
 
     #[test]

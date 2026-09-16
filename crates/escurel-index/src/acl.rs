@@ -32,11 +32,19 @@ use crate::{Indexer, IndexerError};
 /// are the group names projected from the JWT `groups_claim` (already
 /// admin-value-stripped by the server boundary — reserved-name stripping
 /// still happens here, as defence in depth).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct AclCaller<'a> {
     pub subject: &'a str,
     pub is_admin: bool,
     pub token_groups: &'a [String],
+    /// Who this subject is acting FOR, from the token's RFC 8693 `act.sub`
+    /// (#510) — a per-run agent token names the runner that delegated to it.
+    ///
+    /// **Never an input to an ACL decision.** The authority is the subject's
+    /// own; this is lineage, recorded alongside [`CAPTURED_BY_FIELD`] so an
+    /// audit can answer "which agent, acting for whom". Reading it as
+    /// authority would re-open the confused deputy it exists to document.
+    pub actor: Option<&'a str>,
 }
 
 /// The frontmatter field that carries a member's owning principal when an
@@ -58,6 +66,16 @@ const CHAT_OWNER_SKILL: &str = "community_member";
 /// change is purely additive across all three event backends (local table,
 /// attached Postgres, lake) with no migration and no DDL to keep in step.
 pub const CAPTURED_BY_FIELD: &str = "captured_by";
+
+/// The `provenance` key naming the principal the capturing subject was
+/// **acting for** — the runner behind a per-run agent token (#510).
+///
+/// **Server-owned**, exactly like [`CAPTURED_BY_FIELD`]: taken from the
+/// verified token's `act.sub` and overwriting whatever the caller sent, so
+/// the delegation chain is a gateway claim rather than a client assertion.
+/// Absent when the caller acts as itself — the field records a delegation,
+/// so an empty one would assert a chain that does not exist.
+pub const CAPTURED_VIA_FIELD: &str = "captured_via";
 
 /// The subject recorded in an event's `provenance.captured_by`, or `None`
 /// when the event carries no (string) stamp — a pre-stamp legacy row.
