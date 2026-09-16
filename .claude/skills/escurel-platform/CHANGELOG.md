@@ -4,6 +4,28 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.30 — changesets: a run's held writes, decided together
+
+- `create_draft` gains `new_changeset` (start one; the SERVER mints the id
+  and returns it on the stored draft) and `changeset_id` (join the one a
+  previous `create_draft` in this run returned). Sending both is refused
+  rather than silently resolved — they are two different intentions.
+- New tools `list_changesets`, `promote_changeset`, `discard_changeset`
+  (`references/02-tool-surface.md`), typed client methods, and
+  `escurel changeset list|promote|discard`.
+- `promote_changeset` is **all-or-nothing**: every member is checked first
+  (still open, still valid, target still at the hash it was drafted
+  against) and if any would refuse, NOTHING lands and every member stays
+  open to be re-drafted. A half-promoted run leaves the corpus in a state
+  no agent proposed, which is the failure this exists to prevent.
+- It is also safe to retry: a member whose page already holds its bytes
+  counts as applied, so a promotion interrupted mid-flight completes rather
+  than conflicting with its own writes, and a changeset that was already
+  decided answers `{ok: true, already_decided: true}`.
+- **Nothing changes for an ungrouped draft.** `changeset_id` is nullable and
+  NULL is today's draft, byte for byte — created, listed, promoted and
+  discarded exactly as before, and never listed as a changeset of one.
+
 ## 0.6.29 — `diff_draft`: what approving a held write would change
 
 - New agent tool `diff_draft` (`references/02-tool-surface.md`) and typed

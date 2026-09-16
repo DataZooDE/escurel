@@ -130,6 +130,7 @@ pub fn create_drafts_lake_table_sql() -> String {
             status          VARCHAR   NOT NULL, \
             reason          VARCHAR   NOT NULL, \
             decided_by      VARCHAR   NOT NULL, \
+            changeset_id    VARCHAR, \
             created_at      TIMESTAMP, \
             decided_at      TIMESTAMP\
         );"
@@ -152,6 +153,12 @@ pub fn attach_chat_lake(conn: &Connection, cfg: &LakeConfig) -> Result<(), Snaps
 pub fn attach_drafts_lake(conn: &Connection, cfg: &LakeConfig) -> Result<(), SnapshotError> {
     attach_append_lake(conn, cfg)?;
     conn.execute_batch(&create_drafts_lake_table_sql())?;
+    // A lake table provisioned before changesets existed (#509 §1) gains the
+    // column on attach, as the local and Postgres variants do.
+    conn.execute_batch(&format!(
+        "ALTER TABLE {APPEND_LAKE_ALIAS}.{DRAFTS_PG_TABLE_NAME} \
+         ADD COLUMN IF NOT EXISTS changeset_id VARCHAR;"
+    ))?;
     Ok(())
 }
 

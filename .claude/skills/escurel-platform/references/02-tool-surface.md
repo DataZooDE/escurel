@@ -184,6 +184,9 @@ privately, which put consumer-shaped objects in the knowledge base and made
 | `create_draft` | Hold the whole proposed markdown for `target_page_id` (which need not exist yet), with the `base_sha256` it was drafted against (`""` = expect no page). Returns the draft with its `draft_id` and `content_sha256`. |
 | `list_drafts` | Everything still waiting, newest first — the answer to "what is waiting for me?". |
 | `diff_draft` | `draft_id` | `{ok, target_page_id, exists, base_moved, frontmatter_changes:[{key,from,to}], block_changes:[{anchor,kind,preview}]}` | what approving this held write would change — only keys that MOVE, plus whether the target has shifted since the draft was taken (`base_moved`, i.e. promotion will need a merge). Read-only; a draft you may not see answers `ok:false` + `not_found`, never a refusal |
+| `list_changesets` | `limit?` | `{changesets:[{changeset_id, drafts, status, author, created_at, event_ids, target_page_ids}]}` | the review queue by RUN rather than by page: one row per changeset. `status` is DERIVED from the members (`open` while any is open, `mixed` when members were decided individually), so it cannot drift from them |
+| `promote_changeset` | `changeset_id`, `decided_by?` (admin) | `{ok, changeset_id, results:[{draft_id, page_id, ok, already_applied}], already_decided?, partial?, issues}` | land a run's held writes as ONE decision. **All-or-nothing**: every member is pre-checked and if any would refuse, nothing lands and all stay open. Safe to retry — a member whose page already holds its bytes counts as applied, so an interrupted promotion completes instead of conflicting with itself |
+| `discard_changeset` | `changeset_id`, `reason?`, `decided_by?` (admin) | `{ok, discarded}` | refuse the whole proposal; nothing is written to any target |
 | `promote_draft` | Land it, under the approver's identity. |
 | `discard_draft` | Refuse it, with a `reason`. Nothing is written. |
 
@@ -205,7 +208,7 @@ Three properties are worth relying on:
 A draft already decided answers `{code: already_decided}` naming which
 decision was taken — deciding twice is not expressible.
 
-Note this list is **curated, not exhaustive** — the server exposes 72 tools
+Note this list is **curated, not exhaustive** — the server exposes 76 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,

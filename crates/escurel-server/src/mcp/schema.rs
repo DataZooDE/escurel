@@ -240,7 +240,59 @@ pub(super) fn tools_list_payload() -> Value {
                         "target_page_id": { "type": "string", "description": "The page this write is FOR, e.g. `markdown/instances/<skill>/<slug>.md`." },
                         "content": { "type": "string" },
                         "base_sha256": { "type": "string", "description": "The target's content_sha256 when drafted, from `expand`; \"\" = approve-create (expect no page). Carried into `update_page`'s CAS at promotion." },
-                        "event_id": { "type": "string", "description": "The inbox event this draft answers, when it answers one." }
+                        "event_id": { "type": "string", "description": "The inbox event this draft answers, when it answers one." },
+                        "changeset_id": { "type": "string", "description": "Join the changeset a previous create_draft in this run returned (#509)." },
+                        "new_changeset": { "type": "boolean", "description": "Start a changeset; the server mints the id and returns it on the stored draft. Not with `changeset_id`." }
+                    }
+                }),
+            ),
+            tool_entry(
+                "list_changesets",
+                Execution::Deterministic,
+                Scope::Agent,
+                "The review queue by RUN rather than by page (#509): one row \
+                 per changeset with how many held writes it holds, who \
+                 proposed it, the pages it touches and the events it answers. \
+                 `status` is derived from its members — `open` while any is \
+                 open, `mixed` when members were decided individually.",
+                json!({
+                    "type": "object",
+                    "properties": { "limit": { "type": "integer" } }
+                }),
+            ),
+            tool_entry(
+                "promote_changeset",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Land a run's held writes as ONE decision. All-or-nothing: \
+                 every member is checked first (still open, still valid, \
+                 target still at the hash it was drafted against) and if any \
+                 would refuse, NOTHING lands and every member stays open. Safe \
+                 to retry — a member whose page already holds its bytes counts \
+                 as applied, so a promotion interrupted mid-flight completes \
+                 rather than conflicting with itself.",
+                json!({
+                    "type": "object",
+                    "required": ["changeset_id"],
+                    "properties": {
+                        "changeset_id": { "type": "string" },
+                        "decided_by": { "type": "string", "description": "the HUMAN who approved, when a gateway decides on their behalf (admin only)" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "discard_changeset",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Refuse a run's proposal whole. Every open member is closed \
+                 with the reason; nothing is written to any target.",
+                json!({
+                    "type": "object",
+                    "required": ["changeset_id"],
+                    "properties": {
+                        "changeset_id": { "type": "string" },
+                        "reason": { "type": "string" },
+                        "decided_by": { "type": "string" }
                     }
                 }),
             ),
@@ -1429,6 +1481,18 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "next_cursor": { "type": ["string", "null"], "description": "string = more rows (pass back as cursor); null = done" }
         })),
         "list_drafts" => obj(json!({ "drafts": { "type": "array" } })),
+        "list_changesets" => obj(json!({ "changesets": { "type": "array" } })),
+        "promote_changeset" => obj(json!({
+            "ok": { "type": "boolean" },
+            "changeset_id": { "type": "string" },
+            "results": { "type": "array", "description": "[{draft_id, page_id, ok, already_applied}]" },
+            "already_decided": { "type": "boolean", "description": "the retry answer: this changeset was decided already" },
+            "partial": { "type": "boolean", "description": "a pre-flighted member refused mid-apply; re-run to complete" }
+        })),
+        "discard_changeset" => obj(json!({
+            "ok": { "type": "boolean" },
+            "discarded": { "type": "integer" }
+        })),
         "diff_draft" => obj(json!({
             "ok": { "type": "boolean" },
             "target_page_id": { "type": "string" },
