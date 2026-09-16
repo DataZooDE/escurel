@@ -504,3 +504,233 @@ async fn validate_still_refuses_a_reserved_link_to_a_missing_skill() {
          {issues:?}"
     );
 }
+
+// ── Typed skill fields (#508) ────────────────────────────────────────────
+//
+// `required_frontmatter` is a KEY-NAME list: it says `hotness` must be
+// present and nothing about what may be in it, so `hotness: 5-Cold-ish`
+// commits clean and `list_instances(filter={hotness: cold})` silently
+// fractures the corpus into synonym classes. `fields:` adds the shape.
+
+const SKILL_TYPED: (&str, &str) = (
+    "markdown/skills/account.md",
+    "---\n\
+     type: skill\n\
+     id: account\n\
+     description: A customer account.\n\
+     fields:\n\
+       - {name: hotness, kind: enum, values: [hot, warm, cold]}\n\
+       - {name: opened,  kind: date, required: true}\n\
+       - {name: arr_eur, kind: float, min: 0}\n\
+       - {name: seats,   kind: int}\n\
+       - {name: active,  kind: bool}\n\
+       - {name: segment, kind: string}\n\
+     ---\n\
+     # account\n",
+);
+
+fn typed_instance(body: &str) -> String {
+    format!("---\ntype: instance\nskill: account\nid: globex\n{body}---\n# Globex\n")
+}
+
+/// The article's showcase, reproduced: an agent physically cannot write
+/// `5-Cold-ish` into a field declared as an enum.
+#[tokio::test]
+async fn a_value_outside_a_declared_enum_is_an_error() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_TYPED]).await;
+
+    let issues = h
+        .indexer
+        .validate(
+            None,
+            &typed_instance("hotness: 5-Cold-ish\nopened: 2026-01-05\n"),
+        )
+        .await
+        .unwrap();
+    let bad = issues
+        .iter()
+        .find(|i| i.code == "frontmatter_enum_value")
+        .unwrap_or_else(|| panic!("an out-of-enum value must be reported: {issues:?}"));
+    assert_eq!(bad.severity, Severity::Error, "{bad:?}");
+    assert_eq!(bad.location, "frontmatter.hotness", "{bad:?}");
+    assert!(
+        bad.message.contains("hot") && bad.message.contains("warm") && bad.message.contains("cold"),
+        "the message must name the allowed set — a rejection that does not \
+         say what IS allowed costs the author another round trip: {bad:?}"
+    );
+
+    // Control: a declared value passes, so the check is about membership
+    // and not about the field being rejected outright.
+    let issues = h
+        .indexer
+        .validate(None, &typed_instance("hotness: cold\nopened: 2026-01-05\n"))
+        .await
+        .unwrap();
+    assert!(
+        !issues.iter().any(|i| i.code == "frontmatter_enum_value"),
+        "a declared value must pass: {issues:?}"
+    );
+}
+
+/// Every other kind in the closed vocabulary, positive and negative, in one
+/// place — so a kind that stops being enforced fails here rather than
+/// silently widening what an agent may write.
+#[tokio::test]
+async fn a_value_that_does_not_parse_as_its_declared_kind_is_an_error() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_TYPED]).await;
+
+    for (body, key) in [
+        ("opened: last tuesday\n", "frontmatter.opened"),
+        ("opened: 2026-01-05\nseats: twelve\n", "frontmatter.seats"),
+        ("opened: 2026-01-05\narr_eur: lots\n", "frontmatter.arr_eur"),
+        (
+            "opened: 2026-01-05\nactive: yesplease\n",
+            "frontmatter.active",
+        ),
+    ] {
+        let issues = h
+            .indexer
+            .validate(None, &typed_instance(body))
+            .await
+            .unwrap();
+        let bad = issues
+            .iter()
+            .find(|i| i.code == "frontmatter_field_type" && i.location == key)
+            .unwrap_or_else(|| panic!("{key} must be reported for {body:?}: {issues:?}"));
+        assert_eq!(bad.severity, Severity::Error, "{bad:?}");
+    }
+
+    // The whole positive row: every kind, a value that fits it.
+    let ok = typed_instance(
+        "opened: 2026-01-05\nseats: 12\narr_eur: 99000.50\nactive: true\n\
+         hotness: warm\nsegment: mid-market\n",
+    );
+    let issues = h.indexer.validate(None, &ok).await.unwrap();
+    assert!(
+        !issues.iter().any(|i| i.severity == Severity::Error),
+        "a fully well-typed instance must validate clean: {issues:?}"
+    );
+}
+
+/// A range is part of the shape: `arr_eur: min 0` exists to keep a negative
+/// number out, and a declared bound that is not enforced is decoration.
+#[tokio::test]
+async fn a_value_outside_a_declared_range_is_an_error() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_TYPED]).await;
+
+    let issues = h
+        .indexer
+        .validate(None, &typed_instance("opened: 2026-01-05\narr_eur: -5\n"))
+        .await
+        .unwrap();
+    let bad = issues
+        .iter()
+        .find(|i| i.code == "frontmatter_field_range")
+        .unwrap_or_else(|| panic!("a below-min value must be reported: {issues:?}"));
+    assert_eq!(bad.location, "frontmatter.arr_eur", "{bad:?}");
+    assert_eq!(bad.severity, Severity::Error, "{bad:?}");
+    assert!(bad.message.contains('0'), "name the bound: {bad:?}");
+}
+
+/// `fields[].required` is about presence, like `required_frontmatter`, and
+/// reported with the SAME code — a reviewer should not have to learn two
+/// vocabularies for one missing key.
+#[tokio::test]
+async fn a_missing_required_field_is_reported_as_a_missing_key() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_TYPED]).await;
+
+    let issues = h
+        .indexer
+        .validate(None, &typed_instance("hotness: hot\n"))
+        .await
+        .unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.code == "frontmatter_required_key_missing"
+                && i.location == "frontmatter.opened"),
+        "a required declared field that is absent must be reported: {issues:?}"
+    );
+    // An OPTIONAL declared field that is absent is not a finding: declaring
+    // a field is not the same as demanding it.
+    assert!(
+        !issues.iter().any(|i| i.location == "frontmatter.segment"),
+        "an absent optional field is not a problem: {issues:?}"
+    );
+}
+
+/// The skill author's own mistakes, caught on the skill page rather than on
+/// every instance of it.
+#[tokio::test]
+async fn a_malformed_fields_block_is_reported_on_the_skill_page() {
+    let h = fresh_harness();
+
+    let nameless = "---\ntype: skill\nid: broken\nfields:\n  - {kind: enum}\n---\n# broken\n";
+    let issues = h.indexer.validate(None, nameless).await.unwrap();
+    let bad = issues
+        .iter()
+        .find(|i| i.code == "fields_malformed")
+        .unwrap_or_else(|| panic!("a field with no name cannot be enforced: {issues:?}"));
+    assert_eq!(bad.severity, Severity::Error, "{bad:?}");
+
+    let scalar = "---\ntype: skill\nid: broken\nfields: hotness\n---\n# broken\n";
+    assert!(
+        h.indexer
+            .validate(None, scalar)
+            .await
+            .unwrap()
+            .iter()
+            .any(|i| i.code == "fields_malformed"),
+        "a scalar `fields:` is not a schema"
+    );
+
+    // An unknown kind DEGRADES to string with a warning rather than erroring:
+    // the same fallback direction `ParamKind` chose, and for the same reason —
+    // an over-permissive field under-validates, a dropped one loses data.
+    let odd = "---\ntype: skill\nid: odd\nfields:\n  - {name: x, kind: uuid}\n---\n# odd\n";
+    let issues = h.indexer.validate(None, odd).await.unwrap();
+    let warn = issues
+        .iter()
+        .find(|i| i.code == "field_kind_unknown")
+        .unwrap_or_else(|| panic!("an unknown kind must be reported: {issues:?}"));
+    assert_eq!(warn.severity, Severity::Warning, "{warn:?}");
+    assert!(
+        !issues.iter().any(|i| i.severity == Severity::Error),
+        "and must not block the skill page: {issues:?}"
+    );
+}
+
+/// The regression that matters most: a skill with no `fields:` block behaves
+/// exactly as it did. Typing is opt-in per skill — declaring the block IS
+/// the migration step, which is why enforcement can be error-severity from
+/// the first release without breaking a corpus written untyped.
+#[tokio::test]
+async fn a_skill_without_fields_is_unchanged() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_CUSTOMER]).await;
+
+    let instance = "---\n\
+                    type: instance\n\
+                    skill: customer\n\
+                    id: acme\n\
+                    tier: 5-Cold-ish\n\
+                    status: whatever-you-like\n\
+                    ---\n\
+                    # Acme\n";
+    let issues = h.indexer.validate(None, instance).await.unwrap();
+    assert!(
+        !issues.iter().any(|i| matches!(
+            i.code.as_str(),
+            "frontmatter_field_type" | "frontmatter_enum_value" | "frontmatter_field_range"
+        )),
+        "an untyped skill types nothing: {issues:?}"
+    );
+    assert!(
+        !issues.iter().any(|i| i.severity == Severity::Error),
+        "and still accepts what it always accepted: {issues:?}"
+    );
+}

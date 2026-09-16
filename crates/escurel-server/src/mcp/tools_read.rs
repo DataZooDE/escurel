@@ -94,6 +94,24 @@ pub(super) async fn tool_list_skills(
                         description: p.description,
                     })
                     .collect(),
+                // Same shape, same omission rule, for the INSTANCE schema
+                // (#508): a client builds an instance form from this exactly
+                // as it builds a run form from `params` above.
+                fields: s
+                    .fields
+                    .into_iter()
+                    .map(|f| TypesSkillField {
+                        name: f.name,
+                        kind: f.kind.as_str().to_owned(),
+                        required: f.required,
+                        values: f.values,
+                        target_skill: f.target_skill,
+                        min: f.min,
+                        max: f.max,
+                        label: f.label,
+                        description: f.description,
+                    })
+                    .collect(),
             })
             .collect(),
     };

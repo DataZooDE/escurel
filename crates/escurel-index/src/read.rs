@@ -79,6 +79,11 @@ pub struct SkillInfo {
     /// with each other for a report skill parameterised by window and
     /// grouping.
     pub params: Vec<SkillParam>,
+    /// What this skill's INSTANCES look like (the `fields:` block, #508) —
+    /// the typed counterpart to `required_frontmatter`'s key-name list. Empty
+    /// when the skill declares none, which is every skill that predates
+    /// typing and behaves exactly as it did.
+    pub fields: Vec<SkillField>,
 }
 
 /// One invocation parameter a skill page declares via `params:`
@@ -160,6 +165,177 @@ impl ParamKind {
             _ => None,
         }
     }
+}
+
+/// One INSTANCE field a skill page declares via `fields:` (#508).
+///
+/// [`SkillParam`] describes what one RUN of a skill takes; this describes what
+/// its INSTANCES look like. Same parser shape, same issue-emission style, same
+/// `list_skills` surfacing — deliberately, because two schema mechanisms in one
+/// system eventually disagree about which one is authoritative.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillField {
+    /// The frontmatter key this constrains.
+    pub name: String,
+    /// What may be in it, normalised to the closed set.
+    pub kind: FieldKind,
+    /// The allowed values for [`FieldKind::Enum`]. Empty for every other
+    /// kind, and an enum with none constrains nothing (which `validate`
+    /// reports on the skill page rather than on every instance).
+    pub values: Vec<String>,
+    /// For [`FieldKind::Link`]: the skill a linked instance must belong to.
+    pub target_skill: Option<String>,
+    /// Whether an instance must carry it. Omitted `required:` ⇒ `false`:
+    /// declaring a field is not the same as demanding it.
+    pub required: bool,
+    /// Inclusive numeric bounds, for `int`/`float`.
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    /// A human caption and prose, for a generated instance form.
+    pub label: Option<String>,
+    pub description: Option<String>,
+}
+
+/// What an instance field may hold.
+///
+/// Closed, like [`ParamKind`], and for the same reason — every consumer that
+/// renders or projects one of these needs a finite set to switch on. Wider than
+/// `ParamKind` because these values are STORED and filtered on, not only
+/// rendered: `date` and `float` are what make a typed `list_instances` filter
+/// possible, which is the point of declaring a type at all.
+///
+/// An unrecognised `kind:` degrades to [`FieldKind::String`] with a warning,
+/// the same fallback direction `ParamKind` takes: an over-permissive field
+/// under-validates, a dropped field loses the declaration entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FieldKind {
+    #[default]
+    String,
+    Integer,
+    Float,
+    Boolean,
+    Date,
+    DateTime,
+    Enum,
+    Link,
+}
+
+impl FieldKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FieldKind::String => "string",
+            FieldKind::Integer => "int",
+            FieldKind::Float => "float",
+            FieldKind::Boolean => "bool",
+            FieldKind::Date => "date",
+            FieldKind::DateTime => "datetime",
+            FieldKind::Enum => "enum",
+            FieldKind::Link => "link",
+        }
+    }
+
+    /// The closed set, in declaration order. Used to build the validator's
+    /// suggestion so the message cannot drift from the enum.
+    #[must_use]
+    pub fn recognised() -> [FieldKind; 8] {
+        [
+            FieldKind::String,
+            FieldKind::Integer,
+            FieldKind::Float,
+            FieldKind::Boolean,
+            FieldKind::Date,
+            FieldKind::DateTime,
+            FieldKind::Enum,
+            FieldKind::Link,
+        ]
+    }
+
+    /// Parse a declared kind, accepting the spellings authors actually write.
+    /// `None` is what lets `validate` tell the author while the projection
+    /// still degrades to `String`.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "string" | "text" | "str" => Some(FieldKind::String),
+            "int" | "integer" => Some(FieldKind::Integer),
+            "float" | "number" | "double" | "decimal" => Some(FieldKind::Float),
+            "bool" | "boolean" => Some(FieldKind::Boolean),
+            "date" => Some(FieldKind::Date),
+            "datetime" | "timestamp" => Some(FieldKind::DateTime),
+            "enum" => Some(FieldKind::Enum),
+            "link" | "wikilink" | "ref" => Some(FieldKind::Link),
+            _ => None,
+        }
+    }
+}
+
+/// Project one `fields:` entry, given its name and its attribute object.
+fn field_from(name: &str, attrs: &serde_json::Value) -> SkillField {
+    let text = |key: &str| {
+        attrs
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let number = |key: &str| attrs.get(key).and_then(serde_json::Value::as_f64);
+    SkillField {
+        name: name.to_owned(),
+        // `type:` is accepted as a synonym for `kind:`, as on `params:`.
+        kind: text("kind")
+            .or_else(|| text("type"))
+            .and_then(|k| FieldKind::parse(&k))
+            .unwrap_or_default(),
+        values: attrs
+            .get("values")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        target_skill: text("target_skill").or_else(|| text("skill")),
+        required: attrs
+            .get("required")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        min: number("min"),
+        max: number("max"),
+        label: text("label"),
+        description: text("description"),
+    }
+}
+
+/// Project the `fields:` block from a skill page's indexed frontmatter.
+///
+/// Reads the same two shapes [`parse_params`] does — a sequence of
+/// `{name: …, kind: …}` entries (which preserves the author's order, and so
+/// the layout of a generated form) or a mapping of `name: {kind: …}`.
+/// Anything else, and any entry without a `name`, yields nothing here and an
+/// error-severity finding from `validate`: there is no field to degrade to
+/// when the declaration has no key to constrain.
+#[must_use]
+pub fn parse_fields(fm: &serde_json::Value) -> Vec<SkillField> {
+    let Some(raw) = fm.get("fields") else {
+        return Vec::new();
+    };
+    if let Some(arr) = raw.as_array() {
+        return arr
+            .iter()
+            .filter_map(|item| {
+                let name = item.get("name").and_then(serde_json::Value::as_str)?;
+                Some(field_from(name, item))
+            })
+            .collect();
+    }
+    if let Some(obj) = raw.as_object() {
+        return obj
+            .iter()
+            .map(|(name, attrs)| field_from(name, attrs))
+            .collect();
+    }
+    Vec::new()
 }
 
 /// Project one `params:` entry, given its name and its attribute object.
@@ -457,6 +633,7 @@ impl Indexer {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
                 acl: parse_skill_acl(&fm),
+                fields: parse_fields(&fm),
                 backend: crate::backend::BackendBinding::parse(&fm),
                 layer: fm
                     .get("layer")
