@@ -738,10 +738,20 @@ impl Indexer {
         let (scenario_sql, qualify_sql) = if scenario.is_some() {
             (
                 " AND (scenario = ? OR scenario IS NULL)",
-                " QUALIFY ROW_NUMBER() OVER (PARTITION BY slug ORDER BY scenario NULLS LAST, page_id) = 1",
+                // The tombstone rule (#512 §3), and it MUST sit in the
+                // QUALIFY rather than the WHERE: filtering a deleted overlay
+                // out before the window would let its base twin win the
+                // partition and show through the delete — the trap named in
+                // docs/notes/discovered/2026-05-29-scenario-overlay-qualify.md.
+                " QUALIFY ROW_NUMBER() OVER (PARTITION BY slug ORDER BY scenario NULLS LAST, page_id) = 1 \
+                  AND NOT COALESCE(deleted, false)",
             )
         } else {
-            (" AND scenario IS NULL", "")
+            // No scenario: the base timeline only. A tombstone lives on an
+            // overlay, so `deleted` is never true here — excluded anyway, so
+            // that a future path which sets it cannot leak a deleted page
+            // into a base read.
+            (" AND scenario IS NULL AND NOT COALESCE(deleted, false)", "")
         };
         let sql = format!(
             "SELECT page_id, skill, frontmatter::VARCHAR \
@@ -836,10 +846,20 @@ impl Indexer {
         let (scenario_sql, qualify_sql) = if scenario.is_some() {
             (
                 " AND (scenario = ? OR scenario IS NULL)",
-                " QUALIFY ROW_NUMBER() OVER (PARTITION BY slug ORDER BY scenario NULLS LAST, page_id) = 1",
+                // The tombstone rule (#512 §3), and it MUST sit in the
+                // QUALIFY rather than the WHERE: filtering a deleted overlay
+                // out before the window would let its base twin win the
+                // partition and show through the delete — the trap named in
+                // docs/notes/discovered/2026-05-29-scenario-overlay-qualify.md.
+                " QUALIFY ROW_NUMBER() OVER (PARTITION BY slug ORDER BY scenario NULLS LAST, page_id) = 1 \
+                  AND NOT COALESCE(deleted, false)",
             )
         } else {
-            (" AND scenario IS NULL", "")
+            // No scenario: the base timeline only. A tombstone lives on an
+            // overlay, so `deleted` is never true here — excluded anyway, so
+            // that a future path which sets it cannot leak a deleted page
+            // into a base read.
+            (" AND scenario IS NULL AND NOT COALESCE(deleted, false)", "")
         };
 
         // Cursor predicate + ordering over the deduped inner rows. The
@@ -1099,6 +1119,33 @@ impl Indexer {
         Ok(ResolvedWikilink { parsed, page: row })
     }
 
+    /// Whether the winning row for this slug, under `scenario`, is a
+    /// tombstone (#512 §3).
+    ///
+    /// Asked AFTER a row has been found, deliberately: the override picks the
+    /// overlay first, so "is the winner deleted?" is a different question
+    /// from "is there a deleted row", and only the first one may hide a page.
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn slug_is_tombstoned(
+        &self,
+        skill: &str,
+        slug: &str,
+        scenario: &str,
+    ) -> Result<bool, IndexerError> {
+        let conn = self.conn.lock().await;
+        Ok(conn
+            .query_row(
+                "SELECT COALESCE(deleted, false) FROM pages \
+                 WHERE skill = ? AND slug = ? AND (scenario = ? OR scenario IS NULL) \
+                 ORDER BY scenario NULLS LAST, page_id LIMIT 1",
+                duckdb::params![skill, slug, scenario],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false))
+    }
+
     /// Fetch the full body of `page_id` plus its frontmatter and
     /// outbound wikilinks. Returns `Ok(None)` when no page with that
     /// `page_id` is in the index.
@@ -1131,6 +1178,35 @@ impl Indexer {
             return Ok(Some(crate::crdt_history::materialize_snapshot(
                 page_id, &snap,
             )?));
+        }
+
+        // Tombstone gate (#512 §3). `expand` is addressed by page_id, and a
+        // branch's tombstone is a statement about the SLUG — so a base page
+        // whose slug the branch deleted must read as absent on that branch,
+        // not as its base self. Checked before the row is read rather than
+        // after, so no part of a deleted page is assembled.
+        if let Some(sc) = scenario {
+            let identity: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT skill, slug FROM pages WHERE page_id = ?",
+                    duckdb::params![page_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .ok();
+            if let Some((skill, slug)) = identity {
+                let deleted: bool = conn
+                    .query_row(
+                        "SELECT COALESCE(deleted, false) FROM pages \
+                         WHERE skill = ? AND slug = ? AND (scenario = ? OR scenario IS NULL) \
+                         ORDER BY scenario NULLS LAST, page_id LIMIT 1",
+                        duckdb::params![skill, slug, sc],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+                if deleted {
+                    return Ok(None);
+                }
+            }
         }
 
         // Page row. With an `as_of` cut, a page whose `at_ts` is after

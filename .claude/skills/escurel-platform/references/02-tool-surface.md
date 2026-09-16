@@ -91,8 +91,8 @@ Notes:
 | tool | inputs | output | mode |
 |---|---|---|---|
 | `validate` | `content`, `as_page_id?` | `{issues[]}` | dry run — no commit |
-| `update_page` | `page_id`, `content`, `base_version?`+`require_exact_base?` (CRDT gateways), `base_sha256?` (every gateway) | `{ok, issues[], new_version}` | whole-page write (the public write path); the `base_*` guards are the **atomic-approve** CAS — see the autonomy note |
-| `delete_page` | `page_id`, `base_version?` | `{ok, …}` | **soft**-delete / archive |
+| `update_page` | `page_id`, `content`, `base_version?`+`require_exact_base?` (CRDT gateways), `base_sha256?` (every gateway) | `{ok, issues[], new_version}` | whole-page write (the public write path); the `base_*` guards are the **atomic-approve** CAS — see the autonomy note. Pass `branch` to write on a branch instead of the base timeline: the server derives the overlay page id and stamps `scenario`, so you never type it (#512) |
+| `delete_page` | `page_id`, `base_version?` | `{ok, …}` | **soft**-delete / archive. With `branch`, it is a TOMBSTONE rather than a retraction: the base page is untouched, the slug reads as absent on that branch, and the delete lands for real when the branch merges |
 | `open_session` | `page_id` | `{session, head_version, content}` | live CRDT |
 | `apply_op` | `session`, `op` | `{ok, conflicts?}` | live CRDT |
 | `close_session` | `session`, `commit=true` | `{final_version, issues}` | live CRDT |
@@ -183,6 +183,10 @@ privately, which put consumer-shaped objects in the knowledge base and made
 |---|---|
 | `create_draft` | Hold the whole proposed markdown for `target_page_id` (which need not exist yet), with the `base_sha256` it was drafted against (`""` = expect no page). Returns the draft with its `draft_id` and `content_sha256`. |
 | `list_drafts` | Everything still waiting, newest first — the answer to "what is waiting for me?". |
+| `create_branch` | `name` | `{ok, branch:{name, base_version, author, status, created_at}}` | open a BRANCH — an isolated workspace whose writes never touch the base timeline (#512). Records who opened it and what it forked from; the name is also the `scenario` its pages carry. Opening an existing name is refused, never joined |
+| `list_branches` | — | `{branches:[{name, base_version, author, status, reason, decided_by, created_at}]}` | every branch, newest first, including decided ones |
+| `merge_branch` | `name` | `{ok, name, results:[{page_id, target, deleted, ok}], partial?, issues}` | land a branch. **All-or-nothing** — one page that cannot land blocks the whole merge. A base twin that moved since the fork is reconciled by the same three-way merge `update_page` performs; tombstones land as real deletes |
+| `abandon_branch` | `name`, `reason?` | `{ok, name, reason}` | close a branch without landing anything. Its overlay pages are LEFT in place as the record of what was proposed |
 | `promote_draft` | Land it, under the approver's identity. |
 | `discard_draft` | Refuse it, with a `reason`. Nothing is written. |
 
@@ -204,7 +208,7 @@ Three properties are worth relying on:
 A draft already decided answers `{code: already_decided}` naming which
 decision was taken — deciding twice is not expressible.
 
-Note this list is **curated, not exhaustive** — the server exposes 72 tools
+Note this list is **curated, not exhaustive** — the server exposes 76 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,

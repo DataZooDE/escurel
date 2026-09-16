@@ -64,6 +64,7 @@ mod backend_view;
 mod ingest;
 mod schema;
 mod tools_admin;
+mod tools_branches;
 mod tools_drafts;
 mod tools_read;
 mod tools_write;
@@ -71,6 +72,7 @@ pub(crate) use ingest::{blob_get, ingest, ingest_upload};
 pub(crate) use schema::openapi_document;
 use schema::page_type_str;
 use tools_admin::*;
+use tools_branches::*;
 use tools_drafts::*;
 use tools_read::*;
 pub(crate) use tools_write::event_to_json;
@@ -600,6 +602,14 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     // Creating and discarding drafts stay servable there; only the landing
     // is writer-only.
     "promote_draft",
+    // `merge_branch` IS a sequence of `update_page`/`delete_page` calls, so
+    // it belongs here for the same reason `promote_draft` does. Opening and
+    // abandoning a branch mutate only the registry, but a reader has no
+    // writer to hand the merge to afterwards — an isolated workspace it
+    // cannot land is a workspace nobody should be able to open there either.
+    "create_branch",
+    "merge_branch",
+    "abandon_branch",
     "delete_page",
     "move_page",
     "purge_page",
@@ -938,6 +948,12 @@ async fn dispatch_tools_call(
             tool_create_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }
         "list_drafts" => tool_list_drafts(indexer, caller, params.arguments).await,
+        "create_branch" => tool_create_branch(state, indexer, caller, params.arguments).await,
+        "list_branches" => tool_list_branches(indexer, caller, params.arguments).await,
+        "merge_branch" => {
+            tool_merge_branch(state, indexer, caller, state.write_acl, params.arguments).await
+        }
+        "abandon_branch" => tool_abandon_branch(indexer, caller, params.arguments).await,
         "promote_draft" => {
             tool_promote_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }

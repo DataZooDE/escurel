@@ -52,6 +52,19 @@ pub(super) struct UpdatePageArgs {
     /// so only genuine out-of-band edits trigger the eager improvement pass.
     #[serde(default)]
     provenance: Option<Value>,
+    /// Write on a BRANCH rather than on the base timeline (#512 §2).
+    ///
+    /// The branch is a property of the WRITE, not of the page: the server
+    /// derives the overlay page id and stamps `scenario`, so an agent working
+    /// on a branch cannot forget to stamp a page and write to production
+    /// instead. That failure mode — one missed stamp — is the single most
+    /// dangerous property of author-supplied `scenario:` frontmatter, which
+    /// this deprecates but does not break.
+    ///
+    /// A name that is not an OPEN registered branch is refused
+    /// (`unknown_branch` / `already_decided`), never created.
+    #[serde(default)]
+    branch: Option<String>,
 }
 
 /// What the compare-and-swap decided, named.
@@ -245,7 +258,27 @@ pub(super) async fn tool_update_page(
     write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: UpdatePageArgs = parse_args(args, "update_page")?;
+    let mut a: UpdatePageArgs = parse_args(args, "update_page")?;
+
+    // ── Branch write context (#512 §2). ──
+    //
+    // Resolved FIRST, before any guard reads `page_id` or `content`: a branch
+    // write targets a different page and carries a server-stamped
+    // `scenario`, so every check below must see the rewritten write rather
+    // than the caller's base-timeline version of it.
+    if let Some(branch) = a.branch.clone() {
+        match crate::mcp::tools_branches::require_open_branch(indexer, &branch).await? {
+            Ok(_) => {}
+            Err(refusal) => return Ok(refusal),
+        }
+        a.page_id = crate::mcp::tools_branches::overlay_page_id(&a.page_id, &branch);
+        a.content = crate::mcp::tools_branches::stamp_scenario(&a.content, &branch);
+        // A byte CAS the caller computed against the BASE page cannot apply
+        // to the overlay it never saw. Dropped rather than honoured: honouring
+        // it would refuse every first write on a branch, and honouring it
+        // silently against the wrong page would be worse.
+        a.base_sha256 = None;
+    }
 
     // `require_exact_base` without a base is a caller bug, and the harmless
     // reading of it — ignore the flag — is the one that loses data: the caller
@@ -697,6 +730,12 @@ pub(super) struct DeletePageArgs {
     /// version the client last read. A stale value conflicts.
     #[serde(default)]
     base_version: Option<String>,
+    /// Delete on a BRANCH (#512 §3): a tombstone, not a retraction. The base
+    /// page is untouched; the branch's overlay for that slug is marked
+    /// deleted, so the slug reads as absent ON THE BRANCH and lands as a real
+    /// delete when the branch merges.
+    #[serde(default)]
+    branch: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -877,6 +916,71 @@ pub(super) async fn tool_delete_page(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: DeletePageArgs = parse_args(args, "delete_page")?;
+
+    // ── A branch delete is a TOMBSTONE, not a retraction (#512 §3). ──
+    //
+    // The base page is untouched. The branch's overlay for that slug is
+    // written (from the base content, if the branch had not touched the slug
+    // yet) and marked deleted, so the slug reads as ABSENT on the branch —
+    // and the delete lands for real when the branch merges.
+    //
+    // The overlay row is marked rather than removed on purpose: a tombstone
+    // IS the branch's statement about the slug, and deleting the row would
+    // make the branch fall back to the base twin instead of hiding it.
+    if let Some(branch) = a.branch.clone() {
+        match crate::mcp::tools_branches::require_open_branch(indexer, &branch).await? {
+            Ok(_) => {}
+            Err(refusal) => return Ok(refusal),
+        }
+        let overlay = crate::mcp::tools_branches::overlay_page_id(&a.page_id, &branch);
+        if indexer
+            .read_page_markdown(&overlay)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("delete_page branch read: {e}")))?
+            .is_none()
+        {
+            // Materialise the overlay from the base so the tombstone has a
+            // row to mark — and so it WINS the per-slug override, which is
+            // what makes the base twin invisible.
+            let Some(base) = indexer
+                .read_page_markdown(&a.page_id)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("delete_page branch read: {e}")))?
+            else {
+                return Ok(json!({
+                    "ok": false,
+                    "issues": [{
+                        "severity": "error",
+                        "code": "not_found",
+                        "location": "page_id",
+                        "message": format!("no page `{}` to tombstone", a.page_id),
+                    }],
+                }));
+            };
+            let stamped = crate::mcp::tools_branches::stamp_scenario(&base, &branch);
+            let wrote = tool_update_page(
+                state,
+                indexer,
+                caller,
+                write_acl,
+                json!({ "page_id": overlay, "content": stamped }),
+            )
+            .await?;
+            if wrote.get("ok").and_then(Value::as_bool) == Some(false) {
+                return Ok(wrote);
+            }
+        }
+        indexer
+            .tombstone_page(&overlay)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("delete_page tombstone: {e}")))?;
+        return Ok(json!({
+            "ok": true,
+            "page_id": overlay,
+            "branch": branch,
+            "tombstoned": true,
+        }));
+    }
 
     // Fetch the stored markdown; a missing page is a typed `not_found`, not a
     // 500. Idempotent: a second delete (page already retracted) also

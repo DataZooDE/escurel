@@ -81,9 +81,9 @@ Frontmatter rules the indexer enforces at write time:
   `fields`, so a client can build an instance form from the catalogue
   alone.
 
-Two frontmatter fields are **server-governed** — your app never writes
+Three frontmatter fields are **server-governed** — your app never writes
 them: `layer:` (stamped by pack import; a draft declaring `layer: base@…`
-is rejected `layer_read_only`) and `promotable:` (curator/admin-set; a
+is rejected `layer_read_only`), `promotable:` (curator/admin-set; a
 non-admin write carrying it is rejected `promotable_requires_curator`).
 See §Layer/stability axis below.
 

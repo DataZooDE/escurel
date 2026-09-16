@@ -102,3 +102,71 @@ pub struct DecideDraftResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head_content: Option<String>,
 }
+
+/// A branch, as registered (#512): an isolated workspace whose writes never
+/// touch the base timeline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Branch {
+    pub name: String,
+    /// The corpus state the branch forked from — what a merge compares
+    /// against.
+    pub base_version: String,
+    pub author: String,
+    /// `open` | `merged` | `abandoned`.
+    pub status: String,
+    pub reason: String,
+    pub decided_by: String,
+    pub created_at: String,
+}
+
+/// `create_branch` / `merge_branch` / `abandon_branch` arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BranchRequest {
+    pub name: String,
+    /// Why it was abandoned. `abandon_branch` only.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// `create_branch` result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CreateBranchResponse {
+    pub ok: bool,
+    pub branch: Option<Branch>,
+    pub issues: Vec<crate::ValidationIssue>,
+}
+
+/// `list_branches` result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListBranchesResponse {
+    pub branches: Vec<Branch>,
+}
+
+/// What one page did when a branch merged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BranchMergeResult {
+    pub page_id: String,
+    /// The base page the overlay landed on (or the delete applied to).
+    pub target: String,
+    /// This member was a tombstone, so merging it DELETES the base page.
+    pub deleted: bool,
+    pub ok: bool,
+}
+
+/// The outcome of deciding a branch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DecideBranchResponse {
+    pub ok: bool,
+    pub name: String,
+    pub results: Vec<BranchMergeResult>,
+    /// A pre-flighted page refused mid-apply; re-running completes it.
+    pub partial: bool,
+    pub reason: String,
+    pub issues: Vec<crate::ValidationIssue>,
+}
