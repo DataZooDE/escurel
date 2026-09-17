@@ -187,6 +187,7 @@ privately, which put consumer-shaped objects in the knowledge base and made
 | `list_changesets` | `limit?` | `{changesets:[{changeset_id, drafts, status, author, created_at, event_ids, target_page_ids}]}` | the review queue by RUN rather than by page: one row per changeset. `status` is DERIVED from the members (`open` while any is open, `mixed` when members were decided individually), so it cannot drift from them |
 | `promote_changeset` | `changeset_id`, `decided_by?` (admin) | `{ok, changeset_id, results:[{draft_id, page_id, ok, already_applied}], already_decided?, partial?, issues}` | land a run's held writes as ONE decision. **All-or-nothing**: every member is pre-checked and if any would refuse, nothing lands and all stay open. Safe to retry — a member whose page already holds its bytes counts as applied, so an interrupted promotion completes instead of conflicting with itself |
 | `discard_changeset` | `changeset_id`, `reason?`, `decided_by?` (admin) | `{ok, discarded}` | refuse the whole proposal; nothing is written to any target |
+
 | `promote_draft` | Land it, under the approver's identity. |
 | `discard_draft` | Refuse it, with a `reason`. Nothing is written. |
 
@@ -209,6 +210,7 @@ A draft already decided answers `{code: already_decided}` naming which
 decision was taken — deciding twice is not expressible.
 
 Note this list is **curated, not exhaustive** — the server exposes 76 tools
+
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,
@@ -227,7 +229,7 @@ instance's **history** once assigned. Workers build chains on this
 
 | tool | inputs (key ones) | output | what for |
 |---|---|---|---|
-| `capture_event` | `label_skill` (**required** — the label→skill routing key; an unlabelled capture is refused `-32602`), `source`, `mime`, `title`, `body`, `instance_page_id?`, `event_id?`, `provenance?` | the stored `Event` (server mints `event_id`/`at` when empty) | ingest an event; fires the webhook |
+| `capture_event` | `label_skill` (**required** — the label→skill routing key; an unlabelled capture is refused `-32602`), `source`, `mime`, `title`, `body`, `instance_page_id?`, `event_id?`, `provenance?` | the stored `Event` (server mints `event_id`/`at` when empty) | ingest an event; fires the webhook. The server OVERWRITES two provenance keys with its own claims: `captured_by` (your verified token `sub`) and `captured_via` (the principal you are acting for, from the token's `act.sub` — present only for a delegated token such as a runner's per-run agent bearer, and stripped when there is none). Sending either yourself has no effect |
 | `list_inbox` | `limit`, `cursor?` | `{events[], next_cursor?}` | the tenant's UNPROCESSED events (a worker's poll fallback); pass `next_cursor` back as `cursor` — ONLY its absence means done (ACL filtering legitimately shortens pages) |
 | `assign_event` | `event_id`, `instance_page_id` | ack | mark processed + attach to a page's history |
 | `list_events` | `instance_page_id`, `limit`, `cursor?` | `{events[], next_cursor?}` | a page's PROCESSED history, **oldest first** — assigned events only (an unassigned inbox event is a pending work item, not history); paginated like `list_inbox`, so history past `limit` stays reachable |

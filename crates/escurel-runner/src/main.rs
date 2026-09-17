@@ -48,7 +48,7 @@ use escurel_runner_core::{
 use escurel_runner_core::{DeadLetterReason, RunId, StepTerminal};
 use escurel_runner_harness::{
     AgyHarness, ClaudeHarness, CodexHarness, DelegateHarness, EchoHarness, GeminiHarness, Harness,
-    RefusingHarness,
+    MuseHarness, RefusingHarness,
 };
 use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
@@ -1182,6 +1182,29 @@ fn build_harness_named(config: &RunnerConfig, name: &str) -> Option<Arc<dyn Harn
             AgyHarness::new(config.agy_bin.clone())
                 .with_model(config.agy_model.clone())
                 .with_home(config.agy_home.clone()),
+        ),
+        // Muse Code, on a HOST with `muse` installed and logged in. Like
+        // `agy` it runs `autonomy: auto` skills only: `muse exec` has no MCP
+        // tool allow-list, so `MuseHarness` refuses a narrowed surface rather
+        // than pretending to enforce one. Buildable since Muse 1.1.1 became
+        // an MCP client (#451 recorded the 1.0.1 negative).
+        "muse" => Arc::new(
+            MuseHarness::new(config.muse_bin.clone())
+                .with_model(config.muse_model.clone())
+                .with_real_config_home(
+                    config
+                        .muse_config_home
+                        .clone()
+                        .map(std::path::PathBuf::from)
+                        .or_else(|| {
+                            std::env::var_os("XDG_CONFIG_HOME")
+                                .map(std::path::PathBuf::from)
+                                .or_else(|| {
+                                    std::env::var_os("HOME")
+                                        .map(|h| std::path::PathBuf::from(h).join(".config"))
+                                })
+                        }),
+                ),
         ),
         // The one harness a container can run: HTTP to the model, no CLI, no
         // node runtime, no interactive login.
