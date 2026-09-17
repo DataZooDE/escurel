@@ -44,6 +44,7 @@ pub mod retrieval;
 pub mod schema;
 pub mod search;
 pub mod snapshot;
+mod traversal;
 pub mod validate;
 
 pub use acl::{AclCaller, CAPTURED_BY_FIELD, CAPTURED_VIA_FIELD, captured_by};
@@ -71,8 +72,9 @@ pub use query::{
     StoredQueryResult,
 };
 pub use read::{
-    AclPolicy, Autonomy, BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef,
-    ParamKind, ResolvedWikilink, SkillInfo, SkillParam, Visibility,
+    AclPolicy, Autonomy, BlockInfo, Direction, Edge, ExpandedPage, FieldKind, InstanceInfo,
+    OrderDir, PageRef, ParamKind, ResolvedWikilink, SkillField, SkillInfo, SkillParam, Visibility,
+    parse_fields,
 };
 pub use retrieval::RetrievalConfig;
 pub use schema::Migrator;
@@ -80,5 +82,9 @@ pub use search::{Granularity, SearchHit};
 pub use snapshot::{
     IndexStore, IndexerHandle, LakeConfig, ObjectStoreSecret, OpenedIndex, PublishReport,
     SingleFileStore, SnapshotError,
+};
+pub use traversal::{
+    CORPUS_TARGET, Dir, Filter, MAX_DEPTH_CEILING, START_ALIAS, Start, Step, Traversal,
+    TraversalError, parse_traversal,
 };
 pub use validate::{Issue, Severity};

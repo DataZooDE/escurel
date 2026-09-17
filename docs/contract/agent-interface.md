@@ -65,7 +65,7 @@ the skill/instance model.
 | `neighbours` | `page_id: str`, `direction: 'in'\|'out'\|'both' = 'both'`, `link_skill?: str` | list of `{src, dst, link_skill, link_version?, anchor?}` | kind / time | the link-graph primitive; covers both backlinks and forward-links; time-axis traversal (`prev_review`, `supersedes`) uses the appropriate `link_skill` |
 | `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter}` | kind | the Tier 1 catalogue; semantically a `search(*, page_type='skill')` shortcut |
 | `list_instances` | `skill_id: str`, `filter?: {frontmatter clauses}`, `order_by?: str`, `limit?: int` | list of `{id, frontmatter}` | kind / time | `search`-shaped shortcut over `neighbours(skill, link_skill=skill)`; supports e.g. `{status: open}` to enumerate open decisions, `{prev_review: null}` to find the head of an append-only chain, or `{at: '>= 2026-04-01'}` plus `order_by='at desc'` to scan an event-typed skill's recent log |
-| `query_instance` | `ref: str` (`query_id` accepted as an alias), `params?: {…}` | `{rows: [...], schema: [...], truncated}` | origin | resolves `[[query::<ref>]]` and executes it; parameters bound as typed values per the query's `params:` schema (see §"Query parameters in detail"). The one query surface — the legacy admin-gated `run_stored_query` was removed (2026-08-14 surface consolidation) |
+| `query_instance` | `ref: str` (`query_id` accepted as an alias), `params?: {…}` | `{rows: [...], schema: [...], truncated}` | origin | resolves `[[query::<ref>]]` and executes it; parameters bound as typed values per the query's `params:` schema (see §"Query parameters in detail"). The one query surface — the legacy admin-gated `run_stored_query` was removed (2026-08-14 surface consolidation). A page whose `target:` is the literal `corpus` instead of a `[[skill::id]]` declares a **traversal** over the markdown corpus rather than SQL over a view — see §"Stored corpus traversals" |
 | `validate` | `content: str`, `as_page_id?: str` | `{issues: [...]}` | write | dry run; same issue list as `update_page`/`apply_op` but no commit. Used for authoring feedback. |
 | `open_session` | `page_id: str` | `{session, head_version, content}` | write (live) | open a CRDT session; agent enters the live-edit lane (see §"Write path in detail") |
 | `apply_op` | `session: str`, `op: CRDTOp` | `{ok, conflicts?: [...]}` | write (live) | apply a single CRDT op; concurrent merges are handled by Loro |
@@ -638,3 +638,51 @@ than design contract:
   data merge.
 
 These can be punted to implementation.
+
+### Stored corpus traversals
+
+A `[[query::*]]` page may target the **corpus** instead of a `sql_view`
+instance. It then declares a bounded walk over the link graph rather than
+SQL, and `query_instance` dispatches on `target:`:
+
+```yaml
+type: instance
+skill: query
+id: warm-intro
+target: corpus                       # vs. a [[skill::id]] sql_view
+params:
+  - {name: account, kind: string, required: true}
+traversal:
+  start: {skill: company, id: "{{account}}"}
+  steps:
+    - {relation: works_at, direction: in, as: contact}    # who points AT me
+    - {relation: knows,    direction: in, as: teammate}
+  where:  [{field: teammate.employer, equals: datazoo}]
+  return: [teammate.name, contact.name]
+  max_depth: 3
+  limit: 200
+```
+
+- `relation:` is the frontmatter KEY a link was written under
+  (`links.src_field`), so this needs no new storage — it walks the same
+  `resolved_links` view the provenance tools do. `direction: in` follows a
+  link backwards, which is the direction most questions take: a company does
+  not declare its employees, people declare their employer.
+- `max_depth` is **mandatory** and capped at `MAX_DEPTH_CEILING` (12); a path
+  never revisits a page, so a `knows`-style cycle terminates.
+- **ACL is per traversed instance, fail-closed.** Every hop is run through
+  `may_read_instance`; one unreadable instance drops the whole path, because a
+  path is only evidence if every step of it is visible. A caller sees exactly
+  what they could have reached by walking `neighbours` themselves — which is
+  the property the removed `run_stored_query` could not provide, and the whole
+  reason this is declarative rather than SQL.
+- **No caller text becomes a statement.** Params are values; the only place
+  one reaches is the start id, as a bound parameter.
+- Validation (`validate`, and so every write path) reports
+  `traversal_malformed`, `traversal_depth_exceeded` and
+  `traversal_unknown_field` as errors, and `traversal_unknown_relation` as a
+  warning — a relation nothing declares or uses returns nothing, which reads
+  like an answer.
+
+A `sql_view` target is unaffected: its path is unchanged.
+

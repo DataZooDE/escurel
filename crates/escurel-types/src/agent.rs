@@ -423,6 +423,46 @@ pub struct Skill {
     /// did not send.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<SkillParam>,
+    /// What this skill's INSTANCES look like (the `fields:` block, #508) —
+    /// the typed counterpart to `required_frontmatter`'s key-name list. A
+    /// client can build an instance FORM from this the same way it builds a
+    /// run form from `params`.
+    ///
+    /// Empty and omitted from the wire for every skill that declares no
+    /// `fields:`, so those rows stay byte-identical to what they were.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<SkillField>,
+}
+
+/// One instance field a skill declares. MCP wire keys: `name`, `kind`,
+/// `required`, and whichever of `values` / `target_skill` / `min` / `max` /
+/// `label` / `description` the author set.
+///
+/// `kind` is a string, not an enum, for the same reason [`SkillParam::kind`]
+/// is: a kind added by a newer server must still deserialise on an older
+/// client rather than failing the whole response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SkillField {
+    pub name: String,
+    /// `string` | `int` | `float` | `bool` | `date` | `datetime` | `enum` |
+    /// `link`.
+    pub kind: String,
+    pub required: bool,
+    /// The allowed values, for `kind: enum`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    /// The skill a `kind: link` value must point at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_skill: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// One invocation parameter a skill declares. MCP wire keys: `name`,
