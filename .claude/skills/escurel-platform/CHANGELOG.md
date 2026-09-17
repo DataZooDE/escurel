@@ -4,6 +4,24 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.39 — promotion merges a head that moved on other keys
+
+- `create_draft` now records the target's CRDT version as well as its
+  `base_sha256`, and `promote_draft` uses it when the target has moved: the
+  approval takes the three-way merge path instead of refusing on the byte
+  CAS. A reviewer's approval no longer fails because somebody else edited a
+  DIFFERENT field of the same page. The response carries
+  `auto_merged: true` when it did.
+- The same key on both sides still conflicts, the draft stays open, and the
+  auto-merged artifact is re-checked against the write guards — a
+  `promotable: true` the head gained cannot ride in through a merge nobody
+  inspected (ADR-0008).
+- `update_page`'s own auto-merge got the same widening: frontmatter changes
+  on disjoint KEYS now merge, where before the union had to equal one side
+  exactly. Same-key divergence is unchanged — still a conflict.
+- With no CRDT backend there is no base snapshot to merge against, and
+  promotion behaves exactly as it did.
+
 ## 0.6.36 — changesets: a run's held writes, decided together
 
 - `create_draft` gains `new_changeset` (start one; the SERVER mints the id
@@ -25,6 +43,8 @@ pin (see `SKILL.md` → "How this skill is installed").
 - **Nothing changes for an ungrouped draft.** `changeset_id` is nullable and
   NULL is today's draft, byte for byte — created, listed, promoted and
   discarded exactly as before, and never listed as a changeset of one.
+
+## 0.6.38 — `diff_draft`: what approving a held write would change
 
 ## 0.6.35 — `query_instance` takes `scenario` (corpus traversals)
 
@@ -80,21 +100,6 @@ pin (see `SKILL.md` → "How this skill is installed").
   enforcement can block from the first release without breaking a corpus that
   was written untyped.
 
-
-## 0.6.32 — `diff_draft`: what approving a held write would change
-
-- New agent tool `diff_draft` (`references/02-tool-surface.md`) and typed
-  client method `Client::diff_draft`. Given a `draft_id` it answers with
-  structure rather than markdown: `frontmatter_changes` (only keys that
-  MOVE — `from: null` means added, `to: null` means removed),
-  `block_changes` (`{anchor, kind, preview}`, preview = the PROPOSED text),
-  `exists` (false = approving CREATES the page) and `base_moved` (the
-  target has shifted since the draft was taken, so promotion will need a
-  merge — worth knowing before approving, not after).
-- Same read gate as `list_drafts`: a draft the caller may not see answers
-  `{ok: false, issues: [{code: "not_found"}]}`, never a refusal, so the
-  diff cannot become a way to read a draft you are not allowed to see.
-- CLI: `escurel draft diff --draft <id>`.
 
 ## 0.6.31 — server-stamped delegation chain on captured events
 
