@@ -374,11 +374,27 @@ fn mcp_endpoint(gateway_url: &str) -> String {
     format!("{}/mcp", gateway_url.trim_end_matches('/'))
 }
 
+/// How long a per-run agent bearer lives (#510): the run's own budget, never
+/// the process lifetime.
+///
+/// Floored at a minute so a deployment that configures a very short run
+/// timeout does not mint a token that lapses mid-call — the token must
+/// outlive the run it belongs to, and only that run. Not ceilinged: a
+/// deployment that budgets a long run has already accepted that duration.
+fn agent_ttl_secs(cfg: &RunnerConfig) -> u64 {
+    const FLOOR_SECS: u64 = 60;
+    cfg.run_timeout.as_secs().max(FLOOR_SECS)
+}
+
 /// The per-run credential decision for a trigger (async-ops Phase 2c-i / crew
 /// final-review F2).
 enum CallerToken {
     /// Not a workflow trigger — legitimately use the runner's own identity.
     NotWorkflow,
+    /// An ordinary (non-workflow) run on a minting runner: the harness
+    /// executes as `agent:<label_skill>`, with the runner kept as the
+    /// delegating actor (#510), so two skills leave two audit trails.
+    Agent { token: String },
     /// A workflow run with a resolved requester and a minted, caller-scoped
     /// token — the harness executes as the requester. Carries the requester
     /// `subject` too, so a delegate step can name it as the delegation `obo`
@@ -402,10 +418,32 @@ enum CallerToken {
 async fn caller_scoped_token(
     trigger: &Trigger,
     client: &Client,
+    cfg: &RunnerConfig,
     tokens: &crate::TokenSource,
 ) -> Result<CallerToken, PackageError> {
     let Some(wf) = &trigger.workflow else {
-        return Ok(CallerToken::NotWorkflow);
+        // An ordinary event-triggered run: mint the run its OWN agent identity
+        // (#510) so `last_written_by` names the agent rather than the runner.
+        // The authority is unchanged — this is attribution, not a narrowing.
+        // A static-bearer runner cannot mint and keeps its own identity, as
+        // does a `label_skill` that cannot be an unambiguous subject: losing
+        // the attribution is worth less than failing the run, and the run is
+        // no more privileged either way.
+        return Ok(
+            match tokens.mint_agent(&trigger.label_skill, agent_ttl_secs(cfg)) {
+                Ok(Some(token)) => CallerToken::Agent { token },
+                Ok(None) => CallerToken::NotWorkflow,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        label_skill = %trigger.label_skill,
+                        error = %e,
+                        "per-run agent identity not minted; the run writes as the runner"
+                    );
+                    CallerToken::NotWorkflow
+                }
+            },
+        );
     };
     let board = client
         .expand(ExpandRequest {
@@ -482,11 +520,13 @@ pub async fn package(
     // The requester subject, captured when the run is scoped — used as the
     // delegation `obo` for a delegate step (audit only).
     let mut requester: Option<String> = None;
-    let token = match caller_scoped_token(trigger, client, tokens).await? {
+    let token = match caller_scoped_token(trigger, client, cfg, tokens).await? {
         CallerToken::Scoped { token, subject } => {
             requester = Some(subject);
             SecretString::from(token)
         }
+        // The ordinary run, executing as its own agent (#510).
+        CallerToken::Agent { token } => SecretString::from(token),
         // Non-workflow cascades (orchestration writes) legitimately use the
         // runner's own identity; a static dev bearer that cannot mint falls
         // back to it too (production runs minted, so it scopes).
@@ -1085,6 +1125,18 @@ mod tests {
         let rendered = render_event_payload(&trigger, Some(&bare));
         assert!(!rendered.contains("provenance"), "{rendered}");
         assert!(rendered.contains("BODYMARK"), "{rendered}");
+    }
+
+    #[test]
+    fn a_per_run_token_lives_as_long_as_the_run_and_no_longer() {
+        let mut cfg = RunnerConfig::from_env_with(|_| None).expect("defaults");
+        cfg.run_timeout = std::time::Duration::from_secs(900);
+        assert_eq!(agent_ttl_secs(&cfg), 900, "the run's budget is the bound");
+
+        // A sub-minute budget still mints a usable token: one that expires
+        // during the call it authorises is a failure, not a tighter bound.
+        cfg.run_timeout = std::time::Duration::from_secs(5);
+        assert_eq!(agent_ttl_secs(&cfg), 60);
     }
 
     #[test]

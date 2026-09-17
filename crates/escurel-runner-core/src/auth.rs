@@ -70,6 +70,11 @@ pub enum AuthError {
     /// Signing failed.
     #[error("minting failed: {0}")]
     Mint(#[from] jsonwebtoken::errors::Error),
+    /// The run's `label_skill` cannot become an unambiguous token subject.
+    #[error(
+        "{0:?} is not usable as a per-run agent subject (expected a skill id of          letters, digits, '_', '-')"
+    )]
+    UnusableAgentSubject(String),
 }
 
 /// Where the runner's gateway bearer comes from.
@@ -195,6 +200,36 @@ impl TokenSource {
                 step,
                 *ttl_secs,
             )?)),
+        }
+    }
+
+    /// Mint a **per-run agent** bearer (#510) for the run's `label_skill`:
+    /// `sub` = `agent:<label_skill>`, with the runner kept as the delegating
+    /// actor in `act.sub`. This is the identity the gateway stamps into
+    /// `pages.last_written_by` and `crdt_ops.principal`, so two skills leave
+    /// two distinguishable audit trails instead of both reading
+    /// `escurel-runner`.
+    ///
+    /// Never cached — each run mints its own, `ttl_secs` bounded by the run
+    /// budget. A client built around one of these must therefore live no
+    /// longer than its run (the frozen-bearer defect #442).
+    ///
+    /// Returns `None` for a [`Self::Static`] source: it holds a bearer, not a
+    /// signing key, so it cannot scope anything and the caller falls back to
+    /// the runner's own identity (dev-only; production runs minted, ADR-0012).
+    ///
+    /// # Errors
+    /// When signing fails, or `label_skill` cannot be an unambiguous subject.
+    pub fn mint_agent(
+        &self,
+        label_skill: &str,
+        ttl_secs: u64,
+    ) -> Result<Option<String>, AuthError> {
+        match self {
+            Self::Static(_) => Ok(None),
+            Self::Minted {
+                signer, subject, ..
+            } => Ok(Some(signer.mint_agent(subject, label_skill, ttl_secs)?)),
         }
     }
 
@@ -404,6 +439,55 @@ impl Signer {
         )?)
     }
 
+    /// Mint a **per-run agent** bearer (#510): the run executes as
+    /// `agent:<label_skill>` rather than as the runner, while `act.sub` keeps
+    /// the runner visible as the actor that delegated to it (the RFC 8693
+    /// delegation shape — "runner acting as inbox-scan").
+    ///
+    /// The authority is deliberately unchanged from [`Self::mint`] — same
+    /// tenant, audience and `escurel:admin` role — because this lands the
+    /// plumbing, not a narrowing. Narrowing the grant per skill is the
+    /// follow-up that becomes possible once the token is per-run at all
+    /// (#510 proposal step 2).
+    ///
+    /// `ttl_secs` should be the run budget: a run's token has no business
+    /// outliving the run that carries it.
+    ///
+    /// # Errors
+    /// When signing fails, or `label_skill` cannot be an unambiguous subject.
+    pub fn mint_agent(
+        &self,
+        runner_subject: &str,
+        label_skill: &str,
+        ttl_secs: u64,
+    ) -> Result<String, AuthError> {
+        let slug = agent_slug(label_skill)?;
+        let now = now_secs();
+        let claims = json!({
+            "iss": self.issuer,
+            "aud": self.audience,
+            "sub": format!("agent:{slug}"),
+            TENANT_CLAIM: self.tenant,
+            // Same authority the runner holds today — see the doc comment.
+            "roles": ["escurel:admin"],
+            // RFC 8693 §4.1: who is acting, i.e. the delegation chain.
+            "act": { "sub": runner_subject },
+            // Distinguishes two runs of the SAME skill, and makes a leaked
+            // per-run token traceable to the run that leaked it.
+            "jti": ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            "iat": now,
+            "nbf": now,
+            "exp": now + ttl_secs,
+        });
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(self.kid.clone());
+        Ok(encode(
+            &header,
+            &claims,
+            &EncodingKey::from_rsa_pem(&self.private_pem)?,
+        )?)
+    }
+
     fn mint_with_roles(
         &self,
         subject: &str,
@@ -427,6 +511,27 @@ impl Signer {
             &claims,
             &EncodingKey::from_rsa_pem(&self.private_pem)?,
         )?)
+    }
+}
+
+/// A `label_skill` usable as the `agent:` half of a token subject.
+///
+/// Rejected rather than normalised: a skill id that needed cleaning up could
+/// be cleaned into another agent's identity, and an audit trail whose subjects
+/// collide is worse than one that admits it cannot name the actor. Accepts what
+/// a skill page id actually is — letters, digits, `_`, `-`, `.` — and nothing
+/// that could make the subject ambiguous (whitespace, `:` the claim separator,
+/// path syntax).
+fn agent_slug(label_skill: &str) -> Result<&str, AuthError> {
+    let ok = !label_skill.is_empty()
+        && !label_skill.contains("..")
+        && label_skill
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if ok {
+        Ok(label_skill)
+    } else {
+        Err(AuthError::UnusableAgentSubject(label_skill.to_owned()))
     }
 }
 
@@ -661,6 +766,178 @@ mod tests {
                 .expect("no error")
                 .is_none(),
             "a static source cannot mint a delegation; the delegate step fails closed"
+        );
+    }
+
+    /// The claims of a JWT, without verifying it — these tests own the key.
+    fn claims_of(token: &str) -> serde_json::Value {
+        let payload = token.split('.').nth(1).expect("a JWT has three parts");
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("b64");
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    /// #510: two runs on different skills must not both write as the runner.
+    /// The minted per-run token names the AGENT as `sub` — that is what the
+    /// gateway stamps into `last_written_by` — and keeps the runner visible as
+    /// the delegating actor in `act.sub`, so "runner acting as inbox-scan" is
+    /// recoverable from the token alone.
+    #[test]
+    fn a_per_run_agent_token_names_the_agent_and_keeps_the_runner_as_actor() {
+        let signer = Signer::build(
+            "https://agent-lab.data-zoo.de".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+
+        let token = signer
+            .mint_agent("escurel-runner", "inbox-scan", 120)
+            .expect("mint agent");
+        let claims = claims_of(&token);
+
+        assert_eq!(
+            claims["sub"], "agent:inbox-scan",
+            "the agent is the subject, so last_written_by names it: {claims}"
+        );
+        assert_eq!(
+            claims["act"]["sub"], "escurel-runner",
+            "the delegation chain to the runner stays recoverable: {claims}"
+        );
+        // Unchanged from today: same tenant, audience and authority, so this
+        // is plumbing, not a behaviour change (#510 proposal step 2).
+        assert_eq!(claims["tenant"], "acme", "{claims}");
+        assert_eq!(claims["aud"], "escurel", "{claims}");
+        assert_eq!(claims["roles"][0], "escurel:admin", "{claims}");
+        assert_eq!(
+            claims["exp"].as_u64().unwrap_or(0) - claims["iat"].as_u64().unwrap_or(0),
+            120,
+            "exp is bounded by the run budget handed in, not the process lifetime: {claims}"
+        );
+    }
+
+    /// The whole point: two skills, two identities.
+    #[test]
+    fn two_skills_mint_two_distinct_subjects() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+
+        let inbox = claims_of(
+            &signer
+                .mint_agent("escurel-runner", "inbox-scan", 60)
+                .expect("a"),
+        );
+        let hygiene = claims_of(
+            &signer
+                .mint_agent("escurel-runner", "crm-hygiene", 60)
+                .expect("b"),
+        );
+
+        assert_ne!(
+            inbox["sub"], hygiene["sub"],
+            "two agents sharing one identity is the bug: {inbox} vs {hygiene}"
+        );
+        assert_eq!(inbox["act"]["sub"], hygiene["act"]["sub"], "same runner");
+    }
+
+    /// A skill id is a page id, not a claim: anything that could make the
+    /// subject ambiguous is rejected rather than silently normalised into a
+    /// collision with another agent's identity.
+    #[test]
+    fn an_unusable_skill_id_does_not_mint_an_ambiguous_subject() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+
+        for bad in ["", "   ", "has space", "with:colon", "../escalate"] {
+            assert!(
+                signer.mint_agent("escurel-runner", bad, 60).is_err(),
+                "{bad:?} must not mint a subject"
+            );
+        }
+    }
+
+    /// A static-bearer runner holds a bearer, not a key — it cannot scope a
+    /// run to its agent and must say so rather than pretending.
+    #[test]
+    fn only_a_minting_source_scopes_a_run_to_its_agent() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let minted = TokenSource::Minted {
+            signer,
+            ttl_secs: 120,
+            subject: "escurel-runner".into(),
+            cached: Mutex::new(None),
+        };
+
+        let token = minted
+            .mint_agent("inbox-scan", 90)
+            .expect("mint")
+            .expect("a minting source scopes the run");
+        let claims = claims_of(&token);
+        assert_eq!(claims["sub"], "agent:inbox-scan", "{claims}");
+        assert_eq!(claims["act"]["sub"], "escurel-runner", "{claims}");
+
+        assert!(
+            TokenSource::Static("pasted-bearer".into())
+                .mint_agent("inbox-scan", 90)
+                .expect("no error")
+                .is_none(),
+            "a static source cannot scope a run; the caller falls back to the runner"
+        );
+    }
+
+    /// Never cached (unlike [`TokenSource::current`]): a per-run token that
+    /// outlived its run would re-introduce exactly the frozen-bearer defect
+    /// #442 recorded.
+    #[test]
+    fn a_per_run_token_is_minted_fresh_every_time() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let minted = TokenSource::Minted {
+            signer,
+            ttl_secs: 120,
+            subject: "escurel-runner".into(),
+            cached: Mutex::new(None),
+        };
+
+        let first = minted.mint_agent("inbox-scan", 90).expect("a").expect("a");
+        let second = minted.mint_agent("inbox-scan", 90).expect("b").expect("b");
+        assert_ne!(
+            claims_of(&first)["jti"],
+            serde_json::Value::Null,
+            "a per-run token carries a jti so two runs are distinguishable"
+        );
+        assert_ne!(
+            claims_of(&first)["jti"],
+            claims_of(&second)["jti"],
+            "each run mints its own, never a cached one"
         );
     }
 

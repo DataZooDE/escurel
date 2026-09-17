@@ -158,6 +158,7 @@ fn analyst(subject: &str) -> AclCaller<'_> {
         subject,
         is_admin: false,
         token_groups: &[],
+        actor: None,
     }
 }
 

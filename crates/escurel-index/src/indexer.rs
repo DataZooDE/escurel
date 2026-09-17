@@ -45,6 +45,14 @@ pub const BLOCKS_DENSE_VEC_DIM: usize = 768;
 /// markdown lane (any [`LaneStore`] impl). The connection is wrapped
 /// in a `tokio::sync::Mutex` because DuckDB connections are
 /// single-threaded; concurrent async callers serialise through it.
+/// Default wall-clock bound on one authored query (#455).
+///
+/// Generous: an aggregating report over an attached source legitimately takes
+/// seconds, and a bound that fires on honest work is worse than none because
+/// it teaches people to raise it. The point is that "for ever" stops being an
+/// option.
+pub const DEFAULT_QUERY_TIMEOUT_MS: u64 = 60_000;
+
 pub struct Indexer {
     store: Arc<dyn LaneStore>,
     pub(crate) embedder: Arc<dyn Embedder>,
@@ -67,6 +75,19 @@ pub struct Indexer {
     /// [`Self::mutation_epoch`] against the last-published value and skips
     /// the publish when nothing changed. Monotone; only equality matters.
     mutation_epoch: AtomicU64,
+    /// Wall-clock bound on ONE authored query's execution, in milliseconds
+    /// (#455).
+    ///
+    /// DuckDB has no statement timeout — the only bound it offers is
+    /// `Connection::interrupt` — and this Indexer holds ONE connection behind
+    /// a mutex, so an unbounded runaway query does not merely waste CPU: it
+    /// holds the tenant's whole read surface for as long as it runs. That is a
+    /// tenant-level availability event caused by one authored page.
+    ///
+    /// Atomic rather than a plain field because the Indexer is shared behind
+    /// an `Arc` and this is a knob an operator (and a test) sets after
+    /// construction. `0` disables the bound.
+    query_timeout_ms: AtomicU64,
     tenant: String,
     /// Second-stage cross-encoder reranker. [`NoopReranker`] by default
     /// (identity), so the rerank stage is a no-op until a real reranker
@@ -291,6 +312,26 @@ pub struct MergeReport {
 }
 
 impl Indexer {
+    /// Set the wall-clock bound on ONE authored query's execution (#455).
+    /// `Duration::ZERO` disables it.
+    ///
+    /// Interior mutability on purpose: the Indexer is shared behind an `Arc`,
+    /// and this is an operator knob rather than a construction-time property.
+    pub fn set_query_timeout(&self, timeout: std::time::Duration) {
+        let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        self.query_timeout_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The current per-query bound; `None` when disabled.
+    #[must_use]
+    pub fn query_timeout(&self) -> Option<std::time::Duration> {
+        let ms = self
+            .query_timeout_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (ms > 0).then(|| std::time::Duration::from_millis(ms))
+    }
+
     /// Build a per-tenant indexer.
     ///
     /// # Errors
@@ -318,6 +359,7 @@ impl Indexer {
             conn: Mutex::new(conn),
             write_lock: Mutex::new(()),
             mutation_epoch: AtomicU64::new(0),
+            query_timeout_ms: AtomicU64::new(DEFAULT_QUERY_TIMEOUT_MS),
             tenant: tenant.into(),
             reranker: Arc::new(NoopReranker),
             retrieval: RetrievalConfig::disabled(),

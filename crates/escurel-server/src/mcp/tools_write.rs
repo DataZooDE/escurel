@@ -1345,13 +1345,31 @@ pub(crate) fn stamped_principal(subject: &str) -> Option<&str> {
 /// A non-object `provenance` (a bare string/number a caller supplied) is
 /// promoted to `{"provenance": <old>, "captured_by": …}` rather than
 /// dropped, so no caller data is lost to the stamp.
-pub(super) fn stamp_captured_by(provenance: Option<Value>, subject: &str) -> Option<Value> {
+///
+/// `actor` is the token's `act.sub` (#510): when the caller is a per-run
+/// agent acting for a runner, the chain is stamped alongside as
+/// `captured_via`. A caller-supplied `captured_via` is REMOVED when there is
+/// no delegation — otherwise anyone could assert they were driven by the
+/// runner, which is precisely the lineage the runner's own trust guard reads.
+pub(super) fn stamp_captured_by(
+    provenance: Option<Value>,
+    subject: &str,
+    actor: Option<&str>,
+) -> Option<Value> {
     let mut obj = match provenance {
         Some(Value::Object(m)) => Value::Object(m),
         None | Some(Value::Null) => json!({}),
         Some(other) => json!({ "provenance": other }),
     };
     obj[escurel_index::CAPTURED_BY_FIELD] = json!(subject);
+    match actor {
+        Some(a) => obj[escurel_index::CAPTURED_VIA_FIELD] = json!(a),
+        None => {
+            if let Some(map) = obj.as_object_mut() {
+                map.remove(escurel_index::CAPTURED_VIA_FIELD);
+            }
+        }
+    }
     Some(obj)
 }
 
@@ -1426,7 +1444,7 @@ pub(super) async fn tool_capture_event(
         instance_page_id: a.instance_page_id,
         title: a.title,
         body: a.body,
-        provenance: stamp_captured_by(a.provenance, caller.subject),
+        provenance: stamp_captured_by(a.provenance, caller.subject, caller.actor),
     };
     let stored = indexer
         .capture_event(requested.clone())
@@ -1778,6 +1796,7 @@ pub(super) async fn tool_start_operation(
             "workflow": { "run": operation_id, "wf_skill": a.wf_skill, "phase": "invoke" }
         })),
         caller.subject,
+        caller.actor,
     );
     let requested = NewEvent {
         event_id: None,

@@ -48,6 +48,7 @@ const EXPECTED: &[&str] = &[
     "close_session:orchestration",
     "compact_lanes:orchestration",
     "create_draft:orchestration",
+    "diff_draft:deterministic",
     "create_remote_instance:orchestration",
     "create_sql_instance:orchestration",
     "delete_credential:orchestration",

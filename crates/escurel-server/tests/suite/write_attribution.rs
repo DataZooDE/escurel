@@ -511,3 +511,140 @@ async fn list_op_authors_denial_reads_as_absence_not_as_an_error() {
 
     p.shutdown().await;
 }
+
+/// #510: a per-run agent token writes as the AGENT, and the gateway records
+/// the runner it was acting for.
+///
+/// Without this, two agents driven by one runner both stamp `escurel-runner`
+/// and the audit trail cannot answer "which agent set this?". With it, the
+/// page names the agent and the chain back to the runner is still on record —
+/// both server-stamped from the verified token, neither caller-supplied.
+#[tokio::test]
+async fn a_delegated_write_names_the_agent_and_records_the_runner_it_acts_for() {
+    let p = start().await;
+    let inbox = p.mint_token_acting_as(TENANT, "agent:inbox-scan", "escurel-runner");
+    let hygiene = p.mint_token_acting_as(TENANT, "agent:crm-hygiene", "escurel-runner");
+
+    call_ok(
+        &p,
+        &inbox,
+        "update_page",
+        json!({ "page_id": NOTE_PAGE, "content": note_markdown("folded by inbox-scan") }),
+    )
+    .await;
+    assert_eq!(
+        last_written_by(&p, &inbox, NOTE_PAGE).await.as_deref(),
+        Some("agent:inbox-scan"),
+        "the agent is the writer of record, not the runner"
+    );
+
+    // The positive control: a second agent, same runner, same page. If the
+    // stamp came from the runner (or were hard-coded), these two would match.
+    call_ok(
+        &p,
+        &hygiene,
+        "update_page",
+        json!({ "page_id": NOTE_PAGE, "content": note_markdown("tidied by crm-hygiene") }),
+    )
+    .await;
+    assert_eq!(
+        last_written_by(&p, &hygiene, NOTE_PAGE).await.as_deref(),
+        Some("agent:crm-hygiene"),
+        "two agents under one runner must leave two distinguishable trails"
+    );
+
+    // And the chain is recoverable: an event captured by the agent records
+    // the runner that delegated to it, server-stamped from `act.sub`.
+    let captured = call_ok(
+        &p,
+        &inbox,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "note",
+            "instance_page_id": NOTE_PAGE,
+            "title": "renewal",
+            "body": "they want to renew",
+            // Forged, and ignored: the gateway's claim wins, as with captured_by.
+            "provenance": { "captured_via": "somebody-else" },
+        }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().expect("event_id").to_owned();
+    // A captured event sits in the inbox until it is folded; `list_events` is
+    // the instance's processed spine.
+    call_ok(
+        &p,
+        &inbox,
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": NOTE_PAGE }),
+    )
+    .await;
+    let events = call_ok(
+        &p,
+        &inbox,
+        "list_events",
+        json!({ "instance_page_id": NOTE_PAGE }),
+    )
+    .await;
+    let event = events["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .find(|e| e["event_id"] == json!(event_id))
+        .expect("the captured event");
+    assert_eq!(
+        event["provenance"]["captured_by"], "agent:inbox-scan",
+        "{event}"
+    );
+    assert_eq!(
+        event["provenance"]["captured_via"], "escurel-runner",
+        "the delegating runner must be on record, and a caller-supplied \
+         captured_via must not survive: {event}"
+    );
+
+    // An ordinary (undelegated) write carries no chain — the field exists to
+    // record a delegation, not to be present.
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let captured = call_ok(
+        &p,
+        &alice,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "note",
+            "instance_page_id": NOTE_PAGE,
+            "title": "note",
+            "body": "by hand",
+        }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().expect("event_id").to_owned();
+    call_ok(
+        &p,
+        &alice,
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": NOTE_PAGE }),
+    )
+    .await;
+    let events = call_ok(
+        &p,
+        &alice,
+        "list_events",
+        json!({ "instance_page_id": NOTE_PAGE }),
+    )
+    .await;
+    let event = events["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .find(|e| e["event_id"] == json!(event_id))
+        .expect("the captured event");
+    assert_eq!(event["provenance"]["captured_by"], ALICE, "{event}");
+    assert!(
+        event["provenance"].get("captured_via").is_none(),
+        "no delegation, no chain: {event}"
+    );
+}
