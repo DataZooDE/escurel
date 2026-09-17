@@ -611,6 +611,13 @@ pub struct EscurelConfig {
     /// Coarse-pass shortlist size handed to the full-dim rescore
     /// (`coarse_candidates`).
     pub coarse_candidates: usize,
+    /// Wall-clock bound on ONE authored query's execution (#455).
+    ///
+    /// DuckDB has no statement timeout, and the Indexer holds one connection
+    /// behind a mutex — so an unbounded runaway query holds the tenant's whole
+    /// read surface for as long as it runs. `0` disables the bound.
+    /// Source: `ESCUREL_QUERY_TIMEOUT_MS`.
+    pub query_timeout_ms: u64,
     /// Optional built demo bundle (Flutter web `build/web`) to serve
     /// at `/`. `None` → no static serving. Set from
     /// `ESCUREL_SERVE_DEMO_DIR`.
@@ -1160,6 +1167,18 @@ impl EscurelConfig {
                 })?,
             None => toml_cfg.retrieval.coarse_candidates.unwrap_or(500),
         };
+        // The per-query wall-clock bound (#455). Default from
+        // `escurel_index::DEFAULT_QUERY_TIMEOUT_MS` so there is ONE default,
+        // not one per crate; `0` disables the bound for a deployment that
+        // would rather have a hung query than a cut-short one.
+        let query_timeout_ms = match env.get("ESCUREL_QUERY_TIMEOUT_MS") {
+            Some(raw) => raw.parse::<u64>().map_err(|_| ConfigError::InvalidValue {
+                var: "ESCUREL_QUERY_TIMEOUT_MS",
+                value: raw,
+                reason: "expected a non-negative integer number of milliseconds (0 disables)",
+            })?,
+            None => escurel_index::DEFAULT_QUERY_TIMEOUT_MS,
+        };
 
         // --- DuckLake backend / role (PR 6) ---
         let role = match env
@@ -1300,6 +1319,7 @@ impl EscurelConfig {
             two_pass,
             coarse_dim,
             coarse_candidates,
+            query_timeout_ms,
             demo_dir,
             seed_dir,
             webhook_url,
@@ -2350,6 +2370,10 @@ impl EscurelConfig {
             retrieval = retrieval.with_two_pass(self.coarse_dim, self.coarse_candidates);
         }
 
+        // The per-query bound (#455) — applied here because this is where the
+        // configured Indexer is finished, and it is a property of the running
+        // instance rather than of its construction.
+        base.set_query_timeout(std::time::Duration::from_millis(self.query_timeout_ms));
         match reranker {
             Some(r) => base.with_reranker(r, retrieval),
             None => base.with_retrieval(retrieval),
