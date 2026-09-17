@@ -1164,15 +1164,84 @@ pub(super) async fn try_auto_merge(
 
     let merged = three_way_merge(&base_snapshot, &head_content, incoming).ok()?;
 
-    // Safety net: the merged page must still parse AND keep one side's
-    // frontmatter intact. A body-only merge (the common case) leaves the
-    // frontmatter equal to both sides; a one-sided frontmatter change survives
-    // via the CRDT; only a genuine both-sides frontmatter divergence (or a
-    // corrupt interleave) fails both equalities → conflict.
+    // Safety net: the merged page must still parse, and its frontmatter must
+    // be one the two sides actually agree on.
+    //
+    // The cheap cases first: a body-only merge leaves the frontmatter equal to
+    // both sides, and a ONE-sided frontmatter change survives via the CRDT and
+    // equals that side.
     let merged_fm = escurel_md::parse(&merged).ok()?.frontmatter.fields;
     let incoming_fm = escurel_md::parse(incoming).ok()?.frontmatter.fields;
     let head_fm = escurel_md::parse(&head_content).ok()?.frontmatter.fields;
     if merged_fm == incoming_fm || merged_fm == head_fm {
+        return Some(merged);
+    }
+
+    // Then the case those equalities cannot express, and the one #509 §2 is
+    // about: both sides changed frontmatter, on DIFFERENT keys. The union then
+    // matches neither side — by construction, because it carries both changes
+    // — and the old rule read that as a conflict. It is the opposite: it is
+    // the merge working.
+    //
+    // So compare against the BASE, key by key. Disjoint change sets merge; any
+    // key both sides moved to different values is a genuine disagreement a
+    // human has to settle, which is what `conflict` is for.
+    let base_markdown = escurel_crdt::body_from_snapshot(&base_snapshot).ok()?;
+    let base_fm = escurel_md::parse(&base_markdown).ok()?.frontmatter.fields;
+    let changed = |side: &escurel_md::YamlMapping| -> Vec<String> {
+        let mut keys: Vec<String> = Vec::new();
+        for (k, v) in side {
+            let Some(k) = k.as_str() else { continue };
+            if base_fm.get(k) != Some(v) {
+                keys.push(k.to_owned());
+            }
+        }
+        // A key the side REMOVED moved too.
+        for (k, _) in &base_fm {
+            let Some(k) = k.as_str() else { continue };
+            if side.get(k).is_none() {
+                keys.push(k.to_owned());
+            }
+        }
+        keys
+    };
+    let head_changed = changed(&head_fm);
+    let incoming_changed = changed(&incoming_fm);
+    if head_changed.iter().any(|k| incoming_changed.contains(k)) {
+        return None;
+    }
+
+    // Disjoint. The union must be exactly base + both sides' changes — if the
+    // CRDT produced anything else (an interleave inside a value, say), it is
+    // not a merge either side would recognise and must not persist.
+    let mut expected = base_fm.clone();
+    for key in &head_changed {
+        match head_fm.get(key.as_str()) {
+            Some(v) => {
+                expected.insert(escurel_md::YamlValue::from(key.as_str()), v.clone());
+            }
+            None => {
+                expected.remove(escurel_md::YamlValue::from(key.as_str()));
+            }
+        }
+    }
+    for key in &incoming_changed {
+        match incoming_fm.get(key.as_str()) {
+            Some(v) => {
+                expected.insert(escurel_md::YamlValue::from(key.as_str()), v.clone());
+            }
+            None => {
+                expected.remove(escurel_md::YamlValue::from(key.as_str()));
+            }
+        }
+    }
+    // Key ORDER is not agreement: compare as maps, not as sequences.
+    let as_map = |m: &escurel_md::YamlMapping| {
+        m.iter()
+            .filter_map(|(k, v)| k.as_str().map(|k| (k.to_owned(), v.clone())))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    if as_map(&merged_fm) == as_map(&expected) {
         Some(merged)
     } else {
         None

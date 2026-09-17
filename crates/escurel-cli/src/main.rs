@@ -84,6 +84,9 @@ enum Command {
     /// Branches: isolated workspaces that merge into the base timeline.
     #[command(subcommand)]
     Branch(agent::BranchCmd),
+    /// A run's held writes, decided together (#509).
+    #[command(subcommand)]
+    Changeset(agent::ChangesetCmd),
     /// Stored queries.
     #[command(subcommand)]
     Query(agent::QueryCmd),

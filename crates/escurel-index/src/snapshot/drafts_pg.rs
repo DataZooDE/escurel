@@ -63,6 +63,7 @@ pub fn create_drafts_pg_table_sql() -> String {
             status          VARCHAR   NOT NULL DEFAULT 'open', \
             reason          VARCHAR   NOT NULL DEFAULT '', \
             decided_by      VARCHAR   NOT NULL DEFAULT '', \
+            changeset_id    VARCHAR, \
             created_at      TIMESTAMP NOT NULL DEFAULT now(), \
             decided_at      TIMESTAMP, \
             PRIMARY KEY (tenant, draft_id)\
@@ -78,6 +79,13 @@ pub fn attach_drafts_pg(conn: &Connection, catalog_dsn: &str) -> Result<(), Snap
     conn.execute_batch("INSTALL postgres; LOAD postgres;")?;
     conn.execute_batch(&attach_drafts_pg_sql(catalog_dsn)?)?;
     conn.execute_batch(&create_drafts_pg_table_sql())?;
+    // A shared table provisioned before changesets existed (#509 §1) gains
+    // the column here rather than in a migration step an operator has to
+    // remember — same reasoning as `Migrator::ensure_drafts` locally.
+    conn.execute_batch(&format!(
+        "ALTER TABLE {DRAFTS_PG_ALIAS}.{DRAFTS_PG_TABLE_NAME} \
+         ADD COLUMN IF NOT EXISTS changeset_id VARCHAR;"
+    ))?;
     Ok(())
 }
 

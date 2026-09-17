@@ -216,3 +216,74 @@ pub struct DiffDraftResponse {
     pub block_changes: Vec<BlockChange>,
     pub issues: Vec<crate::ValidationIssue>,
 }
+
+/// One changeset as a queue row (#509 §1): a run's held writes, counted and
+/// summarised rather than listed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Changeset {
+    pub changeset_id: String,
+    /// How many held writes it holds.
+    pub drafts: u32,
+    /// `open` | `promoted` | `discarded` | `mixed` — derived from the members,
+    /// so it cannot drift from them. `mixed` means members were decided
+    /// individually.
+    pub status: String,
+    pub author: String,
+    pub created_at: String,
+    pub event_ids: Vec<String>,
+    pub target_page_ids: Vec<String>,
+}
+
+/// `list_changesets` arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListChangesetsRequest {
+    /// `0` means the server's own default.
+    pub limit: u32,
+}
+
+/// The review queue, by run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListChangesetsResponse {
+    pub changesets: Vec<Changeset>,
+}
+
+/// `promote_changeset` / `discard_changeset` arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DecideChangesetRequest {
+    pub changeset_id: String,
+    /// Why it was refused. `discard_changeset` only.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// What one member did when the changeset landed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ChangesetMemberResult {
+    pub draft_id: String,
+    pub page_id: String,
+    pub ok: bool,
+    /// The page already held these bytes — an interrupted promotion being
+    /// completed rather than re-applied.
+    pub already_applied: bool,
+}
+
+/// The outcome of deciding a changeset.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DecideChangesetResponse {
+    pub ok: bool,
+    pub changeset_id: String,
+    pub results: Vec<ChangesetMemberResult>,
+    /// The retry answer: this changeset had already been decided.
+    pub already_decided: bool,
+    /// A pre-flighted member refused mid-apply; re-running completes it.
+    pub partial: bool,
+    /// How many members `discard_changeset` closed.
+    pub discarded: u32,
+    pub issues: Vec<crate::ValidationIssue>,
+}

@@ -8,11 +8,12 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use escurel_client::{
     AppendMessageRequest, AssignEventRequest, BranchRequest, CaptureEventRequest, Client,
-    CreateDraftRequest, DecideDraftRequest, DeletePageRequest, DiffDraftRequest, ExpandRequest,
-    ListDraftsRequest, ListEventsRequest, ListInboxRequest, ListInstancesRequest,
-    ListMessagesRequest, ListSkillsRequest, MovePageRequest, NeighboursRequest,
-    ProvenanceAncestryRequest, ProvenancePathRequest, ProvenanceReportRequest, PurgePageRequest,
-    QueryInstanceRequest, ResolveRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
+    CreateDraftRequest, DecideChangesetRequest, DecideDraftRequest, DeletePageRequest,
+    DiffDraftRequest, ExpandRequest, ListChangesetsRequest, ListDraftsRequest, ListEventsRequest,
+    ListInboxRequest, ListInstancesRequest, ListMessagesRequest, ListSkillsRequest,
+    MovePageRequest, NeighboursRequest, ProvenanceAncestryRequest, ProvenancePathRequest,
+    ProvenanceReportRequest, PurgePageRequest, QueryInstanceRequest, ResolveRequest, SearchRequest,
+    UpdatePageRequest, ValidateRequest,
 };
 use serde_json::{Value, json};
 
@@ -333,6 +334,30 @@ pub enum BranchCmd {
     },
 }
 
+/// A run's held writes, decided together (#509 §1).
+#[derive(Subcommand, Debug)]
+pub enum ChangesetCmd {
+    /// The review queue by RUN rather than by page.
+    List {
+        /// 0 means the server's default.
+        #[arg(long, default_value_t = 0)]
+        limit: u32,
+    },
+    /// Land every member as one decision. Nothing lands unless all of them
+    /// can; safe to re-run if it was interrupted.
+    Promote {
+        #[arg(long)]
+        changeset: String,
+    },
+    /// Refuse the whole proposal. Nothing is written to any target.
+    Discard {
+        #[arg(long)]
+        changeset: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+}
+
 #[derive(Args, Debug)]
 pub struct CreateDraftArgs {
     /// The page this write is FOR. It need not exist yet.
@@ -455,6 +480,7 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Event(c) => event_cmd(client, c).await,
         Command::Draft(c) => draft_cmd(client, c).await,
         Command::Branch(c) => branch_cmd(client, c).await,
+        Command::Changeset(c) => changeset_cmd(client, c).await,
         Command::Query(QueryCmd::Instance(a)) => query_instance(client, a).await,
         Command::Chat(ChatCmd::Append(a)) => chat_append(client, a).await,
         Command::Chat(ChatCmd::List(a)) => chat_list(client, a).await,
@@ -953,6 +979,42 @@ async fn branch_cmd(client: &Client, cmd: BranchCmd) -> Result<Value> {
                 .abandon_branch(BranchRequest { name, reason })
                 .await?;
             Ok(json!({ "ok": resp.ok, "name": resp.name, "reason": resp.reason }))
+        }
+    }
+}
+
+async fn changeset_cmd(client: &Client, cmd: ChangesetCmd) -> Result<Value> {
+    match cmd {
+        ChangesetCmd::List { limit } => {
+            let resp = client
+                .list_changesets(ListChangesetsRequest { limit })
+                .await?;
+            Ok(json!({ "changesets": resp.changesets }))
+        }
+        ChangesetCmd::Promote { changeset } => {
+            let resp = client
+                .promote_changeset(DecideChangesetRequest {
+                    changeset_id: changeset,
+                    reason: String::new(),
+                })
+                .await?;
+            Ok(json!({
+                "ok": resp.ok,
+                "changeset_id": resp.changeset_id,
+                "results": resp.results,
+                "already_decided": resp.already_decided,
+                "partial": resp.partial,
+                "issues": resp.issues,
+            }))
+        }
+        ChangesetCmd::Discard { changeset, reason } => {
+            let resp = client
+                .discard_changeset(DecideChangesetRequest {
+                    changeset_id: changeset,
+                    reason,
+                })
+                .await?;
+            Ok(json!({ "ok": resp.ok, "discarded": resp.discarded, "issues": resp.issues }))
         }
     }
 }

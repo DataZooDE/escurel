@@ -1,0 +1,22 @@
+-- The CRDT version a draft was taken against (escurel#509 §2).
+--
+-- `base_sha256` is a BYTE CAS: it refuses the moment the target changes at
+-- all, even when the two changes touched entirely different frontmatter keys.
+-- That made the review path strictly WORSE at merging than the unreviewed
+-- one — the very same content sent straight through `update_page` with a
+-- `base_version` would have been three-way-merged (Loro), persisted, and
+-- answered `auto_merged: true`. So a reviewer's approval could fail for a
+-- reason that has nothing to do with the review: somebody else edited a
+-- different field of the same page.
+--
+-- Recording the version at draft time is what lets promotion take the merge
+-- path instead. Nullable, and NULL is meaningful rather than missing: a
+-- deployment with no CRDT backend has no base snapshot to merge against, so
+-- there is nothing to record and promotion keeps the byte CAS it always had.
+--
+-- Idempotent, presence-checked and CHECKPOINTed via
+-- `Migrator::ensure_draft_base_version` — `drafts.created_at` carries a
+-- function-valued DEFAULT, and DuckDB cannot replay an ADD COLUMN on such a
+-- table from the WAL. See
+-- docs/notes/discovered/2026-09-16-alter-on-a-defaulted-table-poisons-the-wal.md.
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS base_version VARCHAR;

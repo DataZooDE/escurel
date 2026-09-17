@@ -688,6 +688,9 @@ const DRAFTS_TOOLS: &[&str] = &[
     "diff_draft",
     "promote_draft",
     "discard_draft",
+    "list_changesets",
+    "promote_changeset",
+    "discard_changeset",
 ];
 
 /// The CRDT/session tool surface `dispatch_tools_call`'s dynamic reader
@@ -964,6 +967,11 @@ async fn dispatch_tools_call(
         }
         "abandon_branch" => tool_abandon_branch(indexer, caller, params.arguments).await,
         "diff_draft" => tool_diff_draft(indexer, caller, params.arguments).await,
+        "list_changesets" => tool_list_changesets(indexer, caller, params.arguments).await,
+        "promote_changeset" => {
+            tool_promote_changeset(state, indexer, caller, state.write_acl, params.arguments).await
+        }
+        "discard_changeset" => tool_discard_changeset(indexer, caller, params.arguments).await,
         "promote_draft" => {
             tool_promote_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }

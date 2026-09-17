@@ -207,6 +207,8 @@ impl Migrator {
     /// so `rebuild` must NOT drop it.
     pub fn ensure_drafts(conn: &Connection) -> Result<(), MigrationError> {
         conn.execute_batch(STAGE_12_DRAFTS)?;
+        Self::ensure_draft_changesets(conn)?;
+        Self::ensure_draft_base_version(conn)?;
         Ok(())
     }
 
@@ -337,6 +339,66 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure `drafts.changeset_id` (the changeset grouping key, #509 §1)
+    /// exists.
+    ///
+    /// **Checkpoints, for the reason [`Migrator::ensure_write_attribution`]
+    /// spells out.** `drafts.created_at` is `DEFAULT CURRENT_TIMESTAMP`, and
+    /// DuckDB cannot replay an `ALTER TABLE … ADD COLUMN` on a table with a
+    /// function-valued default: replay re-binds every column default and
+    /// `CURRENT_TIMESTAMP` resolves through a catalog lookup the replay
+    /// context does not have. The ALTER then sits in the WAL as a grenade —
+    /// the process that ran it keeps working, and the NEXT process to open
+    /// the file fails to start.
+    ///
+    /// So the ALTER runs only on the boot that actually adds the column, and
+    /// the checkpoint folds it into the file and truncates the WAL. Every
+    /// later boot costs one catalog query.
+    ///
+    /// (Found the hard way: the first version of this ran the ALTER on every
+    /// connection like `blocks.context` does, and five `index_roundtrip`
+    /// tests — the ones that reopen the same file — failed with exactly the
+    /// replay error above.)
+    pub fn ensure_draft_changesets(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'drafts' \
+               AND column_name = 'changeset_id'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 1 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_14_DRAFT_CHANGESETS)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
+    /// Ensure `drafts.base_version` (the CRDT version a draft was taken
+    /// against, #509 §2) exists.
+    ///
+    /// Presence-checked + CHECKPOINTed for the same reason
+    /// [`Migrator::ensure_draft_changesets`] is: `drafts.created_at` carries a
+    /// function-valued DEFAULT, so an unconditional ALTER leaves an
+    /// unreplayable entry in the WAL and the NEXT process to open the file
+    /// fails to start.
+    pub fn ensure_draft_base_version(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'drafts' \
+               AND column_name = 'base_version'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 1 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_15_DRAFT_BASE_VERSION)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
     /// Ensure the `resolved_links` provenance-graph VIEW (ADR-0010) exists.
     /// A VIEW, not a table — `CREATE OR REPLACE`, so it is safe (and cheap) to
     /// run on EVERY connection like the other `ensure_*` methods, and it stays
@@ -382,6 +444,8 @@ impl Migrator {
         // provisioned before drafts existed must gain the table, and every
         // deployed tenant was.
         conn.execute_batch(STAGE_12_DRAFTS)?;
+        Self::ensure_draft_changesets(conn)?;
+        Self::ensure_draft_base_version(conn)?;
         // Group ACL v1. Idempotent (`IF NOT EXISTS`) and ALSO run on every
         // reopen via `ensure_group_members`, so a DB provisioned before
         // this table existed still gains it. Running it here too means a
@@ -494,6 +558,8 @@ const STAGE_4_CHAT_MESSAGES: &str = include_str!("../sql/0002_chat_messages.sql"
 const STAGE_5_SCENARIOS: &str = include_str!("../sql/0003_scenarios.sql");
 const STAGE_6_EVENTS: &str = include_str!("../sql/0004_events.sql");
 const STAGE_12_DRAFTS: &str = include_str!("../sql/0012_drafts.sql");
+const STAGE_14_DRAFT_CHANGESETS: &str = include_str!("../sql/0013_draft_changesets.sql");
+const STAGE_15_DRAFT_BASE_VERSION: &str = include_str!("../sql/0014_draft_base_version.sql");
 const STAGE_7_GROUP_MEMBERS: &str = include_str!("../sql/0005_group_members.sql");
 const STAGE_8_EXTERNAL_CREDENTIALS: &str = include_str!("../sql/0006_external_credentials.sql");
 const STAGE_9_BLOCK_CONTEXT: &str = include_str!("../sql/0007_block_context.sql");
