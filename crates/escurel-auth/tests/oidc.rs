@@ -615,3 +615,74 @@ async fn jwks_cache_serves_repeated_lookups_without_extra_fetches() {
     // wiremock's expect(1) asserts on drop.
     let _ = Duration::from_secs(1);
 }
+
+/// #510: a per-run agent token names the agent in `sub` and keeps the runner
+/// in `act.sub` (RFC 8693 delegation). The verifier must surface that actor,
+/// because everything downstream that needs the chain — the provenance stamp,
+/// the runner's own lineage-trust guard — can only read what the verifier
+/// resolved. A token without `act` has no actor, which is the ordinary case.
+#[tokio::test]
+async fn an_act_claim_projects_the_delegating_actor_into_authcontext() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let delegated = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "agent:inbox-scan",
+            "act": { "sub": "escurel-runner" },
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+        }),
+    );
+    let ctx = v.verify(&delegated).await.expect("verify");
+    assert_eq!(ctx.subject, "agent:inbox-scan");
+    assert_eq!(
+        ctx.actor.as_deref(),
+        Some("escurel-runner"),
+        "the delegation chain must survive verification, or nothing \
+         downstream can record who the agent was acting for"
+    );
+
+    // The ordinary token: nobody is acting for anybody.
+    let plain = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "consultant:alice",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+        }),
+    );
+    let ctx = v.verify(&plain).await.expect("verify");
+    assert_eq!(ctx.actor, None, "no act claim, no actor");
+
+    // A malformed `act` is not an actor — never a stringified object, and
+    // never an error either: it is a claim we do not understand, so the
+    // token verifies as itself with no chain.
+    for junk in [json!("escurel-runner"), json!({ "sub": "" }), json!([])] {
+        let odd = sign_token(
+            &keys,
+            json!({
+                "iss": issuer,
+                "aud": AUDIENCE,
+                "sub": "agent:x",
+                "act": junk,
+                "tenant": "acme",
+                "iat": now,
+                "exp": now + 600,
+            }),
+        );
+        let ctx = v.verify(&odd).await.expect("verify");
+        assert_eq!(ctx.actor, None, "malformed act must not become an actor");
+    }
+}

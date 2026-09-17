@@ -104,6 +104,7 @@ fn member(subject: &str) -> AclCaller<'_> {
         subject,
         is_admin: false,
         token_groups: &[],
+        actor: None,
     }
 }
 
@@ -113,6 +114,7 @@ fn member_with_groups<'a>(subject: &'a str, groups: &'a [String]) -> AclCaller<'
         subject,
         is_admin: false,
         token_groups: groups,
+        actor: None,
     }
 }
 
@@ -233,6 +235,7 @@ async fn instance_level_acl_block_overrides_the_skill() {
         subject: BOB,
         is_admin: true,
         token_groups: &[],
+        actor: None,
     };
     assert!(
         h.indexer
@@ -646,6 +649,7 @@ async fn admin_bypasses_owner_visibility() {
         subject: "operator",
         is_admin: true,
         token_groups: &[],
+        actor: None,
     };
     assert!(
         h.indexer

@@ -231,6 +231,33 @@ impl TestIssuer {
         self.sign_with_roles(tenant, subject, &roles)
     }
 
+    /// Sign a bearer that is **acting for** somebody — the RFC 8693 `act.sub`
+    /// shape a per-run agent token carries (#510): `sub` is the agent,
+    /// `act.sub` the runner that delegated to it. Admin-roled, matching the
+    /// authority the runner holds today.
+    pub(crate) fn mint_acting_as(&self, tenant: &str, subject: &str, actor: &str) -> String {
+        let mut token = self.sign_with_roles(tenant, subject, &["escurel:admin".to_owned()]);
+        token = self.resign_with_extra(&token, "act", json!({ "sub": actor }));
+        token
+    }
+
+    /// Re-sign a token with one extra top-level claim. Keeps the claim shapes
+    /// in [`Self::sign_with_roles`] as the single source of truth rather than
+    /// duplicating them per variant.
+    fn resign_with_extra(&self, token: &str, claim: &str, value: serde_json::Value) -> String {
+        use base64::Engine as _;
+        let payload = token.split('.').nth(1).expect("a JWT has three parts");
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("b64");
+        let mut claims: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        claims[claim] = value;
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(TEST_KID.to_owned());
+        let key = EncodingKey::from_rsa_pem(&self.keys.private_pem).expect("rsa pem parses");
+        encode(&header, &claims, &key).expect("jwt sign")
+    }
+
     fn sign_with_roles(&self, tenant: &str, subject: &str, roles: &[String]) -> String {
         let now = now_secs();
         let mut claims = json!({
