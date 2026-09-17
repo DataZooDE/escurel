@@ -90,6 +90,11 @@ pub enum QueryError {
     #[error("[[query::{id}]] missing required parameter: {name}")]
     MissingParam { id: String, name: String },
 
+    #[error(
+        "[[query::{id}]] was cut short after {timeout_ms} ms — the query exceeded this          deployment's per-query bound and was interrupted; narrow it or raise the bound"
+    )]
+    Interrupted { id: String, timeout_ms: u64 },
+
     #[error("[[query::{id}]] unknown parameter: {name}")]
     UnknownParam { id: String, name: String },
 
@@ -315,14 +320,57 @@ impl Indexer {
         //    then bind runtime `:param` values and execute (row-capped).
         let sql = substitute_target(&sql, view, query_id)?;
         let conn = self.conn.lock().await;
-        let (rows, schema, truncated) = execute_bound_query(
+
+        // **The bound (#455).** DuckDB has no statement timeout; the only
+        // bound it offers is `Connection::interrupt`, so one is armed around
+        // the execution. This matters more than CPU waste: the Indexer holds
+        // ONE connection behind a mutex, so an unbounded runaway query holds
+        // the tenant's entire read surface for as long as it runs — a
+        // tenant-level availability event caused by one authored page.
+        //
+        // The watchdog is disarmed (or dropped) the moment execution returns,
+        // so an honest query never sees it, and `fired()` is what
+        // distinguishes "we cut this short" from an ordinary engine error the
+        // caller cannot act on.
+        let watchdog = self.query_timeout().map(|deadline| {
+            crate::quack_session::SessionWatchdog::arm(
+                {
+                    let h = conn.interrupt_handle();
+                    move || h.interrupt()
+                },
+                deadline,
+            )
+        });
+        let executed = execute_bound_query(
             &conn,
             query_id,
             &sql,
             &declared,
             args,
             Some(MAX_RESULT_ROWS),
-        )?;
+        );
+        let interrupted = match watchdog {
+            Some(mut w) => {
+                w.disarm();
+                w.fired()
+            }
+            None => false,
+        };
+        let (rows, schema, truncated) = match executed {
+            Ok(out) => out,
+            Err(_engine_error) if interrupted => {
+                // The engine's own message for an interrupt names neither the
+                // query nor the bound, so it is replaced rather than wrapped.
+                return Err(QueryError::Interrupted {
+                    id: query_id.to_owned(),
+                    timeout_ms: self
+                        .query_timeout()
+                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                        .unwrap_or(0),
+                });
+            }
+            Err(e) => return Err(e),
+        };
         Ok(QueryInstanceResult {
             rows,
             schema,
