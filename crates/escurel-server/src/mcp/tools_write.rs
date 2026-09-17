@@ -215,6 +215,24 @@ pub(super) fn blocking_issues<'a>(
             "frontmatter_autonomy_unknown" => {
                 state.autonomy_lint == crate::server::AutonomyLintMode::Enforce
             }
+            // Typed instance fields (#508). UNGATED, unlike `autonomy:` above,
+            // and the difference is what makes that safe: `autonomy:` was
+            // free-form frontmatter that existing pages already carry junk in,
+            // so enforcing it would make those pages unwritable without anyone
+            // opting in. A `fields:` block does not exist until an author
+            // writes one — declaring the types IS the opt-in, per skill, and a
+            // corpus written untyped stays exactly as writable as it was.
+            //
+            // Blocking is the entire point of the feature: the promise is that
+            // an agent physically cannot write `hotness: 5-Cold-ish` into a
+            // field declared `enum(hot, warm, cold)`. A non-blocking version of
+            // that promise is a lint, and a lint is what `required_frontmatter`
+            // already was.
+            "frontmatter_field_type" | "frontmatter_enum_value" | "frontmatter_field_range" => true,
+            // A schema that cannot be enforced must not ship. `kind: enum` with
+            // no `values:` accepts everything — it fails OPEN, which is the
+            // shape of mistake nobody notices from the outside.
+            "fields_malformed" => true,
             _ => false,
         })
         .collect()

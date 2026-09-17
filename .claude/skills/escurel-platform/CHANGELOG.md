@@ -4,6 +4,28 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.33 — typed skill fields: `fields:` constrains what instances may hold
+
+- A skill page may declare `fields:` — the typed counterpart to
+  `required_frontmatter`'s key-name list:
+  `- {name: hotness, kind: enum, values: [hot, warm, cold]}`. `kind` is the
+  closed set `string | int | float | bool | date | datetime | enum | link`.
+- A violation is **error**-severity and **rejects the write**, on
+  `update_page` and `create_draft` alike: `frontmatter_field_type`,
+  `frontmatter_enum_value`, `frontmatter_field_range`. A declared-but-absent
+  `required` field reports the existing `frontmatter_required_key_missing`
+  code rather than inventing a second vocabulary for one missing key.
+- Author-side mistakes are caught on the SKILL page: `fields_malformed`
+  (no `name:`, a scalar `fields:`, or `kind: enum` with no `values:` — which
+  would enforce nothing) and the warning `field_kind_unknown` (degrades to
+  `string`, the same fallback direction `params:` takes).
+- `list_skills` rows carry `fields`, so a client builds an instance form from
+  the catalogue alone, as it already does a run form from `params`.
+- **Opt-in per skill.** A skill with no `fields:` block is completely
+  unaffected — declaring the block IS the migration step, which is why
+  enforcement can block from the first release without breaking a corpus that
+  was written untyped.
+
 ## 0.6.32 — `diff_draft`: what approving a held write would change
 
 - New agent tool `diff_draft` (`references/02-tool-surface.md`) and typed

@@ -71,8 +71,9 @@ pub use query::{
     StoredQueryResult,
 };
 pub use read::{
-    AclPolicy, Autonomy, BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef,
-    ParamKind, ResolvedWikilink, SkillInfo, SkillParam, Visibility,
+    AclPolicy, Autonomy, BlockInfo, Direction, Edge, ExpandedPage, FieldKind, InstanceInfo,
+    OrderDir, PageRef, ParamKind, ResolvedWikilink, SkillField, SkillInfo, SkillParam, Visibility,
+    parse_fields,
 };
 pub use retrieval::RetrievalConfig;
 pub use schema::Migrator;
