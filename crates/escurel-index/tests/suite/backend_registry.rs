@@ -90,6 +90,7 @@ fn ctx() -> BackendCtx<'static> {
             subject: "tester",
             is_admin: true,
             token_groups: &[],
+            actor: None,
         },
         as_of: None,
         scenario: None,

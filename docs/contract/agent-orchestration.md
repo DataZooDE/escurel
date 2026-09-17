@@ -19,6 +19,17 @@ contract that outlives its code is how compensations accumulate:
 - **The `gemini` harness** was added for the cluster: a container has no
   interactive auth and no node runtime, so the CLI-driving adapters
   (`claude`, `codex`, `adk`) cannot run there.
+- **The `agy` and `muse` harnesses run `autonomy: auto` skills only.**
+  Neither CLI can enforce a narrowed MCP tool surface — `agy` routes every
+  tool through `call_mcp_tool` with no allow-list, and `muse exec`'s
+  `--permission-profile` selects a named profile from settings rather than an
+  ad-hoc tool list — so both adapters REFUSE a task packaged under
+  `REVIEW_TOOLS` rather than pretending to enforce one. A review run there
+  would commit instead of drafting. Use `gemini` or `claude` for those.
+  (`muse` became possible at Muse Code 1.1.1, which is an MCP client;
+  escurel#451 recorded the 1.0.1 negative, and escurel#450 recorded the agy
+  interop stall that agy 1.2.1 fixed — both are verified by the `#[ignore]`d
+  live tests, which are the things that say when an upstream changes.)
 - **The runner mints its own gateway bearer** rather than carrying a
   pasted `ESCUREL_RUNNER_TOKEN`, borrowing the platform's existing
   signing identity. Two defects found by deploying it are worth knowing
@@ -27,10 +38,29 @@ contract that outlives its code is how compensations accumulate:
   the ledger but not the in-memory seen-set, so a requeue could not
   re-dispatch in the same process (#441).
 
-The per-run short-TTL token described below remains an **unimplemented
-seam** (`packager.rs`'s `token` field): every run for every principal
-currently shares one privilege. That is the weakest part of the boundary
-and is named here rather than left to be discovered.
+The per-run short-TTL token described below is **implemented** (#510).
+A minting runner packages every ordinary run with a bearer of its own:
+`sub` = `agent:<label_skill>`, the runner kept as the delegating actor in
+the RFC 8693 `act.sub` claim, and `exp` bounded by the run budget rather
+than the process lifetime. The gateway verifies it like any other token,
+stamps the agent into `pages.last_written_by` / `crdt_ops.principal`, and
+records the chain as `provenance.captured_via` — so "who set this to
+cold?" answers with the agent, and "acting for whom?" still answers with
+the runner. The runner's own cascade-lineage guard trusts either half of
+that chain, so a hop written by a delegated agent is still recognised as
+the runner's own (`trigger.rs`).
+
+Two limits are deliberate and still true. The run's **authority** is
+unchanged — the minted agent token carries the same `escurel:admin` role
+the runner holds, so this is attribution, not least privilege; narrowing
+the grant per skill is the follow-up that only became possible now that
+the token is per-run at all. And a **static-bearer** runner
+(`ESCUREL_RUNNER_TOKEN`, dev-only) cannot mint, so it keeps writing as
+itself; production runs minted (ADR-0012).
+
+A **workflow** run is scoped differently and unchanged: it executes as its
+REQUESTER (async-ops Phase 2c-i), which is a narrowing of authority, not
+just of name.
 **Scope:** A new standalone component — working name
 `escurel-agent-runner` — that turns escurel's M7 inbox into a cascading,
 **agent-harness-driven** event→instance projection loop. It triggers a
@@ -89,7 +119,7 @@ independent process):
 | crate | concern |
 |---|---|
 | `escurel-runner-core` | trigger lifecycle, dispatch queue, cascade emitter, loop-control/ledger, context packager — harness-agnostic engine |
-| `escurel-runner-harness` | the `Harness` adapter trait + Claude Code / Codex / Google ADK adapters |
+| `escurel-runner-harness` | the `Harness` adapter trait + the Claude Code / Codex / Google ADK / agy / muse / gemini / echo / delegate adapters |
 | `escurel-runner` (bin) | deployable process: webhook listener + poller, config (`ESCUREL_RUNNER_*`), graceful shutdown, observability |
 
 Core internal pieces:

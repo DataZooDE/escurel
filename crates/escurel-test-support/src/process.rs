@@ -605,6 +605,17 @@ impl EscurelProcess {
         issuer.mint_with_sub(tenant, role, subject)
     }
 
+    /// Mint a bearer that is **acting for** another principal — the per-run
+    /// agent token shape (#510): `sub` names the agent, `act.sub` the runner
+    /// that delegated to it. Used to prove the gateway records the chain.
+    #[must_use]
+    pub fn mint_token_acting_as(&self, tenant: &str, subject: &str, actor: &str) -> String {
+        let issuer = self.issuer.as_ref().expect(
+            "EscurelProcess::mint_token_acting_as requires AuthMode::TestIssuer; spawned with a different mode",
+        );
+        issuer.mint_acting_as(tenant, subject, actor)
+    }
+
     /// Mint a bearer with an explicit `sub` and arbitrary token groups
     /// in the `roles` claim — for RBAC tests exercising custom token
     /// groups (`moderator`, `team-acme`, …). Set `admin` to also stamp
