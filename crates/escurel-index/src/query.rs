@@ -90,6 +90,9 @@ pub enum QueryError {
     #[error("[[query::{id}]] missing required parameter: {name}")]
     MissingParam { id: String, name: String },
 
+    #[error("[[query::{id}]] declares `target: corpus` but its traversal is unusable: {detail}")]
+    TraversalMalformed { id: String, detail: String },
+
     #[error(
         "[[query::{id}]] was cut short after {timeout_ms} ms — the query exceeded this          deployment's per-query bound and was interrupted; narrow it or raise the bound"
     )]
@@ -187,6 +190,8 @@ impl Indexer {
         }
 
         // 4. Extract `sql` + the declared params.
+        let declared = declared_params(&fm);
+
         let sql = fm
             .get("sql")
             .and_then(serde_json::Value::as_str)
@@ -194,7 +199,6 @@ impl Indexer {
                 id: query_id.to_owned(),
             })?
             .to_owned();
-        let declared = declared_params(&fm);
 
         // 5. Validate args, bind `:name` → positional `?`, and execute.
         // No row cap: a stored query is admin-gated and may legitimately
@@ -257,8 +261,20 @@ impl Indexer {
             .ok_or_else(|| QueryError::MissingTarget {
                 id: query_id.to_owned(),
             })?;
+        // A corpus traversal (#511) dispatches HERE, before anything reads
+        // `sql:` or resolves a view — it declares no SQL at all, and the
+        // whole point of the surface is that no caller text ever becomes a
+        // statement. A `sql_view` target falls through, unchanged.
+        if target_raw.trim() == crate::CORPUS_TARGET {
+            let declared = declared_params(&fm);
+            return self
+                .run_corpus_query(query_id, &fm, &declared, args, caller)
+                .await;
+        }
+
         let target_link =
             crate::read::first_wikilink_target(target_raw).unwrap_or_else(|| target_raw.to_owned());
+
         let sql = fm
             .get("sql")
             .and_then(serde_json::Value::as_str)
@@ -378,6 +394,66 @@ impl Indexer {
         })
     }
 
+    /// Execute a `target: corpus` query page: a declared traversal over the
+    /// markdown corpus (#511), ACL'd per traversed instance.
+    ///
+    /// Params are VALUES. The only place one reaches is the start id, as a
+    /// bound parameter to a `WHERE slug = ?` — never text spliced into a
+    /// statement, which is the property that lets this exist at all where
+    /// `run_stored_query` could not.
+    async fn run_corpus_query(
+        &self,
+        query_id: &str,
+        fm: &serde_json::Value,
+        declared: &[DeclaredParam],
+        args: &serde_json::Map<String, serde_json::Value>,
+        caller: &AclCaller<'_>,
+    ) -> Result<QueryInstanceResult, QueryError> {
+        let traversal = crate::parse_traversal(fm)
+            .map_err(|e| QueryError::TraversalMalformed {
+                id: query_id.to_owned(),
+                detail: e.message().to_owned(),
+            })?
+            .ok_or_else(|| QueryError::TraversalMalformed {
+                id: query_id.to_owned(),
+                detail: "`target: corpus` but the page declares no `traversal:` block".to_owned(),
+            })?;
+
+        // Declared params are enforced BEFORE the walk, so a missing required
+        // one is a refusal naming the parameter rather than an empty result —
+        // "no rows" and "you forgot the account" are different answers.
+        for p in declared {
+            if p.required && !args.contains_key(&p.name) {
+                return Err(QueryError::MissingParam {
+                    id: query_id.to_owned(),
+                    name: p.name.clone(),
+                });
+            }
+        }
+
+        let start_id = substitute_params(&traversal.start.id, args);
+        let (rows, truncated) = self
+            .run_traversal(&traversal, &start_id, caller)
+            .await
+            .map_err(|e| QueryError::Indexer(Box::new(e)))?;
+        Ok(QueryInstanceResult {
+            schema: traversal
+                .returns
+                .iter()
+                .map(|c| ColumnSchema {
+                    name: c.clone(),
+                    // Frontmatter is untyped JSON today; the column type is
+                    // whatever the value turns out to be. When #508's typed
+                    // fields reach the projection this becomes the declared
+                    // kind rather than a placeholder.
+                    type_name: "json".to_owned(),
+                })
+                .collect(),
+            rows,
+            truncated,
+        })
+    }
+
     /// The frontmatter object of an indexed page, or `None` when no such page
     /// exists. Shared by `run_stored_query` / `query_instance`; takes and
     /// releases the connection lock so the caller can re-lock for execution.
@@ -483,6 +559,23 @@ pub const INSPECTABLE_TABLES: &[&str] = &[
 struct DeclaredParam {
     name: String,
     required: bool,
+}
+
+/// Replace `{{name}}` placeholders with the caller's VALUES.
+///
+/// Only ever applied to a traversal's start id — a value that then travels as
+/// a bound parameter. It is deliberately not a general templating pass: there
+/// is no statement here for a substituted value to become part of.
+fn substitute_params(raw: &str, args: &serde_json::Map<String, serde_json::Value>) -> String {
+    let mut out = raw.to_owned();
+    for (name, value) in args {
+        let text = match value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        out = out.replace(&format!("{{{{{name}}}}}"), &text);
+    }
+    out
 }
 
 fn declared_params(fm: &serde_json::Value) -> Vec<DeclaredParam> {

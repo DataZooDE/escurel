@@ -4,6 +4,29 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.34 — stored corpus traversals (`target: corpus`)
+
+- A `[[query::*]]` page may now target the **corpus** instead of a `sql_view`
+  instance, declaring a bounded walk over the markdown link graph:
+  `traversal: {start, steps: [{relation, direction, as}], where, return,
+  max_depth, limit}`. `query_instance` dispatches on `target:`; a `sql_view`
+  target is completely unchanged.
+- `relation:` is the frontmatter key a link was written under, so nothing new
+  is stored — it walks the same links the provenance tools do.
+- `max_depth` is mandatory and capped at 12, paths never revisit a page, and
+  every hop is ACL-checked per instance: one unreadable hop drops the whole
+  path, so a caller sees exactly what they could have reached with
+  `neighbours`. That is the property that lets this exist where the old
+  `run_stored_query` (arbitrary SQL over the corpus) could not.
+- Params are values, never syntax — the only place one reaches is the start
+  id, as a bound parameter.
+- New validation codes: `traversal_malformed`, `traversal_depth_exceeded`,
+  `traversal_unknown_field` (errors) and `traversal_unknown_relation`
+  (warning — a relation nothing declares or uses returns nothing, which reads
+  like an answer).
+
+## 0.6.31 — typed skill fields: `fields:` constrains what instances may hold
+
 ## 0.6.33 — typed skill fields: `fields:` constrains what instances may hold
 
 - A skill page may declare `fields:` — the typed counterpart to
@@ -25,6 +48,8 @@ pin (see `SKILL.md` → "How this skill is installed").
   unaffected — declaring the block IS the migration step, which is why
   enforcement can block from the first release without breaking a corpus that
   was written untyped.
+
+
 
 ## 0.6.32 — `diff_draft`: what approving a held write would change
 
@@ -56,7 +81,6 @@ pin (see `SKILL.md` → "How this skill is installed").
   `escurel-runner` (DataZooDE/escurel#510). Consumers reading
   `last_written_by` to attribute an automated write will see agent
   subjects where they previously saw one runner subject.
-
 ## 0.6.30 — typed shapes for the rest of the agent tool surface
 
 - `escurel-client` (`references/05-consume-from-rust.md`): typed

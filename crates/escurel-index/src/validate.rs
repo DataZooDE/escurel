@@ -598,6 +598,10 @@ impl Indexer {
         // SKILL page, so a malformed schema reaches its author once rather
         // than every instance's author repeatedly.
         issues.extend(check_fields(parsed.frontmatter.page_type, fields));
+        // A stored corpus traversal (#511). Checked HERE rather than at query
+        // time: a bound that is only enforced when someone runs the query is a
+        // bound that ships broken, and the author finds out from a stranger.
+        issues.extend(self.check_traversal(&parsed.frontmatter).await?);
 
         // Skill pages declare themselves via `id:`; instance pages
         // via `skill:`.
@@ -987,6 +991,109 @@ impl Indexer {
             }
         }
         out
+    }
+
+    /// Check a `target: corpus` query page's `traversal:` block (#511).
+    ///
+    /// Every structural defect is an error — a traversal that cannot be
+    /// compiled cannot be run, so reporting it as a warning would only move
+    /// the failure to whoever calls it next. An unknown RELATION is a warning:
+    /// it is the one defect that might be a forward reference (the pages that
+    /// will carry that key are not written yet), and a corpus is routinely
+    /// seeded in an order that makes that true.
+    async fn check_traversal(
+        &self,
+        frontmatter: &escurel_md::Frontmatter,
+    ) -> Result<Vec<Issue>, IndexerError> {
+        if frontmatter.page_type != PageType::Instance
+            || frontmatter.fields.get("skill").and_then(YamlValue::as_str) != Some("query")
+        {
+            return Ok(Vec::new());
+        }
+        let fm =
+            serde_json::to_value(&frontmatter.fields).unwrap_or_else(|_| serde_json::json!({}));
+        let is_corpus = fm
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|t| t.trim() == crate::CORPUS_TARGET);
+        if !is_corpus {
+            // A `sql_view` query page that happens to carry a `traversal:`
+            // key is not a traversal, and saying so would be noise about a
+            // key this path does not read.
+            return Ok(Vec::new());
+        }
+
+        let traversal = match crate::parse_traversal(&fm) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                return Ok(vec![Issue::error(
+                    "traversal_malformed",
+                    "frontmatter.traversal",
+                    "`target: corpus` but the page declares no `traversal:` block — there \
+                     is nothing to run",
+                )]);
+            }
+            Err(e) => {
+                return Ok(vec![
+                    Issue::error(e.code(), "frontmatter.traversal", e.message().to_owned())
+                        .with_suggestion(
+                            "see docs/contract/agent-interface.md § stored corpus traversals",
+                        ),
+                ]);
+            }
+        };
+
+        // `relation:` is a frontmatter KEY that links were written under. A
+        // typo returns an empty result set rather than an error, which is the
+        // worst shape of failure — it looks like an answer.
+        let mut issues = Vec::new();
+        for step in &traversal.steps {
+            if !self.relation_is_known(&step.relation).await? {
+                issues.push(
+                    Issue::warning(
+                        "traversal_unknown_relation",
+                        format!("frontmatter.traversal.{}", step.relation),
+                        format!(
+                            "no skill declares `{}` as a `kind: link` field and no link in \
+                             this corpus was written under it — a traversal over a relation \
+                             nothing uses returns nothing, which reads like an answer",
+                            step.relation
+                        ),
+                    )
+                    .with_suggestion(
+                        "declare it on the source skill: `fields: [{name: <relation>, \
+                         kind: link, target_skill: <skill>}]`",
+                    ),
+                );
+            }
+        }
+        Ok(issues)
+    }
+
+    /// Whether `relation` is a link field anybody declares or any link uses.
+    ///
+    /// Declared beats observed deliberately: a skill that declares
+    /// `kind: link` (#508) has promised the relation exists, and a corpus
+    /// seeded skill-pages-first would otherwise warn about every traversal
+    /// written before its first instance.
+    async fn relation_is_known(&self, relation: &str) -> Result<bool, IndexerError> {
+        let conn = self.conn.lock().await;
+        let used: i64 = conn.query_row(
+            "SELECT count(*) FROM links WHERE src_field = ? LIMIT 1",
+            duckdb::params![relation],
+            |row| row.get(0),
+        )?;
+        if used > 0 {
+            return Ok(true);
+        }
+        // Declared as a `kind: link` field on any skill page.
+        let declared: i64 = conn.query_row(
+            "SELECT count(*) FROM pages WHERE page_type = 'skill' \
+             AND frontmatter::VARCHAR LIKE ?",
+            duckdb::params![format!("%\"name\":\"{relation}\"%")],
+            |row| row.get(0),
+        )?;
+        Ok(declared > 0)
     }
 
     /// Resolve a set of skill slugs in a single locked DuckDB pass.

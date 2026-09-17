@@ -35,6 +35,7 @@ mod blob_route;
 mod chat_acl;
 mod chat_cursor;
 mod chat_idempotency;
+mod corpus_traversal;
 mod crm_demo_backends;
 mod delete_page;
 mod dispatch_aliases;

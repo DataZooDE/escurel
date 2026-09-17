@@ -44,6 +44,7 @@ pub mod retrieval;
 pub mod schema;
 pub mod search;
 pub mod snapshot;
+mod traversal;
 pub mod validate;
 
 pub use acl::{AclCaller, CAPTURED_BY_FIELD, CAPTURED_VIA_FIELD, captured_by};
@@ -81,5 +82,9 @@ pub use search::{Granularity, SearchHit};
 pub use snapshot::{
     IndexStore, IndexerHandle, LakeConfig, ObjectStoreSecret, OpenedIndex, PublishReport,
     SingleFileStore, SnapshotError,
+};
+pub use traversal::{
+    CORPUS_TARGET, Dir, Filter, MAX_DEPTH_CEILING, START_ALIAS, Start, Step, Traversal,
+    TraversalError, parse_traversal,
 };
 pub use validate::{Issue, Severity};
