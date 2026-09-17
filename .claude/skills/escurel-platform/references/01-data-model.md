@@ -81,9 +81,33 @@ Frontmatter rules the indexer enforces at write time:
   `fields`, so a client can build an instance form from the catalogue
   alone.
 
-Two frontmatter fields are **server-governed** — your app never writes
+  ```yaml
+  fields:
+    - {name: hotness, kind: enum, values: [hot, warm, cold]}
+    - {name: opened,  kind: date, required: true}
+    - {name: arr_eur, kind: float, min: 0}
+  ```
+
+  `kind` ∈ `string | int | float | bool | date | datetime | enum | link`.
+  A value that does not fit its declared kind
+  (`frontmatter_field_type`), falls outside a declared enum
+  (`frontmatter_enum_value`) or breaks a `min`/`max`
+  (`frontmatter_field_range`) is an **error** and **rejects the write** —
+  on `update_page` and on `create_draft` alike. An unrecognised `kind:`
+  degrades to `string` with a warning; `kind: enum` with no `values:`
+  is rejected on the skill page, because it would enforce nothing.
+
+  **Typing is opt-in per skill.** A skill with no `fields:` block behaves
+  exactly as it always did, so an existing untyped corpus stays as
+  writable as it was — declaring the block is the migration step. Declare
+  both during a migration if you like: `required_frontmatter` stays the
+  authority on presence, `fields:` adds shape. `list_skills` publishes
+  `fields`, so a client can build an instance form from the catalogue
+  alone.
+
+Three frontmatter fields are **server-governed** — your app never writes
 them: `layer:` (stamped by pack import; a draft declaring `layer: base@…`
-is rejected `layer_read_only`) and `promotable:` (curator/admin-set; a
+is rejected `layer_read_only`), `promotable:` (curator/admin-set; a
 non-admin write carrying it is rejected `promotable_requires_curator`).
 See §Layer/stability axis below.
 

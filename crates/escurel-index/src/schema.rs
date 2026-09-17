@@ -306,6 +306,39 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the `branches` registry + `pages.deleted` tombstone column
+    /// exist (#512 §1, §3).
+    ///
+    /// Presence-checked + CHECKPOINTed, like every other ALTER in this
+    /// module: `pages` has no function-valued DEFAULT today, but `branches`
+    /// does (`created_at`), and a stage that mixes a CREATE TABLE with an
+    /// ALTER must be replay-safe as a whole. See
+    /// docs/notes/discovered/2026-09-16-alter-on-a-defaulted-table-poisons-the-wal.md.
+    ///
+    /// A SEPARATE canonical input — a branch is not derivable from `pages/`,
+    /// so `rebuild` must NOT drop it.
+    pub fn ensure_branches(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'pages' \
+               AND column_name = 'deleted'",
+            [],
+            |row| row.get(0),
+        )?;
+        let tables: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.tables \
+             WHERE table_schema = 'main' AND table_name = 'branches'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 1 && tables == 1 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_16_BRANCHES)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
     /// Ensure `drafts.changeset_id` (the changeset grouping key, #509 §1)
     /// exists.
     ///
@@ -434,6 +467,10 @@ impl Migrator {
         // the method) off the fresh-database path entirely. Called anyway so
         // `up` and the reopen chain cannot disagree about the schema.
         Self::ensure_write_attribution(conn)?;
+        // The branch registry + `pages.deleted` (#512). Called on the fresh
+        // path too so `up` and the reopen chain cannot disagree about the
+        // schema.
+        Self::ensure_branches(conn)?;
         // Provenance-graph VIEW (ADR-0010) over the now-existing pages/links
         // tables. A derived read surface; `CREATE OR REPLACE` + also run on
         // every reopen via `ensure_provenance_graph`.
@@ -530,6 +567,7 @@ const STAGE_10_EXTERNAL_ENDPOINTS: &str = include_str!("../sql/0008_external_end
 const STAGE_11_PACK_SUBSCRIPTIONS: &str = include_str!("../sql/0009_pack_subscriptions.sql");
 const STAGE_12_PROVENANCE_GRAPH: &str = include_str!("../sql/0010_provenance_graph.sql");
 const STAGE_13_WRITE_ATTRIBUTION: &str = include_str!("../sql/0011_write_attribution.sql");
+const STAGE_16_BRANCHES: &str = include_str!("../sql/0015_branches.sql");
 
 #[cfg(test)]
 mod tests {

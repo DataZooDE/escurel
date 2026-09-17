@@ -32,6 +32,7 @@ mod autonomy;
 mod backend_read_limits;
 mod binary_boots;
 mod blob_route;
+mod branches;
 mod changesets;
 mod chat_acl;
 mod chat_cursor;

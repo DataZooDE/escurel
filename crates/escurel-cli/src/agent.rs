@@ -7,13 +7,13 @@ use std::io::Read as _;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use escurel_client::{
-    AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, CreateDraftRequest,
-    DecideChangesetRequest, DecideDraftRequest, DeletePageRequest, DiffDraftRequest, ExpandRequest,
-    ListChangesetsRequest, ListDraftsRequest, ListEventsRequest, ListInboxRequest,
-    ListInstancesRequest, ListMessagesRequest, ListSkillsRequest, MovePageRequest,
-    NeighboursRequest, ProvenanceAncestryRequest, ProvenancePathRequest, ProvenanceReportRequest,
-    PurgePageRequest, QueryInstanceRequest, ResolveRequest, SearchRequest, UpdatePageRequest,
-    ValidateRequest,
+    AppendMessageRequest, AssignEventRequest, BranchRequest, CaptureEventRequest, Client,
+    CreateDraftRequest, DecideChangesetRequest, DecideDraftRequest, DeletePageRequest,
+    DiffDraftRequest, ExpandRequest, ListChangesetsRequest, ListDraftsRequest, ListEventsRequest,
+    ListInboxRequest, ListInstancesRequest, ListMessagesRequest, ListSkillsRequest,
+    MovePageRequest, NeighboursRequest, ProvenanceAncestryRequest, ProvenancePathRequest,
+    ProvenanceReportRequest, PurgePageRequest, QueryInstanceRequest, ResolveRequest, SearchRequest,
+    UpdatePageRequest, ValidateRequest,
 };
 use serde_json::{Value, json};
 
@@ -309,6 +309,31 @@ pub enum DraftCmd {
     },
 }
 
+/// Branches: an isolated workspace whose writes never touch the base
+/// timeline (#512).
+#[derive(Subcommand, Debug)]
+pub enum BranchCmd {
+    /// Open a branch. Its name is also the scenario its pages carry.
+    Create {
+        #[arg(long)]
+        name: String,
+    },
+    /// Every branch, newest first, including decided ones.
+    List,
+    /// Land a branch onto the base timeline. All-or-nothing.
+    Merge {
+        #[arg(long)]
+        name: String,
+    },
+    /// Close a branch without landing anything.
+    Abandon {
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+}
+
 /// A run's held writes, decided together (#509 §1).
 #[derive(Subcommand, Debug)]
 pub enum ChangesetCmd {
@@ -454,6 +479,7 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Draft(c) => draft_cmd(client, c).await,
+        Command::Branch(c) => branch_cmd(client, c).await,
         Command::Changeset(c) => changeset_cmd(client, c).await,
         Command::Query(QueryCmd::Instance(a)) => query_instance(client, a).await,
         Command::Chat(ChatCmd::Append(a)) => chat_append(client, a).await,
@@ -916,6 +942,45 @@ fn draft_json(d: escurel_client::Draft, full: bool) -> Value {
         "status": d.status,
         "created_at": d.created_at,
     })
+}
+
+async fn branch_cmd(client: &Client, cmd: BranchCmd) -> Result<Value> {
+    match cmd {
+        BranchCmd::Create { name } => {
+            let resp = client
+                .create_branch(BranchRequest {
+                    name,
+                    reason: String::new(),
+                })
+                .await?;
+            Ok(json!({ "ok": resp.ok, "branch": resp.branch, "issues": resp.issues }))
+        }
+        BranchCmd::List => {
+            let resp = client.list_branches().await?;
+            Ok(json!({ "branches": resp.branches }))
+        }
+        BranchCmd::Merge { name } => {
+            let resp = client
+                .merge_branch(BranchRequest {
+                    name,
+                    reason: String::new(),
+                })
+                .await?;
+            Ok(json!({
+                "ok": resp.ok,
+                "name": resp.name,
+                "results": resp.results,
+                "partial": resp.partial,
+                "issues": resp.issues,
+            }))
+        }
+        BranchCmd::Abandon { name, reason } => {
+            let resp = client
+                .abandon_branch(BranchRequest { name, reason })
+                .await?;
+            Ok(json!({ "ok": resp.ok, "name": resp.name, "reason": resp.reason }))
+        }
+    }
 }
 
 async fn changeset_cmd(client: &Client, cmd: ChangesetCmd) -> Result<Value> {

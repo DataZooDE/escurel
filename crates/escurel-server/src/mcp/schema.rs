@@ -298,6 +298,67 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
+                "create_branch",
+                Execution::Deterministic,
+                Scope::Agent,
+                "Open a BRANCH: an isolated workspace whose writes never touch \
+                 the base timeline (#512). Records who opened it and the corpus \
+                 state it forked from — a merge needs the latter. The name is \
+                 also the `scenario` its pages carry, so there is exactly one \
+                 identifier. Opening an existing name is refused, never joined.",
+                json!({
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": { "name": { "type": "string", "description": "e.g. `agent/inbox-scan`" } }
+                }),
+            ),
+            tool_entry(
+                "list_branches",
+                Execution::Deterministic,
+                Scope::Agent,
+                "Every branch, newest first, including decided ones — \
+                 \"did we already decide that one?\" must stay answerable. Each \
+                 row carries its author, `base_version`, `status` \
+                 (open | merged | abandoned) and the reason it was abandoned.",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "merge_branch",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Land a branch onto the base timeline. All-or-nothing: every \
+                 page the branch carries is checked first, and one member that \
+                 could not land blocks the whole merge — a branch may be hours \
+                 of work, and a half-landed one is very hard to reason back \
+                 out of. A base twin that moved since the fork is reconciled by \
+                 the SAME three-way merge `update_page` performs: disjoint \
+                 frontmatter keys merge, the same key on both sides conflicts. \
+                 Tombstones land as real deletes.",
+                json!({
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": { "name": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "abandon_branch",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Close a branch without landing anything. Its overlay pages are \
+                 deliberately LEFT in place: they are the record of what was \
+                 proposed, they are invisible to the base timeline, and deleting \
+                 them would destroy the only evidence of an abandoned run. A \
+                 decided branch accepts no further writes.",
+                json!({
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "reason": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
                 "diff_draft",
                 Execution::Deterministic,
                 Scope::Agent,
@@ -388,6 +449,7 @@ pub(super) fn tools_list_payload() -> Value {
                         "base_version": { "type": "string" },
                         "require_exact_base": { "type": "boolean" },
                         "base_sha256": { "type": "string", "description": "Content-hash CAS — the approval guard that works on EVERY gateway (base_version needs a CRDT backend). Hex sha256 of the stored markdown the held write was drafted against; \"\" = approve-create (expect no page). Mismatch refuses {code: conflict} + head_sha256 + head_content. (#354)" },
+                        "branch": { "type": "string", "description": "Write on this BRANCH instead of the base timeline (#512): the server derives the overlay page id and stamps `scenario`, so an agent cannot forget to and write to production. Must be an OPEN registered branch." },
                         "provenance": { "type": "object" }
                     }
                 }),
@@ -1482,6 +1544,24 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "next_cursor": { "type": ["string", "null"], "description": "string = more rows (pass back as cursor); null = done" }
         })),
         "list_drafts" => obj(json!({ "drafts": { "type": "array" } })),
+        "create_branch" => obj(json!({
+            "ok": { "type": "boolean" },
+            "branch": { "type": "object", "description": "{name, base_version, author, status, created_at}" },
+            "issues": { "type": "array" }
+        })),
+        "list_branches" => obj(json!({ "branches": { "type": "array" } })),
+        "merge_branch" => obj(json!({
+            "ok": { "type": "boolean" },
+            "name": { "type": "string" },
+            "results": { "type": "array", "description": "[{page_id, target, deleted, ok}]" },
+            "partial": { "type": "boolean", "description": "a pre-flighted page refused mid-apply; re-run to complete" },
+            "issues": { "type": "array" }
+        })),
+        "abandon_branch" => obj(json!({
+            "ok": { "type": "boolean" },
+            "name": { "type": "string" },
+            "reason": { "type": "string" }
+        })),
         "list_changesets" => obj(json!({ "changesets": { "type": "array" } })),
         "promote_changeset" => obj(json!({
             "ok": { "type": "boolean" },

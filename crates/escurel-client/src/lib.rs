@@ -85,6 +85,10 @@ pub use escurel_types::{
     DiffDraftRequest, DiffDraftResponse, Draft, FrontmatterChange, ListChangesetsRequest,
     ListChangesetsResponse, ListDraftsRequest, ListDraftsResponse,
 };
+pub use escurel_types::{
+    Branch, BranchMergeResult, BranchRequest, CreateBranchResponse, DecideBranchResponse,
+    ListBranchesResponse,
+};
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
 // Typed shapes for the previously call_raw-only agent tools: the blob /
@@ -579,6 +583,38 @@ impl Client {
             args["limit"] = json!(req.limit);
         }
         self.transport.call_typed("list_drafts", args).await
+    }
+
+    /// Open a BRANCH: an isolated workspace whose writes never touch the
+    /// base timeline (#512). Pass its name as `branch` on `update_page` /
+    /// `delete_page`; the server stamps the scenario, so you never type it.
+    pub async fn create_branch(&self, req: BranchRequest) -> Result<CreateBranchResponse, Error> {
+        self.transport
+            .call_typed("create_branch", json!({ "name": req.name }))
+            .await
+    }
+
+    /// Every branch, newest first, including decided ones.
+    pub async fn list_branches(&self) -> Result<ListBranchesResponse, Error> {
+        self.transport.call_typed("list_branches", json!({})).await
+    }
+
+    /// Land a branch. All-or-nothing: one page that could not land blocks the
+    /// whole merge.
+    pub async fn merge_branch(&self, req: BranchRequest) -> Result<DecideBranchResponse, Error> {
+        self.transport
+            .call_typed("merge_branch", json!({ "name": req.name }))
+            .await
+    }
+
+    /// Close a branch without landing anything.
+    pub async fn abandon_branch(&self, req: BranchRequest) -> Result<DecideBranchResponse, Error> {
+        self.transport
+            .call_typed(
+                "abandon_branch",
+                json!({ "name": req.name, "reason": req.reason }),
+            )
+            .await
     }
 
     /// What approving a held write would change: which frontmatter keys move

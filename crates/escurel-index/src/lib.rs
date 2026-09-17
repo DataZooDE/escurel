@@ -20,6 +20,7 @@
 
 pub mod acl;
 pub mod backend;
+pub mod branches;
 pub mod chat;
 pub mod citation;
 pub mod crdt_history;
@@ -53,6 +54,7 @@ pub use backend::{
     InstanceBackend, MarkdownBackend, Materialized, RemoteBinding, RemoteKind, RemoteOp,
     SearchMode, SqlConnector, SqlViewBackend, SqlViewBinding, SqlViewError,
 };
+pub use branches::{BranchInfo, BranchPage};
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
 pub use creds::{CredentialInfo, CredentialRecord};

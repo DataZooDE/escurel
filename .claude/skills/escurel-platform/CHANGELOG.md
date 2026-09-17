@@ -4,6 +4,29 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.40 — branches: registry, write context, tombstones, merge
+
+- `create_branch` / `list_branches` / `merge_branch` / `abandon_branch`, plus
+  `escurel branch create|list|merge|abandon` and typed client methods. A
+  branch is an isolated workspace with an author, the corpus state it forked
+  from, and a status that moves `open → merged | abandoned` exactly once.
+- **`update_page` and `delete_page` take `branch`.** This is the important
+  part: the branch is a property of the WRITE, not of the page. The server
+  derives the overlay page id and stamps `scenario`, so an agent working on a
+  branch cannot forget to stamp a page and write to production instead — the
+  failure mode author-supplied `scenario:` frontmatter has. That frontmatter
+  still works and is not broken; it is simply no longer the only way.
+- **`delete_page` with `branch` is a TOMBSTONE**, not a retraction: the base
+  page is untouched, the slug reads as absent on that branch, and the delete
+  lands for real when the branch merges. An overlay that could only add or
+  override could not express "this was wrong, remove it".
+- `merge_branch` is all-or-nothing, and a base twin that moved since the fork
+  is reconciled by the same three-way merge `update_page` performs — disjoint
+  frontmatter keys merge, the same key on both sides conflicts and the whole
+  merge blocks with the branch left open.
+- A write naming an unknown or already-decided branch is refused
+  (`unknown_branch` / `already_decided`), never silently accepted.
+
 ## 0.6.39 — promotion merges a head that moved on other keys
 
 - `create_draft` now records the target's CRDT version as well as its
