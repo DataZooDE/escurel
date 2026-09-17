@@ -80,12 +80,13 @@ pub use escurel_types::{
 // that has not landed, and these are how an app shows a human what is
 // waiting and lands it under their identity.
 pub use escurel_types::{
-    Branch, BranchMergeResult, BranchRequest, CreateBranchResponse, DecideBranchResponse,
-    ListBranchesResponse,
+    BlockChange, CreateDraftRequest, CreateDraftResponse, DecideDraftRequest, DecideDraftResponse,
+    DiffDraftRequest, DiffDraftResponse, Draft, FrontmatterChange, ListDraftsRequest,
+    ListDraftsResponse,
 };
 pub use escurel_types::{
-    CreateDraftRequest, CreateDraftResponse, DecideDraftRequest, DecideDraftResponse, Draft,
-    ListDraftsRequest, ListDraftsResponse,
+    Branch, BranchMergeResult, BranchRequest, CreateBranchResponse, DecideBranchResponse,
+    ListBranchesResponse,
 };
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
@@ -612,6 +613,18 @@ impl Client {
                 "abandon_branch",
                 json!({ "name": req.name, "reason": req.reason }),
             )
+            .await
+    }
+
+    /// What approving a held write would change: which frontmatter keys move
+    /// and to what, what happens to the body, and whether the target moved
+    /// since the draft was taken (`base_moved` — the signal that promotion
+    /// will need a merge). Read-only, and gated by the same read ACL as
+    /// `list_drafts`: a draft the caller may not see answers `ok:false` with
+    /// `not_found` rather than a refusal.
+    pub async fn diff_draft(&self, req: DiffDraftRequest) -> Result<DiffDraftResponse, Error> {
+        self.transport
+            .call_typed("diff_draft", json!({ "draft_id": req.draft_id }))
             .await
     }
 

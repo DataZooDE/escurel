@@ -52,6 +52,7 @@ const EXPECTED: &[&str] = &[
     "create_draft:orchestration",
     "list_branches:deterministic",
     "merge_branch:orchestration",
+    "diff_draft:deterministic",
     "create_remote_instance:orchestration",
     "create_sql_instance:orchestration",
     "delete_credential:orchestration",

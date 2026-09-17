@@ -74,6 +74,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("merge_branch", Agent(&["branch", "merge"])),
     ("abandon_branch", Agent(&["branch", "abandon"])),
     ("list_drafts", Agent(&["draft", "list"])),
+    ("diff_draft", Agent(&["draft", "diff"])),
     ("promote_draft", Agent(&["draft", "promote"])),
     ("discard_draft", Agent(&["draft", "discard"])),
     ("open_session", Agent(&["session", "open"])),

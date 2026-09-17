@@ -187,6 +187,7 @@ privately, which put consumer-shaped objects in the knowledge base and made
 | `list_branches` | — | `{branches:[{name, base_version, author, status, reason, decided_by, created_at}]}` | every branch, newest first, including decided ones |
 | `merge_branch` | `name` | `{ok, name, results:[{page_id, target, deleted, ok}], partial?, issues}` | land a branch. **All-or-nothing** — one page that cannot land blocks the whole merge. A base twin that moved since the fork is reconciled by the same three-way merge `update_page` performs; tombstones land as real deletes |
 | `abandon_branch` | `name`, `reason?` | `{ok, name, reason}` | close a branch without landing anything. Its overlay pages are LEFT in place as the record of what was proposed |
+| `diff_draft` | `draft_id` | `{ok, target_page_id, exists, base_moved, frontmatter_changes:[{key,from,to}], block_changes:[{anchor,kind,preview}]}` | what approving this held write would change — only keys that MOVE, plus whether the target has shifted since the draft was taken (`base_moved`, i.e. promotion will need a merge). Read-only; a draft you may not see answers `ok:false` + `not_found`, never a refusal |
 | `promote_draft` | Land it, under the approver's identity. |
 | `discard_draft` | Refuse it, with a `reason`. Nothing is written. |
 
@@ -208,7 +209,7 @@ Three properties are worth relying on:
 A draft already decided answers `{code: already_decided}` naming which
 decision was taken — deciding twice is not expressible.
 
-Note this list is **curated, not exhaustive** — the server exposes 76 tools
+Note this list is **curated, not exhaustive** — the server exposes 77 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,
@@ -227,7 +228,7 @@ instance's **history** once assigned. Workers build chains on this
 
 | tool | inputs (key ones) | output | what for |
 |---|---|---|---|
-| `capture_event` | `label_skill` (**required** — the label→skill routing key; an unlabelled capture is refused `-32602`), `source`, `mime`, `title`, `body`, `instance_page_id?`, `event_id?`, `provenance?` | the stored `Event` (server mints `event_id`/`at` when empty) | ingest an event; fires the webhook |
+| `capture_event` | `label_skill` (**required** — the label→skill routing key; an unlabelled capture is refused `-32602`), `source`, `mime`, `title`, `body`, `instance_page_id?`, `event_id?`, `provenance?` | the stored `Event` (server mints `event_id`/`at` when empty) | ingest an event; fires the webhook. The server OVERWRITES two provenance keys with its own claims: `captured_by` (your verified token `sub`) and `captured_via` (the principal you are acting for, from the token's `act.sub` — present only for a delegated token such as a runner's per-run agent bearer, and stripped when there is none). Sending either yourself has no effect |
 | `list_inbox` | `limit`, `cursor?` | `{events[], next_cursor?}` | the tenant's UNPROCESSED events (a worker's poll fallback); pass `next_cursor` back as `cursor` — ONLY its absence means done (ACL filtering legitimately shortens pages) |
 | `assign_event` | `event_id`, `instance_page_id` | ack | mark processed + attach to a page's history |
 | `list_events` | `instance_page_id`, `limit`, `cursor?` | `{events[], next_cursor?}` | a page's PROCESSED history, **oldest first** — assigned events only (an unassigned inbox event is a pending work item, not history); paginated like `list_inbox`, so history past `limit` stays reachable |

@@ -49,6 +49,11 @@ pub(super) struct ListDraftsArgs {
 }
 
 #[derive(Deserialize)]
+pub(super) struct DiffDraftArgs {
+    draft_id: String,
+}
+
+#[derive(Deserialize)]
 pub(super) struct DecideDraftArgs {
     draft_id: String,
     /// Why it was discarded. Ignored by `promote_draft`.
@@ -694,4 +699,160 @@ fn draft_blocking_issues<'a>(
         }
     }
     blocking
+}
+
+/// What approving this draft would change (#509 §3).
+///
+/// Reviewing used to mean reading two markdown files against each other by
+/// eye. The reviewer's question is narrower than that — *which keys move, to
+/// what, and has the target shifted underneath since this was drafted?* — and
+/// that question has a structured answer, which is also what a review UI needs
+/// in order to render anything at all.
+///
+/// Read-only: it takes no decision and changes no row. It is gated by the same
+/// [`may_see`] the queue is, so it cannot become a way to read a draft you are
+/// not allowed to see; denial reads as absence, as everywhere else here.
+pub(super) async fn tool_diff_draft(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: DiffDraftArgs = parse_args(args, "diff_draft")?;
+    let Some(draft) = indexer
+        .get_draft(&a.draft_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("diff_draft: {e}")))?
+        .filter(|_| true)
+    else {
+        return Ok(not_found(&a.draft_id));
+    };
+    if !may_see(indexer, &caller, &draft).await? {
+        return Ok(not_found(&a.draft_id));
+    }
+
+    // The target's CURRENT stored bytes — the same source `expand` publishes
+    // `content_sha256` from, so `base_moved` is decided against exactly what
+    // promotion's CAS will compare.
+    let head = indexer
+        .read_page_markdown(&draft.target_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("diff_draft: {e}")))?;
+
+    let exists = head.is_some();
+    let head_sha = head.as_deref().map(escurel_index::drafts::content_hash);
+    // Moved = the target is not what it was when this was drafted, INCLUDING
+    // the case of a page that has appeared since a create-draft was taken:
+    // both make promotion a merge rather than a write, and the reviewer is
+    // better served by one honest flag than by two subtly different ones.
+    let base_moved = head_sha != draft.base_sha256;
+
+    let head_fm = head
+        .as_deref()
+        .and_then(|h| escurel_md::parse(h).ok())
+        .map(|p| p.frontmatter.fields);
+    let Ok(proposed) = escurel_md::parse(&draft.content) else {
+        // A draft whose own bytes do not parse cannot be diffed. It also
+        // cannot be promoted (`create_draft` refuses it), so this is a
+        // legacy/imported row, and saying so beats a misleading empty diff.
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "unparseable",
+                "location": "content",
+                "message": format!("draft `{}` does not parse as markdown with frontmatter", draft.draft_id),
+            }],
+        }));
+    };
+
+    Ok(json!({
+        "ok": true,
+        "draft_id": draft.draft_id,
+        "target_page_id": draft.target_page_id,
+        "exists": exists,
+        "base_moved": base_moved,
+        "frontmatter_changes": frontmatter_changes(head_fm.as_ref(), &proposed.frontmatter.fields),
+        "block_changes": block_changes(head.as_deref(), proposed.body),
+    }))
+}
+
+/// The scoped-read denial shape shared by every draft verb: absence, never a
+/// refusal — "there is a draft you may not see" is itself information.
+fn not_found(draft_id: &str) -> Value {
+    json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "not_found",
+            "location": "draft_id",
+            "message": format!("no draft `{draft_id}`"),
+        }],
+    })
+}
+
+/// Frontmatter keys that MOVE, and only those.
+///
+/// A diff that lists every key is the read-two-files problem with extra
+/// steps. A removed key reports `to: null`, an added one `from: null` — the
+/// asymmetry is the information.
+fn frontmatter_changes(
+    head: Option<&escurel_md::YamlMapping>,
+    proposed: &escurel_md::YamlMapping,
+) -> Vec<Value> {
+    let as_json = |v: &escurel_md::YamlValue| serde_json::to_value(v).unwrap_or(Value::Null);
+    let mut out = Vec::new();
+    for (key, new) in proposed {
+        let key = match key.as_str() {
+            Some(k) => k,
+            None => continue,
+        };
+        let old = head.and_then(|h| h.get(key));
+        match old {
+            Some(old) if old == new => {}
+            _ => out.push(json!({
+                "key": key,
+                "from": old.map_or(Value::Null, as_json),
+                "to": as_json(new),
+            })),
+        }
+    }
+    if let Some(head) = head {
+        for (key, old) in head {
+            let Some(key) = key.as_str() else { continue };
+            if proposed.get(key).is_none() {
+                out.push(json!({ "key": key, "from": as_json(old), "to": Value::Null }));
+            }
+        }
+    }
+    out
+}
+
+/// What happens to the body.
+///
+/// Today the indexer stores one block per page (`blk-0`; anchor splitting is
+/// still ahead), so this reports at that granularity rather than inventing an
+/// anchor scheme the rest of the system does not share — the shape is the
+/// multi-block one, the content is what exists. The preview is the PROPOSED
+/// text, because that is what a reviewer is approving.
+fn block_changes(head: Option<&str>, proposed_body: &str) -> Vec<Value> {
+    const ANCHOR: &str = "blk-0";
+    const PREVIEW_CHARS: usize = 280;
+
+    let head_body = head
+        .and_then(|h| escurel_md::parse(h).ok())
+        .map(|p| p.body.trim().to_owned())
+        .unwrap_or_default();
+    let new_body = proposed_body.trim();
+    if head_body == new_body {
+        return Vec::new();
+    }
+    let kind = if head_body.is_empty() {
+        "insert"
+    } else if new_body.is_empty() {
+        "delete"
+    } else {
+        "replace"
+    };
+    let preview: String = new_body.chars().take(PREVIEW_CHARS).collect();
+    vec![json!({ "anchor": ANCHOR, "kind": kind, "preview": preview })]
 }

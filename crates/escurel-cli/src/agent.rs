@@ -8,11 +8,11 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use escurel_client::{
     AppendMessageRequest, AssignEventRequest, BranchRequest, CaptureEventRequest, Client,
-    CreateDraftRequest, DecideDraftRequest, DeletePageRequest, ExpandRequest, ListDraftsRequest,
-    ListEventsRequest, ListInboxRequest, ListInstancesRequest, ListMessagesRequest,
-    ListSkillsRequest, MovePageRequest, NeighboursRequest, ProvenanceAncestryRequest,
-    ProvenancePathRequest, ProvenanceReportRequest, PurgePageRequest, QueryInstanceRequest,
-    ResolveRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
+    CreateDraftRequest, DecideDraftRequest, DeletePageRequest, DiffDraftRequest, ExpandRequest,
+    ListDraftsRequest, ListEventsRequest, ListInboxRequest, ListInstancesRequest,
+    ListMessagesRequest, ListSkillsRequest, MovePageRequest, NeighboursRequest,
+    ProvenanceAncestryRequest, ProvenancePathRequest, ProvenanceReportRequest, PurgePageRequest,
+    QueryInstanceRequest, ResolveRequest, SearchRequest, UpdatePageRequest, ValidateRequest,
 };
 use serde_json::{Value, json};
 
@@ -285,6 +285,13 @@ pub enum DraftCmd {
         /// Print each draft's full proposed markdown, not just its head.
         #[arg(long)]
         full: bool,
+    },
+    /// What approving a held write would change — which frontmatter keys
+    /// move, what happens to the body, and whether the target moved since
+    /// the draft was taken. Reads nothing into the corpus.
+    Diff {
+        #[arg(long)]
+        draft: String,
     },
     /// Land a held write. A target that moved since drafting conflicts and
     /// leaves the draft open.
@@ -979,6 +986,20 @@ async fn draft_cmd(client: &Client, cmd: DraftCmd) -> Result<Value> {
                     .into_iter()
                     .map(|d| draft_json(d, full))
                     .collect::<Vec<_>>(),
+            }))
+        }
+        DraftCmd::Diff { draft } => {
+            let resp = client
+                .diff_draft(DiffDraftRequest { draft_id: draft })
+                .await?;
+            Ok(json!({
+                "ok": resp.ok,
+                "target_page_id": resp.target_page_id,
+                "exists": resp.exists,
+                "base_moved": resp.base_moved,
+                "frontmatter_changes": resp.frontmatter_changes,
+                "block_changes": resp.block_changes,
+                "issues": resp.issues,
             }))
         }
         DraftCmd::Promote { draft } => {

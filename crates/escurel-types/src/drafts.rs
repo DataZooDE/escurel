@@ -170,3 +170,49 @@ pub struct DecideBranchResponse {
     pub reason: String,
     pub issues: Vec<crate::ValidationIssue>,
 }
+
+/// `diff_draft` arguments (#509 §3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DiffDraftRequest {
+    pub draft_id: String,
+}
+
+/// One frontmatter key that MOVES if the draft is approved. `from`/`to` are
+/// `None` for an added / removed key respectively — the asymmetry is the
+/// information.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct FrontmatterChange {
+    pub key: String,
+    pub from: Option<serde_json::Value>,
+    pub to: Option<serde_json::Value>,
+}
+
+/// What happens to one body block. `kind` is `insert` | `delete` | `replace`;
+/// `preview` is the PROPOSED text, because that is what is being approved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BlockChange {
+    pub anchor: String,
+    pub kind: String,
+    pub preview: String,
+}
+
+/// What approving a held write would change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DiffDraftResponse {
+    pub ok: bool,
+    pub draft_id: String,
+    pub target_page_id: String,
+    /// `false` = approving would CREATE the page.
+    pub exists: bool,
+    /// The target is not what it was when the draft was taken, so promotion
+    /// is a merge rather than a write. Worth showing a reviewer BEFORE they
+    /// approve, rather than as a failed promotion afterwards.
+    pub base_moved: bool,
+    pub frontmatter_changes: Vec<FrontmatterChange>,
+    pub block_changes: Vec<BlockChange>,
+    pub issues: Vec<crate::ValidationIssue>,
+}

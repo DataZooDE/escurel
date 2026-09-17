@@ -277,6 +277,11 @@ async fn mcp_inner(
     // again inside escurel-index as defence in depth.
     let token_groups = crate::auth_gate::rbac_groups(&state, auth_ctx.as_ref());
 
+    // Who the subject is acting FOR (#510), from the verified `act.sub`: a
+    // per-run agent token names the runner that delegated to it. Audit
+    // lineage only — never read for an authorization decision.
+    let actor = auth_ctx.as_ref().and_then(|c| c.actor.clone());
+
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
     // server acknowledges with HTTP 202 Accepted and an empty body.
@@ -314,6 +319,7 @@ async fn mcp_inner(
                 role,
                 &subject,
                 &token_groups,
+                actor.as_deref(),
                 req.params,
             )
             .await;
@@ -679,6 +685,7 @@ const EVENTS_TOOLS: &[&str] = &["capture_event", "assign_event", "list_events", 
 const DRAFTS_TOOLS: &[&str] = &[
     "create_draft",
     "list_drafts",
+    "diff_draft",
     "promote_draft",
     "discard_draft",
 ];
@@ -741,6 +748,7 @@ async fn dispatch_tools_call(
     role: Option<Role>,
     subject: &str,
     token_groups: &[String],
+    actor: Option<&str>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -797,6 +805,7 @@ async fn dispatch_tools_call(
         subject,
         is_admin: matches!(role, None | Some(Role::Admin)),
         token_groups,
+        actor,
     };
 
     // Session tools depend on `crdt_backend` + `sessions`, not on
@@ -954,6 +963,7 @@ async fn dispatch_tools_call(
             tool_merge_branch(state, indexer, caller, state.write_acl, params.arguments).await
         }
         "abandon_branch" => tool_abandon_branch(indexer, caller, params.arguments).await,
+        "diff_draft" => tool_diff_draft(indexer, caller, params.arguments).await,
         "promote_draft" => {
             tool_promote_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }

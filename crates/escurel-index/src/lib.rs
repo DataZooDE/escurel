@@ -48,7 +48,7 @@ pub mod snapshot;
 mod traversal;
 pub mod validate;
 
-pub use acl::{AclCaller, CAPTURED_BY_FIELD, captured_by};
+pub use acl::{AclCaller, CAPTURED_BY_FIELD, CAPTURED_VIA_FIELD, captured_by};
 pub use backend::{
     BackendBinding, BackendCtx, BackendKind, BackendRegistry, BindingStatus, Capabilities,
     InstanceBackend, MarkdownBackend, Materialized, RemoteBinding, RemoteKind, RemoteOp,
@@ -65,8 +65,8 @@ pub use graph::{
 };
 pub use groups::GroupMember;
 pub use indexer::{
-    AuditDrift, IndexChunk, Indexer, IndexerError, RebuildProgress, derive_attach_alias,
-    is_safe_attach_source, is_valid_attach_alias,
+    AuditDrift, DEFAULT_QUERY_TIMEOUT_MS, IndexChunk, Indexer, IndexerError, RebuildProgress,
+    derive_attach_alias, is_safe_attach_source, is_valid_attach_alias,
 };
 pub use meta_skill::{META_SKILL_ID, META_SKILL_MD, META_SKILL_PAGE_ID};
 pub use query::{
