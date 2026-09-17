@@ -36,6 +36,7 @@ mod healthz;
 mod inbox_poll;
 mod loop_controls;
 mod minted_credential;
+mod muse_live;
 mod packager;
 mod per_run_actor_identity;
 mod quota_throttle;

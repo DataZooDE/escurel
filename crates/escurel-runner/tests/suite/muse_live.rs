@@ -1,60 +1,37 @@
-//! Live end-to-end DoD test for the Antigravity (`agy`) adapter — **no
-//! mocks**, but `#[ignore]` because it drives a real LLM (needs `agy` auth +
+//! Live end-to-end DoD test for the Muse Code (`muse`) adapter — **no
+//! mocks**, but `#[ignore]` because it drives a real LLM (needs `muse` auth +
 //! model quota and is non-deterministic/slow, so it must not run in the
 //! default gate).
 //!
 //! Run it on demand / nightly:
 //!
 //! ```text
-//! cargo test -p escurel-runner --test suite agy_live:: -- --ignored
+//! cargo test -p escurel-runner --test suite muse_live:: -- --ignored
 //! ```
 //!
-//! It is a REAL test, structured exactly like the echo end-to-end DoD
-//! (`echo_end_to_end.rs`) but with the **real `agy` CLI** as the harness:
+//! Structured exactly like `agy_live.rs`, with the **real `muse` CLI** as the
+//! harness: a real gateway, a real inbox event, the real `escurel-runner`
+//! with `ESCUREL_RUNNER_HARNESS=muse`, and a real `muse exec` subprocess
+//! making real `/mcp` tool calls under the scoped token to fold the event.
 //!
-//! 1. Spawn a real gateway (`EscurelProcess`, TestIssuer auth) seeded via
-//!    `FixtureBuilder` with a skill page + a target instance page.
-//! 2. `capture_event` a real inbox event labelled with the skill and
-//!    pre-flagged to the target instance, over the real `/mcp`.
-//! 3. Spawn the real `escurel-runner` with `ESCUREL_RUNNER_HARNESS=agy`,
-//!    pointed at the real gateway. The runner packages the trigger and runs
-//!    the **real `agy` subprocess** in a private `HOME` carrying only this
-//!    run's MCP config, and agy makes real `/mcp` tool calls under the
-//!    scoped token to fold the event.
-//! 4. Assert the end-to-end effect on the REAL gateway: the event becomes
-//!    `processed` and the runner's durable ledger run is terminal.
+//! **Why this test can exist at all.** escurel#451 recorded that a `muse`
+//! harness could not be built: Muse Code 1.0.1 was not an MCP client, so
+//! every escurel effect would have had to be made by the adapter itself —
+//! which the `Harness` contract forbids, and for good reason (the scoped
+//! token and the packaged tool surface stop meaning anything). Muse 1.1.1 is
+//! an MCP client, so the adapter is a real one. The negative was recorded
+//! against a VERSION rather than against the design, which is what made it
+//! cheap to revisit.
 //!
-//! Auth: a live run needs `agy` to be logged in — its credentials live in
-//! `~/.gemini`, and the adapter links them into the per-run `HOME`. The
-//! escurel `/mcp` bearer is the scoped token the runner mints; that is
-//! separate from the Google credential the model itself uses.
+//! Auth: a live run needs `muse` to be logged in — its credentials live in
+//! `~/.config/muse`, and the adapter links them into the per-run private
+//! config dir. The escurel `/mcp` bearer is separate: it is the scoped token
+//! the runner mints.
 //!
-//! **The interop works as of agy 1.2.1 (measured 2026-09-17).** This test
-//! passes: a real `agy` subprocess, a real gateway, real `/mcp` tool calls
-//! under the scoped token, the event folded, the ledger run terminal —
-//! 89.9s end to end.
-//!
-//! It did NOT work before, and the history is worth keeping because it is
-//! what this test exists to detect. Measured on 2026-09-07 with agy 1.1.23:
-//! with escurel registered in `mcp_config.json`, `agy` never produced a turn
-//! — every run ended `{"status":"ERROR","error":"timeout waiting for
-//! response","num_turns":0}`, having never reached the model
-//! (`input_tokens: 0`). The same `agy`, same private `HOME`, same argv
-//! answered normally when the MCP entry was absent or pointed at a closed
-//! port, so it was the LIVE escurel connection that stalled it and not the
-//! adapter's invocation. Tracked as escurel#450; nothing in this repo
-//! changed to fix it, and nothing had to — the fix was upstream, which is
-//! precisely why the negative was recorded against a version rather than
-//! against the adapter.
-//!
-//! So this stays `#[ignore]` for cost, not for breakage, and a failure here
-//! now means a real regression: in `agy`, in the gateway's MCP transport, or
-//! in the adapter.
-//!
-//! **The skill declares `autonomy: auto`, and it must.** `agy` cannot enforce
-//! a narrowed tool surface, so the adapter refuses any task packaged under
-//! `REVIEW_TOOLS` — which is what an absent `autonomy:` produces. Drop that
-//! line and this test asserts the refusal instead of the fold.
+//! **The skill declares `autonomy: auto`, and it must.** `muse exec` cannot
+//! enforce a narrowed tool surface, so the adapter refuses any task packaged
+//! under `REVIEW_TOOLS` — which is what an absent `autonomy:` produces. Drop
+//! that line and this test asserts the refusal instead of the fold.
 
 use std::net::TcpListener;
 use std::process::{Child, Command};
@@ -113,8 +90,8 @@ async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Va
 }
 
 #[tokio::test]
-#[ignore = "live LLM; run with --ignored; needs an authenticated agy + model quota"]
-async fn agy_harness_folds_event_into_instance_end_to_end() {
+#[ignore = "live LLM; run with --ignored; needs an authenticated muse + model quota"]
+async fn muse_harness_folds_event_into_instance_end_to_end() {
     // 1. Real gateway with a skill + target instance.
     let gateway = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -151,7 +128,7 @@ async fn agy_harness_folds_event_into_instance_end_to_end() {
         .expect("capture_event returns an event_id")
         .to_owned();
 
-    // 3. Spawn the real runner with the AGY harness selected.
+    // 3. Spawn the real runner with the MUSE harness selected.
     let token = gateway.mint_token(TENANT, Role::Agent);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
@@ -167,15 +144,15 @@ async fn agy_harness_folds_event_into_instance_end_to_end() {
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
         .env("ESCUREL_RUNNER_TENANT", TENANT)
         .env("ESCUREL_RUNNER_TOKEN", &token)
-        .env("ESCUREL_RUNNER_HARNESS", "agy")
+        .env("ESCUREL_RUNNER_HARNESS", "muse")
         .env(
             "ESCUREL_RUNNER_LEDGER_PATH",
             ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
         )
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "1s");
     // Honour an explicit model override if the operator set one.
-    if let Ok(model) = std::env::var("ESCUREL_RUNNER_AGY_MODEL") {
-        cmd.env("ESCUREL_RUNNER_AGY_MODEL", model);
+    if let Ok(model) = std::env::var("ESCUREL_RUNNER_MUSE_MODEL") {
+        cmd.env("ESCUREL_RUNNER_MUSE_MODEL", model);
     }
     let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
 
@@ -221,7 +198,7 @@ async fn agy_harness_folds_event_into_instance_end_to_end() {
         }
 
         if Instant::now() >= deadline {
-            panic!("agy harness never folded {event_id} into {instance_page_id} within 180s");
+            panic!("muse harness never folded {event_id} into {instance_page_id} within 180s");
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }

@@ -50,6 +50,9 @@ pub const DEFAULT_CODEX_BIN: &str = "codex";
 /// resolves on `PATH`; a deterministic test overrides it to a stub.
 pub const DEFAULT_AGY_BIN: &str = "agy";
 
+/// Default path to the `muse` binary the Muse Code adapter spawns (#451).
+pub const DEFAULT_MUSE_BIN: &str = "muse";
+
 /// Default cap on how many times the reconciler (#155) attempts a single
 /// run before recording it `failed`. The first try plus retries: e.g. `3`
 /// means one initial attempt and up to two retries. Sized small — a
@@ -333,6 +336,20 @@ pub struct RunnerConfig {
     /// never lands in the operator's own MCP config.
     /// Source: `ESCUREL_RUNNER_AGY_HOME` (unset → the process's `HOME`).
     pub agy_home: Option<String>,
+    /// Path to the `muse` binary the Muse Code adapter spawns (#451).
+    /// Source: `ESCUREL_RUNNER_MUSE_BIN` (default [`DEFAULT_MUSE_BIN`]).
+    pub muse_bin: String,
+    /// Optional `--model` the muse adapter passes to `muse exec`; `None`
+    /// lets `muse` use the model its settings configure.
+    /// Source: `ESCUREL_RUNNER_MUSE_MODEL` (unset → `None`).
+    pub muse_model: Option<String>,
+    /// The config directory holding `muse`'s provider credentials
+    /// (`~/.config`). Each run gets a private `XDG_CONFIG_HOME` linked over
+    /// this one, so the scoped bearer never lands in the operator's own
+    /// `settings.json` and the operator's MCP servers never reach the run.
+    /// Source: `ESCUREL_RUNNER_MUSE_CONFIG_HOME` (unset → `$XDG_CONFIG_HOME`,
+    /// else `$HOME/.config`).
+    pub muse_config_home: Option<String>,
     /// Issuer for a bearer the runner MINTS for itself, instead of holding
     /// a static one. Absent means "not configured", never "guess": an issuer
     /// the gateway does not trust mints tokens that are silently rejected,
@@ -573,6 +590,12 @@ impl RunnerConfig {
         let agy_model = lookup("ESCUREL_RUNNER_AGY_MODEL").filter(|s| !s.is_empty());
         let agy_home = lookup("ESCUREL_RUNNER_AGY_HOME").filter(|s| !s.is_empty());
 
+        let muse_bin = lookup("ESCUREL_RUNNER_MUSE_BIN")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_MUSE_BIN.to_owned());
+        let muse_model = lookup("ESCUREL_RUNNER_MUSE_MODEL").filter(|s| !s.is_empty());
+        let muse_config_home = lookup("ESCUREL_RUNNER_MUSE_CONFIG_HOME").filter(|s| !s.is_empty());
+
         // `ESCUREL_GEMINI_API_KEY` (not `ESCUREL_RUNNER_…`) is the name the
         // deployment already binds from Secret Manager for `heron-escurel`;
         // inventing a runner-prefixed twin would mean two names for one
@@ -696,6 +719,9 @@ impl RunnerConfig {
             agent_a2a_url,
             agent_a2a_audience,
             agy_bin,
+            muse_bin,
+            muse_model,
+            muse_config_home,
             agy_model,
             agy_home,
             codex_bin,
