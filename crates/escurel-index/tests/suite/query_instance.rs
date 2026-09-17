@@ -153,6 +153,7 @@ fn analyst(subject: &str) -> AclCaller<'_> {
         subject,
         is_admin: false,
         token_groups: &[],
+        actor: None,
     }
 }
 
@@ -161,6 +162,7 @@ fn admin(subject: &str) -> AclCaller<'_> {
         subject,
         is_admin: true,
         token_groups: &[],
+        actor: None,
     }
 }
 
@@ -177,6 +179,7 @@ async fn aggregates_rows_with_bound_runtime_param() {
         .query_instance(
             "sales-by-category",
             &args(&[("min", json!(10))]),
+            None,
             &analyst("u1"),
         )
         .await
@@ -194,6 +197,7 @@ async fn aggregates_rows_with_bound_runtime_param() {
         .query_instance(
             "sales-by-category",
             &args(&[("min", json!(0))]),
+            None,
             &analyst("u1"),
         )
         .await
@@ -213,7 +217,12 @@ async fn runtime_param_is_bound_not_interpolated() {
     let injected = json!("hw'; DROP TABLE pages; --");
     let out = h
         .indexer
-        .query_instance("sales-by-name", &args(&[("cat", injected)]), &analyst("u1"))
+        .query_instance(
+            "sales-by-name",
+            &args(&[("cat", injected)]),
+            None,
+            &analyst("u1"),
+        )
         .await
         .expect("injection value binds, does not error");
     assert!(
@@ -227,6 +236,7 @@ async fn runtime_param_is_bound_not_interpolated() {
         .query_instance(
             "sales-by-name",
             &args(&[("cat", json!("hw"))]),
+            None,
             &analyst("u1"),
         )
         .await
@@ -243,7 +253,7 @@ async fn missing_required_param_errors_before_sql() {
 
     let err = h
         .indexer
-        .query_instance("sales-by-category", &args(&[]), &analyst("u1"))
+        .query_instance("sales-by-category", &args(&[]), None, &analyst("u1"))
         .await
         .expect_err("missing required must error");
     assert!(matches!(err, QueryError::MissingParam { .. }), "got {err}");
@@ -255,7 +265,7 @@ async fn query_without_target_is_rejected() {
     seed(&h, &[SKILL_QUERY, QUERY_NO_TARGET]).await;
     let err = h
         .indexer
-        .query_instance("no-target", &args(&[]), &analyst("u1"))
+        .query_instance("no-target", &args(&[]), None, &analyst("u1"))
         .await
         .expect_err("query_instance requires a target");
     assert!(matches!(err, QueryError::MissingTarget { .. }), "got {err}");
@@ -272,7 +282,7 @@ async fn acl_denies_non_owner_on_owner_private_target() {
 
     let err = h
         .indexer
-        .query_instance("secret-by-category", &args(&[]), &analyst("intruder"))
+        .query_instance("secret-by-category", &args(&[]), None, &analyst("intruder"))
         .await
         .expect_err("non-owner must be denied");
     assert!(matches!(err, QueryError::Forbidden { .. }), "got {err}");
@@ -280,8 +290,110 @@ async fn acl_denies_non_owner_on_owner_private_target() {
     // Admin bypasses the per-instance ACL.
     let out = h
         .indexer
-        .query_instance("secret-by-category", &args(&[]), &admin("root"))
+        .query_instance("secret-by-category", &args(&[]), None, &admin("root"))
         .await
         .expect("admin reads");
     assert_eq!(out.rows.len(), 2);
+}
+
+// ── Resource bounds on the query path (#455) ─────────────────────────────
+//
+// The fleet sub-epic names these as gating the whole feature, and its own
+// words are "none exist today": an authored query has no statement timeout,
+// so a runaway one holds the tenant's single DuckDB connection for as long as
+// it likes. DuckDB has no statement-timeout setting at all — the only bound
+// it offers is `Connection::interrupt` — so the bound has to be armed around
+// the execution.
+//
+// `SessionWatchdog` already proves the primitive works for a delegated Quack
+// session; what was missing is it being wired to the surface that actually
+// executes tenant-authored SQL.
+
+/// A query page whose SQL runs effectively forever on any real engine: a
+/// three-way cross join over a generated range, aggregated so nothing can be
+/// streamed out early.
+const QUERY_RUNAWAY: (&str, &str) = (
+    "markdown/instances/query/runaway.md",
+    "---\ntype: instance\nskill: query\nid: runaway\n\
+     target: \"[[sales::eu]]\"\n\
+     sql: \"SELECT COUNT(*)::BIGINT AS n FROM range(4000000) a, range(4000000) b, range(4000000) c\"\n\
+     ---\n# runaway\n",
+);
+
+/// The bound the sub-epic asks for, with the failing test it asks for:
+/// a runaway authored query is KILLED, and it does not hold the tenant's
+/// query surface for ever afterwards.
+#[tokio::test]
+async fn a_runaway_query_is_killed_at_its_deadline() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_QUERY, SKILL_SALES]).await;
+    materialise_sales(&h, "sales", "eu").await;
+    seed(&h, &[QUERY_BY_CATEGORY, QUERY_RUNAWAY]).await;
+
+    // A short bound, so the test is about the mechanism and not about
+    // waiting. Production configures this; the default is generous.
+    h.indexer
+        .set_query_timeout(std::time::Duration::from_millis(400));
+
+    let started = std::time::Instant::now();
+    let err = h
+        .indexer
+        .query_instance("runaway", &args(&[]), None, &admin("root"))
+        .await
+        .expect_err("a runaway query must not be allowed to finish");
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(err, QueryError::Interrupted { .. }),
+        "the refusal must say the query was cut short, not report a generic \
+         engine error a caller cannot act on: {err:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "the deadline must actually bound the work; took {elapsed:?}"
+    );
+
+    // ...and the surface still works afterwards. A bound that leaves the
+    // connection poisoned, or the interrupt flag set, would turn one bad
+    // query into a dead tenant — which is the availability event the bound
+    // exists to prevent.
+    let out = h
+        .indexer
+        .query_instance(
+            "sales-by-category",
+            &args(&[("min", json!(0))]),
+            None,
+            &admin("root"),
+        )
+        .await
+        .expect("the next query must run normally");
+    assert!(
+        !out.rows.is_empty(),
+        "the tenant's query surface must survive a killed query: {out:?}"
+    );
+}
+
+/// An ordinary query is not affected by the bound existing — the guard is
+/// disarmed on the success path, and nothing is reported as interrupted.
+#[tokio::test]
+async fn a_normal_query_is_unaffected_by_the_bound() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_QUERY, SKILL_SALES]).await;
+    materialise_sales(&h, "sales", "eu").await;
+    seed(&h, &[QUERY_BY_CATEGORY]).await;
+
+    // Even a tight bound must not interfere with a query that finishes.
+    h.indexer
+        .set_query_timeout(std::time::Duration::from_secs(30));
+    let out = h
+        .indexer
+        .query_instance(
+            "sales-by-category",
+            &args(&[("min", json!(0))]),
+            None,
+            &admin("root"),
+        )
+        .await
+        .expect("a normal query must not be interrupted");
+    assert!(!out.rows.is_empty(), "{out:?}");
 }

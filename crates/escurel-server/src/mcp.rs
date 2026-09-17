@@ -51,9 +51,9 @@ use escurel_types::{
     AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
     ListSkillsResponse, PublishSnapshotResponse, QuotaGetResponse, RebuildProgress,
     Skill as TypesSkill, SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
-    SkillCapabilities as TypesSkillCapabilities, SkillParam as TypesSkillParam,
-    TenantCreateResponse, TenantDeleteResponse, TenantGetResponse, TenantImportResponse,
-    TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
+    SkillCapabilities as TypesSkillCapabilities, SkillField as TypesSkillField,
+    SkillParam as TypesSkillParam, TenantCreateResponse, TenantDeleteResponse, TenantGetResponse,
+    TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
     WebhookDeliveriesResponse, WebhookDelivery,
 };
 use serde::Deserialize;
@@ -275,6 +275,11 @@ async fn mcp_inner(
     // again inside escurel-index as defence in depth.
     let token_groups = crate::auth_gate::rbac_groups(&state, auth_ctx.as_ref());
 
+    // Who the subject is acting FOR (#510), from the verified `act.sub`: a
+    // per-run agent token names the runner that delegated to it. Audit
+    // lineage only — never read for an authorization decision.
+    let actor = auth_ctx.as_ref().and_then(|c| c.actor.clone());
+
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
     // server acknowledges with HTTP 202 Accepted and an empty body.
@@ -312,6 +317,7 @@ async fn mcp_inner(
                 role,
                 &subject,
                 &token_groups,
+                actor.as_deref(),
                 req.params,
             )
             .await;
@@ -735,6 +741,7 @@ async fn dispatch_tools_call(
     role: Option<Role>,
     subject: &str,
     token_groups: &[String],
+    actor: Option<&str>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -791,6 +798,7 @@ async fn dispatch_tools_call(
         subject,
         is_admin: matches!(role, None | Some(Role::Admin)),
         token_groups,
+        actor,
     };
 
     // Session tools depend on `crdt_backend` + `sessions`, not on

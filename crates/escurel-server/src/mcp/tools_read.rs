@@ -94,6 +94,24 @@ pub(super) async fn tool_list_skills(
                         description: p.description,
                     })
                     .collect(),
+                // Same shape, same omission rule, for the INSTANCE schema
+                // (#508): a client builds an instance form from this exactly
+                // as it builds a run form from `params` above.
+                fields: s
+                    .fields
+                    .into_iter()
+                    .map(|f| TypesSkillField {
+                        name: f.name,
+                        kind: f.kind.as_str().to_owned(),
+                        required: f.required,
+                        values: f.values,
+                        target_skill: f.target_skill,
+                        min: f.min,
+                        max: f.max,
+                        label: f.label,
+                        description: f.description,
+                    })
+                    .collect(),
             })
             .collect(),
     };
@@ -1297,6 +1315,12 @@ pub(super) struct QueryInstanceArgs {
     query_ref: String,
     #[serde(default)]
     params: serde_json::Map<String, Value>,
+    /// Read a scenario overlay instead of the base timeline (#512 §5), the
+    /// same parameter `expand` / `resolve` / `neighbours` / `search` /
+    /// `list_instances` already take. Only a corpus traversal reads it — a
+    /// `sql_view` query targets an external table, which has no overlay.
+    #[serde(default)]
+    scenario: Option<String>,
 }
 
 /// Normalise a query reference to the bare slug the indexer expects:
@@ -1316,7 +1340,7 @@ pub(super) async fn tool_query_instance(
     let a: QueryInstanceArgs = parse_args(args, "query_instance")?;
     let query_id = normalize_query_ref(&a.query_ref);
     let out = indexer
-        .query_instance(&query_id, &a.params, &caller)
+        .query_instance(&query_id, &a.params, a.scenario.as_deref(), &caller)
         .await
         .map_err(|e| JsonRpcError::internal(format!("query_instance: {e}")))?;
     Ok(json!({

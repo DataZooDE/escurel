@@ -4,7 +4,7 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
-## 0.6.31 — promotion merges a head that moved on other keys
+## 0.6.39 — promotion merges a head that moved on other keys
 
 - `create_draft` now records the target's CRDT version as well as its
   `base_sha256`, and `promote_draft` uses it when the target has moved: the
@@ -22,7 +22,7 @@ pin (see `SKILL.md` → "How this skill is installed").
 - With no CRDT backend there is no base snapshot to merge against, and
   promotion behaves exactly as it did.
 
-## 0.6.30 — changesets: a run's held writes, decided together
+## 0.6.36 — changesets: a run's held writes, decided together
 
 - `create_draft` gains `new_changeset` (start one; the SERVER mints the id
   and returns it on the stored draft) and `changeset_id` (join the one a
@@ -44,21 +44,78 @@ pin (see `SKILL.md` → "How this skill is installed").
   NULL is today's draft, byte for byte — created, listed, promoted and
   discarded exactly as before, and never listed as a changeset of one.
 
-## 0.6.29 — `diff_draft`: what approving a held write would change
+## 0.6.38 — `diff_draft`: what approving a held write would change
 
-- New agent tool `diff_draft` (`references/02-tool-surface.md`) and typed
-  client method `Client::diff_draft`. Given a `draft_id` it answers with
-  structure rather than markdown: `frontmatter_changes` (only keys that
-  MOVE — `from: null` means added, `to: null` means removed),
-  `block_changes` (`{anchor, kind, preview}`, preview = the PROPOSED text),
-  `exists` (false = approving CREATES the page) and `base_moved` (the
-  target has shifted since the draft was taken, so promotion will need a
-  merge — worth knowing before approving, not after).
-- Same read gate as `list_drafts`: a draft the caller may not see answers
-  `{ok: false, issues: [{code: "not_found"}]}`, never a refusal, so the
-  diff cannot become a way to read a draft you are not allowed to see.
-- CLI: `escurel draft diff --draft <id>`.
+## 0.6.35 — `query_instance` takes `scenario` (corpus traversals)
 
+- A corpus traversal now honours the same `scenario` parameter `expand` /
+  `resolve` / `neighbours` / `search` / `list_instances` already take: absent
+  reads the base timeline, present reads `base ∪ overlay` with the per-slug
+  override, so an overlaid slug appears ONCE and the overlay wins.
+- Without this a counting traversal would double-count the moment an overlay
+  existed — the failure nobody notices, because the number still looks like a
+  number.
+- A `sql_view` query ignores it: an external table has no overlay.
+
+## 0.6.34 — stored corpus traversals (`target: corpus`)
+
+- A `[[query::*]]` page may now target the **corpus** instead of a `sql_view`
+  instance, declaring a bounded walk over the markdown link graph:
+  `traversal: {start, steps: [{relation, direction, as}], where, return,
+  max_depth, limit}`. `query_instance` dispatches on `target:`; a `sql_view`
+  target is completely unchanged.
+- `relation:` is the frontmatter key a link was written under, so nothing new
+  is stored — it walks the same links the provenance tools do.
+- `max_depth` is mandatory and capped at 12, paths never revisit a page, and
+  every hop is ACL-checked per instance: one unreadable hop drops the whole
+  path, so a caller sees exactly what they could have reached with
+  `neighbours`. That is the property that lets this exist where the old
+  `run_stored_query` (arbitrary SQL over the corpus) could not.
+- Params are values, never syntax — the only place one reaches is the start
+  id, as a bound parameter.
+- New validation codes: `traversal_malformed`, `traversal_depth_exceeded`,
+  `traversal_unknown_field` (errors) and `traversal_unknown_relation`
+  (warning — a relation nothing declares or uses returns nothing, which reads
+  like an answer).
+
+## 0.6.33 — typed skill fields: `fields:` constrains what instances may hold
+
+- A skill page may declare `fields:` — the typed counterpart to
+  `required_frontmatter`'s key-name list:
+  `- {name: hotness, kind: enum, values: [hot, warm, cold]}`. `kind` is the
+  closed set `string | int | float | bool | date | datetime | enum | link`.
+- A violation is **error**-severity and **rejects the write**, on
+  `update_page` and `create_draft` alike: `frontmatter_field_type`,
+  `frontmatter_enum_value`, `frontmatter_field_range`. A declared-but-absent
+  `required` field reports the existing `frontmatter_required_key_missing`
+  code rather than inventing a second vocabulary for one missing key.
+- Author-side mistakes are caught on the SKILL page: `fields_malformed`
+  (no `name:`, a scalar `fields:`, or `kind: enum` with no `values:` — which
+  would enforce nothing) and the warning `field_kind_unknown` (degrades to
+  `string`, the same fallback direction `params:` takes).
+- `list_skills` rows carry `fields`, so a client builds an instance form from
+  the catalogue alone, as it already does a run form from `params`.
+- **Opt-in per skill.** A skill with no `fields:` block is completely
+  unaffected — declaring the block IS the migration step, which is why
+  enforcement can block from the first release without breaking a corpus that
+  was written untyped.
+
+
+## 0.6.31 — server-stamped delegation chain on captured events
+
+- `capture_event` (`references/02-tool-surface.md`): alongside the
+  existing server-stamped `provenance.captured_by`, an event captured with
+  a **delegated** token now carries `provenance.captured_via` — the
+  principal the caller is acting for, taken from the token's RFC 8693
+  `act.sub`. Both are gateway claims: a value you send under either key is
+  replaced, and `captured_via` is removed outright when the token carries
+  no delegation, so its presence always means a real chain.
+- Where this comes from: a background run is now packaged with its own
+  identity (`sub = agent:<label_skill>`, acting for the runner), so
+  `last_written_by` on a page written by a run names the AGENT rather than
+  `escurel-runner` (DataZooDE/escurel#510). Consumers reading
+  `last_written_by` to attribute an automated write will see agent
+  subjects where they previously saw one runner subject.
 ## 0.6.30 — typed shapes for the rest of the agent tool surface
 
 - `escurel-client` (`references/05-consume-from-rust.md`): typed

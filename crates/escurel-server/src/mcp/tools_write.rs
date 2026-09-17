@@ -215,6 +215,24 @@ pub(super) fn blocking_issues<'a>(
             "frontmatter_autonomy_unknown" => {
                 state.autonomy_lint == crate::server::AutonomyLintMode::Enforce
             }
+            // Typed instance fields (#508). UNGATED, unlike `autonomy:` above,
+            // and the difference is what makes that safe: `autonomy:` was
+            // free-form frontmatter that existing pages already carry junk in,
+            // so enforcing it would make those pages unwritable without anyone
+            // opting in. A `fields:` block does not exist until an author
+            // writes one — declaring the types IS the opt-in, per skill, and a
+            // corpus written untyped stays exactly as writable as it was.
+            //
+            // Blocking is the entire point of the feature: the promise is that
+            // an agent physically cannot write `hotness: 5-Cold-ish` into a
+            // field declared `enum(hot, warm, cold)`. A non-blocking version of
+            // that promise is a lint, and a lint is what `required_frontmatter`
+            // already was.
+            "frontmatter_field_type" | "frontmatter_enum_value" | "frontmatter_field_range" => true,
+            // A schema that cannot be enforced must not ship. `kind: enum` with
+            // no `values:` accepts everything — it fails OPEN, which is the
+            // shape of mistake nobody notices from the outside.
+            "fields_malformed" => true,
             _ => false,
         })
         .collect()
@@ -1396,13 +1414,31 @@ pub(crate) fn stamped_principal(subject: &str) -> Option<&str> {
 /// A non-object `provenance` (a bare string/number a caller supplied) is
 /// promoted to `{"provenance": <old>, "captured_by": …}` rather than
 /// dropped, so no caller data is lost to the stamp.
-pub(super) fn stamp_captured_by(provenance: Option<Value>, subject: &str) -> Option<Value> {
+///
+/// `actor` is the token's `act.sub` (#510): when the caller is a per-run
+/// agent acting for a runner, the chain is stamped alongside as
+/// `captured_via`. A caller-supplied `captured_via` is REMOVED when there is
+/// no delegation — otherwise anyone could assert they were driven by the
+/// runner, which is precisely the lineage the runner's own trust guard reads.
+pub(super) fn stamp_captured_by(
+    provenance: Option<Value>,
+    subject: &str,
+    actor: Option<&str>,
+) -> Option<Value> {
     let mut obj = match provenance {
         Some(Value::Object(m)) => Value::Object(m),
         None | Some(Value::Null) => json!({}),
         Some(other) => json!({ "provenance": other }),
     };
     obj[escurel_index::CAPTURED_BY_FIELD] = json!(subject);
+    match actor {
+        Some(a) => obj[escurel_index::CAPTURED_VIA_FIELD] = json!(a),
+        None => {
+            if let Some(map) = obj.as_object_mut() {
+                map.remove(escurel_index::CAPTURED_VIA_FIELD);
+            }
+        }
+    }
     Some(obj)
 }
 
@@ -1477,7 +1513,7 @@ pub(super) async fn tool_capture_event(
         instance_page_id: a.instance_page_id,
         title: a.title,
         body: a.body,
-        provenance: stamp_captured_by(a.provenance, caller.subject),
+        provenance: stamp_captured_by(a.provenance, caller.subject, caller.actor),
     };
     let stored = indexer
         .capture_event(requested.clone())
@@ -1829,6 +1865,7 @@ pub(super) async fn tool_start_operation(
             "workflow": { "run": operation_id, "wf_skill": a.wf_skill, "phase": "invoke" }
         })),
         caller.subject,
+        caller.actor,
     );
     let requested = NewEvent {
         event_id: None,

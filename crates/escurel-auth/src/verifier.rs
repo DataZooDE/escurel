@@ -127,6 +127,15 @@ pub struct AuthContext {
     /// Raw — reserved-name and admin-value stripping is the ACL
     /// layer's job (`escurel-index`), not the verifier's.
     pub groups: Vec<String>,
+    /// Who this subject is acting FOR, from the RFC 8693 `act.sub` claim
+    /// (#510): a per-run agent token carries the runner that delegated to it,
+    /// so the chain "runner acting as inbox-scan" survives verification and
+    /// can be stamped into provenance. `None` for an ordinary token — the
+    /// subject is acting as itself.
+    ///
+    /// Authorization NEVER reads this: the authority is the subject's own
+    /// (`role`, `groups`). It is audit lineage, not a capability.
+    pub actor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +169,10 @@ pub enum AuthError {
 /// `escurel_runner_core::auth::{PURPOSE_CLAIM, DELEGATION_PURPOSE}` — escurel-auth
 /// must not depend on runner-core (the dependency runs the other way), so the
 /// strings are duplicated here with this note.
+/// RFC 8693 §4.1 delegation claim: who the subject is acting for. Read for
+/// audit lineage only — never for an authorization decision (#510).
+const ACT_CLAIM: &str = "act";
+
 const DELEGATION_PURPOSE_CLAIM: &str = "purpose";
 const DELEGATION_PURPOSE: &str = "internal_delegation";
 
@@ -333,11 +346,24 @@ impl OidcVerifier {
             .map(parse_groups_claim)
             .unwrap_or_default();
 
+        // RFC 8693 §4.1 `act`: a nested {"sub": …}. Anything else is a claim we
+        // do not understand — no actor, and not an error: a token is not
+        // invalid for carrying something extra.
+        let actor = claims
+            .rest
+            .get(ACT_CLAIM)
+            .and_then(serde_json::Value::as_object)
+            .and_then(|act| act.get("sub"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+
         Ok(AuthContext {
             subject: claims.sub,
             tenant_id,
             role,
             groups,
+            actor,
         })
     }
 

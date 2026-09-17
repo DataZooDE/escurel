@@ -40,6 +40,7 @@ mod delegate;
 mod echo;
 mod gemini;
 mod harness;
+mod muse;
 mod refusing;
 mod task;
 
@@ -56,5 +57,6 @@ pub use gemini::{
     GeminiHarness,
 };
 pub use harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus};
+pub use muse::MuseHarness;
 pub use refusing::RefusingHarness;
 pub use task::HarnessTask;

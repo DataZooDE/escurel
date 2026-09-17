@@ -200,7 +200,8 @@ pub(super) fn tools_list_payload() -> Value {
                     "properties": {
                         "ref": { "type": "string", "description": "Query id or [[query::id]] wikilink; its `target` names the sql_view instance to read." },
                         "query_id": { "type": "string", "description": "Alias for `ref` (the retired run_stored_query's spelling)." },
-                        "params": { "type": "object", "description": "Runtime values bound to the report's `:param` placeholders." }
+                        "params": { "type": "object", "description": "Runtime values bound to the report's `:param` placeholders." },
+                        "scenario": { "type": "string", "description": "Read a scenario overlay instead of the base timeline (corpus traversals only)." }
                     }
                 }),
             ),
