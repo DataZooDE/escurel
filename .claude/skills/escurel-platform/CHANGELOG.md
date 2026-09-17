@@ -4,6 +4,21 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.32 — `diff_draft`: what approving a held write would change
+
+- New agent tool `diff_draft` (`references/02-tool-surface.md`) and typed
+  client method `Client::diff_draft`. Given a `draft_id` it answers with
+  structure rather than markdown: `frontmatter_changes` (only keys that
+  MOVE — `from: null` means added, `to: null` means removed),
+  `block_changes` (`{anchor, kind, preview}`, preview = the PROPOSED text),
+  `exists` (false = approving CREATES the page) and `base_moved` (the
+  target has shifted since the draft was taken, so promotion will need a
+  merge — worth knowing before approving, not after).
+- Same read gate as `list_drafts`: a draft the caller may not see answers
+  `{ok: false, issues: [{code: "not_found"}]}`, never a refusal, so the
+  diff cannot become a way to read a draft you are not allowed to see.
+- CLI: `escurel draft diff --draft <id>`.
+
 ## 0.6.31 — server-stamped delegation chain on captured events
 
 - `capture_event` (`references/02-tool-surface.md`): alongside the

@@ -245,6 +245,23 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
+                "diff_draft",
+                Execution::Deterministic,
+                Scope::Agent,
+                "What approving a held write would change: which frontmatter \
+                 keys move and to what (`frontmatter_changes`), what happens to \
+                 the body (`block_changes`), whether the target page exists, and \
+                 whether it has MOVED since the draft was taken (`base_moved` — \
+                 the signal that promotion will need a merge). Read-only; the \
+                 same read gate as `list_drafts`, so a draft you may not see \
+                 reads as absent.",
+                json!({
+                    "type": "object",
+                    "required": ["draft_id"],
+                    "properties": { "draft_id": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
                 "list_drafts",
                 Execution::Deterministic,
                 Scope::Agent,
@@ -1412,6 +1429,14 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "next_cursor": { "type": ["string", "null"], "description": "string = more rows (pass back as cursor); null = done" }
         })),
         "list_drafts" => obj(json!({ "drafts": { "type": "array" } })),
+        "diff_draft" => obj(json!({
+            "ok": { "type": "boolean" },
+            "target_page_id": { "type": "string" },
+            "exists": { "type": "boolean", "description": "false = this draft would CREATE the page" },
+            "base_moved": { "type": "boolean", "description": "the target is not what it was when drafted; promotion needs a merge" },
+            "frontmatter_changes": { "type": "array", "description": "[{key, from, to}] — only keys that MOVE; null on either side means added/removed" },
+            "block_changes": { "type": "array", "description": "[{anchor, kind, preview}] — preview is the PROPOSED text" }
+        })),
         "list_inbox" | "list_events" => obj(json!({
             "events": { "type": "array" },
             "next_cursor": { "type": "string", "description": "present iff rows lie past the page; absence (only) means done" }
