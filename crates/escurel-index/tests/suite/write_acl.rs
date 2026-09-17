@@ -99,6 +99,7 @@ fn member(subject: &str) -> AclCaller<'_> {
         subject,
         is_admin: false,
         token_groups: &[],
+        actor: None,
     }
 }
 fn admin<'a>() -> AclCaller<'a> {
@@ -106,6 +107,7 @@ fn admin<'a>() -> AclCaller<'a> {
         subject: "ops",
         is_admin: true,
         token_groups: &[],
+        actor: None,
     }
 }
 

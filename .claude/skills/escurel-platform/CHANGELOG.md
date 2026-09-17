@@ -4,6 +4,22 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.31 — server-stamped delegation chain on captured events
+
+- `capture_event` (`references/02-tool-surface.md`): alongside the
+  existing server-stamped `provenance.captured_by`, an event captured with
+  a **delegated** token now carries `provenance.captured_via` — the
+  principal the caller is acting for, taken from the token's RFC 8693
+  `act.sub`. Both are gateway claims: a value you send under either key is
+  replaced, and `captured_via` is removed outright when the token carries
+  no delegation, so its presence always means a real chain.
+- Where this comes from: a background run is now packaged with its own
+  identity (`sub = agent:<label_skill>`, acting for the runner), so
+  `last_written_by` on a page written by a run names the AGENT rather than
+  `escurel-runner` (DataZooDE/escurel#510). Consumers reading
+  `last_written_by` to attribute an automated write will see agent
+  subjects where they previously saw one runner subject.
+
 ## 0.6.30 — typed shapes for the rest of the agent tool surface
 
 - `escurel-client` (`references/05-consume-from-rust.md`): typed

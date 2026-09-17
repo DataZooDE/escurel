@@ -37,6 +37,7 @@ mod inbox_poll;
 mod loop_controls;
 mod minted_credential;
 mod packager;
+mod per_run_actor_identity;
 mod quota_throttle;
 mod reconcile_retry;
 mod review_no_op;

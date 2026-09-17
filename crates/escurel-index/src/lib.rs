@@ -46,7 +46,7 @@ pub mod search;
 pub mod snapshot;
 pub mod validate;
 
-pub use acl::{AclCaller, CAPTURED_BY_FIELD, captured_by};
+pub use acl::{AclCaller, CAPTURED_BY_FIELD, CAPTURED_VIA_FIELD, captured_by};
 pub use backend::{
     BackendBinding, BackendCtx, BackendKind, BackendRegistry, BindingStatus, Capabilities,
     InstanceBackend, MarkdownBackend, Materialized, RemoteBinding, RemoteKind, RemoteOp,
