@@ -285,6 +285,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         None => {
             // Nothing to fold — a clean no-op pass.
             return Ok(HarnessOutcome {
+                result_ref: None,
                 ok: true,
                 status: HarnessStatus::Ok,
                 summary: "no unassigned inbox event with a target instance".to_owned(),
@@ -308,6 +309,22 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    // Test-only failure injection (async-ops Phase 0.3 DoD): when
+    // `ESCUREL_ECHO_FAIL_SKILL` matches this event's `label_skill`, fail
+    // deterministically. The run then exhausts its retries and dead-letters —
+    // the terminal a failing workflow step must propagate to its parent
+    // operation. Off unless the env var is set, so production is unaffected.
+    if let Ok(fail_skill) = std::env::var("ESCUREL_ECHO_FAIL_SKILL") {
+        let label = event
+            .get("label_skill")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !fail_skill.is_empty() && label == fail_skill {
+            return Err(format!(
+                "echo: injected failure for label_skill `{label}` (ESCUREL_ECHO_FAIL_SKILL)"
+            ));
+        }
+    }
     // A workflow step carries a `provenance.workflow` block. For those, the
     // harness stamps `source_event: <event_id>` on the instance it writes — the
     // freshness/provenance field (compile-first-wiki G3) and, for a durable
@@ -437,6 +454,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     tool_calls += 1;
 
     Ok(HarnessOutcome {
+        result_ref: knob_result_ref(),
         ok: true,
         status: HarnessStatus::Ok,
         summary: format!(
@@ -445,6 +463,19 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         tool_calls,
         produced_instance: Some(instance_page_id),
     })
+}
+
+/// Test-only knob: when `ESCUREL_ECHO_RESULT_REF` names a scenario id, the echo
+/// harness reports a `ScenarioParquet` result_ref on its write outcome. This lets
+/// the async-ops Phase-4 producing-side threading (harness outcome → confirmed
+/// effect → terminal status event → `get_operation`) be exercised end to end
+/// without a real scenario producer. Unset (the default) ⇒ `None`, so no other
+/// test or production run is affected.
+fn knob_result_ref() -> Option<serde_json::Value> {
+    let scenario_id = std::env::var("ESCUREL_ECHO_RESULT_REF")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    Some(serde_json::json!({ "kind": "scenario_parquet", "scenario_id": scenario_id }))
 }
 
 /// The current time as an RFC 3339 string (UTC, second precision) — the
@@ -663,6 +694,7 @@ fn lint_scan(
     tool_calls += 1;
 
     Ok(HarnessOutcome {
+        result_ref: None,
         ok: true,
         status: HarnessStatus::Ok,
         summary: format!("lint scan recorded {} issue(s)", findings.len()),
@@ -759,6 +791,7 @@ fn curate_index(
     tool_calls += 1;
 
     Ok(HarnessOutcome {
+        result_ref: None,
         ok: true,
         status: HarnessStatus::Ok,
         summary: format!("curated index over {} categories", skills.len()),
@@ -852,6 +885,7 @@ fn eval_score(
     tool_calls += 1;
 
     Ok(HarnessOutcome {
+        result_ref: None,
         ok: true,
         status: HarnessStatus::Ok,
         summary: format!("eval {}: {}", task_id, if passed { "pass" } else { "fail" }),
@@ -925,6 +959,7 @@ fn improve_apply(
     tool_calls += 1;
 
     Ok(HarnessOutcome {
+        result_ref: None,
         ok: true,
         status: HarnessStatus::Ok,
         summary: format!("improved {target_page}"),

@@ -264,6 +264,292 @@ fn check_params(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
         .collect()
 }
 
+/// The skill author's own `fields:` block (#508) — checked on the SKILL page,
+/// so a malformed schema is reported once to the person who wrote it rather
+/// than on every instance of it.
+///
+/// Mirrors [`check_params`] exactly, including the fallback direction: an
+/// unknown `kind:` is a WARNING and the field degrades to `string`, because an
+/// over-permissive field under-validates while a dropped one silently deletes
+/// a constraint the author believes is in force.
+fn check_fields(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
+    if page_type != PageType::Skill {
+        return Vec::new();
+    }
+    let Some(raw) = fields.get("fields") else {
+        return Vec::new();
+    };
+    let recognised: Vec<&str> = crate::FieldKind::recognised()
+        .iter()
+        .map(|k| k.as_str())
+        .collect();
+    let suggestion = format!("use one of: {}", recognised.join(" | "));
+    let malformed = |message: &str| {
+        vec![
+            Issue::error("fields_malformed", "frontmatter.fields", message)
+                .with_suggestion("e.g. `- {name: hotness, kind: enum, values: [hot, warm, cold]}`"),
+        ]
+    };
+
+    // (name, declared kind, declared values) per entry.
+    type Entry<'a> = (String, Option<&'a YamlValue>, Option<&'a YamlValue>);
+    let entries: Vec<Entry<'_>> = if let Some(seq) = raw.as_sequence() {
+        let mut out = Vec::new();
+        for item in seq {
+            let m = item.as_mapping();
+            let Some(name) = m.and_then(|m| m.get("name")).and_then(YamlValue::as_str) else {
+                return malformed(
+                    "every `fields:` entry must be a mapping with a `name:` — a \
+                     field with no name constrains no frontmatter key",
+                );
+            };
+            out.push((
+                name.to_owned(),
+                m.and_then(|m| m.get("kind").or_else(|| m.get("type"))),
+                m.and_then(|m| m.get("values")),
+            ));
+        }
+        out
+    } else if let Some(map) = raw.as_mapping() {
+        map.iter()
+            .filter_map(|(k, v)| {
+                let name = k.as_str()?;
+                let attrs = v.as_mapping();
+                Some((
+                    name.to_owned(),
+                    attrs.and_then(|m| m.get("kind").or_else(|| m.get("type"))),
+                    attrs.and_then(|m| m.get("values")),
+                ))
+            })
+            .collect()
+    } else {
+        return malformed(
+            "`fields:` must be a sequence of `{name, kind, …}` entries or a \
+             mapping of name to those attributes",
+        );
+    };
+
+    let mut issues = Vec::new();
+    for (name, kind, values) in entries {
+        let parsed = kind
+            .and_then(YamlValue::as_str)
+            .and_then(crate::FieldKind::parse);
+        match (kind, parsed) {
+            // No `kind:` at all is not a finding: an undeclared kind is a text
+            // field, which is what an author who omitted it meant.
+            (None, _) | (Some(_), Some(_)) => {}
+            (Some(declared), None) => {
+                let shown = declared
+                    .as_str()
+                    .map_or_else(|| format!("{declared:?}"), str::to_owned);
+                issues.push(
+                    Issue::warning(
+                        "field_kind_unknown",
+                        format!("frontmatter.fields.{name}.kind"),
+                        format!(
+                            "`kind: {shown}` on field `{name}` is not a recognised kind; \
+                             it is enforced as `string`, which constrains nothing"
+                        ),
+                    )
+                    .with_suggestion(suggestion.clone()),
+                );
+            }
+        }
+        // An enum with no values constrains nothing, which is never what the
+        // author meant by writing `kind: enum` — and it fails OPEN, so it is
+        // exactly the kind of mistake nobody notices from the outside.
+        if parsed == Some(crate::FieldKind::Enum)
+            && values
+                .and_then(YamlValue::as_sequence)
+                .is_none_or(|v| v.is_empty())
+        {
+            issues.push(
+                Issue::error(
+                    "fields_malformed",
+                    format!("frontmatter.fields.{name}.values"),
+                    format!(
+                        "field `{name}` is `kind: enum` with no `values:` — an enum \
+                         with no members accepts everything, so nothing is enforced"
+                    ),
+                )
+                .with_suggestion("values: [hot, warm, cold]"),
+            );
+        }
+    }
+    issues
+}
+
+/// Check one instance frontmatter value against the field its skill declared
+/// (#508). Returns the issues for that key — none when it fits.
+///
+/// Values arrive as YAML, so the check is on the PARSED shape rather than on
+/// text: `seats: 12` is already an integer, `opened: 2026-01-05` is already a
+/// date to serde_yaml, and `active: yes` is already a bool. A value that YAML
+/// gave us as a string is re-parsed from its text, which is how a quoted
+/// `"12"` still satisfies `kind: int` — the author's quoting habit is not a
+/// type error.
+fn check_field_value(field: &crate::SkillField, value: &YamlValue) -> Vec<Issue> {
+    use crate::FieldKind;
+    let location = format!("frontmatter.{}", field.name);
+    let name = &field.name;
+    // The value as the author would recognise it: a YAML string as itself, a
+    // scalar through its JSON spelling (`12`, `true`) rather than Rust's Debug.
+    let shown = || match value.as_str() {
+        Some(s) => s.to_owned(),
+        None => serde_json::to_value(value)
+            .ok()
+            .map(|v| match v {
+                serde_json::Value::String(s) => s,
+                other => other.to_string(),
+            })
+            .unwrap_or_else(|| format!("{value:?}")),
+    };
+    let type_error = |expected: &str| {
+        vec![Issue::error(
+            "frontmatter_field_type",
+            location.clone(),
+            format!(
+                "`{name}: {}` does not parse as {expected}, which is what skill \
+                 declares for this field",
+                shown()
+            ),
+        )]
+    };
+
+    // A number, however the author wrote it.
+    let as_number = || -> Option<f64> {
+        value
+            .as_f64()
+            .or_else(|| value.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+    };
+    let as_integer = || -> Option<i64> {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|s| s.trim().parse::<i64>().ok()))
+    };
+
+    let mut issues = match field.kind {
+        // A string constrains nothing by itself — that is what `string` means.
+        FieldKind::String | FieldKind::Link => Vec::new(),
+        FieldKind::Integer => match as_integer() {
+            Some(_) => Vec::new(),
+            None => type_error("a whole number"),
+        },
+        FieldKind::Float => match as_number() {
+            Some(_) => Vec::new(),
+            None => type_error("a number"),
+        },
+        FieldKind::Boolean => {
+            let ok = value.as_bool().is_some()
+                || value.as_str().is_some_and(|s| {
+                    matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "false")
+                });
+            if ok {
+                Vec::new()
+            } else {
+                type_error("a boolean (`true` / `false`)")
+            }
+        }
+        FieldKind::Date => {
+            if is_date(&shown()) {
+                Vec::new()
+            } else {
+                type_error("a date (`YYYY-MM-DD`)")
+            }
+        }
+        FieldKind::DateTime => {
+            let text = shown();
+            if is_date(&text) || is_datetime(&text) {
+                Vec::new()
+            } else {
+                type_error("a timestamp (`YYYY-MM-DDTHH:MM:SSZ`)")
+            }
+        }
+        FieldKind::Enum => {
+            let text = shown();
+            if field.values.iter().any(|v| v == &text) {
+                Vec::new()
+            } else {
+                vec![
+                    Issue::error(
+                        "frontmatter_enum_value",
+                        location.clone(),
+                        format!(
+                            "`{name}: {text}` is not one of the declared values: {}",
+                            field.values.join(", ")
+                        ),
+                    )
+                    // Naming the allowed set in the suggestion too, because an
+                    // agent reading only `suggestion` still gets the answer.
+                    .with_suggestion(format!("{name}: {}", field.values.join(" | "))),
+                ]
+            }
+        }
+    };
+
+    // Bounds apply to whatever parsed as a number, whichever numeric kind was
+    // declared. A bound on a non-numeric field is the author's mistake and is
+    // simply inert — reporting it on every instance would be noise aimed at
+    // the wrong person.
+    if issues.is_empty()
+        && let Some(n) = as_number()
+    {
+        if let Some(min) = field.min
+            && n < min
+        {
+            issues.push(Issue::error(
+                "frontmatter_field_range",
+                location.clone(),
+                format!("`{name}: {n}` is below the declared minimum {min}"),
+            ));
+        }
+        if let Some(max) = field.max
+            && n > max
+        {
+            issues.push(Issue::error(
+                "frontmatter_field_range",
+                location,
+                format!("`{name}: {n}` is above the declared maximum {max}"),
+            ));
+        }
+    }
+    issues
+}
+
+/// `YYYY-MM-DD`, the shape `at:` is already indexed from.
+fn is_date(text: &str) -> bool {
+    let t = text.trim();
+    let b = t.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+}
+
+/// A date followed by a time — `T`-separated or space-separated, with or
+/// without a zone. Deliberately shape-only: escurel stores what the author
+/// wrote and DuckDB does the real parsing at index time.
+fn is_datetime(text: &str) -> bool {
+    let t = text.trim();
+    let Some((date, time)) = t.split_once(['T', ' ']) else {
+        return false;
+    };
+    is_date(date)
+        && time.len() >= 5
+        && time.as_bytes()[2] == b':'
+        && time[..2].bytes().all(|c| c.is_ascii_digit())
+}
+
+/// What a skill demands of its instances: which keys must be present, and —
+/// when the skill declares `fields:` (#508) — what shape their values take.
+#[derive(Debug, Clone, Default)]
+struct SkillContract {
+    required: Vec<String>,
+    fields: Vec<crate::SkillField>,
+}
+
 impl Indexer {
     /// Dry-run the indexer's authoring checks on `content` and
     /// return the resulting [`Issue`] list. Writes nothing.
@@ -308,6 +594,14 @@ impl Indexer {
         issues.extend(check_autonomy(parsed.frontmatter.page_type, fields));
         // The invocation-parameter block a skill declares (heron#11 / CR-7).
         issues.extend(check_params(parsed.frontmatter.page_type, fields));
+        // The instance-shape block a skill declares (#508). Checked on the
+        // SKILL page, so a malformed schema reaches its author once rather
+        // than every instance's author repeatedly.
+        issues.extend(check_fields(parsed.frontmatter.page_type, fields));
+        // A stored corpus traversal (#511). Checked HERE rather than at query
+        // time: a bound that is only enforced when someone runs the query is a
+        // bound that ships broken, and the author finds out from a stranger.
+        issues.extend(self.check_traversal(&parsed.frontmatter).await?);
 
         // Skill pages declare themselves via `id:`; instance pages
         // via `skill:`.
@@ -440,14 +734,41 @@ impl Indexer {
                         format!("declared skill `{skill}` is not an indexed skill page"),
                     ));
                 }
-                Some(required) => {
-                    for key in required {
+                Some(contract) => {
+                    for key in &contract.required {
                         if fields.get(key.as_str()).is_none() {
                             issues.push(Issue::error(
                                 "frontmatter_required_key_missing",
                                 format!("frontmatter.{key}"),
                                 format!("skill `{skill}` requires frontmatter key `{key}`"),
                             ));
+                        }
+                    }
+
+                    // Typed fields (#508). `required_frontmatter` says a key
+                    // must be THERE; `fields:` says what may be IN it — the
+                    // difference between a corpus you can filter and one that
+                    // has quietly fractured into synonym classes.
+                    //
+                    // A field's `required:` is reported with the SAME code as
+                    // a missing `required_frontmatter` key: a reviewer should
+                    // not have to learn two vocabularies for one missing key.
+                    for field in &contract.fields {
+                        match fields.get(field.name.as_str()) {
+                            Some(value) => issues.extend(check_field_value(field, value)),
+                            None if field.required
+                                && !contract.required.iter().any(|k| k == &field.name) =>
+                            {
+                                issues.push(Issue::error(
+                                    "frontmatter_required_key_missing",
+                                    format!("frontmatter.{}", field.name),
+                                    format!(
+                                        "skill `{skill}` declares `{}` as a required field",
+                                        field.name
+                                    ),
+                                ));
+                            }
+                            None => {}
                         }
                     }
                 }
@@ -513,7 +834,7 @@ impl Indexer {
         // catch a mistake the required-field rule already catches.
         let required_keys: &[String] = declared_skill
             .and_then(|s| skills.get(s))
-            .map(Vec::as_slice)
+            .map(|c| c.required.as_slice())
             .unwrap_or(&[]);
 
         let mut targets: HashSet<(&str, &str)> = HashSet::new();
@@ -672,17 +993,125 @@ impl Indexer {
         out
     }
 
+    /// Check a `target: corpus` query page's `traversal:` block (#511).
+    ///
+    /// Every structural defect is an error — a traversal that cannot be
+    /// compiled cannot be run, so reporting it as a warning would only move
+    /// the failure to whoever calls it next. An unknown RELATION is a warning:
+    /// it is the one defect that might be a forward reference (the pages that
+    /// will carry that key are not written yet), and a corpus is routinely
+    /// seeded in an order that makes that true.
+    async fn check_traversal(
+        &self,
+        frontmatter: &escurel_md::Frontmatter,
+    ) -> Result<Vec<Issue>, IndexerError> {
+        if frontmatter.page_type != PageType::Instance
+            || frontmatter.fields.get("skill").and_then(YamlValue::as_str) != Some("query")
+        {
+            return Ok(Vec::new());
+        }
+        let fm =
+            serde_json::to_value(&frontmatter.fields).unwrap_or_else(|_| serde_json::json!({}));
+        let is_corpus = fm
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|t| t.trim() == crate::CORPUS_TARGET);
+        if !is_corpus {
+            // A `sql_view` query page that happens to carry a `traversal:`
+            // key is not a traversal, and saying so would be noise about a
+            // key this path does not read.
+            return Ok(Vec::new());
+        }
+
+        let traversal = match crate::parse_traversal(&fm) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                return Ok(vec![Issue::error(
+                    "traversal_malformed",
+                    "frontmatter.traversal",
+                    "`target: corpus` but the page declares no `traversal:` block — there \
+                     is nothing to run",
+                )]);
+            }
+            Err(e) => {
+                return Ok(vec![
+                    Issue::error(e.code(), "frontmatter.traversal", e.message().to_owned())
+                        .with_suggestion(
+                            "see docs/contract/agent-interface.md § stored corpus traversals",
+                        ),
+                ]);
+            }
+        };
+
+        // `relation:` is a frontmatter KEY that links were written under. A
+        // typo returns an empty result set rather than an error, which is the
+        // worst shape of failure — it looks like an answer.
+        let mut issues = Vec::new();
+        for step in &traversal.steps {
+            if !self.relation_is_known(&step.relation).await? {
+                issues.push(
+                    Issue::warning(
+                        "traversal_unknown_relation",
+                        format!("frontmatter.traversal.{}", step.relation),
+                        format!(
+                            "no skill declares `{}` as a `kind: link` field and no link in \
+                             this corpus was written under it — a traversal over a relation \
+                             nothing uses returns nothing, which reads like an answer",
+                            step.relation
+                        ),
+                    )
+                    .with_suggestion(
+                        "declare it on the source skill: `fields: [{name: <relation>, \
+                         kind: link, target_skill: <skill>}]`",
+                    ),
+                );
+            }
+        }
+        Ok(issues)
+    }
+
+    /// Whether `relation` is a link field anybody declares or any link uses.
+    ///
+    /// Declared beats observed deliberately: a skill that declares
+    /// `kind: link` (#508) has promised the relation exists, and a corpus
+    /// seeded skill-pages-first would otherwise warn about every traversal
+    /// written before its first instance.
+    async fn relation_is_known(&self, relation: &str) -> Result<bool, IndexerError> {
+        let conn = self.conn.lock().await;
+        let used: i64 = conn.query_row(
+            "SELECT count(*) FROM links WHERE src_field = ? LIMIT 1",
+            duckdb::params![relation],
+            |row| row.get(0),
+        )?;
+        if used > 0 {
+            return Ok(true);
+        }
+        // Declared as a `kind: link` field on any skill page.
+        let declared: i64 = conn.query_row(
+            "SELECT count(*) FROM pages WHERE page_type = 'skill' \
+             AND frontmatter::VARCHAR LIKE ?",
+            duckdb::params![format!("%\"name\":\"{relation}\"%")],
+            |row| row.get(0),
+        )?;
+        Ok(declared > 0)
+    }
+
     /// Resolve a set of skill slugs in a single locked DuckDB pass.
     ///
     /// Returns a map keyed by the slugs that exist as indexed skill
     /// pages (`page_type = 'skill'`); each value is that skill's
-    /// declared `required_frontmatter` list (empty when it declares
-    /// none). A slug absent from the map is not an indexed skill —
+    /// [`SkillContract`] — what its instances must CARRY
+    /// (`required_frontmatter`) and what shape those values must have
+    /// (`fields:`, #508). A slug absent from the map is not an indexed skill —
     /// callers treat that as an `unknown_skill` issue.
+    ///
+    /// Both halves come from the ONE row already being read, deliberately: the
+    /// typed checks must not cost a second pass over the same pages (#508 asks
+    /// for exactly this — "fold it into the existing single locked pass").
     async fn resolve_skills(
         &self,
         slugs: &HashSet<&str>,
-    ) -> Result<HashMap<String, Vec<String>>, IndexerError> {
+    ) -> Result<HashMap<String, SkillContract>, IndexerError> {
         let mut out = HashMap::new();
         if slugs.is_empty() {
             return Ok(out);
@@ -711,21 +1140,26 @@ impl Indexer {
         while let Some(row) = rows.next()? {
             let slug: String = row.get(0)?;
             let fm_json: Option<String> = row.get(1)?;
-            let required = match fm_json {
+            let fm_json: Option<String> = fm_json;
+            let contract = match fm_json {
                 Some(s) => {
                     let fm: serde_json::Value = serde_json::from_str(&s)?;
-                    fm.get("required_frontmatter")
-                        .and_then(serde_json::Value::as_array)
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(str::to_owned))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
+                    SkillContract {
+                        required: fm
+                            .get("required_frontmatter")
+                            .and_then(serde_json::Value::as_array)
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(str::to_owned))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default(),
+                        fields: crate::parse_fields(&fm),
+                    }
                 }
-                None => Vec::new(),
+                None => SkillContract::default(),
             };
-            out.insert(slug, required);
+            out.insert(slug, contract);
         }
         Ok(out)
     }

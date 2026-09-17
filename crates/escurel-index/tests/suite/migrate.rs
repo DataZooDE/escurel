@@ -121,13 +121,33 @@ fn pages_skill_at_composite_index_exists() {
     );
 }
 
+/// #431: a fresh database carries NO vector index, and nearest-neighbour
+/// search works anyway.
+///
+/// The `vss` HNSW index hangs the writer after ~192 delete+insert cycles and
+/// segfaults if rebuilt, and it bought no measurable latency because every
+/// search carries a filter. `search_with` ranks by `array_cosine_distance`,
+/// which needs no index — so the query below is the real one, unchanged.
 #[test]
-fn hnsw_index_on_blocks_dense_vec_works_end_to_end() {
-    // Real test of the vss extension: insert a vector, query for
-    // its nearest neighbour, expect to get it back. This implicitly
-    // verifies vss was auto-installed + auto-loaded.
+fn nearest_neighbour_works_and_no_hnsw_index_is_built() {
     let (conn, _dir) = fresh_db();
     Migrator::up(&conn).expect("schema migration succeeds");
+    Migrator::ensure_vector_index(&conn).expect("vector-index DDL runs");
+
+    assert!(
+        !index_exists(&conn, "hnsw_blocks_vec"),
+        "no HNSW index by default (#431) — it is what took the writer down",
+    );
+    assert!(
+        !index_exists(&conn, "hnsw_chat_vec"),
+        "the chat index goes the same way, for the same reason",
+    );
+    // Premise: `index_exists` can see an index that IS there, or the two
+    // assertions above would pass against a helper that always says no.
+    assert!(
+        index_exists(&conn, "blocks_page"),
+        "control: the ordinary b-tree index on blocks.page_id is present",
+    );
 
     // Insert two distinct vectors.
     let mut zero = vec![0.0_f32; 768];
@@ -146,8 +166,35 @@ fn hnsw_index_on_blocks_dense_vec_works_end_to_end() {
     );
     let nearest: String = conn
         .query_row(&sql, [], |row| row.get(0))
-        .expect("vss nearest neighbour query succeeds");
+        .expect("nearest neighbour query succeeds without an index");
     assert_eq!(nearest, "p1:b1", "nearest neighbour of `zero` is itself");
+}
+
+/// …and the flag still builds one, so the day `vss` is fixed we can measure it
+/// again rather than reconstruct the DDL from a git log. Driven through
+/// `set_vector_index` rather than the env var: `set_var` is `unsafe`, and this
+/// workspace forbids `unsafe` — which is also why the env read lives in one
+/// place instead of being threaded through every caller.
+#[test]
+fn the_hnsw_index_can_be_switched_back_on() {
+    let (conn, _dir) = fresh_db();
+    Migrator::up(&conn).expect("schema migration succeeds");
+    Migrator::enable_hnsw_persistence(&conn).expect("experimental persistence");
+
+    Migrator::set_vector_index(&conn, true).expect("the CREATE path still works");
+
+    assert!(
+        index_exists(&conn, "hnsw_blocks_vec"),
+        "ESCUREL_INDEX_HNSW=on must build the index",
+    );
+
+    // And back off again, on the same database — the DDL runs both ways, which
+    // is how a tenant provisioned with an index loses it on the next boot.
+    Migrator::set_vector_index(&conn, false).expect("the DROP path still works");
+    assert!(
+        !index_exists(&conn, "hnsw_blocks_vec"),
+        "unset must drop the index again, not leave it standing",
+    );
 }
 
 #[test]

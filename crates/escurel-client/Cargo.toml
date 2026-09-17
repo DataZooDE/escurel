@@ -20,6 +20,11 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", default-features = false, features = ["macros"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# The connect-retry loop reports when it starts waiting on a gateway that is
+# not listening and how long it waited to get through. A facade only — it
+# emits nothing unless the consumer installs a subscriber, and it does not
+# pull in the server/indexer/storage tree this crate deliberately avoids.
+tracing = "0.1"
 
 [dev-dependencies]
 # The roundtrip integration tests stand up real backends to seed the
@@ -38,6 +43,10 @@ axum = "0.8"
 loro = "1.12"
 serde_json = "1"
 tempfile = "3"
+# The retry tests assert that a re-dial SAYS SO: a silent retry is
+# indistinguishable from "nothing went wrong", which is exactly the evidence
+# gap that made the live fix unverifiable.
+tracing-subscriber = { version = "0.3", features = ["registry"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 tracing = "0.1"
 

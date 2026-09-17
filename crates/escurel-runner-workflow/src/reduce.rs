@@ -144,6 +144,24 @@ pub fn reduce(spec: &WorkflowSkill, state: &RunState) -> Vec<StepIntent> {
     batch
 }
 
+/// Whether the whole plan is complete — every phase has finished all the work
+/// it will ever do. This is the "the operation is done" predicate the runtime
+/// needs to stamp a terminal `succeeded` status: `reduce` returning an empty
+/// batch is NOT sufficient (a quorum barrier mid-flight has emitted every vote
+/// slot yet is not complete until the tally closes), so the runtime must ask
+/// this rather than infer completeness from an empty batch.
+///
+/// **Approximation (crew F-12 / deferred F3):** a barrier phase closes partly
+/// via `RunState::deadlettered`, which the driver does not yet populate from the
+/// ledger. So this is *false-negative* for a barrier that could close only by
+/// counting its dead-lettered votes: it never returns `true` while such a
+/// barrier has an un-tallied dead-letter. It is never false-*positive*, so a
+/// `succeeded` it reports is always real. Phase 0.3b populates `deadlettered`.
+#[must_use]
+pub fn is_complete(spec: &WorkflowSkill, state: &RunState) -> bool {
+    !spec.phases.is_empty() && spec.phases.iter().all(|p| phase_complete(spec, p, state))
+}
+
 /// Whether a phase has finished all the work it will ever do.
 ///
 /// - `Fixed(n)`: all `n` pre-flagged instances are present.
@@ -527,6 +545,31 @@ mod tests {
             &[&scope.event_id(), &synth.event_id()],
         );
         assert!(reduce(&spec, &done).is_empty(), "run is done");
+    }
+
+    #[test]
+    fn is_complete_only_when_every_phase_is_done() {
+        let spec = linear_spec();
+        // Nothing produced yet → not complete.
+        assert!(!is_complete(&spec, &state_with(&[], &[])));
+        let scope = reduce(&spec, &state_with(&[], &[])).remove(0);
+        // Scope produced but synthesize not → not complete, even though the
+        // NEXT reduce would emit synthesize (empty-batch ≠ complete).
+        let mid = state_with(
+            &[("research-angle", &[&scope.instance_page_id()])],
+            &[&scope.event_id()],
+        );
+        assert!(!is_complete(&spec, &mid));
+        // Both phases produced → complete.
+        let synth = reduce(&spec, &mid).remove(0);
+        let done = state_with(
+            &[
+                ("research-angle", &[&scope.instance_page_id()]),
+                ("research-report", &[&synth.instance_page_id()]),
+            ],
+            &[&scope.event_id(), &synth.event_id()],
+        );
+        assert!(is_complete(&spec, &done));
     }
 
     #[test]

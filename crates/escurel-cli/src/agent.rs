@@ -7,8 +7,9 @@ use std::io::Read as _;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use escurel_client::{
-    AppendMessageRequest, AssignEventRequest, CaptureEventRequest, Client, CreateDraftRequest,
-    DecideDraftRequest, DeletePageRequest, ExpandRequest, ListDraftsRequest, ListEventsRequest,
+    AppendMessageRequest, AssignEventRequest, BranchRequest, CaptureEventRequest, Client,
+    CreateDraftRequest, DecideChangesetRequest, DecideDraftRequest, DeletePageRequest,
+    DiffDraftRequest, ExpandRequest, ListChangesetsRequest, ListDraftsRequest, ListEventsRequest,
     ListInboxRequest, ListInstancesRequest, ListMessagesRequest, ListSkillsRequest,
     MovePageRequest, NeighboursRequest, ProvenanceAncestryRequest, ProvenancePathRequest,
     ProvenanceReportRequest, PurgePageRequest, QueryInstanceRequest, ResolveRequest, SearchRequest,
@@ -286,6 +287,13 @@ pub enum DraftCmd {
         #[arg(long)]
         full: bool,
     },
+    /// What approving a held write would change — which frontmatter keys
+    /// move, what happens to the body, and whether the target moved since
+    /// the draft was taken. Reads nothing into the corpus.
+    Diff {
+        #[arg(long)]
+        draft: String,
+    },
     /// Land a held write. A target that moved since drafting conflicts and
     /// leaves the draft open.
     Promote {
@@ -296,6 +304,55 @@ pub enum DraftCmd {
     Discard {
         #[arg(long)]
         draft: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+}
+
+/// Branches: an isolated workspace whose writes never touch the base
+/// timeline (#512).
+#[derive(Subcommand, Debug)]
+pub enum BranchCmd {
+    /// Open a branch. Its name is also the scenario its pages carry.
+    Create {
+        #[arg(long)]
+        name: String,
+    },
+    /// Every branch, newest first, including decided ones.
+    List,
+    /// Land a branch onto the base timeline. All-or-nothing.
+    Merge {
+        #[arg(long)]
+        name: String,
+    },
+    /// Close a branch without landing anything.
+    Abandon {
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+}
+
+/// A run's held writes, decided together (#509 §1).
+#[derive(Subcommand, Debug)]
+pub enum ChangesetCmd {
+    /// The review queue by RUN rather than by page.
+    List {
+        /// 0 means the server's default.
+        #[arg(long, default_value_t = 0)]
+        limit: u32,
+    },
+    /// Land every member as one decision. Nothing lands unless all of them
+    /// can; safe to re-run if it was interrupted.
+    Promote {
+        #[arg(long)]
+        changeset: String,
+    },
+    /// Refuse the whole proposal. Nothing is written to any target.
+    Discard {
+        #[arg(long)]
+        changeset: String,
         #[arg(long, default_value = "")]
         reason: String,
     },
@@ -422,6 +479,8 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Draft(c) => draft_cmd(client, c).await,
+        Command::Branch(c) => branch_cmd(client, c).await,
+        Command::Changeset(c) => changeset_cmd(client, c).await,
         Command::Query(QueryCmd::Instance(a)) => query_instance(client, a).await,
         Command::Chat(ChatCmd::Append(a)) => chat_append(client, a).await,
         Command::Chat(ChatCmd::List(a)) => chat_list(client, a).await,
@@ -885,6 +944,81 @@ fn draft_json(d: escurel_client::Draft, full: bool) -> Value {
     })
 }
 
+async fn branch_cmd(client: &Client, cmd: BranchCmd) -> Result<Value> {
+    match cmd {
+        BranchCmd::Create { name } => {
+            let resp = client
+                .create_branch(BranchRequest {
+                    name,
+                    reason: String::new(),
+                })
+                .await?;
+            Ok(json!({ "ok": resp.ok, "branch": resp.branch, "issues": resp.issues }))
+        }
+        BranchCmd::List => {
+            let resp = client.list_branches().await?;
+            Ok(json!({ "branches": resp.branches }))
+        }
+        BranchCmd::Merge { name } => {
+            let resp = client
+                .merge_branch(BranchRequest {
+                    name,
+                    reason: String::new(),
+                })
+                .await?;
+            Ok(json!({
+                "ok": resp.ok,
+                "name": resp.name,
+                "results": resp.results,
+                "partial": resp.partial,
+                "issues": resp.issues,
+            }))
+        }
+        BranchCmd::Abandon { name, reason } => {
+            let resp = client
+                .abandon_branch(BranchRequest { name, reason })
+                .await?;
+            Ok(json!({ "ok": resp.ok, "name": resp.name, "reason": resp.reason }))
+        }
+    }
+}
+
+async fn changeset_cmd(client: &Client, cmd: ChangesetCmd) -> Result<Value> {
+    match cmd {
+        ChangesetCmd::List { limit } => {
+            let resp = client
+                .list_changesets(ListChangesetsRequest { limit })
+                .await?;
+            Ok(json!({ "changesets": resp.changesets }))
+        }
+        ChangesetCmd::Promote { changeset } => {
+            let resp = client
+                .promote_changeset(DecideChangesetRequest {
+                    changeset_id: changeset,
+                    reason: String::new(),
+                })
+                .await?;
+            Ok(json!({
+                "ok": resp.ok,
+                "changeset_id": resp.changeset_id,
+                "results": resp.results,
+                "already_decided": resp.already_decided,
+                "partial": resp.partial,
+                "issues": resp.issues,
+            }))
+        }
+        ChangesetCmd::Discard { changeset, reason } => {
+            let resp = client
+                .discard_changeset(DecideChangesetRequest {
+                    changeset_id: changeset,
+                    reason,
+                })
+                .await?;
+            Ok(json!({ "ok": resp.ok, "discarded": resp.discarded, "issues": resp.issues }))
+        }
+    }
+}
+
 async fn draft_cmd(client: &Client, cmd: DraftCmd) -> Result<Value> {
     match cmd {
         DraftCmd::Create(a) => {
@@ -914,6 +1048,20 @@ async fn draft_cmd(client: &Client, cmd: DraftCmd) -> Result<Value> {
                     .into_iter()
                     .map(|d| draft_json(d, full))
                     .collect::<Vec<_>>(),
+            }))
+        }
+        DraftCmd::Diff { draft } => {
+            let resp = client
+                .diff_draft(DiffDraftRequest { draft_id: draft })
+                .await?;
+            Ok(json!({
+                "ok": resp.ok,
+                "target_page_id": resp.target_page_id,
+                "exists": resp.exists,
+                "base_moved": resp.base_moved,
+                "frontmatter_changes": resp.frontmatter_changes,
+                "block_changes": resp.block_changes,
+                "issues": resp.issues,
             }))
         }
         DraftCmd::Promote { draft } => {

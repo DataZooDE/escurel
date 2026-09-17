@@ -278,6 +278,13 @@ pub struct ServerConfig {
     /// it) and pack verification on import. `None` (default) disables
     /// the pack surface fail-closed.
     pub pack_secret: Option<String>,
+    /// Per-tenant secret keying the async-operation idempotency slug
+    /// (`ESCUREL_OPERATION_SLUG_SECRET`, async-ops Phase-4 F-4 hardening).
+    /// `Some` makes `start_operation`'s slug an HMAC so a peer cannot compute
+    /// another caller's operation id and squat its board; `None` (dev) degrades
+    /// to a peer-computable unkeyed hash. Set in production from the tenant's
+    /// Secret Manager key.
+    pub operation_slug_secret: Option<String>,
     /// Dedicated Prometheus `/metrics` listener
     /// (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default
     /// `0.0.0.0:9090`). Served on its own port — tailnet-only in the
@@ -460,6 +467,11 @@ pub(crate) struct AppState {
     /// Shared pack-signing secret (`ESCUREL_PACK_SECRET`). `None` →
     /// the pack surface refuses fail-closed.
     pub(crate) pack_secret: Option<String>,
+    /// Per-tenant secret keying the async-operation idempotency slug
+    /// (`ESCUREL_OPERATION_SLUG_SECRET`, async-ops Phase-4 F-4). `Some` → the
+    /// slug is an HMAC a peer cannot compute; `None` (dev) → a peer-computable
+    /// unkeyed hash.
+    pub(crate) operation_slug_secret: Option<String>,
     /// See [`ServerConfig::reader_mode`].
     pub(crate) reader_mode: bool,
     /// See [`ServerConfig::lake`].
@@ -537,6 +549,7 @@ pub async fn serve(
             .clone()
             .map(|url| crate::webhook::Webhook::new(url, config.webhook_secret.clone())),
         pack_secret: config.pack_secret.clone(),
+        operation_slug_secret: config.operation_slug_secret.clone(),
         reader_mode: config.reader_mode,
         lake: config.lake.clone(),
         snapshot_keep: config.snapshot_keep,

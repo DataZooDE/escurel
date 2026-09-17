@@ -154,6 +154,42 @@ pub fn set_frontmatter_bool(input: &str, key: &str, value: bool) -> Result<Strin
     Ok(format!("---\n{yaml}---\n{}", page.body))
 }
 
+/// Set (or clear) a string-valued frontmatter key, re-serialising the page.
+///
+/// `Some(value)` inserts or replaces; `None` removes. Same normalisation
+/// caveat as [`set_frontmatter_bool`]: key order and formatting are
+/// normalised and comments in the block are not preserved.
+///
+/// Exists so callers that own a server-stamped key — `scenario:` for a branch
+/// write (#512) — do not hand-roll frontmatter serialisation in their own
+/// crate. This one owns the YAML dependency; nobody else should have to.
+///
+/// # Errors
+///
+/// Returns [`ParseError`] when `input` is not a well-formed page, or when the
+/// mapping cannot be re-serialized as YAML.
+pub fn set_frontmatter_str(
+    input: &str,
+    key: &str,
+    value: Option<&str>,
+) -> Result<String, ParseError> {
+    let page = parse(input)?;
+    let mut fields = page.frontmatter.fields.clone();
+    match value {
+        Some(v) => {
+            fields.insert(
+                YamlValue::String(key.to_owned()),
+                YamlValue::String(v.to_owned()),
+            );
+        }
+        None => {
+            fields.remove(YamlValue::String(key.to_owned()));
+        }
+    }
+    let yaml = serde_yaml_ng::to_string(&YamlValue::Mapping(fields))?;
+    Ok(format!("---\n{yaml}---\n{}", page.body))
+}
+
 /// Locate the closing `---` line. Returns `(yaml_block, body_slice)`
 /// where `body_slice` starts at the first character after the
 /// closing delimiter's trailing newline (or is empty if the

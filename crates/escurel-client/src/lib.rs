@@ -80,8 +80,14 @@ pub use escurel_types::{
 // that has not landed, and these are how an app shows a human what is
 // waiting and lands it under their identity.
 pub use escurel_types::{
-    CreateDraftRequest, CreateDraftResponse, DecideDraftRequest, DecideDraftResponse, Draft,
-    ListDraftsRequest, ListDraftsResponse,
+    BlockChange, Changeset, ChangesetMemberResult, CreateDraftRequest, CreateDraftResponse,
+    DecideChangesetRequest, DecideChangesetResponse, DecideDraftRequest, DecideDraftResponse,
+    DiffDraftRequest, DiffDraftResponse, Draft, FrontmatterChange, ListChangesetsRequest,
+    ListChangesetsResponse, ListDraftsRequest, ListDraftsResponse,
+};
+pub use escurel_types::{
+    Branch, BranchMergeResult, BranchRequest, CreateBranchResponse, DecideBranchResponse,
+    ListBranchesResponse,
 };
 // #247 tenant lifecycle/quota/embedding sub-types.
 pub use escurel_types::{EmbeddingSpec, QuotaOverride, TenantStatus};
@@ -577,6 +583,91 @@ impl Client {
             args["limit"] = json!(req.limit);
         }
         self.transport.call_typed("list_drafts", args).await
+    }
+
+    /// Open a BRANCH: an isolated workspace whose writes never touch the
+    /// base timeline (#512). Pass its name as `branch` on `update_page` /
+    /// `delete_page`; the server stamps the scenario, so you never type it.
+    pub async fn create_branch(&self, req: BranchRequest) -> Result<CreateBranchResponse, Error> {
+        self.transport
+            .call_typed("create_branch", json!({ "name": req.name }))
+            .await
+    }
+
+    /// Every branch, newest first, including decided ones.
+    pub async fn list_branches(&self) -> Result<ListBranchesResponse, Error> {
+        self.transport.call_typed("list_branches", json!({})).await
+    }
+
+    /// Land a branch. All-or-nothing: one page that could not land blocks the
+    /// whole merge.
+    pub async fn merge_branch(&self, req: BranchRequest) -> Result<DecideBranchResponse, Error> {
+        self.transport
+            .call_typed("merge_branch", json!({ "name": req.name }))
+            .await
+    }
+
+    /// Close a branch without landing anything.
+    pub async fn abandon_branch(&self, req: BranchRequest) -> Result<DecideBranchResponse, Error> {
+        self.transport
+            .call_typed(
+                "abandon_branch",
+                json!({ "name": req.name, "reason": req.reason }),
+            )
+            .await
+    }
+
+    /// What approving a held write would change: which frontmatter keys move
+    /// and to what, what happens to the body, and whether the target moved
+    /// since the draft was taken (`base_moved` — the signal that promotion
+    /// will need a merge). Read-only, and gated by the same read ACL as
+    /// `list_drafts`: a draft the caller may not see answers `ok:false` with
+    /// `not_found` rather than a refusal.
+    pub async fn diff_draft(&self, req: DiffDraftRequest) -> Result<DiffDraftResponse, Error> {
+        self.transport
+            .call_typed("diff_draft", json!({ "draft_id": req.draft_id }))
+            .await
+    }
+
+    /// The review queue by RUN rather than by page (#509 §1).
+    pub async fn list_changesets(
+        &self,
+        req: ListChangesetsRequest,
+    ) -> Result<ListChangesetsResponse, Error> {
+        let mut args = json!({});
+        if req.limit > 0 {
+            args["limit"] = json!(req.limit);
+        }
+        self.transport.call_typed("list_changesets", args).await
+    }
+
+    /// Land a run's held writes as ONE decision. All-or-nothing: a member
+    /// that could not land blocks the whole changeset and nothing is written.
+    /// Safe to retry — an interrupted promotion completes rather than
+    /// conflicting with its own writes.
+    pub async fn promote_changeset(
+        &self,
+        req: DecideChangesetRequest,
+    ) -> Result<DecideChangesetResponse, Error> {
+        self.transport
+            .call_typed(
+                "promote_changeset",
+                json!({ "changeset_id": req.changeset_id }),
+            )
+            .await
+    }
+
+    /// Refuse a run's proposal whole. Nothing is written to any target.
+    pub async fn discard_changeset(
+        &self,
+        req: DecideChangesetRequest,
+    ) -> Result<DecideChangesetResponse, Error> {
+        self.transport
+            .call_typed(
+                "discard_changeset",
+                json!({ "changeset_id": req.changeset_id, "reason": req.reason }),
+            )
+            .await
     }
 
     /// Land a held write, under the caller's identity.

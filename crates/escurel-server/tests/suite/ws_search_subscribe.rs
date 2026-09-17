@@ -128,6 +128,83 @@ async fn search_subscribe_runs_the_query_and_pushes_on_index_change() {
     );
 }
 
+/// #474 — a DRAFT wakes a subscriber, even though it writes no page.
+///
+/// escurel has two notions of "something happened": a bus event, and an index
+/// mutation. A draft was neither — it is a row in the drafts table — so a
+/// watcher never woke for one. That was harmless while drafts were a side
+/// path and fatal once they became the main one: `escurel-runner` drafts every
+/// sorted-in capture, and heron's review feed is woken by exactly these two
+/// signals. Measured from heron on 2026-09-11: open the feed, create a draft,
+/// twenty seconds of silence. The consultant's screen read "nothing waiting",
+/// which is what a runner that never ran looks like too.
+///
+/// The frame's HITS are beside the point here — a draft is not a search hit
+/// and this asserts nothing about them. What is being tested is that the
+/// subscriber is TOLD to go and look.
+#[tokio::test]
+async fn a_draft_wakes_a_subscriber_although_it_writes_no_page() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let mut req = p.ws_url().into_client_request().unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    let (mut sock, _) = tokio_tungstenite::connect_async(req).await.expect("ws");
+    sock.send(Message::Text(
+        json!({ "type": "hello", "presence_only": true }).to_string(),
+    ))
+    .await
+    .expect("hello");
+    sock.send(Message::Text(
+        json!({
+            "type": "search_subscribe",
+            "subscription_id": "sub-draft",
+            "q": "quartz oscillator",
+            "k": 5,
+        })
+        .to_string(),
+    ))
+    .await
+    .expect("subscribe");
+    let ack = recv_json(&mut sock, 5).await.expect("initial search_event");
+    assert_eq!(ack["type"], "search_event", "{ack}");
+
+    // Premise: nothing else is moving the index. Without this the wake below
+    // could be anything at all — and this whole test would pass against the
+    // bug it exists to catch.
+    assert!(
+        recv_json(&mut sock, 3).await.is_none(),
+        "the subscription must be quiet before the draft, or the wake proves \
+         nothing about the draft"
+    );
+
+    let resp: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "create_draft", "arguments": {
+                "target_page_id": "markdown/instances/note/quartz.md",
+                "content": "---\ntype: instance\nskill: note\nid: quartz\n---\n# quartz\n\
+                    A held rewrite nobody has approved.\n",
+            }},
+        }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+    assert!(resp.get("error").is_none(), "the draft was created: {resp}");
+
+    let pushed = recv_json(&mut sock, 10).await.expect(
+        "a draft must wake the subscriber — it is the only thing that \
+                 happened",
+    );
+    assert_eq!(pushed["type"], "search_event", "{pushed}");
+}
+
 /// A subscribe with no query is a typed error frame, not a silent stub.
 #[tokio::test]
 async fn search_subscribe_without_a_query_is_refused() {

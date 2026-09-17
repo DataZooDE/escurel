@@ -29,18 +29,27 @@
 //! escurel `/mcp` bearer is the scoped token the runner mints; that is
 //! separate from the Google credential the model itself uses.
 //!
-//! **KNOWN NOT TO PASS TODAY, and the reason is not this test.** Measured on
-//! 2026-09-07 with agy 1.1.23 against a real gateway: with escurel registered
-//! in `mcp_config.json`, `agy` never produces a turn — the run ends
-//! `{"status":"ERROR","error":"timeout waiting for response","num_turns":0}`.
-//! The same `agy`, same private `HOME`, same argv, answers normally when the
-//! MCP entry is absent or points at a closed port, so it is the LIVE escurel
-//! connection that stalls it, not the adapter's invocation. The gateway is
-//! healthy at that moment: `tools/list` answers 200 with ~26 KB of schemas
-//! over POST, and a GET on `/mcp` is 405 (POST only), which is one candidate
-//! — a client that opens an SSE GET stream first and waits on it. Tracked in
-//! escurel#450. The adapter, its refusal rule and its parsing are unit-tested
-//! either way; this test is the thing that will say when the interop works.
+//! **The interop works as of agy 1.2.1 (measured 2026-09-17).** This test
+//! passes: a real `agy` subprocess, a real gateway, real `/mcp` tool calls
+//! under the scoped token, the event folded, the ledger run terminal —
+//! 89.9s end to end.
+//!
+//! It did NOT work before, and the history is worth keeping because it is
+//! what this test exists to detect. Measured on 2026-09-07 with agy 1.1.23:
+//! with escurel registered in `mcp_config.json`, `agy` never produced a turn
+//! — every run ended `{"status":"ERROR","error":"timeout waiting for
+//! response","num_turns":0}`, having never reached the model
+//! (`input_tokens: 0`). The same `agy`, same private `HOME`, same argv
+//! answered normally when the MCP entry was absent or pointed at a closed
+//! port, so it was the LIVE escurel connection that stalled it and not the
+//! adapter's invocation. Tracked as escurel#450; nothing in this repo
+//! changed to fix it, and nothing had to — the fix was upstream, which is
+//! precisely why the negative was recorded against a version rather than
+//! against the adapter.
+//!
+//! So this stays `#[ignore]` for cost, not for breakage, and a failure here
+//! now means a real regression: in `agy`, in the gateway's MCP transport, or
+//! in the adapter.
 //!
 //! **The skill declares `autonomy: auto`, and it must.** `agy` cannot enforce
 //! a narrowed tool surface, so the adapter refuses any task packaged under

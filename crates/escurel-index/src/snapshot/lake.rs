@@ -960,6 +960,18 @@ pub async fn adopt_lake_for_writer(
         check_manifest_compat(&conn, embedder)?;
     }
     let snapshot_id = indexer.load_from_lake(LAKE_ALIAS).await?;
+    // Reconstruct the SQL views (`vw_<skill>__<id>`) from their overlays'
+    // `backend_ref.source`. Views are NOT durable — they exist only in this
+    // process's local DuckDB, which is a fresh (often /tmp) database on every
+    // writer boot — and `load_from_lake` restores only the corpus tables, not the
+    // view objects. Without this a `sql_view` instance's overlay page survives a
+    // restart while `SELECT … FROM vw_…` throws `Catalog Error: … does not exist`
+    // until someone runs an admin Rebuild. This makes the writer-boot path
+    // symmetric with the SingleFileStore fresh-boot path, whose `rebuild()` tail
+    // already calls `rebuild_sql_views()`. Verified live 2026-09-11: a dz-escurel
+    // restart lost `vw_supplier_deliveries__all`, breaking the `supplier_reliability`
+    // query page (and every workflow step that reads it) until reconstruction.
+    indexer.rebuild_sql_views().await?;
     Ok(Some(snapshot_id))
 }
 

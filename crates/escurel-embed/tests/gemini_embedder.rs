@@ -126,6 +126,88 @@ async fn api_error_response_surfaces_as_backend_error() {
     );
 }
 
+/// A 429 is waited out, not surfaced.
+///
+/// The container default re-embeds the whole corpus at boot, so one
+/// rate-limited batch anywhere in that rebuild used to abort the start.
+/// That is issue #449: a single `RESOURCE_EXHAUSTED` fails the start with
+/// `building indexer: embedder error`, on a dependency that was merely busy.
+/// It is worse than it sounds — the same key serves the runner's harness, so a
+/// burst of drafting makes a restart MORE likely to fail.
+#[tokio::test]
+async fn a_rate_limited_batch_is_retried_rather_than_failing_the_caller() {
+    let server = MockServer::start().await;
+    let dim = 8usize;
+
+    // 429 once, then the real answer. `up_to_n_times` makes the order
+    // deterministic: the first matching mock wins while it has uses left.
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1beta/models/gemini-embedding-001:batchEmbedContents",
+        ))
+        .respond_with(ResponseTemplate::new(429).set_body_string(
+            "{\"error\":{\"message\":\"Resource exhausted\",\"status\":\"RESOURCE_EXHAUSTED\"}}",
+        ))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1beta/models/gemini-embedding-001:batchEmbedContents",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "embeddings": [{ "values": fake_embedding(dim, 0.5) }]
+        })))
+        .mount(&server)
+        .await;
+
+    let e = GeminiEmbedder::new("test-key")
+        .with_base_url(server.uri())
+        .with_dim(dim);
+    let out = e
+        .embed(&["x"])
+        .await
+        .expect("a 429 must be waited out, not surfaced");
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].len(), dim);
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "the batch must actually be retried, not silently skipped"
+    );
+}
+
+/// …but a 4xx that will never change is NOT retried.
+///
+/// Waiting on a bad key turns a clear configuration error into a slow one,
+/// and the boot it delays is the one where an operator is reading the logs.
+#[tokio::test]
+async fn a_bad_key_fails_immediately_without_retrying() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1beta/models/gemini-embedding-001:batchEmbedContents",
+        ))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .set_body_string("{\"error\":{\"message\":\"API key invalid\"}}"),
+        )
+        .mount(&server)
+        .await;
+
+    let e = GeminiEmbedder::new("bad-key")
+        .with_base_url(server.uri())
+        .with_dim(8);
+    e.embed(&["x"]).await.expect_err("403 must surface");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "a 403 answers the same way for ever; retrying it only delays the \
+         error an operator is waiting to read"
+    );
+}
+
 #[tokio::test]
 async fn wrong_dim_in_response_returns_dimension_mismatch() {
     let server = MockServer::start().await;

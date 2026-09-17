@@ -355,6 +355,120 @@ async fn an_empty_base_against_an_existing_page_is_refused_at_draft_time() {
     assert_eq!(ok["ok"], json!(true), "{ok}");
 }
 
+/// Promotion retires the event that produced the draft.
+///
+/// A `review` run leaves its event in the inbox on purpose — the run produced
+/// no state, so the event is still waiting on a human. Promotion IS that
+/// human. Until this, nothing said so: the event stayed unassigned for ever,
+/// and a runner with an ephemeral ledger re-dispatched it on its next restart
+/// and drafted the same page again. Measured in the lab on 2026-09-10: seven
+/// approved emails came back as seven fresh drafts, several byte-identical to
+/// the page that had just landed.
+#[tokio::test]
+async fn promoting_a_draft_takes_its_event_out_of_the_inbox() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let captured = call(
+        &p,
+        &token,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "note",
+            "title": "a thing that happened",
+            "body": "the body",
+        }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().expect("event_id").to_owned();
+
+    // Still waiting on a human: the run drafted, it did not write.
+    let draft = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": body("plan", "folded in."),
+            "base_sha256": sha(BASE),
+            "event_id": event_id,
+        }),
+    )
+    .await;
+    assert_eq!(draft["ok"], json!(true), "{draft}");
+    let in_inbox = |inbox: &Value| {
+        inbox["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|e| e["event_id"] == json!(event_id))
+    };
+    assert!(
+        in_inbox(&call(&p, &token, "list_inbox", json!({})).await),
+        "a drafted event stays in the inbox until a human decides — that is \
+         the gate, and it must not change"
+    );
+
+    call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": draft["draft"]["draft_id"] }),
+    )
+    .await;
+
+    let inbox = call(&p, &token, "list_inbox", json!({})).await;
+    assert!(
+        !in_inbox(&inbox),
+        "the promoted event must leave the inbox, or every restart drafts it \
+         again: {inbox}"
+    );
+    let bound = call(&p, &token, "list_events", json!({ "event_id": event_id })).await;
+    assert_eq!(
+        bound["events"][0]["instance_page_id"],
+        json!(PAGE),
+        "…onto the page the draft wrote, not merely gone: {bound}"
+    );
+    assert_eq!(bound["events"][0]["status"], json!("processed"), "{bound}");
+}
+
+/// A draft with NO event behind it promotes exactly as before.
+///
+/// Not every draft comes from an event — a consultant editing a page by hand
+/// makes one — and a promotion that required one would refuse the oldest path
+/// this surface has.
+#[tokio::test]
+async fn a_draft_without_an_event_still_promotes() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let draft = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": body("plan", "hand-written."),
+            "base_sha256": sha(BASE),
+        }),
+    )
+    .await;
+    let promoted = call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": draft["draft"]["draft_id"] }),
+    )
+    .await;
+    assert_eq!(promoted["ok"], json!(true), "{promoted}");
+    assert_eq!(
+        page_sha(&p, &token, PAGE).await,
+        Some(sha(&body("plan", "hand-written.")))
+    );
+}
+
 /// A decision is taken once. A discarded draft writes nothing, and neither a
 /// second discard nor a promotion can resurrect it.
 #[tokio::test]
@@ -609,6 +723,43 @@ mod scope {
                 .iter()
                 .any(|d| d["draft_id"] == json!(public_id)),
             "a draft against a readable page must be in the queue: {bobs_queue}"
+        );
+    }
+
+    /// A draft is not knowledge, and neither is its diff: the same read gate
+    /// that keeps another person's held write out of `list_drafts` keeps its
+    /// contents out of here. Otherwise `diff_draft` is a way to read a draft
+    /// you may not see (#509 §3).
+    #[tokio::test]
+    async fn diff_draft_does_not_leak_a_draft_the_caller_may_not_see() {
+        let p = start_scoped().await;
+        let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+        let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+
+        let created = call(
+            &p,
+            &alice,
+            "create_draft",
+            json!({ "target_page_id": ALICE_PAGE, "content": ALICE_EDIT }),
+        )
+        .await;
+        let draft_id = created["draft"]["draft_id"]
+            .as_str()
+            .expect("draft_id")
+            .to_owned();
+
+        // Alice sees her own.
+        let mine = call(&p, &alice, "diff_draft", json!({ "draft_id": draft_id })).await;
+        assert_eq!(mine["target_page_id"], json!(ALICE_PAGE), "{mine}");
+
+        // Bob gets absence, not a denial — the same shape the other decide
+        // verbs use, so a probe cannot tell "not yours" from "no such draft".
+        let theirs = call(&p, &bob, "diff_draft", json!({ "draft_id": draft_id })).await;
+        assert_eq!(theirs["ok"], json!(false), "{theirs}");
+        assert_eq!(theirs["issues"][0]["code"], json!("not_found"), "{theirs}");
+        assert!(
+            !theirs.to_string().contains("PRIVATE edit"),
+            "no part of an unreadable draft may leak: {theirs}"
         );
     }
 }
@@ -897,4 +1048,791 @@ async fn a_draft_missing_a_key_its_skill_requires_is_refused() {
     );
 
     p.shutdown().await;
+}
+
+// ===========================================================================
+// Who decided (heron's BR-HIL-6).
+// ===========================================================================
+
+/// A gateway that verified a human can say WHICH human approved.
+///
+/// A service in front of escurel authenticates a person and then writes with
+/// its own credential, because escurel's write ACL matches on groups and a
+/// person's minted bearer carries none. That is correct, and it had a cost
+/// nobody had noticed: the decision was recorded against the SERVICE, so the
+/// person who actually approved was stored nowhere. Measured on lab —
+/// every page promoted from a draft read `last_written_by: heron-onbehalf`,
+/// and no record named a consultant.
+///
+/// The assertion is that the stamp MOVES. A single approval recording
+/// "consultant:alice" is equally satisfied by a field nobody writes and by a
+/// constant, so two people decide two drafts and the record has to follow.
+#[tokio::test]
+async fn an_admin_can_name_the_human_who_decided_and_the_record_follows() {
+    let p = start().await;
+    let gateway = p.mint_token(TENANT, Role::Admin);
+
+    let mut decided = Vec::new();
+    for (page, who) in [("plan", "consultant:alice"), ("plan", "consultant:bob")] {
+        let head = page_sha(&p, &gateway, &format!("markdown/instances/note/{page}.md")).await;
+        let created = call(
+            &p,
+            &gateway,
+            "create_draft",
+            json!({
+                "target_page_id": format!("markdown/instances/note/{page}.md"),
+                "content": body(page, &format!("Revised for {who}.")),
+                "base_sha256": head,
+            }),
+        )
+        .await;
+        let id = created["draft"]["draft_id"].as_str().expect("draft_id");
+        let out = call(
+            &p,
+            &gateway,
+            "promote_draft",
+            json!({ "draft_id": id, "decided_by": who }),
+        )
+        .await;
+        assert_eq!(out["ok"], json!(true), "promotion landed: {out}");
+        decided.push(out["decided_by"].as_str().unwrap_or_default().to_owned());
+    }
+
+    assert_eq!(
+        decided,
+        vec!["consultant:alice".to_owned(), "consultant:bob".to_owned()],
+        "the record must follow the person who decided, not the service that \
+         wrote — a constant or an unwritten field satisfies one approval and \
+         fails this pair"
+    );
+}
+
+/// …and a caller may not vouch for someone else unless it is trusted to.
+///
+/// "This person approved it" is a claim ABOUT SOMEONE ELSE. A caller able to
+/// make it about itself could write any name into the audit trail, which is
+/// worse than no audit trail because it reads as one. Refused, not ignored:
+/// a gateway that silently lost the attribution is how this went missing in
+/// the first place.
+#[tokio::test]
+async fn an_ordinary_caller_may_not_vouch_for_another_subject() {
+    let p = start().await;
+    let agent = p.mint_token_with_sub(TENANT, Role::Agent, "agent:solo");
+
+    let created = call(
+        &p,
+        &agent,
+        "create_draft",
+        json!({
+            "target_page_id": "markdown/instances/note/plan.md",
+            "content": body("plan", "Revised."),
+            "base_sha256": page_sha(&p, &agent, "markdown/instances/note/plan.md").await,
+        }),
+    )
+    .await;
+    let id = created["draft"]["draft_id"]
+        .as_str()
+        .expect("draft_id")
+        .to_owned();
+
+    let refused: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {agent}"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "promote_draft", "arguments": {
+                "draft_id": &id, "decided_by": "consultant:alice",
+            }},
+        }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+    assert!(
+        refused.get("error").is_some(),
+        "a non-admin naming another subject must be refused: {refused}"
+    );
+
+    // …but naming YOURSELF is not vouching for anyone: it is the same fact the
+    // token already carries. An earlier version refused this, which made the
+    // argument unusable by any caller deciding on its own behalf — heron sends
+    // it unconditionally, and its service credential is optional.
+    let mine = call(
+        &p,
+        &agent,
+        "promote_draft",
+        json!({ "draft_id": &id, "decided_by": "agent:solo" }),
+    )
+    .await;
+    assert_eq!(
+        mine["ok"],
+        json!(true),
+        "naming yourself is allowed: {mine}"
+    );
+    assert_eq!(mine["decided_by"].as_str(), Some("agent:solo"), "{mine}");
+
+    // Control: the same caller, a second draft, without the claim — so the
+    // refusal above is about vouching and not about this caller's right to
+    // promote at all.
+    let second = call(
+        &p,
+        &agent,
+        "create_draft",
+        json!({
+            "target_page_id": "markdown/instances/note/plan.md",
+            "content": body("plan", "Revised again."),
+            "base_sha256": page_sha(&p, &agent, "markdown/instances/note/plan.md").await,
+        }),
+    )
+    .await;
+    let id = second["draft"]["draft_id"]
+        .as_str()
+        .expect("draft_id")
+        .to_owned();
+    let out = call(&p, &agent, "promote_draft", json!({ "draft_id": &id })).await;
+    assert_eq!(out["ok"], json!(true), "control: {out}");
+    assert_eq!(
+        out["decided_by"].as_str(),
+        Some("agent:solo"),
+        "with no claim, the decider is the caller itself: {out}"
+    );
+}
+
+/// One LIVE draft per page — a second is refused rather than queued.
+///
+/// Two open drafts against one target are two cards a human cannot both
+/// apply: promoting either moves the page, and from that moment the other's
+/// `base_sha256` is stale for ever. The second can only be discarded, and
+/// only after a reviewer has spent the attention the queue exists to ration.
+///
+/// Measured on lab, 2026-09-12: one Gmail thread produced two drafts against
+/// the same email page from two events. The consultant approved one, pressed
+/// Approve on its twin, and was told "this page changed after the draft was
+/// made" — on a card that had looked exactly as ready as the one before it.
+///
+/// The work is not lost: the second draft's event stays in the inbox and is
+/// re-dispatched once the open one is decided, against the head that decision
+/// produced.
+#[tokio::test]
+async fn a_second_open_draft_for_the_same_page_is_refused() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+    let head = page_sha(&p, &token, page).await;
+
+    let first = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "The first held rewrite."),
+            "base_sha256": head,
+        }),
+    )
+    .await;
+    assert_eq!(first["ok"], json!(true), "the first draft is held: {first}");
+    let first_id = first["draft"]["draft_id"].as_str().expect("draft_id");
+
+    let second = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "A second rewrite of the same page."),
+            "base_sha256": head,
+        }),
+    )
+    .await;
+    assert_eq!(
+        second["ok"],
+        json!(false),
+        "a second open draft against the same page must be refused: {second}"
+    );
+    assert_eq!(second["issues"][0]["code"], "conflict", "{second}");
+    assert!(
+        second["issues"][0]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(first_id)),
+        "the refusal must name the draft that is in the way, or the caller \
+         cannot act on it: {second}"
+    );
+
+    // …and the page is still draftable once that decision is made. Without
+    // this the rule would be "one draft per page, ever", which would stop the
+    // loop dead after the first approval.
+    let promoted = call(&p, &token, "promote_draft", json!({ "draft_id": first_id })).await;
+    assert_eq!(promoted["ok"], json!(true), "{promoted}");
+
+    let after = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "A rewrite against the new head."),
+            "base_sha256": page_sha(&p, &token, page).await,
+        }),
+    )
+    .await;
+    assert_eq!(
+        after["ok"],
+        json!(true),
+        "once the open draft is decided the page takes a new one: {after}"
+    );
+}
+
+/// …and the rule is per PAGE, not per tenant.
+///
+/// The control for the test above. A check that refused every second draft
+/// anywhere would also satisfy it, and would break the ordinary case the
+/// runner produces all day: several pages drafted in one pass.
+#[tokio::test]
+async fn a_draft_for_a_different_page_is_unaffected() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    for id in ["plan", "other"] {
+        let out = call(
+            &p,
+            &token,
+            "create_draft",
+            json!({
+                "target_page_id": format!("markdown/instances/note/{id}.md"),
+                "content": body(id, "A held rewrite."),
+            }),
+        )
+        .await;
+        assert_eq!(
+            out["ok"],
+            json!(true),
+            "a draft for `{id}` must be held while another page has one: {out}"
+        );
+    }
+}
+
+/// A STALE predecessor is superseded, not protected.
+///
+/// A conflicted promotion deliberately leaves its draft open so the work can
+/// be re-drafted against the new head. If "one live draft per page" refused
+/// that re-draft it would strand the store's own recovery path — and leave an
+/// unapprovable card on a reviewer's screen, which is the thing the rule
+/// exists to prevent.
+#[tokio::test]
+async fn a_stale_open_draft_is_superseded_by_the_redraft() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+
+    let stale = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "Drafted against the old head."),
+            "base_sha256": page_sha(&p, &token, page).await,
+        }),
+    )
+    .await;
+    let stale_id = stale["draft"]["draft_id"]
+        .as_str()
+        .expect("draft_id")
+        .to_owned();
+
+    // Somebody else moves the page. The draft above is now unapprovable — its
+    // base names a head that no longer exists.
+    call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": page, "content": body("plan", "A concurrent change.") }),
+    )
+    .await;
+
+    let redraft = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "Re-drafted against the new head."),
+            "base_sha256": page_sha(&p, &token, page).await,
+        }),
+    )
+    .await;
+    assert_eq!(
+        redraft["ok"],
+        json!(true),
+        "a re-draft against the new head must be accepted: {redraft}"
+    );
+
+    // And the dead one is GONE from the queue rather than sitting there
+    // looking ready.
+    let waiting = call(&p, &token, "list_drafts", json!({})).await;
+    let ids: Vec<&str> = waiting["drafts"]
+        .as_array()
+        .expect("drafts")
+        .iter()
+        .filter_map(|d| d["draft_id"].as_str())
+        .collect();
+    assert!(
+        !ids.contains(&stale_id.as_str()),
+        "the superseded draft must leave the queue — leaving it is exactly \
+         the unapprovable card this rule exists to prevent: {waiting}"
+    );
+    assert_eq!(ids.len(), 1, "and the re-draft is the one left: {waiting}");
+}
+
+/// A predecessor with NO base is live, not stale.
+///
+/// `base_sha256: None` means "drafted as a create" — but a caller may simply
+/// not have sent one, and escurel's own runner harness drafts that way. An
+/// earlier version of the supersede rule compared `None` against a page that
+/// exists, concluded "stale", and DISCARDED a perfectly good draft when the
+/// same agent made a second tool call. The run was then recorded failed for
+/// work that had landed (escurel-runner's
+/// `a_draft_that_landed_outlives_the_harness_saying_it_failed` caught it).
+///
+/// Superseding destroys a human's queue entry, so it requires positive
+/// evidence: a base that names a head the page no longer has.
+#[tokio::test]
+async fn a_draft_with_no_base_is_not_treated_as_stale() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+
+    let first = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": page, "content": body("plan", "No base at all.") }),
+    )
+    .await;
+    assert_eq!(first["ok"], json!(true), "{first}");
+    let first_id = first["draft"]["draft_id"].as_str().expect("id").to_owned();
+
+    let second = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": page, "content": body("plan", "A second one.") }),
+    )
+    .await;
+    assert_eq!(
+        second["ok"],
+        json!(false),
+        "the baseless predecessor is LIVE, so the second is refused: {second}"
+    );
+
+    let waiting = call(&p, &token, "list_drafts", json!({})).await;
+    assert!(
+        waiting["drafts"]
+            .as_array()
+            .expect("drafts")
+            .iter()
+            .any(|d| d["draft_id"].as_str() == Some(first_id.as_str())),
+        "and the first draft must SURVIVE — discarding it would destroy a \
+         queue entry on a guess: {waiting}"
+    );
+}
+
+/// Approve with a correction: the reviewer's bytes land, not the agent's.
+///
+/// A reviewer who fixes a wording and then approves has reviewed the fix, and
+/// it is one act rather than two. Without this the only way to land a
+/// correction is discard → re-draft → promote: three calls that can half-fail
+/// and leave a queue entry nobody meant to create. heron offered the gesture —
+/// its approval screen has "Approve with edit" — while the edit was silently
+/// dropped on the way to the store.
+#[tokio::test]
+async fn a_correction_at_approval_time_is_what_lands() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "The agent's wording."),
+            "base_sha256": page_sha(&p, &token, page).await,
+        }),
+    )
+    .await;
+    let id = created["draft"]["draft_id"].as_str().expect("draft_id");
+
+    let out = call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": id, "content": body("plan", "The reviewer's wording.") }),
+    )
+    .await;
+    assert_eq!(out["ok"], json!(true), "{out}");
+
+    let landed = call(&p, &token, "expand", json!({ "page_id": page })).await;
+    let body_text = landed["body"].as_str().unwrap_or_default();
+    assert!(
+        body_text.contains("The reviewer's wording."),
+        "the correction must land: {body_text}"
+    );
+    assert!(
+        !body_text.contains("The agent's wording."),
+        "and the stored draft must NOT: a correction that silently loses is \
+         worse than no correction at all — the reviewer believes they fixed \
+         it: {body_text}"
+    );
+}
+
+/// …and a correction is still validated. An approval is not a way past the
+/// gate the draft had to pass.
+#[tokio::test]
+async fn a_correction_that_would_not_validate_is_refused() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let page = "markdown/instances/note/plan.md";
+    let before = page_sha(&p, &token, page).await;
+
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": page,
+            "content": body("plan", "Fine."),
+            "base_sha256": before.clone(),
+        }),
+    )
+    .await;
+    let id = created["draft"]["draft_id"]
+        .as_str()
+        .expect("draft_id")
+        .to_owned();
+
+    let refused = call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": &id, "content": "# no frontmatter at all\n" }),
+    )
+    .await;
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(
+        page_sha(&p, &token, page).await,
+        before,
+        "and nothing may have landed"
+    );
+
+    // Control: the same draft, promoted WITHOUT a correction, still works — so
+    // the refusal is about the corrected bytes and not about the draft.
+    let ok = call(&p, &token, "promote_draft", json!({ "draft_id": &id })).await;
+    assert_eq!(ok["ok"], json!(true), "control: {ok}");
+}
+
+/// **An interrupted promotion completes instead of wedging the draft.**
+///
+/// A promotion is two writes: the page, then the draft's own row. Between them
+/// the process can die or the client's connection can drop, and on the
+/// deployed gateway the gap is about twelve seconds wide — the markdown lane
+/// and the lake both live on Google Drive, and the promotion waits for both.
+///
+/// What that leaves is a page already carrying the draft's bytes and a draft
+/// still `open`. The retry used to CONFLICT: `base_sha256` names the
+/// pre-promotion head, the page has moved — to exactly these bytes — and the
+/// CAS refused for the wrong reason. The draft could then never be promoted,
+/// only discarded, by a human who first had to work out that their change had
+/// in fact landed. Since #481 it also blocked re-drafting that page at all.
+///
+/// The first half is reproduced here by writing the page directly with the
+/// draft's own content, which is precisely what a promotion that died after
+/// its first write leaves behind.
+#[tokio::test]
+async fn an_interrupted_promotion_completes_instead_of_wedging_the_draft() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let proposed = body("plan", "APPROVED, and the write landed.");
+
+    let captured = call(
+        &p,
+        &token,
+        "capture_event",
+        json!({
+            "source": "manual",
+            "mime": "text/plain",
+            "label_skill": "note",
+            "title": "the thread behind the draft",
+            "body": "the body",
+        }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().expect("event_id").to_owned();
+
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": &proposed,
+            "base_sha256": sha(BASE),
+            "event_id": &event_id,
+        }),
+    )
+    .await;
+    assert_eq!(created["ok"], json!(true), "{created}");
+    let draft_id = created["draft"]["draft_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // The first half of the promotion, and nothing after it: the page now
+    // holds the draft's bytes while the draft is still open. The draft's
+    // `base_sha256` is now stale against a head it wrote itself.
+    let landed = call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": PAGE, "content": &proposed }),
+    )
+    .await;
+    assert_eq!(landed["ok"], json!(true), "first half: {landed}");
+    assert_eq!(
+        page_sha(&p, &token, PAGE).await,
+        Some(sha(&proposed)),
+        "precondition: the page must already carry the draft's bytes"
+    );
+
+    // The retry. It must succeed, and say why it did not have to write.
+    let retry = call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": &draft_id }),
+    )
+    .await;
+    assert_eq!(
+        retry["ok"],
+        json!(true),
+        "a promotion whose write already landed must complete, not refuse: {retry}"
+    );
+    assert_eq!(
+        retry["already_applied"],
+        json!(true),
+        "…and must say it recognised the write rather than making a new one: {retry}"
+    );
+
+    // The second half really ran. All three parts, because each fails
+    // differently and each alone leaves the loop broken: a draft that stays
+    // open is a card that never goes away, and an event that stays in the
+    // inbox is re-dispatched and re-drafted on the next runner restart.
+    let decided = call(&p, &token, "list_drafts", json!({})).await;
+    assert!(
+        !decided["drafts"]
+            .as_array()
+            .expect("drafts")
+            .iter()
+            .any(|d| d["draft_id"] == json!(draft_id)),
+        "the draft must be closed: {decided}"
+    );
+    let inbox = call(&p, &token, "list_inbox", json!({})).await;
+    assert!(
+        !inbox["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|e| e["event_id"] == json!(event_id)),
+        "the event must be retired too, or the next restart drafts it again: {inbox}"
+    );
+    assert_eq!(
+        page_sha(&p, &token, PAGE).await,
+        Some(sha(&proposed)),
+        "and the page must be untouched — there was nothing left to write"
+    );
+}
+
+/// A GENUINE stale base is still a conflict, and the draft still survives it.
+///
+/// The control for the test above, and the reason that one is allowed to
+/// exist. "The page moved to exactly my bytes" and "the page moved" are one
+/// condition apart, and widening the first into the second would turn the CAS
+/// off: a reviewer would approve a diff against one base and silently land it
+/// over somebody else's edit.
+#[tokio::test]
+async fn a_page_that_moved_to_other_bytes_is_still_a_conflict() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": body("plan", "DRAFTED against v1."),
+            "base_sha256": sha(BASE),
+        }),
+    )
+    .await;
+    let draft_id = created["draft"]["draft_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // Someone else's edit — NOT this draft's bytes, which is the whole
+    // difference from the interrupted-promotion case above.
+    let moved = body("plan", "somebody else got there first.");
+    let w = call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": PAGE, "content": &moved }),
+    )
+    .await;
+    assert_eq!(w["ok"], json!(true), "{w}");
+
+    let conflict = call(
+        &p,
+        &token,
+        "promote_draft",
+        json!({ "draft_id": &draft_id }),
+    )
+    .await;
+    assert_eq!(
+        conflict["ok"],
+        json!(false),
+        "a real stale base must still refuse: {conflict}"
+    );
+    assert_eq!(
+        conflict["issues"][0]["code"],
+        json!("conflict"),
+        "{conflict}"
+    );
+    assert_eq!(
+        page_sha(&p, &token, PAGE).await,
+        Some(sha(&moved)),
+        "and must not have overwritten the other edit"
+    );
+    let waiting = call(&p, &token, "list_drafts", json!({})).await;
+    assert!(
+        waiting["drafts"]
+            .as_array()
+            .expect("drafts")
+            .iter()
+            .any(|d| d["draft_id"] == json!(draft_id)),
+        "the draft stays open so the work can be re-drafted against the head"
+    );
+}
+
+/// #509 §3: reviewing a draft must not mean reading two markdown files by eye.
+///
+/// `diff_draft` answers the reviewer's actual question — what changes if I
+/// approve this? — as structure: which frontmatter keys move and to what,
+/// what happens to the body, and whether the target has moved since the draft
+/// was taken (the thing that decides whether promotion will conflict).
+#[tokio::test]
+async fn diff_draft_shows_what_approving_would_change() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    // A draft that changes one key, adds another, and rewrites the body.
+    let proposed = "---\ntype: instance\nskill: note\nid: plan\nhotness: hot\n---\n\
+                    # Plan\nv2 body.\n";
+    let created = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": PAGE,
+            "content": proposed,
+            "base_sha256": sha(BASE),
+        }),
+    )
+    .await;
+    let draft_id = created["draft"]["draft_id"]
+        .as_str()
+        .expect("draft_id")
+        .to_owned();
+
+    let diff = call(&p, &token, "diff_draft", json!({ "draft_id": draft_id })).await;
+    assert_eq!(diff["target_page_id"], json!(PAGE), "{diff}");
+    assert_eq!(diff["exists"], json!(true), "the target exists: {diff}");
+    assert_eq!(
+        diff["base_moved"],
+        json!(false),
+        "nothing has touched the target since drafting: {diff}"
+    );
+
+    let changes = diff["frontmatter_changes"].as_array().expect("changes");
+    let hotness = changes
+        .iter()
+        .find(|c| c["key"] == json!("hotness"))
+        .unwrap_or_else(|| panic!("hotness must be reported as added: {diff}"));
+    assert_eq!(hotness["from"], Value::Null, "it did not exist before");
+    assert_eq!(hotness["to"], json!("hot"), "{diff}");
+    // Keys that did not move are NOT reported — a diff that lists every key
+    // is the two-files-side-by-side problem with extra steps.
+    assert!(
+        !changes.iter().any(|c| c["key"] == json!("skill")),
+        "unchanged keys must not appear: {diff}"
+    );
+
+    let blocks = diff["block_changes"].as_array().expect("block_changes");
+    assert!(
+        blocks.iter().any(|b| {
+            b["kind"] == json!("replace")
+                && b["preview"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("v2 body")
+        }),
+        "the body rewrite must be visible with a preview of what lands: {diff}"
+    );
+
+    // A draft whose target moved after it was taken says so — that is the
+    // signal that promotion will need a merge (or will conflict), and the
+    // reviewer sees it BEFORE approving rather than as a failed promotion.
+    call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": PAGE, "content": body("plan", "moved underneath.") }),
+    )
+    .await;
+    let diff = call(&p, &token, "diff_draft", json!({ "draft_id": draft_id })).await;
+    assert_eq!(
+        diff["base_moved"],
+        json!(true),
+        "the target moved since drafting: {diff}"
+    );
+
+    // A draft for a page that does not exist yet — the ordinary case for a
+    // capture being filed — is a creation, not a diff against nothing.
+    let create = call(
+        &p,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": "markdown/instances/note/fresh.md",
+            "content": body("fresh", "brand new."),
+        }),
+    )
+    .await;
+    let fresh_id = create["draft"]["draft_id"].as_str().expect("id").to_owned();
+    let diff = call(&p, &token, "diff_draft", json!({ "draft_id": fresh_id })).await;
+    assert_eq!(diff["exists"], json!(false), "{diff}");
+    assert_eq!(diff["base_moved"], json!(false), "{diff}");
+    assert!(
+        diff["frontmatter_changes"].as_array().is_some_and(|c| c
+            .iter()
+            .any(|c| c["key"] == json!("id")
+                && c["from"] == Value::Null
+                && c["to"] == json!("fresh"))),
+        "a creation reports every key as an addition: {diff}"
+    );
 }

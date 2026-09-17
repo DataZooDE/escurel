@@ -148,9 +148,20 @@ impl IndexStore for SingleFileStore {
         // draft tools against a table that does not exist — and a review gate
         // that errors is a gate that gets turned off.
         Migrator::ensure_drafts(&conn)?;
+        // The branch registry + overlay tombstones (#512): ensure on EVERY
+        // boot, same reasoning as the drafts table — branches arrived after
+        // every deployed tenant was provisioned, and a branch surface that
+        // errors against a missing table is a surface nobody uses.
+        Migrator::ensure_branches(&conn)?;
         // Provenance-graph VIEW (ADR-0010): ensure on EVERY boot (CREATE OR
         // REPLACE), after pages/links exist. A derived read surface.
         Migrator::ensure_provenance_graph(&conn)?;
+        // Vector index: present only when ESCUREL_INDEX_HNSW asks for it, and
+        // DROPPED here otherwise — a tenant DB provisioned while the HNSW
+        // index still existed carries one, and carrying one is what killed the
+        // writer after ~192 page writes (#431). Both directions on every boot,
+        // like the `ensure_*` above.
+        Migrator::ensure_vector_index(&conn)?;
 
         // The CRDT backend MUST share the SAME DuckDB instance as the indexer.
         // A second `Connection::open` on the same file is a separate database

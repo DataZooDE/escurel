@@ -94,6 +94,24 @@ pub(super) async fn tool_list_skills(
                         description: p.description,
                     })
                     .collect(),
+                // Same shape, same omission rule, for the INSTANCE schema
+                // (#508): a client builds an instance form from this exactly
+                // as it builds a run form from `params` above.
+                fields: s
+                    .fields
+                    .into_iter()
+                    .map(|f| TypesSkillField {
+                        name: f.name,
+                        kind: f.kind.as_str().to_owned(),
+                        required: f.required,
+                        values: f.values,
+                        target_skill: f.target_skill,
+                        min: f.min,
+                        max: f.max,
+                        label: f.label,
+                        description: f.description,
+                    })
+                    .collect(),
             })
             .collect(),
     };
@@ -189,6 +207,114 @@ pub(super) async fn tool_list_instances(
         "instances": instances,
         "next_cursor": next_cursor,
     }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct GetOperationArgs {
+    /// The operation id — the `workflow-run` instance page id `start_operation`
+    /// returned.
+    operation_id: String,
+}
+
+/// `get_operation` — read the current status of an async operation (async-ops
+/// Phase 2). An **ordinary ACL'd read** of the operation's run board: a caller
+/// who may not read the instance gets the same `found: false` shape as a
+/// non-existent operation (denial as absence — no cross-caller existence
+/// oracle, matching every sibling read verb).
+///
+/// The status is DERIVED from the board's append-only status events (the
+/// reserved [`escurel_types::OPERATION_STATUS_LABEL`] the runner records) by
+/// [`derive_operation_status`] — latest-wins by event time, so a re-driven
+/// operation reports its current state rather than a stale terminal.
+pub(super) async fn tool_get_operation(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: GetOperationArgs = parse_args(args, "get_operation")?;
+    // ACL: the run board is an instance; a non-owner is denied by ABSENCE.
+    let readable = match indexer
+        .expand(&a.operation_id, None, None)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("get_operation acl: {e}")))?
+    {
+        Some(e) if e.page.page_type == PageType::Instance => indexer
+            .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("get_operation acl: {e}")))?,
+        // No such page ⇒ not found; a non-instance page id is not an operation.
+        _ => false,
+    };
+    if !readable {
+        return Ok(json!({ "operation_id": a.operation_id, "found": false }));
+    }
+    // Status AND result_ref both come from the SAME latest status event, so fetch
+    // it once. The runner stamps `result_ref` onto the terminal `succeeded`
+    // event's provenance (async-ops Phase 4); surface it here so a caller that
+    // polled to `succeeded` can resolve the produced artifact. Validated by
+    // round-tripping through the closed `ResultRef` enum — a malformed or absent
+    // ref is simply omitted (never a raw, unvalidated path leaks out).
+    let latest = latest_run_status_event(indexer, &a.operation_id).await?;
+    let status = run_status_of(latest.as_ref());
+    let mut out = json!({
+        "operation_id": a.operation_id,
+        "found": true,
+        "status": status.as_str(),
+    });
+    if let Some(result_ref) = latest
+        .as_ref()
+        .and_then(|ev| ev.provenance.get("result_ref"))
+        .and_then(|v| serde_json::from_value::<escurel_types::ResultRef>(v.clone()).ok())
+    {
+        out["result_ref"] = serde_json::to_value(result_ref)
+            .map_err(|e| JsonRpcError::internal(format!("get_operation result_ref: {e}")))?;
+    }
+    Ok(out)
+}
+
+/// Derive an operation's current status from its run board's append-only status
+/// events — the single source of truth shared by `get_operation` and
+/// `start_operation`'s idempotent re-attach (crew Phase-2 F-2/F-3).
+///
+/// **Latest-wins by event time, not max-precedence.** The status writer stamps a
+/// real `at` on each transition and `list_events_page` returns them in `(at,
+/// event_id)` order, so the LAST recognised `run-status` event is the current
+/// one. Max-precedence would be sticky — a `failed` would pin the operation
+/// forever even after an operator re-drive drove it back to `running` →
+/// `succeeded`. No status events yet ⇒ `pending`.
+pub(super) async fn derive_operation_status(
+    indexer: &Indexer,
+    operation_id: &str,
+) -> Result<escurel_types::OperationStatus, JsonRpcError> {
+    let latest = latest_run_status_event(indexer, operation_id).await?;
+    Ok(run_status_of(latest.as_ref()))
+}
+
+/// The single most-recent `run-status` event for an operation (crew Phase-4 F-6):
+/// a newest-first `LIMIT 1` lookup, so a derivation cannot report a stale status
+/// for a board whose history exceeds the page cap. Shared by `get_operation`
+/// (status + result_ref) and `derive_operation_status` (status only) so both read
+/// the exact same event.
+async fn latest_run_status_event(
+    indexer: &Indexer,
+    operation_id: &str,
+) -> Result<Option<escurel_index::EventInfo>, JsonRpcError> {
+    indexer
+        .latest_labeled_event(operation_id, escurel_types::OPERATION_STATUS_LABEL)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("get_operation: {e}")))
+}
+
+/// Latest-wins status from a `run-status` event's `provenance.run_status`; no
+/// event ⇒ `pending`.
+fn run_status_of(ev: Option<&escurel_index::EventInfo>) -> escurel_types::OperationStatus {
+    ev.and_then(|ev| {
+        ev.provenance
+            .get("run_status")
+            .and_then(Value::as_str)
+            .and_then(escurel_types::OperationStatus::from_wire)
+    })
+    .unwrap_or(escurel_types::OperationStatus::Pending)
 }
 
 #[derive(Deserialize)]
@@ -1189,6 +1315,12 @@ pub(super) struct QueryInstanceArgs {
     query_ref: String,
     #[serde(default)]
     params: serde_json::Map<String, Value>,
+    /// Read a scenario overlay instead of the base timeline (#512 §5), the
+    /// same parameter `expand` / `resolve` / `neighbours` / `search` /
+    /// `list_instances` already take. Only a corpus traversal reads it — a
+    /// `sql_view` query targets an external table, which has no overlay.
+    #[serde(default)]
+    scenario: Option<String>,
 }
 
 /// Normalise a query reference to the bare slug the indexer expects:
@@ -1208,7 +1340,7 @@ pub(super) async fn tool_query_instance(
     let a: QueryInstanceArgs = parse_args(args, "query_instance")?;
     let query_id = normalize_query_ref(&a.query_ref);
     let out = indexer
-        .query_instance(&query_id, &a.params, &caller)
+        .query_instance(&query_id, &a.params, a.scenario.as_deref(), &caller)
         .await
         .map_err(|e| JsonRpcError::internal(format!("query_instance: {e}")))?;
     Ok(json!({

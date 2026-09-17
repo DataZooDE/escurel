@@ -94,6 +94,11 @@ pub enum DeadLetterReason {
     /// The harness produced output the adapter could not parse (#158). A
     /// re-run won't fix a broken harness contract, so it dead-letters.
     BadOutput,
+    /// The workflow reducer pass on this run's terminal transition failed
+    /// (async-ops Phase 0.3, Bug B). The run's own effect already landed, but
+    /// the parent plan could not be advanced, so the run is dead-lettered
+    /// (rather than left `processed`) to surface the stall to the DLQ.
+    ReducerFailed,
 }
 
 impl DeadLetterReason {
@@ -105,6 +110,7 @@ impl DeadLetterReason {
             DeadLetterReason::BudgetExceeded => "budget_exceeded",
             DeadLetterReason::RetriesExhausted => "retries_exhausted",
             DeadLetterReason::BadOutput => "bad_output",
+            DeadLetterReason::ReducerFailed => "reducer_failed",
         }
     }
 }

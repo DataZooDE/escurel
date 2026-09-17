@@ -16,6 +16,7 @@ use duckdb::{Connection, params};
 use escurel_embed::{EmbedError, Embedder, NoopReranker, Reranker};
 
 use crate::retrieval::RetrievalConfig;
+use crate::schema::Migrator;
 use escurel_md::wikilink::parse_wikilinks;
 use escurel_md::{PageType, parse};
 use escurel_storage::{Key, LaneStore};
@@ -44,6 +45,14 @@ pub const BLOCKS_DENSE_VEC_DIM: usize = 768;
 /// markdown lane (any [`LaneStore`] impl). The connection is wrapped
 /// in a `tokio::sync::Mutex` because DuckDB connections are
 /// single-threaded; concurrent async callers serialise through it.
+/// Default wall-clock bound on one authored query (#455).
+///
+/// Generous: an aggregating report over an attached source legitimately takes
+/// seconds, and a bound that fires on honest work is worse than none because
+/// it teaches people to raise it. The point is that "for ever" stops being an
+/// option.
+pub const DEFAULT_QUERY_TIMEOUT_MS: u64 = 60_000;
+
 pub struct Indexer {
     store: Arc<dyn LaneStore>,
     pub(crate) embedder: Arc<dyn Embedder>,
@@ -66,6 +75,19 @@ pub struct Indexer {
     /// [`Self::mutation_epoch`] against the last-published value and skips
     /// the publish when nothing changed. Monotone; only equality matters.
     mutation_epoch: AtomicU64,
+    /// Wall-clock bound on ONE authored query's execution, in milliseconds
+    /// (#455).
+    ///
+    /// DuckDB has no statement timeout — the only bound it offers is
+    /// `Connection::interrupt` — and this Indexer holds ONE connection behind
+    /// a mutex, so an unbounded runaway query does not merely waste CPU: it
+    /// holds the tenant's whole read surface for as long as it runs. That is a
+    /// tenant-level availability event caused by one authored page.
+    ///
+    /// Atomic rather than a plain field because the Indexer is shared behind
+    /// an `Arc` and this is a knob an operator (and a test) sets after
+    /// construction. `0` disables the bound.
+    query_timeout_ms: AtomicU64,
     tenant: String,
     /// Second-stage cross-encoder reranker. [`NoopReranker`] by default
     /// (identity), so the rerank stage is a no-op until a real reranker
@@ -290,6 +312,26 @@ pub struct MergeReport {
 }
 
 impl Indexer {
+    /// Set the wall-clock bound on ONE authored query's execution (#455).
+    /// `Duration::ZERO` disables it.
+    ///
+    /// Interior mutability on purpose: the Indexer is shared behind an `Arc`,
+    /// and this is an operator knob rather than a construction-time property.
+    pub fn set_query_timeout(&self, timeout: std::time::Duration) {
+        let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        self.query_timeout_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The current per-query bound; `None` when disabled.
+    #[must_use]
+    pub fn query_timeout(&self) -> Option<std::time::Duration> {
+        let ms = self
+            .query_timeout_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (ms > 0).then(|| std::time::Duration::from_millis(ms))
+    }
+
     /// Build a per-tenant indexer.
     ///
     /// # Errors
@@ -317,6 +359,7 @@ impl Indexer {
             conn: Mutex::new(conn),
             write_lock: Mutex::new(()),
             mutation_epoch: AtomicU64::new(0),
+            query_timeout_ms: AtomicU64::new(DEFAULT_QUERY_TIMEOUT_MS),
             tenant: tenant.into(),
             reranker: Arc::new(NoopReranker),
             retrieval: RetrievalConfig::disabled(),
@@ -685,7 +728,7 @@ impl Indexer {
     /// tail of every write path that changed `pages`/`links`/`blocks`
     /// (AFTER the transaction committed — a rolled-back write must not
     /// dirty the epoch).
-    fn bump_mutation_epoch(&self) {
+    pub(crate) fn bump_mutation_epoch(&self) {
         self.mutation_epoch.fetch_add(1, Ordering::Release);
     }
 
@@ -1354,19 +1397,17 @@ impl Indexer {
         Ok(())
     }
 
-    /// Drop + recreate the `blocks` HNSW vector index. Per-row HNSW
-    /// maintenance is the slow path on a large bulk load (the offline batch
-    /// loader, or a DuckDB→DuckDB merge); the fast pattern is to insert all
-    /// rows first and rebuild the index once at the end. Vector search stays
-    /// *correct* throughout — `search_with` ranks by `array_cosine_distance`,
-    /// the HNSW index only accelerates it — so this is purely a speed knob.
+    /// Bring the HNSW vector indexes in line with `ESCUREL_INDEX_HNSW` —
+    /// rebuilding them when it is set, dropping them when it is not.
+    ///
+    /// Vector search stays *correct* either way: `search_with` ranks by
+    /// `array_cosine_distance`, which the index only ever accelerated. Since
+    /// #431 it does not even do that measurably (every search carries a
+    /// filter), while it does hang the writer after ~192 page writes — so the
+    /// default is no index at all. See [`Migrator::ensure_vector_index`].
     pub async fn reindex_vectors(&self) -> Result<(), IndexerError> {
         let conn = self.conn.lock().await;
-        conn.execute_batch(
-            "DROP INDEX IF EXISTS hnsw_blocks_vec; \
-             CREATE INDEX hnsw_blocks_vec ON blocks USING HNSW (dense_vec) \
-             WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);",
-        )?;
+        conn.execute_batch(Migrator::vector_index_ddl())?;
         Ok(())
     }
 
@@ -1478,12 +1519,10 @@ impl Indexer {
         }
         tx.commit()?;
 
-        // Rebuild the vector index (same DDL as the schema), then drop the lock
-        // before refreshing FTS (which re-locks the connection).
-        conn.execute_batch(
-            "CREATE INDEX hnsw_blocks_vec ON blocks USING HNSW (dense_vec) \
-             WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);",
-        )?;
+        // Rebuild the vector index if this deployment asks for one (#431: by
+        // default it does not), then drop the lock before refreshing FTS
+        // (which re-locks the connection).
+        conn.execute_batch(Migrator::vector_index_ddl())?;
         drop(conn);
         self.refresh_fts().await?;
         self.bump_mutation_epoch();

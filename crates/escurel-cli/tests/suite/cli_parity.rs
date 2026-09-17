@@ -69,12 +69,33 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("list_op_authors", Agent(&["page", "op-authors"])),
     ("assign_event", Agent(&["event", "assign"])),
     ("create_draft", Agent(&["draft", "create"])),
+    ("create_branch", Agent(&["branch", "create"])),
+    ("list_branches", Agent(&["branch", "list"])),
+    ("merge_branch", Agent(&["branch", "merge"])),
+    ("abandon_branch", Agent(&["branch", "abandon"])),
     ("list_drafts", Agent(&["draft", "list"])),
+    ("diff_draft", Agent(&["draft", "diff"])),
+    ("list_changesets", Agent(&["changeset", "list"])),
+    ("promote_changeset", Agent(&["changeset", "promote"])),
+    ("discard_changeset", Agent(&["changeset", "discard"])),
     ("promote_draft", Agent(&["draft", "promote"])),
     ("discard_draft", Agent(&["draft", "discard"])),
     ("open_session", Agent(&["session", "open"])),
     ("apply_op", Agent(&["session", "apply"])),
     ("close_session", Agent(&["session", "close"])),
+    // --- async-operation facade: agent/chat-callable via MCP ------------
+    // `start_operation`/`get_operation` are the async-ops surface a running
+    // agent drives (kick a long job; poll its status), not an operator CLI
+    // verb. Operator inspection of a run goes through `workflow run/status`.
+    // If a dedicated `operation` CLI ever earns its keep, move these to Agent.
+    (
+        "start_operation",
+        Excluded("async-ops facade; agent/chat-callable via MCP"),
+    ),
+    (
+        "get_operation",
+        Excluded("async-ops facade; agent/chat-callable via MCP"),
+    ),
     // --- admin surface with a CLI command -------------------------------
     ("admin_quota", Admin(&["quota"])),
     ("admin_audit", Admin(&["audit"])),

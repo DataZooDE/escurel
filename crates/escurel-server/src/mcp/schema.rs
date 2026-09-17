@@ -45,6 +45,19 @@ pub(super) fn tools_list_payload() -> Value {
                 }),
             ),
             tool_entry(
+                "get_operation",
+                Execution::Deterministic,
+                Scope::Agent,
+                "Read the current status of an async operation (pending|running|succeeded|failed|awaiting_human), derived from its run board. Returns {found:false} for an unknown or unreadable operation.",
+                json!({
+                    "type": "object",
+                    "required": ["operation_id"],
+                    "properties": {
+                        "operation_id": { "type": "string", "description": "The operation id returned by start_operation (its run-board page id)." }
+                    }
+                }),
+            ),
+            tool_entry(
                 "resolve",
                 Execution::Deterministic,
                 Scope::Agent,
@@ -187,7 +200,8 @@ pub(super) fn tools_list_payload() -> Value {
                     "properties": {
                         "ref": { "type": "string", "description": "Query id or [[query::id]] wikilink; its `target` names the sql_view instance to read." },
                         "query_id": { "type": "string", "description": "Alias for `ref` (the retired run_stored_query's spelling)." },
-                        "params": { "type": "object", "description": "Runtime values bound to the report's `:param` placeholders." }
+                        "params": { "type": "object", "description": "Runtime values bound to the report's `:param` placeholders." },
+                        "scenario": { "type": "string", "description": "Read a scenario overlay instead of the base timeline (corpus traversals only)." }
                     }
                 }),
             ),
@@ -227,8 +241,138 @@ pub(super) fn tools_list_payload() -> Value {
                         "target_page_id": { "type": "string", "description": "The page this write is FOR, e.g. `markdown/instances/<skill>/<slug>.md`." },
                         "content": { "type": "string" },
                         "base_sha256": { "type": "string", "description": "The target's content_sha256 when drafted, from `expand`; \"\" = approve-create (expect no page). Carried into `update_page`'s CAS at promotion." },
-                        "event_id": { "type": "string", "description": "The inbox event this draft answers, when it answers one." }
+                        "event_id": { "type": "string", "description": "The inbox event this draft answers, when it answers one." },
+                        "changeset_id": { "type": "string", "description": "Join the changeset a previous create_draft in this run returned (#509)." },
+                        "new_changeset": { "type": "boolean", "description": "Start a changeset; the server mints the id and returns it on the stored draft. Not with `changeset_id`." }
                     }
+                }),
+            ),
+            tool_entry(
+                "list_changesets",
+                Execution::Deterministic,
+                Scope::Agent,
+                "The review queue by RUN rather than by page (#509): one row \
+                 per changeset with how many held writes it holds, who \
+                 proposed it, the pages it touches and the events it answers. \
+                 `status` is derived from its members — `open` while any is \
+                 open, `mixed` when members were decided individually.",
+                json!({
+                    "type": "object",
+                    "properties": { "limit": { "type": "integer" } }
+                }),
+            ),
+            tool_entry(
+                "promote_changeset",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Land a run's held writes as ONE decision. All-or-nothing: \
+                 every member is checked first (still open, still valid, \
+                 target still at the hash it was drafted against) and if any \
+                 would refuse, NOTHING lands and every member stays open. Safe \
+                 to retry — a member whose page already holds its bytes counts \
+                 as applied, so a promotion interrupted mid-flight completes \
+                 rather than conflicting with itself.",
+                json!({
+                    "type": "object",
+                    "required": ["changeset_id"],
+                    "properties": {
+                        "changeset_id": { "type": "string" },
+                        "decided_by": { "type": "string", "description": "the HUMAN who approved, when a gateway decides on their behalf (admin only)" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "discard_changeset",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Refuse a run's proposal whole. Every open member is closed \
+                 with the reason; nothing is written to any target.",
+                json!({
+                    "type": "object",
+                    "required": ["changeset_id"],
+                    "properties": {
+                        "changeset_id": { "type": "string" },
+                        "reason": { "type": "string" },
+                        "decided_by": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "create_branch",
+                Execution::Deterministic,
+                Scope::Agent,
+                "Open a BRANCH: an isolated workspace whose writes never touch \
+                 the base timeline (#512). Records who opened it and the corpus \
+                 state it forked from — a merge needs the latter. The name is \
+                 also the `scenario` its pages carry, so there is exactly one \
+                 identifier. Opening an existing name is refused, never joined.",
+                json!({
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": { "name": { "type": "string", "description": "e.g. `agent/inbox-scan`" } }
+                }),
+            ),
+            tool_entry(
+                "list_branches",
+                Execution::Deterministic,
+                Scope::Agent,
+                "Every branch, newest first, including decided ones — \
+                 \"did we already decide that one?\" must stay answerable. Each \
+                 row carries its author, `base_version`, `status` \
+                 (open | merged | abandoned) and the reason it was abandoned.",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_entry(
+                "merge_branch",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Land a branch onto the base timeline. All-or-nothing: every \
+                 page the branch carries is checked first, and one member that \
+                 could not land blocks the whole merge — a branch may be hours \
+                 of work, and a half-landed one is very hard to reason back \
+                 out of. A base twin that moved since the fork is reconciled by \
+                 the SAME three-way merge `update_page` performs: disjoint \
+                 frontmatter keys merge, the same key on both sides conflicts. \
+                 Tombstones land as real deletes.",
+                json!({
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": { "name": { "type": "string" } }
+                }),
+            ),
+            tool_entry(
+                "abandon_branch",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Close a branch without landing anything. Its overlay pages are \
+                 deliberately LEFT in place: they are the record of what was \
+                 proposed, they are invisible to the base timeline, and deleting \
+                 them would destroy the only evidence of an abandoned run. A \
+                 decided branch accepts no further writes.",
+                json!({
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "reason": { "type": "string" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "diff_draft",
+                Execution::Deterministic,
+                Scope::Agent,
+                "What approving a held write would change: which frontmatter \
+                 keys move and to what (`frontmatter_changes`), what happens to \
+                 the body (`block_changes`), whether the target page exists, and \
+                 whether it has MOVED since the draft was taken (`base_moved` — \
+                 the signal that promotion will need a merge). Read-only; the \
+                 same read gate as `list_drafts`, so a draft you may not see \
+                 reads as absent.",
+                json!({
+                    "type": "object",
+                    "required": ["draft_id"],
+                    "properties": { "draft_id": { "type": "string" } }
                 }),
             ),
             tool_entry(
@@ -305,6 +449,7 @@ pub(super) fn tools_list_payload() -> Value {
                         "base_version": { "type": "string" },
                         "require_exact_base": { "type": "boolean" },
                         "base_sha256": { "type": "string", "description": "Content-hash CAS — the approval guard that works on EVERY gateway (base_version needs a CRDT backend). Hex sha256 of the stored markdown the held write was drafted against; \"\" = approve-create (expect no page). Mismatch refuses {code: conflict} + head_sha256 + head_content. (#354)" },
+                        "branch": { "type": "string", "description": "Write on this BRANCH instead of the base timeline (#512): the server derives the overlay page id and stamps `scenario`, so an agent cannot forget to and write to production. Must be an OPEN registered branch." },
                         "provenance": { "type": "object" }
                     }
                 }),
@@ -464,6 +609,28 @@ pub(super) fn tools_list_payload() -> Value {
                         "title": { "type": "string" },
                         "body": { "type": "string" },
                         "provenance": { "type": "object" }
+                    }
+                }),
+            ),
+            tool_entry(
+                "start_operation",
+                Execution::Orchestration,
+                Scope::Agent,
+                "Begin an async workflow operation: run the `wf_skill` plan in the \
+                 background and return `{operation_id, status:'pending'}` fast. The \
+                 server owns the operation's identity and its workflow provenance \
+                 (you cannot forge either), creates an owner-scoped run board, and \
+                 captures the invocation. Poll progress with `get_operation`. Pass \
+                 `idempotency_key` to make a retry re-attach to the same operation \
+                 rather than start a second run.",
+                json!({
+                    "type": "object",
+                    "required": ["wf_skill"],
+                    "properties": {
+                        "wf_skill": { "type": "string", "description": "The kind:workflow plan skill id to run." },
+                        "input": { "type": "string", "description": "The invocation body handed to the plan's first step." },
+                        "idempotency_key": { "type": "string", "description": "Retry key: same key (same caller) → one operation, not a second run." },
+                        "conversation_ref": { "type": "object", "description": "Opaque channel reference stored for terminal delivery (Phase 3); not interpreted." }
                     }
                 }),
             ),
@@ -1377,6 +1544,44 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "next_cursor": { "type": ["string", "null"], "description": "string = more rows (pass back as cursor); null = done" }
         })),
         "list_drafts" => obj(json!({ "drafts": { "type": "array" } })),
+        "create_branch" => obj(json!({
+            "ok": { "type": "boolean" },
+            "branch": { "type": "object", "description": "{name, base_version, author, status, created_at}" },
+            "issues": { "type": "array" }
+        })),
+        "list_branches" => obj(json!({ "branches": { "type": "array" } })),
+        "merge_branch" => obj(json!({
+            "ok": { "type": "boolean" },
+            "name": { "type": "string" },
+            "results": { "type": "array", "description": "[{page_id, target, deleted, ok}]" },
+            "partial": { "type": "boolean", "description": "a pre-flighted page refused mid-apply; re-run to complete" },
+            "issues": { "type": "array" }
+        })),
+        "abandon_branch" => obj(json!({
+            "ok": { "type": "boolean" },
+            "name": { "type": "string" },
+            "reason": { "type": "string" }
+        })),
+        "list_changesets" => obj(json!({ "changesets": { "type": "array" } })),
+        "promote_changeset" => obj(json!({
+            "ok": { "type": "boolean" },
+            "changeset_id": { "type": "string" },
+            "results": { "type": "array", "description": "[{draft_id, page_id, ok, already_applied}]" },
+            "already_decided": { "type": "boolean", "description": "the retry answer: this changeset was decided already" },
+            "partial": { "type": "boolean", "description": "a pre-flighted member refused mid-apply; re-run to complete" }
+        })),
+        "discard_changeset" => obj(json!({
+            "ok": { "type": "boolean" },
+            "discarded": { "type": "integer" }
+        })),
+        "diff_draft" => obj(json!({
+            "ok": { "type": "boolean" },
+            "target_page_id": { "type": "string" },
+            "exists": { "type": "boolean", "description": "false = this draft would CREATE the page" },
+            "base_moved": { "type": "boolean", "description": "the target is not what it was when drafted; promotion needs a merge" },
+            "frontmatter_changes": { "type": "array", "description": "[{key, from, to}] — only keys that MOVE; null on either side means added/removed" },
+            "block_changes": { "type": "array", "description": "[{anchor, kind, preview}] — preview is the PROPOSED text" }
+        })),
         "list_inbox" | "list_events" => obj(json!({
             "events": { "type": "array" },
             "next_cursor": { "type": "string", "description": "present iff rows lie past the page; absence (only) means done" }

@@ -538,6 +538,50 @@ impl Indexer {
             .next())
     }
 
+    /// The **most recent** processed event assigned to `instance` under
+    /// `label` — newest by `at_ts` (async-ops Phase-4 F-6). One indexed row, so
+    /// deriving an operation's current status is a `LIMIT 1` lookup rather than
+    /// paging the whole ASC history (which, capped at [`EVENTS_MAX_LIMIT`],
+    /// would report a STALE status for a board with more events than the cap).
+    pub async fn latest_labeled_event(
+        &self,
+        instance: &str,
+        label: &str,
+    ) -> Result<Option<EventInfo>, IndexerError> {
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+        let mut where_clauses = vec![
+            "instance_page_id = ?".to_owned(),
+            "label_skill = ?".to_owned(),
+            "status = 'processed'".to_owned(),
+        ];
+        if tenant.is_some() {
+            where_clauses.push("tenant = ?".to_owned());
+        }
+        let sql = format!(
+            "{} WHERE {} ORDER BY at_ts DESC NULLS LAST, event_id DESC LIMIT 1",
+            select_cols(&table),
+            where_clauses.join(" AND "),
+        );
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> =
+            vec![Box::new(instance.to_owned()), Box::new(label.to_owned())];
+        if let Some(t) = &tenant {
+            bindings.push(Box::new(t.clone()));
+        }
+        let param_refs: Vec<&dyn duckdb::ToSql> = bindings
+            .iter()
+            .map(|b| b.as_ref() as &dyn duckdb::ToSql)
+            .collect();
+        let row = stmt
+            .query_map(param_refs.as_slice(), event_row_from_row)?
+            .collect::<duckdb::Result<Vec<_>>>()?
+            .into_iter()
+            .next();
+        row.map(event_from_row).transpose()
+    }
+
     /// Assign an inbox event to an instance and mark it processed — the
     /// (external/simulated) agent folding the event into the instance.
     ///

@@ -120,6 +120,139 @@ async fn verifies_a_well_formed_token_to_agent_role() {
     assert_eq!(ctx.role, Role::Agent);
 }
 
+/// A runner→agent internal-delegation token is refused at the gateway surface
+/// even when it carries escurel's OWN audience (fleet #801 AD-7 fail-closed).
+///
+/// The delegation token is signed by the same issuer and verified against the
+/// same JWKS as a gateway bearer; its only intended separation is `aud` (the
+/// agent's). This test mints one with `aud=escurel` on purpose — so it PASSES
+/// the audience gate — and asserts the explicit `purpose` reject refuses it
+/// anyway. That is the defense-in-depth the design promises: a leaked delegation
+/// bearer is not a candidate `/mcp` credential even under an audience
+/// misconfiguration.
+#[tokio::test]
+async fn a_delegation_purpose_token_is_refused_even_with_escurels_own_audience() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let token = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE, // escurel's OWN audience → passes the aud gate
+            "sub": "escurel-async-runner",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+            "roles": [],
+            "purpose": "internal_delegation"
+        }),
+    );
+
+    let err = v
+        .verify(&token)
+        .await
+        .expect_err("delegation purpose must be refused");
+    assert!(
+        matches!(err, AuthError::PurposeRefused(ref p) if p == "internal_delegation"),
+        "expected PurposeRefused, got {err:?}"
+    );
+}
+
+/// Positive control: the SAME token shape WITHOUT the delegation purpose still
+/// verifies — so the test above is about the purpose, not a coincidental
+/// rejection.
+#[tokio::test]
+async fn the_same_token_without_the_delegation_purpose_verifies() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let token = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "escurel-async-runner",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+            "roles": []
+        }),
+    );
+
+    let ctx = v.verify(&token).await.expect("verify without purpose");
+    assert_eq!(ctx.subject, "escurel-async-runner");
+    assert_eq!(ctx.tenant_id, "acme");
+}
+
+/// An expired bearer is refused the second it expires, not a minute later.
+///
+/// `jsonwebtoken` defaults `leeway` to 60 seconds. Inherited, that accepted a
+/// dead credential for a full minute — and, worse, made a broken
+/// re-authentication path look correct: the first version of the expiry test
+/// in escurel#442 minted a 5-second bearer, slept, and passed against a runner
+/// that provably never re-minted.
+///
+/// The window is what matters, so the test uses one: a token 30 seconds past
+/// `exp` is inside the old default and outside the new policy. A token merely
+/// one second past would pass under either if this regressed to a small
+/// non-zero leeway, which is exactly the change this must catch.
+#[tokio::test]
+async fn a_token_past_its_exp_is_refused_without_a_minute_of_grace() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let expired = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "user-42",
+            "tenant": "acme",
+            "iat": now - 630,
+            "exp": now - 30,
+            "roles": ["regular-user"]
+        }),
+    );
+    let err = v
+        .verify(&expired)
+        .await
+        .expect_err("a token 30s past exp must be refused");
+    assert!(
+        format!("{err}").to_lowercase().contains("expired"),
+        "the refusal must name the expiry, or a caller cannot tell it from a \
+         bad signature and will not know to re-authenticate: {err}"
+    );
+
+    // POSITIVE CONTROL: the same claims, still live, verify — so the refusal
+    // above is the clock and not the issuer, audience or key.
+    let live = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "user-42",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+            "roles": ["regular-user"]
+        }),
+    );
+    assert_eq!(v.verify(&live).await.expect("control").subject, "user-42");
+}
+
 #[tokio::test]
 async fn admin_role_is_detected_when_role_value_in_claim_array() {
     let server = MockServer::start().await;
@@ -481,4 +614,75 @@ async fn jwks_cache_serves_repeated_lookups_without_extra_fetches() {
     }
     // wiremock's expect(1) asserts on drop.
     let _ = Duration::from_secs(1);
+}
+
+/// #510: a per-run agent token names the agent in `sub` and keeps the runner
+/// in `act.sub` (RFC 8693 delegation). The verifier must surface that actor,
+/// because everything downstream that needs the chain — the provenance stamp,
+/// the runner's own lineage-trust guard — can only read what the verifier
+/// resolved. A token without `act` has no actor, which is the ordinary case.
+#[tokio::test]
+async fn an_act_claim_projects_the_delegating_actor_into_authcontext() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+
+    let delegated = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "agent:inbox-scan",
+            "act": { "sub": "escurel-runner" },
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+        }),
+    );
+    let ctx = v.verify(&delegated).await.expect("verify");
+    assert_eq!(ctx.subject, "agent:inbox-scan");
+    assert_eq!(
+        ctx.actor.as_deref(),
+        Some("escurel-runner"),
+        "the delegation chain must survive verification, or nothing \
+         downstream can record who the agent was acting for"
+    );
+
+    // The ordinary token: nobody is acting for anybody.
+    let plain = sign_token(
+        &keys,
+        json!({
+            "iss": issuer,
+            "aud": AUDIENCE,
+            "sub": "consultant:alice",
+            "tenant": "acme",
+            "iat": now,
+            "exp": now + 600,
+        }),
+    );
+    let ctx = v.verify(&plain).await.expect("verify");
+    assert_eq!(ctx.actor, None, "no act claim, no actor");
+
+    // A malformed `act` is not an actor — never a stringified object, and
+    // never an error either: it is a claim we do not understand, so the
+    // token verifies as itself with no chain.
+    for junk in [json!("escurel-runner"), json!({ "sub": "" }), json!([])] {
+        let odd = sign_token(
+            &keys,
+            json!({
+                "iss": issuer,
+                "aud": AUDIENCE,
+                "sub": "agent:x",
+                "act": junk,
+                "tenant": "acme",
+                "iat": now,
+                "exp": now + 600,
+            }),
+        );
+        let ctx = v.verify(&odd).await.expect("verify");
+        assert_eq!(ctx.actor, None, "malformed act must not become an actor");
+    }
 }

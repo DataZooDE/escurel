@@ -158,6 +158,7 @@ fn analyst(subject: &str) -> AclCaller<'_> {
         subject,
         is_admin: false,
         token_groups: &[],
+        actor: None,
     }
 }
 
@@ -193,7 +194,7 @@ async fn reorder_proposal_e2e_through_query_page_and_acl() {
     // computes a real reorder point per SKU.
     let res = h
         .indexer
-        .query_instance("reorder-proposal", &no_args, &analyst("planner@acme"))
+        .query_instance("reorder-proposal", &no_args, None, &analyst("planner@acme"))
         .await
         .expect("public reorder proposal");
     assert_eq!(res.rows.len(), 2, "one policy row per SKU");
@@ -214,7 +215,7 @@ async fn reorder_proposal_e2e_through_query_page_and_acl() {
     // for a non-owner — the fleet's fail-closed boundary, no number leaks.
     let denied = h
         .indexer
-        .query_instance("reorder-secret", &no_args, &analyst("intruder@acme"))
+        .query_instance("reorder-secret", &no_args, None, &analyst("intruder@acme"))
         .await;
     assert!(
         matches!(denied, Err(QueryError::Forbidden { .. })),

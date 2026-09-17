@@ -52,7 +52,12 @@ async fn start() -> Harness {
         .strip_prefix("http://")
         .unwrap()
         .to_owned();
-    let bearer = process.mint_token(TENANT, Role::Agent);
+    // `workflow run` injects `provenance.workflow` (the reducer-routing key) via
+    // capture_event — a server-owned block that, since async-ops 2c-ii, only an
+    // admin/system identity may supply directly (a non-admin agent begins a
+    // workflow through `start_operation`, not this operator verb). The CLI is an
+    // operator surface, so it runs as admin, like the other `escurel` admin verbs.
+    let bearer = process.mint_token(TENANT, Role::Admin);
     Harness {
         process,
         addr,

@@ -127,6 +127,10 @@ pub struct ConfigOverrides {
     /// (production `ESCUREL_PACK_SECRET`). `None` (default) keeps the
     /// pack surface off — `export_pack` refuses fail-closed.
     pub pack_secret: Option<String>,
+    /// Per-tenant secret keying the async-operation idempotency slug
+    /// (production `ESCUREL_OPERATION_SLUG_SECRET`, async-ops Phase-4 F-4).
+    /// `None` (default) → the slug degrades to a peer-computable hash.
+    pub operation_slug_secret: Option<String>,
     /// JWT claim the verifier reads the subject's group memberships from
     /// (production `ESCUREL_AUTH_GROUPS_CLAIM`; e.g. `triton_sender_groups`
     /// in the Triton-fronted topology). `None` keeps the default (`roles`).
@@ -436,6 +440,7 @@ impl EscurelProcess {
             webhook_url: overrides.webhook_url.clone(),
             webhook_secret: overrides.webhook_secret.clone(),
             pack_secret: overrides.pack_secret.clone(),
+            operation_slug_secret: overrides.operation_slug_secret.clone(),
             // Metrics on their own random port, mirroring production's
             // dedicated listener (production defaults to :9090).
             metrics_listen: Some("127.0.0.1:0".to_owned()),
@@ -598,6 +603,17 @@ impl EscurelProcess {
             "EscurelProcess::mint_token_with_sub requires AuthMode::TestIssuer; spawned with a different mode",
         );
         issuer.mint_with_sub(tenant, role, subject)
+    }
+
+    /// Mint a bearer that is **acting for** another principal — the per-run
+    /// agent token shape (#510): `sub` names the agent, `act.sub` the runner
+    /// that delegated to it. Used to prove the gateway records the chain.
+    #[must_use]
+    pub fn mint_token_acting_as(&self, tenant: &str, subject: &str, actor: &str) -> String {
+        let issuer = self.issuer.as_ref().expect(
+            "EscurelProcess::mint_token_acting_as requires AuthMode::TestIssuer; spawned with a different mode",
+        );
+        issuer.mint_acting_as(tenant, subject, actor)
     }
 
     /// Mint a bearer with an explicit `sub` and arbitrary token groups

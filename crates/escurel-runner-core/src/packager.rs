@@ -178,6 +178,15 @@ pub enum PackageError {
     /// A credential is configured but could not be minted.
     #[error("could not mint the runner's gateway bearer: {0}")]
     Auth(String),
+    /// A WORKFLOW run's board carries no `requested_by` (crew final-review F2):
+    /// the run must execute as the requester, and falling back to the runner's
+    /// admin bearer would reinstate the confused deputy. Fail the run instead of
+    /// running it with more authority than the requester had.
+    #[error("workflow run {run:?} has no requester on its board; refusing to run as the runner")]
+    MissingRequester {
+        /// The run board page id.
+        run: String,
+    },
 }
 
 /// The packaged unit of work handed to a harness adapter: the skill body as
@@ -211,6 +220,82 @@ pub struct TaskContext {
     /// minted, short-TTL" token) is a later concern — this field is the
     /// seam where that minting will land without changing the public shape.
     token: SecretString,
+    /// The delegation seam for a `harness: delegate` step (async-ops Phase 4
+    /// slice 3c): where to reach the agent's A2A endpoint, what capability to
+    /// ask it for, and the runner→agent delegation token (aud=agent, minted by
+    /// [`crate::auth::Signer::mint_delegation`]). `None` for every ordinary
+    /// step — only the packager, and only for a delegate step, fills it in. The
+    /// `DelegateHarness` reads it and refuses (fails closed) when it is `None`.
+    delegation: Option<Delegation>,
+}
+
+/// The A2A delegation parameters for a `harness: delegate` step (async-ops
+/// Phase 4 slice 3c). escurel is the orchestrator; the domain implementation
+/// lives next to the agent, so a delegate step hands the work to the agent over
+/// A2A and waits for it to name a result. Carried per-task because the
+/// delegation token is minted fresh per requester.
+#[derive(Clone)]
+pub struct Delegation {
+    /// The agent's A2A endpoint (`AGENT_A2A_URL`) the runner POSTs the
+    /// JSON-RPC `message/send` / `tasks/get` to.
+    pub agent_a2a_url: String,
+    /// The capability the delegated task asks the agent for (e.g. `scenario`).
+    /// Domain-agnostic to the runner — the agent decides what it means.
+    pub capability: String,
+    /// The runner→agent delegation bearer, held opaque (aud=agent, empty roles,
+    /// `purpose=internal_delegation`). Redacted from `Debug`.
+    token: SecretString,
+    /// The step's produced-instance page id (the pre-flagged
+    /// `markdown/instances/<skill>/<id>.md` the reducer will read back). After
+    /// the agent returns a `result_ref`, the delegate harness writes THIS
+    /// instance over `/mcp` — the "seal" — so the step confirms like every other
+    /// harness's produced instance and the `result_ref` reaches `get_operation`.
+    /// `None` when the step declares no produced instance (nothing to seal).
+    produced_instance: Option<String>,
+}
+
+impl Delegation {
+    /// Construct a delegation, wrapping the bearer opaquely.
+    #[must_use]
+    pub fn new(agent_a2a_url: String, capability: String, token: SecretString) -> Self {
+        Self {
+            agent_a2a_url,
+            capability,
+            token,
+            produced_instance: None,
+        }
+    }
+
+    /// Attach the produced-instance page id the seal writes after the agent
+    /// returns a result (see the field docs).
+    #[must_use]
+    pub fn with_produced_instance(mut self, page_id: Option<String>) -> Self {
+        self.produced_instance = page_id;
+        self
+    }
+
+    /// The produced-instance page id the seal must write, if the step declares one.
+    #[must_use]
+    pub fn produced_instance(&self) -> Option<&str> {
+        self.produced_instance.as_deref()
+    }
+
+    /// The delegation bearer as a `&str` (the single explicit read path; kept
+    /// out of `Debug` via [`SecretString`]).
+    #[must_use]
+    pub fn token_str(&self) -> &str {
+        self.token.expose_secret()
+    }
+}
+
+impl std::fmt::Debug for Delegation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Delegation")
+            .field("agent_a2a_url", &self.agent_a2a_url)
+            .field("capability", &self.capability)
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 impl TaskContext {
@@ -223,6 +308,23 @@ impl TaskContext {
     /// single, explicit read path.
     pub fn token_str(&self) -> &str {
         self.token.expose_secret()
+    }
+
+    /// The delegation parameters for a `harness: delegate` step, if this task is
+    /// one. `None` for every ordinary step — the `DelegateHarness` treats that
+    /// as "not a delegate task" and refuses.
+    #[must_use]
+    pub fn delegation(&self) -> Option<&Delegation> {
+        self.delegation.as_ref()
+    }
+
+    /// Attach delegation parameters (async-ops Phase 4 slice 3c). Builder-style
+    /// so the packager sets it only for a delegate step and every other
+    /// construction path leaves it `None`.
+    #[must_use]
+    pub fn with_delegation(mut self, delegation: Delegation) -> Self {
+        self.delegation = Some(delegation);
+        self
     }
 
     /// Construct a `TaskContext` directly from its parts.
@@ -248,6 +350,7 @@ impl TaskContext {
             // silently exercises the committing surface.
             autonomy: Autonomy::Review,
             token,
+            delegation: None,
         }
     }
 }
@@ -271,6 +374,127 @@ fn mcp_endpoint(gateway_url: &str) -> String {
     format!("{}/mcp", gateway_url.trim_end_matches('/'))
 }
 
+/// How long a per-run agent bearer lives (#510): the run's own budget, never
+/// the process lifetime.
+///
+/// Floored at a minute so a deployment that configures a very short run
+/// timeout does not mint a token that lapses mid-call — the token must
+/// outlive the run it belongs to, and only that run. Not ceilinged: a
+/// deployment that budgets a long run has already accepted that duration.
+fn agent_ttl_secs(cfg: &RunnerConfig) -> u64 {
+    const FLOOR_SECS: u64 = 60;
+    cfg.run_timeout.as_secs().max(FLOOR_SECS)
+}
+
+/// The per-run credential decision for a trigger (async-ops Phase 2c-i / crew
+/// final-review F2).
+enum CallerToken {
+    /// Not a workflow trigger — legitimately use the runner's own identity.
+    NotWorkflow,
+    /// An ordinary (non-workflow) run on a minting runner: the harness
+    /// executes as `agent:<label_skill>`, with the runner kept as the
+    /// delegating actor (#510), so two skills leave two audit trails.
+    Agent { token: String },
+    /// A workflow run with a resolved requester and a minted, caller-scoped
+    /// token — the harness executes as the requester. Carries the requester
+    /// `subject` too, so a delegate step can name it as the delegation `obo`
+    /// (audit) without re-reading the run board.
+    Scoped { token: String, subject: String },
+    /// A workflow run the token source cannot scope — a static dev bearer (which
+    /// cannot mint at all), whether or not a requester is on record. Dev-only
+    /// fallback to the runner's identity; production runs minted (ADR-0012), so
+    /// this never occurs there.
+    CannotMint,
+    /// A workflow run whose board carries NO requester, on a **minting** runner
+    /// that would otherwise scope it — fail closed (F2), never fall open to the
+    /// runner's admin bearer (the strip-mid-run escalation).
+    MissingRequester,
+}
+
+/// Decide the per-run credential for `trigger`. A workflow run must execute as
+/// its requester (read from the run board's `requested_by`/`requester_groups`,
+/// which `start_operation` stamped); a board with no requester fails closed
+/// rather than running as the runner.
+async fn caller_scoped_token(
+    trigger: &Trigger,
+    client: &Client,
+    cfg: &RunnerConfig,
+    tokens: &crate::TokenSource,
+) -> Result<CallerToken, PackageError> {
+    let Some(wf) = &trigger.workflow else {
+        // An ordinary event-triggered run: mint the run its OWN agent identity
+        // (#510) so `last_written_by` names the agent rather than the runner.
+        // The authority is unchanged — this is attribution, not a narrowing.
+        // A static-bearer runner cannot mint and keeps its own identity, as
+        // does a `label_skill` that cannot be an unambiguous subject: losing
+        // the attribution is worth less than failing the run, and the run is
+        // no more privileged either way.
+        return Ok(
+            match tokens.mint_agent(&trigger.label_skill, agent_ttl_secs(cfg)) {
+                Ok(Some(token)) => CallerToken::Agent { token },
+                Ok(None) => CallerToken::NotWorkflow,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        label_skill = %trigger.label_skill,
+                        error = %e,
+                        "per-run agent identity not minted; the run writes as the runner"
+                    );
+                    CallerToken::NotWorkflow
+                }
+            },
+        );
+    };
+    let board = client
+        .expand(ExpandRequest {
+            page_id: wf.run.clone(),
+            ..Default::default()
+        })
+        .await
+        .map_err(|source| PackageError::Client {
+            call: "expand",
+            source,
+        })?;
+    let Some(subject) = board
+        .frontmatter
+        .get("requested_by")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        // A minting runner scopes every run to its requester, so a board with no
+        // requester is the strip-mid-run escalation — fail closed (F2). A
+        // static-bearer runner cannot scope any run regardless (dev-only), so it
+        // falls back to its own identity as it always has, not a new hole.
+        return Ok(if tokens.can_mint() {
+            CallerToken::MissingRequester
+        } else {
+            CallerToken::CannotMint
+        });
+    };
+    let groups: Vec<String> = board
+        .frontmatter
+        .get("requester_groups")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|g| g.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    // `mint_scoped` strips any privileged (`escurel:`) role (F1), so a caller
+    // can never mint an admin token even if the mutable board says otherwise.
+    match tokens
+        .mint_scoped(subject, &groups)
+        .map_err(|e| PackageError::Auth(e.to_string()))?
+    {
+        Some(scoped) => Ok(CallerToken::Scoped {
+            token: scoped,
+            subject: subject.to_owned(),
+        }),
+        None => Ok(CallerToken::CannotMint),
+    }
+}
+
 /// Package a [`Trigger`] into a [`TaskContext`].
 ///
 /// Reads (only) through `client`: `resolve("[[<label_skill>]]")` →
@@ -285,11 +509,43 @@ pub async fn package(
     // Taken from the source at PACKAGE time, not held from boot: a minted
     // bearer is re-minted before it lapses, and a run packaged with an
     // expired one fails every `/mcp` call while the process looks healthy.
-    let token = tokens
-        .ok_or(PackageError::MissingToken)?
-        .current()
-        .map_err(|e| PackageError::Auth(e.to_string()))
-        .map(SecretString::from)?;
+    let tokens = tokens.ok_or(PackageError::MissingToken)?;
+    // Per-run caller token (async-ops Phase 2c-i): a WORKFLOW run executes under
+    // the REQUESTER's identity — the subject + RBAC groups the facade stamped on
+    // the run board — not the runner's admin bearer, so the harness reads and
+    // writes only what the requester may (closing the confused deputy). Falls
+    // back to the runner's own identity when there is no requester on record or
+    // the token source cannot mint (a static bearer); production runs minted
+    // (ADR-0012: the runner mints from a per-tenant GCP Secret Manager key).
+    // The requester subject, captured when the run is scoped — used as the
+    // delegation `obo` for a delegate step (audit only).
+    let mut requester: Option<String> = None;
+    let token = match caller_scoped_token(trigger, client, cfg, tokens).await? {
+        CallerToken::Scoped { token, subject } => {
+            requester = Some(subject);
+            SecretString::from(token)
+        }
+        // The ordinary run, executing as its own agent (#510).
+        CallerToken::Agent { token } => SecretString::from(token),
+        // Non-workflow cascades (orchestration writes) legitimately use the
+        // runner's own identity; a static dev bearer that cannot mint falls
+        // back to it too (production runs minted, so it scopes).
+        CallerToken::NotWorkflow | CallerToken::CannotMint => tokens
+            .current()
+            .map_err(|e| PackageError::Auth(e.to_string()))
+            .map(SecretString::from)?,
+        // F2: a workflow run with no requester must NOT fall open to the
+        // runner's admin bearer — fail the run.
+        CallerToken::MissingRequester => {
+            return Err(PackageError::MissingRequester {
+                run: trigger
+                    .workflow
+                    .as_ref()
+                    .map(|w| w.run.clone())
+                    .unwrap_or_default(),
+            });
+        }
+    };
 
     // ── Instructions: resolve the skill wikilink → expand its body. ──
     let resolved = client
@@ -438,6 +694,16 @@ pub async fn package(
 
     let instructions = build_instructions(trigger, &skill.body, trigger_event.as_ref(), autonomy);
 
+    // Delegate step (async-ops Phase 4 slice 3c): when this step's effective
+    // harness is `delegate`, attach the A2A delegation the DelegateHarness needs
+    // — the agent endpoint + the requested capability + a freshly minted
+    // runner→agent token (aud=agent, obo=requester). Only for a workflow step
+    // (delegation carries the requester + step) whose deploy configured the
+    // endpoint + audience and whose token source can mint; otherwise it stays
+    // `None` and the harness fails closed rather than delegating with no
+    // authority.
+    let delegation = build_delegation(trigger, cfg, tokens, requester.as_deref())?;
+
     Ok(TaskContext {
         instructions,
         input,
@@ -445,7 +711,62 @@ pub async fn package(
         mcp_endpoint: mcp_endpoint(&cfg.gateway_url),
         allowed_tools: tools.iter().map(|s| s.to_string()).collect(),
         token,
+        delegation,
     })
+}
+
+/// The effective harness selector for a step: the workflow's declared `harness`
+/// when non-empty, else the runner's configured default.
+fn effective_harness<'a>(trigger: &'a Trigger, cfg: &'a RunnerConfig) -> &'a str {
+    trigger
+        .workflow
+        .as_ref()
+        .map(|wf| wf.harness.as_str())
+        .filter(|h| !h.is_empty())
+        .unwrap_or(&cfg.harness)
+}
+
+/// Build the A2A [`Delegation`] for a delegate step, or `None` when this is not
+/// a delegate step / not a workflow run / the deploy has no agent endpoint /
+/// the token source cannot mint. A delegate step that lands `None` here fails
+/// closed at the harness (never delegates with the runner's own identity).
+fn build_delegation(
+    trigger: &Trigger,
+    cfg: &RunnerConfig,
+    tokens: &crate::TokenSource,
+    requester: Option<&str>,
+) -> Result<Option<Delegation>, PackageError> {
+    if effective_harness(trigger, cfg) != crate::DELEGATE_HARNESS {
+        return Ok(None);
+    }
+    // Delegation is a workflow-step concept (it carries the requester + step id).
+    let Some(wf) = &trigger.workflow else {
+        return Ok(None);
+    };
+    let (Some(url), Some(audience)) = (&cfg.agent_a2a_url, &cfg.agent_a2a_audience) else {
+        return Ok(None);
+    };
+    // `obo` is audit-only; fall back to the run id when no requester is on record
+    // (a static-bearer dev run cannot scope, but the delegate call still names a
+    // subject for the audit trail).
+    let obo = requester.unwrap_or(&wf.run);
+    // The capability the agent runs for this step = the step's skill id.
+    let capability = trigger.label_skill.clone();
+    match tokens
+        .mint_delegation(audience, obo, &wf.step)
+        .map_err(|e| PackageError::Auth(e.to_string()))?
+    {
+        Some(token) => Ok(Some(
+            Delegation::new(url.clone(), capability, SecretString::from(token))
+                // The seal target: the step's pre-flagged produced instance, the
+                // exact page the reducer reads back to confirm the step. The
+                // harness writes it after the agent returns a result_ref.
+                .with_produced_instance(trigger.instance_page_id.clone()),
+        )),
+        // A static-bearer runner cannot mint a delegation — fail closed at the
+        // harness rather than present the runner's own bearer to the agent.
+        None => Ok(None),
+    }
 }
 
 /// Render the triggering event's payload (title + body when known). When
@@ -807,6 +1128,18 @@ mod tests {
     }
 
     #[test]
+    fn a_per_run_token_lives_as_long_as_the_run_and_no_longer() {
+        let mut cfg = RunnerConfig::from_env_with(|_| None).expect("defaults");
+        cfg.run_timeout = std::time::Duration::from_secs(900);
+        assert_eq!(agent_ttl_secs(&cfg), 900, "the run's budget is the bound");
+
+        // A sub-minute budget still mints a usable token: one that expires
+        // during the call it authorises is a failure, not a tighter bound.
+        cfg.run_timeout = std::time::Duration::from_secs(5);
+        assert_eq!(agent_ttl_secs(&cfg), 60);
+    }
+
+    #[test]
     fn allowed_tools_include_the_write_capable_subset() {
         for t in ["update_page", "assign_event", "validate", "capture_event"] {
             assert!(ALLOWED_TOOLS.contains(&t), "missing {t}");
@@ -1097,6 +1430,7 @@ mod tests {
             allowed_tools: vec!["update_page".into()],
             autonomy: Autonomy::Auto,
             token: SecretString::from("super-secret-token".to_string()),
+            delegation: None,
         };
         let dbg = format!("{ctx:?}");
         assert!(dbg.contains("<redacted>"));

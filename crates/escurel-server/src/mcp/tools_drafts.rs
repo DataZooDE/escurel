@@ -40,6 +40,16 @@ pub(super) struct CreateDraftArgs {
     /// The inbox event this draft answers, when it answers one.
     #[serde(default)]
     event_id: Option<String>,
+    /// Join an existing changeset (#509 §1) — the id a previous
+    /// `create_draft` in this run returned.
+    #[serde(default)]
+    changeset_id: Option<String>,
+    /// Start a changeset: the server mints the id and returns it on the
+    /// stored draft. Mutually exclusive with `changeset_id`; a client that
+    /// sends both has two different intentions and is told so rather than
+    /// having one silently win.
+    #[serde(default)]
+    new_changeset: bool,
 }
 
 #[derive(Deserialize)]
@@ -49,11 +59,85 @@ pub(super) struct ListDraftsArgs {
 }
 
 #[derive(Deserialize)]
+pub(super) struct DiffDraftArgs {
+    draft_id: String,
+}
+
+#[derive(Deserialize)]
 pub(super) struct DecideDraftArgs {
     draft_id: String,
     /// Why it was discarded. Ignored by `promote_draft`.
     #[serde(default)]
     reason: String,
+    /// The HUMAN who decided, when the caller is deciding on their behalf.
+    ///
+    /// A gateway in front of escurel authenticates a person and then writes
+    /// with its OWN credential, because escurel's write ACL matches on groups
+    /// and a person's minted bearer carries none (heron#100). Without this
+    /// field the decision is recorded against that service identity and the
+    /// person who actually approved is stored nowhere — which is what heron's
+    /// BR-HIL-6 ("every change carries an approver") asks for and what the
+    /// draft path silently stopped providing when it replaced the proposal
+    /// path. Measured on lab: pages promoted from drafts read
+    /// `last_written_by: heron-onbehalf`, and no record named the consultant.
+    ///
+    /// **Admin only.** The claim is "I verified this person", which is exactly
+    /// the claim a caller must not be able to make about itself; a non-admin
+    /// sending it is refused rather than ignored, so a client cannot quietly
+    /// forge an audit trail and believe it worked.
+    ///
+    /// `last_written_by` on the page is untouched and still says who WROTE —
+    /// the service — because that field is stamped from the verified token and
+    /// must keep meaning exactly that (#357).
+    #[serde(default)]
+    decided_by: Option<String>,
+    /// The bytes to write INSTEAD of the stored draft, when the approver
+    /// corrected them before deciding.
+    ///
+    /// "Approve with an edit" is one act, not two: a reviewer who fixes a
+    /// wording and then approves has reviewed the fix. Without this the only
+    /// way to land a correction is discard → re-draft → promote — three calls
+    /// that can half-fail and leave a queue entry nobody meant to create.
+    ///
+    /// It is NOT a way to write arbitrary bytes through an approval. The
+    /// correction is validated exactly as `create_draft` validates one, and it
+    /// lands against the DRAFT's own `base_sha256`, so a target that moved
+    /// under the reviewer still conflicts. "What you approved is what shipped"
+    /// holds because the approver is the one who typed it.
+    #[serde(default)]
+    content: Option<String>,
+}
+
+/// Who to record as having decided: the human the caller vouches for, or the
+/// caller itself.
+///
+/// See [`DecideDraftArgs::decided_by`] for why the field exists. The admin
+/// check is the whole of its security: "this person approved it" is a claim
+/// about someone else, and a caller that could make it about itself could
+/// write any name into the audit trail. Refused rather than ignored — a
+/// gateway that silently lost the attribution is how this was missed the
+/// first time.
+fn decided_by_or_caller(
+    decided_by: Option<&str>,
+    caller: &AclCaller<'_>,
+) -> Result<String, JsonRpcError> {
+    match decided_by.map(str::trim) {
+        None | Some("") => Ok(caller.subject.to_owned()),
+        // Naming YOURSELF is not vouching for anyone — it is the same fact the
+        // token already carries, and refusing it made the argument unusable by
+        // any caller that decides on its own behalf. heron sends it
+        // unconditionally (its service credential is optional, and when it is
+        // absent the consultant's own bearer does the write), so the strict
+        // rule turned every approval in that shape into `invalid_params`.
+        // Caught by heron's `draft_verbs` suite the moment the field shipped.
+        Some(human) if human == caller.subject => Ok(human.to_owned()),
+        Some(_) if !caller.is_admin => Err(JsonRpcError::invalid_params(
+            "`decided_by` names the human a gateway verified, and only an \
+             admin may vouch for another subject"
+                .to_owned(),
+        )),
+        Some(human) => Ok(human.to_owned()),
+    }
 }
 
 /// Whether `caller` may SEE this draft, decided from the proposed content's
@@ -107,6 +191,8 @@ fn draft_to_json(d: &escurel_index::drafts::DraftInfo) -> Value {
         "reason": d.reason,
         "decided_by": d.decided_by,
         "created_at": d.created_at,
+        "changeset_id": d.changeset_id,
+        "base_version": d.base_version,
     })
 }
 
@@ -197,6 +283,122 @@ pub(super) async fn tool_create_draft(
         }));
     }
 
+    // ONE LIVE draft per page.
+    //
+    // Two live drafts against one target are two cards a human cannot both
+    // apply: promoting either moves the page, and from that moment the other's
+    // `base_sha256` is stale for ever. The second is then unapprovable — it
+    // can only be discarded, and only after a reviewer has spent the attention
+    // the queue exists to ration.
+    //
+    // Observed on lab, 2026-09-12: one Gmail thread produced two drafts
+    // against `markdown/instances/email/1a05cfc4ab1cca02.md` from two events.
+    // The consultant approved one, pressed Approve on its twin, and got "this
+    // page changed after the draft was made" on a card that had looked exactly
+    // as ready as the one before it.
+    //
+    // LIVE, not merely open, and the distinction is load-bearing. A draft
+    // whose base no longer matches the page is already dead — a conflicted
+    // promotion leaves exactly that, deliberately, so the work can be
+    // re-drafted against the new head. Refusing the re-draft would strand the
+    // recovery path this store documents. So a stale predecessor is
+    // SUPERSEDED rather than protected: it is discarded with a reason, which
+    // also takes the unapprovable card off the reviewer's screen.
+    let head_sha256 = indexer
+        .read_page_markdown(&a.target_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft head: {e}")))?
+        .map(|stored| {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(stored.as_bytes()))
+        });
+    if let Some(open) = indexer
+        .open_draft_for_page(&a.target_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft open check: {e}")))?
+    {
+        // Superseding requires POSITIVE evidence that the predecessor is
+        // dead: a base that names a head the page no longer has. Anything
+        // else is live, and that includes a draft with NO base at all.
+        //
+        // Not a detail. `base_sha256: None` means "drafted as a create", but
+        // a caller may simply not have sent one — escurel's own runner
+        // harness drafts that way — and such a draft against an existing page
+        // would compare unequal to the head and be discarded as stale. The
+        // first version of this did exactly that: escurel-runner's
+        // `a_draft_that_landed_outlives_the_harness_saying_it_failed` went
+        // red, because the agent's SECOND tool call silently destroyed the
+        // good draft its first call had made, and the run was then recorded
+        // failed for work that had landed.
+        let predecessor_is_dead = open
+            .base_sha256
+            .as_deref()
+            .is_some_and(|base| Some(base) != head_sha256.as_deref());
+        if !predecessor_is_dead {
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "conflict",
+                    "location": "target_page_id",
+                    "message": format!(
+                        "draft `{}` is already open for `{}` and nobody has \
+                         decided it yet. A second draft against the same page \
+                         could never be applied after the first one is: decide \
+                         that one, then draft against the head it leaves.",
+                        open.draft_id, a.target_page_id
+                    ),
+                }],
+            }));
+        }
+        indexer
+            .close_draft(
+                &open.draft_id,
+                "discarded",
+                caller.subject,
+                "superseded: the target moved, and this draft was drafted \
+                 against the old head",
+            )
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("create_draft supersede: {e}")))?;
+        tracing::info!(
+            superseded = %open.draft_id,
+            page_id = %a.target_page_id,
+            "create_draft: discarded a stale draft the new one replaces"
+        );
+    }
+
+    // The changeset this draft joins, if any (#509 §1). The id is minted
+    // SERVER-side on first use, for the same reason `event_id` is: a
+    // client-chosen grouping key collides across runs, and a collision here
+    // merges two agents' proposals into one decision.
+    let changeset_id = match (&a.changeset_id, a.new_changeset) {
+        (Some(id), true) if !id.trim().is_empty() => {
+            return Err(JsonRpcError::invalid_params(
+                "create_draft: pass `changeset_id` to JOIN a changeset or \
+                 `new_changeset` to START one, not both"
+                    .to_owned(),
+            ));
+        }
+        (Some(id), _) if !id.trim().is_empty() => Some(id.trim().to_owned()),
+        (_, true) => Some(ulid::Ulid::new().to_string()),
+        _ => None,
+    };
+
+    // The target's CRDT version right now (#509 §2). Recorded so promotion
+    // can three-way-merge a head that moved on OTHER keys rather than
+    // refusing on the byte CAS — which made the review path worse at merging
+    // than the unreviewed one. `None` with no CRDT backend: there is then no
+    // base snapshot to merge against, and promotion keeps the byte CAS.
+    let base_version = match state.crdt_backend.as_ref() {
+        Some(backend) => {
+            let hlc =
+                u64::try_from(backend.max_hlc(&a.target_page_id).await.unwrap_or(0)).unwrap_or(0);
+            Some(Version::from_op_count(hlc).as_str().to_owned())
+        }
+        None => None,
+    };
+
     // Validate at DRAFT time, with the same blocking set promotion will
     // apply. A draft that cannot be promoted is worse than a refused write:
     // it costs a human a review before anyone finds out.
@@ -222,6 +424,8 @@ pub(super) async fn tool_create_draft(
             // caller-supplied answer to it is not evidence.
             author: caller.subject.to_owned(),
             event_id: a.event_id,
+            changeset_id,
+            base_version,
         })
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_draft: {e}")))?;
@@ -308,17 +512,128 @@ pub(super) async fn tool_promote_draft(
     // not a copy of it. `base_sha256` travels as the draft recorded it — a
     // target that moved since drafting conflicts here rather than silently
     // overwriting what the reviewer never saw.
-    let subject = caller.subject.to_owned();
+    let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
+    let target_page_id = draft.target_page_id.clone();
+    // The approver's correction wins over the stored bytes, when there is one.
+    // Validated first, with the same blocking set `create_draft` applies — an
+    // approval is not a way past the gate a draft had to pass.
+    let corrected = a.content.as_deref().filter(|c| !c.trim().is_empty());
+    if let Some(content) = corrected {
+        let issues = indexer
+            .validate(Some(&draft.target_page_id), content)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("promote_draft validate: {e}")))?;
+        if !draft_blocking_issues(state, &issues).is_empty() {
+            return Ok(json!({
+                "ok": false,
+                "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
+            }));
+        }
+    }
     let mut write_args = json!({
         "page_id": draft.target_page_id,
-        "content": draft.content,
+        "content": corrected.unwrap_or(draft.content.as_str()),
     });
-    if let Some(base) = &draft.base_sha256 {
-        write_args["base_sha256"] = json!(base);
+    let promoted = corrected.unwrap_or(draft.content.as_str()).to_owned();
+
+    // **Which guard travels (#509 §2).**
+    //
+    // `base_sha256` is a BYTE CAS: it refuses the moment the target changes at
+    // all, even when the two changes touched different frontmatter keys. The
+    // same content sent straight through `update_page` with a `base_version`
+    // would have been three-way-merged and answered `auto_merged: true`, so
+    // the review path was strictly worse at merging than the unreviewed one —
+    // and an approval could fail for a reason that has nothing to do with the
+    // review.
+    //
+    // So: while the target still hashes to what the drafter saw, send the byte
+    // CAS (exact, cheap, and it needs no snapshot). Once it has moved, send
+    // the recorded `base_version` instead, which is the guard that can merge —
+    // and which still CONFLICTS when both sides changed the same key, or the
+    // merged document no longer parses. Sending both would be pointless: the
+    // byte CAS would refuse before the merge was ever attempted.
+    let head_markdown = indexer
+        .read_page_markdown(&draft.target_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("promote_draft head: {e}")))?;
+    let head_sha = head_markdown
+        .as_deref()
+        .map(escurel_index::drafts::content_hash);
+    let moved = head_sha != draft.base_sha256;
+    match (&draft.base_version, moved) {
+        (Some(version), true) => {
+            write_args["base_version"] = json!(version);
+        }
+        _ => {
+            if let Some(base) = &draft.base_sha256 {
+                write_args["base_sha256"] = json!(base);
+            }
+        }
     }
-    let result =
+
+    // The interrupted promotion, detected BEFORE the write rather than from
+    // the refusal it would produce (#489). The page already holding exactly
+    // the bytes being promoted is not a conflict — nobody else changed
+    // anything and there is nothing to re-review; what remains is the second
+    // half of a promotion that never ran. Decided here because the merge path
+    // answers with `head_version`, not the `head_sha256` the old detection
+    // read off the refusal.
+    let already_landed = head_markdown.as_deref() == Some(promoted.as_str());
+    let mut result =
         crate::mcp::tools_write::tool_update_page(state, indexer, caller, write_acl, write_args)
             .await?;
+
+    // **The interrupted promotion.**
+    //
+    // A promotion is two writes: the page, then the draft's own row. Between
+    // them the process can die, or the client's connection can drop — and on
+    // the deployed gateway the gap is not theoretical, because the markdown
+    // lane and the lake both live on Google Drive and a promotion takes about
+    // twelve seconds.
+    //
+    // What that leaves is a page carrying this draft's bytes and a draft that
+    // is still `open`. The retry then CONFLICTS: `base_sha256` names the
+    // pre-promotion head, the page has moved — to exactly this draft's
+    // content — and the CAS refuses, correctly, for the wrong reason. The
+    // draft can then never be promoted. It can only be discarded, by a human
+    // who first has to work out that the write already landed, and since #481
+    // it blocks any re-draft of that page until they do.
+    //
+    // So: a conflict whose `head_sha256` equals the hash of the bytes being
+    // promoted is not a conflict at all. Nobody else changed anything, there
+    // is nothing to re-review, and what remains is the second half that never
+    // ran. Finish it and report success.
+    //
+    // Deliberately narrow, because every widening is a hole in the CAS:
+    //
+    //  - the code must be `conflict`. A `forbidden` or a validation refusal
+    //    is never "already applied", whatever the page happens to contain.
+    //  - `head_sha256` must be present and NON-EMPTY. Absent is ignorance
+    //    rather than agreement; empty means no page exists, which cannot be
+    //    an applied write.
+    //  - it is compared against the bytes THIS call would write — the
+    //    correction when there is one, the stored draft otherwise — so an
+    //    approval carrying a correction is never absorbed by a page holding
+    //    the uncorrected original.
+    //
+    // Heron carried this fix on its proposal path, where it works; this is
+    // the same rule on the path that is actually live (#489).
+    let already_applied = already_landed
+        && result.get("ok").and_then(Value::as_bool) == Some(false)
+        && result["issues"].as_array().is_some_and(|issues| {
+            issues
+                .iter()
+                .any(|i| i["code"].as_str() == Some("conflict"))
+        });
+    if already_applied {
+        tracing::info!(
+            draft_id = %draft.draft_id,
+            page_id = %target_page_id,
+            "promote_draft: the write had already landed; completing the \
+             decision instead of refusing it"
+        );
+        result = json!({ "ok": true, "already_applied": true });
+    }
 
     // Close the draft ONLY on a landed write. An `ok:false` (a stale CAS, a
     // validation refusal) leaves it open, which is what makes a re-drafted
@@ -328,6 +643,52 @@ pub(super) async fn tool_promote_draft(
             .close_draft(&draft.draft_id, "promoted", &subject, "")
             .await
             .map_err(|e| JsonRpcError::internal(format!("promote_draft close: {e}")))?;
+
+        // **The event is absorbed the moment the write lands.**
+        //
+        // A draft made under `autonomy: review` deliberately leaves its event
+        // in the inbox: the run produced no state, so the event is still
+        // waiting on a human. Promotion IS that human, and until now nothing
+        // said so — the event stayed unassigned for ever, and every restart
+        // of a runner with an ephemeral ledger re-dispatched it and drafted
+        // the same page again. Measured in the lab on 2026-09-10: seven
+        // approved emails came back as seven fresh drafts, several
+        // byte-identical to the page that had just landed, and a review queue
+        // that refills itself is one nobody can trust to be finished.
+        //
+        // Best effort, and deliberately so. The write has landed; the draft
+        // is closed; a failure to retire the event must not turn a successful
+        // promotion into an error the reviewer sees. It is logged, and the
+        // worst case is the state this replaces.
+        if let Some(event_id) = draft.event_id.as_deref().filter(|e| !e.is_empty()) {
+            let assigned = crate::mcp::tools_write::tool_assign_event(
+                indexer,
+                caller,
+                state.event_acl,
+                json!({
+                    "event_id": event_id,
+                    "instance_page_id": &target_page_id,
+                }),
+            )
+            .await;
+            match assigned {
+                Ok(out) if out.get("ok").and_then(Value::as_bool) != Some(false) => {}
+                other => tracing::warn!(
+                    draft_id = %draft.draft_id,
+                    event_id = %event_id,
+                    page_id = %target_page_id,
+                    outcome = ?other,
+                    "promoted a draft but could not retire its event; it will \
+                     be dispatched again"
+                ),
+            }
+        }
+    }
+    // Name the decider back to the caller. A gateway that vouched for a human
+    // can log what the store recorded rather than what it hoped the store
+    // recorded — and a test can assert it without a second read path.
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("decided_by".to_owned(), json!(subject));
     }
     Ok(result)
 }
@@ -359,7 +720,12 @@ pub(super) async fn tool_discard_draft(
         }));
     }
     let closed = indexer
-        .close_draft(&a.draft_id, "discarded", caller.subject, &a.reason)
+        .close_draft(
+            &a.draft_id,
+            "discarded",
+            &decided_by_or_caller(a.decided_by.as_deref(), &caller)?,
+            &a.reason,
+        )
         .await
         .map_err(|e| JsonRpcError::internal(format!("discard_draft: {e}")))?;
     if !closed {
@@ -413,4 +779,433 @@ fn draft_blocking_issues<'a>(
         }
     }
     blocking
+}
+
+/// What approving this draft would change (#509 §3).
+///
+/// Reviewing used to mean reading two markdown files against each other by
+/// eye. The reviewer's question is narrower than that — *which keys move, to
+/// what, and has the target shifted underneath since this was drafted?* — and
+/// that question has a structured answer, which is also what a review UI needs
+/// in order to render anything at all.
+///
+/// Read-only: it takes no decision and changes no row. It is gated by the same
+/// [`may_see`] the queue is, so it cannot become a way to read a draft you are
+/// not allowed to see; denial reads as absence, as everywhere else here.
+pub(super) async fn tool_diff_draft(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: DiffDraftArgs = parse_args(args, "diff_draft")?;
+    let Some(draft) = indexer
+        .get_draft(&a.draft_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("diff_draft: {e}")))?
+        .filter(|_| true)
+    else {
+        return Ok(not_found(&a.draft_id));
+    };
+    if !may_see(indexer, &caller, &draft).await? {
+        return Ok(not_found(&a.draft_id));
+    }
+
+    // The target's CURRENT stored bytes — the same source `expand` publishes
+    // `content_sha256` from, so `base_moved` is decided against exactly what
+    // promotion's CAS will compare.
+    let head = indexer
+        .read_page_markdown(&draft.target_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("diff_draft: {e}")))?;
+
+    let exists = head.is_some();
+    let head_sha = head.as_deref().map(escurel_index::drafts::content_hash);
+    // Moved = the target is not what it was when this was drafted, INCLUDING
+    // the case of a page that has appeared since a create-draft was taken:
+    // both make promotion a merge rather than a write, and the reviewer is
+    // better served by one honest flag than by two subtly different ones.
+    let base_moved = head_sha != draft.base_sha256;
+
+    let head_fm = head
+        .as_deref()
+        .and_then(|h| escurel_md::parse(h).ok())
+        .map(|p| p.frontmatter.fields);
+    let Ok(proposed) = escurel_md::parse(&draft.content) else {
+        // A draft whose own bytes do not parse cannot be diffed. It also
+        // cannot be promoted (`create_draft` refuses it), so this is a
+        // legacy/imported row, and saying so beats a misleading empty diff.
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "unparseable",
+                "location": "content",
+                "message": format!("draft `{}` does not parse as markdown with frontmatter", draft.draft_id),
+            }],
+        }));
+    };
+
+    Ok(json!({
+        "ok": true,
+        "draft_id": draft.draft_id,
+        "target_page_id": draft.target_page_id,
+        "exists": exists,
+        "base_moved": base_moved,
+        "frontmatter_changes": frontmatter_changes(head_fm.as_ref(), &proposed.frontmatter.fields),
+        "block_changes": block_changes(head.as_deref(), proposed.body),
+    }))
+}
+
+/// The scoped-read denial shape shared by every draft verb: absence, never a
+/// refusal — "there is a draft you may not see" is itself information.
+fn not_found(draft_id: &str) -> Value {
+    json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "not_found",
+            "location": "draft_id",
+            "message": format!("no draft `{draft_id}`"),
+        }],
+    })
+}
+
+/// Frontmatter keys that MOVE, and only those.
+///
+/// A diff that lists every key is the read-two-files problem with extra
+/// steps. A removed key reports `to: null`, an added one `from: null` — the
+/// asymmetry is the information.
+fn frontmatter_changes(
+    head: Option<&escurel_md::YamlMapping>,
+    proposed: &escurel_md::YamlMapping,
+) -> Vec<Value> {
+    let as_json = |v: &escurel_md::YamlValue| serde_json::to_value(v).unwrap_or(Value::Null);
+    let mut out = Vec::new();
+    for (key, new) in proposed {
+        let key = match key.as_str() {
+            Some(k) => k,
+            None => continue,
+        };
+        let old = head.and_then(|h| h.get(key));
+        match old {
+            Some(old) if old == new => {}
+            _ => out.push(json!({
+                "key": key,
+                "from": old.map_or(Value::Null, as_json),
+                "to": as_json(new),
+            })),
+        }
+    }
+    if let Some(head) = head {
+        for (key, old) in head {
+            let Some(key) = key.as_str() else { continue };
+            if proposed.get(key).is_none() {
+                out.push(json!({ "key": key, "from": as_json(old), "to": Value::Null }));
+            }
+        }
+    }
+    out
+}
+
+/// What happens to the body.
+///
+/// Today the indexer stores one block per page (`blk-0`; anchor splitting is
+/// still ahead), so this reports at that granularity rather than inventing an
+/// anchor scheme the rest of the system does not share — the shape is the
+/// multi-block one, the content is what exists. The preview is the PROPOSED
+/// text, because that is what a reviewer is approving.
+fn block_changes(head: Option<&str>, proposed_body: &str) -> Vec<Value> {
+    const ANCHOR: &str = "blk-0";
+    const PREVIEW_CHARS: usize = 280;
+
+    let head_body = head
+        .and_then(|h| escurel_md::parse(h).ok())
+        .map(|p| p.body.trim().to_owned())
+        .unwrap_or_default();
+    let new_body = proposed_body.trim();
+    if head_body == new_body {
+        return Vec::new();
+    }
+    let kind = if head_body.is_empty() {
+        "insert"
+    } else if new_body.is_empty() {
+        "delete"
+    } else {
+        "replace"
+    };
+    let preview: String = new_body.chars().take(PREVIEW_CHARS).collect();
+    vec![json!({ "anchor": ANCHOR, "kind": kind, "preview": preview })]
+}
+
+#[derive(Deserialize)]
+pub(super) struct ListChangesetsArgs {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct DecideChangesetArgs {
+    changeset_id: String,
+    /// Why it was refused. `discard_changeset` only.
+    #[serde(default)]
+    reason: String,
+    /// The HUMAN who decided, when the caller decides on their behalf.
+    /// Admin-only, exactly as on [`DecideDraftArgs`].
+    #[serde(default)]
+    decided_by: Option<String>,
+}
+
+/// The queue, one row per RUN rather than one per page (#509 §1).
+pub(super) async fn tool_list_changesets(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: ListChangesetsArgs = parse_args(args, "list_changesets")?;
+    let rows = indexer
+        .list_changesets(a.limit)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_changesets: {e}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        // Scoped the same way the draft queue is, and for the same reason:
+        // one tenant holds several people. A changeset is visible when its
+        // members are — and a caller who may see only SOME of them sees
+        // none of it, because a changeset is decided whole and a partial
+        // view would invite deciding on a partial reading.
+        let members = indexer
+            .drafts_in_changeset(&row.changeset_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_changesets: {e}")))?;
+        let mut visible = true;
+        for m in &members {
+            if !may_see(indexer, &caller, m).await? {
+                visible = false;
+                break;
+            }
+        }
+        if !visible {
+            continue;
+        }
+        out.push(json!({
+            "changeset_id": row.changeset_id,
+            "drafts": row.drafts,
+            "status": row.status,
+            "author": row.author,
+            "created_at": row.created_at,
+            "event_ids": members
+                .iter()
+                .filter_map(|m| m.event_id.clone())
+                .collect::<Vec<_>>(),
+            "target_page_ids": members
+                .iter()
+                .map(|m| m.target_page_id.clone())
+                .collect::<Vec<_>>(),
+        }));
+    }
+    Ok(json!({ "changesets": out }))
+}
+
+/// Every member of a changeset the caller may fully see, or the refusal that
+/// stops the whole decision. Absence and partial visibility read the same —
+/// a changeset you cannot see all of is a changeset you cannot decide.
+async fn changeset_members(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    changeset_id: &str,
+) -> Result<Result<Vec<escurel_index::drafts::DraftInfo>, Value>, JsonRpcError> {
+    let members = indexer
+        .drafts_in_changeset(changeset_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("changeset: {e}")))?;
+    if members.is_empty() {
+        return Ok(Err(not_found_changeset(changeset_id)));
+    }
+    for m in &members {
+        if !may_see(indexer, caller, m).await? {
+            return Ok(Err(not_found_changeset(changeset_id)));
+        }
+    }
+    Ok(Ok(members))
+}
+
+fn not_found_changeset(changeset_id: &str) -> Value {
+    json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "not_found",
+            "location": "changeset_id",
+            "message": format!("no changeset `{changeset_id}`"),
+        }],
+    })
+}
+
+/// Land a run's held writes as ONE decision (#509 §1).
+///
+/// **All-or-nothing, by pre-flight.** Every member is checked first — it is
+/// still open, its bytes still validate, and its target still hashes to the
+/// `base_sha256` it was drafted against — and only then is anything written.
+/// A member that would refuse blocks the whole changeset and NOTHING lands,
+/// because a half-promoted changeset leaves the corpus in a state no agent
+/// proposed, which is the failure this verb exists to prevent.
+///
+/// The honest limit: the markdown lane and the index are two stores, so this
+/// is checked-then-applied rather than one transaction spanning both. A
+/// process that dies mid-apply can leave some members landed — and that is
+/// exactly what the retry path handles: a promotion whose page already holds
+/// the bytes being promoted is `already_applied` (#489's rule, per member),
+/// so re-running the same `promote_changeset` finishes it instead of
+/// conflicting against its own writes.
+pub(super) async fn tool_promote_changeset(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: DecideChangesetArgs = parse_args(args, "promote_changeset")?;
+    let members = match changeset_members(indexer, &caller, &a.changeset_id).await? {
+        Ok(m) => m,
+        Err(refusal) => return Ok(refusal),
+    };
+    let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
+
+    // Already decided: a retry after a timeout the client never saw an answer
+    // to. The transport warns that a mid-flight failure may already have
+    // applied, so this is a success with a flag, not an error to untangle.
+    if members.iter().all(|m| m.status != "open") {
+        return Ok(json!({
+            "ok": true,
+            "already_decided": true,
+            "changeset_id": a.changeset_id,
+            "results": members
+                .iter()
+                .map(|m| json!({
+                    "draft_id": m.draft_id,
+                    "page_id": m.target_page_id,
+                    "status": m.status,
+                }))
+                .collect::<Vec<_>>(),
+        }));
+    }
+
+    // ── Pre-flight. Nothing is written until every member could be. ──
+    let open: Vec<&escurel_index::drafts::DraftInfo> =
+        members.iter().filter(|m| m.status == "open").collect();
+    let mut issues = Vec::new();
+    for m in &open {
+        let head = indexer
+            .read_page_markdown(&m.target_page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("promote_changeset: {e}")))?;
+        let head_sha = head.as_deref().map(escurel_index::drafts::content_hash);
+        // The same CAS promotion will apply, asked before anything lands. An
+        // `already_applied` member (the page already holds these bytes) is
+        // NOT a conflict — that is the interrupted-promotion retry.
+        if head_sha != m.base_sha256 && head_sha.as_deref() != Some(&m.content_sha256) {
+            issues.push(json!({
+                "severity": "error",
+                "code": "conflict",
+                "location": m.target_page_id,
+                "message": format!(
+                    "`{}` moved since draft `{}` was taken; the changeset lands nothing",
+                    m.target_page_id, m.draft_id
+                ),
+            }));
+            continue;
+        }
+        let validation = indexer
+            .validate(Some(&m.target_page_id), &m.content)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("promote_changeset validate: {e}")))?;
+        for issue in draft_blocking_issues(state, &validation) {
+            issues.push(issue_to_json(issue));
+        }
+    }
+    if !issues.is_empty() {
+        return Ok(json!({
+            "ok": false,
+            "changeset_id": a.changeset_id,
+            "issues": issues,
+        }));
+    }
+
+    // ── Apply. Each member goes through `promote_draft`, so the layer,
+    // backend, curator and validation guards, the CAS, the lake publish, the
+    // provenance stamp and the event retirement all run exactly as they do
+    // for a single held write. This is not a second write path.
+    let mut results = Vec::new();
+    for m in &open {
+        let mut args = json!({ "draft_id": m.draft_id });
+        if let Some(human) = &a.decided_by {
+            args["decided_by"] = json!(human);
+        }
+        let out = tool_promote_draft(state, indexer, caller, write_acl, args).await?;
+        let landed = out.get("ok").and_then(Value::as_bool) == Some(true);
+        results.push(json!({
+            "draft_id": m.draft_id,
+            "page_id": m.target_page_id,
+            "ok": landed,
+            "already_applied": out.get("already_applied").cloned().unwrap_or(json!(false)),
+        }));
+        if !landed {
+            // Pre-flight said every member could land, so this is a genuine
+            // race or an I/O fault — not a reviewable refusal. Stop rather
+            // than pressing on: the members already landed stay landed and
+            // their drafts are closed, so re-running this same call completes
+            // the rest (each landed member is then `already_applied`).
+            tracing::warn!(
+                changeset_id = %a.changeset_id,
+                draft_id = %m.draft_id,
+                outcome = %out,
+                "promote_changeset: a pre-flighted member refused mid-apply; \
+                 stopping. Re-running the promotion completes it."
+            );
+            return Ok(json!({
+                "ok": false,
+                "changeset_id": a.changeset_id,
+                "partial": true,
+                "results": results,
+                "issues": out.get("issues").cloned().unwrap_or(json!([])),
+            }));
+        }
+    }
+
+    Ok(json!({
+        "ok": true,
+        "changeset_id": a.changeset_id,
+        "decided_by": subject,
+        "results": results,
+    }))
+}
+
+/// Refuse a run's proposal whole. Nothing is written to any target.
+pub(super) async fn tool_discard_changeset(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: DecideChangesetArgs = parse_args(args, "discard_changeset")?;
+    let members = match changeset_members(indexer, &caller, &a.changeset_id).await? {
+        Ok(m) => m,
+        Err(refusal) => return Ok(refusal),
+    };
+    let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
+    let mut discarded = 0usize;
+    for m in members.iter().filter(|m| m.status == "open") {
+        if indexer
+            .close_draft(&m.draft_id, "discarded", &subject, &a.reason)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("discard_changeset: {e}")))?
+        {
+            discarded += 1;
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "changeset_id": a.changeset_id,
+        "discarded": discarded,
+        "decided_by": subject,
+    }))
 }

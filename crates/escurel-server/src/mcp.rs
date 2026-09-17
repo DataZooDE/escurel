@@ -51,9 +51,9 @@ use escurel_types::{
     AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
     ListSkillsResponse, PublishSnapshotResponse, QuotaGetResponse, RebuildProgress,
     Skill as TypesSkill, SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
-    SkillCapabilities as TypesSkillCapabilities, SkillParam as TypesSkillParam,
-    TenantCreateResponse, TenantDeleteResponse, TenantGetResponse, TenantImportResponse,
-    TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
+    SkillCapabilities as TypesSkillCapabilities, SkillField as TypesSkillField,
+    SkillParam as TypesSkillParam, TenantCreateResponse, TenantDeleteResponse, TenantGetResponse,
+    TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
     WebhookDeliveriesResponse, WebhookDelivery,
 };
 use serde::Deserialize;
@@ -64,6 +64,7 @@ mod backend_view;
 mod ingest;
 mod schema;
 mod tools_admin;
+mod tools_branches;
 mod tools_drafts;
 mod tools_read;
 mod tools_write;
@@ -71,6 +72,7 @@ pub(crate) use ingest::{blob_get, ingest, ingest_upload};
 pub(crate) use schema::openapi_document;
 use schema::page_type_str;
 use tools_admin::*;
+use tools_branches::*;
 use tools_drafts::*;
 use tools_read::*;
 pub(crate) use tools_write::event_to_json;
@@ -275,6 +277,11 @@ async fn mcp_inner(
     // again inside escurel-index as defence in depth.
     let token_groups = crate::auth_gate::rbac_groups(&state, auth_ctx.as_ref());
 
+    // Who the subject is acting FOR (#510), from the verified `act.sub`: a
+    // per-run agent token names the runner that delegated to it. Audit
+    // lineage only — never read for an authorization decision.
+    let actor = auth_ctx.as_ref().and_then(|c| c.actor.clone());
+
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
     // server acknowledges with HTTP 202 Accepted and an empty body.
@@ -312,6 +319,7 @@ async fn mcp_inner(
                 role,
                 &subject,
                 &token_groups,
+                actor.as_deref(),
                 req.params,
             )
             .await;
@@ -497,7 +505,7 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         // body; `close_session` is a cleanup and does not debit.
         "update_page" | "delete_page" | "move_page" | "purge_page" | "apply_op"
         | "append_message" | "capture_event" | "assign_event" | "create_draft"
-        | "promote_draft" | "discard_draft" => Dimension::Writes,
+        | "promote_draft" | "discard_draft" | "start_operation" => Dimension::Writes,
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -600,6 +608,14 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     // Creating and discarding drafts stay servable there; only the landing
     // is writer-only.
     "promote_draft",
+    // `merge_branch` IS a sequence of `update_page`/`delete_page` calls, so
+    // it belongs here for the same reason `promote_draft` does. Opening and
+    // abandoning a branch mutate only the registry, but a reader has no
+    // writer to hand the merge to afterwards — an isolated workspace it
+    // cannot land is a workspace nobody should be able to open there either.
+    "create_branch",
+    "merge_branch",
+    "abandon_branch",
     "delete_page",
     "move_page",
     "purge_page",
@@ -669,8 +685,12 @@ const EVENTS_TOOLS: &[&str] = &["capture_event", "assign_event", "list_events", 
 const DRAFTS_TOOLS: &[&str] = &[
     "create_draft",
     "list_drafts",
+    "diff_draft",
     "promote_draft",
     "discard_draft",
+    "list_changesets",
+    "promote_changeset",
+    "discard_changeset",
 ];
 
 /// The CRDT/session tool surface `dispatch_tools_call`'s dynamic reader
@@ -731,6 +751,7 @@ async fn dispatch_tools_call(
     role: Option<Role>,
     subject: &str,
     token_groups: &[String],
+    actor: Option<&str>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -787,6 +808,7 @@ async fn dispatch_tools_call(
         subject,
         is_admin: matches!(role, None | Some(Role::Admin)),
         token_groups,
+        actor,
     };
 
     // Session tools depend on `crdt_backend` + `sessions`, not on
@@ -917,6 +939,7 @@ async fn dispatch_tools_call(
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer, caller).await,
         "list_instances" => tool_list_instances(indexer, caller, params.arguments).await,
+        "get_operation" => tool_get_operation(indexer, caller, params.arguments).await,
         "resolve" => tool_resolve(indexer, caller, params.arguments).await,
         "expand" => tool_expand(state, indexer, caller, params.arguments).await,
         "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,
@@ -937,6 +960,18 @@ async fn dispatch_tools_call(
             tool_create_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }
         "list_drafts" => tool_list_drafts(indexer, caller, params.arguments).await,
+        "create_branch" => tool_create_branch(state, indexer, caller, params.arguments).await,
+        "list_branches" => tool_list_branches(indexer, caller, params.arguments).await,
+        "merge_branch" => {
+            tool_merge_branch(state, indexer, caller, state.write_acl, params.arguments).await
+        }
+        "abandon_branch" => tool_abandon_branch(indexer, caller, params.arguments).await,
+        "diff_draft" => tool_diff_draft(indexer, caller, params.arguments).await,
+        "list_changesets" => tool_list_changesets(indexer, caller, params.arguments).await,
+        "promote_changeset" => {
+            tool_promote_changeset(state, indexer, caller, state.write_acl, params.arguments).await
+        }
+        "discard_changeset" => tool_discard_changeset(indexer, caller, params.arguments).await,
         "promote_draft" => {
             tool_promote_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }
@@ -977,6 +1012,17 @@ async fn dispatch_tools_call(
                 state.event_acl,
                 state.webhook.as_ref(),
                 &state.events_tx,
+                params.arguments,
+            )
+            .await
+        }
+        "start_operation" => {
+            tool_start_operation(
+                indexer,
+                caller,
+                state.webhook.as_ref(),
+                &state.events_tx,
+                state.operation_slug_secret.as_deref(),
                 params.arguments,
             )
             .await

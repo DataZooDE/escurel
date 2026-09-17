@@ -28,6 +28,7 @@
 //! later work-item, so for now a drain task empties the queue.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Bytes;
@@ -35,18 +36,19 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use escurel_client::{Client, SecretString};
+use escurel_client::{AssignEventRequest, Client, SecretString};
 use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
 use escurel_runner_core::{
     Admission, Autonomy, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue,
     EnqueueOutcome, Governor, Ledger, LedgerDecision, LoopLimits, QuotaDecision, QuotaLimits,
     ReconcileError, RunFailure, RunStatus, RunnerConfig, TaskContext, Trigger, admit,
-    classify_client_error, confirm_draft, confirm_effect, drive_workflow, emit_cascade, package,
-    recover_pending, recover_workflows, run_with_retry,
+    classify_client_error, confirm_draft, confirm_effect, drive_workflow, emit_cascade,
+    operation_has_terminal_status, package, recover_pending, recover_workflows, run_with_retry,
 };
-use escurel_runner_core::{DeadLetterReason, RunId};
+use escurel_runner_core::{DeadLetterReason, RunId, StepTerminal};
 use escurel_runner_harness::{
-    AgyHarness, ClaudeHarness, CodexHarness, EchoHarness, GeminiHarness, Harness,
+    AgyHarness, ClaudeHarness, CodexHarness, DelegateHarness, EchoHarness, GeminiHarness, Harness,
+    MuseHarness, RefusingHarness,
 };
 use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
@@ -97,6 +99,18 @@ struct AppState {
     /// Set once shutdown begins: the ingress paths stop admitting new triggers
     /// while in-flight runs drain.
     draining: Arc<std::sync::atomic::AtomicBool>,
+    /// The runner's own tenant (async-ops Phase 1, `/trigger` binding). This
+    /// runner process is single-tenant by deployment (one runner per customer
+    /// stack), so the authoritative tenant of an inbound webhook is THIS, never
+    /// the request body — a party holding the webhook secret must not be able to
+    /// name another tenant. `None` only on the dev/legacy path with no tenant
+    /// configured, where the body value is accepted as before.
+    tenant: Option<Arc<str>>,
+    /// The runner's own subject — the identity a runner-emitted event is
+    /// captured as. An inbound `/trigger` event's cascade lineage is trusted for
+    /// loop control only when it was captured by this subject (runner-lineage-
+    /// forge fix); `None` (static token with no readable `sub`) → trust-all.
+    lineage_trust_subject: Option<Arc<str>>,
 }
 
 #[tokio::main]
@@ -318,6 +332,8 @@ async fn main() -> anyhow::Result<()> {
         metrics: Arc::clone(&metrics),
         inflight: Arc::clone(&inflight),
         draining: Arc::clone(&draining),
+        tenant: config.tenant.clone().map(Arc::from),
+        lineage_trust_subject: tokens.as_ref().and_then(|t| t.subject()).map(Arc::from),
     };
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -431,19 +447,36 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         }
     };
 
-    // 3. The authoritative tenant rides in the payload (#147). Read it
-    //    from the raw JSON (it is not a field of `Event`); fall back to
-    //    empty when absent (dev / legacy senders).
-    let tenant = serde_json::from_slice::<serde_json::Value>(&body)
+    // 3. The authoritative tenant is THIS runner's own (async-ops Phase 1):
+    //    the process is single-tenant by deployment, so the tenant is never
+    //    taken from the request body — a party holding the webhook secret must
+    //    not be able to drive another tenant's runs through this runner. The
+    //    body's `tenant_id` is only cross-checked: if present and disagreeing
+    //    with the runner's tenant, the delivery was mis-routed → reject.
+    let body_tenant = serde_json::from_slice::<serde_json::Value>(&body)
         .ok()
         .and_then(|v| {
             v.get("tenant_id")
                 .and_then(|t| t.as_str())
                 .map(str::to_owned)
-        })
-        .unwrap_or_default();
+        });
+    let tenant = match resolve_trigger_tenant(state.tenant.as_deref(), body_tenant.as_deref()) {
+        Ok(tenant) => tenant,
+        Err(claimed) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                own_tenant = ?state.tenant,
+                claimed_tenant = %claimed,
+                "POST /trigger rejected: body tenant_id does not match this runner's tenant"
+            );
+            return StatusCode::FORBIDDEN;
+        }
+    };
 
-    let trigger = Trigger::from_event(&event, tenant);
+    let trigger = match state.lineage_trust_subject.as_deref() {
+        Some(subj) => Trigger::from_event_gated(&event, tenant, subj),
+        None => Trigger::from_event(&event, tenant),
+    };
     // Loop-control gate (lifecycle step 4): the durable ledger is the
     // idempotency authority; the in-memory seen-set is a cheap fast-path in
     // front of it. Either way we acknowledge 202 immediately so the
@@ -488,6 +521,20 @@ fn gate_and_enqueue(
     trigger: Trigger,
     via: &str,
 ) -> bool {
+    // Fail-closed (async-ops F1): an operation-status record is a KB-visible
+    // event, never a dispatchable run. Drop it BEFORE `begin_run` so it creates
+    // no ledger row — the reducer writes one such event per status transition,
+    // and without this each would spawn (and dead-letter) a run. This is the
+    // single chokepoint both the poller and the webhook route through.
+    if trigger.label_skill == escurel_runner_core::OPERATION_STATUS_LABEL {
+        tracing::debug!(
+            target: "escurel_runner",
+            via,
+            event_id = %trigger.event_id,
+            "gate: dropping reserved operation-status event (not dispatchable)"
+        );
+        return false;
+    }
     match ledger.begin_run(&trigger) {
         Ok(LedgerDecision::Created(run_id)) => {
             // Loop controls: depth/cycle/budget. The `pending` row already
@@ -640,6 +687,192 @@ fn gate_and_enqueue(
 /// Keeps cardinality sane: only tenant + status labels.
 fn record_run_terminal(metrics: &Metrics, tenant: &str, status: &str) {
     metrics.inc_runner_run(tenant, status);
+}
+
+/// Resolve the authoritative tenant for an inbound `POST /trigger` (async-ops
+/// Phase 1). The runner is single-tenant by deployment, so its own configured
+/// tenant is authoritative and the request body can never *name* a tenant — it
+/// may only match. Returns the tenant to use, or `Err(claimed)` (the offending
+/// body value) when the body names a different tenant than this runner serves.
+///
+/// - runner tenant set, body absent or equal → the runner's tenant;
+/// - runner tenant set, body differs → `Err` (mis-routed / forged delivery);
+/// - no runner tenant (dev/legacy) → the body value, or empty.
+fn resolve_trigger_tenant(own: Option<&str>, body_tenant: Option<&str>) -> Result<String, String> {
+    match own {
+        Some(own) => match body_tenant {
+            Some(claimed) if claimed != own => Err(claimed.to_owned()),
+            _ => Ok(own.to_owned()),
+        },
+        None => Ok(body_tenant.unwrap_or_default().to_owned()),
+    }
+}
+
+/// Drive the workflow reducer on a run's terminal transition, dead-lettering
+/// the run if the reducer pass errors (async-ops Phase 0.3, Bug B).
+///
+/// Called on EVERY terminal transition of a `trigger.workflow` run — not just a
+/// confirmed non-held write — so a converged no-op, a held draft, or a failed
+/// step advances (or terminates) the parent operation instead of wedging it at
+/// `running`. On an `Advanced`/`Held` terminal the run's own effect already
+/// landed and was recorded `processed`; if the reducer then fails, the run is
+/// dead-lettered (`ReducerFailed`) so the stall surfaces to the DLQ rather than
+/// masquerading as a clean success. On a `Failed` terminal the run is already
+/// terminal, so a reducer error is only logged.
+#[allow(clippy::too_many_arguments)]
+async fn drive_workflow_or_deadletter(
+    client: &escurel_client::Client,
+    ledger: &Ledger,
+    metrics: &Metrics,
+    trigger: &Trigger,
+    run_id: &escurel_runner_core::RunId,
+    effect: Option<&escurel_runner_core::ConfirmedEffect>,
+    terminal: StepTerminal,
+    max_runs_per_root: u64,
+    outbound_url: Option<&str>,
+    outbound_bearer: Option<&str>,
+) {
+    match drive_workflow(
+        client,
+        trigger,
+        &run_id.0,
+        effect,
+        terminal,
+        max_runs_per_root,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            tracing::info!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                run_id = %run_id,
+                terminal = ?terminal,
+                emitted = outcome.emitted.len(),
+                "workflow: reducer drove operation on terminal transition"
+            );
+            // Channel delivery (async-ops Phase 3): a terminal operation with a
+            // stored conversation reference is delivered to the channel's
+            // proactive seam. Fire-and-forget, best-effort — never derails the
+            // run; at-least-once, the courier dedups on operation_id.
+            if let (Some(delivery), Some(url)) = (outcome.delivery, outbound_url) {
+                deliver_terminal(url, outbound_bearer, &delivery).await;
+            }
+        }
+        Err(e) => {
+            let progressed = matches!(terminal, StepTerminal::Advanced | StepTerminal::Held);
+            if progressed {
+                if let Err(dl) = ledger.dead_letter(run_id, DeadLetterReason::ReducerFailed) {
+                    tracing::error!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        error = %dl,
+                        "workflow: could not dead-letter run after a reducer failure"
+                    );
+                } else {
+                    record_run_terminal(metrics, &trigger.tenant, "dead_letter");
+                }
+                // F-4: record a terminal operation status so the run board and
+                // the DLQ agree — otherwise the operation stays at whatever it
+                // last reported (typically `running`) while a DLQ row exists.
+                if let Some(wf) = &trigger.workflow {
+                    escurel_runner_core::record_status_best_effort(
+                        client,
+                        &wf.run,
+                        &trigger.event_id,
+                        escurel_runner_core::OperationStatus::Failed,
+                        &wf.phase,
+                        "reducer_failed",
+                        None,
+                    )
+                    .await;
+                }
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    run_id = %run_id,
+                    error = %e,
+                    "workflow: reducer pass failed; run dead-lettered (Bug B)"
+                );
+            } else {
+                // A `Failed` terminal is already terminal in the ledger; the
+                // reducer error is at most a missed best-effort status write.
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    run_id = %run_id,
+                    error = %e,
+                    "workflow: reducer status pass on a failed run errored (run already terminal)"
+                );
+            }
+        }
+    }
+}
+
+/// Deliver a terminal operation result to the channel courier's proactive seam
+/// (async-ops Phase 3). Best-effort fire-and-forget: a `POST <outbound_url>`
+/// with `{operation_id, status, conversation_ref}`. A delivery failure is
+/// logged, never propagated — the run already reached its terminal, and the
+/// delivery is at-least-once (the courier dedups on `operation_id`).
+async fn deliver_terminal(
+    outbound_url: &str,
+    outbound_bearer: Option<&str>,
+    delivery: &escurel_runner_core::TerminalDelivery,
+) {
+    let mut body = serde_json::json!({
+        "operation_id": delivery.operation_id,
+        "status": delivery.status,
+        "conversation_ref": delivery.conversation_ref,
+    });
+    // A selective PROGRESS delivery carries a human note; hand it to the receiver
+    // as the `result` it already renders, so the courier posts the note verbatim
+    // ("⏳ Working on …"). A terminal delivery has no note — the receiver renders
+    // the operation's own result (or a terse status fallback) as before.
+    if let Some(note) = &delivery.note {
+        body["result"] = serde_json::json!({ "text": note });
+    }
+    // The CHANNEL's tenant, as recorded when the operation started. Present
+    // only when the operation recorded one — omitted rather than null, so a
+    // courier can distinguish "no binding available" (started before this
+    // existed, or off-chat) from "a binding that says nothing".
+    if let Some(tenant) = &delivery.channel_tenant {
+        body["channel_tenant"] = serde_json::json!(tenant);
+    }
+    // A succeeded operation's produced-artifact reference (fleet #801, option D):
+    // a delegated step returns only this, so the receiver resolves + renders it
+    // into the reply when there is no already-rendered `result`. Omitted (not
+    // null) when the operation produced no artifact.
+    if let Some(result_ref) = &delivery.result_ref {
+        body["result_ref"] = result_ref.clone();
+    }
+    // The agent's delivery receiver (`AGENT_ASYNC_CALLBACK_BEARER`) refuses a
+    // callback with no/ wrong bearer (401). Attach it when configured; a sink
+    // that requires none (a pull-only deploy, a test stub) leaves it unset.
+    let mut req = reqwest::Client::new().post(outbound_url).json(&body);
+    if let Some(bearer) = outbound_bearer {
+        req = req.bearer_auth(bearer);
+    }
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => tracing::info!(
+            target: "escurel_runner",
+            operation = %delivery.operation_id,
+            status = %delivery.status,
+            "delivery: terminal operation delivered to channel courier"
+        ),
+        Ok(resp) => tracing::warn!(
+            target: "escurel_runner",
+            operation = %delivery.operation_id,
+            http_status = resp.status().as_u16(),
+            "delivery: courier rejected the terminal delivery (best-effort; not retried here)"
+        ),
+        Err(e) => tracing::warn!(
+            target: "escurel_runner",
+            operation = %delivery.operation_id,
+            error = %e,
+            "delivery: could not reach the channel courier (best-effort)"
+        ),
+    }
 }
 
 /// Operator DLQ list (#158): every dead-lettered run with its reason +
@@ -861,18 +1094,23 @@ fn echo_harness_path() -> String {
 /// harness (#151); `claude` drives the real Claude Code CLI (#152); `codex`
 /// drives the real Codex CLI (#153); `agy` drives the Antigravity CLI for
 /// `autonomy: auto` runs; `gemini` drives Gemini over HTTP in process — the
-/// one a container can run. Unknown selectors fall back to `echo` with a
-/// warning so a typo never silently disables dispatch.
+/// one a container can run. An unknown selector REFUSES TO START rather than
+/// falling back to `echo`: a typo'd `ESCUREL_RUNNER_HARNESS` that quietly became
+/// `echo` would dispatch — writing echo's deterministic stand-in text into the
+/// tenant's knowledge base and marking real events processed. Refusing to boot
+/// is the recoverable failure (the same posture the `gemini` arm takes for a
+/// missing key).
 fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
     match build_harness_named(config, &config.harness) {
         Some(h) => h,
         None => {
-            tracing::warn!(
+            tracing::error!(
                 target: "escurel_runner",
                 selector = %config.harness,
-                "unknown ESCUREL_RUNNER_HARNESS; falling back to echo"
+                "unknown ESCUREL_RUNNER_HARNESS; refusing to start rather than falling back to \
+                 the echo harness, which would write stand-in content into a real corpus"
             );
-            Arc::new(EchoHarness::new(echo_harness_path()))
+            std::process::exit(2);
         }
     }
 }
@@ -881,12 +1119,17 @@ fn build_harness(config: &RunnerConfig) -> Arc<dyn Harness> {
 /// none — the `harness:` key parsed at plan and phase level since the workflow
 /// spec landed and, until now, propagated by nobody.
 ///
-/// **An unbuildable override falls back rather than failing the run.** A plan
-/// naming `claude` on a runner that has no `claude` is a corpus mistake, and
-/// dead-lettering every step of that workflow would be a strange way to say
-/// so. The default harness is a working one by construction — the process
-/// refused to start otherwise — so the step runs and the log names the plan
-/// that asked for something this deployment cannot give it.
+/// **An unbuildable declared harness FAILS CLOSED — it does not fall back to
+/// the default.** A plan naming a harness this runner cannot build
+/// (`build_harness_named` → `None`, e.g. `delegate` on a runner without it) must
+/// NOT silently run the default: the default is a DIFFERENT harness, and running
+/// `echo`/`gemini` for a step that asked for `delegate` would write a fabricated
+/// stand-in result into a real corpus and mark the event processed. Instead the
+/// step gets a [`RefusingHarness`] whose refusal maps to a PERMANENT reconcile
+/// failure, so it dead-letters with a reason naming the harness the deployment
+/// lacks — the operator fixes the selector, not the retry budget (the same
+/// posture the `gemini` arm takes when its key is missing). A blank declaration,
+/// or one equal to the runner's own harness, still resolves to the default.
 fn resolve_harness(
     config: &RunnerConfig,
     default: &Arc<dyn Harness>,
@@ -903,14 +1146,14 @@ fn resolve_harness(
     match build_harness_named(config, name) {
         Some(h) => h,
         None => {
-            tracing::warn!(
+            tracing::error!(
                 target: "escurel_runner",
                 event_id = %trigger.event_id,
                 declared = %name,
-                using = %default.name(),
-                "the workflow declares a harness this runner cannot build; using the default"
+                "the workflow declares a harness this runner cannot build; failing the step \
+                 closed rather than running the default harness, which would fabricate a result"
             );
-            Arc::clone(default)
+            Arc::new(RefusingHarness::new(name))
         }
     }
 }
@@ -919,6 +1162,12 @@ fn resolve_harness(
 fn build_harness_named(config: &RunnerConfig, name: &str) -> Option<Arc<dyn Harness>> {
     let built: Arc<dyn Harness> = match name {
         "echo" => Arc::new(EchoHarness::new(echo_harness_path())),
+        // The A2A delegate harness (async-ops Phase 4 slice 3c): stateless —
+        // the agent endpoint + capability + per-requester delegation token ride
+        // on the TaskContext the packager builds. A delegate step with no
+        // delegation params (unconfigured deploy / static-bearer runner) fails
+        // closed at the harness, never delegating with the runner's identity.
+        n if n == escurel_runner_core::DELEGATE_HARNESS => Arc::new(DelegateHarness::new()),
         "claude" => Arc::new(
             ClaudeHarness::new(config.claude_bin.clone()).with_model(config.claude_model.clone()),
         ),
@@ -933,6 +1182,29 @@ fn build_harness_named(config: &RunnerConfig, name: &str) -> Option<Arc<dyn Harn
             AgyHarness::new(config.agy_bin.clone())
                 .with_model(config.agy_model.clone())
                 .with_home(config.agy_home.clone()),
+        ),
+        // Muse Code, on a HOST with `muse` installed and logged in. Like
+        // `agy` it runs `autonomy: auto` skills only: `muse exec` has no MCP
+        // tool allow-list, so `MuseHarness` refuses a narrowed surface rather
+        // than pretending to enforce one. Buildable since Muse 1.1.1 became
+        // an MCP client (#451 recorded the 1.0.1 negative).
+        "muse" => Arc::new(
+            MuseHarness::new(config.muse_bin.clone())
+                .with_model(config.muse_model.clone())
+                .with_real_config_home(
+                    config
+                        .muse_config_home
+                        .clone()
+                        .map(std::path::PathBuf::from)
+                        .or_else(|| {
+                            std::env::var_os("XDG_CONFIG_HOME")
+                                .map(std::path::PathBuf::from)
+                                .or_else(|| {
+                                    std::env::var_os("HOME")
+                                        .map(|h| std::path::PathBuf::from(h).join(".config"))
+                                })
+                        }),
+                ),
         ),
         // The one harness a container can run: HTTP to the model, no CLI, no
         // node runtime, no interactive login.
@@ -992,6 +1264,63 @@ async fn connect_now(
     }
 }
 
+/// Block until the gateway answers a real call, or the process is draining.
+///
+/// The call is `list_skills`: a read every runner is already allowed to make
+/// (it is in `ALLOWED_TOOLS`), cheap, and — unlike building a client — it
+/// proves the far end is serving rather than merely addressable.
+///
+/// Backoff climbs to a ceiling rather than hammering: the thing being waited
+/// for takes minutes by design, and a tight loop against a booting DuckLake
+/// index is load on exactly the process that needs the CPU.
+async fn await_gateway(
+    config: &RunnerConfig,
+    tokens: &escurel_runner_core::TokenSource,
+    drained: &Arc<Notify>,
+) {
+    let mut backoff = Duration::from_secs(1);
+    let ceiling = Duration::from_secs(30);
+    let mut waited = Duration::ZERO;
+    loop {
+        if let Some(client) = connect_now(&config.gateway_url, tokens).await
+            && client
+                .list_skills(escurel_types::ListSkillsRequest::default())
+                .await
+                .is_ok()
+        {
+            if waited > Duration::ZERO {
+                tracing::info!(
+                    target: "escurel_runner",
+                    waited_ms = waited.as_millis() as u64,
+                    "gateway answered; dispatch starting"
+                );
+            }
+            return;
+        }
+        // Said once, at the wait's start: a line every second for sixteen
+        // minutes buries whatever else the boot has to say.
+        if waited == Duration::ZERO {
+            tracing::info!(
+                target: "escurel_runner",
+                gateway = %config.gateway_url,
+                "gateway not answering yet; holding dispatch rather than \
+                 spending run attempts on it"
+            );
+        }
+        // A SIGTERM during the wait must not be ignored — draining is the one
+        // thing more urgent than starting.
+        tokio::select! {
+            () = tokio::time::sleep(backoff) => {}
+            () = drained.notified() => {
+                drained.notify_one();
+                return;
+            }
+        }
+        waited += backoff;
+        backoff = (backoff * 2).min(ceiling);
+    }
+}
+
 /// The real dispatch loop (lifecycle steps 5-7): consume each `Trigger`,
 /// `package` it ("skill body = instructions, `/mcp` = tools"), run the
 /// selected `harness` (a real subprocess that makes the escurel writes via
@@ -1031,6 +1360,28 @@ async fn dispatch_loop(
         drained.notify_one();
         return;
     }
+    // **Wait for the gateway to ANSWER before spending anything on it.**
+    //
+    // Building a client proves the config, not the dependency: it mints a
+    // bearer and constructs an HTTP client without touching the far end. The
+    // gateway rebuilds a DuckLake index over Google Drive at boot and its own
+    // platform budgets 29 minutes for that; measured in the lab, 16.
+    //
+    // A runner started in the same rollout found six real inbox events
+    // immediately and dead-lettered every one of them within seconds —
+    // `max_attempts` is 3 with a short backoff, which is a sensible policy
+    // for a run that FAILED and the wrong one entirely for a dependency that
+    // has not started yet. Three attempts over a few seconds against
+    // something allowed half an hour to boot.
+    //
+    // So the loop does not begin until one call has succeeded. Triggers wait
+    // in the bounded queue and the inbox poller backstops whatever the queue
+    // drops; nothing is consumed, nothing is dead-lettered, and the events
+    // are still there when the gateway is. After first contact this stops
+    // mattering: a gateway that has answered once and then fails is a genuine
+    // transient failure, which is exactly what the retry policy is for.
+    await_gateway(&config, &tokens, &drained).await;
+
     tracing::info!(
         target: "escurel_runner",
         harness = %harness.name(),
@@ -1109,6 +1460,111 @@ async fn dispatch_loop(
         // Acquire a global harness-subprocess permit (#158): bounds concurrent
         // harness spawns across all tenants. Held across the whole run.
         let _harness_permit = governor.acquire_harness().await;
+
+        // ── async-ops: the workflow INVOCATION event is a control kick, not
+        //    harness work ────────────────────────────────────────────────────
+        // `start_operation` stamps the kick with a server-owned `phase: "invoke"`
+        // targeting the run board. Dispatching it to the caller-scoped harness
+        // makes the harness try to FOLD the event into the run board — a control
+        // instance it must not write (the run board is the reducer's, and
+        // `WORKFLOW_STEP_TOOLS` even denies the harness `assign_event`) — so the
+        // event was never marked `processed` and EVERY operation dead-lettered
+        // "event not yet processed". The echo suite missed it: echo's requester
+        // owns the board and folds it cleanly, so only a real caller-scoped run
+        // (the requester ≠ the runner) exposed it.
+        //
+        // Drive the reducer as the runner (admin): the "invocation pass" builds
+        // an empty run state, emits the plan's first phase, and records
+        // `running` (or `succeeded` + delivery for a one-phase plan); then the
+        // runner (admin) assigns the invocation event to the run board so it is
+        // `processed` and never re-triggers. Only the emitted phase STEPS run
+        // under the caller-scoped harness, and those write their own produced
+        // instances, which the requester owns.
+        if let Some(wf) = trigger.workflow.clone().filter(|w| w.phase == "invoke") {
+            // If a concurrent driver (crash recovery) already drove this
+            // operation to a terminal state, do NOT re-drive it back to
+            // `running`; just close the kick. (Normal operation has a single
+            // driver — this only bites when a fresh runner's startup recovery
+            // races the invocation of a board that already exists.)
+            if operation_has_terminal_status(&client, &wf.run).await {
+                let _ = client
+                    .assign_event(AssignEventRequest {
+                        event_id: trigger.event_id.clone(),
+                        instance_page_id: wf.run.clone(),
+                    })
+                    .await;
+                let _ = ledger.complete(&run_id, RunStatus::Processed, None);
+                record_run_terminal(&metrics, &trigger.tenant, "processed");
+                inflight
+                    .lock()
+                    .expect("inflight slots mutex")
+                    .remove(&trigger.event_id);
+                continue;
+            }
+            match drive_workflow(
+                &client,
+                &trigger,
+                &run_id.0,
+                None,
+                StepTerminal::Advanced,
+                config.max_runs_per_root,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    // A one-phase plan completes on the invocation pass and
+                    // carries a terminal delivery; a multi-phase plan is now
+                    // `running` with `delivery: None`.
+                    if let (Some(delivery), Some(url)) =
+                        (outcome.delivery, config.outbound_url.as_deref())
+                    {
+                        deliver_terminal(url, config.outbound_bearer.as_deref(), &delivery).await;
+                    }
+                    // Close the kick: mark the invocation event processed on the
+                    // run board (admin) so the poller stops re-delivering it.
+                    if let Err(e) = client
+                        .assign_event(AssignEventRequest {
+                            event_id: trigger.event_id.clone(),
+                            instance_page_id: wf.run.clone(),
+                        })
+                        .await
+                    {
+                        tracing::warn!(
+                            target: "escurel_runner",
+                            event_id = %trigger.event_id,
+                            run_id = %run_id,
+                            error = %e,
+                            "workflow: could not mark the invocation event processed"
+                        );
+                    }
+                    let _ = ledger.complete(&run_id, RunStatus::Processed, None);
+                    record_run_terminal(&metrics, &trigger.tenant, "processed");
+                    tracing::info!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        emitted = outcome.emitted.len(),
+                        "workflow: invocation drove the reducer; first phase emitted"
+                    );
+                }
+                Err(e) => {
+                    let _ = ledger.dead_letter(&run_id, DeadLetterReason::ReducerFailed);
+                    record_run_terminal(&metrics, &trigger.tenant, "dead_letter");
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        error = %e,
+                        "workflow: invocation reducer pass failed; run dead-lettered"
+                    );
+                }
+            }
+            inflight
+                .lock()
+                .expect("inflight slots mutex")
+                .remove(&trigger.event_id);
+            continue;
+        }
 
         // Reconcile with retry: package + run the harness + read back over
         // `/mcp` to CONFIRM the effect, retrying transient failures with
@@ -1223,6 +1679,25 @@ async fn dispatch_loop(
                         draft_sha256 = %effect.version,
                         "dispatch: run produced a DRAFT awaiting a human; no cascade"
                     );
+                    // A held draft in a WORKFLOW step pauses the operation for
+                    // human approval (async-ops Phase 0.3): drive the reducer
+                    // with a `Held` terminal so it records `awaiting_human` and
+                    // does not advance the plan past the unapproved draft.
+                    if trigger.workflow.is_some() {
+                        drive_workflow_or_deadletter(
+                            &client,
+                            &ledger,
+                            &metrics,
+                            &trigger,
+                            &run_id,
+                            None,
+                            StepTerminal::Held,
+                            config.max_runs_per_root,
+                            config.outbound_url.as_deref(),
+                            config.outbound_bearer.as_deref(),
+                        )
+                        .await;
+                    }
                     continue;
                 }
                 // Dynamic workflows: a confirmed write whose trigger carries a
@@ -1232,29 +1707,19 @@ async fn dispatch_loop(
                 // step events (each a §3.6-idempotent, lineage-tagged
                 // `capture_event`), guarded by the same `admit` controls.
                 if trigger.workflow.is_some() {
-                    match drive_workflow(
+                    drive_workflow_or_deadletter(
                         &client,
+                        &ledger,
+                        &metrics,
                         &trigger,
-                        &run_id.0,
-                        effect,
+                        &run_id,
+                        Some(effect),
+                        StepTerminal::Advanced,
                         config.max_runs_per_root,
+                        config.outbound_url.as_deref(),
+                        config.outbound_bearer.as_deref(),
                     )
-                    .await
-                    {
-                        Ok(outcome) => tracing::info!(
-                            target: "escurel_runner",
-                            event_id = %trigger.event_id,
-                            run_id = %run_id,
-                            emitted = outcome.emitted.len(),
-                            "workflow: reducer emitted next-step events"
-                        ),
-                        Err(e) => tracing::warn!(
-                            target: "escurel_runner",
-                            event_id = %trigger.event_id,
-                            error = %e,
-                            "workflow: reducer pass failed (run already recorded processed)"
-                        ),
-                    }
+                    .await;
                     continue;
                 }
                 // The "change → event" bridge (#156): a CONFIRMED successful
@@ -1291,6 +1756,55 @@ async fn dispatch_loop(
                 }
             }
             (None, Ok(())) => {
+                // Dynamic workflows (async-ops Phase 0.3, Bug A): a non-success
+                // terminal must still advance or terminate the parent operation
+                // — previously only a confirmed write drove the reducer, so
+                // these wedged the operation at `running` forever. A converged
+                // no-op advances the plan; every real failure resolves via the
+                // failed phase's authored `on_exhausted` policy.
+                //
+                // On crew F-2: this arm is only reached once a run has hit a
+                // LEDGER TERMINAL (dead-letter or fail-fast `failed`). A merely
+                // *transient* error is retried WITHIN the run by the reconciler
+                // (up to MAX_ATTEMPTS) and either clears (→ a confirmed write,
+                // handled above) or exhausts (→ `RetriesExhausted`); it never
+                // arrives here mid-retry. `Permanent` is a fail-fast terminal
+                // with no automatic recovery (the seen-set blocks the poller's
+                // re-claim within a process), so it too terminates the
+                // operation rather than wedging it at `running`. The reason slug
+                // rides into the status provenance (F-5). Additive to the
+                // metrics/logging below.
+                if trigger.workflow.is_some() {
+                    let terminal = if report.converged_no_op {
+                        Some(StepTerminal::Advanced)
+                    } else {
+                        match report.failure {
+                            Some(RunFailure::RetriesExhausted) => {
+                                Some(StepTerminal::Failed("retries_exhausted"))
+                            }
+                            Some(RunFailure::BadOutput) => Some(StepTerminal::Failed("bad_output")),
+                            Some(RunFailure::Permanent) => Some(StepTerminal::Failed("permanent")),
+                            // No failure and not converged: not a real terminal
+                            // (should not occur) — leave the operation running.
+                            None => None,
+                        }
+                    };
+                    if let Some(terminal) = terminal {
+                        drive_workflow_or_deadletter(
+                            &client,
+                            &ledger,
+                            &metrics,
+                            &trigger,
+                            &run_id,
+                            None,
+                            terminal,
+                            config.max_runs_per_root,
+                            config.outbound_url.as_deref(),
+                            config.outbound_bearer.as_deref(),
+                        )
+                        .await;
+                    }
+                }
                 // Not confirmed, not converged: a dead-letter (retries/bad
                 // output, already metered above) or a retriable `failed`.
                 match report.failure {
@@ -1396,62 +1910,69 @@ async fn attempt_run(
     // Carried past the match so the read-back below can tell "the harness
     // named a page" from "it named nothing" — the latter is only meaningful
     // once the gateway has also been asked.
-    let (harness_produced, harness_reported_failure) = match harness.run(&task).await {
-        Ok(outcome) => {
-            tracing::info!(
-                target: "escurel_runner",
-                event_id = %trigger.event_id,
-                harness = %harness.name(),
-                attempt,
-                ok = outcome.ok,
-                tool_calls = outcome.tool_calls,
-                produced_instance = ?outcome.produced_instance,
-                summary = %outcome.summary,
-                "dispatch: harness completed"
-            );
-            // A self-reported FAILURE is not evidence either.
-            //
-            // This used to return here, before the read-back — which
-            // contradicted the rule stated eight lines below and enforced
-            // everywhere else in this function: the gateway is the authority,
-            // never the harness's own account of itself. Measured in the
-            // cluster on 2026-09-06: a Gemini run created a draft
-            // (`create_draft` → `status: ok`), kept talking, hit the turn cap,
-            // and reported failure. The run was recorded `failed
-            // (retriable re-drive)` for work that had landed — and a re-drive
-            // would have produced a SECOND draft for a page whose rule is
-            // one draft per page.
-            //
-            // So carry the report past the read-back and let it decide. If
-            // the gateway confirms an effect, the run succeeded whatever the
-            // model said; if it confirms nothing, this becomes the permanent
-            // failure it always was, with the harness's own words attached.
-            let reported_failure = (!outcome.ok).then(|| outcome.summary.clone());
-            // NB: "produced no instance + no pre-flagged target" is NOT by
-            // itself a no-op, and treating it as one was a real bug. Both
-            // real LLM adapters hardcode `produced_instance: None` — their
-            // envelopes do not name the page the model wrote — so this fired
-            // on every unflagged `claude`/`codex` run, including ones that
-            // had just written a page and assigned the event. The run was
-            // recorded `processed` with no effect, and never cascaded. Only
-            // the `echo` stub reports a produced instance, which is why the
-            // suite never saw it.
-            //
-            // The gateway is the authority, so ask it first (below) and
-            // decide afterwards.
-            (outcome.produced_instance, reported_failure)
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "escurel_runner",
-                event_id = %trigger.event_id,
-                attempt,
-                error = %e,
-                "dispatch: harness run failed"
-            );
-            return Err(harness_error_to_reconcile(&e));
-        }
-    };
+    let (harness_produced, harness_reported_failure, harness_result_ref) =
+        match harness.run(&task).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    harness = %harness.name(),
+                    attempt,
+                    ok = outcome.ok,
+                    tool_calls = outcome.tool_calls,
+                    produced_instance = ?outcome.produced_instance,
+                    summary = %outcome.summary,
+                    "dispatch: harness completed"
+                );
+                // A self-reported FAILURE is not evidence either.
+                //
+                // This used to return here, before the read-back — which
+                // contradicted the rule stated eight lines below and enforced
+                // everywhere else in this function: the gateway is the authority,
+                // never the harness's own account of itself. Measured in the
+                // cluster on 2026-09-06: a Gemini run created a draft
+                // (`create_draft` → `status: ok`), kept talking, hit the turn cap,
+                // and reported failure. The run was recorded `failed
+                // (retriable re-drive)` for work that had landed — and a re-drive
+                // would have produced a SECOND draft for a page whose rule is
+                // one draft per page.
+                //
+                // So carry the report past the read-back and let it decide. If
+                // the gateway confirms an effect, the run succeeded whatever the
+                // model said; if it confirms nothing, this becomes the permanent
+                // failure it always was, with the harness's own words attached.
+                let reported_failure = (!outcome.ok).then(|| outcome.summary.clone());
+                // NB: "produced no instance + no pre-flagged target" is NOT by
+                // itself a no-op, and treating it as one was a real bug. Both
+                // real LLM adapters hardcode `produced_instance: None` — their
+                // envelopes do not name the page the model wrote — so this fired
+                // on every unflagged `claude`/`codex` run, including ones that
+                // had just written a page and assigned the event. The run was
+                // recorded `processed` with no effect, and never cascaded. Only
+                // the `echo` stub reports a produced instance, which is why the
+                // suite never saw it.
+                //
+                // The gateway is the authority, so ask it first (below) and
+                // decide afterwards. `result_ref` is the harness's own — a produced
+                // artifact the gateway read-back cannot observe — so it rides
+                // through to the confirmed effect verbatim.
+                (
+                    outcome.produced_instance,
+                    reported_failure,
+                    outcome.result_ref,
+                )
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    attempt,
+                    error = %e,
+                    "dispatch: harness run failed"
+                );
+                return Err(harness_error_to_reconcile(&e));
+            }
+        };
 
     // Don't trust the harness: read back over `/mcp` to confirm the event is
     // processed + bound and the instance's version advanced (#155). For an
@@ -1499,7 +2020,12 @@ async fn attempt_run(
         Autonomy::Review => confirm_draft(client, trigger).await,
     };
     match confirmed {
-        Ok(effect) => {
+        Ok(mut effect) => {
+            // Carry the harness's produced-artifact reference onto the confirmed
+            // effect (async-ops Phase 4): the gateway read-back cannot observe it,
+            // so it comes only from the harness's own outcome. The driver stamps
+            // it onto the terminal `succeeded` status event.
+            effect.result_ref = harness_result_ref;
             if let Some(summary) = &harness_reported_failure {
                 // Worth a line: the model said it failed and the gateway
                 // disagrees. The gateway wins, and someone should know the
@@ -1536,6 +2062,33 @@ async fn attempt_run(
         {
             Err(ReconcileError::Converged(format!(
                 "harness ran cleanly and the gateway reports no effect ({reason})"
+            )))
+        }
+        // The same rule for a REVIEW run, where "produced" means something
+        // different and the two clauses above do not fire.
+        //
+        // Under `autonomy: review` the only effect that counts is a DRAFT,
+        // and `confirm_draft` has just asked the gateway and been told there
+        // is none. A `produced_instance` from the harness is then not
+        // evidence of an effect: an agent that read a page and concluded
+        // nothing needed changing names that page, because naming it is how
+        // it says what the event was about. Requiring `harness_produced` to
+        // be absent therefore never converges a review no-op — it retries it.
+        //
+        // Measured on lab, 2026-09-12. The agent answered "Event already
+        // covered by existing note; no page modification needed" and named
+        // the note. The run was retried, and on the second attempt the agent
+        // did the only thing that would satisfy the read-back: it created a
+        // draft of a page it had just said needed no change. A human then
+        // found that card in their review queue, indistinguishable from real
+        // work until they opened it.
+        //
+        // Asking twice and taking the second answer is not a retry; it is
+        // pressure. An agent given a tool and asked again will use it.
+        Err(ReconcileError::Transient(reason)) if task.autonomy == Autonomy::Review => {
+            Err(ReconcileError::Converged(format!(
+                "review run: the harness ran cleanly and the gateway holds no \
+                 draft for this event ({reason})"
             )))
         }
         Err(e) => Err(e),
@@ -1658,6 +2211,12 @@ async fn poll_loop(
         "inbox poller started"
     );
 
+    // The runner's own identity: the cascade lineage on an inbox event is
+    // trusted for loop control only when the event was captured by THIS subject
+    // (a runner-emitted hop), so a caller cannot forge a shallow depth/root/path
+    // (runner-lineage-forge fix). `None` (a static token with no readable `sub`)
+    // falls back to trust-all — the pre-fix behaviour.
+    let self_subject = tokens.subject();
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
@@ -1679,7 +2238,10 @@ async fn poll_loop(
         match client.list_inbox(ListInboxRequest::default()).await {
             Ok(resp) => {
                 for event in &resp.events {
-                    let trigger = Trigger::from_event(event, tenant.clone());
+                    let trigger = match self_subject.as_deref() {
+                        Some(subj) => Trigger::from_event_gated(event, tenant.clone(), subj),
+                        None => Trigger::from_event(event, tenant.clone()),
+                    };
                     // Route through the same loop-control + quota gate the
                     // webhook uses: the durable ledger decides create-vs-drop,
                     // the depth/cycle/budget controls admit-or-dead-letter, and
@@ -1820,4 +2382,129 @@ async fn wait_for_shutdown(draining: Arc<std::sync::atomic::AtomicBool>) {
 async fn wait_for_shutdown(draining: Arc<std::sync::atomic::AtomicBool>) {
     let _ = tokio::signal::ctrl_c().await;
     draining.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use escurel_runner_core::{Lineage, OPERATION_STATUS_LABEL, QuotaLimits};
+
+    /// Build the minimal `gate_and_enqueue` dependency set with limits generous
+    /// enough that only the reserved-label guard can reject a trigger. The
+    /// [`DispatchConsumer`] is returned so the caller keeps it alive — dropping
+    /// it closes the queue channel and every `enqueue` then reports not-sent.
+    #[allow(clippy::type_complexity)]
+    fn gate_deps() -> (
+        Ledger,
+        DispatchQueue,
+        LoopLimits,
+        Governor,
+        Metrics,
+        InflightSlots,
+        DispatchConsumer,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Leak the tempdir so the sqlite file outlives the test body; the
+        // process exits at test end and reclaims it.
+        let path = dir.keep().join("ledger.sqlite");
+        let ledger = Ledger::open(path).expect("open ledger");
+        let (queue, consumer) = DispatchQueue::new(16, 256);
+        let limits = LoopLimits {
+            max_depth: 16,
+            max_runs_per_root: 64,
+        };
+        let governor = Governor::new(QuotaLimits {
+            runs_per_min: 1000,
+            max_concurrent: 1000,
+            max_harness_procs: 1000,
+        });
+        let metrics = Metrics::new();
+        let inflight: InflightSlots =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        (ledger, queue, limits, governor, metrics, inflight, consumer)
+    }
+
+    fn trigger_with_label(event_id: &str, label: &str) -> Trigger {
+        Trigger {
+            tenant: "acme".to_owned(),
+            event_id: event_id.to_owned(),
+            label_skill: label.to_owned(),
+            instance_page_id: None,
+            lineage: Lineage::root(event_id.to_owned()),
+            workflow: None,
+            content_hash: None,
+        }
+    }
+
+    /// F1: a reserved operation-status event is dropped at the enqueue
+    /// chokepoint and creates NO ledger row — so recording a status can never
+    /// spawn (and dead-letter) a run. Deterministic: exercises the guard
+    /// directly, independent of the poller/webhook timing race that hid the bug.
+    #[test]
+    fn operation_status_event_creates_no_ledger_row() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let admitted = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-status-1", OPERATION_STATUS_LABEL),
+            "test",
+        );
+        assert!(!admitted, "a status event must not be admitted");
+        assert_eq!(
+            ledger.count_all_runs().expect("count runs"),
+            0,
+            "a status event must create no ledger row"
+        );
+    }
+
+    /// Phase 1 (`/trigger` binding): a single-tenant runner takes its OWN
+    /// tenant as authoritative and refuses a body that names a different one, so
+    /// a party holding the webhook secret cannot drive another tenant's runs
+    /// through this runner. Absent/equal body tenant is accepted; with no
+    /// configured tenant the body value passes through (dev/legacy).
+    #[test]
+    fn trigger_tenant_is_bound_to_the_runner_not_the_body() {
+        // Configured runner: own tenant wins; a matching or absent body is fine.
+        assert_eq!(
+            resolve_trigger_tenant(Some("acme"), Some("acme")).unwrap(),
+            "acme"
+        );
+        assert_eq!(resolve_trigger_tenant(Some("acme"), None).unwrap(), "acme");
+        // A body naming a DIFFERENT tenant is rejected (mis-routed / forged).
+        assert_eq!(
+            resolve_trigger_tenant(Some("acme"), Some("evil")),
+            Err("evil".to_owned())
+        );
+        // Dev/legacy: no configured tenant → body value (or empty) passes.
+        assert_eq!(resolve_trigger_tenant(None, Some("acme")).unwrap(), "acme");
+        assert_eq!(resolve_trigger_tenant(None, None).unwrap(), "");
+    }
+
+    /// Positive control: an ordinary labelled trigger is NOT dropped by the
+    /// guard — it creates exactly one ledger row. Proves the guard is scoped to
+    /// the reserved label and does not swallow real work.
+    #[test]
+    fn ordinary_event_creates_one_ledger_row() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let admitted = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-real-1", "research-angle"),
+            "test",
+        );
+        assert!(admitted, "an ordinary event must be admitted");
+        assert_eq!(
+            ledger.count_all_runs().expect("count runs"),
+            1,
+            "an ordinary event must create exactly one ledger row"
+        );
+    }
 }

@@ -351,6 +351,7 @@ impl GeminiHarness {
             if responses.is_empty() {
                 // No tool calls this turn: the model is done talking.
                 return Ok(HarnessOutcome {
+                    result_ref: None,
                     ok: true,
                     status: HarnessStatus::Ok,
                     summary: summary.trim().to_owned(),
@@ -366,6 +367,7 @@ impl GeminiHarness {
         // done — the reconciler decides retry-vs-dead, and it can only do
         // that if this is not dressed up as success.
         Ok(HarnessOutcome {
+            result_ref: None,
             ok: false,
             status: HarnessStatus::Failed,
             summary: format!(

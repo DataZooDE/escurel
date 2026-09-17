@@ -64,6 +64,11 @@ pub struct ConfirmedEffect {
     /// nothing has changed yet — cascading a held write would spend the
     /// budget of an entire lineage on a change a human may still refuse.
     pub held: bool,
+    /// The out-of-band result the harness produced, verbatim from its
+    /// [`HarnessOutcome::result_ref`] (a serialized `escurel_types::ResultRef`).
+    /// Carried through so the driver can stamp it onto the terminal `succeeded`
+    /// status event (async-ops Phase 4). `None` for every non-producing run.
+    pub result_ref: Option<serde_json::Value>,
 }
 
 /// A reconcile/attempt failure, classified for the retry policy.
@@ -72,6 +77,21 @@ pub enum ReconcileError {
     /// A plausibly self-healing failure — retry with backoff.
     #[error("transient reconcile failure: {0}")]
     Transient(String),
+    /// **The gateway is not answering at all** — wait for it, and do not
+    /// spend an attempt on it.
+    ///
+    /// Distinct from [`ReconcileError::Transient`] because the retry budget
+    /// measures the wrong thing here. `max_attempts` asks "how many times is
+    /// this run worth trying?", which is a question about the run; a refused
+    /// connection is a statement about the dependency, and the run has not
+    /// been tried at all. #440 fixed that at BOOT (the runner waits for the
+    /// gateway before dispatching). This is the same fact arriving later:
+    /// measured in the lab on 2026-09-11, a gateway rollout took 17 minutes to
+    /// adopt its lake and the runner — already up, already past its boot wait
+    /// — dead-lettered eight in-flight events inside seconds, against three
+    /// attempts with a short backoff.
+    #[error("gateway unavailable: {0}")]
+    Unavailable(String),
     /// A failure a retry cannot fix — fail fast.
     #[error("permanent reconcile failure: {0}")]
     Permanent(String),
@@ -96,8 +116,9 @@ pub enum ReconcileError {
 pub fn classify_client_error(err: &escurel_client::Error) -> ReconcileError {
     use escurel_client::Error as E;
     match err {
-        // Wire-level failures the gateway can recover from.
-        E::Transport(_) => ReconcileError::Transient(err.to_string()),
+        // Nothing answered: the gateway is down, restarting, or still
+        // booting. Not this run's fault, and not chargeable to its budget.
+        E::Transport(_) => ReconcileError::Unavailable(err.to_string()),
         E::Http { status, .. } if *status >= 500 || *status == 408 || *status == 429 => {
             ReconcileError::Transient(err.to_string())
         }
@@ -140,6 +161,7 @@ pub async fn confirm_draft(
         )));
     };
     Ok(ConfirmedEffect {
+        result_ref: None,
         // The page the draft is FOR. It may not exist yet — that is the
         // ordinary case for a capture being filed for the first time — so
         // this is deliberately NOT read back through `expand`.
@@ -347,6 +369,7 @@ pub async fn confirm_effect(
     let version = content_version(&expanded.body);
 
     Ok(ConfirmedEffect {
+        result_ref: None,
         held: false,
         instance_page_id,
         version,
@@ -405,6 +428,11 @@ where
 {
     let cap = cfg.max_attempts.max(1);
     let mut tries = 0u32;
+    // Time spent waiting on a gateway that was not answering. Kept apart from
+    // `tries` deliberately: waiting is not attempting, and charging it to the
+    // attempt budget is what dead-lettered eight healthy events during a
+    // 17-minute gateway rollout.
+    let mut waited = Duration::ZERO;
     loop {
         tries += 1;
         match attempt(tries).await {
@@ -461,6 +489,46 @@ where
                     attempts: tries,
                 };
             }
+            Err(ReconcileError::Unavailable(reason)) => {
+                // Nothing answered. Do NOT count this as an attempt: step
+                // `tries` back and wait for the dependency to come back, up to
+                // the grace the dependency's own startup budget deserves.
+                tries -= 1;
+                if waited >= cfg.unavailable_grace {
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        waited_secs = waited.as_secs(),
+                        grace_secs = cfg.unavailable_grace.as_secs(),
+                        reason = %reason,
+                        "reconcile: gateway still unavailable after the full grace; giving up"
+                    );
+                    return RunReport {
+                        confirmed: None,
+                        converged_no_op: false,
+                        failure: Some(RunFailure::RetriesExhausted),
+                        attempts: tries.max(1),
+                    };
+                }
+                // A flat interval rather than a growing one: this is a poll
+                // for "is it back yet", not an apology for a failed request,
+                // and the answer arrives when the gateway decides, not when we
+                // have backed off far enough.
+                let wait = unavailable_poll_interval(cfg.retry_backoff);
+                if waited.is_zero() {
+                    // Once per run, not once per poll: a 17-minute outage at
+                    // this interval is hundreds of lines that all say the same
+                    // thing.
+                    tracing::info!(
+                        target: "escurel_runner",
+                        poll_ms = wait.as_millis() as u64,
+                        grace_secs = cfg.unavailable_grace.as_secs(),
+                        reason = %reason,
+                        "reconcile: gateway unavailable; holding the run (not spending an attempt)"
+                    );
+                }
+                waited += wait;
+                tokio::time::sleep(wait).await;
+            }
             Err(ReconcileError::Transient(reason)) => {
                 if tries >= cap {
                     tracing::warn!(
@@ -488,6 +556,15 @@ where
             }
         }
     }
+}
+
+/// How often to re-check a gateway that is not answering.
+///
+/// The configured retry backoff, floored at a second (a 1ms backoff would
+/// spin) and capped at fifteen (a gateway that is coming back should not wait
+/// minutes for us to notice).
+fn unavailable_poll_interval(retry_backoff: Duration) -> Duration {
+    retry_backoff.clamp(Duration::from_secs(1), Duration::from_secs(15))
 }
 
 /// The content-addressed version marker of an instance body: a short hex
@@ -521,6 +598,7 @@ mod tests {
 
     fn effect() -> ConfirmedEffect {
         ConfirmedEffect {
+            result_ref: None,
             instance_page_id: "inst".into(),
             version: "v1".into(),
             held: false,

@@ -316,6 +316,7 @@ fn parse_outcome(final_message: &str, jsonl: &[u8]) -> Result<HarnessOutcome, Ha
     };
 
     Ok(HarnessOutcome {
+        result_ref: None,
         ok,
         status: if ok {
             HarnessStatus::Ok

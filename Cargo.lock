@@ -2586,6 +2586,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.24.0",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2623,6 +2624,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokenizers",
  "tokio",
+ "tracing",
  "wiremock",
 ]
 
@@ -2678,6 +2680,7 @@ dependencies = [
  "escurel-embed",
  "escurel-md",
  "escurel-storage",
+ "escurel-types",
  "html-to-markdown-rs",
  "kreuzberg",
  "regex",
@@ -2778,6 +2781,7 @@ name = "escurel-runner-core"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "escurel-client",
  "escurel-runner-workflow",
  "escurel-types",

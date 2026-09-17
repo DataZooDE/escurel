@@ -85,6 +85,30 @@ pub struct DraftInfo {
     pub decided_by: String,
     /// RFC 3339.
     pub created_at: String,
+    /// The run that proposed this, when it proposed more than one page
+    /// (#509 §1). `None` is an ungrouped draft — today's draft exactly.
+    pub changeset_id: Option<String>,
+    /// The target's CRDT version when this was drafted (#509 §2), so
+    /// promotion can three-way-merge a head that moved instead of refusing on
+    /// the byte CAS. `None` where there is no CRDT backend to merge against,
+    /// which is meaningful rather than missing.
+    pub base_version: Option<String>,
+}
+
+/// A changeset as a queue row (#509 §1): the held writes of one run, counted
+/// and summarised rather than listed. See [`Indexer::list_changesets`] for why
+/// `status` is derived rather than stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangesetInfo {
+    pub changeset_id: String,
+    /// How many drafts are in it.
+    pub drafts: usize,
+    /// `open` | `promoted` | `discarded` | `mixed`.
+    pub status: String,
+    /// The subject that proposed it.
+    pub author: String,
+    /// RFC 3339, the oldest member's creation time.
+    pub created_at: String,
 }
 
 /// Input to [`Indexer::create_draft`].
@@ -100,6 +124,12 @@ pub struct NewDraft {
     pub author: String,
     /// The inbox event this answers, if any.
     pub event_id: Option<String>,
+    /// The changeset this draft belongs to, when it is one of several from
+    /// one run. `None` keeps it ungrouped, which is today's behaviour.
+    pub changeset_id: Option<String>,
+    /// The target's CRDT version at drafting time (#509 §2). `None` when the
+    /// deployment has no CRDT backend.
+    pub base_version: Option<String>,
 }
 
 /// Hex sha256 of a draft's bytes. Free function so the server can compute the
@@ -126,6 +156,8 @@ fn row_to_draft(row: &duckdb::Row<'_>) -> duckdb::Result<DraftInfo> {
         reason: row.get(8)?,
         decided_by: row.get(9)?,
         created_at: row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+        changeset_id: row.get(11)?,
+        base_version: row.get(12)?,
     })
 }
 
@@ -133,7 +165,7 @@ fn select_cols(table: &str) -> String {
     format!(
         "SELECT draft_id, target_page_id, content, content_sha256, base_sha256, \
          author, event_id, status, reason, decided_by, \
-         strftime(created_at, '%Y-%m-%dT%H:%M:%SZ') \
+         strftime(created_at, '%Y-%m-%dT%H:%M:%SZ'), changeset_id, base_version \
          FROM {table}"
     )
 }
@@ -195,8 +227,8 @@ impl Indexer {
                 &format!(
                     "INSERT INTO {table} \
                      (tenant, draft_id, target_page_id, content, content_sha256, base_sha256, \
-                      author, event_id, status, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)"
+                      author, event_id, changeset_id, base_version, status, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)"
                 ),
                 duckdb::params![
                     t,
@@ -207,6 +239,8 @@ impl Indexer {
                     &draft.base_sha256,
                     &draft.author,
                     &draft.event_id,
+                    &draft.changeset_id,
+                    &draft.base_version,
                 ],
             )?;
         } else {
@@ -214,8 +248,8 @@ impl Indexer {
                 &format!(
                     "INSERT INTO {table} \
                      (draft_id, target_page_id, content, content_sha256, base_sha256, \
-                      author, event_id, status, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)"
+                      author, event_id, changeset_id, base_version, status, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)"
                 ),
                 duckdb::params![
                     &draft_id,
@@ -225,10 +259,29 @@ impl Indexer {
                     &draft.base_sha256,
                     &draft.author,
                     &draft.event_id,
+                    &draft.changeset_id,
+                    &draft.base_version,
                 ],
             )?;
         }
         drop(conn);
+        // A draft is a change a subscriber must be able to see (#474).
+        //
+        // escurel has two notions of "something happened": a bus event, and an
+        // INDEX mutation — and a draft is a row, not a page, so it was neither.
+        // Consumers therefore never woke for one. That mattered the moment
+        // drafts became the main producer: `escurel-runner` drafts every
+        // sorted-in capture, and heron's review feed subscribes to exactly
+        // these two signals, so the queue grew in silence and the consultant's
+        // screen read "nothing waiting" — indistinguishable from a runner that
+        // never ran.
+        //
+        // The epoch is the right lever precisely because a wake is a SIGNAL,
+        // not data: every subscriber re-reads its own scoped query and decides
+        // for itself whether anything it cares about moved. The cost of a
+        // spurious wake is one read; the cost of a missing one is a queue
+        // nobody is told about.
+        self.bump_mutation_epoch();
 
         self.get_draft(&draft_id)
             .await?
@@ -255,6 +308,50 @@ impl Indexer {
             None => (
                 format!("{} WHERE draft_id = ?", select_cols(&table)),
                 vec![draft_id.to_owned()],
+            ),
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query_map(duckdb::params_from_iter(params.iter()), row_to_draft)?;
+        rows.next().transpose().map_err(Into::into)
+    }
+
+    /// The OPEN draft against `target_page_id`, if there is one.
+    ///
+    /// Exists so a second draft against a page that already has one can be
+    /// refused at draft time rather than discovered at review time: promoting
+    /// either of two open drafts moves the page, which makes the other's
+    /// `base_sha256` stale for ever. See `tool_create_draft`.
+    ///
+    /// Deliberately unfiltered by reader, like [`Self::list_drafts`]: the
+    /// question is "does this page already have one?", which is a fact about
+    /// the page and not about who is asking. The caller has already been
+    /// admitted to WRITE this page by the time it asks.
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn open_draft_for_page(
+        &self,
+        target_page_id: &str,
+    ) -> Result<Option<DraftInfo>, IndexerError> {
+        let table = self.drafts_table();
+        let tenant = self.drafts_tenant_scope().map(str::to_owned);
+        let conn = self.conn.lock().await;
+        let (sql, params): (String, Vec<String>) = match &tenant {
+            Some(t) => (
+                format!(
+                    "{} WHERE tenant = ? AND target_page_id = ? AND status = 'open' \
+                     ORDER BY created_at DESC LIMIT 1",
+                    select_cols(&table)
+                ),
+                vec![t.clone(), target_page_id.to_owned()],
+            ),
+            None => (
+                format!(
+                    "{} WHERE target_page_id = ? AND status = 'open' \
+                     ORDER BY created_at DESC LIMIT 1",
+                    select_cols(&table)
+                ),
+                vec![target_page_id.to_owned()],
             ),
         };
         let mut stmt = conn.prepare(&sql)?;
@@ -302,6 +399,114 @@ impl Indexer {
         Ok(out)
     }
 
+    /// Every draft in one changeset, oldest first — the order the run
+    /// proposed them, which is the order a reviewer reads them in and the
+    /// order promotion applies them in.
+    ///
+    /// Unfiltered by reader for the same reason [`Self::list_drafts`] is: who
+    /// may see a draft is decided from its CONTENT at the server.
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn drafts_in_changeset(
+        &self,
+        changeset_id: &str,
+    ) -> Result<Vec<DraftInfo>, IndexerError> {
+        let table = self.drafts_table();
+        let tenant = self.drafts_tenant_scope().map(str::to_owned);
+        let conn = self.conn.lock().await;
+        let (sql, params): (String, Vec<String>) = match &tenant {
+            Some(t) => (
+                format!(
+                    "{} WHERE tenant = ? AND changeset_id = ? ORDER BY created_at ASC",
+                    select_cols(&table)
+                ),
+                vec![t.clone(), changeset_id.to_owned()],
+            ),
+            None => (
+                format!(
+                    "{} WHERE changeset_id = ? ORDER BY created_at ASC",
+                    select_cols(&table)
+                ),
+                vec![changeset_id.to_owned()],
+            ),
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(duckdb::params_from_iter(params.iter()), row_to_draft)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Every changeset, newest first, as a queue row rather than as its
+    /// member drafts: how many are in it, who proposed it, when, and where it
+    /// stands.
+    ///
+    /// `status` is derived, not stored — a changeset has no row of its own, so
+    /// there is nowhere for a stored status to drift from its members. It is
+    /// `open` while any member is open, `promoted` when every member promoted,
+    /// `discarded` when every member was discarded, and `mixed` when members
+    /// were decided individually (promoting a member unlinks it from the group
+    /// decision, and a reviewer must be able to see that happened).
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn list_changesets(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<ChangesetInfo>, IndexerError> {
+        let table = self.drafts_table();
+        let tenant = self.drafts_tenant_scope().map(str::to_owned);
+        let cap = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
+        let conn = self.conn.lock().await;
+        let where_tenant = if tenant.is_some() {
+            "WHERE tenant = ? AND changeset_id IS NOT NULL"
+        } else {
+            "WHERE changeset_id IS NOT NULL"
+        };
+        let sql = format!(
+            "SELECT changeset_id, COUNT(*), \
+                    COUNT(*) FILTER (WHERE status = 'open'), \
+                    COUNT(*) FILTER (WHERE status = 'promoted'), \
+                    COUNT(*) FILTER (WHERE status = 'discarded'), \
+                    MIN(author), \
+                    strftime(MIN(created_at), '%Y-%m-%dT%H:%M:%SZ') AS created \
+             FROM {table} {where_tenant} \
+             GROUP BY changeset_id ORDER BY created DESC{cap}"
+        );
+        let params: Vec<String> = tenant.into_iter().collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(duckdb::params_from_iter(params.iter()), |row| {
+            let drafts: i64 = row.get(1)?;
+            let open: i64 = row.get(2)?;
+            let promoted: i64 = row.get(3)?;
+            let discarded: i64 = row.get(4)?;
+            Ok(ChangesetInfo {
+                changeset_id: row.get(0)?,
+                drafts: usize::try_from(drafts).unwrap_or(0),
+                status: if open > 0 {
+                    "open"
+                } else if promoted == drafts {
+                    "promoted"
+                } else if discarded == drafts {
+                    "discarded"
+                } else {
+                    "mixed"
+                }
+                .to_owned(),
+                author: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                created_at: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Mark a draft decided. `status` is `promoted` or `discarded`.
     ///
     /// The row is kept, never deleted: "did I already deal with that?" must
@@ -342,6 +547,13 @@ impl Indexer {
                 duckdb::params![status, decided_by, reason, draft_id],
             )?,
         };
+        // Same signal on the way out (#474). A queue that shrinks unannounced
+        // is the mirror of one that grows unannounced: two reviewers on two
+        // devices, and the card the other one just decided stays on your
+        // screen until something unrelated moves the index.
+        if n > 0 {
+            self.bump_mutation_epoch();
+        }
         Ok(n > 0)
     }
 }

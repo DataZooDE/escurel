@@ -26,10 +26,11 @@ section below.
 | `resolve` | `wikilink` | `{parsed, page (PageRef), exists}` | parse + look up a `[[wikilink]]`; reports validity without raising |
 | `expand` | `page_id`, `as_of?`, `scenario?`, `full?` (all chunks of a document instance) | `{page, frontmatter, body, blocks[], wikilinks_out[], content_sha256?}` (`content_sha256` = the stored-bytes hash, i.e. the value `update_page.base_sha256` guards against; plain reads only) (+ `shadow` on an overlay that shadows a base skill: `{base_page_id, pack, base: {…base frontmatter…}}`) | the body fetch — the **most expensive** primitive; use sparingly |
 | `neighbours` | `page_id`, `direction='in'\|'out'\|'both'`, `link_skill?` | list of `Edge {src_page, dst_page, link_skill, link_version?, dst_anchor?}` | typed link-graph traversal (backlinks + forward links) |
-| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, visibility, owner_field?, autonomy?, layer, shadows?}` | the Tier-1 catalogue, **scoped to the caller**; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>`; `autonomy` is the declared human-in-the-loop policy — see the note below |
+| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, visibility, owner_field?, autonomy?, layer, shadows?}` | the Tier-1 catalogue, **scoped to the caller**; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>`; `autonomy` is the declared human-in-the-loop policy — see the note below. Rows carry `params` (what one RUN takes) and `fields` (the typed shape of the INSTANCES — `{name, kind, required, values?, target_skill?, min?, max?}`); both are omitted entirely for a skill that declares neither |
 | `list_instances` | `cursor?` (pass back the response next-cursor; ONLY a null one means done), `skill_id`, `order_by='at asc'\|'at desc'?`, `limit?`, `frontmatter_key?`+`frontmatter_value?`, `as_of?`, `scenario?` | list of `{page_id, skill, frontmatter, at}` | enumerate instances of a skill (event-log scans, chain heads); NB the filter param is `skill_id` here but `skill` on `search` |
 | `fetch_blob` | `page_id` (a document instance) | `{blob: {page_id, content_type, size, bytes_base64} \| null}` | the raw bytes behind a document/RAG instance; capped at 25 MiB. For browsers/large files prefer `GET /blob/{page_id}` — same ACL, raw bytes, real `Content-Type`, no cap |
-| `query_instance` | `ref` (a query-page id; `query_id` accepted as an alias), `params` (typed object) | `{rows, schema[], truncated}` | **the one query surface**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side. (The legacy admin-gated `run_stored_query` was removed in the 2026-08-14 surface consolidation.) |
+| `query_instance` | `ref` (a query-page id; `query_id` accepted as an alias), `params` (typed object), `scenario?` (read an overlay instead of the base timeline — corpus traversals only) | `{rows, schema[], truncated}` | **the one query surface**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side. (The legacy admin-gated `run_stored_query` was removed in the 2026-08-14 surface consolidation.) A page whose `target:` is the literal `corpus` declares a bounded **traversal** over the markdown link graph instead of SQL (`start` + `steps` of `{relation, direction, as}` + `where`/`return`, mandatory `max_depth` ≤ 12); ACL is enforced per traversed instance, fail-closed, so one unreadable hop drops the whole path |
+| `get_operation` | `operation_id` (the run-board page id start_operation returned) | `{operation_id, found, status?}` where `status` ∈ `pending\|running\|succeeded\|failed\|awaiting_human` | poll an async operation's current status, derived from its run board by precedence (a `failed` outranks a stale `running`); an ACL'd read — an unknown or unreadable operation is `{found: false}` (denial as absence) |
 
 Notes:
 - **`list_skills` is caller-scoped, and never carries group names.** A
@@ -90,11 +91,12 @@ Notes:
 | tool | inputs | output | mode |
 |---|---|---|---|
 | `validate` | `content`, `as_page_id?` | `{issues[]}` | dry run — no commit |
-| `update_page` | `page_id`, `content`, `base_version?`+`require_exact_base?` (CRDT gateways), `base_sha256?` (every gateway) | `{ok, issues[], new_version}` | whole-page write (the public write path); the `base_*` guards are the **atomic-approve** CAS — see the autonomy note |
-| `delete_page` | `page_id`, `base_version?` | `{ok, …}` | **soft**-delete / archive |
+| `update_page` | `page_id`, `content`, `base_version?`+`require_exact_base?` (CRDT gateways), `base_sha256?` (every gateway) | `{ok, issues[], new_version}` | whole-page write (the public write path); the `base_*` guards are the **atomic-approve** CAS — see the autonomy note. Pass `branch` to write on a branch instead of the base timeline: the server derives the overlay page id and stamps `scenario`, so you never type it (#512) |
+| `delete_page` | `page_id`, `base_version?` | `{ok, …}` | **soft**-delete / archive. With `branch`, it is a TOMBSTONE rather than a retraction: the base page is untouched, the slug reads as absent on that branch, and the delete lands for real when the branch merges |
 | `open_session` | `page_id` | `{session, head_version, content}` | live CRDT |
 | `apply_op` | `session`, `op` | `{ok, conflicts?}` | live CRDT |
 | `close_session` | `session`, `commit=true` | `{final_version, issues}` | live CRDT |
+| `start_operation` | `wf_skill`, `input?`, `idempotency_key?`, `conversation_ref?` | `{operation_id, status:'pending'}` | begin an async workflow operation; the server owns the operation id + its workflow provenance (uncoerceable), creates an owner-scoped run board, and captures the invocation — poll with `get_operation`; `idempotency_key` makes a retry re-attach, not restart |
 
 `update_page` is the path you use for seeding and for whole-page authoring
 (`references/07`). The live CRDT trio (`open_session`/`apply_op`/
@@ -181,6 +183,15 @@ privately, which put consumer-shaped objects in the knowledge base and made
 |---|---|
 | `create_draft` | Hold the whole proposed markdown for `target_page_id` (which need not exist yet), with the `base_sha256` it was drafted against (`""` = expect no page). Returns the draft with its `draft_id` and `content_sha256`. |
 | `list_drafts` | Everything still waiting, newest first — the answer to "what is waiting for me?". |
+| `create_branch` | `name` | `{ok, branch:{name, base_version, author, status, created_at}}` | open a BRANCH — an isolated workspace whose writes never touch the base timeline (#512). Records who opened it and what it forked from; the name is also the `scenario` its pages carry. Opening an existing name is refused, never joined |
+| `list_branches` | — | `{branches:[{name, base_version, author, status, reason, decided_by, created_at}]}` | every branch, newest first, including decided ones |
+| `merge_branch` | `name` | `{ok, name, results:[{page_id, target, deleted, ok}], partial?, issues}` | land a branch. **All-or-nothing** — one page that cannot land blocks the whole merge. A base twin that moved since the fork is reconciled by the same three-way merge `update_page` performs; tombstones land as real deletes |
+| `abandon_branch` | `name`, `reason?` | `{ok, name, reason}` | close a branch without landing anything. Its overlay pages are LEFT in place as the record of what was proposed |
+| `diff_draft` | `draft_id` | `{ok, target_page_id, exists, base_moved, frontmatter_changes:[{key,from,to}], block_changes:[{anchor,kind,preview}]}` | what approving this held write would change — only keys that MOVE, plus whether the target has shifted since the draft was taken (`base_moved`, i.e. promotion will need a merge). Read-only; a draft you may not see answers `ok:false` + `not_found`, never a refusal |
+| `list_changesets` | `limit?` | `{changesets:[{changeset_id, drafts, status, author, created_at, event_ids, target_page_ids}]}` | the review queue by RUN rather than by page: one row per changeset. `status` is DERIVED from the members (`open` while any is open, `mixed` when members were decided individually), so it cannot drift from them |
+| `promote_changeset` | `changeset_id`, `decided_by?` (admin) | `{ok, changeset_id, results:[{draft_id, page_id, ok, already_applied}], already_decided?, partial?, issues}` | land a run's held writes as ONE decision. **All-or-nothing**: every member is pre-checked and if any would refuse, nothing lands and all stay open. Safe to retry — a member whose page already holds its bytes counts as applied, so an interrupted promotion completes instead of conflicting with itself |
+| `discard_changeset` | `changeset_id`, `reason?`, `decided_by?` (admin) | `{ok, discarded}` | refuse the whole proposal; nothing is written to any target |
+
 | `promote_draft` | Land it, under the approver's identity. |
 | `discard_draft` | Refuse it, with a `reason`. Nothing is written. |
 
@@ -202,7 +213,7 @@ Three properties are worth relying on:
 A draft already decided answers `{code: already_decided}` naming which
 decision was taken — deciding twice is not expressible.
 
-Note this list is **curated, not exhaustive** — the server exposes 70 tools
+Note this list is **curated, not exhaustive** — the server exposes 80 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,
@@ -221,7 +232,7 @@ instance's **history** once assigned. Workers build chains on this
 
 | tool | inputs (key ones) | output | what for |
 |---|---|---|---|
-| `capture_event` | `label_skill` (**required** — the label→skill routing key; an unlabelled capture is refused `-32602`), `source`, `mime`, `title`, `body`, `instance_page_id?`, `event_id?`, `provenance?` | the stored `Event` (server mints `event_id`/`at` when empty) | ingest an event; fires the webhook |
+| `capture_event` | `label_skill` (**required** — the label→skill routing key; an unlabelled capture is refused `-32602`), `source`, `mime`, `title`, `body`, `instance_page_id?`, `event_id?`, `provenance?` | the stored `Event` (server mints `event_id`/`at` when empty) | ingest an event; fires the webhook. The server OVERWRITES two provenance keys with its own claims: `captured_by` (your verified token `sub`) and `captured_via` (the principal you are acting for, from the token's `act.sub` — present only for a delegated token such as a runner's per-run agent bearer, and stripped when there is none). Sending either yourself has no effect |
 | `list_inbox` | `limit`, `cursor?` | `{events[], next_cursor?}` | the tenant's UNPROCESSED events (a worker's poll fallback); pass `next_cursor` back as `cursor` — ONLY its absence means done (ACL filtering legitimately shortens pages) |
 | `assign_event` | `event_id`, `instance_page_id` | ack | mark processed + attach to a page's history |
 | `list_events` | `instance_page_id`, `limit`, `cursor?` | `{events[], next_cursor?}` | a page's PROCESSED history, **oldest first** — assigned events only (an unassigned inbox event is a pending work item, not history); paginated like `list_inbox`, so history past `limit` stays reachable |

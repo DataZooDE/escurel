@@ -20,6 +20,7 @@
 
 pub mod acl;
 pub mod backend;
+pub mod branches;
 pub mod chat;
 pub mod citation;
 pub mod crdt_history;
@@ -35,20 +36,25 @@ pub mod indexer;
 mod materialise;
 pub mod meta_skill;
 pub mod pack;
+pub mod quack_policy;
+pub mod quack_session;
 pub mod query;
 pub mod read;
+pub mod result_ref;
 pub mod retrieval;
 pub mod schema;
 pub mod search;
 pub mod snapshot;
+mod traversal;
 pub mod validate;
 
-pub use acl::{AclCaller, CAPTURED_BY_FIELD, captured_by};
+pub use acl::{AclCaller, CAPTURED_BY_FIELD, CAPTURED_VIA_FIELD, captured_by};
 pub use backend::{
     BackendBinding, BackendCtx, BackendKind, BackendRegistry, BindingStatus, Capabilities,
     InstanceBackend, MarkdownBackend, Materialized, RemoteBinding, RemoteKind, RemoteOp,
     SearchMode, SqlConnector, SqlViewBackend, SqlViewBinding, SqlViewError,
 };
+pub use branches::{BranchInfo, BranchPage};
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
 pub use creds::{CredentialInfo, CredentialRecord};
@@ -59,8 +65,8 @@ pub use graph::{
 };
 pub use groups::GroupMember;
 pub use indexer::{
-    AuditDrift, IndexChunk, Indexer, IndexerError, RebuildProgress, derive_attach_alias,
-    is_safe_attach_source, is_valid_attach_alias,
+    AuditDrift, DEFAULT_QUERY_TIMEOUT_MS, IndexChunk, Indexer, IndexerError, RebuildProgress,
+    derive_attach_alias, is_safe_attach_source, is_valid_attach_alias,
 };
 pub use meta_skill::{META_SKILL_ID, META_SKILL_MD, META_SKILL_PAGE_ID};
 pub use query::{
@@ -68,8 +74,9 @@ pub use query::{
     StoredQueryResult,
 };
 pub use read::{
-    AclPolicy, Autonomy, BlockInfo, Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, PageRef,
-    ParamKind, ResolvedWikilink, SkillInfo, SkillParam, Visibility,
+    AclPolicy, Autonomy, BlockInfo, Direction, Edge, ExpandedPage, FieldKind, InstanceInfo,
+    OrderDir, PageRef, ParamKind, ResolvedWikilink, SkillField, SkillInfo, SkillParam, Visibility,
+    parse_fields,
 };
 pub use retrieval::RetrievalConfig;
 pub use schema::Migrator;
@@ -77,5 +84,9 @@ pub use search::{Granularity, SearchHit};
 pub use snapshot::{
     IndexStore, IndexerHandle, LakeConfig, ObjectStoreSecret, OpenedIndex, PublishReport,
     SingleFileStore, SnapshotError,
+};
+pub use traversal::{
+    CORPUS_TARGET, Dir, Filter, MAX_DEPTH_CEILING, START_ALIAS, Start, Step, Traversal,
+    TraversalError, parse_traversal,
 };
 pub use validate::{Issue, Severity};

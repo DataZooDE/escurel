@@ -127,6 +127,15 @@ pub struct AuthContext {
     /// Raw — reserved-name and admin-value stripping is the ACL
     /// layer's job (`escurel-index`), not the verifier's.
     pub groups: Vec<String>,
+    /// Who this subject is acting FOR, from the RFC 8693 `act.sub` claim
+    /// (#510): a per-run agent token carries the runner that delegated to it,
+    /// so the chain "runner acting as inbox-scan" survives verification and
+    /// can be stamped into provenance. `None` for an ordinary token — the
+    /// subject is acting as itself.
+    ///
+    /// Authorization NEVER reads this: the authority is the subject's own
+    /// (`role`, `groups`). It is audit lineage, not a capability.
+    pub actor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,7 +160,21 @@ pub enum AuthError {
     UnsupportedAlg(Algorithm),
     #[error("token missing required `{tenant_claim}` claim")]
     MissingTenant { tenant_claim: String },
+    #[error("token carries purpose `{0}`, which is not accepted at this surface")]
+    PurposeRefused(String),
 }
+
+/// The `purpose` claim + value on a runner→agent INTERNAL-DELEGATION token
+/// (fleet #801 AD-7). Kept in lock-step with
+/// `escurel_runner_core::auth::{PURPOSE_CLAIM, DELEGATION_PURPOSE}` — escurel-auth
+/// must not depend on runner-core (the dependency runs the other way), so the
+/// strings are duplicated here with this note.
+/// RFC 8693 §4.1 delegation claim: who the subject is acting for. Read for
+/// audit lineage only — never for an authorization decision (#510).
+const ACT_CLAIM: &str = "act";
+
+const DELEGATION_PURPOSE_CLAIM: &str = "purpose";
+const DELEGATION_PURPOSE: &str = "internal_delegation";
 
 #[derive(Debug, Deserialize)]
 struct Claims {
@@ -255,6 +278,29 @@ impl OidcVerifier {
         // the accepted set; `Validation::new(alg)` pins this token to
         // its single, vetted algorithm.
         let mut validation = Validation::new(alg);
+        // **An expired bearer is expired.** `jsonwebtoken` defaults `leeway`
+        // to 60 seconds, and inheriting that meant a token was accepted for a
+        // full minute past its `exp`.
+        //
+        // Set explicitly, and set to zero, for two reasons. The credentials
+        // this gateway sees are short-lived on purpose — a runner's minted
+        // bearer lives 30 minutes and is re-minted before it lapses — so a
+        // 60-second grace is a meaningful fraction of the window an expired
+        // token is usable in, and every caller on this surface already knows
+        // how to get a new one.
+        //
+        // The second reason is worse: leeway HIDES expiry bugs. A test that
+        // minted a 5-second bearer, slept, and passed against a credential
+        // path that provably never re-minted (escurel#442) was green only
+        // because of this default — the same way the production bug it was
+        // written for stayed invisible. A guard that makes broken
+        // re-authentication look correct is worse than no guard.
+        //
+        // Clock skew is the thing this gives up, and it is the right thing to
+        // give up here: the hosts are NTP-synced, the issuers are Google and
+        // our own minter, and a caller refused a second early retries with a
+        // fresh token rather than failing.
+        validation.leeway = 0;
         validation.set_audience(&[self.config.audience.as_str()]);
         validation.set_issuer(&[entry.issuer.as_str()]);
         // Required claims left at default (exp, iat); we add aud + iss above.
@@ -262,6 +308,23 @@ impl OidcVerifier {
             .map_err(|e| AuthError::Invalid(e.to_string()))?;
 
         let claims = token_data.claims;
+
+        // Defense-in-depth (fleet #801 AD-7): a runner→agent internal-delegation
+        // token is signed by the same issuer and verified against the same JWKS
+        // as a gateway bearer, differing only by `aud` (the AGENT's, not
+        // escurel's) and this `purpose`. The audience gate above already refuses
+        // it, but reject the purpose explicitly and independently so a delegation
+        // token can never authenticate at escurel's own surfaces even if a future
+        // misconfiguration ever widened the accepted audience.
+        if claims
+            .rest
+            .get(DELEGATION_PURPOSE_CLAIM)
+            .and_then(serde_json::Value::as_str)
+            == Some(DELEGATION_PURPOSE)
+        {
+            return Err(AuthError::PurposeRefused(DELEGATION_PURPOSE.to_owned()));
+        }
+
         let tenant_id = claims
             .rest
             .get(&self.config.tenant_claim)
@@ -283,11 +346,24 @@ impl OidcVerifier {
             .map(parse_groups_claim)
             .unwrap_or_default();
 
+        // RFC 8693 §4.1 `act`: a nested {"sub": …}. Anything else is a claim we
+        // do not understand — no actor, and not an error: a token is not
+        // invalid for carrying something extra.
+        let actor = claims
+            .rest
+            .get(ACT_CLAIM)
+            .and_then(serde_json::Value::as_object)
+            .and_then(|act| act.get("sub"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+
         Ok(AuthContext {
             subject: claims.sub,
             tenant_id,
             role,
             groups,
+            actor,
         })
     }
 

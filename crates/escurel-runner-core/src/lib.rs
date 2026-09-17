@@ -31,12 +31,20 @@ pub use auth::{AuthError, Signer, TokenSource};
 pub use cascade::{CascadeError, CascadeOutcome, emit_cascade};
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
+pub use escurel_runner_workflow::OperationStatus;
 pub use ledger::{
     DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
 };
 pub use packager::{
-    ALLOWED_TOOLS, Autonomy, PackageError, REVIEW_TOOLS, TaskContext, WORKFLOW_STEP_TOOLS, package,
+    ALLOWED_TOOLS, Autonomy, Delegation, PackageError, REVIEW_TOOLS, TaskContext,
+    WORKFLOW_STEP_TOOLS, package,
 };
+
+/// The harness selector for a step that delegates to the agent over A2A
+/// (async-ops Phase 4 slice 3c). Shared here so the packager (which builds the
+/// [`Delegation`]) and the harness adapter (which consumes it) name it
+/// identically without the core→harness dependency the reverse would require.
+pub const DELEGATE_HARNESS: &str = "delegate";
 pub use quota::{Governor, QuotaDecision, QuotaLimits, RunSlot, ThrottleReason};
 pub use reconciler::{
     ConfirmedEffect, ReconcileError, RunFailure, RunReport, assign_confirmed_write,
@@ -45,4 +53,8 @@ pub use reconciler::{
 pub use recovery::{RecoveryReport, recover_pending};
 pub use secrecy::SecretString;
 pub use trigger::{Lineage, Trigger};
-pub use workflow::{WorkflowDriveError, WorkflowDriveOutcome, drive_workflow, recover_workflows};
+pub use workflow::{
+    OPERATION_STATUS_LABEL, StepTerminal, TerminalDelivery, WorkflowDriveError,
+    WorkflowDriveOutcome, drive_workflow, operation_has_terminal_status, record_status_best_effort,
+    recover_workflows,
+};

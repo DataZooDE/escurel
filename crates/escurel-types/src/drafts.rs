@@ -102,3 +102,188 @@ pub struct DecideDraftResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head_content: Option<String>,
 }
+
+/// A branch, as registered (#512): an isolated workspace whose writes never
+/// touch the base timeline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Branch {
+    pub name: String,
+    /// The corpus state the branch forked from — what a merge compares
+    /// against.
+    pub base_version: String,
+    pub author: String,
+    /// `open` | `merged` | `abandoned`.
+    pub status: String,
+    pub reason: String,
+    pub decided_by: String,
+    pub created_at: String,
+}
+
+/// `create_branch` / `merge_branch` / `abandon_branch` arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BranchRequest {
+    pub name: String,
+    /// Why it was abandoned. `abandon_branch` only.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// `create_branch` result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CreateBranchResponse {
+    pub ok: bool,
+    pub branch: Option<Branch>,
+    pub issues: Vec<crate::ValidationIssue>,
+}
+
+/// `list_branches` result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListBranchesResponse {
+    pub branches: Vec<Branch>,
+}
+
+/// What one page did when a branch merged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BranchMergeResult {
+    pub page_id: String,
+    /// The base page the overlay landed on (or the delete applied to).
+    pub target: String,
+    /// This member was a tombstone, so merging it DELETES the base page.
+    pub deleted: bool,
+    pub ok: bool,
+}
+
+/// The outcome of deciding a branch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DecideBranchResponse {
+    pub ok: bool,
+    pub name: String,
+    pub results: Vec<BranchMergeResult>,
+    /// A pre-flighted page refused mid-apply; re-running completes it.
+    pub partial: bool,
+    pub reason: String,
+    pub issues: Vec<crate::ValidationIssue>,
+}
+
+/// `diff_draft` arguments (#509 §3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DiffDraftRequest {
+    pub draft_id: String,
+}
+
+/// One frontmatter key that MOVES if the draft is approved. `from`/`to` are
+/// `None` for an added / removed key respectively — the asymmetry is the
+/// information.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct FrontmatterChange {
+    pub key: String,
+    pub from: Option<serde_json::Value>,
+    pub to: Option<serde_json::Value>,
+}
+
+/// What happens to one body block. `kind` is `insert` | `delete` | `replace`;
+/// `preview` is the PROPOSED text, because that is what is being approved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BlockChange {
+    pub anchor: String,
+    pub kind: String,
+    pub preview: String,
+}
+
+/// What approving a held write would change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DiffDraftResponse {
+    pub ok: bool,
+    pub draft_id: String,
+    pub target_page_id: String,
+    /// `false` = approving would CREATE the page.
+    pub exists: bool,
+    /// The target is not what it was when the draft was taken, so promotion
+    /// is a merge rather than a write. Worth showing a reviewer BEFORE they
+    /// approve, rather than as a failed promotion afterwards.
+    pub base_moved: bool,
+    pub frontmatter_changes: Vec<FrontmatterChange>,
+    pub block_changes: Vec<BlockChange>,
+    pub issues: Vec<crate::ValidationIssue>,
+}
+
+/// One changeset as a queue row (#509 §1): a run's held writes, counted and
+/// summarised rather than listed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Changeset {
+    pub changeset_id: String,
+    /// How many held writes it holds.
+    pub drafts: u32,
+    /// `open` | `promoted` | `discarded` | `mixed` — derived from the members,
+    /// so it cannot drift from them. `mixed` means members were decided
+    /// individually.
+    pub status: String,
+    pub author: String,
+    pub created_at: String,
+    pub event_ids: Vec<String>,
+    pub target_page_ids: Vec<String>,
+}
+
+/// `list_changesets` arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListChangesetsRequest {
+    /// `0` means the server's own default.
+    pub limit: u32,
+}
+
+/// The review queue, by run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListChangesetsResponse {
+    pub changesets: Vec<Changeset>,
+}
+
+/// `promote_changeset` / `discard_changeset` arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DecideChangesetRequest {
+    pub changeset_id: String,
+    /// Why it was refused. `discard_changeset` only.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// What one member did when the changeset landed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ChangesetMemberResult {
+    pub draft_id: String,
+    pub page_id: String,
+    pub ok: bool,
+    /// The page already held these bytes — an interrupted promotion being
+    /// completed rather than re-applied.
+    pub already_applied: bool,
+}
+
+/// The outcome of deciding a changeset.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DecideChangesetResponse {
+    pub ok: bool,
+    pub changeset_id: String,
+    pub results: Vec<ChangesetMemberResult>,
+    /// The retry answer: this changeset had already been decided.
+    pub already_decided: bool,
+    /// A pre-flighted member refused mid-apply; re-running completes it.
+    pub partial: bool,
+    /// How many members `discard_changeset` closed.
+    pub discarded: u32,
+    pub issues: Vec<crate::ValidationIssue>,
+}

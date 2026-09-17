@@ -141,6 +141,62 @@ impl Migrator {
         Ok(())
     }
 
+    /// The vector-index DDL, as `ESCUREL_INDEX_HNSW` asks for it.
+    ///
+    /// **Off by default, and that is the fix for #431.** `vss` corrupts its own
+    /// state under the delete-then-insert cycle that every page write performs
+    /// (`materialise::replace_blocks`): the 192nd cycle blocks for ever inside
+    /// `usearch::index_dense_gt::remove`, and a rebuilt index segfaults instead
+    /// (`HNSWIndex::Append`). In the lab that was container exit 139 during a
+    /// seeding burst. Measured variants and stacks:
+    /// `docs/notes/discovered/2026-09-11-vss-hnsw-churn-hangs-then-segfaults.md`.
+    ///
+    /// Dropping it costs nothing anyone can measure. Every vector search
+    /// carries at least one filter (`build_filters` always appends
+    /// `scenario IS NULL`), so the plan is a filtered semi-join either way:
+    /// 10k blocks ran 29.6ms indexed vs 30.6ms scanned, and 100k ran ~0.29s
+    /// both ways in steady state. What the index actually bought was a
+    /// write-path budget of ~192 pages per boot.
+    ///
+    /// Run on EVERY boot, like the other `ensure_*`, and in BOTH directions:
+    /// a tenant DB provisioned while the index still existed drops it here,
+    /// and setting the flag brings it back without a rebuild. Keeping the DDL
+    /// (rather than deleting it) is deliberate — it is how we re-test when vss
+    /// is fixed, and it is one `SET` away from being exercised again.
+    ///
+    /// # Errors
+    ///
+    /// When the DDL fails. A `CREATE` needs `vss` loaded and, on a file-backed
+    /// database, [`Migrator::enable_hnsw_persistence`] on this connection.
+    pub fn ensure_vector_index(conn: &Connection) -> Result<(), MigrationError> {
+        Self::set_vector_index(conn, hnsw_enabled())
+    }
+
+    /// [`Migrator::ensure_vector_index`] with the decision made by the caller
+    /// rather than by the environment — the shape a test can drive, since this
+    /// workspace forbids `unsafe` and `set_var` is `unsafe`.
+    ///
+    /// # Errors
+    ///
+    /// When the DDL fails. See [`Migrator::ensure_vector_index`].
+    pub fn set_vector_index(conn: &Connection, enabled: bool) -> Result<(), MigrationError> {
+        conn.execute_batch(if enabled { HNSW_CREATE } else { HNSW_DROP })?;
+        Ok(())
+    }
+
+    /// The DDL [`Migrator::ensure_vector_index`] runs — the `CREATE`s when
+    /// `ESCUREL_INDEX_HNSW` is set, the `DROP`s when it is not. Exposed so the
+    /// bulk-load paths can execute it on a connection they already hold
+    /// without threading a second error type through `IndexerError`.
+    #[must_use]
+    pub fn vector_index_ddl() -> &'static str {
+        if hnsw_enabled() {
+            HNSW_CREATE
+        } else {
+            HNSW_DROP
+        }
+    }
+
     /// Ensure the `drafts` table (held writes awaiting a human) exists.
     /// Idempotent (`CREATE TABLE IF NOT EXISTS`) and run on EVERY connection
     /// like [`Migrator::ensure_group_members`]: drafts arrived after the
@@ -151,6 +207,8 @@ impl Migrator {
     /// so `rebuild` must NOT drop it.
     pub fn ensure_drafts(conn: &Connection) -> Result<(), MigrationError> {
         conn.execute_batch(STAGE_12_DRAFTS)?;
+        Self::ensure_draft_changesets(conn)?;
+        Self::ensure_draft_base_version(conn)?;
         Ok(())
     }
 
@@ -248,6 +306,99 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the `branches` registry + `pages.deleted` tombstone column
+    /// exist (#512 §1, §3).
+    ///
+    /// Presence-checked + CHECKPOINTed, like every other ALTER in this
+    /// module: `pages` has no function-valued DEFAULT today, but `branches`
+    /// does (`created_at`), and a stage that mixes a CREATE TABLE with an
+    /// ALTER must be replay-safe as a whole. See
+    /// docs/notes/discovered/2026-09-16-alter-on-a-defaulted-table-poisons-the-wal.md.
+    ///
+    /// A SEPARATE canonical input — a branch is not derivable from `pages/`,
+    /// so `rebuild` must NOT drop it.
+    pub fn ensure_branches(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'pages' \
+               AND column_name = 'deleted'",
+            [],
+            |row| row.get(0),
+        )?;
+        let tables: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.tables \
+             WHERE table_schema = 'main' AND table_name = 'branches'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 1 && tables == 1 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_16_BRANCHES)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
+    /// Ensure `drafts.changeset_id` (the changeset grouping key, #509 §1)
+    /// exists.
+    ///
+    /// **Checkpoints, for the reason [`Migrator::ensure_write_attribution`]
+    /// spells out.** `drafts.created_at` is `DEFAULT CURRENT_TIMESTAMP`, and
+    /// DuckDB cannot replay an `ALTER TABLE … ADD COLUMN` on a table with a
+    /// function-valued default: replay re-binds every column default and
+    /// `CURRENT_TIMESTAMP` resolves through a catalog lookup the replay
+    /// context does not have. The ALTER then sits in the WAL as a grenade —
+    /// the process that ran it keeps working, and the NEXT process to open
+    /// the file fails to start.
+    ///
+    /// So the ALTER runs only on the boot that actually adds the column, and
+    /// the checkpoint folds it into the file and truncates the WAL. Every
+    /// later boot costs one catalog query.
+    ///
+    /// (Found the hard way: the first version of this ran the ALTER on every
+    /// connection like `blocks.context` does, and five `index_roundtrip`
+    /// tests — the ones that reopen the same file — failed with exactly the
+    /// replay error above.)
+    pub fn ensure_draft_changesets(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'drafts' \
+               AND column_name = 'changeset_id'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 1 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_14_DRAFT_CHANGESETS)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
+    /// Ensure `drafts.base_version` (the CRDT version a draft was taken
+    /// against, #509 §2) exists.
+    ///
+    /// Presence-checked + CHECKPOINTed for the same reason
+    /// [`Migrator::ensure_draft_changesets`] is: `drafts.created_at` carries a
+    /// function-valued DEFAULT, so an unconditional ALTER leaves an
+    /// unreplayable entry in the WAL and the NEXT process to open the file
+    /// fails to start.
+    pub fn ensure_draft_base_version(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'drafts' \
+               AND column_name = 'base_version'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 1 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_15_DRAFT_BASE_VERSION)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
     /// Ensure the `resolved_links` provenance-graph VIEW (ADR-0010) exists.
     /// A VIEW, not a table — `CREATE OR REPLACE`, so it is safe (and cheap) to
     /// run on EVERY connection like the other `ensure_*` methods, and it stays
@@ -293,6 +444,8 @@ impl Migrator {
         // provisioned before drafts existed must gain the table, and every
         // deployed tenant was.
         conn.execute_batch(STAGE_12_DRAFTS)?;
+        Self::ensure_draft_changesets(conn)?;
+        Self::ensure_draft_base_version(conn)?;
         // Group ACL v1. Idempotent (`IF NOT EXISTS`) and ALSO run on every
         // reopen via `ensure_group_members`, so a DB provisioned before
         // this table existed still gains it. Running it here too means a
@@ -314,6 +467,10 @@ impl Migrator {
         // the method) off the fresh-database path entirely. Called anyway so
         // `up` and the reopen chain cannot disagree about the schema.
         Self::ensure_write_attribution(conn)?;
+        // The branch registry + `pages.deleted` (#512). Called on the fresh
+        // path too so `up` and the reopen chain cannot disagree about the
+        // schema.
+        Self::ensure_branches(conn)?;
         // Provenance-graph VIEW (ADR-0010) over the now-existing pages/links
         // tables. A derived read surface; `CREATE OR REPLACE` + also run on
         // every reopen via `ensure_provenance_graph`.
@@ -325,6 +482,30 @@ impl Migrator {
 /// Whether `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS` opts this process into
 /// loading unsigned extensions. Accepts the same truthy spellings as the
 /// server's other boolean vars.
+/// The vector-index DDL, kept in one place so [`Migrator::ensure_vector_index`]
+/// and the bulk-load paths in `indexer.rs` cannot drift apart.
+pub(crate) const HNSW_CREATE: &str = "\
+    CREATE INDEX IF NOT EXISTS hnsw_blocks_vec ON blocks USING HNSW (dense_vec) \
+        WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16); \
+    CREATE INDEX IF NOT EXISTS hnsw_chat_vec ON chat_messages USING HNSW (dense_vec) \
+        WITH (metric = 'cosine', ef_construction = 128, ef_search = 64, M = 16);";
+
+/// The inverse. `IF EXISTS` so it is a no-op on a database that never had one.
+pub(crate) const HNSW_DROP: &str = "\
+    DROP INDEX IF EXISTS hnsw_blocks_vec; \
+    DROP INDEX IF EXISTS hnsw_chat_vec;";
+
+/// Whether to build the `vss` HNSW indexes. Default **off** — see
+/// [`Migrator::ensure_vector_index`] for why, and for what it costs.
+pub(crate) fn hnsw_enabled() -> bool {
+    std::env::var("ESCUREL_INDEX_HNSW").is_ok_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        )
+    })
+}
+
 fn allow_unsigned_extensions() -> bool {
     std::env::var("ESCUREL_ALLOW_UNSIGNED_EXTENSIONS").is_ok_and(|raw| {
         matches!(
@@ -377,6 +558,8 @@ const STAGE_4_CHAT_MESSAGES: &str = include_str!("../sql/0002_chat_messages.sql"
 const STAGE_5_SCENARIOS: &str = include_str!("../sql/0003_scenarios.sql");
 const STAGE_6_EVENTS: &str = include_str!("../sql/0004_events.sql");
 const STAGE_12_DRAFTS: &str = include_str!("../sql/0012_drafts.sql");
+const STAGE_14_DRAFT_CHANGESETS: &str = include_str!("../sql/0013_draft_changesets.sql");
+const STAGE_15_DRAFT_BASE_VERSION: &str = include_str!("../sql/0014_draft_base_version.sql");
 const STAGE_7_GROUP_MEMBERS: &str = include_str!("../sql/0005_group_members.sql");
 const STAGE_8_EXTERNAL_CREDENTIALS: &str = include_str!("../sql/0006_external_credentials.sql");
 const STAGE_9_BLOCK_CONTEXT: &str = include_str!("../sql/0007_block_context.sql");
@@ -384,6 +567,7 @@ const STAGE_10_EXTERNAL_ENDPOINTS: &str = include_str!("../sql/0008_external_end
 const STAGE_11_PACK_SUBSCRIPTIONS: &str = include_str!("../sql/0009_pack_subscriptions.sql");
 const STAGE_12_PROVENANCE_GRAPH: &str = include_str!("../sql/0010_provenance_graph.sql");
 const STAGE_13_WRITE_ATTRIBUTION: &str = include_str!("../sql/0011_write_attribution.sql");
+const STAGE_16_BRANCHES: &str = include_str!("../sql/0015_branches.sql");
 
 #[cfg(test)]
 mod tests {
