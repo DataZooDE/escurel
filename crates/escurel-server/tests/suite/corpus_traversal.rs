@@ -395,3 +395,94 @@ async fn a_missing_required_parameter_is_refused() {
         "the refusal must name the missing parameter: {body}"
     );
 }
+
+/// #512 §5: a traversal is scenario-aware, or the branch model has a hole
+/// exactly where analytics looks.
+///
+/// escurel already reads `base ∪ overlay` with a per-slug override on
+/// `expand` / `resolve` / `neighbours` / `search` / `list_instances`. A query
+/// surface that ignores it would see BOTH the base row and its overlay twin —
+/// so any counting query silently double-counts the moment an overlay exists,
+/// which is the failure nobody notices because the number still looks like a
+/// number.
+#[tokio::test]
+async fn a_traversal_reads_the_base_timeline_unless_a_scenario_is_named() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+
+    // An overlay of `mara` on scenario `what-if`: same slug, different page,
+    // a changed projected value. `scenario:` is author-supplied today (#512
+    // §2 would make it a write context; that is not this change).
+    let overlay = format!(
+        "---\ntype: instance\nskill: person\nid: mara\nname: mara (what-if)\n\
+         credential: \"{ALICE}\"\nemployer: datazoo\nscenario: what-if\n\
+         knows: \"[[contact::wile]]\"\n---\n# mara\n"
+    );
+    let wrote = call(
+        &p,
+        &admin,
+        "update_page",
+        json!({
+            "page_id": "markdown/instances/person/mara@what-if.md",
+            "content": overlay,
+        }),
+    )
+    .await;
+    assert_eq!(wrote["ok"], json!(true), "{wrote}");
+
+    // Base read: the overlay is invisible, and — the part that matters — the
+    // slug appears ONCE, not twice.
+    let base = call(
+        &p,
+        &admin,
+        "query_instance",
+        json!({ "ref": "[[query::warm-intro]]", "params": { "account": "globex" } }),
+    )
+    .await;
+    let names: Vec<&str> = base["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .filter_map(|r| r["teammate.name"].as_str())
+        .collect();
+    assert_eq!(
+        names.iter().filter(|n| n.starts_with("mara")).count(),
+        1,
+        "a slug with an overlay must not be counted twice: {base}"
+    );
+    assert!(
+        names.contains(&"mara") && !names.contains(&"mara (what-if)"),
+        "the base timeline shows the base row: {base}"
+    );
+
+    // Scenario read: the overlay wins for its slug, and still exactly once.
+    let branch = call(
+        &p,
+        &admin,
+        "query_instance",
+        json!({
+            "ref": "[[query::warm-intro]]",
+            "params": { "account": "globex" },
+            "scenario": "what-if",
+        }),
+    )
+    .await;
+    let names: Vec<&str> = branch["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .filter_map(|r| r["teammate.name"].as_str())
+        .collect();
+    assert_eq!(
+        names.iter().filter(|n| n.starts_with("mara")).count(),
+        1,
+        "the overlay REPLACES its base twin rather than joining it: {branch}"
+    );
+    assert!(
+        names.contains(&"mara (what-if)"),
+        "a reviewer must be able to read the branch from outside it: {branch}"
+    );
+    // Rows that have no overlay are unaffected — a branch is a diff, not a
+    // separate corpus.
+    assert!(names.contains(&"tom"), "{branch}");
+}

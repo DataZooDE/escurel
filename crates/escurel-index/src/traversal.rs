@@ -386,13 +386,14 @@ impl Indexer {
         &self,
         traversal: &Traversal,
         start_id: &str,
+        scenario: Option<&str>,
         caller: &crate::AclCaller<'_>,
     ) -> Result<(Vec<serde_json::Map<String, Value>>, bool), IndexerError> {
         // The start node, resolved like any other instance — and ACL'd, so a
         // traversal cannot confirm the existence of a record the caller may
         // not read by returning "no rows" for one id and an error for another.
         let start_page = self
-            .instance_page_id(&traversal.start.skill, start_id)
+            .instance_page_id(&traversal.start.skill, start_id, scenario)
             .await?;
         let Some(start_page) = start_page else {
             return Ok((Vec::new(), false));
@@ -413,7 +414,10 @@ impl Indexer {
                     .bound
                     .get(&prev_alias(traversal, step))
                     .expect("every step's predecessor is bound");
-                for landed in self.hop(from, &step.relation, step.direction).await? {
+                for landed in self
+                    .hop(from, &step.relation, step.direction, scenario)
+                    .await?
+                {
                     // A path never revisits a page: without this a `knows`
                     // relation walks A → B → A for ever, and the cycle is the
                     // ordinary case in a corpus about people.
@@ -492,23 +496,65 @@ impl Indexer {
     /// Reads `resolved_links` — the same view the provenance tools walk — so
     /// `relation` is `links.src_field`, the frontmatter key the link was
     /// written under. Both endpoints are bound parameters.
+    ///
+    /// Scenario-aware (#512 §5), with the override the read tools already
+    /// apply: with no scenario only the base timeline is walked; with one, a
+    /// landed page whose slug has an overlay resolves to the OVERLAY, so a
+    /// branch read never returns a slug twice. A query surface that ignored
+    /// this would silently double-count the moment an overlay existed, which
+    /// is the failure nobody notices because the number still looks like a
+    /// number.
     async fn hop(
         &self,
         page_id: &str,
         relation: &str,
         direction: Dir,
+        scenario: Option<&str>,
     ) -> Result<Vec<String>, IndexerError> {
         let (from_col, to_col) = match direction {
             Dir::Out => ("src_page_id", "dst_page_id"),
             Dir::In => ("dst_page_id", "src_page_id"),
         };
-        let sql = format!(
-            "SELECT DISTINCT r.{to_col} FROM resolved_links r \
-             WHERE r.{from_col} = ? AND r.relation = ? AND r.src_scenario IS NULL"
-        );
+        // Edges are gated by their SOURCE page's scenario, mirroring how
+        // `neighbours` gates them.
+        let edge_gate = if scenario.is_some() {
+            "(r.src_scenario = ? OR r.src_scenario IS NULL)"
+        } else {
+            "r.src_scenario IS NULL"
+        };
+        // Then the per-slug override: `ORDER BY scenario NULLS LAST` is the
+        // crux — the non-null overlay row sorts FIRST and is kept, the base
+        // twin dropped. Flip it and the overlay is silently ignored, with no
+        // type error to catch it (docs/notes/discovered/
+        // 2026-05-29-scenario-overlay-qualify.md).
+        let sql = if scenario.is_some() {
+            format!(
+                "WITH landed AS ( \
+                     SELECT DISTINCT d.skill, d.slug \
+                     FROM resolved_links r JOIN pages d ON d.page_id = r.{to_col} \
+                     WHERE r.{from_col} = ? AND r.relation = ? AND {edge_gate} \
+                 ) \
+                 SELECT p.page_id FROM pages p JOIN landed l \
+                   ON p.skill = l.skill AND p.slug = l.slug \
+                 WHERE (p.scenario = ? OR p.scenario IS NULL) \
+                 QUALIFY ROW_NUMBER() OVER ( \
+                     PARTITION BY p.slug ORDER BY p.scenario NULLS LAST, p.page_id) = 1"
+            )
+        } else {
+            format!(
+                "SELECT DISTINCT r.{to_col} FROM resolved_links r \
+                 WHERE r.{from_col} = ? AND r.relation = ? AND {edge_gate}"
+            )
+        };
+        let mut binds: Vec<String> = vec![page_id.to_owned(), relation.to_owned()];
+        if let Some(sc) = scenario {
+            // Once for the edge gate, once for the page override.
+            binds.push(sc.to_owned());
+            binds.push(sc.to_owned());
+        }
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(duckdb::params![page_id, relation], |row| {
+        let rows = stmt.query_map(duckdb::params_from_iter(binds.iter()), |row| {
             row.get::<_, String>(0)
         })?;
         let mut out = Vec::new();
@@ -518,21 +564,36 @@ impl Indexer {
         Ok(out)
     }
 
-    /// `page_id` of an instance, by skill + id.
+    /// `page_id` of an instance, by skill + id — under `scenario` when one is
+    /// given, with the same per-slug override every read path applies.
     async fn instance_page_id(
         &self,
         skill: &str,
         id: &str,
+        scenario: Option<&str>,
     ) -> Result<Option<String>, IndexerError> {
         let conn = self.conn.lock().await;
-        Ok(conn
-            .query_row(
+        let (sql, binds): (String, Vec<String>) = match scenario {
+            Some(sc) => (
+                "SELECT page_id FROM pages \
+                 WHERE page_type = 'instance' AND skill = ? AND slug = ? \
+                   AND (scenario = ? OR scenario IS NULL) \
+                 ORDER BY scenario NULLS LAST, page_id LIMIT 1"
+                    .to_owned(),
+                vec![skill.to_owned(), id.to_owned(), sc.to_owned()],
+            ),
+            None => (
                 "SELECT page_id FROM pages \
                  WHERE page_type = 'instance' AND skill = ? AND slug = ? AND scenario IS NULL \
-                 LIMIT 1",
-                duckdb::params![skill, id],
-                |row| row.get::<_, String>(0),
-            )
+                 LIMIT 1"
+                    .to_owned(),
+                vec![skill.to_owned(), id.to_owned()],
+            ),
+        };
+        Ok(conn
+            .query_row(&sql, duckdb::params_from_iter(binds.iter()), |row| {
+                row.get::<_, String>(0)
+            })
             .ok())
     }
 

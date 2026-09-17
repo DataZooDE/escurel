@@ -1315,6 +1315,12 @@ pub(super) struct QueryInstanceArgs {
     query_ref: String,
     #[serde(default)]
     params: serde_json::Map<String, Value>,
+    /// Read a scenario overlay instead of the base timeline (#512 §5), the
+    /// same parameter `expand` / `resolve` / `neighbours` / `search` /
+    /// `list_instances` already take. Only a corpus traversal reads it — a
+    /// `sql_view` query targets an external table, which has no overlay.
+    #[serde(default)]
+    scenario: Option<String>,
 }
 
 /// Normalise a query reference to the bare slug the indexer expects:
@@ -1334,7 +1340,7 @@ pub(super) async fn tool_query_instance(
     let a: QueryInstanceArgs = parse_args(args, "query_instance")?;
     let query_id = normalize_query_ref(&a.query_ref);
     let out = indexer
-        .query_instance(&query_id, &a.params, &caller)
+        .query_instance(&query_id, &a.params, a.scenario.as_deref(), &caller)
         .await
         .map_err(|e| JsonRpcError::internal(format!("query_instance: {e}")))?;
     Ok(json!({
