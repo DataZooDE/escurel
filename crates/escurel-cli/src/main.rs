@@ -81,6 +81,9 @@ enum Command {
     /// Held writes: the review queue for `autonomy: review` skills.
     #[command(subcommand)]
     Draft(agent::DraftCmd),
+    /// A run's held writes, decided together (#509).
+    #[command(subcommand)]
+    Changeset(agent::ChangesetCmd),
     /// Stored queries.
     #[command(subcommand)]
     Query(agent::QueryCmd),

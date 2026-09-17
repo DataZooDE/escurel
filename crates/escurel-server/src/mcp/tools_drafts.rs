@@ -40,6 +40,16 @@ pub(super) struct CreateDraftArgs {
     /// The inbox event this draft answers, when it answers one.
     #[serde(default)]
     event_id: Option<String>,
+    /// Join an existing changeset (#509 §1) — the id a previous
+    /// `create_draft` in this run returned.
+    #[serde(default)]
+    changeset_id: Option<String>,
+    /// Start a changeset: the server mints the id and returns it on the
+    /// stored draft. Mutually exclusive with `changeset_id`; a client that
+    /// sends both has two different intentions and is told so rather than
+    /// having one silently win.
+    #[serde(default)]
+    new_changeset: bool,
 }
 
 #[derive(Deserialize)]
@@ -108,10 +118,10 @@ pub(super) struct DecideDraftArgs {
 /// gateway that silently lost the attribution is how this was missed the
 /// first time.
 fn decided_by_or_caller(
-    a: &DecideDraftArgs,
+    decided_by: Option<&str>,
     caller: &AclCaller<'_>,
 ) -> Result<String, JsonRpcError> {
-    match a.decided_by.as_deref().map(str::trim) {
+    match decided_by.map(str::trim) {
         None | Some("") => Ok(caller.subject.to_owned()),
         // Naming YOURSELF is not vouching for anyone — it is the same fact the
         // token already carries, and refusing it made the argument unusable by
@@ -181,6 +191,7 @@ fn draft_to_json(d: &escurel_index::drafts::DraftInfo) -> Value {
         "reason": d.reason,
         "decided_by": d.decided_by,
         "created_at": d.created_at,
+        "changeset_id": d.changeset_id,
     })
 }
 
@@ -356,6 +367,23 @@ pub(super) async fn tool_create_draft(
         );
     }
 
+    // The changeset this draft joins, if any (#509 §1). The id is minted
+    // SERVER-side on first use, for the same reason `event_id` is: a
+    // client-chosen grouping key collides across runs, and a collision here
+    // merges two agents' proposals into one decision.
+    let changeset_id = match (&a.changeset_id, a.new_changeset) {
+        (Some(id), true) if !id.trim().is_empty() => {
+            return Err(JsonRpcError::invalid_params(
+                "create_draft: pass `changeset_id` to JOIN a changeset or \
+                 `new_changeset` to START one, not both"
+                    .to_owned(),
+            ));
+        }
+        (Some(id), _) if !id.trim().is_empty() => Some(id.trim().to_owned()),
+        (_, true) => Some(ulid::Ulid::new().to_string()),
+        _ => None,
+    };
+
     // Validate at DRAFT time, with the same blocking set promotion will
     // apply. A draft that cannot be promoted is worse than a refused write:
     // it costs a human a review before anyone finds out.
@@ -381,6 +409,7 @@ pub(super) async fn tool_create_draft(
             // caller-supplied answer to it is not evidence.
             author: caller.subject.to_owned(),
             event_id: a.event_id,
+            changeset_id,
         })
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_draft: {e}")))?;
@@ -467,7 +496,7 @@ pub(super) async fn tool_promote_draft(
     // not a copy of it. `base_sha256` travels as the draft recorded it — a
     // target that moved since drafting conflicts here rather than silently
     // overwriting what the reviewer never saw.
-    let subject = decided_by_or_caller(&a, &caller)?;
+    let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
     let target_page_id = draft.target_page_id.clone();
     // The approver's correction wins over the stored bytes, when there is one.
     // Validated first, with the same blocking set `create_draft` applies — an
@@ -643,7 +672,7 @@ pub(super) async fn tool_discard_draft(
         .close_draft(
             &a.draft_id,
             "discarded",
-            &decided_by_or_caller(&a, &caller)?,
+            &decided_by_or_caller(a.decided_by.as_deref(), &caller)?,
             &a.reason,
         )
         .await
@@ -855,4 +884,277 @@ fn block_changes(head: Option<&str>, proposed_body: &str) -> Vec<Value> {
     };
     let preview: String = new_body.chars().take(PREVIEW_CHARS).collect();
     vec![json!({ "anchor": ANCHOR, "kind": kind, "preview": preview })]
+}
+
+#[derive(Deserialize)]
+pub(super) struct ListChangesetsArgs {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct DecideChangesetArgs {
+    changeset_id: String,
+    /// Why it was refused. `discard_changeset` only.
+    #[serde(default)]
+    reason: String,
+    /// The HUMAN who decided, when the caller decides on their behalf.
+    /// Admin-only, exactly as on [`DecideDraftArgs`].
+    #[serde(default)]
+    decided_by: Option<String>,
+}
+
+/// The queue, one row per RUN rather than one per page (#509 §1).
+pub(super) async fn tool_list_changesets(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: ListChangesetsArgs = parse_args(args, "list_changesets")?;
+    let rows = indexer
+        .list_changesets(a.limit)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_changesets: {e}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        // Scoped the same way the draft queue is, and for the same reason:
+        // one tenant holds several people. A changeset is visible when its
+        // members are — and a caller who may see only SOME of them sees
+        // none of it, because a changeset is decided whole and a partial
+        // view would invite deciding on a partial reading.
+        let members = indexer
+            .drafts_in_changeset(&row.changeset_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_changesets: {e}")))?;
+        let mut visible = true;
+        for m in &members {
+            if !may_see(indexer, &caller, m).await? {
+                visible = false;
+                break;
+            }
+        }
+        if !visible {
+            continue;
+        }
+        out.push(json!({
+            "changeset_id": row.changeset_id,
+            "drafts": row.drafts,
+            "status": row.status,
+            "author": row.author,
+            "created_at": row.created_at,
+            "event_ids": members
+                .iter()
+                .filter_map(|m| m.event_id.clone())
+                .collect::<Vec<_>>(),
+            "target_page_ids": members
+                .iter()
+                .map(|m| m.target_page_id.clone())
+                .collect::<Vec<_>>(),
+        }));
+    }
+    Ok(json!({ "changesets": out }))
+}
+
+/// Every member of a changeset the caller may fully see, or the refusal that
+/// stops the whole decision. Absence and partial visibility read the same —
+/// a changeset you cannot see all of is a changeset you cannot decide.
+async fn changeset_members(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    changeset_id: &str,
+) -> Result<Result<Vec<escurel_index::drafts::DraftInfo>, Value>, JsonRpcError> {
+    let members = indexer
+        .drafts_in_changeset(changeset_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("changeset: {e}")))?;
+    if members.is_empty() {
+        return Ok(Err(not_found_changeset(changeset_id)));
+    }
+    for m in &members {
+        if !may_see(indexer, caller, m).await? {
+            return Ok(Err(not_found_changeset(changeset_id)));
+        }
+    }
+    Ok(Ok(members))
+}
+
+fn not_found_changeset(changeset_id: &str) -> Value {
+    json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "not_found",
+            "location": "changeset_id",
+            "message": format!("no changeset `{changeset_id}`"),
+        }],
+    })
+}
+
+/// Land a run's held writes as ONE decision (#509 §1).
+///
+/// **All-or-nothing, by pre-flight.** Every member is checked first — it is
+/// still open, its bytes still validate, and its target still hashes to the
+/// `base_sha256` it was drafted against — and only then is anything written.
+/// A member that would refuse blocks the whole changeset and NOTHING lands,
+/// because a half-promoted changeset leaves the corpus in a state no agent
+/// proposed, which is the failure this verb exists to prevent.
+///
+/// The honest limit: the markdown lane and the index are two stores, so this
+/// is checked-then-applied rather than one transaction spanning both. A
+/// process that dies mid-apply can leave some members landed — and that is
+/// exactly what the retry path handles: a promotion whose page already holds
+/// the bytes being promoted is `already_applied` (#489's rule, per member),
+/// so re-running the same `promote_changeset` finishes it instead of
+/// conflicting against its own writes.
+pub(super) async fn tool_promote_changeset(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: DecideChangesetArgs = parse_args(args, "promote_changeset")?;
+    let members = match changeset_members(indexer, &caller, &a.changeset_id).await? {
+        Ok(m) => m,
+        Err(refusal) => return Ok(refusal),
+    };
+    let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
+
+    // Already decided: a retry after a timeout the client never saw an answer
+    // to. The transport warns that a mid-flight failure may already have
+    // applied, so this is a success with a flag, not an error to untangle.
+    if members.iter().all(|m| m.status != "open") {
+        return Ok(json!({
+            "ok": true,
+            "already_decided": true,
+            "changeset_id": a.changeset_id,
+            "results": members
+                .iter()
+                .map(|m| json!({
+                    "draft_id": m.draft_id,
+                    "page_id": m.target_page_id,
+                    "status": m.status,
+                }))
+                .collect::<Vec<_>>(),
+        }));
+    }
+
+    // ── Pre-flight. Nothing is written until every member could be. ──
+    let open: Vec<&escurel_index::drafts::DraftInfo> =
+        members.iter().filter(|m| m.status == "open").collect();
+    let mut issues = Vec::new();
+    for m in &open {
+        let head = indexer
+            .read_page_markdown(&m.target_page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("promote_changeset: {e}")))?;
+        let head_sha = head.as_deref().map(escurel_index::drafts::content_hash);
+        // The same CAS promotion will apply, asked before anything lands. An
+        // `already_applied` member (the page already holds these bytes) is
+        // NOT a conflict — that is the interrupted-promotion retry.
+        if head_sha != m.base_sha256 && head_sha.as_deref() != Some(&m.content_sha256) {
+            issues.push(json!({
+                "severity": "error",
+                "code": "conflict",
+                "location": m.target_page_id,
+                "message": format!(
+                    "`{}` moved since draft `{}` was taken; the changeset lands nothing",
+                    m.target_page_id, m.draft_id
+                ),
+            }));
+            continue;
+        }
+        let validation = indexer
+            .validate(Some(&m.target_page_id), &m.content)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("promote_changeset validate: {e}")))?;
+        for issue in draft_blocking_issues(state, &validation) {
+            issues.push(issue_to_json(issue));
+        }
+    }
+    if !issues.is_empty() {
+        return Ok(json!({
+            "ok": false,
+            "changeset_id": a.changeset_id,
+            "issues": issues,
+        }));
+    }
+
+    // ── Apply. Each member goes through `promote_draft`, so the layer,
+    // backend, curator and validation guards, the CAS, the lake publish, the
+    // provenance stamp and the event retirement all run exactly as they do
+    // for a single held write. This is not a second write path.
+    let mut results = Vec::new();
+    for m in &open {
+        let mut args = json!({ "draft_id": m.draft_id });
+        if let Some(human) = &a.decided_by {
+            args["decided_by"] = json!(human);
+        }
+        let out = tool_promote_draft(state, indexer, caller, write_acl, args).await?;
+        let landed = out.get("ok").and_then(Value::as_bool) == Some(true);
+        results.push(json!({
+            "draft_id": m.draft_id,
+            "page_id": m.target_page_id,
+            "ok": landed,
+            "already_applied": out.get("already_applied").cloned().unwrap_or(json!(false)),
+        }));
+        if !landed {
+            // Pre-flight said every member could land, so this is a genuine
+            // race or an I/O fault — not a reviewable refusal. Stop rather
+            // than pressing on: the members already landed stay landed and
+            // their drafts are closed, so re-running this same call completes
+            // the rest (each landed member is then `already_applied`).
+            tracing::warn!(
+                changeset_id = %a.changeset_id,
+                draft_id = %m.draft_id,
+                outcome = %out,
+                "promote_changeset: a pre-flighted member refused mid-apply; \
+                 stopping. Re-running the promotion completes it."
+            );
+            return Ok(json!({
+                "ok": false,
+                "changeset_id": a.changeset_id,
+                "partial": true,
+                "results": results,
+                "issues": out.get("issues").cloned().unwrap_or(json!([])),
+            }));
+        }
+    }
+
+    Ok(json!({
+        "ok": true,
+        "changeset_id": a.changeset_id,
+        "decided_by": subject,
+        "results": results,
+    }))
+}
+
+/// Refuse a run's proposal whole. Nothing is written to any target.
+pub(super) async fn tool_discard_changeset(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: DecideChangesetArgs = parse_args(args, "discard_changeset")?;
+    let members = match changeset_members(indexer, &caller, &a.changeset_id).await? {
+        Ok(m) => m,
+        Err(refusal) => return Ok(refusal),
+    };
+    let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
+    let mut discarded = 0usize;
+    for m in members.iter().filter(|m| m.status == "open") {
+        if indexer
+            .close_draft(&m.draft_id, "discarded", &subject, &a.reason)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("discard_changeset: {e}")))?
+        {
+            discarded += 1;
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "changeset_id": a.changeset_id,
+        "discarded": discarded,
+        "decided_by": subject,
+    }))
 }
