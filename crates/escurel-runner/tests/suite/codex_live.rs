@@ -28,11 +28,10 @@
 //! `OPENAI_API_KEY`). The escurel `/mcp` bearer is the scoped token the runner
 //! mints; that is separate from the OpenAI credential the LLM itself uses.
 
-use std::net::TcpListener;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
+use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role, free_port};
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
@@ -54,11 +53,6 @@ impl Drop for ChildGuard {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().expect("read local_addr").port()
 }
 
 /// Call an MCP tool over `/mcp` with a freshly minted bearer; return the

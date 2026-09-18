@@ -33,11 +33,10 @@
 //! and — crucially — that the chain TERMINATED (bounded run count), so a buggy
 //! control can never hang the test unbounded.
 
-use std::net::TcpListener;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
+use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role, free_port};
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
@@ -63,11 +62,6 @@ impl Drop for ChildGuard {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().expect("read local_addr").port()
 }
 
 async fn call_mcp(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value {

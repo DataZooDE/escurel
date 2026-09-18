@@ -11,10 +11,10 @@
 //! The authoritative `tenant_id` now rides in the payload.
 
 use std::io::ErrorKind;
-use std::net::TcpListener;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+use escurel_test_support::free_port;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -29,13 +29,6 @@ impl Drop for ChildGuard {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-/// Bind to port 0 to let the OS pick a free port, read it, then drop the
-/// listener so the runner can claim it.
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().expect("read local_addr").port()
 }
 
 /// A realistic webhook body: a serialized [`escurel_types::Event`] plus the

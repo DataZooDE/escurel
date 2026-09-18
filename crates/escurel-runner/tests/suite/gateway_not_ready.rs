@@ -15,7 +15,7 @@
 //!
 //! Real runner binary, real HTTP, no gateway. No mocks.
 
-use std::net::TcpListener;
+use escurel_test_support::free_port;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
@@ -26,14 +26,6 @@ impl Drop for ChildGuard {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind ephemeral port")
-        .local_addr()
-        .expect("local_addr")
-        .port()
 }
 
 /// A trigger the runner will admit into its ledger without asking anyone:

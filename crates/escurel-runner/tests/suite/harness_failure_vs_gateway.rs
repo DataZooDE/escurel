@@ -20,11 +20,10 @@
 //! The second is the control. Without it, a runner that recorded every run as
 //! success would pass the first assertion.
 
-use std::net::TcpListener;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
+use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role, free_port};
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
@@ -43,14 +42,6 @@ impl Drop for ChildGuard {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind")
-        .local_addr()
-        .expect("addr")
-        .port()
 }
 
 async fn call_mcp(p: &EscurelProcess, name: &str, args: Value) -> Value {
@@ -238,8 +229,18 @@ async fn run_until_terminal(draft: bool) -> (Value, EscurelProcess, String) {
     // call. Polling every 250ms for the deadline built ~960 of them, which
     // under a loaded CI runner exhausts file descriptors for the whole test
     // process, including the stub model server the harness is waiting on.
-    // That is consistent with what CI reported: the run created and enqueued
-    // (`total: 1`) and then never reaching a verdict.
+    // That was ALSO offered as the explanation for `total: 1` and no verdict,
+    // and it was wrong. The cause was a real wedge in the gate: this control
+    // ends `failed`, a `failed` row is re-claimed by design (#157), and the
+    // re-claim met a seen-set that still held the event id — so nothing
+    // re-dispatched and the re-claimed row sat `pending` with the verdict
+    // erased. Forensics on a failing run: the port was held by this test's
+    // own runner, whose log said `recorded failed` 7ms before the poller
+    // re-delivered the same event as `outcome: Duplicate`, after which the
+    // log went silent for the full 240s. Fixed in `gate_and_enqueue`; pinned
+    // deterministically by the `escurel-runner` unit test
+    // `a_failed_run_redelivered_dispatches_instead_of_wedging_pending`.
+    // Kept here because reusing one client is right regardless.
     let http = reqwest::Client::new();
     let health = format!("http://127.0.0.1:{port}/healthz");
     let up_by = Instant::now() + Duration::from_secs(60);
