@@ -31,13 +31,12 @@
 //! correctness: the flip is driven by an observed counter, the success wait is
 //! a deadline-bounded poll of the real ledger + the real gateway.
 
-use std::net::TcpListener as StdTcpListener;
 use std::process::{Child, Command};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
+use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role, free_port};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -65,15 +64,6 @@ struct ProxyState {
     forward: AtomicBool,
     /// How many connections were refused in the refuse phase.
     refused: AtomicU64,
-}
-
-/// Reserve a real OS-assigned loopback port and hand it back free for the
-/// proxy to bind. (Binding then dropping leaves the port unbound; the proxy
-/// rebinds it a moment later — acceptable here because only this test process
-/// races for it.)
-fn free_port() -> u16 {
-    let l = StdTcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-    l.local_addr().expect("local_addr").port()
 }
 
 /// Run the real TCP proxy: bind `proxy_port`; for each inbound connection,

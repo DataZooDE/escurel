@@ -18,6 +18,7 @@
 //! `list_skills` and then stops listening — a network fault, not a mock of the
 //! gateway's behaviour.
 
+use escurel_test_support::free_port;
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command};
@@ -32,14 +33,6 @@ impl Drop for ChildGuard {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind ephemeral port")
-        .local_addr()
-        .expect("local_addr")
-        .port()
 }
 
 /// Enough of a gateway for `await_gateway` to accept it: one `list_skills`

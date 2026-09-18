@@ -29,12 +29,11 @@
 //! server speaking Gemini's wire shape that calls NO tools and reports the
 //! page it read, which is exactly what the lab agent did.
 
-use std::net::TcpListener;
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
+use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role, free_port};
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
@@ -46,14 +45,6 @@ impl Drop for ChildGuard {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind")
-        .local_addr()
-        .expect("addr")
-        .port()
 }
 
 async fn call_mcp(p: &EscurelProcess, name: &str, args: Value) -> Value {

@@ -46,11 +46,13 @@ mod auth;
 pub mod crdt_testkit;
 mod fixtures;
 mod mcp_client;
+mod port;
 mod process;
 
 pub use auth::{AuthMode, ExtraIssuer, Role};
 pub use fixtures::{FixtureBuilder, MarkdownBody, TenantFixture};
 pub use mcp_client::{McpError, McpTestClient};
+pub use port::free_port;
 pub use process::{ConfigOverrides, EscurelProcess, Opts};
 // Re-export so consumers can set `ConfigOverrides.write_acl` in their own
 // integration tests without depending on `escurel-server` directly.

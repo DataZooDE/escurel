@@ -502,14 +502,23 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
 /// - `begin_run` returns [`LedgerDecision::Created`] → a fresh `pending` run
 ///   exists. Run the loop-control [`admit`] gate: if it denies (depth/cycle/
 ///   budget), **dead-letter** the just-created run with the reason and do NOT
-///   enqueue — the cascade stops here. Otherwise enqueue the trigger (the
-///   in-memory seen-set collapses any webhook/poll overlap).
+///   enqueue — the cascade stops here. Otherwise enqueue the trigger.
 /// - `AlreadyTerminal` (idempotency — `processed`/`dead_letter`) / `InFlight`
 ///   (dedup) → drop. (A prior `failed` run is re-claimed as `Created`.)
 ///
+/// The seen-set collapses a webhook/poll overlap, but it is only a cache in
+/// front of the ledger and it is **never** cleared on completion — so the
+/// `Created` arm drops this event's entry before enqueueing. Reaching
+/// `Created` is proof that no run for the event is in flight, so an entry
+/// still present there is stale by construction; left in place it vetoed
+/// every #157 re-claim, and the re-claimed row then sat `pending` for ever.
+///
 /// Returns `true` if the trigger was enqueued. Best-effort: a ledger error
 /// is logged and the trigger dropped (the poller re-pulls on the next tick),
-/// never panicking the process.
+/// never panicking the process. A trigger that is admitted but never reaches
+/// the channel is reset to retriable `failed`, never left `pending`: the row
+/// exists before the enqueue, and a `pending` row with nothing queued to move
+/// it cannot be re-driven by anything.
 #[allow(clippy::too_many_arguments)]
 fn gate_and_enqueue(
     ledger: &Ledger,
@@ -617,19 +626,38 @@ fn gate_and_enqueue(
                 (QuotaDecision::Admit, None) => return false,
             }
 
+            // Drop any stale seen-set entry for this event BEFORE enqueueing.
+            //
+            // Reaching `Created` proves no run for this event is in flight:
+            // `begin_run` is one IMMEDIATE transaction with `ON CONFLICT DO
+            // NOTHING`, so a concurrent delivery gets `InFlight` /
+            // `AlreadyTerminal` and only one caller is ever handed `Created`.
+            // So a seen-set hit here cannot be a live duplicate — it can only
+            // be the residue of an earlier dispatch of the same event, and the
+            // set is only ever cleared by an operator requeue, never on
+            // completion.
+            //
+            // Without this, the #157 re-claim could not dispatch at all: the
+            // ledger reset a `failed` row to `pending` and minted a fresh run
+            // id, then `enqueue` answered `Duplicate` on the stale id and
+            // nothing ran. That left the row `pending` for ever — unmovable,
+            // because every later delivery read `pending` and dropped as
+            // `InFlight` — with the `failed` verdict erased by the re-claim.
+            queue.forget(&trigger.event_id);
             let outcome = queue.enqueue(trigger.clone());
-            // If the trigger did not actually reach the channel (a duplicate
-            // already in flight, or backpressure), release the quota slot we
-            // just took — the run won't dispatch under this slot. A `Full`
-            // trigger is reset to retriable so the poller re-drives it.
+            // If the trigger did not actually reach the channel, release the
+            // quota slot we just took — the run won't dispatch under this
+            // slot — and leave the row RETRIABLE so the poller re-drives it.
+            //
+            // Every non-`Enqueued` outcome is reset, not just `Full`: the row
+            // is `pending` at this point and nothing is queued to move it, so
+            // any outcome we leave unreset is a wedged run.
             if !matches!(outcome, EnqueueOutcome::Enqueued) {
                 inflight
                     .lock()
                     .expect("inflight slots mutex")
                     .remove(&trigger.event_id);
-                if matches!(outcome, EnqueueOutcome::Full) {
-                    let _ = ledger.mark(&run_id, RunStatus::Failed);
-                }
+                let _ = ledger.mark(&run_id, RunStatus::Failed);
             }
             tracing::info!(
                 target: "escurel_runner",
@@ -2505,6 +2533,126 @@ mod tests {
             ledger.count_all_runs().expect("count runs"),
             1,
             "an ordinary event must create exactly one ledger row"
+        );
+    }
+
+    /// A `failed` run that is re-delivered must actually re-dispatch — and
+    /// must never be left stranded `pending`.
+    ///
+    /// The ledger deliberately re-claims a `failed` row (reset to `pending`,
+    /// fresh run id, `Created`) so a transient failure is re-drivable rather
+    /// than wedged for ever (#157). But the in-memory seen-set is only ever
+    /// cleared by an operator requeue, never on completion — so the event id
+    /// of every run this process has dispatched stays in it. The re-claim
+    /// therefore met a seen-set that still held the id, `enqueue` answered
+    /// `Duplicate`, and nothing dispatched.
+    ///
+    /// The row was left `pending` by the re-claim, which is the trap: nothing
+    /// can move it (no dispatch), and every later delivery reads `pending` and
+    /// returns `InFlight` → dropped. The verdict a human would read is also
+    /// gone, because the re-claim cleared it. Observed as
+    /// `{"total":1,"terminal":0,"succeeded":0,"failed":0}` sitting unchanged
+    /// for four minutes while the runner's own log said `recorded failed`.
+    ///
+    /// Deterministic: drives the gate directly, so it does not depend on the
+    /// poller re-polling inside the window that made this a flake.
+    #[test]
+    fn a_failed_run_redelivered_dispatches_instead_of_wedging_pending() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let deliver = || {
+            gate_and_enqueue(
+                &ledger,
+                &queue,
+                &limits,
+                &governor,
+                &metrics,
+                &inflight,
+                trigger_with_label("evt-redrive-1", "research-angle"),
+                "test",
+            )
+        };
+
+        assert!(deliver(), "the first delivery must dispatch");
+        // The run finishes with a retriable failure — the state #157 makes
+        // re-drivable, and the state this event is in when the poller,
+        // finding the event still in the inbox, delivers it again.
+        let run = ledger
+            .get_run("acme", "evt-redrive-1")
+            .expect("get run")
+            .expect("a row for the first delivery");
+        let run_id = run.run_id.clone();
+        ledger
+            .mark(&RunId(run.run_id), RunStatus::Failed)
+            .expect("mark failed");
+
+        assert!(
+            deliver(),
+            "a re-delivered failed run must dispatch: the ledger is the \
+             idempotency authority and it re-claimed the row, so the seen-set \
+             fast-path in front of it must not veto the retry"
+        );
+        let after = ledger
+            .get_run("acme", "evt-redrive-1")
+            .expect("get run")
+            .expect("the row survives the re-claim");
+        assert_eq!(
+            after.status,
+            RunStatus::Pending,
+            "the re-claimed row is in flight again under a fresh run id"
+        );
+        assert_ne!(
+            after.run_id, run_id,
+            "the re-claim mints a fresh run id, so the retry is a run of its \
+             own rather than an edit of the one that failed"
+        );
+    }
+
+    /// A trigger the gate admits but cannot queue must be left RETRIABLE.
+    ///
+    /// The row is already `pending` when `enqueue` is reached, so an outcome
+    /// that never reaches the channel and is not reset leaves a run nothing
+    /// can move: the dispatch loop never sees it, and every later delivery
+    /// reads `pending` and drops it as `InFlight`.
+    ///
+    /// A regression guard rather than a reproduction: the reachable not-sent
+    /// outcomes (`Full`, and a closed channel, which reports as `Full`) were
+    /// already reset before the `Duplicate` fix, and with the stale seen-set
+    /// entry now dropped ahead of the enqueue, `Duplicate` is no longer
+    /// reachable from this arm at all. What this pins is the invariant that
+    /// made the wedge possible — a row must never be left `pending` with
+    /// nothing queued to move it — so an outcome added to `EnqueueOutcome`
+    /// later cannot quietly reintroduce it.
+    ///
+    /// Dropping the consumer closes the channel, which is the cheapest way to
+    /// make every `enqueue` report not-sent.
+    #[test]
+    fn a_trigger_that_cannot_be_queued_is_left_retriable_not_pending() {
+        let (ledger, queue, limits, governor, metrics, inflight, consumer) = gate_deps();
+        drop(consumer);
+
+        let admitted = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-unqueueable-1", "research-angle"),
+            "test",
+        );
+        assert!(
+            !admitted,
+            "a trigger that never reached the channel is not admitted"
+        );
+        let row = ledger
+            .get_run("acme", "evt-unqueueable-1")
+            .expect("get run")
+            .expect("the gate created a row before enqueueing");
+        assert_eq!(
+            row.status,
+            RunStatus::Failed,
+            "an un-queueable trigger must be reset to retriable `failed` so \
+             the poller re-drives it; left `pending` it is wedged for ever"
         );
     }
 }
