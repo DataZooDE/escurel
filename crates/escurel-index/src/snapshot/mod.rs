@@ -54,6 +54,15 @@ pub use store::{AttachRetrievalFn, SingleFileStore};
 /// Errors surfaced by an [`IndexStore`] backend.
 #[derive(Debug, Error)]
 pub enum SnapshotError {
+    /// The local corpus is empty and the lake is not. Publishing would
+    /// overwrite every lake table with nothing, and retention would then
+    /// prune the Parquet behind it.
+    #[error(
+        "refused: publishing an empty local corpus would overwrite {lake_pages} \
+         pages in the lake"
+    )]
+    RefusedEmptyPublish { lake_pages: i64 },
+
     /// Creating (or clearing) a directory / file under the tenant dir
     /// failed.
     #[error("creating data dir {path}: {source}")]

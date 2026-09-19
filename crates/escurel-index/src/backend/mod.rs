@@ -58,6 +58,7 @@ pub use binding::{
 };
 #[cfg(feature = "kreuzberg")]
 pub use document::KreuzbergExtractor;
+pub use document::reclaim_orphan_blobs;
 pub use document::{
     Chunk, ChunkConfig, ContextualizeMode, DeterministicProcessor, DocMetadata,
     DocumentIngestWorker, DocumentProcessor, ExtractConfig, ExtractError, ExtractionResult,

@@ -45,6 +45,7 @@ mod no_payload_in_catalog_live;
 mod quack_load_probe;
 mod query_instance;
 mod read_tools;
+mod rebuild_guard;
 mod rerank;
 mod resolve_expand;
 mod scenarios;
