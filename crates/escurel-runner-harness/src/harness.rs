@@ -152,3 +152,132 @@ pub trait Harness: Send + Sync {
     /// timeout + kill-on-drop), and return its captured outcome.
     async fn run(&self, task: &TaskContext) -> Result<HarnessOutcome, HarnessError>;
 }
+
+/// One subprocess harness run: spawn, feed stdin, wait against a deadline,
+/// check the exit status.
+///
+/// Five adapters carried their own copy of this sequence — `agy`, `claude`,
+/// `codex`, `muse` and `echo` — differing only in the binary, the argv, the
+/// env vars and the stdin payload. The copies were identical down to the
+/// comment wording, which is the tell: `kill_on_drop`, the EOF-on-stdin hang
+/// fix and the 2000-character stderr truncation were five independent
+/// implementations of the same safety properties, and a fix to one fixed one.
+///
+/// `gemini` is deliberately not a caller: it speaks HTTP rather than spawning
+/// anything, so it shares none of this.
+pub(crate) struct Spawn<'a> {
+    /// Adapter name, for the error variants.
+    pub harness: &'static str,
+    pub bin: &'a str,
+    pub args: &'a [String],
+    /// Env vars to set on the child. Used to hand a bearer to the child's
+    /// environment rather than its argv or an on-disk config, and to point a
+    /// harness at its per-run home directory.
+    pub envs: Vec<(&'a str, std::ffi::OsString)>,
+    /// Written to the child's stdin, which is then CLOSED. Every harness here
+    /// reads its prompt until EOF, so a held-open stdin hangs the run until
+    /// the timeout — that is why this closes rather than leaving the handle.
+    pub stdin: Option<&'a [u8]>,
+    pub timeout: std::time::Duration,
+}
+
+/// Run `spawn` to completion and return its captured output.
+///
+/// # Errors
+/// [`HarnessError::Spawn`] if the binary will not start, [`HarnessError::Io`]
+/// on a stdin or wait failure, [`HarnessError::Timeout`] if it outruns the
+/// deadline, and [`HarnessError::NonZeroExit`] (with stderr truncated to 2000
+/// characters) if it exits non-zero.
+pub(crate) async fn run_capture(spawn: Spawn<'_>) -> Result<std::process::Output, HarnessError> {
+    use std::process::Stdio;
+
+    let harness = spawn.harness;
+    let mut cmd = tokio::process::Command::new(spawn.bin);
+    cmd.args(spawn.args);
+    for (k, v) in &spawn.envs {
+        cmd.env(k, v);
+    }
+    // `kill_on_drop` ties the child's lifetime to this future: a dropped
+    // adapter (panic, cancellation, timeout) reaps the subprocess.
+    let mut child = cmd
+        // `null` rather than `piped` when there is nothing to write: a piped
+        // stdin nobody closes is the hang this helper exists to prevent, and
+        // one adapter (`muse`) genuinely takes its prompt via a file path.
+        .stdin(match spawn.stdin {
+            Some(_) => Stdio::piped(),
+            None => Stdio::null(),
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|source| HarnessError::Spawn {
+            harness,
+            path: spawn.bin.to_owned(),
+            source,
+        })?;
+
+    // Write the payload, then drop the handle to send EOF.
+    if let Some(payload) = spawn.stdin {
+        let mut stdin = child.stdin.take().ok_or_else(|| HarnessError::Io {
+            harness,
+            source: std::io::Error::other("stdin was not piped"),
+        })?;
+        tokio::io::AsyncWriteExt::write_all(&mut stdin, payload)
+            .await
+            .map_err(|source| HarnessError::Io { harness, source })?;
+        tokio::io::AsyncWriteExt::shutdown(&mut stdin)
+            .await
+            .map_err(|source| HarnessError::Io { harness, source })?;
+    }
+
+    let output = match tokio::time::timeout(spawn.timeout, child.wait_with_output()).await {
+        Ok(result) => result.map_err(|source| HarnessError::Io { harness, source })?,
+        Err(_elapsed) => {
+            // The cancelled `wait_with_output` future drops the `Child` it
+            // consumed; `kill_on_drop` then reaps the overrunning child.
+            return Err(HarnessError::Timeout {
+                harness,
+                timeout_ms: spawn.timeout.as_millis() as u64,
+            });
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(HarnessError::NonZeroExit {
+            harness,
+            code: output.status.code(),
+            stderr: stderr.chars().take(2000).collect(),
+        });
+    }
+    Ok(output)
+}
+
+/// Symlink every entry of `from` into `into`, skipping names in `skip`.
+///
+/// Was byte-identical in the `agy` and `muse` adapters, each building a
+/// private home directory that mirrors the real one minus the files it must
+/// override. The `muse` copy's own doc comment said "same helper shape as the
+/// `agy` adapter's", which is the point at which it should have moved here.
+pub(crate) fn link_entries(
+    from: &std::path::Path,
+    into: &std::path::Path,
+    skip: &[&str],
+) -> std::io::Result<()> {
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if skip.iter().any(|s| std::ffi::OsStr::new(s) == name) {
+            continue;
+        }
+        let target = into.join(&name);
+        if target.exists() {
+            continue;
+        }
+        std::os::unix::fs::symlink(entry.path(), target)?;
+    }
+    Ok(())
+}

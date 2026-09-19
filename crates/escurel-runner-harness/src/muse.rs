@@ -48,7 +48,6 @@
 //! [`REVIEW_TOOLS`]: escurel_runner_core::REVIEW_TOOLS
 
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -225,31 +224,10 @@ fn build_config_home(
     if let Some(real) = real_config_home {
         // Everything but `settings.json` — the credentials the model needs,
         // never the operator's MCP servers or their session logs.
-        link_entries(&real.join("muse"), &muse, &["settings.json"])?;
+        crate::harness::link_entries(&real.join("muse"), &muse, &["settings.json"])?;
     }
     std::fs::write(muse.join("settings.json"), settings)?;
     Ok(dir)
-}
-
-/// Symlink every entry of `from` into `into`, skipping `skip` and anything
-/// already there. A `from` that does not exist links nothing. (Same helper
-/// shape as the `agy` adapter's, for the same reason.)
-fn link_entries(from: &Path, into: &Path, skip: &[&str]) -> std::io::Result<()> {
-    let Ok(entries) = std::fs::read_dir(from) else {
-        return Ok(());
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        if skip.iter().any(|s| std::ffi::OsStr::new(s) == name) {
-            continue;
-        }
-        let target = into.join(&name);
-        if target.exists() {
-            continue;
-        }
-        std::os::unix::fs::symlink(entry.path(), target)?;
-    }
-    Ok(())
 }
 
 #[async_trait]
@@ -297,43 +275,17 @@ impl Harness for MuseHarness {
         )?;
         let prompt_path = prompt.path().to_string_lossy().into_owned();
 
-        let child = tokio::process::Command::new(&self.bin_path)
-            .args(self.build_args(&prompt_path))
-            .env("XDG_CONFIG_HOME", config_home.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|source| HarnessError::Spawn {
-                harness: NAME,
-                path: self.bin_path.clone(),
-                source,
-            })?;
-
-        let output = match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
-            Ok(result) => result.map_err(|source| HarnessError::Io {
-                harness: NAME,
-                source,
-            })?,
-            Err(_elapsed) => {
-                // The cancelled future drops the `Child` it consumed;
-                // kill_on_drop then reaps the overrunning subprocess.
-                return Err(HarnessError::Timeout {
-                    harness: NAME,
-                    timeout_ms: self.timeout.as_millis() as u64,
-                });
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(HarnessError::NonZeroExit {
-                harness: NAME,
-                code: output.status.code(),
-                stderr: stderr.chars().take(2000).collect(),
-            });
-        }
+        let output = crate::harness::run_capture(crate::harness::Spawn {
+            harness: NAME,
+            bin: &self.bin_path,
+            args: &self.build_args(&prompt_path),
+            envs: vec![("XDG_CONFIG_HOME", config_home.path().into())],
+            // muse takes its prompt as a FILE PATH in argv, so stdin stays
+            // closed rather than piped-and-unwritten.
+            stdin: None,
+            timeout: self.timeout,
+        })
+        .await?;
 
         parse_outcome(&output.stdout)
     }
