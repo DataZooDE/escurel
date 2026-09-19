@@ -698,6 +698,28 @@ async fn dispatch_tools_call(
         actor,
     };
 
+    // The admin gate, once, from the registry.
+    //
+    // This was `require_admin(role)?;` written as the first statement of 40
+    // dispatch arms, with a ratchet test parsing the source of this function
+    // to check that the set of arms containing that call matched the set of
+    // tools advertising `scope: "admin"`. Two places to state one fact, and a
+    // test whose job was to notice when they disagreed.
+    //
+    // `admin_scope_tools()` already derives the set from the registry — the
+    // quota path has consulted it for exactly this since the prefix-matching
+    // version of that list "silently forgot every unprefixed admin tool".
+    // Now dispatch consults it too, so `Scope` at the definition site is the
+    // only place a tool's audience is declared.
+    //
+    // Placed HERE deliberately: after the reader-replica and shared-surface
+    // gates and after `caller`, and before both dispatch matches. That is the
+    // order the per-arm calls produced, so which refusal a caller sees when
+    // several apply is unchanged.
+    if schema::admin_scope_tools().contains(params.name.as_str()) {
+        require_admin(role)?;
+    }
+
     // Session tools depend on `crdt_backend` + `sessions`, not on
     // the indexer. Route them before the indexer gate.
     match params.name.as_str() {
@@ -739,81 +761,62 @@ async fn dispatch_tools_call(
         // embedder seam) rather than the bound indexer, so they route
         // before the indexer gate, mirroring the session tools above.
         "tenant_create" => {
-            require_admin(role)?;
             return tool_tenant_create(state, params.arguments).await;
         }
         "tenant_list" => {
-            require_admin(role)?;
             return tool_tenant_list(state).await;
         }
         "tenant_get" => {
-            require_admin(role)?;
             return tool_tenant_get(state, params.arguments).await;
         }
         "tenant_update" => {
-            require_admin(role)?;
             return tool_tenant_update(state, params.arguments).await;
         }
         "tenant_delete" => {
-            require_admin(role)?;
             return tool_tenant_delete(state, params.arguments).await;
         }
         "tenant_export" => {
-            require_admin(role)?;
             return tool_tenant_export(state, params.arguments).await;
         }
         "export_pack" => {
-            require_admin(role)?;
             return tool_export_pack(state, params.arguments).await;
         }
         "import_pack" => {
-            require_admin(role)?;
             return tool_import_pack(state, params.arguments).await;
         }
         "list_packs" => {
-            require_admin(role)?;
             return tool_list_packs(state).await;
         }
         "rebase_pack" => {
-            require_admin(role)?;
             return tool_rebase_pack(state, params.arguments).await;
         }
         "unsubscribe_pack" => {
-            require_admin(role)?;
             return tool_unsubscribe_pack(state, params.arguments).await;
         }
         "submit_promotion" => {
-            require_admin(role)?;
             return tool_submit_promotion(state, subject, params.arguments).await;
         }
         "tenant_import" => {
-            require_admin(role)?;
             return tool_tenant_import(state, params.arguments).await;
         }
         "attach_external" => {
-            require_admin(role)?;
             return tool_attach_external(state, params.arguments).await;
         }
         "embedding_reload" => {
-            require_admin(role)?;
             return tool_embedding_reload(state).await;
         }
         "rebuild" => {
-            require_admin(role)?;
             return tool_rebuild(state, params.arguments).await;
         }
         "compact_lanes" => {
-            require_admin(role)?;
             return tool_compact_lanes(state, params.arguments).await;
         }
         "publish_snapshot" => {
-            require_admin(role)?;
             return tool_publish_snapshot(state).await;
         }
         // Outbound-webhook delivery log (observability). Needs only the
         // webhook handle on AppState, so it routes before the indexer gate.
         "admin_webhook_deliveries" => {
-            require_admin(role)?;
             return tool_admin_webhook_deliveries(state, params.arguments);
         }
         _ => {}
@@ -876,7 +879,6 @@ async fn dispatch_tools_call(
             // Destroys the audit record `delete_page` retained — an operator
             // act. Admin-gated like the other audit-destroying tools; the
             // owner of a page may retract it, but not erase the husk.
-            require_admin(role)?;
             tool_purge_page(state, indexer, params.arguments).await
         }
         "append_message" => {
@@ -931,96 +933,38 @@ async fn dispatch_tools_call(
         }
         // Admin-gated ops tools (mirror the documented MCP admin
         // surface; delegate to the same logic as EscurelAdmin gRPC).
-        "admin_quota" => {
-            require_admin(role)?;
-            tool_admin_quota(state, tenant_id, params.arguments)
-        }
-        "admin_audit" => {
-            require_admin(role)?;
-            tool_admin_audit(indexer, params.arguments).await
-        }
-        "admin_index_query" => {
-            require_admin(role)?;
-            tool_admin_index_query(indexer, params.arguments).await
-        }
+        "admin_quota" => tool_admin_quota(state, tenant_id, params.arguments),
+        "admin_audit" => tool_admin_audit(indexer, params.arguments).await,
+        "admin_index_query" => tool_admin_index_query(indexer, params.arguments).await,
         "admin_delete_chat_history" => {
-            require_admin(role)?;
             tool_admin_delete_chat_history(indexer, params.arguments).await
         }
-        "admin_list_lanes" => {
-            require_admin(role)?;
-            tool_admin_list_lanes(indexer)
-        }
-        "admin_lane_keys" => {
-            require_admin(role)?;
-            tool_admin_lane_keys(indexer, params.arguments).await
-        }
-        "admin_lane_blob" => {
-            require_admin(role)?;
-            tool_admin_lane_blob(indexer, params.arguments).await
-        }
+        "admin_list_lanes" => tool_admin_list_lanes(indexer),
+        "admin_lane_keys" => tool_admin_lane_keys(indexer, params.arguments).await,
+        "admin_lane_blob" => tool_admin_lane_blob(indexer, params.arguments).await,
         // Group ACL v1: admin-only membership mutation + read (D14). Gated
         // here, exactly like the other operator tools; group membership is
         // the source of truth for custom-group RBAC.
-        "add_group_member" => {
-            require_admin(role)?;
-            tool_add_group_member(indexer, subject, params.arguments).await
-        }
-        "remove_group_member" => {
-            require_admin(role)?;
-            tool_remove_group_member(indexer, params.arguments).await
-        }
-        "list_group_members" => {
-            require_admin(role)?;
-            tool_list_group_members(indexer, params.arguments).await
-        }
+        "add_group_member" => tool_add_group_member(indexer, subject, params.arguments).await,
+        "remove_group_member" => tool_remove_group_member(indexer, params.arguments).await,
+        "list_group_members" => tool_list_group_members(indexer, params.arguments).await,
         // SQL-view credential registry (admin-only). Secrets live
         // server-side in kb.duckdb, never in the markdown corpus (REQ-SQL-05).
-        "register_credential" => {
-            require_admin(role)?;
-            tool_register_credential(indexer, subject, params.arguments).await
-        }
-        "list_credentials" => {
-            require_admin(role)?;
-            tool_list_credentials(indexer).await
-        }
-        "delete_credential" => {
-            require_admin(role)?;
-            tool_delete_credential(indexer, params.arguments).await
-        }
-        "validate_bindings" => {
-            require_admin(role)?;
-            tool_validate_bindings(indexer).await
-        }
-        "create_sql_instance" => {
-            require_admin(role)?;
-            tool_create_sql_instance(indexer, params.arguments).await
-        }
+        "register_credential" => tool_register_credential(indexer, subject, params.arguments).await,
+        "list_credentials" => tool_list_credentials(indexer).await,
+        "delete_credential" => tool_delete_credential(indexer, params.arguments).await,
+        "validate_bindings" => tool_validate_bindings(indexer).await,
+        "create_sql_instance" => tool_create_sql_instance(indexer, params.arguments).await,
         // Remote-backend endpoint registry (admin-only). Base URL + auth live
         // server-side in kb.duckdb; the secret is never echoed. This is the
         // SSRF guard — a remote instance can only reach a registered endpoint.
-        "register_endpoint" => {
-            require_admin(role)?;
-            tool_register_endpoint(indexer, subject, params.arguments).await
-        }
-        "list_endpoints" => {
-            require_admin(role)?;
-            tool_list_endpoints(indexer).await
-        }
-        "delete_endpoint" => {
-            require_admin(role)?;
-            tool_delete_endpoint(indexer, params.arguments).await
-        }
-        "validate_endpoints" => {
-            require_admin(role)?;
-            tool_validate_endpoints(indexer).await
-        }
+        "register_endpoint" => tool_register_endpoint(indexer, subject, params.arguments).await,
+        "list_endpoints" => tool_list_endpoints(indexer).await,
+        "delete_endpoint" => tool_delete_endpoint(indexer, params.arguments).await,
+        "validate_endpoints" => tool_validate_endpoints(indexer).await,
         // Materialise a remote (openapi/mcp) overlay page from a skill that
         // declares a remote backend. Admin-only, mirroring create_sql_instance.
-        "create_remote_instance" => {
-            require_admin(role)?;
-            tool_create_remote_instance(indexer, params.arguments).await
-        }
+        "create_remote_instance" => tool_create_remote_instance(indexer, params.arguments).await,
         // Write-back to a remote instance's upstream. Agent tool, gated by the
         // target instance's acl.update (may_write_instance, fail-closed).
         "write_instance" => tool_write_instance(indexer, caller, params.arguments).await,
@@ -1912,82 +1856,45 @@ mod registry_conformance {
         );
     }
 
-    /// Arm name → does its dispatch block call `require_admin`? The block
-    /// is the source between this arm's `"name" =>` and the next arm's.
-    fn dispatch_admin_gated() -> std::collections::BTreeMap<String, bool> {
-        let src = include_str!("mcp.rs");
-        let start = src
-            .find("async fn dispatch_tools_call")
-            .expect("dispatch_tools_call exists");
-        let body = &src[start..];
-        let open = body.find('{').expect("function body");
-        let mut depth = 0usize;
-        let mut end = body.len();
-        for (i, c) in body.char_indices().skip(open) {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = i;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let window = &body[..end];
-        // (arm name, byte offset) pairs, reusing the line-shape rule from
-        // `dispatch_arm_names` so the two parsers cannot disagree on what
-        // an arm is.
-        let names = dispatch_arm_names();
-        let mut arms: Vec<(String, usize)> = Vec::new();
-        for name in &names {
-            let pat = format!("\"{name}\" =>");
-            if let Some(pos) = window.find(&pat) {
-                arms.push((name.clone(), pos));
-            }
-        }
-        arms.sort_by_key(|(_, pos)| *pos);
-        let mut out = std::collections::BTreeMap::new();
-        for i in 0..arms.len() {
-            let (name, pos) = &arms[i];
-            let block_end = arms.get(i + 1).map_or(window.len(), |(_, p)| *p);
-            out.insert(
-                name.clone(),
-                window[*pos..block_end].contains("require_admin"),
+    /// A tool's audience is declared once, and dispatch reads that declaration.
+    ///
+    /// This replaces a ratchet that parsed the source of `dispatch_tools_call`
+    /// to check that the arms calling `require_admin` were exactly the tools
+    /// advertising `scope: "admin"`. That test existed because the fact was
+    /// written in two places; it is gone because the fact is now written in
+    /// one. The gate consults `admin_scope_tools()`, which is derived from the
+    /// same `Scope` the entry advertises, so the two cannot disagree.
+    ///
+    /// What is worth pinning is that the derived set is not empty or
+    /// inverted — a bug there would silently open or close the whole operator
+    /// surface. The wiring itself is covered behaviourally by
+    /// `error_data::admin_required_carries_data_code`, which drives a real
+    /// agent token at a real admin tool.
+    #[test]
+    fn admin_scope_is_declared_once_and_drives_the_gate() {
+        let admin = super::schema::admin_scope_tools();
+        assert!(
+            admin.len() > 20,
+            "admin set collapsed to {} — the operator surface would be open",
+            admin.len()
+        );
+        for t in [
+            "tenant_create",
+            "rebuild",
+            "register_credential",
+            "import_pack",
+        ] {
+            assert!(
+                admin.contains(t),
+                "`{t}` is an operator tool but is not gated"
             );
         }
-        out
-    }
-
-    /// The advertised `scope` label must tell the truth about the gate:
-    /// `scope: "admin"` ⟺ the dispatch arm calls `require_admin`. This is
-    /// the ratchet that keeps the role-filtered `tools/list` honest — a
-    /// tool advertised to agents that then answers `-32001` (or an admin
-    /// tool leaking into the agent view) fails here, at write time.
-    #[test]
-    fn scope_label_matches_the_dispatch_gate() {
-        let gated = dispatch_admin_gated();
-        assert!(gated.len() > 50, "arm parser went blind: {}", gated.len());
-        let payload = super::schema::tools_list_payload();
-        let mut errors = Vec::new();
-        for t in payload["tools"].as_array().expect("tools") {
-            let name = t["name"].as_str().expect("name");
-            let scope = t["scope"].as_str().expect("scope");
-            match (gated.get(name), scope) {
-                (Some(true), "admin") | (Some(false), "agent") => {}
-                (Some(true), other) => errors.push(format!(
-                    "`{name}` is require_admin-gated but advertises scope `{other}`"
-                )),
-                (Some(false), other) if other != "agent" => errors.push(format!(
-                    "`{name}` is agent-callable but advertises scope `{other}`"
-                )),
-                (None, _) => errors.push(format!("`{name}` has no dispatch arm")),
-                _ => {}
-            }
+        for t in ["search", "expand", "update_page", "create_draft"] {
+            assert!(
+                !admin.contains(t),
+                "`{t}` is agent surface but is admin-gated"
+            );
         }
-        assert!(errors.is_empty(), "scope drift:\n  {}", errors.join("\n  "));
     }
 
     /// Every tool that can write must be refused on a reader replica.
