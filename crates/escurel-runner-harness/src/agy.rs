@@ -39,7 +39,6 @@
 //! `agy` against a real `/mcp`) runs on demand behind `#[ignore]`.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -214,31 +213,11 @@ fn build_home(real_home: Option<&Path>, mcp_config: &str) -> std::io::Result<tem
     std::fs::create_dir_all(&config)?;
 
     if let Some(real) = real_home {
-        link_entries(&real.join(".gemini"), &gemini, &["config"])?;
-        link_entries(&real.join(".gemini/config"), &config, &["mcp_config.json"])?;
+        crate::harness::link_entries(&real.join(".gemini"), &gemini, &["config"])?;
+        crate::harness::link_entries(&real.join(".gemini/config"), &config, &["mcp_config.json"])?;
     }
     std::fs::write(config.join("mcp_config.json"), mcp_config)?;
     Ok(dir)
-}
-
-/// Symlink every entry of `from` into `into`, skipping `skip` and anything
-/// already there. A `from` that does not exist links nothing.
-fn link_entries(from: &Path, into: &Path, skip: &[&str]) -> std::io::Result<()> {
-    let Ok(entries) = std::fs::read_dir(from) else {
-        return Ok(());
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        if skip.iter().any(|s| std::ffi::OsStr::new(s) == name) {
-            continue;
-        }
-        let target = into.join(&name);
-        if target.exists() {
-            continue;
-        }
-        std::os::unix::fs::symlink(entry.path(), target)?;
-    }
-    Ok(())
 }
 
 #[async_trait]
@@ -270,61 +249,16 @@ impl Harness for AgyHarness {
             },
         )?;
 
-        let mut child = tokio::process::Command::new(&self.bin_path)
-            .args(self.build_args())
-            .env("HOME", home.path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|source| HarnessError::Spawn {
-                harness: NAME,
-                path: self.bin_path.clone(),
-                source,
-            })?;
-
-        {
-            let mut stdin = child.stdin.take().ok_or_else(|| HarnessError::Io {
-                harness: NAME,
-                source: std::io::Error::other("stdin was not piped"),
-            })?;
-            tokio::io::AsyncWriteExt::write_all(&mut stdin, Self::stdin_message(task).as_bytes())
-                .await
-                .map_err(|source| HarnessError::Io {
-                    harness: NAME,
-                    source,
-                })?;
+        let output = crate::harness::run_capture(crate::harness::Spawn {
+            harness: NAME,
+            bin: &self.bin_path,
+            args: &self.build_args(),
+            envs: vec![("HOME", home.path().into())],
             // EOF, or `agy` waits for a second turn until the run times out.
-            tokio::io::AsyncWriteExt::shutdown(&mut stdin)
-                .await
-                .map_err(|source| HarnessError::Io {
-                    harness: NAME,
-                    source,
-                })?;
-        }
-
-        let output = match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
-            Ok(result) => result.map_err(|source| HarnessError::Io {
-                harness: NAME,
-                source,
-            })?,
-            Err(_elapsed) => {
-                return Err(HarnessError::Timeout {
-                    harness: NAME,
-                    timeout_ms: self.timeout.as_millis() as u64,
-                });
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(HarnessError::NonZeroExit {
-                harness: NAME,
-                code: output.status.code(),
-                stderr: stderr.chars().take(2000).collect(),
-            });
-        }
+            stdin: Some(Self::stdin_message(task).as_bytes()),
+            timeout: self.timeout,
+        })
+        .await?;
 
         parse_outcome(&output.stdout)
     }

@@ -20,7 +20,6 @@
 //! end-to-end test (real `claude` against a real `/mcp`) runs on demand
 //! behind `#[ignore]`.
 
-use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -171,68 +170,16 @@ impl Harness for ClaudeHarness {
 
         let args = self.build_args(task, &mcp_config_path);
 
-        // kill_on_drop ties the child's lifetime to this future: a dropped
-        // adapter (panic, cancellation, timeout) reaps the subprocess.
-        let mut child = tokio::process::Command::new(&self.bin_path)
-            .args(&args)
-            // The prompt goes on stdin (see `build_args`). Capture stdout
-            // (the JSON envelope) and stderr (diagnostics on failure).
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|source| HarnessError::Spawn {
-                harness: NAME,
-                path: self.bin_path.clone(),
-                source,
-            })?;
-
-        // Write the prompt, then drop the handle to send EOF — `claude -p`
-        // reads until the stream closes, so a held-open stdin would hang
-        // until the run timeout.
-        {
-            let mut stdin = child.stdin.take().ok_or_else(|| HarnessError::Io {
-                harness: NAME,
-                source: std::io::Error::other("stdin was not piped"),
-            })?;
-            tokio::io::AsyncWriteExt::write_all(&mut stdin, task.input.as_bytes())
-                .await
-                .map_err(|source| HarnessError::Io {
-                    harness: NAME,
-                    source,
-                })?;
-            tokio::io::AsyncWriteExt::shutdown(&mut stdin)
-                .await
-                .map_err(|source| HarnessError::Io {
-                    harness: NAME,
-                    source,
-                })?;
-        }
-
-        let output = match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
-            Ok(result) => result.map_err(|source| HarnessError::Io {
-                harness: NAME,
-                source,
-            })?,
-            Err(_elapsed) => {
-                // The cancelled `wait_with_output` future drops the `Child`
-                // it consumed; kill_on_drop then reaps the overrunning child.
-                return Err(HarnessError::Timeout {
-                    harness: NAME,
-                    timeout_ms: self.timeout.as_millis() as u64,
-                });
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(HarnessError::NonZeroExit {
-                harness: NAME,
-                code: output.status.code(),
-                stderr: stderr.chars().take(2000).collect(),
-            });
-        }
+        let output = crate::harness::run_capture(crate::harness::Spawn {
+            harness: NAME,
+            bin: &self.bin_path,
+            args: &args,
+            envs: Vec::new(),
+            // `claude -p` reads the prompt until stdin closes.
+            stdin: Some(task.input.as_bytes()),
+            timeout: self.timeout,
+        })
+        .await?;
 
         parse_outcome(&output.stdout)
     }

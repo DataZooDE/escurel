@@ -12,12 +12,10 @@
 //! but its escurel effects are 100% real. The richer Claude/Codex/Gemini
 //! adapters (#152-154) reuse this exact spawn-and-capture shape.
 
-use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use escurel_runner_core::TaskContext;
-use tokio::io::AsyncWriteExt;
 
 use crate::harness::{Harness, HarnessError, HarnessOutcome};
 use crate::task::HarnessTask;
@@ -69,61 +67,16 @@ impl Harness for EchoHarness {
             }
         })?;
 
-        // kill_on_drop ties the child's lifetime to this future: a dropped
-        // adapter (panic, cancellation, timeout) reaps the subprocess.
-        let mut child = tokio::process::Command::new(&self.bin_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|source| HarnessError::Spawn {
-                harness: NAME,
-                path: self.bin_path.clone(),
-                source,
-            })?;
-
-        // Stream the task into the child's stdin, then close it so the
-        // harness's read-to-end completes.
-        {
-            let mut stdin = child.stdin.take().expect("stdin was piped");
-            stdin
-                .write_all(&payload)
-                .await
-                .map_err(|source| HarnessError::Io {
-                    harness: NAME,
-                    source,
-                })?;
-            stdin.shutdown().await.map_err(|source| HarnessError::Io {
-                harness: NAME,
-                source,
-            })?;
-        }
-
-        let output = match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
-            Ok(result) => result.map_err(|source| HarnessError::Io {
-                harness: NAME,
-                source,
-            })?,
-            Err(_elapsed) => {
-                // On timeout the (cancelled) `wait_with_output` future is
-                // dropped, dropping the `Child` it consumed; kill_on_drop
-                // then reaps the overrunning subprocess.
-                return Err(HarnessError::Timeout {
-                    harness: NAME,
-                    timeout_ms: self.timeout.as_millis() as u64,
-                });
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(HarnessError::NonZeroExit {
-                harness: NAME,
-                code: output.status.code(),
-                stderr: stderr.chars().take(2000).collect(),
-            });
-        }
+        let output = crate::harness::run_capture(crate::harness::Spawn {
+            harness: NAME,
+            bin: &self.bin_path,
+            args: &[],
+            envs: Vec::new(),
+            // Streamed in, then closed so the harness's read-to-end completes.
+            stdin: Some(&payload),
+            timeout: self.timeout,
+        })
+        .await?;
 
         serde_json::from_slice::<HarnessOutcome>(&output.stdout).map_err(|source| {
             HarnessError::BadOutcome {
