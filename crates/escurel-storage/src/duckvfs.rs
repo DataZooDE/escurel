@@ -254,6 +254,7 @@ impl LaneStore for DuckVfsStore {
         let base = self.tenant_prefix(&tenant);
         let pattern = format!("{base}/**");
         let want = prefix.path().to_owned();
+        let root = self.root.clone();
 
         self.with_conn(move |conn| {
             let mut stmt = conn
@@ -264,12 +265,44 @@ impl LaneStore for DuckVfsStore {
                 Ok(it) => it
                     .collect::<std::result::Result<Vec<_>, _>>()
                     .map_err(|e| duck_err("list", e))?,
-                // An empty tenant is not an error: glob on a directory that
-                // does not exist raises on some filesystems and returns
-                // nothing on others, and `list` is specified to return an
-                // empty vec. Only that case is swallowed — a real failure
-                // above still propagates.
-                Err(_) => Vec::new(),
+                // A glob on a prefix that does not exist raises on some
+                // filesystems and returns nothing on others, so an error here
+                // may mean "this tenant is new" — or it may mean the store is
+                // unreachable, which for a `gdrive://` root is the everyday
+                // failure (an expired token, a 429, the extension not loaded).
+                //
+                // Those cannot share an answer. `Ok(empty)` is taken as
+                // authoritative by destructive callers: `Indexer::rebuild`
+                // truncates the index against it. The previous `Err(_) =>
+                // Vec::new()` reported both as empty, which is the same
+                // reasoning this file rejects for `read` a hundred lines
+                // below — "treating every read failure as `NotFound` would
+                // hide real errors (a bad credential, a network fault)".
+                //
+                // So probe the STORE ROOT, which is created at provisioning.
+                // If the root lists, the tenant prefix genuinely has nothing.
+                // If it does not, the store is unreachable and that is an
+                // error. The probe runs only on this path, so an ordinary
+                // listing still costs one round trip.
+                Err(tenant_err) => {
+                    let root_pattern = format!("{root}/**");
+                    let root_ok = conn
+                        .prepare("SELECT file FROM glob(?)")
+                        .and_then(|mut st| {
+                            st.query_map([&root_pattern], |row| row.get::<_, String>(0))
+                                .and_then(|it| it.collect::<std::result::Result<Vec<String>, _>>())
+                        })
+                        .is_ok();
+                    if root_ok {
+                        Vec::new()
+                    } else {
+                        return Err(duck_err(
+                            "list (store root unreachable, so an empty listing \
+                             would be a lie)",
+                            tenant_err,
+                        ));
+                    }
+                }
             };
 
             Ok(rows
