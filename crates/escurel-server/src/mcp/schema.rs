@@ -14,114 +14,126 @@
 use escurel_md::PageType;
 use serde_json::{Value, json};
 
-pub(super) fn tools_list_payload() -> Value {
-    json!({
-        "tools": [
-            tool_entry(
-                "list_skills",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Return the tenant's Tier-1 skill catalogue.",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "list_instances",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Enumerate instances of a skill, optionally filtered by a frontmatter field.",
-                json!({
-                    "type": "object",
-                    "required": ["skill_id"],
-                    "properties": {
-                        "skill_id": { "type": "string" },
-                        "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor; ONLY a null next_cursor means done (ACL filtering shortens pages)." },
-                        "order_by": { "type": "string", "enum": ["at asc", "at desc"] },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
-                        "frontmatter_key": { "type": "string", "description": "Frontmatter field to filter on (with frontmatter_value)." },
-                        "frontmatter_value": { "type": "string", "description": "Required value of frontmatter_key." },
-                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; instances born after it are excluded (untimed always remain)." },
-                        "scenario": { "type": "string", "description": "What-if overlay; absent = base only, else base ∪ overlay (overlay wins per slug)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "get_operation",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Read the current status of an async operation (pending|running|succeeded|failed|awaiting_human), derived from its run board. Returns {found:false} for an unknown or unreadable operation.",
-                json!({
-                    "type": "object",
-                    "required": ["operation_id"],
-                    "properties": {
-                        "operation_id": { "type": "string", "description": "The operation id returned by start_operation (its run-board page id)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "resolve",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Parse a [[wikilink]] and look up its target page.",
-                json!({
-                    "type": "object",
-                    "required": ["wikilink"],
-                    "properties": {
-                        "wikilink": { "type": "string" },
-                        "scenario": { "type": "string", "description": "What-if overlay to resolve against; absent = base only." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "expand",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Fetch a page's frontmatter + body + outbound wikilinks.",
-                json!({
-                    "type": "object",
-                    "required": ["page_id"],
-                    "properties": {
-                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
-                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." },
-                        "scenario": { "type": "string", "description": "What-if overlay to read against; absent = base only." },
-                        "full": { "type": "boolean", "description": "Return ALL chunks of a document instance instead of the bounded lead (REQ-DOC-05)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "fetch_blob",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Fetch the original retained file bytes of a document-backed instance (base64 + content type) for a faithful client preview.",
-                json!({
-                    "type": "object",
-                    "required": ["page_id"],
-                    "properties": {
-                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "neighbours",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Typed link-graph traversal.",
-                json!({
-                    "type": "object",
-                    "required": ["page_id"],
-                    "properties": {
-                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
-                        "direction": { "type": "string", "enum": ["in", "out", "both"] },
-                        "link_skill": { "type": "string" },
-                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; edges from sources born after it are hidden." },
-                        "scenario": { "type": "string", "description": "What-if overlay; edges filtered by their source page's scenario." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "provenance_ancestry",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Bounded multi-hop provenance traversal (ADR-0010). \
+/// Every advertised tool, with the facts dispatch needs about it.
+///
+/// The single declaration site. `tools/list`, the admin-scope set and all the
+/// reader-replica gates are derived from this, so none of them can disagree
+/// with the tool or with each other.
+pub(crate) fn tool_defs() -> Vec<ToolDef> {
+    vec![
+        tool_entry(
+            "list_skills",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Return the tenant's Tier-1 skill catalogue.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "list_instances",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Enumerate instances of a skill, optionally filtered by a frontmatter field.",
+            json!({
+                "type": "object",
+                "required": ["skill_id"],
+                "properties": {
+                    "skill_id": { "type": "string" },
+                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor; ONLY a null next_cursor means done (ACL filtering shortens pages)." },
+                    "order_by": { "type": "string", "enum": ["at asc", "at desc"] },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                    "frontmatter_key": { "type": "string", "description": "Frontmatter field to filter on (with frontmatter_value)." },
+                    "frontmatter_value": { "type": "string", "description": "Required value of frontmatter_key." },
+                    "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; instances born after it are excluded (untimed always remain)." },
+                    "scenario": { "type": "string", "description": "What-if overlay; absent = base only, else base ∪ overlay (overlay wins per slug)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "get_operation",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Read the current status of an async operation (pending|running|succeeded|failed|awaiting_human), derived from its run board. Returns {found:false} for an unknown or unreadable operation.",
+            json!({
+                "type": "object",
+                "required": ["operation_id"],
+                "properties": {
+                    "operation_id": { "type": "string", "description": "The operation id returned by start_operation (its run-board page id)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "resolve",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Parse a [[wikilink]] and look up its target page.",
+            json!({
+                "type": "object",
+                "required": ["wikilink"],
+                "properties": {
+                    "wikilink": { "type": "string" },
+                    "scenario": { "type": "string", "description": "What-if overlay to resolve against; absent = base only." }
+                }
+            }),
+        ),
+        tool_entry(
+            "expand",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Fetch a page's frontmatter + body + outbound wikilinks.",
+            json!({
+                "type": "object",
+                "required": ["page_id"],
+                "properties": {
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
+                    "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." },
+                    "scenario": { "type": "string", "description": "What-if overlay to read against; absent = base only." },
+                    "full": { "type": "boolean", "description": "Return ALL chunks of a document instance instead of the bounded lead (REQ-DOC-05)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "fetch_blob",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Fetch the original retained file bytes of a document-backed instance (base64 + content type) for a faithful client preview.",
+            json!({
+                "type": "object",
+                "required": ["page_id"],
+                "properties": {
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "neighbours",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Typed link-graph traversal.",
+            json!({
+                "type": "object",
+                "required": ["page_id"],
+                "properties": {
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
+                    "direction": { "type": "string", "enum": ["in", "out", "both"] },
+                    "link_skill": { "type": "string" },
+                    "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; edges from sources born after it are hidden." },
+                    "scenario": { "type": "string", "description": "What-if overlay; edges filtered by their source page's scenario." }
+                }
+            }),
+        ),
+        tool_entry(
+            "provenance_ancestry",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::READ,
+            "Bounded multi-hop provenance traversal (ADR-0010). \
                  `direction: up` returns everything the page rests on (its \
                  causes); `down` returns everything derived from it. Optionally \
                  restrict to `relations` (e.g. [\"derived_from\",\"motivated_by\"]); \
@@ -131,100 +143,105 @@ pub(super) fn tools_list_payload() -> Value {
                  `max_hops`? Then returns `{reachable, path, depth}`; a route \
                  through an ACL-private node reports `reachable: false` (no \
                  existence leak).",
-                json!({
-                    "type": "object",
-                    "required": ["page_id"],
-                    "properties": {
-                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
-                        "to_page": { "type": "string", "description": "Target page: switches to reachability/shortest-path mode ({reachable, path, depth})." },
-                        "direction": { "type": "string", "enum": ["up", "down"], "description": "up = what this rests on; down = what derives from it. Default up." },
-                        "relations": { "type": "array", "items": { "type": "string" }, "description": "Restrict the walk to these edge kinds; absent/empty = all." },
-                        "max_hops": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Hop ceiling (default 5, capped at 12)." },
-                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; edges from sources born after it are hidden." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "provenance_report",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Corpus-wide provenance report (ADR-0010). `kind: \"drift\"` = \
+            json!({
+                "type": "object",
+                "required": ["page_id"],
+                "properties": {
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
+                    "to_page": { "type": "string", "description": "Target page: switches to reachability/shortest-path mode ({reachable, path, depth})." },
+                    "direction": { "type": "string", "enum": ["up", "down"], "description": "up = what this rests on; down = what derives from it. Default up." },
+                    "relations": { "type": "array", "items": { "type": "string" }, "description": "Restrict the walk to these edge kinds; absent/empty = all." },
+                    "max_hops": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Hop ceiling (default 5, capped at 12)." },
+                    "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; edges from sources born after it are hidden." }
+                }
+            }),
+        ),
+        tool_entry(
+            "provenance_report",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::READ,
+            "Corpus-wide provenance report (ADR-0010). `kind: \"drift\"` = \
                  decisions resting on a since-superseded expectation (lost \
                  context); `kind: \"abandoned\"` = nodes retired by \
                  `supersedes`/`abandons` (dead-ended branches). Optionally \
                  scope to a `skill`. Returns `{kind, rows}`; rows touching an \
                  ACL-private page are dropped, fail-closed.",
-                json!({
-                    "type": "object",
-                    "required": ["kind"],
-                    "properties": {
-                        "kind": { "type": "string", "enum": ["drift", "abandoned"] },
-                        "skill": { "type": "string", "description": "Restrict to this skill; absent/empty = all." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "search",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Hybrid vector + FTS search, RRF-fused. Pass `q` for a single \
+            json!({
+                "type": "object",
+                "required": ["kind"],
+                "properties": {
+                    "kind": { "type": "string", "enum": ["drift", "abandoned"] },
+                    "skill": { "type": "string", "description": "Restrict to this skill; absent/empty = all." }
+                }
+            }),
+        ),
+        tool_entry(
+            "search",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Hybrid vector + FTS search, RRF-fused. Pass `q` for a single \
                  query, or `queries` with 2-3 phrasings to fuse their results \
                  in one ranking (provide exactly one of the two).",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "q": { "type": "string", "description": "Single query string. Provide this OR `queries`." },
-                        "queries": { "type": "array", "items": { "type": "string" }, "description": "Multiple query variants fused into one ranking (RRF across all variants × lanes). Provide this OR `q`." },
-                        "k": { "type": "integer", "minimum": 0, "maximum": 1000 },
-                        "granularity": { "type": "string", "enum": ["block", "page"], "description": "Result granularity; `page` collapses block hits to one per page. Default `block`." },
-                        "page_type": { "type": "string", "enum": ["skill", "instance", "any"] },
-                        "skill": { "type": "string" },
-                        "filter": { "type": "object", "description": "Frontmatter post-filter; clauses are ANDed, e.g. {\"tier\": \"gold\", \"at\": {\">=\": \"2026-04-01\"}}." },
-                        "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; blocks born after it are excluded." },
-                        "scenario": { "type": "string", "description": "What-if overlay; base-only when absent." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "query_instance",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Run a [[query::*]] report that declares `target: [[skill::id]]` \
+            json!({
+                "type": "object",
+                "properties": {
+                    "q": { "type": "string", "description": "Single query string. Provide this OR `queries`." },
+                    "queries": { "type": "array", "items": { "type": "string" }, "description": "Multiple query variants fused into one ranking (RRF across all variants × lanes). Provide this OR `q`." },
+                    "k": { "type": "integer", "minimum": 0, "maximum": 1000 },
+                    "granularity": { "type": "string", "enum": ["block", "page"], "description": "Result granularity; `page` collapses block hits to one per page. Default `block`." },
+                    "page_type": { "type": "string", "enum": ["skill", "instance", "any"] },
+                    "skill": { "type": "string" },
+                    "filter": { "type": "object", "description": "Frontmatter post-filter; clauses are ANDed, e.g. {\"tier\": \"gold\", \"at\": {\">=\": \"2026-04-01\"}}." },
+                    "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; blocks born after it are excluded." },
+                    "scenario": { "type": "string", "description": "What-if overlay; base-only when absent." }
+                }
+            }),
+        ),
+        tool_entry(
+            "query_instance",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Run a [[query::*]] report that declares `target: [[skill::id]]` \
                  against that sql_view instance's view. Runtime `params` are bound \
                  as prepared-statement values (never interpolated); the report's \
                  aggregation runs in the view and the full result set is returned. \
                  The per-instance ACL gates the target instance, fail-closed.",
-                json!({
-                    "type": "object",
-                    "required": ["ref"],
-                    "properties": {
-                        "ref": { "type": "string", "description": "Query id or [[query::id]] wikilink; its `target` names the sql_view instance to read." },
-                        "query_id": { "type": "string", "description": "Alias for `ref` (the retired run_stored_query's spelling)." },
-                        "params": { "type": "object", "description": "Runtime values bound to the report's `:param` placeholders." },
-                        "scenario": { "type": "string", "description": "Read a scenario overlay instead of the base timeline (corpus traversals only)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "validate",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Dry-run the indexer's checks on a draft; returns the same issue list \
+            json!({
+                "type": "object",
+                "required": ["ref"],
+                "properties": {
+                    "ref": { "type": "string", "description": "Query id or [[query::id]] wikilink; its `target` names the sql_view instance to read." },
+                    "query_id": { "type": "string", "description": "Alias for `ref` (the retired run_stored_query's spelling)." },
+                    "params": { "type": "object", "description": "Runtime values bound to the report's `:param` placeholders." },
+                    "scenario": { "type": "string", "description": "Read a scenario overlay instead of the base timeline (corpus traversals only)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "validate",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Dry-run the indexer's checks on a draft; returns the same issue list \
                  as update_page but commits nothing.",
-                json!({
-                    "type": "object",
-                    "required": ["content"],
-                    "properties": {
-                        "content": { "type": "string" },
-                        "as_page_id": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "create_draft",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Hold a finished write for a human instead of landing it — the \
+            json!({
+                "type": "object",
+                "required": ["content"],
+                "properties": {
+                    "content": { "type": "string" },
+                    "as_page_id": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "create_draft",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Drafts),
+            "Hold a finished write for a human instead of landing it — the \
                  gate a skill's `autonomy: review` asks for. Takes the whole \
                  proposed markdown for `target_page_id` (which need not exist \
                  yet) plus the `base_sha256` it was drafted against (\"\" = \
@@ -234,99 +251,105 @@ pub(super) fn tools_list_payload() -> Value {
                  never appears in `expand`, `search`, `list_instances` or \
                  `neighbours`, and it does not cascade — nothing has landed. \
                  Immutable; a revision is a new draft.",
-                json!({
-                    "type": "object",
-                    "required": ["target_page_id", "content"],
-                    "properties": {
-                        "target_page_id": { "type": "string", "description": "The page this write is FOR, e.g. `markdown/instances/<skill>/<slug>.md`." },
-                        "content": { "type": "string" },
-                        "base_sha256": { "type": "string", "description": "The target's content_sha256 when drafted, from `expand`; \"\" = approve-create (expect no page). Carried into `update_page`'s CAS at promotion." },
-                        "event_id": { "type": "string", "description": "The inbox event this draft answers, when it answers one." },
-                        "changeset_id": { "type": "string", "description": "Join the changeset a previous create_draft in this run returned (#509)." },
-                        "new_changeset": { "type": "boolean", "description": "Start a changeset; the server mints the id and returns it on the stored draft. Not with `changeset_id`." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "list_changesets",
-                Execution::Deterministic,
-                Scope::Agent,
-                "The review queue by RUN rather than by page (#509): one row \
+            json!({
+                "type": "object",
+                "required": ["target_page_id", "content"],
+                "properties": {
+                    "target_page_id": { "type": "string", "description": "The page this write is FOR, e.g. `markdown/instances/<skill>/<slug>.md`." },
+                    "content": { "type": "string" },
+                    "base_sha256": { "type": "string", "description": "The target's content_sha256 when drafted, from `expand`; \"\" = approve-create (expect no page). Carried into `update_page`'s CAS at promotion." },
+                    "event_id": { "type": "string", "description": "The inbox event this draft answers, when it answers one." },
+                    "changeset_id": { "type": "string", "description": "Join the changeset a previous create_draft in this run returned (#509)." },
+                    "new_changeset": { "type": "boolean", "description": "Start a changeset; the server mints the id and returns it on the stored draft. Not with `changeset_id`." }
+                }
+            }),
+        ),
+        tool_entry(
+            "list_changesets",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Drafts),
+            "The review queue by RUN rather than by page (#509): one row \
                  per changeset with how many held writes it holds, who \
                  proposed it, the pages it touches and the events it answers. \
                  `status` is derived from its members — `open` while any is \
                  open, `mixed` when members were decided individually.",
-                json!({
-                    "type": "object",
-                    "properties": { "limit": { "type": "integer" } }
-                }),
-            ),
-            tool_entry(
-                "promote_changeset",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Land a run's held writes as ONE decision. All-or-nothing: \
+            json!({
+                "type": "object",
+                "properties": { "limit": { "type": "integer" } }
+            }),
+        ),
+        tool_entry(
+            "promote_changeset",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::index_and(Surface::Drafts),
+            "Land a run's held writes as ONE decision. All-or-nothing: \
                  every member is checked first (still open, still valid, \
                  target still at the hash it was drafted against) and if any \
                  would refuse, NOTHING lands and every member stays open. Safe \
                  to retry — a member whose page already holds its bytes counts \
                  as applied, so a promotion interrupted mid-flight completes \
                  rather than conflicting with itself.",
-                json!({
-                    "type": "object",
-                    "required": ["changeset_id"],
-                    "properties": {
-                        "changeset_id": { "type": "string" },
-                        "decided_by": { "type": "string", "description": "the HUMAN who approved, when a gateway decides on their behalf (admin only)" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "discard_changeset",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Refuse a run's proposal whole. Every open member is closed \
+            json!({
+                "type": "object",
+                "required": ["changeset_id"],
+                "properties": {
+                    "changeset_id": { "type": "string" },
+                    "decided_by": { "type": "string", "description": "the HUMAN who approved, when a gateway decides on their behalf (admin only)" }
+                }
+            }),
+        ),
+        tool_entry(
+            "discard_changeset",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::index_and(Surface::Drafts),
+            "Refuse a run's proposal whole. Every open member is closed \
                  with the reason; nothing is written to any target.",
-                json!({
-                    "type": "object",
-                    "required": ["changeset_id"],
-                    "properties": {
-                        "changeset_id": { "type": "string" },
-                        "reason": { "type": "string" },
-                        "decided_by": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "create_branch",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Open a BRANCH: an isolated workspace whose writes never touch \
+            json!({
+                "type": "object",
+                "required": ["changeset_id"],
+                "properties": {
+                    "changeset_id": { "type": "string" },
+                    "reason": { "type": "string" },
+                    "decided_by": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "create_branch",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::INDEX,
+            "Open a BRANCH: an isolated workspace whose writes never touch \
                  the base timeline (#512). Records who opened it and the corpus \
                  state it forked from — a merge needs the latter. The name is \
                  also the `scenario` its pages carry, so there is exactly one \
                  identifier. Opening an existing name is refused, never joined.",
-                json!({
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": { "name": { "type": "string", "description": "e.g. `agent/inbox-scan`" } }
-                }),
-            ),
-            tool_entry(
-                "list_branches",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Every branch, newest first, including decided ones — \
+            json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": { "name": { "type": "string", "description": "e.g. `agent/inbox-scan`" } }
+            }),
+        ),
+        tool_entry(
+            "list_branches",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Every branch, newest first, including decided ones — \
                  \"did we already decide that one?\" must stay answerable. Each \
                  row carries its author, `base_version`, `status` \
                  (open | merged | abandoned) and the reason it was abandoned.",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "merge_branch",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Land a branch onto the base timeline. All-or-nothing: every \
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "merge_branch",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::INDEX,
+            "Land a branch onto the base timeline. All-or-nothing: every \
                  page the branch carries is checked first, and one member that \
                  could not land blocks the whole merge — a branch may be hours \
                  of work, and a half-landed one is very hard to reason back \
@@ -334,67 +357,71 @@ pub(super) fn tools_list_payload() -> Value {
                  the SAME three-way merge `update_page` performs: disjoint \
                  frontmatter keys merge, the same key on both sides conflicts. \
                  Tombstones land as real deletes.",
-                json!({
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": { "name": { "type": "string" } }
-                }),
-            ),
-            tool_entry(
-                "abandon_branch",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Close a branch without landing anything. Its overlay pages are \
+            json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": { "name": { "type": "string" } }
+            }),
+        ),
+        tool_entry(
+            "abandon_branch",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::INDEX,
+            "Close a branch without landing anything. Its overlay pages are \
                  deliberately LEFT in place: they are the record of what was \
                  proposed, they are invisible to the base timeline, and deleting \
                  them would destroy the only evidence of an abandoned run. A \
                  decided branch accepts no further writes.",
-                json!({
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": {
-                        "name": { "type": "string" },
-                        "reason": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "diff_draft",
-                Execution::Deterministic,
-                Scope::Agent,
-                "What approving a held write would change: which frontmatter \
+            json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": { "type": "string" },
+                    "reason": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "diff_draft",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Drafts),
+            "What approving a held write would change: which frontmatter \
                  keys move and to what (`frontmatter_changes`), what happens to \
                  the body (`block_changes`), whether the target page exists, and \
                  whether it has MOVED since the draft was taken (`base_moved` — \
                  the signal that promotion will need a merge). Read-only; the \
                  same read gate as `list_drafts`, so a draft you may not see \
                  reads as absent.",
-                json!({
-                    "type": "object",
-                    "required": ["draft_id"],
-                    "properties": { "draft_id": { "type": "string" } }
-                }),
-            ),
-            tool_entry(
-                "list_drafts",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Every held write still waiting for a decision, newest first, \
+            json!({
+                "type": "object",
+                "required": ["draft_id"],
+                "properties": { "draft_id": { "type": "string" } }
+            }),
+        ),
+        tool_entry(
+            "list_drafts",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Drafts),
+            "Every held write still waiting for a decision, newest first, \
                  with its `content`, `content_sha256`, `author` and the \
                  `event_id` it answers. This is the answer to \"what is waiting \
                  for me?\" — a question that, before drafts existed, only the \
                  consumer that invented its own pending-change convention could \
                  answer.",
-                json!({
-                    "type": "object",
-                    "properties": { "limit": { "type": "integer" } }
-                }),
-            ),
-            tool_entry(
-                "promote_draft",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Land a held write, under the approver's identity. Re-enters \
+            json!({
+                "type": "object",
+                "properties": { "limit": { "type": "integer" } }
+            }),
+        ),
+        tool_entry(
+            "promote_draft",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::index_and(Surface::Drafts),
+            "Land a held write, under the approver's identity. Re-enters \
                  `update_page` with the draft's exact bytes and its \
                  `base_sha256`, so every guard, the validation and the CAS \
                  apply at the moment the write lands: a target that changed \
@@ -402,33 +429,35 @@ pub(super) fn tools_list_payload() -> Value {
                  head_content}` and the draft stays OPEN to be re-drafted. A \
                  draft already promoted or discarded returns \
                  `{code:already_decided}`.",
-                json!({
-                    "type": "object",
-                    "required": ["draft_id"],
-                    "properties": { "draft_id": { "type": "string" } }
-                }),
-            ),
-            tool_entry(
-                "discard_draft",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Refuse a held write. Nothing is written to the target. The row \
+            json!({
+                "type": "object",
+                "required": ["draft_id"],
+                "properties": { "draft_id": { "type": "string" } }
+            }),
+        ),
+        tool_entry(
+            "discard_draft",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Drafts),
+            "Refuse a held write. Nothing is written to the target. The row \
                  is kept with the reason and the deciding subject — \"did I \
                  already deal with that?\" must stay answerable.",
-                json!({
-                    "type": "object",
-                    "required": ["draft_id"],
-                    "properties": {
-                        "draft_id": { "type": "string" },
-                        "reason": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "update_page",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Upsert a markdown page (whole-body write). Optional \
+            json!({
+                "type": "object",
+                "required": ["draft_id"],
+                "properties": {
+                    "draft_id": { "type": "string" },
+                    "reason": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "update_page",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::INDEX,
+            "Upsert a markdown page (whole-body write). Optional \
                  `base_version` (from a prior read's `version`) enables \
                  optimistic concurrency with CRDT auto-merge: a stale write is \
                  three-way-merged against concurrent head edits (`ok:true, \
@@ -440,25 +469,26 @@ pub(super) fn tools_list_payload() -> Value {
                  guard on a gateway that does not track versions returns \
                  `{ok:false, issues:[{code:versioning_unavailable}]}` rather than \
                  writing unguarded.",
-                json!({
-                    "type": "object",
-                    "required": ["page_id", "content"],
-                    "properties": {
-                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
-                        "content": { "type": "string" },
-                        "base_version": { "type": "string" },
-                        "require_exact_base": { "type": "boolean" },
-                        "base_sha256": { "type": "string", "description": "Content-hash CAS — the approval guard that works on EVERY gateway (base_version needs a CRDT backend). Hex sha256 of the stored markdown the held write was drafted against; \"\" = approve-create (expect no page). Mismatch refuses {code: conflict} + head_sha256 + head_content. (#354)" },
-                        "branch": { "type": "string", "description": "Write on this BRANCH instead of the base timeline (#512): the server derives the overlay page id and stamps `scenario`, so an agent cannot forget to and write to production. Must be an OPEN registered branch." },
-                        "provenance": { "type": "object" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "delete_page",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Soft-delete (archive) a markdown page/instance: retract it from \
+            json!({
+                "type": "object",
+                "required": ["page_id", "content"],
+                "properties": {
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
+                    "content": { "type": "string" },
+                    "base_version": { "type": "string" },
+                    "require_exact_base": { "type": "boolean" },
+                    "base_sha256": { "type": "string", "description": "Content-hash CAS — the approval guard that works on EVERY gateway (base_version needs a CRDT backend). Hex sha256 of the stored markdown the held write was drafted against; \"\" = approve-create (expect no page). Mismatch refuses {code: conflict} + head_sha256 + head_content. (#354)" },
+                    "branch": { "type": "string", "description": "Write on this BRANCH instead of the base timeline (#512): the server derives the overlay page id and stamps `scenario`, so an agent cannot forget to and write to production. Must be an OPEN registered branch." },
+                    "provenance": { "type": "object" }
+                }
+            }),
+        ),
+        tool_entry(
+            "delete_page",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::INDEX,
+            "Soft-delete (archive) a markdown page/instance: retract it from \
                  discovery (search/resolve/neighbours/list) by dropping its index \
                  rows and link edges, while retaining the canonical markdown \
                  (stamped `archived: true`) as an audit record a rebuild skips. \
@@ -467,20 +497,21 @@ pub(super) fn tools_list_payload() -> Value {
                  (`{ok:false, issues:[{code:conflict}]}`). Returns \
                  `{ok:false, issues:[{code:not_found}]}` for an absent page. The \
                  mandatory `escurel` meta-skill cannot be deleted.",
-                json!({
-                    "type": "object",
-                    "required": ["page_id"],
-                    "properties": {
-                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
-                        "base_version": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "purge_page",
-                Execution::Orchestration,
-                Scope::Admin,
-                "ADMIN. Permanently remove an ALREADY-ARCHIVED page from the \
+            json!({
+                "type": "object",
+                "required": ["page_id"],
+                "properties": {
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
+                    "base_version": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "purge_page",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "ADMIN. Permanently remove an ALREADY-ARCHIVED page from the \
                  lane, finishing what `delete_page` started. `delete_page` \
                  retracts and retains the markdown as an audit record; this \
                  gives that record up — an operator act, refused for non-admin \
@@ -489,17 +520,18 @@ pub(super) fn tools_list_payload() -> Value {
                  `{ok:false, issues:[{code:not_found}]}` for an absent page, so a \
                  sweep is re-runnable. The mandatory `escurel` meta-skill cannot \
                  be purged.",
-                json!({
-                    "type": "object",
-                    "required": ["page_id"],
-                    "properties": { "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." } }
-                }),
-            ),
-            tool_entry(
-                "move_page",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Move a page to a new `page_id`, leaving NOTHING at the old one. \
+            json!({
+                "type": "object",
+                "required": ["page_id"],
+                "properties": { "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." } }
+            }),
+        ),
+        tool_entry(
+            "move_page",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::INDEX,
+            "Move a page to a new `page_id`, leaving NOTHING at the old one. \
                  Use this to restructure ids; use `delete_page` to retract \
                  knowledge. The difference matters: a delete retains the old \
                  markdown as an audit record, which is correct for a retraction \
@@ -510,82 +542,85 @@ pub(super) fn tools_list_payload() -> Value {
                  `{code:conflict}` when a LIVE page already occupies `to` (an \
                  archived husk there is replaced). The mandatory `escurel` \
                  meta-skill cannot be moved.",
-                json!({
-                    "type": "object",
-                    "required": ["from", "to"],
-                    "properties": {
-                        "from": { "type": "string" },
-                        "to": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "append_message",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Append a message to a chat-group's conversation history. \
+            json!({
+                "type": "object",
+                "required": ["from", "to"],
+                "properties": {
+                    "from": { "type": "string" },
+                    "to": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "append_message",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Chat),
+            "Append a message to a chat-group's conversation history. \
                  `chat_group_id` is opaque to escurel; consumers own the \
                  identifier scheme. `embed` defaults to true; set false to \
                  skip the embedding cost for high-volume sources.",
-                json!({
-                    "type": "object",
-                    "required": ["chat_group_id", "role", "content"],
-                    "properties": {
-                        "chat_group_id": { "type": "string" },
-                        "role": {
-                            "type": "string",
-                            "enum": ["user", "assistant", "system", "tool"]
-                        },
-                        "content": { "type": "string" },
-                        "author": { "type": "string" },
-                        "ts": {
-                            "type": "string",
-                            "description": "RFC-3339 UTC; server stamps CURRENT_TIMESTAMP when absent"
-                        },
-                        "metadata": { "type": "object" },
-                        "msg_id": {
-                            "type": "string",
-                            "description": "Caller-supplied IDEMPOTENCY KEY: a retry with the same (chat_group_id, msg_id) echoes the stored row instead of inserting a duplicate. Server generates a ULID when absent (no dedup)."
-                        },
-                        "embed": { "type": "boolean", "default": true }
-                    }
-                }),
-            ),
-            tool_entry(
-                "list_messages",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Read back a chat-group's conversation history time-ordered. \
+            json!({
+                "type": "object",
+                "required": ["chat_group_id", "role", "content"],
+                "properties": {
+                    "chat_group_id": { "type": "string" },
+                    "role": {
+                        "type": "string",
+                        "enum": ["user", "assistant", "system", "tool"]
+                    },
+                    "content": { "type": "string" },
+                    "author": { "type": "string" },
+                    "ts": {
+                        "type": "string",
+                        "description": "RFC-3339 UTC; server stamps CURRENT_TIMESTAMP when absent"
+                    },
+                    "metadata": { "type": "object" },
+                    "msg_id": {
+                        "type": "string",
+                        "description": "Caller-supplied IDEMPOTENCY KEY: a retry with the same (chat_group_id, msg_id) echoes the stored row instead of inserting a duplicate. Server generates a ULID when absent (no dedup)."
+                    },
+                    "embed": { "type": "boolean", "default": true }
+                }
+            }),
+        ),
+        tool_entry(
+            "list_messages",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Chat),
+            "Read back a chat-group's conversation history time-ordered. \
                  `since` is inclusive, `until` is exclusive. `direction` \
                  defaults to `desc` (most recent first). Use `next_cursor` \
                  to page.",
-                json!({
-                    "type": "object",
-                    "required": ["chat_group_id"],
-                    "properties": {
-                        "chat_group_id": { "type": "string" },
-                        "since": { "type": "string" },
-                        "until": { "type": "string" },
-                        "limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 1000,
-                            "default": 100
-                        },
-                        "cursor": { "type": "string" },
-                        "direction": {
-                            "type": "string",
-                            "enum": ["asc", "desc"],
-                            "default": "desc"
-                        }
+            json!({
+                "type": "object",
+                "required": ["chat_group_id"],
+                "properties": {
+                    "chat_group_id": { "type": "string" },
+                    "since": { "type": "string" },
+                    "until": { "type": "string" },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000,
+                        "default": 100
+                    },
+                    "cursor": { "type": "string" },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["asc", "desc"],
+                        "default": "desc"
                     }
-                }),
-            ),
-            tool_entry(
-                "capture_event",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Append an event to the global inbox (M7). `label_skill` links \
+                }
+            }),
+        ),
+        tool_entry(
+            "capture_event",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Events),
+            "Append an event to the global inbox (M7). `label_skill` links \
                  to the skill that knows how to process this event type; \
                  `instance_page_id` may pre-flag a candidate instance but the \
                  event stays in the inbox until `assign_event`. Returns the \
@@ -596,68 +631,71 @@ pub(super) fn tools_list_payload() -> Value {
                  `event_id`: a re-capture returns the stored first-writer \
                  event — or, if that event is not yours to see, your own \
                  submission back under the same id.",
-                json!({
-                    "type": "object",
-                    "required": ["label_skill"],
-                    "properties": {
-                        "event_id": { "type": "string", "minLength": 1, "description": "Idempotency key: a redelivery with the same id echoes the stored event. Must be NON-EMPTY when supplied (#390); omit to mint a server ULID." },
-                        "at": { "type": "string", "description": "RFC 3339 event time." },
-                        "source": { "type": "string", "description": "Ingest source, e.g. gmail/meet/drive." },
-                        "mime": { "type": "string", "description": "Content type, e.g. message/rfc822." },
-                        "label_skill": { "type": "string", "description": "Skill id: how to process this event type." },
-                        "instance_page_id": { "type": "string", "description": "Candidate instance (label hint); still inbox until assigned." },
-                        "title": { "type": "string" },
-                        "body": { "type": "string" },
-                        "provenance": { "type": "object" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "start_operation",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Begin an async workflow operation: run the `wf_skill` plan in the \
+            json!({
+                "type": "object",
+                "required": ["label_skill"],
+                "properties": {
+                    "event_id": { "type": "string", "minLength": 1, "description": "Idempotency key: a redelivery with the same id echoes the stored event. Must be NON-EMPTY when supplied (#390); omit to mint a server ULID." },
+                    "at": { "type": "string", "description": "RFC 3339 event time." },
+                    "source": { "type": "string", "description": "Ingest source, e.g. gmail/meet/drive." },
+                    "mime": { "type": "string", "description": "Content type, e.g. message/rfc822." },
+                    "label_skill": { "type": "string", "description": "Skill id: how to process this event type." },
+                    "instance_page_id": { "type": "string", "description": "Candidate instance (label hint); still inbox until assigned." },
+                    "title": { "type": "string" },
+                    "body": { "type": "string" },
+                    "provenance": { "type": "object" }
+                }
+            }),
+        ),
+        tool_entry(
+            "start_operation",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::INDEX,
+            "Begin an async workflow operation: run the `wf_skill` plan in the \
                  background and return `{operation_id, status:'pending'}` fast. The \
                  server owns the operation's identity and its workflow provenance \
                  (you cannot forge either), creates an owner-scoped run board, and \
                  captures the invocation. Poll progress with `get_operation`. Pass \
                  `idempotency_key` to make a retry re-attach to the same operation \
                  rather than start a second run.",
-                json!({
-                    "type": "object",
-                    "required": ["wf_skill"],
-                    "properties": {
-                        "wf_skill": { "type": "string", "description": "The kind:workflow plan skill id to run." },
-                        "input": { "type": "string", "description": "The invocation body handed to the plan's first step." },
-                        "idempotency_key": { "type": "string", "description": "Retry key: same key (same caller) → one operation, not a second run." },
-                        "conversation_ref": { "type": "object", "description": "Opaque channel reference stored for terminal delivery (Phase 3); not interpreted." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "list_inbox",
-                Execution::Deterministic,
-                Scope::Agent,
-                "List unprocessed events (the inbox), newest first. Filtered to the \
+            json!({
+                "type": "object",
+                "required": ["wf_skill"],
+                "properties": {
+                    "wf_skill": { "type": "string", "description": "The kind:workflow plan skill id to run." },
+                    "input": { "type": "string", "description": "The invocation body handed to the plan's first step." },
+                    "idempotency_key": { "type": "string", "description": "Retry key: same key (same caller) → one operation, not a second run." },
+                    "conversation_ref": { "type": "object", "description": "Opaque channel reference stored for terminal delivery (Phase 3); not interpreted." }
+                }
+            }),
+        ),
+        tool_entry(
+            "list_inbox",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Events),
+            "List unprocessed events (the inbox), newest first. Filtered to the \
                  events you may see: an event filed into an instance follows \
                  that instance's ACL, an un-triaged one is yours only if you \
                  captured it, and admin sees all (`ESCUREL_EVENT_ACL`). A page \
                  may therefore come back shorter than `limit` — ONLY the \
                  absence of `next_cursor` means the listing is complete; pass \
                  `next_cursor` back as `cursor` to continue.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
-                        "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "list_events",
-                Execution::Deterministic,
-                Scope::Agent,
-                "List an instance's processed event history (the event sequence \
+            json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor." }
+                }
+            }),
+        ),
+        tool_entry(
+            "list_events",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Events),
+            "List an instance's processed event history (the event sequence \
                  whose projection is its state), oldest first. Pass `event_id` \
                  instead to look ONE event up by id — whatever its status — \
                  which is how you discover the instance an event was assigned \
@@ -666,38 +704,40 @@ pub(super) fn tools_list_payload() -> Value {
                  you may not see is absent, not an error. Paginated: ONLY the \
                  absence of `next_cursor` means the history is complete; pass \
                  it back as `cursor` to read past `limit`.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "instance_page_id": { "type": "string" },
-                        "event_id": { "type": "string" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
-                        "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor (listing branch only)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "list_snapshots",
-                Execution::Deterministic,
-                Scope::Agent,
-                "List the taken_at timestamps of an instance's CRDT snapshot \
+            json!({
+                "type": "object",
+                "properties": {
+                    "instance_page_id": { "type": "string" },
+                    "event_id": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor (listing branch only)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "list_snapshots",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Crdt),
+            "List the taken_at timestamps of an instance's CRDT snapshot \
                  history, oldest first — the discrete state-over-time points \
                  expand(as_of=T) can replay. Follows the page's own read \
                  ACL: a page you may not read reports an empty history, \
                  indistinguishable from one that has none.",
-                json!({
-                    "type": "object",
-                    "required": ["page_id"],
-                    "properties": {
-                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "list_op_authors",
-                Execution::Deterministic,
-                Scope::Agent,
-                "Who wrote each live-editing (CRDT) op on a page, oldest first: \
+            json!({
+                "type": "object",
+                "required": ["page_id"],
+                "properties": {
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "list_op_authors",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Crdt),
+            "Who wrote each live-editing (CRDT) op on a page, oldest first: \
                  op_id, hlc, applied_at and the server-verified `principal` that \
                  submitted it. The read side of write attribution — the principal \
                  is the caller the gateway authenticated, NOT the Loro peer id in \
@@ -707,688 +747,776 @@ pub(super) fn tools_list_payload() -> Value {
                  not listed. Returns no op bytes. Follows the page's own read \
                  ACL: a page you may not read reports an empty history, \
                  indistinguishable from one that has none.",
-                json!({
-                    "type": "object",
-                    "required": ["page_id"],
-                    "properties": {
-                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "assign_event",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Assign an inbox event to an instance and mark it processed — the \
+            json!({
+                "type": "object",
+                "required": ["page_id"],
+                "properties": {
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "assign_event",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Events),
+            "Assign an inbox event to an instance and mark it processed — the \
                  (external) agent folding the event into the instance. A \
                  compare-and-set: re-assigning to the SAME instance is a no-op \
                  success, a different instance for an already-processed event \
                  conflicts, and an event you may not see is refused as NOT \
                  FOUND — indistinguishable from one that does not exist.",
-                json!({
-                    "type": "object",
-                    "required": ["event_id", "instance_page_id"],
-                    "properties": {
-                        "event_id": { "type": "string" },
-                        "instance_page_id": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "open_session",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Open a live CRDT session on a page; returns a session id and \
+            json!({
+                "type": "object",
+                "required": ["event_id", "instance_page_id"],
+                "properties": {
+                    "event_id": { "type": "string" },
+                    "instance_page_id": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "open_session",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Crdt),
+            "Open a live CRDT session on a page; returns a session id and \
                  the WS upgrade URL. Gated by the same write ACL as \
                  update_page: a caller who may not write the page is refused \
                  (`forbidden`).",
-                json!({
-                    "type": "object",
-                    "required": ["page_id"],
-                    "properties": {
-                        "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "apply_op",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Apply a base64-encoded Loro op blob to an open session.",
-                json!({
-                    "type": "object",
-                    "required": ["session", "op"],
-                    "properties": {
-                        "session": { "type": "string" },
-                        "op": { "type": "string", "description": "base64-encoded Loro op bytes" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "close_session",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Close a session; optionally snapshot the doc (commit=true). \
+            json!({
+                "type": "object",
+                "required": ["page_id"],
+                "properties": {
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "apply_op",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Crdt),
+            "Apply a base64-encoded Loro op blob to an open session.",
+            json!({
+                "type": "object",
+                "required": ["session", "op"],
+                "properties": {
+                    "session": { "type": "string" },
+                    "op": { "type": "string", "description": "base64-encoded Loro op bytes" }
+                }
+            }),
+        ),
+        tool_entry(
+            "close_session",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Crdt),
+            "Close a session; optionally snapshot the doc (commit=true). \
                  The commit re-checks update_page's write ACL (it can change \
                  while a session is open); a refused commit returns \
                  update_page's `forbidden` issue and leaves the session open \
                  so it can still be discarded.",
-                json!({
-                    "type": "object",
-                    "required": ["session"],
-                    "properties": {
-                        "session": { "type": "string" },
-                        "commit": { "type": "boolean", "default": true }
-                    }
-                }),
-            ),
-            // Admin-gated ops tools. Visible in tools/list, but the
-            // dispatcher rejects non-admin callers (see require_admin).
-            tool_entry(
-                "admin_quota",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: per-tenant quota snapshot (remaining query/write/embed \
+            json!({
+                "type": "object",
+                "required": ["session"],
+                "properties": {
+                    "session": { "type": "string" },
+                    "commit": { "type": "boolean", "default": true }
+                }
+            }),
+        ),
+        // Admin-gated ops tools. Visible in tools/list, but the
+        // dispatcher rejects non-admin callers (see require_admin).
+        tool_entry(
+            "admin_quota",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: per-tenant quota snapshot (remaining query/write/embed \
                  budget + concurrent sessions in use).",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "admin_audit",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: drift between canonical markdown and the DuckDB index \
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "admin_audit",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: drift between canonical markdown and the DuckDB index \
                  (markdown_not_in_duckdb / indexed_but_no_markdown).",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "admin_webhook_deliveries",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: recent outbound capture-webhook delivery outcomes \
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "admin_webhook_deliveries",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: recent outbound capture-webhook delivery outcomes \
                  (newest first) — event_id, ok, http_status, error. \
                  `configured: false` when no ESCUREL_WEBHOOK_URL is set.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 100 }
-                    }
-                }),
-            ),
-            tool_entry(
-                "admin_index_query",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: read up to `limit` rows from an allow-listed index table \
+            json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 100 }
+                }
+            }),
+        ),
+        tool_entry(
+            "admin_index_query",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: read up to `limit` rows from an allow-listed index table \
                  (pages, blocks, links, crdt_ops, crdt_snapshots, \
                  chat_messages). Not arbitrary SQL.",
-                json!({
-                    "type": "object",
-                    "required": ["table"],
-                    "properties": {
-                        "table": {
-                            "type": "string",
-                            "enum": ["pages", "blocks", "links",
-                                     "crdt_ops", "crdt_snapshots", "chat_messages"]
-                        },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 }
-                    }
-                }),
-            ),
-            tool_entry(
-                "admin_delete_chat_history",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: purge chat history. GDPR erasure of a whole group \
+            json!({
+                "type": "object",
+                "required": ["table"],
+                "properties": {
+                    "table": {
+                        "type": "string",
+                        "enum": ["pages", "blocks", "links",
+                                 "crdt_ops", "crdt_snapshots", "chat_messages"]
+                    },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 }
+                }
+            }),
+        ),
+        tool_entry(
+            "admin_delete_chat_history",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::shared(Surface::Chat),
+            "Admin: purge chat history. GDPR erasure of a whole group \
                  (chat_group_id set) or a single member across groups \
                  (author set), retention prune (before_ts set); filters \
                  compose with AND. MCP twin of the gRPC \
                  EscurelAdmin.DeleteChatHistory.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "chat_group_id": { "type": "string" },
-                        "before_ts": { "type": "string" },
-                        "author": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "admin_list_lanes",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: enumerate the configured LaneStores (name, backend, \
+            json!({
+                "type": "object",
+                "properties": {
+                    "chat_group_id": { "type": "string" },
+                    "before_ts": { "type": "string" },
+                    "author": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "admin_list_lanes",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: enumerate the configured LaneStores (name, backend, \
                  tenants present). MCP twin of EscurelAdmin.AdminListLanes.",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "admin_lane_keys",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: list keys under a prefix in a lane, with byte sizes. \
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "admin_lane_keys",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: list keys under a prefix in a lane, with byte sizes. \
                  MCP twin of EscurelAdmin.AdminLaneKeys.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "lane": { "type": "string", "description": "Lane name; empty = the default `markdown`." },
-                        "prefix": { "type": "string", "description": "Tenant-relative key prefix." },
-                        "limit": { "type": "integer", "minimum": 0, "description": "0 → server default (100)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "admin_lane_blob",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: fetch one blob (base64) from a lane, subject to a \
+            json!({
+                "type": "object",
+                "properties": {
+                    "lane": { "type": "string", "description": "Lane name; empty = the default `markdown`." },
+                    "prefix": { "type": "string", "description": "Tenant-relative key prefix." },
+                    "limit": { "type": "integer", "minimum": 0, "description": "0 → server default (100)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "admin_lane_blob",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: fetch one blob (base64) from a lane, subject to a \
                  1 MiB cap. MCP twin of EscurelAdmin.AdminLaneBlob.",
-                json!({
-                    "type": "object",
-                    "required": ["key"],
-                    "properties": {
-                        "lane": { "type": "string" },
-                        "key": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "add_group_member",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: add a principal `subject` to a custom RBAC group \
+            json!({
+                "type": "object",
+                "required": ["key"],
+                "properties": {
+                    "lane": { "type": "string" },
+                    "key": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "add_group_member",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: add a principal `subject` to a custom RBAC group \
                  `group_id`. Idempotent. Membership is the source of truth \
                  for groups escurel manages; reserved names \
                  (public/owner/admin) are resolved structurally and ignored \
                  if stored.",
-                json!({
-                    "type": "object",
-                    "required": ["group_id", "subject"],
-                    "properties": {
-                        "group_id": { "type": "string", "description": "The group name." },
-                        "subject": { "type": "string", "description": "The principal `sub`." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "remove_group_member",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: remove a principal `subject` from a custom RBAC \
+            json!({
+                "type": "object",
+                "required": ["group_id", "subject"],
+                "properties": {
+                    "group_id": { "type": "string", "description": "The group name." },
+                    "subject": { "type": "string", "description": "The principal `sub`." }
+                }
+            }),
+        ),
+        tool_entry(
+            "remove_group_member",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: remove a principal `subject` from a custom RBAC \
                  group `group_id`. No-op when the row is absent.",
-                json!({
-                    "type": "object",
-                    "required": ["group_id", "subject"],
-                    "properties": {
-                        "group_id": { "type": "string" },
-                        "subject": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "list_group_members",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: list the members of a custom RBAC group, with \
+            json!({
+                "type": "object",
+                "required": ["group_id", "subject"],
+                "properties": {
+                    "group_id": { "type": "string" },
+                    "subject": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "list_group_members",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: list the members of a custom RBAC group, with \
                  grant time + granting admin (audit).",
-                json!({
-                    "type": "object",
-                    "required": ["group_id"],
-                    "properties": {
-                        "group_id": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "register_credential",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: register (or replace) a named external-source \
+            json!({
+                "type": "object",
+                "required": ["group_id"],
+                "properties": {
+                    "group_id": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "register_credential",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: register (or replace) a named external-source \
                  credential a sql_view skill references via \
                  `backend.source.attach`. The secret is stored server-side \
                  and NEVER in the markdown corpus (REQ-SQL-05).",
-                json!({
-                    "type": "object",
-                    "required": ["name", "connector", "secret"],
-                    "properties": {
-                        "name": { "type": "string", "description": "The `attach` name skills reference." },
-                        "connector": { "type": "string", "description": "postgres|mysql|sqlite|erpl|s3|…" },
-                        "secret": { "type": "string", "description": "DSN / secret material (server-side only)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "list_credentials",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: list registered external-source credentials WITHOUT \
+            json!({
+                "type": "object",
+                "required": ["name", "connector", "secret"],
+                "properties": {
+                    "name": { "type": "string", "description": "The `attach` name skills reference." },
+                    "connector": { "type": "string", "description": "postgres|mysql|sqlite|erpl|s3|…" },
+                    "secret": { "type": "string", "description": "DSN / secret material (server-side only)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "list_credentials",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: list registered external-source credentials WITHOUT \
                  their secrets (name, connector, registration audit).",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "delete_credential",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: remove a registered external-source credential by \
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "delete_credential",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: remove a registered external-source credential by \
                  name. No-op when absent.",
-                json!({
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": { "name": { "type": "string" } }
-                }),
-            ),
-            tool_entry(
-                "validate_bindings",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: re-probe every SQL-view binding and report schema \
+            json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": { "name": { "type": "string" } }
+            }),
+        ),
+        tool_entry(
+            "validate_bindings",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: re-probe every SQL-view binding and report schema \
                  drift (binding_degraded) or unreachable sources \
                  (backend_unavailable). Reconciles views ⟂ backend_refs.",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "create_sql_instance",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: materialise a sql_view instance — the binding comes \
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "create_sql_instance",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: materialise a sql_view instance — the binding comes \
                  from the skill's backend.source block (read-only view + \
                  overlay page).",
-                json!({
-                    "type": "object",
-                    "required": ["skill", "id"],
-                    "properties": {
-                        "skill": { "type": "string", "description": "A skill declaring backend.kind=sql_view." },
-                        "id": { "type": "string", "description": "New instance id." },
-                        "overlay_body": { "type": "string", "description": "Optional overlay markdown body." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "register_endpoint",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: register (or replace) a remote-backend endpoint an \
+            json!({
+                "type": "object",
+                "required": ["skill", "id"],
+                "properties": {
+                    "skill": { "type": "string", "description": "A skill declaring backend.kind=sql_view." },
+                    "id": { "type": "string", "description": "New instance id." },
+                    "overlay_body": { "type": "string", "description": "Optional overlay markdown body." }
+                }
+            }),
+        ),
+        tool_entry(
+            "register_endpoint",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: register (or replace) a remote-backend endpoint an \
                  openapi/mcp skill references via `backend.endpoint`. The base \
                  URL + auth secret are stored server-side and NEVER in the \
                  markdown corpus (SSRF / secrets-in-markdown guard).",
-                json!({
-                    "type": "object",
-                    "required": ["name", "kind", "base_url"],
-                    "properties": {
-                        "name": { "type": "string", "description": "The `endpoint` name skills reference." },
-                        "kind": { "type": "string", "enum": ["openapi", "mcp"] },
-                        "base_url": { "type": "string", "description": "REST base URL (openapi) or /mcp URL (mcp)." },
-                        "auth": { "type": "string", "enum": ["none", "bearer", "api_key"], "description": "Default none." },
-                        "auth_header": { "type": "string", "description": "Header name when auth=api_key (default X-API-Key)." },
-                        "secret": { "type": "string", "description": "Bearer/api-key material (server-side only)." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "list_endpoints",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: list registered remote-backend endpoints WITHOUT their \
+            json!({
+                "type": "object",
+                "required": ["name", "kind", "base_url"],
+                "properties": {
+                    "name": { "type": "string", "description": "The `endpoint` name skills reference." },
+                    "kind": { "type": "string", "enum": ["openapi", "mcp"] },
+                    "base_url": { "type": "string", "description": "REST base URL (openapi) or /mcp URL (mcp)." },
+                    "auth": { "type": "string", "enum": ["none", "bearer", "api_key"], "description": "Default none." },
+                    "auth_header": { "type": "string", "description": "Header name when auth=api_key (default X-API-Key)." },
+                    "secret": { "type": "string", "description": "Bearer/api-key material (server-side only)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "list_endpoints",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: list registered remote-backend endpoints WITHOUT their \
                  secrets (name, kind, base_url, auth scheme, audit).",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "delete_endpoint",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: remove a registered remote-backend endpoint by name. \
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "delete_endpoint",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: remove a registered remote-backend endpoint by name. \
                  No-op when absent.",
-                json!({
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": { "name": { "type": "string" } }
-                }),
-            ),
-            tool_entry(
-                "validate_endpoints",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: probe every registered remote-backend endpoint for \
+            json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": { "name": { "type": "string" } }
+            }),
+        ),
+        tool_entry(
+            "validate_endpoints",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: probe every registered remote-backend endpoint for \
                  reachability; an unreachable endpoint's instances read closed.",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "create_remote_instance",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: materialise a remote (openapi/mcp) instance — the \
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "create_remote_instance",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: materialise a remote (openapi/mcp) instance — the \
                  binding comes from the skill's backend block (overlay page + \
                  backend_ref; data is fetched live on expand).",
-                json!({
-                    "type": "object",
-                    "required": ["skill", "id"],
-                    "properties": {
-                        "skill": { "type": "string", "description": "A skill declaring backend.kind=openapi|mcp." },
-                        "id": { "type": "string", "description": "New instance id." },
-                        "overlay_body": { "type": "string", "description": "Optional overlay markdown body." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "write_instance",
-                Execution::Orchestration,
-                Scope::Agent,
-                "Write-back to a remote (openapi/mcp) instance's upstream. \
+            json!({
+                "type": "object",
+                "required": ["skill", "id"],
+                "properties": {
+                    "skill": { "type": "string", "description": "A skill declaring backend.kind=openapi|mcp." },
+                    "id": { "type": "string", "description": "New instance id." },
+                    "overlay_body": { "type": "string", "description": "Optional overlay markdown body." }
+                }
+            }),
+        ),
+        tool_entry(
+            "write_instance",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::READ,
+            "Write-back to a remote (openapi/mcp) instance's upstream. \
                  Gated by the target instance's acl.update; a binding with no \
                  write op is refused.",
-                json!({
-                    "type": "object",
-                    "required": ["ref"],
-                    "properties": {
-                        "ref": { "type": "string", "description": "Target instance id or [[skill::id]]." },
-                        "payload": { "type": "object", "description": "Fields forwarded to the upstream write op." }
-                    }
-                }),
-            ),
-            // Admin tenant-lifecycle + operator tools. All require an
-            // admin-role bearer (JSON-RPC -32001 otherwise) and a
-            // `tenant_id` naming this single-tenant gateway's tenant
-            // (-32002 on a mismatch).
-            tool_entry(
-                "tenant_create",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: provision a tenant (directory + DuckDB file).",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id"],
-                    "properties": {
-                        "tenant_id": { "type": "string" },
-                        "display_name": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "tenant_list",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: list all tenants in the tenant store.",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "tenant_get",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: fetch one tenant's spec.",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id"],
-                    "properties": { "tenant_id": { "type": "string" } }
-                }),
-            ),
-            tool_entry(
-                "tenant_update",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: partial-update a tenant's spec — display_name, status \
+            json!({
+                "type": "object",
+                "required": ["ref"],
+                "properties": {
+                    "ref": { "type": "string", "description": "Target instance id or [[skill::id]]." },
+                    "payload": { "type": "object", "description": "Fields forwarded to the upstream write op." }
+                }
+            }),
+        ),
+        // Admin tenant-lifecycle + operator tools. All require an
+        // admin-role bearer (JSON-RPC -32001 otherwise) and a
+        // `tenant_id` naming this single-tenant gateway's tenant
+        // (-32002 on a mismatch).
+        tool_entry(
+            "tenant_create",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: provision a tenant (directory + DuckDB file).",
+            json!({
+                "type": "object",
+                "required": ["tenant_id"],
+                "properties": {
+                    "tenant_id": { "type": "string" },
+                    "display_name": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "tenant_list",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: list all tenants in the tenant store.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "tenant_get",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: fetch one tenant's spec.",
+            json!({
+                "type": "object",
+                "required": ["tenant_id"],
+                "properties": { "tenant_id": { "type": "string" } }
+            }),
+        ),
+        tool_entry(
+            "tenant_update",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: partial-update a tenant's spec — display_name, status \
                  (active|suspended), quotas, embedding_provider. Changing \
                  embedding_provider requires a rebuild (`rebuild_required` in the \
                  response).",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id"],
-                    "properties": {
-                        "tenant_id": { "type": "string" },
-                        "display_name": { "type": "string" },
-                        "status": { "type": "string", "enum": ["active", "suspended"] },
-                        "quotas": {
-                            "type": "object",
-                            "properties": {
-                                "queries_per_minute": { "type": "integer" },
-                                "writes_per_minute": { "type": "integer" },
-                                "embeds_per_minute": { "type": "integer" },
-                                "concurrent_sessions": { "type": "integer" },
-                                "max_blob_bytes": { "type": "integer" }
-                            }
-                        },
-                        "embedding_provider": {
-                            "type": "object",
-                            "required": ["provider"],
-                            "properties": {
-                                "provider": { "type": "string", "enum": ["zero", "gemini", "embeddinggemma"] },
-                                "model": { "type": "string" },
-                                "dim": { "type": "integer" }
-                            }
+            json!({
+                "type": "object",
+                "required": ["tenant_id"],
+                "properties": {
+                    "tenant_id": { "type": "string" },
+                    "display_name": { "type": "string" },
+                    "status": { "type": "string", "enum": ["active", "suspended"] },
+                    "quotas": {
+                        "type": "object",
+                        "properties": {
+                            "queries_per_minute": { "type": "integer" },
+                            "writes_per_minute": { "type": "integer" },
+                            "embeds_per_minute": { "type": "integer" },
+                            "concurrent_sessions": { "type": "integer" },
+                            "max_blob_bytes": { "type": "integer" }
+                        }
+                    },
+                    "embedding_provider": {
+                        "type": "object",
+                        "required": ["provider"],
+                        "properties": {
+                            "provider": { "type": "string", "enum": ["zero", "gemini", "embeddinggemma"] },
+                            "model": { "type": "string" },
+                            "dim": { "type": "integer" }
                         }
                     }
-                }),
-            ),
-            tool_entry(
-                "tenant_delete",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: delete a tenant and its on-disk state. Destructive — \
+                }
+            }),
+        ),
+        tool_entry(
+            "tenant_delete",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: delete a tenant and its on-disk state. Destructive — \
                  requires `confirm` equal to the tenant id.",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id", "confirm"],
-                    "properties": {
-                        "tenant_id": { "type": "string" },
-                        "confirm": {
-                            "type": "string",
-                            "description": "Must equal tenant_id to proceed."
-                        }
+            json!({
+                "type": "object",
+                "required": ["tenant_id", "confirm"],
+                "properties": {
+                    "tenant_id": { "type": "string" },
+                    "confirm": {
+                        "type": "string",
+                        "description": "Must equal tenant_id to proceed."
                     }
-                }),
-            ),
-            tool_entry(
-                "tenant_export",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: export a tenant's canonical markdown as a base64 \
+                }
+            }),
+        ),
+        tool_entry(
+            "tenant_export",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: export a tenant's canonical markdown as a base64 \
                  tar+gz blob (`tarball_b64` + `bytes`).",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id"],
-                    "properties": { "tenant_id": { "type": "string" } }
-                }),
-            ),
-            tool_entry(
-                "export_pack",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: build a versioned, HMAC-signed skill pack (a \
+            json!({
+                "type": "object",
+                "required": ["tenant_id"],
+                "properties": { "tenant_id": { "type": "string" } }
+            }),
+        ),
+        tool_entry(
+            "export_pack",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: build a versioned, HMAC-signed skill pack (a \
                  deterministic tar+gz of the named skills' pages + a signed \
                  manifest) — the unit of distribution between escurel nodes. \
                  Requires ESCUREL_PACK_SECRET; fails closed on \
                  credential-shaped content.",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id", "id", "version", "vertical", "publisher", "skills"],
-                    "properties": {
-                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
-                        "id": { "type": "string", "description": "Pack identity, e.g. logistics-midmarket." },
-                        "version": { "type": "integer", "description": "Monotonic pack version." },
-                        "vertical": { "type": "string", "description": "The vertical this pack belongs to." },
-                        "publisher": { "type": "string", "description": "Publisher identity, e.g. hub.stuttgart-ai." },
-                        "skills": {
-                            "type": "array", "items": { "type": "string" },
-                            "description": "Skill ids whose pages form the pack subtree."
-                        },
-                        "include_instances": {
-                            "type": "boolean",
-                            "description": "Also bundle each skill's instance pages (edge-case libraries). Default false."
-                        }
+            json!({
+                "type": "object",
+                "required": ["tenant_id", "id", "version", "vertical", "publisher", "skills"],
+                "properties": {
+                    "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                    "id": { "type": "string", "description": "Pack identity, e.g. logistics-midmarket." },
+                    "version": { "type": "integer", "description": "Monotonic pack version." },
+                    "vertical": { "type": "string", "description": "The vertical this pack belongs to." },
+                    "publisher": { "type": "string", "description": "Publisher identity, e.g. hub.stuttgart-ai." },
+                    "skills": {
+                        "type": "array", "items": { "type": "string" },
+                        "description": "Skill ids whose pages form the pack subtree."
+                    },
+                    "include_instances": {
+                        "type": "boolean",
+                        "description": "Also bundle each skill's instance pages (edge-case libraries). Default false."
                     }
-                }),
-            ),
-            tool_entry(
-                "import_pack",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: import a signed skill pack as this tenant's pinned, \
+                }
+            }),
+        ),
+        tool_entry(
+            "import_pack",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: import a signed skill pack as this tenant's pinned, \
                  read-only base layer. Verifies signature + content hash \
                  fail-closed before unpacking; refuses silent version \
                  changes (pack_version_pinned) and cross-vertical mixing \
                  (vertical_mismatch, overridable).",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id", "manifest", "tarball_b64"],
-                    "properties": {
-                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
-                        "manifest": { "type": "object", "description": "The signed pack.manifest.json object." },
-                        "tarball_b64": { "type": "string", "description": "The pack tarball, base64." },
-                        "allow_vertical_mismatch": {
-                            "type": "boolean",
-                            "description": "Explicitly permit subscribing across verticals. Default false."
-                        }
+            json!({
+                "type": "object",
+                "required": ["tenant_id", "manifest", "tarball_b64"],
+                "properties": {
+                    "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                    "manifest": { "type": "object", "description": "The signed pack.manifest.json object." },
+                    "tarball_b64": { "type": "string", "description": "The pack tarball, base64." },
+                    "allow_vertical_mismatch": {
+                        "type": "boolean",
+                        "description": "Explicitly permit subscribing across verticals. Default false."
                     }
-                }),
-            ),
-            tool_entry(
-                "list_packs",
-                Execution::Deterministic,
-                Scope::Admin,
-                "Admin: the subscribed skill packs and their pinned versions.",
-                json!({ "type": "object", "properties": {} }),
-            ),
-            tool_entry(
-                "unsubscribe_pack",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: drop a pack subscription — removes every base page it \
+                }
+            }),
+        ),
+        tool_entry(
+            "list_packs",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: the subscribed skill packs and their pinned versions.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
+            "unsubscribe_pack",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: drop a pack subscription — removes every base page it \
                  landed and the version pin; tenant overlays survive.",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id", "pack_id"],
-                    "properties": {
-                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
-                        "pack_id": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "rebase_pack",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: the reviewed upgrade of a subscribed pack — the only \
+            json!({
+                "type": "object",
+                "required": ["tenant_id", "pack_id"],
+                "properties": {
+                    "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                    "pack_id": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "rebase_pack",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: the reviewed upgrade of a subscribed pack — the only \
                  operation that moves a version pin. Shadow-vs-upstream \
                  conflicts surface as rebase_conflict Issues and block until \
                  acknowledge_conflicts=true; orphaned base pages are removed.",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id", "manifest", "tarball_b64"],
-                    "properties": {
-                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
-                        "manifest": { "type": "object", "description": "The signed manifest of the NEW version." },
-                        "tarball_b64": { "type": "string", "description": "The new version's tarball, base64." },
-                        "acknowledge_conflicts": {
-                            "type": "boolean",
-                            "description": "Apply despite rebase_conflict Issues (the human review). Default false."
-                        },
-                        "dry_run": {
-                            "type": "boolean",
-                            "description": "Plan only: run the full validation + conflict scan, apply nothing, and report {would_import, would_remove}. Default false."
-                        }
+            json!({
+                "type": "object",
+                "required": ["tenant_id", "manifest", "tarball_b64"],
+                "properties": {
+                    "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                    "manifest": { "type": "object", "description": "The signed manifest of the NEW version." },
+                    "tarball_b64": { "type": "string", "description": "The new version's tarball, base64." },
+                    "acknowledge_conflicts": {
+                        "type": "boolean",
+                        "description": "Apply despite rebase_conflict Issues (the human review). Default false."
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Plan only: run the full validation + conflict scan, apply nothing, and report {would_import, would_remove}. Default false."
                     }
-                }),
-            ),
-            tool_entry(
-                "submit_promotion",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin/curator: propose a scrubbed pack candidate from this \
+                }
+            }),
+        ),
+        tool_entry(
+            "submit_promotion",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin/curator: propose a scrubbed pack candidate from this \
                  node's own promotable skills (the L2→L3 harvest). Default-deny: \
                  skills-only, curator-marked `promotable: true`, tenant-authored; \
                  fail-closed on credential-shaped content; emits an immutable \
                  audit event. A hub curator reviews + publishes deliberately.",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id", "candidate_id", "vertical", "skills"],
-                    "properties": {
-                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
-                        "candidate_id": { "type": "string", "description": "Candidate pack identity for hub review." },
-                        "vertical": { "type": "string", "description": "The vertical the candidate belongs to." },
-                        "skills": {
-                            "type": "array", "items": { "type": "string" },
-                            "description": "Promotable skill ids to harvest."
-                        }
+            json!({
+                "type": "object",
+                "required": ["tenant_id", "candidate_id", "vertical", "skills"],
+                "properties": {
+                    "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                    "candidate_id": { "type": "string", "description": "Candidate pack identity for hub review." },
+                    "vertical": { "type": "string", "description": "The vertical the candidate belongs to." },
+                    "skills": {
+                        "type": "array", "items": { "type": "string" },
+                        "description": "Promotable skill ids to harvest."
                     }
-                }),
-            ),
-            tool_entry(
-                "tenant_import",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: import a tenant's markdown from a base64 tar+gz blob \
+                }
+            }),
+        ),
+        tool_entry(
+            "tenant_import",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: import a tenant's markdown from a base64 tar+gz blob \
                  into an existing tenant; returns `bytes_imported`.",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id", "tarball_b64"],
-                    "properties": {
-                        "tenant_id": { "type": "string" },
-                        "tarball_b64": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "rebuild",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: rebuild the tenant's index from canonical markdown; \
+            json!({
+                "type": "object",
+                "required": ["tenant_id", "tarball_b64"],
+                "properties": {
+                    "tenant_id": { "type": "string" },
+                    "tarball_b64": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "rebuild",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: rebuild the tenant's index from canonical markdown; \
                  returns the final `{done, total}` page counts.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." }
-                    }
-                }),
-            ),
-            tool_entry(
-                "compact_lanes",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: compact the tenant's CRDT op lanes; returns \
+            json!({
+                "type": "object",
+                "properties": {
+                    "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." }
+                }
+            }),
+        ),
+        tool_entry(
+            "compact_lanes",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: compact the tenant's CRDT op lanes; returns \
                  `{ops_compacted, bytes_reclaimed}`.",
-                json!({
-                    "type": "object",
-                    "required": ["tenant_id"],
-                    "properties": { "tenant_id": { "type": "string" } }
-                }),
-            ),
-            tool_entry(
-                "publish_snapshot",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: trigger a DuckLake publish of this writer's current \
+            json!({
+                "type": "object",
+                "required": ["tenant_id"],
+                "properties": { "tenant_id": { "type": "string" } }
+            }),
+        ),
+        tool_entry(
+            "publish_snapshot",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: trigger a DuckLake publish of this writer's current \
                  index state, then prune old snapshots down to \
                  `ESCUREL_SNAPSHOT_KEEP`. A no-op (`skipped: true`) when \
                  nothing changed since the last publish. Unavailable on a \
                  non-ducklake gateway or a ducklake reader replica.",
-                json!({
-                    "type": "object",
-                    "properties": {}
-                }),
-            ),
-            tool_entry(
-                "attach_external",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: attach an external read-only DuckDB source; the \
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+        ),
+        tool_entry(
+            "attach_external",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: attach an external read-only DuckDB source; the \
                  catalog alias is derived from `source_url` and returned as \
                  `source_id`.",
-                json!({
-                    "type": "object",
-                    "required": ["source_url"],
-                    "properties": {
-                        "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
-                        "source_url": { "type": "string" }
-                    }
-                }),
-            ),
-            tool_entry(
-                "embedding_reload",
-                Execution::Orchestration,
-                Scope::Admin,
-                "Admin: hot-reload the embedding model from the captured \
+            json!({
+                "type": "object",
+                "required": ["source_url"],
+                "properties": {
+                    "tenant_id": { "type": "string", "description": "Must match this gateway's tenant." },
+                    "source_url": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
+            "embedding_reload",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: hot-reload the embedding model from the captured \
                  config; returns the new `model_revision`.",
-                json!({ "type": "object", "properties": {} }),
-            ),
-        ]
+            json!({ "type": "object", "properties": {} }),
+        ),
+    ]
+}
+
+pub(super) fn tools_list_payload() -> Value {
+    json!({ "tools": tool_defs().into_iter().map(|d| d.value).collect::<Vec<_>>() })
+}
+
+/// Tools a reader replica must refuse outright: they write the LOCAL index,
+/// so the write is either discarded at the next hot-swap or never reaches the
+/// writer. Derived from [`Touches::writes_index`].
+#[cfg(test)]
+pub(crate) fn writes_index_tools() -> &'static std::collections::HashSet<&'static str> {
+    static SET: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        tool_defs()
+            .iter()
+            .filter(|d| d.touches.writes_index)
+            .map(|d| d.name)
+            .collect()
     })
+}
+
+/// What one tool touches, by name. `None` for an unknown name.
+///
+/// The single lookup both reader-replica gates use, so neither can consult a
+/// list the tool itself did not declare.
+pub(crate) fn touches_of(name: &str) -> Option<Touches> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<&'static str, Touches>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| tool_defs().iter().map(|d| (d.name, d.touches)).collect())
+        .get(name)
+        .copied()
+}
+
+/// Tools that touch `surface` — read or write. A reader may serve these only
+/// while the matching shared backend is attached. Derived from
+/// [`Touches::surface`]. Test-only, for the same reason as
+/// [`writes_index_tools`].
+#[cfg(test)]
+pub(crate) fn surface_tools(surface: Surface) -> Vec<&'static str> {
+    tool_defs()
+        .iter()
+        .filter(|d| d.touches.surface == Some(surface))
+        .map(|d| d.name)
+        .collect()
 }
 
 /// Whether a tool's result is reproducible compute or a step that advances
@@ -1608,13 +1736,89 @@ fn output_schema_for(name: &str) -> Option<Value> {
     })
 }
 
+/// The shared backend a tool reads or writes, when it uses one.
+///
+/// A reader replica may serve these only while the matching backend is
+/// attached — without the attach even a READ hits a table that is not there,
+/// which is why membership is about *touching* the surface, not about writing
+/// it. `list_drafts` is as gated as `create_draft`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Surface {
+    Chat,
+    Events,
+    Drafts,
+    Crdt,
+}
+
+/// What a tool touches beyond reading the local index.
+///
+/// Two independent facts, which is the whole reason this exists. They were
+/// six hand-kept name lists in `mcp.rs` — `READ_ONLY_REPLICA_TOOLS` plus one
+/// per shared surface — and a tool that does both had to be remembered into
+/// two of them. Three were (`promote_draft`, `promote_changeset`,
+/// `discard_changeset`); `start_operation` was remembered into neither and
+/// reported success on a reader while its run board evaporated at the next
+/// hot-swap.
+///
+/// Declared here as a required argument for the same reason [`Execution`] and
+/// [`Scope`] are: a required argument makes forgetting impossible, where a
+/// list makes it silent. Every one of those six lists is now derived from
+/// this, so they cannot disagree with each other or with the tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Touches {
+    /// Writes the LOCAL index, so a reader replica can never serve it: the
+    /// write is either discarded at the next hot-swap or never reaches the
+    /// writer at all.
+    pub writes_index: bool,
+    /// The shared backend this tool reads or writes, if any.
+    pub surface: Option<Surface>,
+}
+
+impl Touches {
+    /// Reads the local index and nothing else.
+    pub const READ: Self = Self {
+        writes_index: false,
+        surface: None,
+    };
+    /// Writes the local index; no shared surface.
+    pub const INDEX: Self = Self {
+        writes_index: true,
+        surface: None,
+    };
+    /// Reads or writes a shared surface, without writing the local index.
+    pub const fn shared(surface: Surface) -> Self {
+        Self {
+            writes_index: false,
+            surface: Some(surface),
+        }
+    }
+    /// Writes the local index AND touches a shared surface — the case that
+    /// needed remembering into two lists.
+    pub const fn index_and(surface: Surface) -> Self {
+        Self {
+            writes_index: true,
+            surface: Some(surface),
+        }
+    }
+}
+
+/// One advertised tool: its `tools/list` entry plus the facts dispatch needs
+/// about it. Built by [`tool_entry`], consumed by [`tools_list_payload`] and
+/// by the derived gate sets.
+pub(crate) struct ToolDef {
+    pub name: &'static str,
+    pub value: Value,
+    pub touches: Touches,
+}
+
 fn tool_entry(
-    name: &str,
+    name: &'static str,
     execution: Execution,
     scope: Scope,
+    touches: Touches,
     description: &str,
     input_schema: Value,
-) -> Value {
+) -> ToolDef {
     let mut entry = json!({
         "name": name,
         "description": description,
@@ -1633,7 +1837,11 @@ fn tool_entry(
     if let Some(os) = output_schema_for(name) {
         entry["outputSchema"] = os;
     }
-    entry
+    ToolDef {
+        name,
+        value: entry,
+        touches,
+    }
 }
 
 /// [`tools_list_payload`] filtered for the caller's role: an agent-role

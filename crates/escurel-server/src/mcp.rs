@@ -593,74 +593,6 @@ fn is_rejected_payload(tool: &str, payload: &Value) -> bool {
         && payload.get("dry_run") != Some(&Value::Bool(true))
 }
 
-/// Mutating tool surface a ducklake reader must reject (DuckLake PR 6):
-/// each of these writes into the SERVING index, which on a reader is a
-/// throwaway in-memory copy adopted from the lake (`adopt_lake`) — any
-/// write here is either silently discarded on the next `RefreshTask`
-/// hot-swap or, worse, never reaches the writer/lake at all. The writer
-/// is the only mutation path; a reader is read-only by construction.
-const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
-    "update_page",
-    // `promote_draft` IS an `update_page` — it re-enters that handler with
-    // the draft's bytes. It therefore belongs in this bucket and not merely
-    // behind the drafts gate: on a reader with a shared drafts table the
-    // gate would pass and the page write would land in a throwaway index.
-    // Creating and discarding drafts stay servable there; only the landing
-    // is writer-only.
-    "promote_draft",
-    // The changeset verbs are the same argument one level up, and were
-    // missed when they were added: `promote_changeset` calls
-    // `tool_promote_draft` per member, which calls `tool_update_page`, and
-    // `discard_changeset` closes its members in the shared drafts table.
-    // Both are WORSE than the single-draft case on a reader, because the
-    // members are marked decided in the SHARED table — so the writer never
-    // re-offers them — while the page writes are discarded at the next
-    // hot-swap. An approved changeset then reports success, lands nowhere,
-    // and cannot be re-promoted.
-    "promote_changeset",
-    "discard_changeset",
-    // `merge_branch` IS a sequence of `update_page`/`delete_page` calls, so
-    // it belongs here for the same reason `promote_draft` does. Opening and
-    // abandoning a branch mutate only the registry, but a reader has no
-    // writer to hand the merge to afterwards — an isolated workspace it
-    // cannot land is a workspace nobody should be able to open there either.
-    "create_branch",
-    "merge_branch",
-    "abandon_branch",
-    "delete_page",
-    "move_page",
-    "purge_page",
-    // `start_operation` stamps its run board with `update_page_as`, so on a
-    // reader it answers `{status:"pending"}` and the board evaporates at the
-    // next hot-swap — a caller is told the operation started and nothing
-    // ever runs it.
-    "start_operation",
-    "rebuild",
-    "compact_lanes",
-    "import_pack",
-    "rebase_pack",
-    "unsubscribe_pack",
-    "submit_promotion",
-    "attach_external",
-    "add_group_member",
-    "remove_group_member",
-    "register_credential",
-    "delete_credential",
-    // A reader has no local mutation surface to publish FROM (it only
-    // ever adopts). "retry against the writer" is the exact correct
-    // guidance here, so `publish_snapshot` reuses this bucket rather
-    // than a bespoke reader-side error (DuckLake PR 7).
-    "publish_snapshot",
-    "create_sql_instance",
-    "register_endpoint",
-    "delete_endpoint",
-    "create_remote_instance",
-    "tenant_create",
-    "tenant_update",
-    "tenant_delete",
-    "tenant_import",
-];
-
 /// Tool surface a ducklake reader must reject outright when the
 /// deployment has no relevant shared backend attached. This static list
 /// is now EMPTY of CRDT/session tools — DuckLake PR 10 (Phase B) moved
@@ -672,76 +604,6 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
 /// comments below can keep referring to it by name.
 const UNSUPPORTED_ON_REPLICA_TOOLS: &[&str] = &[];
 
-/// The chat tool surface `dispatch_tools_call`'s dynamic reader gate
-/// covers — split out from [`UNSUPPORTED_ON_REPLICA_TOOLS`] (and, for
-/// `admin_delete_chat_history`, out of [`READ_ONLY_REPLICA_TOOLS`])
-/// because whether they're servable depends on the CURRENT indexer's
-/// chat backend, not just `state.reader_mode` (DuckLake PR 8). The GDPR
-/// delete path deliberately gets the same treatment as append/list: on
-/// the shared attached-Postgres table a delete from ANY replica removes
-/// the rows for every replica (same physical table), so there is no
-/// reason to force it through the writer once chat is re-homed.
-const CHAT_TOOLS: &[&str] = &[
-    "append_message",
-    "list_messages",
-    "admin_delete_chat_history",
-];
-
-/// The events tool surface `dispatch_tools_call`'s dynamic reader gate
-/// covers (DuckLake PR 9, Phase B) — mirrors [`CHAT_TOOLS`] exactly:
-/// reader-rejected only when the CURRENT indexer has no shared events
-/// backend attached (see [`escurel_index::Indexer::has_shared_events`]).
-const EVENTS_TOOLS: &[&str] = &["capture_event", "assign_event", "list_events", "list_inbox"];
-
-/// The held-write surface, gated exactly like [`EVENTS_TOOLS`]: a replica
-/// serves it only when the CURRENT indexer has a SHARED drafts table
-/// attached. A `Local` drafts table on a pod with no persistent volume is a
-/// review queue that empties itself on rollout — refusing the surface is the
-/// honest answer, and the one an operator notices.
-const DRAFTS_TOOLS: &[&str] = &[
-    "create_draft",
-    "list_drafts",
-    "diff_draft",
-    "promote_draft",
-    "discard_draft",
-    "list_changesets",
-    "promote_changeset",
-    "discard_changeset",
-];
-
-/// The CRDT/session tool surface `dispatch_tools_call`'s dynamic reader
-/// gate covers (DuckLake PR 10, Phase B) — mirrors [`CHAT_TOOLS`] /
-/// [`EVENTS_TOOLS`] exactly: reader-rejected only when the CURRENT
-/// indexer has no shared CRDT backend attached (see
-/// [`escurel_index::Indexer::has_shared_crdt`]).
-///
-/// Gated on the INDEXER's `has_shared_crdt` for all of them, including
-/// the three session ones (`open_session`/`apply_op`/`close_session`,
-/// which route through `state.crdt_backend`, not the indexer) — both
-/// seams are attached from the SAME `catalog_dsn` at the SAME boot step
-/// (`EscurelConfig::build`'s `is_pg_catalog()` branch), so they always
-/// agree; checking the indexer keeps this list's shape identical to
-/// [`CHAT_TOOLS`]/[`EVENTS_TOOLS`] rather than inventing a second style
-/// of dynamic check just for these three tools.
-///
-/// Scope note: this makes the durable STORAGE (`crdt_ops`/
-/// `crdt_snapshots`) reachable from every replica — it does NOT give a
-/// live editing session cross-replica failover. `SessionManager` still
-/// runs one `LiveDoc` actor per page in-process; a session opened on
-/// replica A and continued on replica B is not the same actor. What this
-/// buys a reader: `list_snapshots` works for any page (even one whose
-/// history was written by the writer or another reader), and a session
-/// opened fresh on any replica loads correct history from the shared
-/// table. Ingress affinity for a live session is a documented future
-/// follow-up, not built here.
-const CRDT_TOOLS: &[&str] = &[
-    "open_session",
-    "apply_op",
-    "close_session",
-    "list_snapshots",
-    "list_op_authors",
-];
-
 /// Tool surfaces a Ducklake reader may serve only when the current indexer
 /// has the matching shared backend attached, paired with the probe that
 /// answers "is it attached?".
@@ -752,13 +614,19 @@ const CRDT_TOOLS: &[&str] = &[
 ///
 /// The pair is named rather than written inline so the constant reads as
 /// "a list of gates" instead of a nested tuple type.
-type SharedSurfaceGate = (&'static [&'static str], fn(&Indexer) -> bool);
+type SharedSurfaceProbe = (schema::Surface, fn(&Indexer) -> bool);
 
-const SHARED_SURFACE_GATES: &[SharedSurfaceGate] = &[
-    (CHAT_TOOLS, Indexer::has_shared_chat),
-    (EVENTS_TOOLS, Indexer::has_shared_events),
-    (DRAFTS_TOOLS, Indexer::has_shared_drafts),
-    (CRDT_TOOLS, Indexer::has_shared_crdt),
+/// Which probe answers "is this shared backend attached?" for each surface.
+///
+/// Only the probe lives here now. Tool MEMBERSHIP comes from each tool's own
+/// `Touches` declaration in the registry, so adding a tool to a shared
+/// surface is one argument at its definition rather than a name remembered
+/// into a list in this file.
+const SHARED_SURFACE_PROBES: &[SharedSurfaceProbe] = &[
+    (schema::Surface::Chat, Indexer::has_shared_chat),
+    (schema::Surface::Events, Indexer::has_shared_events),
+    (schema::Surface::Drafts, Indexer::has_shared_drafts),
+    (schema::Surface::Crdt, Indexer::has_shared_crdt),
 ];
 
 async fn dispatch_tools_call(
@@ -777,8 +645,9 @@ async fn dispatch_tools_call(
     // surface and the chat/CRDT/session/event tool surface EARLY —
     // before any tool-specific handler runs, before the indexer/session
     // routing below — with a typed error naming which bucket applies.
+    let touches = schema::touches_of(&params.name);
     if state.reader_mode {
-        if READ_ONLY_REPLICA_TOOLS.contains(&params.name.as_str()) {
+        if touches.is_some_and(|t| t.writes_index) {
             return Err(JsonRpcError::read_only_replica(params.name.clone()));
         }
         if UNSUPPORTED_ON_REPLICA_TOOLS.contains(&params.name.as_str()) {
@@ -802,13 +671,15 @@ async fn dispatch_tools_call(
     // the chat gate above exactly". They did, which is why they are a table:
     // a fourth shared surface is now one row rather than a fourth copy, and
     // the three cannot drift apart while claiming not to.
-    if state.reader_mode {
-        for (tools, has_shared) in SHARED_SURFACE_GATES {
-            if tools.contains(&params.name.as_str())
-                && !current_indexer.as_deref().is_some_and(has_shared)
-            {
-                return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
-            }
+    if state.reader_mode
+        && let Some(surface) = touches.and_then(|t| t.surface)
+    {
+        let attached = SHARED_SURFACE_PROBES
+            .iter()
+            .find(|(s, _)| *s == surface)
+            .is_some_and(|(_, probe)| current_indexer.as_deref().is_some_and(probe));
+        if !attached {
+            return Err(JsonRpcError::unsupported_on_replica(params.name.clone()));
         }
     }
 
@@ -2137,22 +2008,55 @@ mod registry_conformance {
     /// writes are discarded at the next hot-swap. An approved changeset then
     /// reports success and lands nowhere, with no way to re-promote it.
     ///
-    /// Named explicitly rather than derived, because deriving the list from
-    /// the registry is the follow-up change and this must fail first.
+    /// Every tool that writes the local index is refused on a reader replica.
+    ///
+    /// This used to require remembering a name into `READ_ONLY_REPLICA_TOOLS`,
+    /// and three tools were missing: `start_operation`, `promote_changeset`
+    /// and `discard_changeset`. The list is now derived from each tool's own
+    /// `Touches` declaration, so the only way to be absent from it is to
+    /// declare that you do not write — a visible claim at the definition site
+    /// rather than a silent omission in a list two files away.
+    ///
+    /// What is left to pin is the derivation itself: that the gate consults
+    /// the registry, and that the tools we know write are in it.
     #[test]
     fn every_writing_tool_is_refused_on_a_reader_replica() {
-        let missing: Vec<&str> = [
+        let gated = super::schema::writes_index_tools();
+        for t in [
+            "update_page",
+            "delete_page",
+            "promote_draft",
             "start_operation",
             "promote_changeset",
             "discard_changeset",
-        ]
-        .into_iter()
-        .filter(|t| !super::READ_ONLY_REPLICA_TOOLS.contains(t))
-        .collect();
+        ] {
+            assert!(gated.contains(t), "`{t}` writes but is not reader-gated");
+        }
+        for t in ["search", "expand", "list_skills", "list_drafts"] {
+            assert!(!gated.contains(t), "`{t}` only reads but is reader-gated");
+        }
+    }
+
+    /// A tool that touches a shared surface is declared once, at the tool.
+    ///
+    /// The four surface lists were hand-kept and carried READS as well as
+    /// writes — `list_drafts` is as gated as `create_draft`, because without
+    /// the attach even the read hits a table that is not there. That is why
+    /// the axis is separate from `writes_index` rather than folded into it,
+    /// and why three tools had to appear in two lists at once.
+    #[test]
+    fn shared_surface_membership_is_declared_at_the_tool() {
+        use super::schema::{Surface, surface_tools};
+        let drafts = surface_tools(Surface::Drafts);
+        assert!(drafts.contains(&"create_draft"), "write member missing");
+        assert!(drafts.contains(&"list_drafts"), "READ member missing");
         assert!(
-            missing.is_empty(),
-            "these tools write but are not refused on a reader replica: {missing:?}"
+            surface_tools(Surface::Events).contains(&"capture_event"),
+            "events member missing"
         );
+        // The overlap case: writes the index AND touches a shared surface.
+        let t = super::schema::touches_of("promote_draft").expect("declared");
+        assert!(t.writes_index && t.surface == Some(Surface::Drafts));
     }
 
     #[test]
