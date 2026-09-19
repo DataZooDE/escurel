@@ -312,11 +312,16 @@ async fn acl_denies_non_owner_on_owner_private_target() {
 /// A query page whose SQL runs effectively forever on any real engine: a
 /// three-way cross join over a generated range, aggregated so nothing can be
 /// streamed out early.
+/// A deliberately runaway query. It cross-joins its target with three
+/// four-million-row ranges, so it names `{{target}}` — which `substitute_target`
+/// now requires — while still being unfinishable. The earlier fixture omitted
+/// the placeholder entirely, which is exactly the shape that is refused before
+/// execution now, and would have left this test asserting nothing.
 const QUERY_RUNAWAY: (&str, &str) = (
     "markdown/instances/query/runaway.md",
     "---\ntype: instance\nskill: query\nid: runaway\n\
      target: \"[[sales::eu]]\"\n\
-     sql: \"SELECT COUNT(*)::BIGINT AS n FROM range(4000000) a, range(4000000) b, range(4000000) c\"\n\
+     sql: \"SELECT COUNT(*)::BIGINT AS n FROM {{target}} t, range(4000000) a, range(4000000) b, range(4000000) c\"\n\
      ---\n# runaway\n",
 );
 

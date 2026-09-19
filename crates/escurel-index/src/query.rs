@@ -119,6 +119,12 @@ pub enum QueryError {
     #[error("[[query::{id}]] declares no `target` instance (query_instance requires one)")]
     MissingTarget { id: String },
 
+    #[error(
+        "[[query::{id}]] `sql` never names `{{{{target}}}}` — a statement that does not \
+         use the target it was authorised against cannot run"
+    )]
+    MissingTargetPlaceholder { id: String },
+
     #[error("[[query::{id}]] target {target} does not resolve to an instance in this tenant")]
     TargetNotFound { id: String, target: String },
 
@@ -648,6 +654,24 @@ fn execute_bound_query(
 /// identifier-position substitution permitted, so any other `{{…}}` token is
 /// rejected rather than silently left in the SQL.
 fn substitute_target(sql: &str, view: &str, id: &str) -> Result<String, QueryError> {
+    // The placeholder is REQUIRED.
+    //
+    // `query_instance` authorises a caller to read ONE instance's managed
+    // view and then substitutes it here. A statement that never names the
+    // placeholder was authorised against a target it does not use — and
+    // `str::replace` on an absent needle is the identity, so such a statement
+    // ran verbatim on the indexer's own connection: the one carrying
+    // `external_credentials` (plaintext DSNs) and every attach. The ACL check
+    // upstream was real; it was simply about a different thing than the SQL
+    // touched.
+    //
+    // Deliberately "at least once" rather than "exactly once": a self-join
+    // over the target view names it twice, which is a legitimate query, and
+    // every occurrence resolves to the same allow-listed view — so a second
+    // mention grants nothing the first did not.
+    if !sql.contains("{{target}}") {
+        return Err(QueryError::MissingTargetPlaceholder { id: id.to_owned() });
+    }
     let replaced = sql.replace("{{target}}", view);
     if let Some(pos) = replaced.find("{{") {
         let placeholder: String = replaced[pos..].chars().take(32).collect();
@@ -878,5 +902,56 @@ mod temporal_tests {
         assert_eq!(interval_to_iso8601(14, 0, 0), "P14M");
         // Sub-second fraction, trailing zeros trimmed.
         assert_eq!(interval_to_iso8601(0, 0, 500_000_000), "PT0.5S");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `sql:` that never names `{{target}}` must be refused.
+    ///
+    /// `query_instance` authorises a caller to read ONE instance's managed
+    /// view, and then substitutes that view into the placeholder. A statement
+    /// with no placeholder was authorised against a target it never uses —
+    /// and `str::replace` on an absent needle is the identity, so it ran
+    /// verbatim on the indexer's own connection: the one carrying
+    /// `external_credentials` and every attach.
+    #[test]
+    fn sql_that_never_names_its_target_is_refused() {
+        let r = substitute_target("SELECT secret FROM external_credentials", "vw_x", "q1");
+        assert!(
+            r.is_err(),
+            "a statement that never names its target was authorised against nothing"
+        );
+    }
+
+    /// The ordinary case still works.
+    #[test]
+    fn the_target_placeholder_is_substituted() {
+        let out = substitute_target("SELECT * FROM {{target}}", "vw_deal__acme", "q1")
+            .expect("one placeholder is the normal shape");
+        assert_eq!(out, "SELECT * FROM vw_deal__acme");
+    }
+
+    /// Repeating it is legitimate and must keep working: a self-join over the
+    /// target view names it twice, and both occurrences resolve to the same
+    /// allow-listed view, so a second mention grants nothing a first did not.
+    #[test]
+    fn naming_the_target_twice_is_allowed() {
+        let out = substitute_target(
+            "SELECT a.id FROM {{target}} a JOIN {{target}} b ON a.id = b.parent",
+            "vw_deal__acme",
+            "q1",
+        )
+        .expect("a self-join over the target is a legitimate query");
+        assert_eq!(out.matches("vw_deal__acme").count(), 2);
+    }
+
+    /// Any OTHER placeholder is still a hard error, unchanged.
+    #[test]
+    fn an_unknown_placeholder_is_still_refused() {
+        let r = substitute_target("SELECT * FROM {{target}} WHERE x = {{oops}}", "vw_x", "q1");
+        assert!(matches!(r, Err(QueryError::UnknownPlaceholder { .. })));
     }
 }
