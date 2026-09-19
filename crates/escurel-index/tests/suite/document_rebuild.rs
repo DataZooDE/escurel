@@ -150,10 +150,17 @@ async fn audit_documents_detects_missing_blob() {
 }
 
 #[tokio::test]
-async fn rebuild_reclaims_orphan_blobs() {
-    // A canonical blob with no overlay referencing it (e.g. materialise failed
-    // after promotion, or the instance was deleted) is dead weight on the host
-    // volume. rebuild reclaims it; a blob a live instance references is kept.
+async fn reclaim_is_explicit_and_rebuild_does_not_do_it() {
+    // A canonical blob with no overlay referencing it (a materialise that
+    // failed after promotion, or a deleted instance) is dead weight. Reclaim
+    // removes it and keeps anything a live instance references.
+    //
+    // The contract this pins is that `rebuild` does NOT do it. Reclaim used
+    // to run at the end of every rebuild, which is what turned an emptied
+    // index into deleted source-of-truth bytes: a rebuild that indexed
+    // nothing makes every blob look unreferenced. The referenced-set is only
+    // authoritative when the index is known good, and only a person knows
+    // that — so reclaim is an explicit operator command.
     let store_dir = TempDir::new().unwrap();
     let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
     let db = TempDir::new().unwrap();
@@ -199,12 +206,23 @@ async fn rebuild_reclaims_orphan_blobs() {
     i.rebuild().await.expect("rebuild");
 
     assert!(
+        store.get_blob(TENANT, &orphan).await.is_ok(),
+        "rebuild must NOT delete blobs — an index it just rebuilt is not \
+         evidence that the referenced-set is authoritative"
+    );
+
+    let reclaimed = escurel_index::backend::reclaim_orphan_blobs(&i)
+        .await
+        .expect("explicit reclaim");
+    assert_eq!(reclaimed, 1, "the explicit pass reclaims the orphan");
+
+    assert!(
         store.get_blob(TENANT, &orphan).await.is_err(),
-        "rebuild must reclaim the orphan blob"
+        "the explicit reclaim must remove the orphan blob"
     );
     assert!(
         store.get_blob(TENANT, &kept).await.is_ok(),
-        "rebuild must retain a referenced blob"
+        "the explicit reclaim must retain a referenced blob"
     );
     // The healthy instance still round-trips after the reclaim pass.
     assert!(i.expand(&page_id, None, None).await.unwrap().is_some());

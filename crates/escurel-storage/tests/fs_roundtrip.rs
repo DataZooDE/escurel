@@ -242,3 +242,39 @@ async fn fs_store_satisfies_the_lane_store_contract() {
     let (store, _dir) = store_and_dir();
     conformance::run_lane_store_conformance(&store, "fs").await;
 }
+
+/// An unreachable store must not read as an empty one.
+///
+/// `list` returning `Ok(vec![])` is taken as authoritative by destructive
+/// callers — `Indexer::rebuild` truncates the index against it. So "the store
+/// was reachable and there is nothing" and "I could not tell" have to be
+/// different answers. The store root is what distinguishes them: it is
+/// created at provisioning, so its absence means the volume is not mounted,
+/// not that the tenant is new.
+#[tokio::test]
+async fn list_on_an_unreachable_store_is_an_error_not_an_empty_listing() {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path().join("never-provisioned");
+    let store = FsStore::new(root);
+
+    let err = store
+        .list(&k("acme", "markdown/"))
+        .await
+        .expect_err("an absent store root must not read as an empty tenant");
+    assert!(
+        matches!(err, StoreError::Io(_)),
+        "expected an io error naming the missing root, got {err:?}"
+    );
+}
+
+/// The control: a provisioned store with a tenant that has written nothing
+/// is genuinely empty, and must still say so.
+#[tokio::test]
+async fn list_on_a_provisioned_store_with_a_new_tenant_is_empty() {
+    let (store, _dir) = store_and_dir();
+    let keys = store
+        .list(&k("brand-new", "markdown/"))
+        .await
+        .expect("a provisioned store with no writes for this tenant is empty, not an error");
+    assert!(keys.is_empty());
+}

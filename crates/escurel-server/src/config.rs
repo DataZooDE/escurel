@@ -32,7 +32,7 @@
 //! | `ESCUREL_WEBHOOK_SECRET` | — | shared secret; when set the webhook body is HMAC-SHA256-signed via `X-Escurel-Webhook-Signature: sha256=<hex>` |
 //! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
 //! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
-//! | `ESCUREL_REBUILD_INDEX_ON_BOOT` | `if-missing` | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent) or `always` (drop + rebuild from the markdown LaneStore each start; the container default — HNSW-persistence-reload workaround) |
+//! | `ESCUREL_REBUILD_INDEX_ON_BOOT` | `if-missing` | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent, and the default everywhere including the container) or `always` (drop + rebuild from the markdown LaneStore each start — re-embeds the whole corpus, so expect minutes) |
 //! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs`, `s3`, `gcs` or `duckvfs` |
 //! | `ESCUREL_STORAGE_DUCKVFS_ROOT` | — | root URL, e.g. `gdrive://escurel/lanes` (backend=duckvfs); its scheme picks the filesystem |
 //! | `ESCUREL_STORAGE_DUCKVFS_EXTENSION` | — | path to a built `gdrive.duckdb_extension` (backend=duckvfs); needed for every scheme, not only `gdrive://`. Prefer `…_EXTENSION_REPO` — a path is a local build a container does not have |
@@ -375,6 +375,14 @@ impl From<SnapshotError> for ConfigError {
             // `SingleFileStore::open`; the server grows a lake config
             // surface in a later PR (5-6). Mapped mechanically so the
             // conversion stays total.
+            // A publish refusal is a runtime guard, not a boot failure —
+            // unreachable from an IndexStore open. Mapped so the conversion
+            // stays total.
+            SnapshotError::RefusedEmptyPublish { lake_pages } => ConfigError::InvalidValue {
+                var: "ESCUREL_LAKE",
+                value: lake_pages.to_string(),
+                reason: "refused to publish an empty corpus over a populated lake",
+            },
             SnapshotError::InvalidLakeConfig(value) => ConfigError::InvalidValue {
                 var: "ESCUREL_LAKE",
                 value,
