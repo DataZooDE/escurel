@@ -594,3 +594,64 @@ async fn nothing_that_ignores_branches_changes() {
         "an unregistered author-stamped overlay still reads as one: {legacy_body:?}"
     );
 }
+
+/// An agent sees its OWN branches, not every branch in the tenant.
+///
+/// `tool_list_branches` took `_caller: AclCaller<'_>` — underscore-prefixed,
+/// deliberately unused — and returned the whole registry to anyone. Branch
+/// names are the finding: by the repo's own convention they read like
+/// `agent/acme-renegotiation`, so the listing disclosed what other agents
+/// were working on, and on whose records, without reading a single page.
+///
+/// The registry already records an `author` per branch, which is the scope
+/// drafts use. Admin still sees everything.
+#[tokio::test]
+async fn an_agent_sees_only_the_branches_it_authored() {
+    let p = start().await;
+    let alice = p.mint_token_with_groups(TENANT, "agent:alice", &[], false);
+    let bob = p.mint_token_with_groups(TENANT, "agent:bob", &[], false);
+
+    let mine = call(
+        &p,
+        &alice,
+        "create_branch",
+        json!({ "name": "agent/alice-workspace" }),
+    )
+    .await;
+    assert!(
+        mine["ok"] == json!(true),
+        "premise: alice opens a branch: {mine}"
+    );
+
+    let theirs = call(
+        &p,
+        &bob,
+        "create_branch",
+        json!({ "name": "agent/bob-acme-renegotiation" }),
+    )
+    .await;
+    assert!(
+        theirs["ok"] == json!(true),
+        "premise: bob opens a branch: {theirs}"
+    );
+
+    let listed = call(&p, &alice, "list_branches", json!({})).await;
+    let names: Vec<String> = listed["branches"]
+        .as_array()
+        .expect("branches array")
+        .iter()
+        .filter_map(|b| b["name"].as_str().map(str::to_owned))
+        .collect();
+
+    assert!(
+        names.iter().any(|n| n == "agent/alice-workspace"),
+        "alice must see her own branch: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "agent/bob-acme-renegotiation"),
+        "alice must NOT see bob's branch — the name alone says what he is \
+         working on and for whom: {names:?}"
+    );
+
+    p.shutdown().await;
+}

@@ -738,8 +738,10 @@ async fn dispatch_tools_call(
         }
         "apply_op" => {
             return tool_apply_op(
-                state.crdt_backend.as_ref(),
+                state,
+                current_indexer.as_deref(),
                 Arc::clone(&state.sessions),
+                caller,
                 subject,
                 params.arguments,
             )
@@ -1205,16 +1207,52 @@ struct ApplyOpArgs {
 }
 
 async fn tool_apply_op(
-    backend: Option<&Arc<dyn CrdtBackend>>,
+    state: &crate::server::AppState,
+    indexer: Option<&Indexer>,
     sessions: Arc<SessionManager>,
+    caller: AclCaller<'_>,
     subject: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ApplyOpArgs = parse_args(args, "apply_op")?;
-    if backend.is_none() {
+    if state.crdt_backend.is_none() {
         return Err(JsonRpcError::internal(
             "live CRDT mode not enabled on this server",
         ));
+    }
+
+    // The same gate `close_session` applies, for the same reason and at the
+    // same bar `open_session` set: admin passes, the opener passes, anyone
+    // else must be able to write the page.
+    //
+    // This had NO check at all. The handler took the subject only to stamp
+    // authorship and then applied the op, so a session id was a bearer
+    // capability over the page it belongs to — and session ids travel in
+    // tool results and logs. Both ends of a session were gated and the
+    // middle, which is the part that actually edits bytes, was not.
+    if !caller.is_admin && sessions.opened_by(&a.session).as_deref() != Some(subject) {
+        let permitted = match (sessions.page_id_of(&a.session), indexer) {
+            (Some(page_id), Some(ix)) => {
+                state.write_acl == crate::server::WriteAclMode::Off
+                    || session_write_allowed(ix, &caller, &page_id, None).await?
+            }
+            // No page behind it, or an unknown session: nothing to protect,
+            // and an unknown id must not read differently from a forbidden
+            // one. Mirrors `close_session`.
+            _ => true,
+        };
+        if !permitted {
+            return Err(JsonRpcError {
+                code: -32000,
+                message: format!(
+                    "apply_op denied: caller `{subject}` neither opened session \
+                     `{}` nor may write its page",
+                    a.session
+                ),
+                data: None,
+            }
+            .with_code("forbidden", false));
+        }
     }
 
     let op_bytes = B64
