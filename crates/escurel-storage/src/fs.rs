@@ -86,15 +86,17 @@ impl LaneStore for FsStore {
 
     async fn list(&self, prefix: &Key) -> Result<Vec<Key>> {
         let tenant = prefix.tenant().to_owned();
+        let store_root = self.root.clone();
         let tenant_root = self.tenant_root(&tenant);
         let prefix_path = prefix.path().to_owned();
 
         // walkdir is sync; offload to a blocking task so we don't
         // stall the runtime on large trees.
-        let keys =
-            tokio::task::spawn_blocking(move || list_under(&tenant_root, &tenant, &prefix_path))
-                .await
-                .map_err(|e| StoreError::Io(std::io::Error::other(e)))??;
+        let keys = tokio::task::spawn_blocking(move || {
+            list_under(&store_root, &tenant_root, &tenant, &prefix_path)
+        })
+        .await
+        .map_err(|e| StoreError::Io(std::io::Error::other(e)))??;
 
         Ok(keys)
     }
@@ -147,20 +149,53 @@ fn format_version(mtime: SystemTime) -> Version {
         .to_string()
 }
 
-/// Walk `tenant_root` recursively and return keys whose relative
-/// path under the tenant root starts with `prefix_path`. Returns an
-/// empty vec if the tenant root does not exist.
-fn list_under(tenant_root: &Path, tenant: &str, prefix_path: &str) -> Result<Vec<Key>> {
+/// Walk `tenant_root` recursively and return keys whose relative path under
+/// the tenant root starts with `prefix_path`.
+///
+/// `Ok(empty)` means one thing only: **the store was reachable and this
+/// tenant has nothing**. Every condition under which the listing might be
+/// incomplete is an error, because destructive callers treat an empty
+/// listing as authoritative — `Indexer::rebuild` truncates the index against
+/// it, and the orphan-blob reclaim then deletes canonical bytes the empty
+/// index no longer references. "There is nothing here" and "I could not
+/// tell" cannot be the same answer.
+///
+/// `store_root` is what separates them, and it needs no marker object: the
+/// root is created at provisioning, so its absence means the volume is not
+/// mounted or the path is wrong. A missing *tenant* directory under a root
+/// that does exist is a genuinely new tenant, and is empty.
+fn list_under(
+    store_root: &Path,
+    tenant_root: &Path,
+    tenant: &str,
+    prefix_path: &str,
+) -> Result<Vec<Key>> {
+    if !store_root.exists() {
+        return Err(StoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "lane store root {} does not exist — the store is unreachable, \
+                 not empty (an unmounted volume or a misconfigured path)",
+                store_root.display()
+            ),
+        )));
+    }
     if !tenant_root.exists() {
+        // Provisioned store, no writes for this tenant yet.
         return Ok(Vec::new());
     }
 
     let mut out = Vec::new();
-    for entry in WalkDir::new(tenant_root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-    {
+    for entry in WalkDir::new(tenant_root).follow_links(false) {
+        // Propagate rather than `filter_map(Result::ok)`: a subtree this
+        // process cannot read (EACCES) or an I/O failure mid-walk silently
+        // shortened the listing, which is the same lie as an empty one.
+        let entry = entry.map_err(|e| {
+            StoreError::Io(std::io::Error::other(format!(
+                "listing {} was incomplete: {e}",
+                tenant_root.display()
+            )))
+        })?;
         if !entry.file_type().is_file() {
             continue;
         }
