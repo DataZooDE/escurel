@@ -126,16 +126,26 @@ ARG SERVICE_LABEL=dz-escurel
 LABEL service="${SERVICE_LABEL}"
 
 # Defaults; a deployment overrides via env. Data dir is where the volume mounts.
-# ESCUREL_REBUILD_INDEX_ON_BOOT=always: the derived DuckDB is a rebuildable
-# cache, so drop + rebuild it from the canonical markdown LaneStore on every
-# start. This is the container default because vss's experimental HNSW
-# persistence segfaults when a restart reloads the on-disk index. The binary
-# handles this itself now (see config.rs) — no shell hack in the entrypoint.
-# Fast-restart deployments that never hit the segfault can override this to
-# `if-missing`. Trade-off: `always` re-embeds the corpus at boot.
+# ESCUREL_REBUILD_INDEX_ON_BOOT is deliberately NOT set here any more, so the
+# binary's own default (`if-missing`) applies: reuse an existing DuckDB and
+# rebuild only when it is absent.
+#
+# It used to be `always`, and the reason given was that "vss's experimental
+# HNSW persistence segfaults when a restart reloads the on-disk index". That
+# index no longer exists — it was removed in `sql/0001_b_tables.sql` because
+# vss corrupts itself under the delete+insert cycle every page write performs,
+# and because it bought nothing measurable (29.6ms vs 30.6ms at 10k blocks).
+# The workaround outlived the bug it worked around, and its cost is large: a
+# full re-embed of the corpus on every single boot, measured at 16 minutes and
+# budgeted at 29.
+#
+# A host that legitimately starts with no index still rebuilds once, on its
+# own: `SnapshotStore` rebuilds when the DuckDB file was freshly created (the
+# wiped-volume case). That path is now guarded — a rebuild refuses to empty a
+# populated index, and `LaneStore::list` errors rather than reporting an
+# unreachable store as empty.
 ENV ESCUREL_SERVER_LISTEN_HTTP=0.0.0.0:8080 \
-    ESCUREL_SERVER_DATA_DIR=/data \
-    ESCUREL_REBUILD_INDEX_ON_BOOT=always
+    ESCUREL_SERVER_DATA_DIR=/data
 EXPOSE 8080 9090
 VOLUME ["/data"]
 
@@ -143,7 +153,8 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s \
   CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 
-# The derived-index drop-and-rebuild is now handled inside the binary, gated by
-# ESCUREL_REBUILD_INDEX_ON_BOOT (set to `always` above). No shell wrapper — exec
-# the server directly so it is PID 1 and receives SIGTERM for graceful shutdown.
+# The derived-index boot policy is handled inside the binary, gated by
+# ESCUREL_REBUILD_INDEX_ON_BOOT (left unset here — see above). No shell wrapper
+# — exec the server directly so it is PID 1 and receives SIGTERM for graceful
+# shutdown.
 ENTRYPOINT ["/usr/local/bin/escurel-server"]

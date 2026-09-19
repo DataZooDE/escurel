@@ -412,6 +412,37 @@ pub async fn publish_lake(
 
     attach_lake(&conn, cfg, false)?;
 
+    // Refuse to publish an empty corpus over a lake that holds one.
+    //
+    // Every table below is `CREATE OR REPLACE ... AS SELECT * FROM <local>`,
+    // an unconditional whole-corpus overwrite from this process's local
+    // DuckDB. So a local index that was emptied — by a rebuild against an
+    // unreachable store, historically — propagates that emptiness into the
+    // lake, and retention GC then prunes the Parquet that held the real
+    // corpus. That is the last link of the chain this guard closes; the
+    // earlier links (a lying `list`, a rebuild that truncates against it)
+    // are closed separately, and this is deliberately independent of them.
+    //
+    // Publishing an empty corpus into an empty lake stays legal: it is only
+    // a refusal when there is something to lose.
+    {
+        let local_pages: i64 = conn
+            .query_row("SELECT count(*) FROM pages", [], |row| row.get(0))
+            .unwrap_or(0);
+        if local_pages == 0 {
+            let lake_pages: i64 = conn
+                .query_row(
+                    &format!("SELECT count(*) FROM {LAKE_ALIAS}.pages"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            if lake_pages > 0 {
+                return Err(SnapshotError::RefusedEmptyPublish { lake_pages });
+            }
+        }
+    }
+
     let tx = conn.transaction()?;
     for table in PUBLISH_TABLES {
         tx.execute_batch(&format!(

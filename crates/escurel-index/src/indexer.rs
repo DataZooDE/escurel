@@ -233,6 +233,17 @@ impl AuditDrift {
 
 #[derive(Debug, Error)]
 pub enum IndexerError {
+    /// A rebuild would have truncated a populated index against a corpus
+    /// listing with nothing in it. The listing is proven complete by this
+    /// point — `LaneStore::list` errors rather than reporting an unreachable
+    /// store as empty — so this is the reachable-but-empty case, and it is
+    /// still not a reason to erase `existing` pages.
+    #[error(
+        "refused: rebuilding from an empty corpus would erase {existing} indexed \
+         pages. If the corpus is genuinely empty, clear the index explicitly."
+    )]
+    RefusedEmptyRebuild { existing: i64 },
+
     #[error("duckdb error: {0}")]
     Duckdb(#[from] duckdb::Error),
     #[error("lane store error: {0}")]
@@ -1753,6 +1764,28 @@ impl Indexer {
         // across the truncate is what keeps "drop the index, recreate from
         // markdown" from also meaning "forget who wrote everything" —
         // which would be worst precisely when `rebuild` is reached for.
+        // Refuse to empty a populated index.
+        //
+        // The truncate below is committed BEFORE anything is read back, so an
+        // empty listing does not degrade the index — it erases it. `list` now
+        // errors rather than reporting an unreachable store as empty, which
+        // removes the common cause; this is the second line of defence, for a
+        // store that is reachable and answers truthfully with nothing while
+        // the index holds pages that came from somewhere.
+        //
+        // The legitimate empty-to-empty rebuild is untouched: it is only a
+        // refusal when there is something to lose.
+        if total == 0 {
+            let existing: i64 = {
+                let conn = self.conn.lock().await;
+                conn.query_row("SELECT count(*) FROM pages", [], |row| row.get(0))
+                    .unwrap_or(0)
+            };
+            if existing > 0 {
+                return Err(IndexerError::RefusedEmptyRebuild { existing });
+            }
+        }
+
         let attribution = {
             let mut conn = self.conn.lock().await;
             let carried: Vec<(String, String)> = {
@@ -1801,11 +1834,12 @@ impl Indexer {
         // re-chunk + re-embed + re-index, replacing the single overlay block
         // the main loop wrote with the correct chunk-blocks (REQ-NF-01).
         crate::backend::document::rebuild_documents(self).await?;
-        // Reclaim canonical blobs no overlay references — dead weight from a
-        // materialise that failed after promotion, or a deleted instance
-        // (REQ-NF-02). Runs after the overlays are re-indexed so the
-        // referenced-set is authoritative. Inbox blobs are retained.
-        crate::backend::document::reclaim_orphan_blobs(self).await?;
+        // Orphan-blob reclaim used to run HERE, and that is what turned a
+        // lost derived cache into destroyed source-of-truth bytes: a rebuild
+        // that emptied the index made every canonical blob look unreferenced,
+        // and they were deleted. It is no longer a side effect of anything —
+        // it is an explicit operator command (`escurel reclaim-blobs`), run
+        // deliberately against an index someone has confirmed is correct.
         // The truncate itself is a mutation even when zero pages were
         // re-indexed (the per-page `update_page` calls above bump too —
         // the counter is monotone, only equality vs. last-published

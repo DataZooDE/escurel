@@ -913,7 +913,24 @@ async fn referenced_blob_ids(
 /// Reclaim canonical blobs no overlay references (REQ-NF-02). Returns the
 /// count removed. Inbox blobs are *not* touched — an `extraction_failed`
 /// upload is deliberately retained there for reprocessing (REQ-DOC-04).
-pub(crate) async fn reclaim_orphan_blobs(indexer: &Indexer) -> Result<usize, IndexerError> {
+/// Delete canonical blobs no overlay references, returning how many went.
+///
+/// **Deliberately not called by `rebuild`.** It used to be, and that is what
+/// escalated an emptied index from a lost derived cache into destroyed
+/// source-of-truth bytes: a rebuild that indexed nothing made every blob look
+/// unreferenced, and this deleted them. The referenced-set is only
+/// authoritative when the index is known good, and nothing automatic knows
+/// that — a person does. So this is an explicit operator command now, never
+/// a side effect.
+///
+/// NOTE: the operator entry point is not wired yet. It belongs on the SERVER
+/// binary (which can open the index locally) rather than `escurel-cli` (a
+/// thin MCP client), and the server has no light index-open path today —
+/// `EscurelConfig::build` serves. Until that lands, orphan blobs accumulate
+/// rather than being reclaimed, which is dead bytes and not a correctness
+/// problem. Deliberately NOT exposed as an MCP tool: an agent has no business
+/// deleting canonical bytes.
+pub async fn reclaim_orphan_blobs(indexer: &Indexer) -> Result<usize, IndexerError> {
     let referenced = referenced_blob_ids(indexer).await?;
     let store = indexer.lane_store();
     let tenant = indexer.tenant();
