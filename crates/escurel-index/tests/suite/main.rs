@@ -47,7 +47,6 @@ mod query_instance;
 mod read_tools;
 mod rerank;
 mod resolve_expand;
-mod run_stored_query;
 mod scenarios;
 mod search;
 mod seed;

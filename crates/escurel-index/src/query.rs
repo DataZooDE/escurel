@@ -1,4 +1,13 @@
-//! Stored-query execution: the `run_stored_query` agent tool.
+//! Stored-query execution: the `query_instance` agent tool.
+//!
+//! The corpus-wide twin, `Indexer::run_stored_query`, is gone. It took a
+//! query id and ran that page's authored `sql:` on the indexer's own
+//! connection with NO ACL check of any kind — the widest privilege in the
+//! crate, reachable by whoever could author a query page. Its MCP tool name
+//! was retired long ago (`schema.rs` still aliases `run_stored_query` →
+//! `query_instance` for callers that remember the old spelling), but the
+//! function outlived the tool and kept its authority. Nothing outside its own
+//! tests called it.
 //!
 //! A query is a markdown page with `type: instance, skill: query`
 //! and frontmatter that declares
@@ -14,8 +23,8 @@
 //!   WHERE skill = :customer_id AND created_at >= :from_date
 //! ```
 //!
-//! `Indexer::run_stored_query(id, args)` looks up the query
-//! instance by slug, validates `args` against the declared params,
+//! `Indexer::query_instance(...)` resolves the target instance, checks the
+//! caller may read it, validates `args` against the declared params,
 //! binds them as positional DuckDB prepared-statement parameters
 //! (so SQL injection through arg values is impossible), executes,
 //! and returns rows + schema.
@@ -50,7 +59,7 @@ use thiserror::Error;
 
 use crate::{AclCaller, Indexer, IndexerError};
 
-/// Result of [`Indexer::run_stored_query`].
+/// Result of [`Indexer::query_instance`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredQueryResult {
     pub rows: Vec<serde_json::Map<String, serde_json::Value>>,
@@ -147,68 +156,6 @@ static NAMED_PARAM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:^|[^:]):([A-Za-z_][A-Za-z0-9_]*)").expect("regex"));
 
 impl Indexer {
-    /// Look up the `[[query::query_id]]` page, validate `args`
-    /// against its declared params, and execute the SQL against
-    /// the indexer's DuckDB connection.
-    pub async fn run_stored_query(
-        &self,
-        query_id: &str,
-        args: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<StoredQueryResult, QueryError> {
-        // 1. Resolve the query page.
-        let resolved = self
-            .resolve(&format!("[[query::{query_id}]]"), None)
-            .await
-            .map_err(|err| QueryError::Indexer(Box::new(err)))?;
-        let page = resolved.page.ok_or_else(|| QueryError::NotFound {
-            id: query_id.to_owned(),
-        })?;
-        if page.skill != "query" {
-            return Err(QueryError::WrongType {
-                id: query_id.to_owned(),
-            });
-        }
-
-        // 2. Re-fetch the page's frontmatter (resolve doesn't include it).
-        let fm =
-            self.page_frontmatter(&page.page_id)
-                .await?
-                .ok_or_else(|| QueryError::NotFound {
-                    id: query_id.to_owned(),
-                })?;
-
-        // 3. Validate `db`.
-        let db = fm
-            .get("db")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("relational");
-        if db != "relational" {
-            return Err(QueryError::UnsupportedDb {
-                id: query_id.to_owned(),
-                db: db.to_owned(),
-            });
-        }
-
-        // 4. Extract `sql` + the declared params.
-        let declared = declared_params(&fm);
-
-        let sql = fm
-            .get("sql")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| QueryError::MissingSql {
-                id: query_id.to_owned(),
-            })?
-            .to_owned();
-
-        // 5. Validate args, bind `:name` → positional `?`, and execute.
-        // No row cap: a stored query is admin-gated and may legitimately
-        // project a large corpus-wide aggregate.
-        let conn = self.conn.lock().await;
-        let (rows, schema, _truncated) =
-            execute_bound_query(&conn, query_id, &sql, &declared, args, None)?;
-        Ok(StoredQueryResult { rows, schema })
-    }
-
     /// Execute a `[[query::query_id]]` page that declares a
     /// `target: [[skill::id]]` **against that instance's managed `vw_…`
     /// view**, returning the full (aggregated) result set (issue #205).
@@ -221,7 +168,7 @@ impl Indexer {
     ///   It is never a bound value.
     /// - **Value position** — every `:param` runtime value supplied by the
     ///   caller is bound as a positional DuckDB prepared-statement parameter
-    ///   (the [`Self::run_stored_query`] pattern). Runtime input never reaches
+    ///   (the stored-query pattern). Runtime input never reaches
     ///   the SQL text, so injection through a param value is impossible and it
     ///   never flows through the `sql_view` blocklist-interpolation path.
     ///
@@ -401,7 +348,7 @@ impl Indexer {
     /// Params are VALUES. The only place one reaches is the start id, as a
     /// bound parameter to a `WHERE slug = ?` — never text spliced into a
     /// statement, which is the property that lets this exist at all where
-    /// `run_stored_query` could not.
+    /// the retired corpus-wide twin could not.
     async fn run_corpus_query(
         &self,
         query_id: &str,
@@ -457,7 +404,7 @@ impl Indexer {
     }
 
     /// The frontmatter object of an indexed page, or `None` when no such page
-    /// exists. Shared by `run_stored_query` / `query_instance`; takes and
+    /// exists. Used by `query_instance`; takes and
     /// releases the connection lock so the caller can re-lock for execution.
     async fn page_frontmatter(
         &self,
@@ -487,7 +434,7 @@ impl Indexer {
     /// is clamped to `[1, 1000]`. The heavy `dense_vec FLOAT[768]`
     /// column is excluded from the vector-bearing tables so the JSON
     /// projection stays small. Returns the same shape as
-    /// [`Self::run_stored_query`].
+    /// [`Self::query_instance`].
     pub async fn inspect_table(
         &self,
         table: &str,
@@ -601,7 +548,7 @@ fn declared_params(fm: &serde_json::Value) -> Vec<DeclaredParam> {
 /// Validate `args` against the declared params, rewrite `:name` → positional
 /// `?`, bind each value as a DuckDB prepared-statement parameter, and execute
 /// against `conn`. Returns the rows, the result schema, and whether `row_cap`
-/// clipped the tail. Shared by [`Indexer::run_stored_query`] (no cap) and
+/// clipped the tail. Used by
 /// [`Indexer::query_instance`] (capped at [`MAX_RESULT_ROWS`]).
 ///
 /// Runtime values flow ONLY through the positional-bind path here — they are
