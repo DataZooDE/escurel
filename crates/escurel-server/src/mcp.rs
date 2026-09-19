@@ -608,6 +608,17 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     // Creating and discarding drafts stay servable there; only the landing
     // is writer-only.
     "promote_draft",
+    // The changeset verbs are the same argument one level up, and were
+    // missed when they were added: `promote_changeset` calls
+    // `tool_promote_draft` per member, which calls `tool_update_page`, and
+    // `discard_changeset` closes its members in the shared drafts table.
+    // Both are WORSE than the single-draft case on a reader, because the
+    // members are marked decided in the SHARED table — so the writer never
+    // re-offers them — while the page writes are discarded at the next
+    // hot-swap. An approved changeset then reports success, lands nowhere,
+    // and cannot be re-promoted.
+    "promote_changeset",
+    "discard_changeset",
     // `merge_branch` IS a sequence of `update_page`/`delete_page` calls, so
     // it belongs here for the same reason `promote_draft` does. Opening and
     // abandoning a branch mutate only the registry, but a reader has no
@@ -619,6 +630,11 @@ const READ_ONLY_REPLICA_TOOLS: &[&str] = &[
     "delete_page",
     "move_page",
     "purge_page",
+    // `start_operation` stamps its run board with `update_page_as`, so on a
+    // reader it answers `{status:"pending"}` and the board evaporates at the
+    // next hot-swap — a caller is told the operation started and nothing
+    // ever runs it.
+    "start_operation",
     "rebuild",
     "compact_lanes",
     "import_pack",
@@ -2101,6 +2117,42 @@ mod registry_conformance {
             }
         }
         assert!(errors.is_empty(), "scope drift:\n  {}", errors.join("\n  "));
+    }
+
+    /// Every tool that can write must be refused on a reader replica.
+    ///
+    /// `READ_ONLY_REPLICA_TOOLS` is hand-kept, and its own doc comment states
+    /// the cost of an omission: the write "is either silently discarded on the
+    /// next `RefreshTask` hot-swap or, worse, never reaches the writer". Three
+    /// tools were missing. Each reaches a page write:
+    ///
+    /// - `start_operation` calls `update_page_as` to stamp the run board;
+    /// - `promote_changeset` calls `tool_promote_draft` per member, which
+    ///   calls `tool_update_page` — and its single-draft sibling
+    ///   `promote_draft` IS listed, with a comment explaining exactly why;
+    /// - `discard_changeset` closes its members in the shared drafts table.
+    ///
+    /// The changeset pair is the worse half: the drafts are marked decided in
+    /// the SHARED table, so the writer never re-offers them, while the page
+    /// writes are discarded at the next hot-swap. An approved changeset then
+    /// reports success and lands nowhere, with no way to re-promote it.
+    ///
+    /// Named explicitly rather than derived, because deriving the list from
+    /// the registry is the follow-up change and this must fail first.
+    #[test]
+    fn every_writing_tool_is_refused_on_a_reader_replica() {
+        let missing: Vec<&str> = [
+            "start_operation",
+            "promote_changeset",
+            "discard_changeset",
+        ]
+        .into_iter()
+        .filter(|t| !super::READ_ONLY_REPLICA_TOOLS.contains(t))
+        .collect();
+        assert!(
+            missing.is_empty(),
+            "these tools write but are not refused on a reader replica: {missing:?}"
+        );
     }
 
     #[test]
