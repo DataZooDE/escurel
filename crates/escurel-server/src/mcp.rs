@@ -161,6 +161,16 @@ pub async fn mcp(
     // footgun where a thread-local guard leaks into the next
     // poll's task.
     let request_id = request_id_from(&headers);
+    // The run this call belongs to, when a runner made it. Recorded as its
+    // own field rather than only as the `request_id` prefix so a single
+    // `run_id=<ulid>` query returns every tool call the run made, in order,
+    // alongside the runner's own lines for it. Empty for every other caller.
+    let run_id = headers
+        .get("x-escurel-run-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_owned();
     let tool_name = tool_name_from(&req.method, &req.params).unwrap_or_default();
     // Per-record audit fields per `platform.md §Observability`:
     // `transport` + `trace_id` are known up front; `tenant` + `subject`
@@ -174,6 +184,7 @@ pub async fn mcp(
         "mcp.request",
         request_id = %request_id,
         trace_id = %request_id,
+        run_id = %run_id,
         transport = "mcp_http",
         method = %req.method,
         tool = %tool_name,
