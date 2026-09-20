@@ -180,15 +180,31 @@ pub(super) async fn tool_create_branch(
 /// Every branch, newest first — including decided ones.
 pub(super) async fn tool_list_branches(
     indexer: &Indexer,
-    _caller: AclCaller<'_>,
+    caller: AclCaller<'_>,
     _args: Value,
 ) -> Result<Value, JsonRpcError> {
     let branches = indexer
         .list_branches()
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_branches: {e}")))?;
+
+    // Scope to the caller's own workspaces.
+    //
+    // This took `_caller` — underscore-prefixed, deliberately unused — and
+    // returned the whole registry to anyone. The names are the disclosure:
+    // by this codebase's own convention a branch is called something like
+    // `agent/acme-renegotiation`, so the listing said what every other agent
+    // was working on, and on whose records, without reading a page.
+    //
+    // `author` is recorded at creation and is the same scope the draft queue
+    // uses. Admin sees everything, as everywhere.
+    let visible: Vec<&escurel_index::BranchInfo> = branches
+        .iter()
+        .filter(|b| caller.is_admin || b.author == caller.subject)
+        .collect();
+
     Ok(json!({
-        "branches": branches.iter().map(branch_to_json).collect::<Vec<_>>(),
+        "branches": visible.into_iter().map(branch_to_json).collect::<Vec<_>>(),
     }))
 }
 

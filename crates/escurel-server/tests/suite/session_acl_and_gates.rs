@@ -519,3 +519,63 @@ async fn a_session_cannot_be_opened_on_a_page_that_does_not_exist() {
 
     p.shutdown().await;
 }
+
+/// A caller who may not OPEN a session on a page may not APPLY ops to one.
+///
+/// `open_session` and `close_session` both gate; `apply_op` did not gate at
+/// all. Its handler took only the subject, used it to stamp authorship, and
+/// applied the op — so a session id was a bearer capability. Session ids
+/// travel in tool results and logs, and the ops they carry edit the page byte
+/// by byte, so the middle of the sequence was the one part of it anyone could
+/// reach.
+///
+/// The member opens legitimately; the outsider — already proven unable to
+/// write the page or open a session on it, two tests above — then tries to
+/// apply against that session id.
+#[tokio::test]
+async fn an_outsider_cannot_apply_ops_to_someone_elses_session() {
+    let p = start_group_scoped().await;
+    let member = p.mint_token_with_groups(TENANT, "consultant:alice", &["team-red"], false);
+    let outsider = p.mint_token_with_groups(TENANT, "consultant:bob", &["team-blue"], false);
+
+    let opened = call(&p, &member, "open_session", json!({ "page_id": RED_PAGE })).await;
+    let session = opened["result"]["structuredContent"]["session"]
+        .as_str()
+        .expect("premise: the member opens a session")
+        .to_owned();
+
+    // A syntactically valid but inert op payload: the refusal must happen on
+    // the authorization check, before the CRDT layer ever reads these bytes.
+    let applied = call(
+        &p,
+        &outsider,
+        "apply_op",
+        json!({ "session": session, "op": "AAAA" }),
+    )
+    .await;
+
+    // The refusal must be an AUTHORIZATION refusal, and it must happen
+    // BEFORE the CRDT layer sees the bytes.
+    //
+    // Asserting merely "some error came back" is what this test did first,
+    // and it passed against the ungated code: the op was refused as
+    // `DecodeError("Invalid import data")` — the session was found, the
+    // caller was accepted, and only the payload was rejected. That is proof
+    // the op reached the engine, i.e. that a VALID op from the same outsider
+    // would have landed. A decode error is not a denial.
+    let text = applied.to_string();
+    assert!(
+        !text.contains("DecodeError") && !text.contains("loro"),
+        "the op reached the CRDT engine, so the caller was never checked: \
+         {applied}"
+    );
+    let refused = applied.get("error").is_some()
+        || applied["result"]["structuredContent"]["ok"] == json!(false);
+    assert!(
+        refused,
+        "an outsider holding a session id must not be able to edit the page \
+         through it: {applied}"
+    );
+
+    p.shutdown().await;
+}
