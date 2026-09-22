@@ -78,6 +78,9 @@ enum Command {
     /// Event-sourcing surface: inbox, history, capture, assign.
     #[command(subcommand)]
     Event(agent::EventCmd),
+    /// A run's own surface (needs a run-bound bearer): report progress.
+    #[command(subcommand)]
+    Run(agent::RunCmd),
     /// Held writes: the review queue for `autonomy: review` skills.
     #[command(subcommand)]
     Draft(agent::DraftCmd),

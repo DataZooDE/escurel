@@ -134,6 +134,39 @@ pub struct ListEventsResponse {
     pub next_cursor: Option<String>,
 }
 
+/// One step of an agent's plan, as `report_progress` snapshots it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PlanStep {
+    pub step: String,
+    /// `pending` | `in_progress` | `completed` | `blocked`.
+    pub status: String,
+}
+
+/// `report_progress` arguments: the WHOLE plan, every time (a snapshot, not
+/// a delta). Only a run-bound bearer (the runner's per-run agent token) may
+/// call it — the run is read from the token, never sent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ReportProgressRequest {
+    pub plan: Vec<PlanStep>,
+    /// The step in progress, if any (empty sends nothing).
+    pub current: String,
+    /// A short free-text note (empty sends nothing).
+    pub note: String,
+}
+
+/// `report_progress` ack: the `run-progress` event written (the same
+/// `event_id` for the same snapshot) and how many steps it holds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ReportProgressResponse {
+    pub ok: bool,
+    pub event_id: String,
+    pub run_id: String,
+    pub steps: u32,
+}
+
 /// `assign_event` arguments. MCP wire keys: `event_id`,
 /// `instance_page_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

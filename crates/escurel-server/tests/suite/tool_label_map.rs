@@ -45,6 +45,7 @@ const EXPECTED: &[&str] = &[
     "assign_event:orchestration",
     "attach_external:orchestration",
     "capture_event:orchestration",
+    "report_progress:orchestration",
     "close_session:orchestration",
     "compact_lanes:orchestration",
     "abandon_branch:orchestration",

@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.43 — `report_progress` (workbench backend P1)
+
+- New agent tool `report_progress {plan:[{step,status}], current?, note?}` →
+  `{ok, event_id, run_id, steps}`: a harness reports its WHOLE plan as a
+  snapshot, filed as a `run-progress` system event under `escurel:run` for
+  the run the caller's token names. Only a run-bound bearer may call it (an
+  admin token without a run is refused `-32602`); idempotent per snapshot;
+  a run keeps its last 50. CLI: `escurel run progress --step a=completed …`.
+
 ## 0.6.42 — drafts record the run that proposed them (workbench backend P1)
 
 - `Draft`, `Changeset` and `diff_draft` carry `run_id` / `root_event_id`:
