@@ -117,6 +117,7 @@ mod tests {
                 lineage_path: vec!["ROOT".into()],
                 instance_path,
                 trace_id: None,
+                parent_run_id: None,
             },
             workflow: None,
             content_hash: None,

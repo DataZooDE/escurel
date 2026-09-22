@@ -23,6 +23,7 @@ mod packager;
 mod quota;
 mod reconciler;
 mod recovery;
+mod run_events;
 mod trigger;
 mod workflow;
 
@@ -53,6 +54,7 @@ pub use reconciler::{
     classify_client_error, confirm_draft, confirm_effect, instance_version, run_with_retry,
 };
 pub use recovery::{RecoveryReport, recover_pending};
+pub use run_events::{AttemptReport, RUN_EVENT_LABEL, RunEventCtx, RunFinish, now_ts};
 pub use secrecy::SecretString;
 pub use trigger::{Lineage, Trigger};
 pub use workflow::{

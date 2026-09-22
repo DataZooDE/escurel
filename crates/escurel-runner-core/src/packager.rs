@@ -542,13 +542,22 @@ pub async fn package(
     // The requester subject, captured when the run is scoped — used as the
     // delegation `obo` for a delegate step (audit only).
     let mut requester: Option<String> = None;
+    // Whether the instructions may ask for `report_progress`: only a minted,
+    // run-bound bearer can report (the gateway refuses one without a run
+    // claim), and a model told to call a tool that always refuses spends
+    // its whole turn budget on it — seen live on a static-bearer runner.
+    let mut can_report_progress = false;
     let token = match caller_scoped_token(trigger, client, cfg, tokens, run).await? {
         CallerToken::Scoped { token, subject } => {
             requester = Some(subject);
+            can_report_progress = run.is_some();
             SecretString::from(token)
         }
         // The ordinary run, executing as its own agent (#510).
-        CallerToken::Agent { token } => SecretString::from(token),
+        CallerToken::Agent { token } => {
+            can_report_progress = run.is_some();
+            SecretString::from(token)
+        }
         // Non-workflow cascades (orchestration writes) legitimately use the
         // runner's own identity; a static dev bearer that cannot mint falls
         // back to it too (production runs minted, so it scopes).
@@ -716,7 +725,13 @@ pub async fn package(
         autonomy.tools()
     };
 
-    let instructions = build_instructions(trigger, &skill.body, trigger_event.as_ref(), autonomy);
+    let instructions = build_instructions(
+        trigger,
+        &skill.body,
+        trigger_event.as_ref(),
+        autonomy,
+        can_report_progress,
+    );
 
     // Delegate step (async-ops Phase 4 slice 3c): when this step's effective
     // harness is `delegate`, attach the A2A delegation the DelegateHarness needs
@@ -850,6 +865,7 @@ fn build_instructions(
     skill_body: &str,
     event: Option<&Event>,
     autonomy: Autonomy,
+    report_progress: bool,
 ) -> String {
     let title = event.map(|e| e.title.as_str()).unwrap_or("");
     // Under review the tool surface already makes committing impossible, but
@@ -1036,7 +1052,16 @@ fn build_instructions(
          the appropriate `{skill}` instance per the skill below. The event itself is in \
          the task input.\n\n\
          ## Skill: {skill}\n\n{skill_body}{coordinates}{target}{gate}{progress}",
-        progress = PROGRESS_PARAGRAPH,
+        // Only when the run's token can actually report: `report_progress`
+        // refuses a bearer without a run claim, and a model told to call a
+        // tool that always refuses spends its whole turn budget on it (seen
+        // live: Gemini looped 12 turns, 0 counted calls, on a static-bearer
+        // runner). A dev runner on a pasted token packages without it.
+        progress = if report_progress {
+            PROGRESS_PARAGRAPH
+        } else {
+            ""
+        },
         skill = trigger.label_skill,
         event_id = trigger.event_id,
         title = if title.is_empty() {
@@ -1195,11 +1220,15 @@ mod tests {
             content_hash: None,
         };
         for autonomy in [Autonomy::Auto, Autonomy::Review] {
-            let instr = build_instructions(&trigger, "SKILLBODY", None, autonomy);
+            let instr = build_instructions(&trigger, "SKILLBODY", None, autonomy, true);
             assert!(
                 instr.ends_with(PROGRESS_PARAGRAPH),
                 "{autonomy:?} instructions must end with the progress paragraph: {instr}"
             );
+            // A run whose token cannot report is not told to: the tool would
+            // refuse every call and a model can burn its turns on that.
+            let unbound = build_instructions(&trigger, "SKILLBODY", None, autonomy, false);
+            assert!(!unbound.contains("report_progress"), "{unbound}");
         }
         assert!(PROGRESS_PARAGRAPH.contains("`report_progress`"));
         assert!(PROGRESS_PARAGRAPH.contains("whole plan"));
@@ -1287,6 +1316,7 @@ mod tests {
             "SKILLBODY",
             None,
             Autonomy::Auto,
+            true,
         );
         assert!(vote.contains("`vote_index: 2`"), "the slot: {vote}");
         assert!(
@@ -1300,12 +1330,12 @@ mod tests {
         // phase but never invents a slot — a `vote_index` on a page the tally
         // does not read is noise, and a wrong one would skew a barrier.
         wf.vote_index = None;
-        let plain = build_instructions(&trigger(Some(wf)), "SKILLBODY", None, Autonomy::Auto);
+        let plain = build_instructions(&trigger(Some(wf)), "SKILLBODY", None, Autonomy::Auto, true);
         assert!(plain.contains("workflow_run:"), "{plain}");
         assert!(!plain.contains("vote_index"), "{plain}");
 
         // CONTROL: an ordinary event is not a workflow step at all.
-        let ordinary = build_instructions(&trigger(None), "SKILLBODY", None, Autonomy::Auto);
+        let ordinary = build_instructions(&trigger(None), "SKILLBODY", None, Autonomy::Auto, true);
         assert!(!ordinary.contains("one step of a workflow"), "{ordinary}");
     }
 
@@ -1322,7 +1352,7 @@ mod tests {
             workflow: None,
             content_hash: None,
         };
-        let assigned = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Auto);
+        let assigned = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Auto, true);
         assert!(
             assigned.contains(page),
             "the assigned page id must be in the instructions: {assigned}"
@@ -1353,7 +1383,7 @@ mod tests {
         // draft's target: the constraint must survive the gate text — but the
         // assign instruction must NOT, because a review run has no such verb
         // and the event stays in the inbox for a human on purpose.
-        let review = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Review);
+        let review = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Review, true);
         assert!(review.contains(page), "{review}");
         assert!(review.contains("target_page_id"), "{review}");
         assert!(
@@ -1387,7 +1417,7 @@ mod tests {
         // there is no page to pin, and telling an agent to write to "only this
         // page" when none was chosen would be a contradiction.
         trigger.instance_page_id = None;
-        let unassigned = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Auto);
+        let unassigned = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Auto, true);
         assert!(
             !unassigned.contains("only this page"),
             "an unassigned trigger must still be free to create one: {unassigned}"
@@ -1415,7 +1445,7 @@ mod tests {
             body: "x".repeat(220 * 1024),
             ..Event::default()
         };
-        let instr = build_instructions(&trigger, "SKILLBODY", Some(&event), Autonomy::Auto);
+        let instr = build_instructions(&trigger, "SKILLBODY", Some(&event), Autonomy::Auto, true);
         assert!(
             instr.len() < MAX_ARG_STRLEN,
             "instructions are {} bytes, over the {MAX_ARG_STRLEN}-byte per-argument \
@@ -1450,7 +1480,7 @@ mod tests {
             body: "BODYMARK".into(),
             ..Event::default()
         };
-        let instr = build_instructions(&trigger, "SKILLBODY", Some(&event), Autonomy::Auto);
+        let instr = build_instructions(&trigger, "SKILLBODY", Some(&event), Autonomy::Auto, true);
         assert!(instr.contains("note"));
         assert!(instr.contains("SKILLBODY"));
         assert!(instr.contains("EVT1"));
@@ -1471,7 +1501,7 @@ mod tests {
         );
 
         // No event record recovered → fall back to the trigger ids.
-        let fallback = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Auto);
+        let fallback = build_instructions(&trigger, "SKILLBODY", None, Autonomy::Auto, true);
         assert!(fallback.contains("EVT1"));
     }
 

@@ -50,6 +50,9 @@ pub struct Lineage {
     /// `None` for a legacy webhook-origin event with no trace id yet (the
     /// runner mints one when it starts the root span).
     pub trace_id: Option<String>,
+    /// The run that emitted this hop (`provenance.runner.parent_run_id`);
+    /// `None` for a root.
+    pub parent_run_id: Option<String>,
 }
 
 impl Lineage {
@@ -64,6 +67,7 @@ impl Lineage {
             lineage_path: vec![event_id],
             instance_path: Vec::new(),
             trace_id: None,
+            parent_run_id: None,
         }
     }
 }
@@ -282,12 +286,20 @@ fn lineage_from_provenance(provenance: &serde_json::Value, event_id: &str) -> Op
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
+    // The run that emitted this hop (workbench backend P1): a run event
+    // names it so a lineage tree can hang the hop off its parent run.
+    let parent_run_id = runner
+        .get("parent_run_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     Some(Lineage {
         root_event_id,
         depth,
         lineage_path,
         instance_path,
         trace_id,
+        parent_run_id,
     })
 }
 

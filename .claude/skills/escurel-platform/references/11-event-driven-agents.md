@@ -51,9 +51,13 @@ This is the part worth internalising if you author skills:
   harness's native config, with `allowedTools` narrowed to the read tools
   plus `validate` / `update_page` / `assign_event` / `capture_event` —
   and `report_progress` on every packaging (review runs and workflow
-  steps too): the instructions end with a paragraph telling the agent to
-  report its whole plan up front and on every step change, which the
-  gateway files as `run-progress` events for the humans watching the run.
+  steps too). When the run's token can report — a **minted**, run-bound
+  bearer, i.e. every production run — the instructions end with a
+  paragraph telling the agent to report its whole plan up front and on
+  every step change, which the gateway files as `run-progress` events for
+  the humans watching the run. A static-bearer dev runner packages without
+  the paragraph: `report_progress` refuses a token with no run claim, and a
+  model told to call a tool that always refuses burns its turns on it.
 
 **Consequence for skill authors:** any skill that can be event-triggered
 is read by a machine as its system prompt. Write those skill bodies as a
@@ -114,6 +118,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_HARNESS` | `echo` | **`echo` is the default — set `claude` or nothing runs an LLM** |
 | `ESCUREL_RUNNER_CLAUDE_BIN` | `claude` | binary path (or a test stub) |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | `30s` | inbox-poll backstop |
+| `ESCUREL_RUNNER_EMIT_EVENTS` | `true` | write each run's lifecycle as `escurel:run` system events (see *Run lifecycle events*); `false` = the workbench sees events and drafts but no runs |
 | `ESCUREL_RUNNER_MAX_DEPTH` | `8` | cascade depth budget |
 | `ESCUREL_RUNNER_TENANT_MAX_CONCURRENT`, `…_RUNS_PER_MIN` | — | per-tenant limits |
 
@@ -164,6 +169,30 @@ Every event carries three more fields on the wire: `kind`, `root_event_id`,
   it as `provenance.runner.parent_run_id`; it does not carry the run's id
   itself. `list_events { run_id }` is one run's own events and implies
   `include_system`.
+
+## Run lifecycle events (`escurel:run`)
+
+Every run the runner admits is written back to the gateway as three kinds
+of `kind: system` events under `label_skill: escurel:run`, attached to the
+run's target page (`processed`, never inbox work) and readable with
+`list_events { run_id }` or `list_events { root_event_id, include_system }`:
+
+| title | when | body |
+|---|---|---|
+| `run-started` | the ledger admitted the run and a harness is about to run it | `{}` |
+| `run-attempt` | each try ends | `{attempt, started_at, ended_at, outcome: ok \| converged \| failed \| timeout, error?}` |
+| `run-finished` | the ledger reached its terminal | `{status: processed \| failed \| dead_letter, reason?, attempts, held, summary, tool_calls, produced_instance, produced_version, plan}` — `plan` is the newest `run-progress` snapshot the agent reported |
+
+`provenance.runner` on each carries `run_id`, `root_event_id`, `event_id`
+(the trigger), `parent_run_id` (a cascade hop's emitting run), `depth`,
+`lineage_path`, `trace_id`, `harness`, `max_attempts`, `attempt`,
+`target_page_id` and, on `run-finished`, `autonomy`. Event ids are
+deterministic (`run:<run_id>:started` / `:attempt:<n>` / `:finished`), so a
+re-emission is idempotent. **The ledger stays the source of truth**: these
+are its projection and are best-effort — a gateway that refuses them (a
+non-admin runner bearer cannot write the `escurel:` namespace) is logged
+and counted (`escurel_runner_run_events_failed_total{kind}`), and the run
+lands regardless.
 
 ## Watching the bus from an open session: `event_subscribe`
 

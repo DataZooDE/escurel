@@ -458,6 +458,11 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_MAX_HARNESS_PROCS` (default
     /// [`DEFAULT_MAX_HARNESS_PROCS`]).
     pub max_harness_procs: usize,
+    /// Write a run's lifecycle (`run-started` / `run-attempt` /
+    /// `run-finished`) as `escurel:run` system events on the gateway
+    /// (`ESCUREL_RUNNER_EMIT_EVENTS`, default on). Best-effort either way;
+    /// off means the workbench sees events and drafts but no runs.
+    pub emit_run_events: bool,
     /// SIGTERM drain timeout: how long shutdown lets in-flight runs finish
     /// before exiting anyway (#158).
     /// Source: `ESCUREL_RUNNER_DRAIN_TIMEOUT` (default
@@ -675,6 +680,13 @@ impl RunnerConfig {
             &lookup,
             DEFAULT_TENANT_MAX_CONCURRENT,
         )?;
+        let emit_run_events = !matches!(
+            lookup("ESCUREL_RUNNER_EMIT_EVENTS")
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("0" | "false" | "off" | "no")
+        );
+
         let max_harness_procs = match lookup("ESCUREL_RUNNER_MAX_HARNESS_PROCS") {
             Some(raw) if !raw.is_empty() => match raw.parse::<usize>() {
                 Ok(n) if n >= 1 => n,
@@ -735,6 +747,7 @@ impl RunnerConfig {
             tenant_runs_per_min,
             tenant_max_concurrent,
             max_harness_procs,
+            emit_run_events,
             drain_timeout,
         })
     }
