@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.44 — review transitions on the bus (workbench backend P1)
+
+- Every draft / changeset transition is published as an `escurel:review`
+  `kind: system` event on the draft's target page: `draft-created`,
+  `draft-promoted`, `draft-discarded` (incl. a stale draft superseded by a
+  re-draft), `changeset-promoted`, `changeset-discarded`,
+  `changeset-already_decided`. `provenance.review` carries `{draft_id,
+  changeset_id, run_id, root_event_id, decided_by, already_decided}` — the
+  lineage from the draft ROW, never the caller. Hidden from `list_inbox` /
+  `list_events` unless `include_system`; pushed to `event_subscribe`
+  subscribers like any event. A review queue no longer needs to poll.
+
 ## 0.6.43 — `report_progress` (workbench backend P1)
 
 - New agent tool `report_progress {plan:[{step,status}], current?, note?}` →

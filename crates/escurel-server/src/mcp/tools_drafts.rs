@@ -25,7 +25,8 @@
 //!    identity, which is whose authority the write is made on.
 
 use super::*;
-use escurel_index::drafts::NewDraft;
+use escurel_index::drafts::{DraftInfo, NewDraft};
+use escurel_index::{EventKind, NewEvent};
 
 #[derive(Deserialize)]
 pub(super) struct CreateDraftArgs {
@@ -198,6 +199,90 @@ fn draft_to_json(d: &escurel_index::drafts::DraftInfo) -> Value {
     })
 }
 
+/// One draft or changeset transition, as the bus carries it (workbench
+/// backend P1, BRD FR-W-2): an `escurel:review` system event on the
+/// target page, so a review queue and a lineage tree update live.
+struct ReviewTransition<'a> {
+    /// `draft-created` | `draft-promoted` | `draft-discarded` |
+    /// `changeset-promoted` | `changeset-discarded` | `changeset-already_decided`.
+    title: &'a str,
+    /// The draft the transition is about; `None` for a changeset-level one.
+    draft: Option<&'a DraftInfo>,
+    /// The row the run lineage and the target page come from — the draft
+    /// itself, or a changeset's first member. Always the ROW, never the
+    /// caller: the lineage a transition claims is the lineage the runner
+    /// signed into the draft.
+    lineage: &'a DraftInfo,
+    changeset_id: Option<&'a str>,
+    decided_by: &'a str,
+    already_decided: bool,
+    reason: &'a str,
+}
+
+/// Publish a review transition. Best-effort: a held write changing state
+/// must never fail because the bus could not be told — same rule as the
+/// event retirement on promotion. Idempotent per transition (the event id
+/// names the row and the transition), so a retried decision is one event.
+async fn publish_review_event(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    t: ReviewTransition<'_>,
+) {
+    let key = t
+        .draft
+        .map(|d| d.draft_id.as_str())
+        .or(t.changeset_id)
+        .unwrap_or("-");
+    let changeset_id = t
+        .changeset_id
+        .map(str::to_owned)
+        .or_else(|| t.draft.and_then(|d| d.changeset_id.clone()));
+    let draft_id = t.draft.map(|d| d.draft_id.clone());
+    let review = json!({
+        "draft_id": draft_id,
+        "changeset_id": changeset_id,
+        "run_id": t.lineage.run_id,
+        "root_event_id": t.lineage.root_event_id,
+        "decided_by": t.decided_by,
+        "already_decided": t.already_decided,
+    });
+    let body = json!({
+        "transition": t.title,
+        "draft_id": draft_id,
+        "changeset_id": changeset_id,
+        "target_page_id": t.lineage.target_page_id,
+        "decided_by": t.decided_by,
+        "reason": t.reason,
+    });
+    match indexer
+        .capture_event(NewEvent {
+            event_id: Some(format!("review:{key}:{}", t.title)),
+            at: Some(escurel_index::now_rfc3339_micros()),
+            source: "escurel".to_owned(),
+            mime: "application/json".to_owned(),
+            label_skill: "escurel:review".to_owned(),
+            instance_page_id: Some(t.lineage.target_page_id.clone()),
+            title: t.title.to_owned(),
+            body: body.to_string(),
+            provenance: Some(json!({ "review": review, "captured_by": "escurel" })),
+            kind: EventKind::System,
+            root_event_id: t.lineage.root_event_id.clone(),
+            run_id: t.lineage.run_id.clone(),
+        })
+        .await
+    {
+        Ok(stored) => {
+            let _ = state.events_tx.send(std::sync::Arc::new(stored));
+        }
+        Err(e) => tracing::warn!(
+            transition = t.title,
+            key,
+            error = %e,
+            "review event not recorded (best-effort); the decision stands"
+        ),
+    }
+}
+
 /// Hold a finished write for a human.
 pub(super) async fn tool_create_draft(
     state: &crate::server::AppState,
@@ -368,6 +453,20 @@ pub(super) async fn tool_create_draft(
             page_id = %a.target_page_id,
             "create_draft: discarded a stale draft the new one replaces"
         );
+        publish_review_event(
+            state,
+            indexer,
+            ReviewTransition {
+                title: "draft-discarded",
+                draft: Some(&open),
+                lineage: &open,
+                changeset_id: None,
+                decided_by: caller.subject,
+                already_decided: false,
+                reason: "superseded: the target moved",
+            },
+        )
+        .await;
     }
 
     // The changeset this draft joins, if any (#509 §1). The id is minted
@@ -437,6 +536,20 @@ pub(super) async fn tool_create_draft(
         })
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_draft: {e}")))?;
+    publish_review_event(
+        state,
+        indexer,
+        ReviewTransition {
+            title: "draft-created",
+            draft: Some(&stored),
+            lineage: &stored,
+            changeset_id: None,
+            decided_by: caller.subject,
+            already_decided: false,
+            reason: "",
+        },
+    )
+    .await;
 
     Ok(json!({ "ok": true, "draft": draft_to_json(&stored) }))
 }
@@ -651,6 +764,20 @@ pub(super) async fn tool_promote_draft(
             .close_draft(&draft.draft_id, "promoted", &subject, "")
             .await
             .map_err(|e| JsonRpcError::internal(format!("promote_draft close: {e}")))?;
+        publish_review_event(
+            state,
+            indexer,
+            ReviewTransition {
+                title: "draft-promoted",
+                draft: Some(&draft),
+                lineage: &draft,
+                changeset_id: None,
+                decided_by: &subject,
+                already_decided: already_applied,
+                reason: "",
+            },
+        )
+        .await;
 
         // **The event is absorbed the moment the write lands.**
         //
@@ -703,49 +830,58 @@ pub(super) async fn tool_promote_draft(
 
 /// Refuse a held write. Nothing is written to the page.
 pub(super) async fn tool_discard_draft(
+    state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: DecideDraftArgs = parse_args(args, "discard_draft")?;
+    let not_found = || {
+        json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "not_found",
+                "location": "draft_id",
+                "message": format!("no OPEN draft `{}`", a.draft_id),
+            }],
+        })
+    };
     // Refusing someone else's held write is a decision on their work, so it
     // takes the same visibility check promotion does. Without it the cheapest
     // attack on this surface is to discard every draft in the tenant.
-    if let Some(draft) = indexer
+    let draft = indexer
         .get_draft(&a.draft_id)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("discard_draft: {e}")))?
-        && !may_see(indexer, &caller, &draft).await?
+        .map_err(|e| JsonRpcError::internal(format!("discard_draft: {e}")))?;
+    if let Some(d) = &draft
+        && !may_see(indexer, &caller, d).await?
     {
-        return Ok(json!({
-            "ok": false,
-            "issues": [{
-                "severity": "error",
-                "code": "not_found",
-                "location": "draft_id",
-                "message": format!("no OPEN draft `{}`", a.draft_id),
-            }],
-        }));
+        return Ok(not_found());
     }
+    let decided_by = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
     let closed = indexer
-        .close_draft(
-            &a.draft_id,
-            "discarded",
-            &decided_by_or_caller(a.decided_by.as_deref(), &caller)?,
-            &a.reason,
-        )
+        .close_draft(&a.draft_id, "discarded", &decided_by, &a.reason)
         .await
         .map_err(|e| JsonRpcError::internal(format!("discard_draft: {e}")))?;
     if !closed {
-        return Ok(json!({
-            "ok": false,
-            "issues": [{
-                "severity": "error",
-                "code": "not_found",
-                "location": "draft_id",
-                "message": format!("no OPEN draft `{}`", a.draft_id),
-            }],
-        }));
+        return Ok(not_found());
+    }
+    if let Some(d) = &draft {
+        publish_review_event(
+            state,
+            indexer,
+            ReviewTransition {
+                title: "draft-discarded",
+                draft: Some(d),
+                lineage: d,
+                changeset_id: None,
+                decided_by: &decided_by,
+                already_decided: false,
+                reason: &a.reason,
+            },
+        )
+        .await;
     }
     Ok(json!({ "ok": true, "draft_id": a.draft_id }))
 }
@@ -1087,6 +1223,20 @@ pub(super) async fn tool_promote_changeset(
     // to. The transport warns that a mid-flight failure may already have
     // applied, so this is a success with a flag, not an error to untangle.
     if members.iter().all(|m| m.status != "open") {
+        publish_review_event(
+            state,
+            indexer,
+            ReviewTransition {
+                title: "changeset-already_decided",
+                draft: None,
+                lineage: &members[0],
+                changeset_id: Some(&a.changeset_id),
+                decided_by: &subject,
+                already_decided: true,
+                reason: "",
+            },
+        )
+        .await;
         return Ok(json!({
             "ok": true,
             "already_decided": true,
@@ -1184,6 +1334,20 @@ pub(super) async fn tool_promote_changeset(
         }
     }
 
+    publish_review_event(
+        state,
+        indexer,
+        ReviewTransition {
+            title: "changeset-promoted",
+            draft: None,
+            lineage: &members[0],
+            changeset_id: Some(&a.changeset_id),
+            decided_by: &subject,
+            already_decided: false,
+            reason: "",
+        },
+    )
+    .await;
     Ok(json!({
         "ok": true,
         "changeset_id": a.changeset_id,
@@ -1194,6 +1358,7 @@ pub(super) async fn tool_promote_changeset(
 
 /// Refuse a run's proposal whole. Nothing is written to any target.
 pub(super) async fn tool_discard_changeset(
+    state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
     args: Value,
@@ -1212,8 +1377,36 @@ pub(super) async fn tool_discard_changeset(
             .map_err(|e| JsonRpcError::internal(format!("discard_changeset: {e}")))?
         {
             discarded += 1;
+            publish_review_event(
+                state,
+                indexer,
+                ReviewTransition {
+                    title: "draft-discarded",
+                    draft: Some(m),
+                    lineage: m,
+                    changeset_id: Some(&a.changeset_id),
+                    decided_by: &subject,
+                    already_decided: false,
+                    reason: &a.reason,
+                },
+            )
+            .await;
         }
     }
+    publish_review_event(
+        state,
+        indexer,
+        ReviewTransition {
+            title: "changeset-discarded",
+            draft: None,
+            lineage: &members[0],
+            changeset_id: Some(&a.changeset_id),
+            decided_by: &subject,
+            already_decided: discarded == 0,
+            reason: &a.reason,
+        },
+    )
+    .await;
     Ok(json!({
         "ok": true,
         "changeset_id": a.changeset_id,
