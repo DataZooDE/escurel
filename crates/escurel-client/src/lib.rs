@@ -68,14 +68,15 @@ pub use escurel_types::{
     ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, LineageNode, ListEventsRequest,
     ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
     ListInstancesResponse, ListLineageRequest, ListLineageResponse, ListMessagesRequest,
-    ListMessagesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp, MovePageRequest,
-    MovePageResponse, NeighboursRequest, NeighboursResponse, PageRef, PlanStep,
-    ProvenanceAncestryRequest, ProvenanceAncestryResponse, ProvenancePathRequest,
-    ProvenancePathResponse, ProvenanceReportRequest, ProvenanceReportResponse, PurgePageRequest,
-    PurgePageResponse, QueryInstanceRequest, QueryInstanceResponse, ReportProgressRequest,
-    ReportProgressResponse, ResolveRequest, ResolveResponse, SearchHit, SearchRequest,
-    SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse,
-    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
+    ListMessagesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp,
+    MintAgentTokenRequest, MintAgentTokenResponse, MovePageRequest, MovePageResponse,
+    NeighboursRequest, NeighboursResponse, PageRef, PlanStep, ProvenanceAncestryRequest,
+    ProvenanceAncestryResponse, ProvenancePathRequest, ProvenancePathResponse,
+    ProvenanceReportRequest, ProvenanceReportResponse, PurgePageRequest, PurgePageResponse,
+    QueryInstanceRequest, QueryInstanceResponse, ReportProgressRequest, ReportProgressResponse,
+    ResolveRequest, ResolveResponse, SearchHit, SearchRequest, SearchResponse, Skill,
+    StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest,
+    ValidateResponse, ValidationIssue, WikilinkParsed,
 };
 // Held writes (the `autonomy: review` gate): a draft is a finished change
 // that has not landed, and these are how an app shows a human what is
@@ -581,6 +582,32 @@ impl Client {
             args["cursor"] = json!(req.cursor);
         }
         self.transport.call_typed("list_lineage", args).await
+    }
+
+    /// Mint a run-bound bearer for an interactive agent (`mint_agent_token`,
+    /// workbench backend P2-6). Refused `unsupported` on a gateway with no
+    /// signing key.
+    ///
+    /// # Errors
+    /// When the transport or the tool fails.
+    pub async fn mint_agent_token(
+        &self,
+        req: MintAgentTokenRequest,
+    ) -> Result<MintAgentTokenResponse, Error> {
+        let mut args = json!({ "skill": req.skill });
+        if !req.root_event_id.is_empty() {
+            args["root_event_id"] = json!(req.root_event_id);
+        }
+        if !req.target_page_id.is_empty() {
+            args["target_page_id"] = json!(req.target_page_id);
+        }
+        if req.ttl_secs > 0 {
+            args["ttl_secs"] = json!(req.ttl_secs);
+        }
+        if !req.trace_id.is_empty() {
+            args["trace_id"] = json!(req.trace_id);
+        }
+        self.transport.call_typed("mint_agent_token", args).await
     }
 
     /// Report the run's whole plan as a snapshot (`report_progress`). Only a

@@ -217,6 +217,13 @@ pub struct ServerConfig {
     /// `Authorization: Bearer <jwt>` header; `None` runs the
     /// gateway unauthenticated (dev / on-host use).
     pub verifier: Option<Arc<OidcVerifier>>,
+    /// The gateway's own signing identity (workbench backend P2-6):
+    /// `mint_agent_token` mints run-bound agent bearers with it. `None` =
+    /// the tool refuses `unsupported`. Built from `ESCUREL_AUTH_SIGNING_*`.
+    pub signer: Option<Arc<escurel_auth::Signer>>,
+    /// How often gateway-minted runs are swept for expiry (P2-6); `None` =
+    /// every 30 s.
+    pub minted_run_sweep: Option<std::time::Duration>,
     /// Per-tenant rate-limit + concurrency cap. When `Some`,
     /// `/mcp` debits the relevant quota dimension before
     /// dispatch. Required `verifier` to be set too (the tenant
@@ -420,6 +427,12 @@ pub(crate) struct AppState {
     pub(crate) served_tenant: Option<String>,
     pub(crate) indexer: Option<IndexerHandle>,
     pub(crate) verifier: Option<Arc<OidcVerifier>>,
+    /// The gateway's signing identity for `mint_agent_token` (P2-6).
+    pub(crate) signer: Option<Arc<escurel_auth::Signer>>,
+    /// Gateway-minted runs still open, for the expiry sweep (P2-6). Lost on
+    /// restart: a run whose token lapses across a restart is closed by
+    /// nobody (the follow-up is a durable record).
+    pub(crate) minted_runs: crate::mcp::MintedRuns,
     pub(crate) quota: Option<Arc<QuotaManager>>,
     pub(crate) tenant_store: Option<Arc<dyn TenantStore>>,
     /// Cached suspend flag for the served tenant (#247). Loaded from the
@@ -533,6 +546,8 @@ pub async fn serve(
         served_tenant,
         indexer: config.indexer.clone(),
         verifier: config.verifier.clone(),
+        signer: config.signer.clone(),
+        minted_runs: crate::mcp::MintedRuns::default(),
         quota: config.quota.clone(),
         tenant_suspended: Arc::clone(&config.tenant_suspended),
         emit_edit_events: config.emit_edit_events,
@@ -619,13 +634,24 @@ pub async fn serve(
     // abandoned draft.
     let (evict_shutdown_tx, mut evict_shutdown_rx) = oneshot::channel();
     let sweep_sessions = Arc::clone(&state.sessions);
+    // Gateway-minted runs (workbench backend P2-6) share the sweep: a token
+    // that lapsed unused closes its run as `expired`.
+    let mint_state = state.clone();
+    let mint_every = config
+        .minted_run_sweep
+        .unwrap_or(std::time::Duration::from_secs(30));
     let evict_join = tokio::spawn(async move {
         let mut tick = tokio::time::interval(EVICT_SWEEP_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut mint_tick = tokio::time::interval(mint_every);
+        mint_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = tick.tick() => {
                     sweep_sessions.evict_idle(DEFAULT_IDLE_TTL).await;
+                }
+                _ = mint_tick.tick() => {
+                    crate::mcp::sweep_expired_minted_runs(&mint_state).await;
                 }
                 _ = &mut evict_shutdown_rx => break,
             }

@@ -181,6 +181,32 @@ pub struct ReportProgressResponse {
     pub steps: u32,
 }
 
+/// `mint_agent_token` arguments (workbench backend P2-6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MintAgentTokenRequest {
+    /// The skill the agent works as (`agent:<skill>`).
+    pub skill: String,
+    /// The lineage root to work under; empty = the run is its own root.
+    pub root_event_id: String,
+    /// The page the run works on.
+    pub target_page_id: String,
+    /// Token life in seconds; 0 = the server's default (1800).
+    pub ttl_secs: u64,
+    pub trace_id: String,
+}
+
+/// `mint_agent_token` result: the bearer and the run it names.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MintAgentTokenResponse {
+    pub token: String,
+    pub run_id: String,
+    pub root_event_id: String,
+    pub subject: String,
+    pub expires_at: String,
+}
+
 /// `list_lineage` arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]

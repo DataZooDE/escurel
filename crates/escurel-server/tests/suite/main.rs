@@ -74,6 +74,7 @@ mod mcp_lifecycle;
 mod mcp_session_tools;
 mod meta_skill;
 mod metrics_real;
+mod mint_agent_token;
 mod multi_issuer_groups;
 mod openapi_surface;
 mod pack_export;

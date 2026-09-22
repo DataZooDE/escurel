@@ -704,6 +704,29 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "mint_agent_token",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Events),
+            "Mint a run-bound bearer for an interactive agent (the workbench): \
+                 `agent:<skill>` acting for YOU (`act.sub`), with your own authority \
+                 and never more, carrying a fresh `run_id` so drafts it makes are \
+                 stamped and `report_progress` accepts it. The run starts here \
+                 (`run-started`, harness `workbench`) and is closed `expired` if the \
+                 token lapses. Refused `unsupported` on a gateway with no signing key.",
+            json!({
+                "type": "object",
+                "required": ["skill"],
+                "properties": {
+                    "skill": { "type": "string", "description": "The skill the agent works as (`agent:<skill>`)." },
+                    "root_event_id": { "type": "string", "description": "The lineage root to work under; default: the run is its own root." },
+                    "target_page_id": { "type": "string", "description": "The page the run works on (where run-started/finished attach)." },
+                    "ttl_secs": { "type": "integer", "minimum": 1, "maximum": 14400, "description": "Token life; default 1800." },
+                    "trace_id": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
             "report_progress",
             Execution::Orchestration,
             Scope::Agent,
@@ -1798,6 +1821,13 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "root_event_id": { "type": "string" },
             "nodes": { "type": "array", "description": "[{id, type: event|run|changeset|draft, parent, state, …}]" },
             "next_cursor": { "type": "string", "description": "present iff more events lie past the page" }
+        })),
+        "mint_agent_token" => obj(json!({
+            "token": { "type": "string" },
+            "run_id": { "type": "string" },
+            "root_event_id": { "type": "string" },
+            "subject": { "type": "string" },
+            "expires_at": { "type": "string" }
         })),
         "report_progress" => obj(json!({
             "ok": { "type": "boolean" },
