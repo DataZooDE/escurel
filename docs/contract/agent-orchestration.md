@@ -439,8 +439,8 @@ the next boot).
 **Open follow-ups from the P2 second-opinion review (2026-09-22).**
 (1) Done (H3, 2026-09-22): `events.seq` is the ingestion position; label,
 lineage and run listings order and resume by it. (2) Done (H2, 2026-09-22): the tails keep their cursor in the run
-ledger and skip requests older than `ESCUREL_RUNNER_TAIL_MAX_AGE`. (3) Gateway-minted runs (`mint_agent_token`) are
-swept for expiry from an in-memory list; a restart forgets them.
+ledger and skip requests older than `ESCUREL_RUNNER_TAIL_MAX_AGE`. (3) Done (H4, 2026-09-22): the expiry sweep derives the open
+gateway-minted runs from the events; a restart forgets nothing.
 
 *Original finding.* **Promotion did not cascade (found 2026-09-22 by the
 workbench backend's end-to-end test).** The header above says "cascade fires on

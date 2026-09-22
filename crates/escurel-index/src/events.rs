@@ -155,6 +155,14 @@ fn select_cols(table: &str) -> String {
     )
 }
 
+/// A gateway-minted run whose token lapsed with no terminal (H4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpiredGatewayRun {
+    pub run_id: String,
+    pub root_event_id: Option<String>,
+    pub instance_page_id: Option<String>,
+}
+
 /// The default list surfaces' filter: bookkeeping stays out of a human's
 /// (or an agent's) view unless asked for with `include_system`.
 const HIDE_SYSTEM: &str = "COALESCE(kind, 'user') <> 'system'";
@@ -769,6 +777,50 @@ impl Indexer {
             Some(t) => conn.execute(&sql, params![run_id, t, run_id, t])?,
         };
         Ok(())
+    }
+
+    /// Gateway-minted runs whose token has lapsed with no terminal yet
+    /// (hardening H4): `run-started` rows with `provenance.runner.minted_by
+    /// = gateway` and an `expires_at` before `now`, for which no
+    /// `run-finished` exists. Derived from the events, so a gateway restart
+    /// forgets nothing it minted.
+    pub async fn expired_gateway_runs(
+        &self,
+        now_rfc3339: &str,
+    ) -> Result<Vec<ExpiredGatewayRun>, IndexerError> {
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+        let scope = if tenant.is_some() {
+            " AND s.tenant = ?"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT s.run_id, s.root_event_id, s.instance_page_id \
+             FROM {table} s \
+             WHERE s.label_skill = 'escurel:run' AND s.title = 'run-started' \
+               AND json_extract_string(CAST(s.provenance AS VARCHAR), '$.runner.minted_by') = 'gateway' \
+               AND json_extract_string(CAST(s.provenance AS VARCHAR), '$.runner.expires_at') < ?{scope} \
+               AND s.run_id IS NOT NULL \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM {table} f WHERE f.run_id = s.run_id AND f.title = 'run-finished'\
+               )"
+        );
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let map = |row: &duckdb::Row<'_>| {
+            Ok(ExpiredGatewayRun {
+                run_id: row.get::<_, String>(0)?,
+                root_event_id: row.get::<_, Option<String>>(1)?,
+                instance_page_id: row.get::<_, Option<String>>(2)?,
+            })
+        };
+        let rows = match &tenant {
+            None => stmt.query_map(params![now_rfc3339], map)?,
+            Some(t) => stmt.query_map(params![now_rfc3339, t], map)?,
+        }
+        .collect::<duckdb::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Keep only the newest `keep` rows under `label_skill` for the tenant

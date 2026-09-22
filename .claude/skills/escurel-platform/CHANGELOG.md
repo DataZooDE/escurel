@@ -4,6 +4,13 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.63 — minted runs expire across restarts
+
+- The expiry sweep for `mint_agent_token` runs reads what is still open
+  from the events themselves (a gateway-minted `run-started` whose
+  `expires_at` passed with no `run-finished`), so a gateway restart no
+  longer forgets a run its predecessor minted.
+
 ## 0.6.62 — tails page by ingestion order (`events.seq`)
 
 - `list_events` by `label_skill`, `root_event_id` or `run_id` is ordered
