@@ -167,6 +167,46 @@ pub struct ReportProgressResponse {
     pub steps: u32,
 }
 
+/// `list_lineage` arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListLineageRequest {
+    pub root_event_id: String,
+    /// `events` | `runs` | `drafts` (drafts implies changesets); empty = all.
+    pub include: Vec<String>,
+    /// Events per page; `0` = the server's default.
+    pub limit: u32,
+    pub cursor: String,
+}
+
+/// One node of a lineage: `id`, `type` (`event` | `run` | `changeset` |
+/// `draft`), `parent` (`null` for the root, empty here), `state`, and the
+/// type's own attributes flattened into `extra`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct LineageNode {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(deserialize_with = "null_as_default")]
+    pub parent: String,
+    #[serde(deserialize_with = "null_as_default")]
+    pub state: String,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+/// `list_lineage` result: the nodes under a root, plus the resume cursor
+/// over the lineage's events (nodes are keyed by id — merge pages by id).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ListLineageResponse {
+    pub root_event_id: String,
+    pub nodes: Vec<LineageNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
 /// `assign_event` arguments. MCP wire keys: `event_id`,
 /// `instance_page_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

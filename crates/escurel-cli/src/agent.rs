@@ -309,6 +309,22 @@ pub enum RunCmd {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Everything under a root event — its runs, cascades, changesets and
+    /// drafts — as nodes with parents (`list_lineage`).
+    Lineage {
+        /// The root event id.
+        #[arg(long)]
+        root_event: String,
+        /// `events`, `runs`, `drafts`; repeatable. Empty = all.
+        #[arg(long = "include")]
+        include: Vec<String>,
+        /// Events per page; 0 = the server's default.
+        #[arg(long, default_value_t = 0)]
+        limit: u32,
+        /// Resume cursor from a previous page.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
 }
 
 /// Held writes — the review queue for `autonomy: review` skills.
@@ -938,6 +954,22 @@ async fn run_cmd(client: &Client, cmd: RunCmd) -> Result<Value> {
                 "run_id": resp.run_id,
                 "steps": resp.steps,
             }))
+        }
+        RunCmd::Lineage {
+            root_event,
+            include,
+            limit,
+            cursor,
+        } => {
+            let resp = client
+                .list_lineage(escurel_client::ListLineageRequest {
+                    root_event_id: root_event,
+                    include,
+                    limit,
+                    cursor: cursor.unwrap_or_default(),
+                })
+                .await?;
+            Ok(serde_json::to_value(resp)?)
         }
     }
 }

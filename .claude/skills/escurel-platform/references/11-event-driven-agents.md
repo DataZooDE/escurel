@@ -219,6 +219,27 @@ Best-effort: a decision never fails because the bus could not be told.
 Hidden from the default list surfaces like every system event; pushed to
 `event_subscribe` subscribers like every event.
 
+## Reading a lineage: `list_lineage`
+
+`list_lineage { root_event_id }` returns the whole thread under a root
+event as a flat list of nodes for you to fold into a tree:
+
+| type | id | parent | state | carries |
+|---|---|---|---|---|
+| `event` | the event id | the run that emitted it (`provenance.runner.parent_run_id`); `null` for the root | `inbox` / `processed` | `label_skill`, `title`, `at`, `kind`, `instance_page_id`, `parent_event_id`, `depth` |
+| `run` | the run id | the event that triggered it | `running` until its `run-finished`, then `processed` / `failed` / `dead_letter` | `harness`, `attempt`, `max_attempts`, `started_at`, `finished_at`, `summary`, `produced_instance`, `plan` (newest `run-progress`), `autonomy`, `target_page_id` |
+| `changeset` | the changeset id | the run that proposed it | `open` / `promoted` / `discarded` / `mixed` | `drafts`, `author` |
+| `draft` | the draft id | its changeset, else its run | `open` / `promoted` / `discarded` | `target_page_id`, `author`, `decided_by`, `event_id` |
+
+Runs are folded from their `escurel:run` rows; `escurel:review` rows are
+not nodes (the drafts carry that state). A draft whose run wrote no events
+(a static-bearer dev runner) hangs off the root, its `run_id` still set.
+ACL fails closed per node: an unreadable node is absent with its subtree,
+and an unreadable or unknown root is an empty tree — never an error. The
+events half is paged (`limit`, default 500; `next_cursor`), the drafts half
+is not; nodes are keyed by id, so merge pages by id. Then subscribe with
+`event_subscribe { filters: { root_event_id } }` for the deltas.
+
 ## Watching the bus from an open session: `event_subscribe`
 
 An agent that cannot host the HTTP webhook (a locally-running assistant,

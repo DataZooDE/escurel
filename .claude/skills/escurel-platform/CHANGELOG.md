@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.45 — `list_lineage` (workbench backend P1)
+
+- New agent tool `list_lineage {root_event_id, include?, limit?, cursor?}` →
+  `{root_event_id, nodes:[{id, type, parent, state, …}], next_cursor?}`:
+  everything under a root event — the root and its cascade events, the runs
+  folded from their `escurel:run` rows (state, harness, attempts, summary,
+  newest plan), the changesets and drafts those runs proposed. Parents
+  alternate event → run → {changeset → draft | draft | event}; the client
+  folds the tree. A node the caller may not read is absent with its subtree.
+  CLI: `escurel run lineage --root-event <id> [--include events|runs|drafts]`.
+
 ## 0.6.44 — review transitions on the bus (workbench backend P1)
 
 - Every draft / changeset transition is published as an `escurel:review`
