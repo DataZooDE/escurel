@@ -1089,6 +1089,7 @@ mod tests {
     #[test]
     fn the_event_payload_carries_provenance_when_there_is_any() {
         let trigger = Trigger {
+            is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "email".into(),
@@ -1208,6 +1209,7 @@ mod tests {
             harness: String::new(),
         };
         let trigger = |wf: Option<escurel_types::WorkflowProvenance>| Trigger {
+            is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "verify-vote".into(),
@@ -1248,6 +1250,7 @@ mod tests {
     fn an_assigned_trigger_names_its_target_page_in_the_instructions() {
         let page = "markdown/instances/deep-research/dr-42.md";
         let mut trigger = Trigger {
+            is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "deep-research".into(),
@@ -1332,6 +1335,7 @@ mod tests {
     fn a_large_event_body_does_not_ride_in_the_instructions() {
         const MAX_ARG_STRLEN: usize = 32 * 4096;
         let trigger = Trigger {
+            is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "meeting".into(),
@@ -1366,6 +1370,7 @@ mod tests {
     #[test]
     fn instructions_carry_framing_skill_body_and_event() {
         let trigger = Trigger {
+            is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "note".into(),
@@ -1410,6 +1415,7 @@ mod tests {
     #[test]
     fn new_instance_input_tells_the_agent_to_create_one() {
         let trigger = Trigger {
+            is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "note".into(),

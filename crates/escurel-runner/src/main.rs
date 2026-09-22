@@ -530,17 +530,26 @@ fn gate_and_enqueue(
     trigger: Trigger,
     via: &str,
 ) -> bool {
-    // Fail-closed (async-ops F1): an operation-status record is a KB-visible
-    // event, never a dispatchable run. Drop it BEFORE `begin_run` so it creates
-    // no ledger row — the reducer writes one such event per status transition,
-    // and without this each would spawn (and dead-letter) a run. This is the
-    // single chokepoint both the poller and the webhook route through.
-    if trigger.label_skill == escurel_runner_core::OPERATION_STATUS_LABEL {
+    // Fail-closed (async-ops F1, generalised for the workbench backend): a
+    // `kind: system` event and anything under the reserved `escurel:` label
+    // namespace is bookkeeping ABOUT a run — an operation-status record, a
+    // `run-started` / `run-finished`, a review transition, runner health —
+    // never a dispatchable run. Drop it BEFORE `begin_run` so it creates no
+    // ledger row: the runner writes one such event per transition, and
+    // without this each would spawn (and dead-letter) a run — a runner
+    // dispatching its own `run-finished` hands itself a job per run, forever.
+    // The gateway hides these from the inbox the poller reads; the webhook
+    // path does not, which is why this is the single chokepoint both routes
+    // pass through. (`OPERATION_STATUS_LABEL` is `escurel:run-status`, one
+    // member of the namespace.)
+    if trigger.is_system || trigger.label_skill.starts_with("escurel:") {
         tracing::debug!(
             target: "escurel_runner",
             via,
             event_id = %trigger.event_id,
-            "gate: dropping reserved operation-status event (not dispatchable)"
+            label_skill = %trigger.label_skill,
+            reason = if trigger.is_system { "system_kind" } else { "reserved_label" },
+            "gate: dropping system / reserved-label event (not dispatchable)"
         );
         return false;
     }
@@ -967,6 +976,7 @@ async fn dlq_requeue(
             // event immediately. The ledger row is now `pending` (re-claimed),
             // so we enqueue onto the dispatch queue under a fresh quota slot.
             let trigger = Trigger {
+                is_system: false,
                 tenant: tenant.clone(),
                 event_id: event_id.clone(),
                 label_skill: String::new(),
@@ -2454,6 +2464,7 @@ mod tests {
 
     fn trigger_with_label(event_id: &str, label: &str) -> Trigger {
         Trigger {
+            is_system: false,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),
             label_skill: label.to_owned(),

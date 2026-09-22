@@ -119,6 +119,7 @@ async fn packages_skill_body_as_instructions_with_event_and_instance() {
 
     // 4. Build the trigger and package it.
     let trigger = Trigger {
+        is_system: false,
         tenant: TENANT.to_owned(),
         event_id: event_id.clone(),
         label_skill: SKILL.to_owned(),
@@ -249,6 +250,7 @@ async fn workflow_step_trigger_is_packaged_without_the_event_surface() {
     .expect("config");
 
     let trigger = Trigger {
+        is_system: false,
         tenant: TENANT.to_owned(),
         event_id: "STEP-EVT".to_owned(),
         label_skill: SKILL.to_owned(),

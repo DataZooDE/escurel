@@ -144,8 +144,10 @@ Every event carries three more fields on the wire: `kind`, `root_event_id`,
   `run-finished` would be a forged run. A system event captured with an
   `instance_page_id` is stored `processed` on that page at once (no
   `assign_event`: it was never inbox work); without one it sits unassigned.
-  **The runner never dispatches a system event**, and `list_inbox` /
-  `list_events` hide them unless you pass `include_system: true` — so a
+  **The runner never dispatches a system event, nor anything under an
+  `escurel:` label** — its gate drops both before a ledger row exists, on
+  the webhook path as well as the poll path — and `list_inbox` /
+  `list_events` hide them unless you pass `include_system: true`, so a
   consumer that never asks sees exactly what it saw before.
 - **`root_event_id`** is the lineage root. A user event that names none is
   its own root; a cascade hop and a run event inherit it from
