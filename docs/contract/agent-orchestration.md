@@ -441,9 +441,8 @@ the next boot).
 `(at, event_id)` cursor; the gateway now stamps control requests with its
 own clock, but a same-microsecond tie with a caller-supplied `event_id`
 can still sort before the cursor — the durable fix is a monotonic
-ingestion sequence on `events`, a schema change. (2) The tails keep no
-durable cursor: a runner restart catches up to the end of each label and
-acts on nothing older. (3) Gateway-minted runs (`mint_agent_token`) are
+ingestion sequence on `events`, a schema change. (2) Done (H2, 2026-09-22): the tails keep their cursor in the run
+ledger and skip requests older than `ESCUREL_RUNNER_TAIL_MAX_AGE`. (3) Gateway-minted runs (`mint_agent_token`) are
 swept for expiry from an in-memory list; a restart forgets them.
 
 *Original finding.* **Promotion did not cascade (found 2026-09-22 by the

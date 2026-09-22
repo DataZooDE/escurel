@@ -302,6 +302,7 @@ async fn main() -> anyhow::Result<()> {
             source,
             config.poll_interval,
             Arc::clone(&ledger),
+            config.tail_max_age,
             Arc::clone(&draining),
         ));
     }
@@ -380,6 +381,7 @@ async fn main() -> anyhow::Result<()> {
             tenant.clone(),
             source.clone(),
             config.poll_interval,
+            config.tail_max_age,
         ));
         tokio::spawn(status_loop(
             state.clone(),
@@ -2776,19 +2778,32 @@ async fn poll_loop(
 struct LabelTail {
     label: &'static str,
     cursor: Option<String>,
-    /// Set once the boot catch-up reached the END of the label. Until it
-    /// does, `poll` keeps catching up and acts on nothing — a transient
-    /// gateway error at boot must not turn history into fresh requests
-    /// (codex second-opinion review of P2, P1).
+    /// Set once the tail is positioned: either resumed from the cursor the
+    /// ledger kept (hardening H2), or caught up to the END of the label on
+    /// a first boot. Until it is, `poll` keeps catching up and acts on
+    /// nothing — a transient gateway error at boot must not turn history
+    /// into fresh requests (codex second-opinion review of P2, P1).
     caught_up: bool,
+    /// Where the cursor is persisted, so a restart resumes here.
+    ledger: Arc<Ledger>,
+    /// A request older than this is skipped, not acted on: the tail may
+    /// resume days later, and a stale `cancel` must not fire.
+    max_age: std::time::Duration,
 }
 
 impl LabelTail {
-    fn new(label: &'static str) -> Self {
+    fn new(label: &'static str, ledger: Arc<Ledger>, max_age: std::time::Duration) -> Self {
+        let persisted = ledger.tail_cursor(label).ok().flatten();
+        let resumed = persisted.is_some();
+        if resumed {
+            tracing::info!(target: "escurel_runner", label, "tail: resuming from the persisted cursor");
+        }
         Self {
             label,
-            cursor: None,
-            caught_up: false,
+            cursor: persisted,
+            caught_up: resumed,
+            ledger,
+            max_age,
         }
     }
 
@@ -2802,13 +2817,26 @@ impl LabelTail {
         }
     }
 
+    fn remember(&mut self, cursor: Option<String>) {
+        if let Some(c) = cursor {
+            if let Err(e) = self.ledger.put_tail_cursor(self.label, &c) {
+                tracing::warn!(target: "escurel_runner", label = self.label, error = %e, "tail: cursor not persisted");
+            }
+            self.cursor = Some(c);
+        }
+    }
+
     async fn catch_up(&mut self, client: &Client) {
+        // A tail resumed from its persisted cursor is already positioned:
+        // paging to the end here would swallow, as history, exactly the
+        // requests filed while the runner was down.
+        if self.caught_up {
+            return;
+        }
         loop {
             match client.list_events(self.request()).await {
                 Ok(page) => {
-                    if let Some(c) = page.resume_cursor {
-                        self.cursor = Some(c);
-                    }
+                    self.remember(page.resume_cursor);
                     if page.next_cursor.is_none() {
                         self.caught_up = true;
                         return;
@@ -2822,6 +2850,30 @@ impl LabelTail {
         }
     }
 
+    /// Is this event too old to act on? Unparseable or missing `at` is
+    /// treated as fresh: the gateway stamps every reserved-label event, so
+    /// that is a bug to see, not a request to drop.
+    fn too_old(&self, event: &escurel_types::Event) -> bool {
+        let at = event.at.trim();
+        if at.is_empty() {
+            return false;
+        }
+        let parsed = chrono::DateTime::parse_from_rfc3339(at)
+            .map(|d| d.with_timezone(&chrono::Utc))
+            .or_else(|_| {
+                chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M:%S%.f")
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M:%S%.f"))
+                    .map(|n| n.and_utc())
+            });
+        match parsed {
+            Ok(t) => {
+                let age = chrono::Utc::now().signed_duration_since(t);
+                age.to_std().is_ok_and(|a| a > self.max_age)
+            }
+            Err(_) => false,
+        }
+    }
+
     async fn poll(&mut self, client: &Client) -> Vec<escurel_types::Event> {
         if !self.caught_up {
             self.catch_up(client).await;
@@ -2830,10 +2882,19 @@ impl LabelTail {
         }
         match client.list_events(self.request()).await {
             Ok(page) => {
-                if let Some(c) = page.resume_cursor {
-                    self.cursor = Some(c);
+                self.remember(page.resume_cursor);
+                let (fresh, stale): (Vec<_>, Vec<_>) =
+                    page.events.into_iter().partition(|e| !self.too_old(e));
+                for e in &stale {
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        label = self.label,
+                        event_id = %e.event_id,
+                        at = %e.at,
+                        "tail: request older than ESCUREL_RUNNER_TAIL_MAX_AGE; skipped, not replayed"
+                    );
                 }
-                page.events
+                fresh
             }
             Err(e) => {
                 tracing::warn!(target: "escurel_runner", label = self.label, error = %e, "tail: poll failed; will retry");
@@ -2858,6 +2919,7 @@ async fn promotion_tail_loop(
     tokens: Arc<escurel_runner_core::TokenSource>,
     interval: std::time::Duration,
     ledger: Arc<Ledger>,
+    tail_max_age: std::time::Duration,
     draining: Arc<std::sync::atomic::AtomicBool>,
 ) {
     use escurel_runner_core::{
@@ -2872,7 +2934,7 @@ async fn promotion_tail_loop(
         return;
     };
     let self_subject = tokens.subject();
-    let mut tail = LabelTail::new(REVIEW_LABEL);
+    let mut tail = LabelTail::new(REVIEW_LABEL, Arc::clone(&ledger), tail_max_age);
     tail.catch_up(&client).await;
     tracing::info!(target: "escurel_runner", tenant = %tenant, "promotion tail started");
 
@@ -3118,6 +3180,7 @@ async fn control_tail_loop(
     tenant: String,
     tokens: Arc<escurel_runner_core::TokenSource>,
     interval: std::time::Duration,
+    tail_max_age: std::time::Duration,
 ) {
     let Some(client) = connect_now(&gateway_url, &tokens).await else {
         tracing::error!(
@@ -3126,7 +3189,7 @@ async fn control_tail_loop(
         );
         return;
     };
-    let mut tail = LabelTail::new(RUN_CONTROL_LABEL);
+    let mut tail = LabelTail::new(RUN_CONTROL_LABEL, Arc::clone(&state.ledger), tail_max_age);
     tail.catch_up(&client).await;
     tracing::info!(target: "escurel_runner", tenant = %tenant, "run-control tail started");
 

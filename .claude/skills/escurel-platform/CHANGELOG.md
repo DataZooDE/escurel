@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.61 — the runner's label tails resume where they left off
+
+- The tails on `escurel:review` and `escurel:run-control` keep their
+  cursor in the run ledger (`tail_cursors`), so a request filed while the
+  runner was down is acted on after a restart — if it is younger than
+  `ESCUREL_RUNNER_TAIL_MAX_AGE` (default `10m`); an older one is skipped
+  with a warning, never replayed (a week-old `cancel` must not fire). A
+  first boot still catches up to the end of the label without acting.
+
 ## 0.6.60 — the runner's run ledger is a DuckDB file
 
 - `ESCUREL_RUNNER_LEDGER_PATH` now names a DuckDB file (default

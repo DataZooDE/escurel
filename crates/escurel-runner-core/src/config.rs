@@ -290,6 +290,12 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_POLL_INTERVAL` (default
     /// [`DEFAULT_POLL_INTERVAL`]).
     pub poll_interval: Duration,
+    /// How old a request on a tailed label may be and still be acted on
+    /// after a restart (hardening H2): the tails resume from their persisted
+    /// cursor, and anything older than this is skipped rather than replayed
+    /// (a week-old `cancel` must not fire). Same duration grammar as
+    /// `poll_interval`. Source: `ESCUREL_RUNNER_TAIL_MAX_AGE` (default 10m).
+    pub tail_max_age: Duration,
     /// How often the runner reports its own health as an
     /// `escurel:runner-status` event when nothing changed (workbench
     /// backend P2-4); a change is reported at once. Same duration grammar
@@ -584,6 +590,12 @@ impl RunnerConfig {
             _ => DEFAULT_POLL_INTERVAL,
         };
 
+        let tail_max_age = match lookup("ESCUREL_RUNNER_TAIL_MAX_AGE") {
+            Some(raw) if !raw.is_empty() => {
+                parse_duration(&raw).ok_or(ConfigError::InvalidPollInterval { value: raw })?
+            }
+            _ => Duration::from_secs(10 * 60),
+        };
         let status_interval = match lookup("ESCUREL_RUNNER_STATUS_INTERVAL") {
             Some(raw) if !raw.is_empty() => {
                 parse_duration(&raw).ok_or(ConfigError::InvalidPollInterval { value: raw })?
@@ -769,6 +781,7 @@ impl RunnerConfig {
             seen_cap,
             poll_interval,
             status_interval,
+            tail_max_age,
             harness_allow,
             runner_id,
             cancel_grace,
