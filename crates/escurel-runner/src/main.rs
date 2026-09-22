@@ -202,7 +202,7 @@ async fn main() -> anyhow::Result<()> {
     {
         match Client::connect(&config.gateway_url, SecretString::from(token)).await {
             Ok(client) => {
-                let report = recover_pending(&ledger, &client).await;
+                let report = recover_pending(&ledger, &client, config.emit_run_events).await;
                 if report.swept > 0 {
                     tracing::info!(
                         target: "escurel_runner",
