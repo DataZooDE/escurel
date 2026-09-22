@@ -213,6 +213,15 @@ Three properties are worth relying on:
 A draft already decided answers `{code: already_decided}` naming which
 decision was taken — deciding twice is not expressible.
 
+**Every transition is on the bus.** `create_draft`, `promote_draft`,
+`discard_draft`, `promote_changeset` and `discard_changeset` each publish
+an `escurel:review` system event on the target page (`draft-created`,
+`draft-promoted`, `draft-discarded`, `changeset-promoted`,
+`changeset-discarded`, `changeset-already_decided`), with
+`provenance.review {draft_id, changeset_id, run_id, root_event_id,
+decided_by, already_decided}` — see *Review events* in `references/11`. A
+review queue subscribes instead of polling.
+
 Note this list is **curated, not exhaustive** — the server exposes 81 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,

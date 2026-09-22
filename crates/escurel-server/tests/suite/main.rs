@@ -96,6 +96,7 @@ mod reader_role_crdt;
 mod reader_role_events;
 mod remote_backend_tools;
 mod report_progress;
+mod review_events;
 mod schema_ergonomics;
 mod self_packaging;
 mod serve_demo;

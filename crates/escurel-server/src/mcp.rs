@@ -876,11 +876,13 @@ async fn dispatch_tools_call(
         "promote_changeset" => {
             tool_promote_changeset(state, indexer, caller, state.write_acl, params.arguments).await
         }
-        "discard_changeset" => tool_discard_changeset(indexer, caller, params.arguments).await,
+        "discard_changeset" => {
+            tool_discard_changeset(state, indexer, caller, params.arguments).await
+        }
         "promote_draft" => {
             tool_promote_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }
-        "discard_draft" => tool_discard_draft(indexer, caller, params.arguments).await,
+        "discard_draft" => tool_discard_draft(state, indexer, caller, params.arguments).await,
         "update_page" => {
             tool_update_page(state, indexer, caller, state.write_acl, params.arguments).await
         }

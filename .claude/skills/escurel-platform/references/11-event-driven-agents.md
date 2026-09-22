@@ -197,6 +197,28 @@ is reconciled on the next boot, and its `run-finished` is written then
 (`provenance.runner.harness: recovery`, `attempts: 0`) — so a terminal the
 ledger reached is never missing from the projection.
 
+## Review events (`escurel:review`)
+
+Every held-write transition is a `kind: system` event under
+`label_skill: escurel:review` on the draft's target page, so a review queue
+and a lineage tree update live from the bus instead of polling
+`list_drafts`:
+
+| title | when |
+|---|---|
+| `draft-created` | `create_draft` held a write (also for the runner's per-run agent) |
+| `draft-promoted` | `promote_draft` landed it (`already_decided: true` when the bytes had already landed and the decision merely completed) |
+| `draft-discarded` | `discard_draft`, or a stale predecessor superseded by a re-draft (`body.reason` says which) |
+| `changeset-promoted` / `changeset-discarded` | the whole-changeset decision, after its per-member events |
+| `changeset-already_decided` | a retried decision on a changeset already decided |
+
+`provenance.review` carries `{draft_id, changeset_id, run_id,
+root_event_id, decided_by, already_decided}`. The run lineage comes from
+the draft ROW (what the runner signed into it), never from the caller.
+Best-effort: a decision never fails because the bus could not be told.
+Hidden from the default list surfaces like every system event; pushed to
+`event_subscribe` subscribers like every event.
+
 ## Watching the bus from an open session: `event_subscribe`
 
 An agent that cannot host the HTTP webhook (a locally-running assistant,
