@@ -2530,8 +2530,10 @@ dependencies = [
  "rsa",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
+ "ulid",
  "wiremock",
 ]
 
@@ -2782,6 +2784,7 @@ version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "escurel-auth",
  "escurel-client",
  "escurel-runner-workflow",
  "escurel-types",

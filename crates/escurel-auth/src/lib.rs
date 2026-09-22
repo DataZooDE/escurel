@@ -18,7 +18,12 @@
 //! ```
 
 mod jwks;
+mod signer;
 mod verifier;
 
 pub use jwks::{Jwks, JwksCache};
+pub use signer::{
+    DELEGATION_PURPOSE, PURPOSE_CLAIM, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM,
+    RunClaims as MintRunClaims, SignError, Signer, TENANT_CLAIM, TRACE_ID_CLAIM,
+};
 pub use verifier::{AuthContext, AuthError, OidcConfig, OidcVerifier, Role, RunClaims};

@@ -177,16 +177,13 @@ pub enum AuthError {
 /// audit lineage only — never for an authorization decision (#510).
 const ACT_CLAIM: &str = "act";
 
-const DELEGATION_PURPOSE_CLAIM: &str = "purpose";
-const DELEGATION_PURPOSE: &str = "internal_delegation";
+use crate::signer::{DELEGATION_PURPOSE, PURPOSE_CLAIM as DELEGATION_PURPOSE_CLAIM};
 
 /// The run-identity claims a runner mints onto a per-run token (workbench
 /// backend P1). Kept in lock-step with
 /// `escurel_runner_core::auth::{RUN_ID_CLAIM, ROOT_EVENT_ID_CLAIM, TRACE_ID_CLAIM}`
 /// — same dependency direction as the delegation constants above.
-const RUN_ID_CLAIM: &str = "run_id";
-const ROOT_EVENT_ID_CLAIM: &str = "root_event_id";
-const TRACE_ID_CLAIM: &str = "trace_id";
+use crate::signer::{ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, TRACE_ID_CLAIM};
 
 /// The run a per-run token belongs to, as the runner minted it: the ledger
 /// run id, the lineage root event, and the lineage's trace when there is
