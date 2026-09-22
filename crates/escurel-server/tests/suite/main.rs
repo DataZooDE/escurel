@@ -132,6 +132,7 @@ mod writer_lease;
 mod ws;
 mod ws_attach_acl;
 mod ws_broadcast;
+mod ws_event_filters;
 mod ws_event_subscribe;
 mod ws_search_subscribe;
 mod ws_session;

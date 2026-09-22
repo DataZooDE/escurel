@@ -1435,7 +1435,7 @@ Message types:
 | `resync_required` | S→C | `{ session, skipped, message }` — this peer fell behind |
 | `search_subscribe` | C→S | `{ subscription_id, q, k?, filter? }` — live search: runs the real ACL-fused search now (the initial `search_event` is the ack) and re-runs it on every index mutation, pushing updated hits; a missing/empty `q` answers `{type:"error", code:"invalid_subscription"}`; presence-only connections |
 | `search_event` | S→C | `{ subscription_id, hits: [...] }` — the **current results** for the subscribed query, never a delta. A reconnecting client therefore needs no replay: it re-sends `search_subscribe` and the initial frame already carries whatever changed while it was away (asserted by `a_resubscribe_carries_what_changed_while_the_client_was_gone`). Subscriptions do not survive the socket, and are ACL-fused on every re-run, not only at subscribe time (`a_subscription_is_not_a_side_channel_around_the_acl`) |
-| `event_subscribe` | C→S | `{ subscription_id, since_event_id? }` — push freshly captured bus events (#333); presence-only connections |
+| `event_subscribe` | C→S | `{ subscription_id, since_event_id?, filters? }` — push freshly captured bus events (#333); presence-only connections. `filters: { root_event_id?, run_id?, label_skill?, kind?, instance_page_id? }` narrows the push server-side (before the per-event ACL); a malformed filter answers `{type:"error", code:"invalid_subscription"}` and subscribes nothing |
 | `event_subscribe_ack` | S→C | `{ subscription_id }` — subscription is live |
 | `event` | S→C | `{ subscription_id, event: <Event>, replayed? }` — one captured event this caller may read (`ESCUREL_EVENT_ACL` filtered, same rule as `list_inbox`); `replayed: true` marks catch-up frames |
 | `event_lagged` | S→C | `{ subscription_id, skipped, message }` — push stream has gaps; poll `list_inbox` to catch up |
@@ -1460,8 +1460,16 @@ A client that wants live co-editing AND event push holds two sockets.
 
 ### Resume (`since_event_id`)
 
-A reconnecting subscriber passes the last event id it processed as
-`since_event_id`: after the ack, the **still-inbox** events captured
+Two shapes, chosen by the filter. A subscription scoped to a lineage
+(`filters.root_event_id` or `filters.run_id`) resumes from that lineage's
+own **event log**, any status — gap-free for the thread: a run event
+stored `processed` while the socket was down is replayed, which the inbox
+resume below could never do. Run events carry non-ULID ids, so they
+compare above any `since_event_id` and are replayed on every resume —
+dedupe by `event_id`. The bound is the list cap (10 000 rows).
+
+Otherwise, a reconnecting subscriber passes the last event id it
+processed as `since_event_id`: after the ack, the **still-inbox** events captured
 after that id are replayed oldest-first, marked `replayed: true`,
 before the live stream. This is a **best-effort, inbox-only** resume,
 not a gap-free one: the replay reads `list_inbox`, which is a queue,

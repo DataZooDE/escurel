@@ -257,6 +257,21 @@ polling (#333, shipped):
 4. on `{ "type": "event_lagged", "skipped": n }` the push stream has
    gaps — poll `list_inbox` once to catch up, keep the subscription.
 
+**Filters.** `{ "type": "event_subscribe", "subscription_id": …,
+"filters": { "root_event_id": "<root>" } }` narrows the push server-side
+(before the per-event ACL) to one lineage; `run_id`, `label_skill`,
+`kind` (`user` | `system`) and `instance_page_id` work the same way and
+combine. A workbench watching a thread therefore gets exactly that
+thread — its cascades, its runs' `escurel:run` rows, its `escurel:review`
+transitions — and nothing else. A malformed filter answers
+`{ "type": "error", "code": "invalid_subscription" }` and subscribes
+nothing.
+
+**Resume.** With a `root_event_id` or `run_id` filter, `since_event_id`
+replays from the lineage's own event log — any status, system rows
+included — so a run event stored `processed` while you were away is
+replayed too (gap-free for the thread; dedupe by `event_id`, run events
+carry non-ULID ids and replay on every resume). Without a lineage filter,
 pass `since_event_id` (the last event id you processed) on the
 subscribe frame to resume: the still-**inbox** events after that id
 replay oldest-first with `replayed: true` before the live stream —
