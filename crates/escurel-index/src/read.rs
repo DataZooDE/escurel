@@ -69,6 +69,18 @@ pub struct SkillInfo {
     /// value — see [`Autonomy`] for why those two collapse rather than the
     /// unrecognised one resolving to a policy.
     pub autonomy: Option<Autonomy>,
+    /// `summary:` — the one-line purpose the workbench shows in a skill
+    /// list (workbench backend P2-7). `None` when absent.
+    pub summary: Option<String>,
+    /// `harness:` — the adapter this skill asks to run on. Advisory here;
+    /// the runner honours it within its allow-list.
+    pub harness: Option<String>,
+    /// `actions:` — the skills this one may fan out to (cascade targets).
+    /// Empty when undeclared: no restriction.
+    pub actions: Vec<String>,
+    /// `cascade:` — where a confirmed write cascades (`target`: a page id or
+    /// `produced`) and how deep (`max_depth`). `None` when undeclared.
+    pub cascade: Option<CascadePolicy>,
     /// The parameters ONE RUN of this skill takes (the `params:` block,
     /// heron#11 / CR-7), in declaration order. Empty for every skill that
     /// declares none — which is every skill that predates the key.
@@ -559,6 +571,32 @@ impl Autonomy {
     }
 }
 
+/// A skill's `cascade:` block (workbench backend P2-7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CascadePolicy {
+    /// A page id, or the sentinel `produced` (the page the run wrote).
+    pub target: Option<String>,
+    /// The deepest hop this skill's cascades may reach; the runner caps it
+    /// further by its own `ESCUREL_RUNNER_MAX_DEPTH`.
+    pub max_depth: Option<u32>,
+}
+
+fn parse_cascade(fm: &serde_json::Value) -> Option<CascadePolicy> {
+    let c = fm.get("cascade")?;
+    let obj = c.as_object()?;
+    Some(CascadePolicy {
+        target: obj
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        max_depth: obj
+            .get("max_depth")
+            .and_then(serde_json::Value::as_u64)
+            .map(|d| d.min(u64::from(u32::MAX)) as u32),
+    })
+}
+
 /// Project `autonomy:` from a skill page's indexed frontmatter.
 ///
 /// `None` covers three cases a consumer must treat identically: the key is
@@ -641,6 +679,20 @@ impl Indexer {
                     .map(str::to_owned),
                 shadows: None,
                 autonomy: parse_autonomy(&fm),
+                summary: fm
+                    .get("summary")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                harness: fm
+                    .get("harness")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                actions: string_array_field(&fm, "actions"),
+                cascade: parse_cascade(&fm),
                 params: parse_params(&fm),
             });
         }

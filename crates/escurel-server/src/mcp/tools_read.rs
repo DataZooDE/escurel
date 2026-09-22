@@ -80,6 +80,13 @@ pub(super) async fn tool_list_skills(
                 // It must not be defaulted to a policy here: the only value a
                 // consumer may act on permissively is an explicit `auto`.
                 autonomy: s.autonomy.map(|a| a.as_str().to_owned()),
+                summary: s.summary,
+                harness: s.harness,
+                actions: s.actions,
+                cascade: s.cascade.map(|c| escurel_types::SkillCascade {
+                    target: c.target,
+                    max_depth: c.max_depth,
+                }),
                 // Empty for every skill that declares no `params:`, and an
                 // empty vec is omitted from the wire — so those rows stay
                 // byte-identical to what they were before CR-7.

@@ -350,6 +350,18 @@ pub struct SkillCapabilities {
 /// A Tier-1 skill. MCP wire keys: `id`, `description`,
 /// `required_frontmatter`, `optional_frontmatter`, `is_event_typed`,
 /// `visibility`, `owner_field`, `acl`, `backend`, `capabilities`, `params`.
+/// A skill's `cascade:` block (workbench backend P2-7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SkillCascade {
+    /// A page id, or `produced` (the page the run wrote).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The deepest hop this skill's cascades may reach.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Skill {
@@ -408,6 +420,20 @@ pub struct Skill {
     /// response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomy: Option<String>,
+    /// `summary:` — the one-liner for skill lists (workbench backend P2-7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// `harness:` — the adapter the skill asks to run on (advisory; the
+    /// runner honours it within its allow-list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// `actions:` — the skills this one may fan out to. Absent = no
+    /// restriction declared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
+    /// `cascade:` — where a confirmed write cascades and how deep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade: Option<SkillCascade>,
     /// The parameters ONE RUN of this skill takes (`params:`, heron#11 /
     /// CR-7), in declaration order — enough for a client to build an input
     /// form from the catalogue alone, without expanding every page.

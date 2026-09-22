@@ -30,6 +30,22 @@ that omits the key is not making a mistake. Consumers must treat an omitted
 `autonomy` as "hold for review": an unrecognised value is reported as
 omitted, never as `auto` (see `02-tool-surface.md`).
 
+A skill page may also declare the **workbench contract keys** (all
+optional; reported on `list_skills`, linted by `validate`):
+
+- `summary: <one line>` — the purpose a skill list shows. Missing is a
+  warning (`summary_missing`; the workbench shows `description` instead);
+  over 200 characters is an error (`summary_too_long`).
+- `harness: echo | claude | codex | agy | muse | gemini | delegate` — the
+  adapter the skill asks to run on; anything else is `harness_unknown`.
+  The runner honours it within its own allow-list.
+- `actions: [<skill id>, …]` — the skills this one may fan out to; an
+  entry naming a skill the corpus does not have is `action_skill_unknown`
+  at `frontmatter.actions[i]`.
+- `cascade: { target: <page id> | produced, max_depth: <n> }` — where a
+  confirmed write cascades (`produced` = the page the run wrote) and how
+  deep; supersedes the older flat `cascade_target:` key, which still works.
+
 An **instance** page is a memory of that type:
 
 ```markdown

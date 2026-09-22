@@ -108,6 +108,7 @@ mod session_acl_and_gates;
 mod session_commit_writes_through;
 mod session_hydrates_page;
 mod shadow_merge;
+mod skill_contract;
 mod skill_doc_parity;
 mod skill_fields;
 mod skill_params;
