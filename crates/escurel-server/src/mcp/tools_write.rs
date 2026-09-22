@@ -1488,6 +1488,32 @@ pub(super) struct CaptureEventArgs {
     body: String,
     #[serde(default)]
     provenance: Option<Value>,
+    /// `user` (the default: work for a skill) or `system` (bookkeeping
+    /// about a run — admin-only, skips the inbox when it names a page).
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+/// The lineage columns, promoted from provenance at capture: the runner's
+/// `runner` block (cascade hops, run events) first, then the gateway's
+/// `review` block (draft transitions). Server-side only — the wire has no
+/// `root_event_id` / `run_id` argument, so filing an event under a lineage
+/// means writing the provenance block the runner's own trust guard
+/// (`captured_by` / `captured_via`) already scrutinises.
+pub(super) fn lineage_from_provenance(
+    provenance: Option<&Value>,
+) -> (Option<String>, Option<String>) {
+    let pick = |key: &str| -> Option<String> {
+        let p = provenance?;
+        ["runner", "review"].iter().find_map(|block| {
+            p.get(block)?
+                .get(key)?
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        })
+    };
+    (pick("root_event_id"), pick("run_id"))
 }
 
 /// The principal to persist for a write by `subject` (escurel#357 / CR-6):
@@ -1577,6 +1603,27 @@ pub(super) async fn tool_capture_event(
             "capture_event: the `escurel:` label namespace is reserved".to_owned(),
         ));
     }
+    // `kind: system` is bookkeeping ABOUT a run — the runner's lifecycle
+    // events, the gateway's review transitions. It skips the inbox and is
+    // read back as a run's own record, so a non-admin caller must not
+    // author one: a forged `run-finished` would be a forged run. Same gate
+    // as the `escurel:` label namespace, for the same reason. An unknown
+    // kind is a caller mistake, never silently a user event.
+    let kind = match a.kind.as_deref() {
+        None | Some("") => escurel_index::EventKind::User,
+        Some(k) => escurel_index::EventKind::parse(k).ok_or_else(|| {
+            JsonRpcError::invalid_params(format!(
+                "capture_event: `kind` must be `user` or `system`, got `{k}`"
+            ))
+        })?,
+    };
+    if kind == escurel_index::EventKind::System && !caller.is_admin {
+        return Err(JsonRpcError::invalid_params(
+            "capture_event: `kind: system` events are written by the runner and the \
+             gateway; a caller files `user` events"
+                .to_owned(),
+        ));
+    }
     // Provenance sanitisation (async-ops 2c-ii): `provenance.workflow` is the
     // block that ROUTES an event into the runner's reducer and grants a step
     // its workflow autonomy/tools — so a non-admin CALLER must not forge one and
@@ -1609,6 +1656,7 @@ pub(super) async fn tool_capture_event(
                 .to_owned(),
         ));
     }
+    let (root_event_id, run_id) = lineage_from_provenance(a.provenance.as_ref());
     let requested = NewEvent {
         event_id: a.event_id,
         at: a.at,
@@ -1619,9 +1667,9 @@ pub(super) async fn tool_capture_event(
         title: a.title,
         body: a.body,
         provenance: stamp_captured_by(a.provenance, caller.subject, caller.actor),
-        // `kind` / lineage stamping is the wire step (P1 PR2); every
-        // capture through this tool is a user event until then.
-        ..Default::default()
+        kind,
+        root_event_id,
+        run_id,
     };
     let stored = indexer
         .capture_event(requested.clone())
@@ -2113,6 +2161,11 @@ pub(super) struct ListInboxArgs {
     /// Resume cursor from a previous page's `next_cursor`.
     #[serde(default)]
     cursor: Option<String>,
+    /// Also show `kind: system` rows (run bookkeeping that never became
+    /// inbox work). Off by default: the inbox is a human's / an agent's
+    /// work queue.
+    #[serde(default)]
+    include_system: bool,
 }
 
 /// Drop the events `caller` may not see (`Indexer::may_read_event`),
@@ -2166,7 +2219,7 @@ pub(super) async fn tool_list_inbox(
         .list_inbox_page(
             a.limit.unwrap_or(escurel_index::EVENTS_MAX_LIMIT),
             a.cursor.as_deref(),
-            false,
+            a.include_system,
         )
         .await
         .map_err(|e| cursor_aware_error("list_inbox", e))?;
@@ -2210,6 +2263,20 @@ pub(super) struct ListEventsArgs {
     /// branch only; meaningless with `event_id`).
     #[serde(default)]
     cursor: Option<String>,
+    /// A lineage: the root event and everything captured under it (any
+    /// status, oldest first). One of the three listing selectors.
+    #[serde(default)]
+    root_event_id: Option<String>,
+    /// One run's own events (always `system`, so this implies
+    /// `include_system`). One of the three listing selectors.
+    #[serde(default)]
+    run_id: Option<String>,
+    /// Narrow to `user` or `system` rows; overrides `include_system`.
+    #[serde(default)]
+    kind: Option<String>,
+    /// Also show `kind: system` rows. Off by default.
+    #[serde(default)]
+    include_system: bool,
 }
 
 pub(super) async fn tool_list_events(
@@ -2234,17 +2301,62 @@ pub(super) async fn tool_list_events(
             .collect::<Vec<_>>();
         (events, None)
     } else {
-        if a.instance_page_id.is_empty() {
+        let selectors = [
+            !a.instance_page_id.is_empty(),
+            a.root_event_id.is_some(),
+            a.run_id.is_some(),
+        ]
+        .into_iter()
+        .filter(|s| *s)
+        .count();
+        if selectors != 1 {
             return Err(JsonRpcError::invalid_params(
-                "list_events: one of `instance_page_id` or `event_id` is required".to_owned(),
+                "list_events: exactly one of `instance_page_id`, `root_event_id` or `run_id` \
+                 is required (or `event_id` for a by-id lookup)"
+                    .to_owned(),
             ));
         }
+        let kind = match a.kind.as_deref() {
+            None | Some("") => None,
+            Some(k) => Some(escurel_index::EventKind::parse(k).ok_or_else(|| {
+                JsonRpcError::invalid_params(format!(
+                    "list_events: `kind` must be `user` or `system`, got `{k}`"
+                ))
+            })?),
+        };
+        let filter = if !a.instance_page_id.is_empty() {
+            // A page's history: assigned events only, as ever.
+            escurel_index::EventListFilter {
+                instance_page_id: Some(a.instance_page_id.clone()),
+                status: Some("processed".to_owned()),
+                kind,
+                include_system: a.include_system,
+                ..Default::default()
+            }
+        } else if let Some(root) = a.root_event_id.clone() {
+            // A lineage is status-agnostic: the root usually still sits in
+            // the inbox while its runs and cascades already exist.
+            escurel_index::EventListFilter {
+                root_event_id: Some(root),
+                kind,
+                include_system: a.include_system,
+                ..Default::default()
+            }
+        } else {
+            // A run has only system events; asking for one is asking for them.
+            escurel_index::EventListFilter {
+                run_id: a.run_id.clone(),
+                kind,
+                include_system: true,
+                ..Default::default()
+            }
+        };
         let page = indexer
-            .list_events_page(
-                &a.instance_page_id,
+            .list_events_filtered_page(
+                &filter,
+                true,
                 a.limit.unwrap_or(escurel_index::EVENTS_MAX_LIMIT),
                 a.cursor.as_deref(),
-                false,
             )
             .await
             .map_err(|e| cursor_aware_error("list_events", e))?;
@@ -2436,6 +2548,9 @@ pub(crate) fn event_to_json(e: &EventInfo) -> Value {
         "title": e.title,
         "body": e.body,
         "provenance": e.provenance,
+        "kind": e.kind.as_str(),
+        "root_event_id": e.root_event_id,
+        "run_id": e.run_id,
     })
 }
 

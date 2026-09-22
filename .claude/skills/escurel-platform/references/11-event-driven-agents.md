@@ -129,6 +129,36 @@ an `event_id` already terminal, drops an in-flight or identical
 or closing a cycle. That is what makes cascades safe — a run emits a
 `capture_event` for the next hop, which re-enters at the same gate.
 
+## Event kinds and lineage
+
+Every event carries three more fields on the wire: `kind`, `root_event_id`,
+`run_id`.
+
+- **`kind: user`** (the default) is work — something happened that a skill
+  should fold into an instance. Everything above is about user events.
+- **`kind: system`** is bookkeeping ABOUT a run, written by the runner and
+  the gateway under the reserved `escurel:` labels (`escurel:run` for a
+  run's lifecycle, `escurel:review` for draft transitions, `escurel:runner-status`
+  for runner health; the pre-existing `escurel:run-status` is a workflow
+  *operation's* status and stays as it is). Admin-only to capture — a forged
+  `run-finished` would be a forged run. A system event captured with an
+  `instance_page_id` is stored `processed` on that page at once (no
+  `assign_event`: it was never inbox work); without one it sits unassigned.
+  **The runner never dispatches a system event**, and `list_inbox` /
+  `list_events` hide them unless you pass `include_system: true` — so a
+  consumer that never asks sees exactly what it saw before.
+- **`root_event_id`** is the lineage root. A user event that names none is
+  its own root; a cascade hop and a run event inherit it from
+  `provenance.runner.root_event_id` at capture (server-side — there is no
+  argument for it). `list_events { root_event_id }` is therefore the whole
+  thread under a root: the root itself, its cascade hops, and — with
+  `include_system` — its runs, any status, oldest first.
+- **`run_id`** is the run a system event belongs to (from
+  `provenance.runner.run_id`). A cascade hop is *emitted by* a run and names
+  it as `provenance.runner.parent_run_id`; it does not carry the run's id
+  itself. `list_events { run_id }` is one run's own events and implies
+  `include_system`.
+
 ## Watching the bus from an open session: `event_subscribe`
 
 An agent that cannot host the HTTP webhook (a locally-running assistant,

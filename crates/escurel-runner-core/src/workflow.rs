@@ -679,6 +679,7 @@ async fn record_status(
             title,
             body: String::new(),
             provenance: serde_json::Value::Object(prov),
+            ..Default::default()
         })
         .await
         .map_err(WorkflowDriveError::Capture)?;

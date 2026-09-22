@@ -50,5 +50,8 @@ pub fn event(e: Event) -> Value {
         "title": e.title,
         "body": e.body,
         "provenance": json_or_null(&e.provenance),
+        "kind": e.kind,
+        "root_event_id": opt(&e.root_event_id),
+        "run_id": opt(&e.run_id),
     })
 }

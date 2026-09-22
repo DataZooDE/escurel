@@ -624,6 +624,7 @@ pub async fn package(
                     .list_inbox(ListInboxRequest {
                         cursor: String::new(),
                         limit: EVENT_HISTORY_LIMIT,
+                        ..Default::default()
                     })
                     .await
                     .map_err(|source| PackageError::Client {
@@ -650,6 +651,7 @@ pub async fn package(
                 .list_inbox(ListInboxRequest {
                     cursor: String::new(),
                     limit: EVENT_HISTORY_LIMIT,
+                    ..Default::default()
                 })
                 .await
                 .map_err(|source| PackageError::Client {

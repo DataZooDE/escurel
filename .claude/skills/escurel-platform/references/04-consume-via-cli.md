@@ -118,7 +118,7 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `provenance drift\|abandoned` | `provenance_report` (`kind: "drift"` / `"abandoned"`; both return `{kind, rows}` — the abandoned key changed from `nodes` to `rows`) |
 | `ui` | — (client-side TUI over the read tools) |
 | `query instance` | `query_instance` (accepts `query_id` as an alias for `ref`; `query run` and its `run_stored_query` tool are gone) |
-| `event capture\|inbox\|list\|assign` | `capture_event` / `list_inbox` / `list_events` / `assign_event` |
+| `event capture\|inbox\|list\|assign` | `capture_event` / `list_inbox` / `list_events` / `assign_event` (`event list --instance \| --root-event \| --run`, `--include-system` on `inbox`/`list`, `capture --kind`) |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
 | `session open\|apply\|close` | `open_session` / `apply_op` / `close_session` |
 | `ingest` | `POST /ingest/upload` (HTTP endpoint) |

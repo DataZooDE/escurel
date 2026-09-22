@@ -33,6 +33,22 @@ pub struct Event {
     /// when absent); the proto encoded it as the string
     /// `provenance_json`.
     pub provenance: Value,
+    /// `user` (work for a skill) | `system` (bookkeeping about a run:
+    /// `escurel:run`, `escurel:review`, …). A gateway that predates the
+    /// field sends nothing ⇒ `user`.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// The lineage root — every new event has one, a user event being its
+    /// own; `null` on the wire only for a pre-lineage row.
+    #[serde(deserialize_with = "null_as_default")]
+    pub root_event_id: String,
+    /// The run a system event belongs to; `null` for user events.
+    #[serde(deserialize_with = "null_as_default")]
+    pub run_id: String,
+}
+
+fn default_kind() -> String {
+    "user".to_owned()
 }
 
 /// `capture_event` arguments.
@@ -49,6 +65,9 @@ pub struct CaptureEventRequest {
     pub body: String,
     /// MCP wire `provenance` object (proto `provenance_json` string).
     pub provenance: Value,
+    /// `user` (default; empty sends nothing) or `system` (admin only —
+    /// bookkeeping about a run, skips the inbox when a page is named).
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -57,6 +76,8 @@ pub struct ListInboxRequest {
     pub limit: u32,
     /// Resume cursor from a previous page's `next_cursor`. Empty = first page.
     pub cursor: String,
+    /// Also list `kind: system` rows (hidden by default).
+    pub include_system: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -91,6 +112,17 @@ pub struct ListEventsRequest {
     /// Resume cursor from a previous page's `next_cursor` (listing
     /// branch only; meaningless with `event_id`). Empty = first page.
     pub cursor: String,
+    /// A lineage: the root event and everything captured under it, any
+    /// status, oldest first. One of the three listing selectors
+    /// (`instance_page_id` / `root_event_id` / `run_id`); the client sends
+    /// whichever is set, `event_id` first, then `run_id`, then this.
+    pub root_event_id: String,
+    /// One run's own events (always `system`; implies `include_system`).
+    pub run_id: String,
+    /// Narrow to `user` or `system` rows; empty = both per `include_system`.
+    pub kind: String,
+    /// Also list `kind: system` rows (hidden by default).
+    pub include_system: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
