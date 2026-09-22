@@ -19,6 +19,7 @@ base64 = "0.22"
 # event's hash-derived id (which is content-addressed, not monotonic).
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 escurel-client = { path = "../escurel-client" }
+escurel-auth = { path = "../escurel-auth" }
 jsonwebtoken = "9"
 escurel-runner-workflow = { path = "../escurel-runner-workflow" }
 escurel-types = { path = "../escurel-types" }

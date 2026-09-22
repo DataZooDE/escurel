@@ -521,6 +521,7 @@ impl RunnerConfig {
                 self.auth_kid.clone(),
                 key,
             )
+            .map_err(crate::AuthError::from)
             .map(|signer| crate::TokenSource::Minted {
                 signer,
                 subject: self.auth_subject.clone(),
