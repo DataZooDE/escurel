@@ -209,6 +209,31 @@ impl Migrator {
         conn.execute_batch(STAGE_12_DRAFTS)?;
         Self::ensure_draft_changesets(conn)?;
         Self::ensure_draft_base_version(conn)?;
+        Self::ensure_draft_run_lineage(conn)?;
+        Ok(())
+    }
+
+    /// Ensure `drafts.run_id` / `drafts.root_event_id` (the run that
+    /// proposed a held write, workbench backend P1) exist.
+    ///
+    /// Presence-checked + CHECKPOINTed for the same reason
+    /// [`Migrator::ensure_draft_changesets`] is: `drafts.created_at` carries a
+    /// function-valued DEFAULT, so an unconditional ALTER leaves an
+    /// unreplayable entry in the WAL and the NEXT process to open the file
+    /// fails to start.
+    pub fn ensure_draft_run_lineage(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'drafts' \
+               AND column_name IN ('run_id', 'root_event_id')",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 2 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_18_DRAFT_RUN_LINEAGE)?;
+        conn.execute_batch("CHECKPOINT;")?;
         Ok(())
     }
 
@@ -476,6 +501,7 @@ impl Migrator {
         conn.execute_batch(STAGE_12_DRAFTS)?;
         Self::ensure_draft_changesets(conn)?;
         Self::ensure_draft_base_version(conn)?;
+        Self::ensure_draft_run_lineage(conn)?;
         // Group ACL v1. Idempotent (`IF NOT EXISTS`) and ALSO run on every
         // reopen via `ensure_group_members`, so a DB provisioned before
         // this table existed still gains it. Running it here too means a
@@ -599,6 +625,7 @@ const STAGE_12_PROVENANCE_GRAPH: &str = include_str!("../sql/0010_provenance_gra
 const STAGE_13_WRITE_ATTRIBUTION: &str = include_str!("../sql/0011_write_attribution.sql");
 const STAGE_16_BRANCHES: &str = include_str!("../sql/0015_branches.sql");
 const STAGE_17_EVENTS_LINEAGE: &str = include_str!("../sql/0016_events_lineage.sql");
+const STAGE_18_DRAFT_RUN_LINEAGE: &str = include_str!("../sql/0017_drafts_run_lineage.sql");
 
 #[cfg(test)]
 mod tests {

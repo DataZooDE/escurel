@@ -251,6 +251,37 @@ fn event_provenance_is_value() {
 }
 
 #[test]
+fn drafts_and_changesets_carry_run_lineage() {
+    // draft_to_json / list_changesets / diff_draft after the workbench P1:
+    // `run_id` / `root_event_id` are `null` for a draft no run proposed.
+    let d: Draft = serde_json::from_value(json!({
+        "draft_id": "d1", "target_page_id": "p", "content": "", "content_sha256": "",
+        "base_sha256": null, "author": "agent:note", "event_id": null, "status": "open",
+        "reason": "", "decided_by": "", "created_at": "", "changeset_id": null,
+        "run_id": "r1", "root_event_id": "e1"
+    }))
+    .unwrap();
+    assert_eq!(d.run_id, "r1");
+    assert_eq!(d.root_event_id, "e1");
+    let legacy: Draft =
+        serde_json::from_value(json!({ "draft_id": "d0", "run_id": null })).unwrap();
+    assert_eq!(legacy.run_id, "");
+    let c: Changeset = serde_json::from_value(
+        json!({ "changeset_id": "c1", "run_id": "r1", "root_event_id": null }),
+    )
+    .unwrap();
+    assert_eq!(c.run_id, "r1");
+    assert_eq!(c.root_event_id, "");
+    let diff: DiffDraftResponse =
+        serde_json::from_value(json!({ "ok": true, "run_id": "r1", "root_event_id": "e1" }))
+            .unwrap();
+    assert_eq!(
+        (diff.run_id.as_str(), diff.root_event_id.as_str()),
+        ("r1", "e1")
+    );
+}
+
+#[test]
 fn event_kind_and_lineage_default_to_user_and_absent() {
     // Mirrors event_to_json after the lineage columns: `kind` is always
     // present on the wire; `root_event_id` / `run_id` are `null` when

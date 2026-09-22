@@ -163,6 +163,8 @@ impl WsCaller {
             // The WS surface carries no delegated run (#510): a session is
             // opened by whoever presented the bearer.
             actor: None,
+            run_id: None,
+            root_event_id: None,
         }
     }
 }

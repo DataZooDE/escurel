@@ -193,6 +193,8 @@ fn draft_to_json(d: &escurel_index::drafts::DraftInfo) -> Value {
         "created_at": d.created_at,
         "changeset_id": d.changeset_id,
         "base_version": d.base_version,
+        "run_id": d.run_id,
+        "root_event_id": d.root_event_id,
     })
 }
 
@@ -426,6 +428,12 @@ pub(super) async fn tool_create_draft(
             event_id: a.event_id,
             changeset_id,
             base_version,
+            // Likewise the run: the lineage a draft claims is the lineage
+            // the runner signed into the caller's token, never an argument
+            // — a forged `run_id` would file a human's draft under an
+            // agent's run.
+            run_id: caller.run_id.map(str::to_owned),
+            root_event_id: caller.root_event_id.map(str::to_owned),
         })
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_draft: {e}")))?;
@@ -851,6 +859,8 @@ pub(super) async fn tool_diff_draft(
         "target_page_id": draft.target_page_id,
         "exists": exists,
         "base_moved": base_moved,
+        "run_id": draft.run_id,
+        "root_event_id": draft.root_event_id,
         "frontmatter_changes": frontmatter_changes(head_fm.as_ref(), &proposed.frontmatter.fields),
         "block_changes": block_changes(head.as_deref(), proposed.body),
     }))
@@ -993,6 +1003,8 @@ pub(super) async fn tool_list_changesets(
             "status": row.status,
             "author": row.author,
             "created_at": row.created_at,
+            "run_id": row.run_id,
+            "root_event_id": row.root_event_id,
             "event_ids": members
                 .iter()
                 .filter_map(|m| m.event_id.clone())

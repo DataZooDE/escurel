@@ -91,6 +91,8 @@ fn ctx() -> BackendCtx<'static> {
             is_admin: true,
             token_groups: &[],
             actor: None,
+            run_id: None,
+            root_event_id: None,
         },
         as_of: None,
         scenario: None,

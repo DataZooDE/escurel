@@ -105,6 +105,8 @@ fn member(subject: &str) -> AclCaller<'_> {
         is_admin: false,
         token_groups: &[],
         actor: None,
+        run_id: None,
+        root_event_id: None,
     }
 }
 
@@ -115,6 +117,8 @@ fn member_with_groups<'a>(subject: &'a str, groups: &'a [String]) -> AclCaller<'
         is_admin: false,
         token_groups: groups,
         actor: None,
+        run_id: None,
+        root_event_id: None,
     }
 }
 
@@ -236,6 +240,8 @@ async fn instance_level_acl_block_overrides_the_skill() {
         is_admin: true,
         token_groups: &[],
         actor: None,
+        run_id: None,
+        root_event_id: None,
     };
     assert!(
         h.indexer
@@ -650,6 +656,8 @@ async fn admin_bypasses_owner_visibility() {
         is_admin: true,
         token_groups: &[],
         actor: None,
+        run_id: None,
+        root_event_id: None,
     };
     assert!(
         h.indexer

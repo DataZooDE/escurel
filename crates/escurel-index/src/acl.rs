@@ -45,6 +45,13 @@ pub struct AclCaller<'a> {
     /// audit can answer "which agent, acting for whom". Reading it as
     /// authority would re-open the confused deputy it exists to document.
     pub actor: Option<&'a str>,
+    /// The run this caller's token was minted for (`run_id` claim, workbench
+    /// backend P1) — stamped onto what the run writes (a draft's lineage)
+    /// and matched by `report_progress`. **Never an input to an ACL
+    /// decision** either: same rule as `actor`.
+    pub run_id: Option<&'a str>,
+    /// That run's lineage root (`root_event_id` claim); `None` with `run_id`.
+    pub root_event_id: Option<&'a str>,
 }
 
 /// The frontmatter field that carries a member's owning principal when an

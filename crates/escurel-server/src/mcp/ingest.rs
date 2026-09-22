@@ -386,6 +386,8 @@ async fn record_and_dispatch_ingest(
                 token_groups: &caller.groups,
                 // /ingest is a direct upload, not a delegated run (#510).
                 actor: None,
+                run_id: None,
+                root_event_id: None,
             };
             let may_create = indexer
                 .may_write_instance(&acl_caller, sk, None, &Value::Object(incoming))
@@ -769,6 +771,8 @@ async fn blob_get_inner(
         is_admin,
         token_groups: &groups,
         actor: None,
+        run_id: None,
+        root_event_id: None,
     };
     match super::tools_read::resolve_readable_blob(&indexer, &caller, page_id).await {
         Ok(Some((content_type, bytes))) => (
