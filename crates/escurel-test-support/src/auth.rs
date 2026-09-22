@@ -241,6 +241,24 @@ impl TestIssuer {
         token
     }
 
+    /// Mint a bearer bound to a RUN — the per-run agent token shape after the
+    /// workbench backend's P1: `run_id` + `root_event_id` claims, the role's
+    /// authority, and `act.sub` naming the runner. Used to prove the gateway
+    /// stamps lineage from the token and refuses `report_progress` without it.
+    pub(crate) fn mint_for_run(
+        &self,
+        tenant: &str,
+        role: Role,
+        subject: &str,
+        run_id: &str,
+        root_event_id: &str,
+    ) -> String {
+        let mut token = self.mint_with_sub(tenant, role, subject);
+        token = self.resign_with_extra(&token, "act", json!({ "sub": "escurel-runner" }));
+        token = self.resign_with_extra(&token, "run_id", json!(run_id));
+        self.resign_with_extra(&token, "root_event_id", json!(root_event_id))
+    }
+
     /// Re-sign a token with one extra top-level claim. Keeps the claim shapes
     /// in [`Self::sign_with_roles`] as the single source of truth rather than
     /// duplicating them per variant.

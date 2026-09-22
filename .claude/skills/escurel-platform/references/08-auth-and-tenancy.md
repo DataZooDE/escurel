@@ -25,6 +25,16 @@ against cached JWKS → resolve `tenant_id` from the tenant claim → resolve
 agent) → stamp `(tenant_id, role, sub)` onto the request. The stamped role
 surfaces as `escurel.role = "agent" | "admin"`.
 
+A **per-run agent token** (the bearer the runner mints for one harness run,
+`sub: agent:<skill>`, `act.sub: escurel-runner`) additionally carries the
+run's identity as claims — `run_id`, `root_event_id`, `trace_id` (optional).
+The gateway reads them to stamp lineage onto what the run writes (a draft's
+`run_id` / `root_event_id`) and to authorise `report_progress` for exactly
+that run. They are never an authorization input for anything else, and an
+ordinary bearer simply has none. Only a runner in **minted** mode carries
+them; a dev runner on a pasted `ESCUREL_RUNNER_TOKEN` cannot mint, so its
+runs write unstamped.
+
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A
 mismatched tenant in a request body is rejected. `tools/list` is

@@ -133,6 +133,10 @@ pub struct AuthContext {
     /// can be stamped into provenance. `None` for an ordinary token — the
     /// subject is acting as itself.
     ///
+    /// The run this token was minted for (`run_id` claim, non-empty), with
+    /// its lineage root and trace when present; `None` for a token that
+    /// belongs to no run — an ordinary bearer, or a runner's own.
+    pub run: Option<RunClaims>,
     /// Authorization NEVER reads this: the authority is the subject's own
     /// (`role`, `groups`). It is audit lineage, not a capability.
     pub actor: Option<String>,
@@ -175,6 +179,26 @@ const ACT_CLAIM: &str = "act";
 
 const DELEGATION_PURPOSE_CLAIM: &str = "purpose";
 const DELEGATION_PURPOSE: &str = "internal_delegation";
+
+/// The run-identity claims a runner mints onto a per-run token (workbench
+/// backend P1). Kept in lock-step with
+/// `escurel_runner_core::auth::{RUN_ID_CLAIM, ROOT_EVENT_ID_CLAIM, TRACE_ID_CLAIM}`
+/// — same dependency direction as the delegation constants above.
+const RUN_ID_CLAIM: &str = "run_id";
+const ROOT_EVENT_ID_CLAIM: &str = "root_event_id";
+const TRACE_ID_CLAIM: &str = "trace_id";
+
+/// The run a per-run token belongs to, as the runner minted it: the ledger
+/// run id, the lineage root event, and the lineage's trace when there is
+/// one. Read to stamp lineage onto what the run writes and to authorise
+/// `report_progress` for exactly this run — never as an authorization input
+/// for anything else (the authority is the subject's own, like `actor`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunClaims {
+    pub run_id: String,
+    pub root_event_id: Option<String>,
+    pub trace_id: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 struct Claims {
@@ -358,12 +382,30 @@ impl OidcVerifier {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
 
+        // Run identity (workbench backend P1): present iff `run_id` is a
+        // non-empty string. The other two are optional companions; a token
+        // is not invalid for lacking any of them.
+        let claim_str = |name: &str| {
+            claims
+                .rest
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        let run = claim_str(RUN_ID_CLAIM).map(|run_id| RunClaims {
+            run_id,
+            root_event_id: claim_str(ROOT_EVENT_ID_CLAIM),
+            trace_id: claim_str(TRACE_ID_CLAIM),
+        });
+
         Ok(AuthContext {
             subject: claims.sub,
             tenant_id,
             role,
             groups,
             actor,
+            run,
         })
     }
 

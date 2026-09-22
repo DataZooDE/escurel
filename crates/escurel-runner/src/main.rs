@@ -1486,6 +1486,15 @@ async fn dispatch_loop(
             trigger.lineage.trace_id = Some(mint_trace_id());
         }
         let trace_id = trigger.lineage.trace_id.clone().unwrap_or_default();
+        // The run's identity rides ON the per-run agent token (workbench
+        // backend P1): the gateway stamps a draft's `run_id` / `root_event_id`
+        // from it and authorises `report_progress` by it, so it is a claim the
+        // runner signs, never a header the harness could set.
+        let run_claims = escurel_runner_core::RunClaims {
+            run_id: run_id.0.clone(),
+            root_event_id: trigger.lineage.root_event_id.clone(),
+            trace_id: Some(trace_id.clone()),
+        };
         let run_span = tracing::info_span!(
             "runner.run",
             trace_id = %trace_id,
@@ -1633,6 +1642,7 @@ async fn dispatch_loop(
                 &tokens,
                 step_harness.as_ref(),
                 attempt,
+                Some(&run_claims),
             );
             let bound = config.run_timeout;
             async move {
@@ -1923,8 +1933,9 @@ async fn attempt_run(
     tokens: &escurel_runner_core::TokenSource,
     harness: &dyn Harness,
     attempt: u32,
+    run: Option<&escurel_runner_core::RunClaims>,
 ) -> Result<ConfirmedEffect, ReconcileError> {
-    let task: TaskContext = package(trigger, client, config, Some(tokens))
+    let task: TaskContext = package(trigger, client, config, Some(tokens), run)
         .await
         .map_err(|e| {
             tracing::warn!(

@@ -21,4 +21,4 @@ mod jwks;
 mod verifier;
 
 pub use jwks::{Jwks, JwksCache};
-pub use verifier::{AuthContext, AuthError, OidcConfig, OidcVerifier, Role};
+pub use verifier::{AuthContext, AuthError, OidcConfig, OidcVerifier, Role, RunClaims};

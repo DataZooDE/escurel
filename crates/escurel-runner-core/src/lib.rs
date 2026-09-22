@@ -27,7 +27,9 @@ mod trigger;
 mod workflow;
 
 pub use admit::{Admission, LoopLimits, admit};
-pub use auth::{AuthError, Signer, TokenSource};
+pub use auth::{
+    AuthError, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, RunClaims, Signer, TRACE_ID_CLAIM, TokenSource,
+};
 pub use cascade::{CascadeError, CascadeOutcome, emit_cascade};
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
