@@ -69,7 +69,7 @@ mod tools_control;
 mod tools_drafts;
 mod tools_lineage;
 mod tools_mint;
-pub(crate) use tools_mint::{MintedRuns, sweep_expired_minted_runs};
+pub(crate) use tools_mint::sweep_expired_minted_runs;
 mod tools_progress;
 mod tools_read;
 mod tools_write;

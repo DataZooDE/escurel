@@ -429,10 +429,6 @@ pub(crate) struct AppState {
     pub(crate) verifier: Option<Arc<OidcVerifier>>,
     /// The gateway's signing identity for `mint_agent_token` (P2-6).
     pub(crate) signer: Option<Arc<escurel_auth::Signer>>,
-    /// Gateway-minted runs still open, for the expiry sweep (P2-6). Lost on
-    /// restart: a run whose token lapses across a restart is closed by
-    /// nobody (the follow-up is a durable record).
-    pub(crate) minted_runs: crate::mcp::MintedRuns,
     pub(crate) quota: Option<Arc<QuotaManager>>,
     pub(crate) tenant_store: Option<Arc<dyn TenantStore>>,
     /// Cached suspend flag for the served tenant (#247). Loaded from the
@@ -547,7 +543,6 @@ pub async fn serve(
         indexer: config.indexer.clone(),
         verifier: config.verifier.clone(),
         signer: config.signer.clone(),
-        minted_runs: crate::mcp::MintedRuns::default(),
         quota: config.quota.clone(),
         tenant_suspended: Arc::clone(&config.tenant_suspended),
         emit_edit_events: config.emit_edit_events,

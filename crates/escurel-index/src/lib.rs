@@ -59,8 +59,8 @@ pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
 pub use creds::{CredentialInfo, CredentialRecord};
 pub use events::{
-    EVENTS_MAX_LIMIT, EventInfo, EventKind, EventListFilter, EventPage, NewEvent,
-    now_rfc3339_micros,
+    EVENTS_MAX_LIMIT, EventInfo, EventKind, EventListFilter, EventPage, ExpiredGatewayRun,
+    NewEvent, now_rfc3339_micros,
 };
 pub use graph::{
     AbandonedNode, DriftRow, GraphBackend, GraphDir, MAX_HOPS_CEILING, ProvenanceHop,

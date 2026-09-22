@@ -12,12 +12,14 @@
 //!
 //! The gateway also plays the runner's part in the run's record: it writes
 //! `run-started` at mint (harness `workbench`) and, when the token lapses
-//! without a terminal, `run-finished { status: "expired" }` — swept from an
-//! in-memory list, so a restart forgets what it minted (the follow-up is a
-//! durable record). `run:<id>:finished` is first-writer-wins, so a run the
-//! agent finished explicitly is not overwritten by the sweep.
+//! without a terminal, `run-finished { status: "expired" }`. Which runs are
+//! still open is derived from the events themselves (hardening H4:
+//! `run-started` rows minted by the gateway whose `expires_at` passed with
+//! no `run-finished`), so a restart forgets nothing. `run:<id>:finished` is
+//! first-writer-wins, so a run the agent finished explicitly is not
+//! overwritten by the sweep.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use escurel_index::{AclCaller, EventKind, Indexer, NewEvent};
@@ -26,18 +28,6 @@ use serde_json::{Value, json};
 
 use super::{JsonRpcError, parse_args};
 use crate::server::AppState;
-
-/// A gateway-minted run still open, for the expiry sweep.
-#[derive(Debug, Clone)]
-pub(crate) struct MintedRun {
-    run_id: String,
-    root_event_id: Option<String>,
-    target_page_id: Option<String>,
-    expires_at: SystemTime,
-}
-
-/// The open gateway-minted runs (shared with the sweep).
-pub(crate) type MintedRuns = Arc<Mutex<Vec<MintedRun>>>;
 
 const DEFAULT_TTL_SECS: u64 = 30 * 60;
 const MIN_TTL_SECS: u64 = 1;
@@ -178,16 +168,6 @@ pub(super) async fn tool_mint_agent_token(
         }
         Err(e) => tracing::warn!(error = %e, run_id, "mint_agent_token: run-started not written"),
     }
-    state
-        .minted_runs
-        .lock()
-        .expect("minted runs mutex")
-        .push(MintedRun {
-            run_id: run_id.clone(),
-            root_event_id: Some(run.root_event_id.clone()),
-            target_page_id,
-            expires_at,
-        });
     tracing::info!(subject = %caller.subject, agent = %subject, run_id, ttl, "mint_agent_token: minted");
     Ok(json!({
         "token": token,
@@ -198,25 +178,24 @@ pub(super) async fn tool_mint_agent_token(
     }))
 }
 
-/// Close every gateway-minted run whose token has lapsed:
-/// `run-finished { status: "expired" }`, first-writer-wins on the id.
+/// Close every gateway-minted run whose token has lapsed with no terminal:
+/// `run-finished { status: "expired" }`, first-writer-wins on the id. The
+/// set is read from the events (H4), so it survives a restart.
 pub(crate) async fn sweep_expired_minted_runs(state: &AppState) {
-    let now = SystemTime::now();
-    let due: Vec<MintedRun> = {
-        let mut open = state.minted_runs.lock().expect("minted runs mutex");
-        let (due, keep): (Vec<_>, Vec<_>) = open.drain(..).partition(|r| r.expires_at <= now);
-        *open = keep;
-        due
-    };
-    if due.is_empty() {
-        return;
-    }
     let Some(indexer) = state
         .indexer
         .as_ref()
         .map(escurel_index::IndexerHandle::current)
     else {
         return;
+    };
+    let now = SystemTime::now();
+    let due = match indexer.expired_gateway_runs(&rfc3339(now)).await {
+        Ok(due) => due,
+        Err(e) => {
+            tracing::warn!(error = %e, "mint_agent_token: expiry sweep could not read the runs");
+            return;
+        }
     };
     for run in due {
         let finished = indexer
@@ -226,7 +205,7 @@ pub(crate) async fn sweep_expired_minted_runs(state: &AppState) {
                 source: "escurel-gateway".to_owned(),
                 mime: "application/json".to_owned(),
                 label_skill: "escurel:run".to_owned(),
-                instance_page_id: run.target_page_id.clone(),
+                instance_page_id: run.instance_page_id.clone(),
                 title: "run-finished".to_owned(),
                 body: json!({
                     "status": "expired",

@@ -11,7 +11,14 @@
 //! Real gateway (test issuer, gateway signing on the issuer's key), real
 //! DuckDB, raw JSON-RPC. No runner: the agent here is the test itself.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use duckdb::Connection;
+use escurel_embed::{Embedder, ZeroEmbedder};
+use escurel_index::{Indexer, Migrator};
+use escurel_storage::{FsStore, LaneStore};
+use tempfile::TempDir;
 
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
 use serde_json::{Value, json};
@@ -250,4 +257,89 @@ async fn a_lapsed_token_closes_its_run_as_expired() {
     };
     let body: Value = serde_json::from_str(finished["body"].as_str().unwrap()).unwrap();
     assert_eq!(body["status"], "expired", "{body}");
+}
+
+/// Hardening H4: which minted runs are still open is derived from the
+/// events themselves (`run-started` with `minted_by: gateway`, an
+/// `expires_at` in the past, no `run-finished`), so a gateway restart does
+/// not forget what its predecessor minted. Before H4 the sweep read an
+/// in-memory list.
+#[tokio::test]
+async fn a_run_minted_before_a_restart_is_still_closed_as_expired() {
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    Migrator::up(&conn).unwrap();
+    let indexer = Arc::new(Indexer::new(Arc::clone(&store), embedder, conn, TENANT).unwrap());
+    indexer
+        .update_page("markdown/skills/renewal.md", SKILL)
+        .await
+        .unwrap();
+    let overrides = || ConfigOverrides {
+        indexer: Some(Arc::clone(&indexer)),
+        signing: true,
+        minted_run_sweep: Some(Duration::from_millis(300)),
+        ..Default::default()
+    };
+
+    // Gateway A mints and goes away before the token lapses.
+    let a = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: overrides(),
+        ..Default::default()
+    })
+    .await;
+    let alice = a.mint_token_with_sub(TENANT, Role::Agent, "alice");
+    let r = call(
+        &a,
+        &alice,
+        "mint_agent_token",
+        json!({ "skill": "renewal", "ttl_secs": 1 }),
+    )
+    .await;
+    let run_id = r["run_id"].as_str().unwrap().to_owned();
+    a.shutdown().await;
+
+    // Gateway B on the same store closes it once it has lapsed.
+    let b = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: overrides(),
+        ..Default::default()
+    })
+    .await;
+    let admin = b.mint_token(TENANT, Role::Admin);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let finished = loop {
+        let own = call(&b, &admin, "list_events", json!({ "run_id": run_id })).await;
+        if let Some(f) = own["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["title"] == "run-finished")
+        {
+            break f.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the restarted gateway never closed the run: {own}"
+        );
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    };
+    let body: Value = serde_json::from_str(finished["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["status"], "expired", "{body}");
+    // Swept once: a later sweep does not write a second terminal (the id is
+    // first-writer-wins anyway), and nothing else is pending.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let own = call(&b, &admin, "list_events", json!({ "run_id": run_id })).await;
+    assert_eq!(
+        own["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["title"] == "run-finished")
+            .count(),
+        1
+    );
 }
