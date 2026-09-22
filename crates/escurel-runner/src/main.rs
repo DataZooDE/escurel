@@ -28,7 +28,7 @@
 //! later work-item, so for now a drain task empties the queue.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Bytes;
@@ -91,6 +91,9 @@ struct AppState {
     /// credentials: the bare trigger is enqueued as before).
     gateway_url: String,
     tokens: Option<Arc<escurel_runner_core::TokenSource>>,
+    /// When the poller last completed a tick (epoch ms; 0 = never), for the
+    /// status report's `last_poll_age_ms`.
+    last_poll_ms: Arc<std::sync::atomic::AtomicU64>,
     /// The loop-control limits (#157) the gate enforces after idempotency:
     /// depth cap + per-root run budget. A trigger that would breach them is
     /// dead-lettered (with `cycle` checked against the lineage instance chain).
@@ -203,6 +206,8 @@ async fn main() -> anyhow::Result<()> {
     // In-flight quota slots, shared gate → dispatch loop (#158).
     let inflight: InflightSlots = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let cancels = escurel_runner_core::CancelRegistry::new();
+    let last_poll_ms: Arc<std::sync::atomic::AtomicU64> =
+        Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     // Crash recovery (#158): before opening for traffic, reconcile any
     // orphaned `pending` rows left by a previous crash. A confirmed effect is
@@ -317,6 +322,7 @@ async fn main() -> anyhow::Result<()> {
                 Arc::clone(&metrics),
                 Arc::clone(&inflight),
                 Arc::clone(&draining),
+                Arc::clone(&last_poll_ms),
             ));
         }
         _ => {
@@ -360,19 +366,32 @@ async fn main() -> anyhow::Result<()> {
         cancels: cancels.clone(),
         gateway_url: config.gateway_url.clone(),
         tokens: tokens.clone(),
+        last_poll_ms: Arc::clone(&last_poll_ms),
         draining: Arc::clone(&draining),
         tenant: config.tenant.clone().map(Arc::from),
         lineage_trust_subject: tokens.as_ref().and_then(|t| t.subject()).map(Arc::from),
     };
-    // The run-control subscriber (workbench backend P2-3b). Same enablement
-    // as the poller and the promotion tail.
+    // The run-control subscriber (workbench backend P2-3b) and the status
+    // reporter (P2-4). Same enablement as the poller and the promotion tail.
     if let (Some(tenant), Some(source)) = (config.tenant.clone(), tokens.clone()) {
         tokio::spawn(control_tail_loop(
             state.clone(),
             config.gateway_url.clone(),
+            tenant.clone(),
+            source.clone(),
+            config.poll_interval,
+        ));
+        tokio::spawn(status_loop(
+            state.clone(),
+            config.gateway_url.clone(),
             tenant,
             source,
-            config.poll_interval,
+            StatusIdentity {
+                runner_id: config.runner_id.clone(),
+                version: config.version.clone(),
+                harness: config.harness.clone(),
+            },
+            config.status_interval,
         ));
     }
     let app = Router::new()
@@ -2544,6 +2563,7 @@ async fn poll_loop(
     metrics: Arc<Metrics>,
     inflight: InflightSlots,
     draining: Arc<std::sync::atomic::AtomicBool>,
+    last_poll_ms: Arc<std::sync::atomic::AtomicU64>,
 ) {
     // A boot probe only — the per-tick client is built inside the loop.
     // A hoisted one carries a 30-minute minted bearer for the life of the
@@ -2588,6 +2608,13 @@ async fn poll_loop(
             // job is to be the self-healing fallback.
             continue;
         };
+        last_poll_ms.store(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         match client.list_inbox(ListInboxRequest::default()).await {
             Ok(resp) => {
                 for event in &resp.events {
@@ -3026,6 +3053,146 @@ async fn control_tail_loop(
                     "run-control: could not write the result (acted anyway)"
                 );
             }
+        }
+    }
+}
+
+/// Who is reporting, for `escurel:runner-status`.
+struct StatusIdentity {
+    runner_id: String,
+    version: String,
+    harness: String,
+}
+
+/// The runner's health as one JSON body (workbench backend P2-4). Split
+/// into the part that means "something changed" (`stable`) and the
+/// clock-derived rest, so a change is detected by comparing `stable`.
+fn status_snapshot(
+    state: &AppState,
+    tenant: &str,
+    who: &StatusIdentity,
+    started: Instant,
+) -> (serde_json::Value, serde_json::Value) {
+    let count = |s: RunStatus| state.ledger.count_all_by_status(s).unwrap_or(0);
+    let mut live: Vec<serde_json::Value> = state
+        .cancels
+        .live()
+        .into_iter()
+        .map(|run_id| {
+            let rec = state.ledger.find_run(&run_id).ok().flatten();
+            json!({
+                "run_id": run_id,
+                "event_id": rec.as_ref().map(|r| r.event_id.clone()),
+                "instance_page_id": rec.as_ref().and_then(|r| r.instance_page_id.clone()),
+            })
+        })
+        .collect();
+    live.sort_by(|a, b| a["run_id"].as_str().cmp(&b["run_id"].as_str()));
+    let stable = json!({
+        "runner_id": who.runner_id,
+        "version": who.version,
+        "harness": who.harness,
+        "tenant": tenant,
+        "live_runs": live,
+        "paused_tenants": state.governor.paused_tenants(),
+        "runs": {
+            "pending": count(RunStatus::Pending),
+            "processed": count(RunStatus::Processed),
+            "failed": count(RunStatus::Failed),
+            "dead_letter": count(RunStatus::DeadLetter),
+            "cancelled": count(RunStatus::Cancelled),
+            "total": state.ledger.count_all_runs().unwrap_or(0),
+        },
+        "throttled": {
+            "runs_per_min": state.governor.throttled(escurel_runner_core::ThrottleReason::RunsPerMin),
+            "max_concurrent": state.governor.throttled(escurel_runner_core::ThrottleReason::MaxConcurrent),
+            "paused": state.governor.throttled(escurel_runner_core::ThrottleReason::Paused),
+        },
+        "harness_permits_available": state.governor.harness_permits_available(),
+        "draining": state.draining.load(std::sync::atomic::Ordering::Relaxed),
+    });
+    let last = state
+        .last_poll_ms
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let mut body = stable.clone();
+    body["uptime_s"] = json!(started.elapsed().as_secs());
+    body["last_poll_age_ms"] = if last == 0 {
+        serde_json::Value::Null
+    } else {
+        json!(now_ms.saturating_sub(last))
+    };
+    (stable, body)
+}
+
+/// The status reporter (workbench backend P2-4). Writes this runner's
+/// health as unassigned `escurel:runner-status` system events — `started`
+/// once, `changed` as soon as the stable part of the snapshot differs
+/// (checked every 250 ms), `heartbeat` every `interval` while nothing does,
+/// `stopping` on drain. The gateway keeps a tenant's last 50 rows; the
+/// workbench reads the latest with `list_events { label_skill,
+/// newest_first: true, limit: 1 }`. Best-effort: a refused write is the
+/// next tick's problem.
+async fn status_loop(
+    state: AppState,
+    gateway_url: String,
+    tenant: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
+    who: StatusIdentity,
+    interval: std::time::Duration,
+) {
+    const CHECK: std::time::Duration = std::time::Duration::from_millis(250);
+    let started = Instant::now();
+    let mut last_stable: Option<serde_json::Value> = None;
+    let mut last_sent = Instant::now();
+    let mut ticker = tokio::time::interval(CHECK.min(interval));
+    loop {
+        ticker.tick().await;
+        let draining = state.draining.load(std::sync::atomic::Ordering::Relaxed);
+        let (stable, body) = status_snapshot(&state, &tenant, &who, started);
+        let title = if draining {
+            "stopping"
+        } else if last_stable.is_none() {
+            "started"
+        } else if last_stable.as_ref() != Some(&stable) {
+            "changed"
+        } else if last_sent.elapsed() >= interval {
+            "heartbeat"
+        } else {
+            continue;
+        };
+        let Some(client) = connect_now(&gateway_url, &tokens).await else {
+            continue;
+        };
+        let written = client
+            .capture_event(escurel_client::CaptureEventRequest {
+                source: "escurel-runner".to_owned(),
+                mime: "application/json".to_owned(),
+                label_skill: "escurel:runner-status".to_owned(),
+                title: title.to_owned(),
+                body: body.to_string(),
+                provenance: json!({ "runner_status": { "runner_id": who.runner_id, "tenant": tenant } }),
+                kind: "system".to_owned(),
+                ..Default::default()
+            })
+            .await;
+        match written {
+            Ok(_) => {
+                last_stable = Some(stable);
+                last_sent = Instant::now();
+            }
+            Err(e) => tracing::warn!(
+                target: "escurel_runner",
+                error = %e,
+                title,
+                "runner-status: write failed (will retry)"
+            ),
+        }
+        if draining {
+            return;
         }
     }
 }

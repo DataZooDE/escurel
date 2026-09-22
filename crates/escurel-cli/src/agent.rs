@@ -250,6 +250,9 @@ pub enum EventCmd {
         /// Also list `kind: system` rows (hidden by default).
         #[arg(long)]
         include_system: bool,
+        /// Newest first (with `--limit 1`: the latest row).
+        #[arg(long)]
+        newest_first: bool,
         /// 0 means no limit.
         #[arg(long, default_value_t = 0)]
         limit: u32,
@@ -1021,6 +1024,7 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
             label,
             kind,
             include_system,
+            newest_first,
             limit,
         } => {
             if instance.is_none() && root_event.is_none() && run.is_none() && label.is_none() {
@@ -1036,6 +1040,7 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
                     label_skill: label.unwrap_or_default(),
                     kind: kind.unwrap_or_default(),
                     include_system,
+                    newest_first,
                     limit,
                     ..Default::default()
                 })

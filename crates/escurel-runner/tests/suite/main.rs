@@ -49,6 +49,7 @@ mod review_no_op;
 mod run_control_subscriber;
 mod run_events;
 mod run_ledger;
+mod runner_status;
 mod sigterm_drain;
 mod system_events_not_dispatched;
 mod trigger;

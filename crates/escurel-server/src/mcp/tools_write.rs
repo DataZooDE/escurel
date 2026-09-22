@@ -1465,6 +1465,10 @@ pub(super) fn chat_message_to_json(m: &ChatMessage) -> Value {
 
 // --- events / inbox tools (M7 — Event-sourcing surface) --------
 
+/// The runner's health label and how many rows of it a tenant keeps.
+const RUNNER_STATUS_LABEL: &str = "escurel:runner-status";
+const RUNNER_STATUS_KEEP: usize = 50;
+
 #[derive(Deserialize)]
 pub(super) struct CaptureEventArgs {
     #[serde(default)]
@@ -1700,6 +1704,15 @@ pub(super) async fn tool_capture_event(
         .capture_event(requested.clone())
         .await
         .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?;
+    // A runner's heartbeat is unbounded by construction; keep the tail that
+    // answers "what is the runner's state now?" (workbench backend P2-4).
+    if requested.label_skill == RUNNER_STATUS_LABEL
+        && let Err(e) = indexer
+            .prune_label_events(RUNNER_STATUS_LABEL, RUNNER_STATUS_KEEP)
+            .await
+    {
+        tracing::warn!(error = %e, "capture_event: runner-status prune failed (rows kept)");
+    }
 
     // `capture_event` is idempotent on `event_id` and returns the STORED
     // (first-writer) row — which quietly makes it a READ, and so a way
@@ -2324,6 +2337,10 @@ pub(super) struct ListEventsArgs {
     /// With another selector: a narrowing filter.
     #[serde(default)]
     label_skill: Option<String>,
+    /// Turn the listing around: newest first. `limit: 1` is then the
+    /// latest row (the workbench reads `escurel:runner-status` this way).
+    #[serde(default)]
+    newest_first: bool,
 }
 
 pub(super) async fn tool_list_events(
@@ -2419,7 +2436,7 @@ pub(super) async fn tool_list_events(
         let page = indexer
             .list_events_filtered_page(
                 &filter,
-                true,
+                !a.newest_first,
                 a.limit.unwrap_or(escurel_index::EVENTS_MAX_LIMIT),
                 a.cursor.as_deref(),
             )

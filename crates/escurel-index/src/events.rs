@@ -710,6 +710,35 @@ impl Indexer {
         Ok(())
     }
 
+    /// Keep only the newest `keep` rows under `label_skill` for the tenant
+    /// (workbench backend P2-4): `escurel:runner-status` is a heartbeat
+    /// every N seconds per runner and would otherwise grow without bound.
+    /// Same shape as [`Self::prune_run_progress`], keyed by label alone.
+    pub async fn prune_label_events(
+        &self,
+        label_skill: &str,
+        keep: usize,
+    ) -> Result<(), IndexerError> {
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+        let scope = if tenant.is_some() {
+            " AND tenant = ?"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "DELETE FROM {table} WHERE label_skill = ?{scope} AND event_id NOT IN (\
+                 SELECT event_id FROM {table} WHERE label_skill = ?{scope} \
+                 ORDER BY at_ts DESC NULLS LAST, event_id DESC LIMIT {keep})"
+        );
+        let conn = self.conn.lock().await;
+        match &tenant {
+            None => conn.execute(&sql, params![label_skill, label_skill])?,
+            Some(t) => conn.execute(&sql, params![label_skill, t, label_skill, t])?,
+        };
+        Ok(())
+    }
+
     /// One event by id, whatever its status — the by-event lookup the
     /// instance-scoped surfaces cannot express.
     ///

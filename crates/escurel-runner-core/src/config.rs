@@ -290,6 +290,15 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_POLL_INTERVAL` (default
     /// [`DEFAULT_POLL_INTERVAL`]).
     pub poll_interval: Duration,
+    /// How often the runner reports its own health as an
+    /// `escurel:runner-status` event when nothing changed (workbench
+    /// backend P2-4); a change is reported at once. Same duration grammar
+    /// as `poll_interval`. Source: `ESCUREL_RUNNER_STATUS_INTERVAL`
+    /// (default 30s).
+    pub status_interval: Duration,
+    /// This runner's name in its status reports. Source:
+    /// `ESCUREL_RUNNER_ID` (default `<HOSTNAME>:<pid>`, or `runner:<pid>`).
+    pub runner_id: String,
     /// How long a cancelled run's harness subprocess gets between SIGTERM
     /// and SIGKILL (workbench backend P2-3a). Same duration grammar as
     /// `poll_interval`. Source: `ESCUREL_RUNNER_CANCEL_GRACE` (default
@@ -567,6 +576,22 @@ impl RunnerConfig {
             _ => DEFAULT_POLL_INTERVAL,
         };
 
+        let status_interval = match lookup("ESCUREL_RUNNER_STATUS_INTERVAL") {
+            Some(raw) if !raw.is_empty() => {
+                parse_duration(&raw).ok_or(ConfigError::InvalidPollInterval { value: raw })?
+            }
+            _ => Duration::from_secs(30),
+        };
+        let runner_id = match lookup("ESCUREL_RUNNER_ID") {
+            Some(raw) if !raw.is_empty() => raw,
+            _ => format!(
+                "{}:{}",
+                lookup("HOSTNAME")
+                    .filter(|h| !h.is_empty())
+                    .unwrap_or_else(|| "runner".to_owned()),
+                std::process::id()
+            ),
+        };
         let cancel_grace = match lookup("ESCUREL_RUNNER_CANCEL_GRACE") {
             Some(raw) if !raw.is_empty() => {
                 parse_duration(&raw).ok_or(ConfigError::InvalidPollInterval { value: raw })?
@@ -726,6 +751,8 @@ impl RunnerConfig {
             queue_cap,
             seen_cap,
             poll_interval,
+            status_interval,
+            runner_id,
             cancel_grace,
             lint_interval,
             ledger_path,
