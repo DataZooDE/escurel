@@ -20,6 +20,7 @@ mod config;
 mod dispatch;
 mod ledger;
 mod packager;
+mod promotion;
 mod quota;
 mod reconciler;
 mod recovery;
@@ -31,7 +32,7 @@ pub use admit::{Admission, LoopLimits, admit};
 pub use auth::{
     AuthError, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, RunClaims, Signer, TRACE_ID_CLAIM, TokenSource,
 };
-pub use cascade::{CascadeError, CascadeOutcome, emit_cascade};
+pub use cascade::{CascadeError, CascadeOutcome, emit_cascade, emit_cascade_with_id};
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
 pub use escurel_runner_workflow::OperationStatus;
@@ -48,6 +49,7 @@ pub use packager::{
 /// [`Delegation`]) and the harness adapter (which consumes it) name it
 /// identically without the core→harness dependency the reverse would require.
 pub const DELEGATE_HARNESS: &str = "delegate";
+pub use promotion::{PromotedDraft, REVIEW_LABEL, cascade_event_id, promoted_draft};
 pub use quota::{Governor, QuotaDecision, QuotaLimits, RunSlot, ThrottleReason};
 pub use reconciler::{
     ConfirmedEffect, ReconcileError, RunFailure, RunReport, assign_confirmed_write,

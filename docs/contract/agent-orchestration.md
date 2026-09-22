@@ -429,8 +429,15 @@ first green) → 8/9/10 in parallel (the three real adapters) → 11→12→13
 
 ## Open follow-up
 
-**Promotion does not cascade yet (found 2026-09-22 by the workbench
-backend's end-to-end test).** The header above says "cascade fires on
+**Promotion cascades since the workbench backend's P2-1 (2026-09-22):**
+the runner tails `escurel:review` and cascades a `draft-promoted` event
+from the promoted page under the drafting run's lineage, one cascade per
+draft. The gap below is kept as the record of why. Still open: a durable
+tail cursor (a promotion made while no runner listened is not replayed on
+the next boot).
+
+*Original finding.* **Promotion did not cascade (found 2026-09-22 by the
+workbench backend's end-to-end test).** The header above says "cascade fires on
 promotion, because until a human promotes it nothing has landed" — the
 first half is implemented (a held write never cascades), the second is
 not: `emit_cascade` runs only in the dispatch loop, after a run the

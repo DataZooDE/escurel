@@ -36,7 +36,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use escurel_client::{AssignEventRequest, Client, SecretString};
+use escurel_client::{AssignEventRequest, Client, ListEventsRequest, SecretString};
 use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
 use escurel_runner_core::{
     Admission, Autonomy, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue,
@@ -273,6 +273,20 @@ async fn main() -> anyhow::Result<()> {
                 drained.notify_one();
             });
         }
+    }
+
+    // The promotion tail (workbench backend P2-1): a human landing a held
+    // write is the cascade the run could not emit itself. Same enablement
+    // as the poller.
+    if let (Some(tenant), Some(source)) = (config.tenant.clone(), tokens.clone()) {
+        tokio::spawn(promotion_tail_loop(
+            config.gateway_url.clone(),
+            tenant,
+            source,
+            config.poll_interval,
+            Arc::clone(&ledger),
+            Arc::clone(&draining),
+        ));
     }
 
     // The inbox poller: the self-healing fallback for missed webhooks.
@@ -2429,6 +2443,173 @@ async fn poll_loop(
                 error = %e,
                 "inbox poll failed; will retry next tick"
             ),
+        }
+    }
+}
+
+/// The promotion tail (workbench backend P2-1). Every `interval` it reads
+/// what arrived under `escurel:review` since the last poll — the label
+/// listing's `resume_cursor` is the tail — and, for each `draft-promoted`,
+/// cascades from the promoted page under the drafting run's lineage: the
+/// ledger names the run by the draft's trigger event, the trigger event
+/// itself (re-read by id, through the same lineage trust gate the poller
+/// applies) is the parent, and the cascade id is one per draft, so a
+/// retried decision, a changeset's paired event or a restart cascades once.
+///
+/// On boot it pages to the END of the label without acting: a promotion
+/// that happened while no runner was listening is not cascaded on the next
+/// boot (a durable cursor in the ledger is the follow-up), and a fresh
+/// runner must not replay a tenant's whole review history as cascades.
+/// Best-effort and non-panicking, like the poller: the gateway stays the
+/// record; this only notifies.
+async fn promotion_tail_loop(
+    gateway_url: String,
+    tenant: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
+    interval: std::time::Duration,
+    ledger: Arc<Ledger>,
+    draining: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use escurel_runner_core::{
+        REVIEW_LABEL, cascade_event_id, emit_cascade_with_id, promoted_draft,
+    };
+
+    let Some(client) = connect_now(&gateway_url, &tokens).await else {
+        tracing::error!(
+            target: "escurel_runner",
+            "promotion tail could not build a gateway client; promotions will not cascade"
+        );
+        return;
+    };
+    let self_subject = tokens.subject();
+    let tail = |cursor: Option<String>| ListEventsRequest {
+        label_skill: REVIEW_LABEL.to_owned(),
+        include_system: true,
+        limit: 1000,
+        cursor: cursor.unwrap_or_default(),
+        ..Default::default()
+    };
+    // Catch up to the end without acting.
+    let mut cursor: Option<String> = None;
+    loop {
+        match client.list_events(tail(cursor.clone())).await {
+            Ok(page) => {
+                if let Some(c) = page.resume_cursor {
+                    cursor = Some(c);
+                }
+                if page.next_cursor.is_none() {
+                    break;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(target: "escurel_runner", error = %e, "promotion tail: catch-up failed; starting from here");
+                break;
+            }
+        }
+    }
+    tracing::info!(target: "escurel_runner", tenant = %tenant, "promotion tail started");
+
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        if draining.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let Some(client) = connect_now(&gateway_url, &tokens).await else {
+            continue;
+        };
+        let page = match client.list_events(tail(cursor.clone())).await {
+            Ok(page) => page,
+            Err(e) => {
+                tracing::warn!(target: "escurel_runner", error = %e, "promotion tail: poll failed; will retry");
+                continue;
+            }
+        };
+        if let Some(c) = &page.resume_cursor {
+            cursor = Some(c.clone());
+        }
+        for event in &page.events {
+            let Some(promoted) = promoted_draft(event) else {
+                continue;
+            };
+            // The run that proposed the draft, by its trigger event.
+            let run = match ledger.get_run(&tenant, &promoted.trigger_event_id) {
+                Ok(Some(rec)) => rec,
+                Ok(None) => {
+                    tracing::debug!(
+                        target: "escurel_runner",
+                        draft_id = %promoted.draft_id,
+                        trigger = %promoted.trigger_event_id,
+                        "promotion tail: no run of ours behind this draft; not cascading"
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(target: "escurel_runner", error = %e, "promotion tail: ledger lookup failed");
+                    continue;
+                }
+            };
+            // The trigger event itself is the cascade's parent — re-read by
+            // id so its lineage rides through the same trust gate the
+            // poller applies.
+            let trigger_event = match client
+                .list_events(ListEventsRequest {
+                    event_id: Some(promoted.trigger_event_id.clone()),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(page) => page.events.into_iter().next(),
+                Err(e) => {
+                    tracing::warn!(target: "escurel_runner", error = %e, "promotion tail: trigger read failed");
+                    continue;
+                }
+            };
+            let Some(trigger_event) = trigger_event else {
+                continue;
+            };
+            let trigger = match self_subject.as_deref() {
+                Some(subj) => Trigger::from_event_gated(&trigger_event, tenant.clone(), subj),
+                None => Trigger::from_event(&trigger_event, tenant.clone()),
+            };
+            let effect = escurel_runner_core::ConfirmedEffect {
+                instance_page_id: promoted.target_page_id.clone(),
+                version: "promoted".to_owned(),
+                held: false,
+                result_ref: None,
+            };
+            match emit_cascade_with_id(
+                &client,
+                &trigger,
+                &run.run_id,
+                &effect,
+                Some(cascade_event_id(&promoted.draft_id)),
+            )
+            .await
+            {
+                Ok(CascadeOutcome::Emitted {
+                    event_id,
+                    label_skill,
+                }) => tracing::info!(
+                    target: "escurel_runner",
+                    draft_id = %promoted.draft_id,
+                    parent_run_id = %run.run_id,
+                    cascaded_event_id = %event_id,
+                    label_skill = %label_skill,
+                    "promotion tail: a promoted draft cascaded under its run's lineage"
+                ),
+                Ok(CascadeOutcome::NotCrossSkill) => tracing::debug!(
+                    target: "escurel_runner",
+                    draft_id = %promoted.draft_id,
+                    "promotion tail: promoted page is not a cross-skill change; no follow-on"
+                ),
+                Err(e) => tracing::warn!(
+                    target: "escurel_runner",
+                    draft_id = %promoted.draft_id,
+                    error = %e,
+                    "promotion tail: cascade emit failed (will not retry)"
+                ),
+            }
         }
     }
 }

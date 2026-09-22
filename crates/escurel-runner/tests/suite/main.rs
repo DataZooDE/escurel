@@ -41,6 +41,7 @@ mod minted_credential;
 mod muse_live;
 mod packager;
 mod per_run_actor_identity;
+mod promotion_cascades;
 mod quota_throttle;
 mod reconcile_retry;
 mod review_no_op;

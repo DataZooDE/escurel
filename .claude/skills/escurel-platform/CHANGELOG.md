@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.49 — a promoted draft cascades (workbench P2-1)
+
+- The runner tails `escurel:review` and, on `draft-promoted`, emits the
+  cascade the drafting run could not: from the promoted page, under that
+  run's lineage (`parent_run_id` = the run), one cascade per draft however
+  often the decision is announced. A review-gated chain now continues past
+  the human — the second half of "cascade fires on promotion".
+
 ## 0.6.48 — `list_events` tails a label; review events name the trigger (workbench P2-0)
 
 - `list_events { label_skill }` alone lists every event under that label,
