@@ -1577,11 +1577,12 @@ pub(super) async fn tool_capture_event(
     indexer: &Indexer,
     caller: AclCaller<'_>,
     event_acl: crate::server::EventAclMode,
+    write_acl: crate::server::WriteAclMode,
     webhook: Option<&crate::webhook::Webhook>,
     events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<EventInfo>>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: CaptureEventArgs = parse_args(args, "capture_event")?;
+    let mut a: CaptureEventArgs = parse_args(args, "capture_event")?;
     // An event with no `label_skill` is unroutable: the runner selects its
     // system prompt by that label, and `{}` used to mint junk the inbox
     // could never dispatch (API review F4). Refuse at the door.
@@ -1598,7 +1599,28 @@ pub(super) async fn tool_capture_event(
     // terminal status). Enforced unconditionally, independent of the event ACL
     // mode (which defaults Off): the runner records status with its own admin
     // identity, so only a non-admin caller is refused.
-    if a.label_skill.starts_with("escurel:") && !caller.is_admin {
+    // The one carve-out (workbench backend P2-2): `escurel:run-control` is
+    // how a human asks the runner to cancel/retry/pause/resume/requeue.
+    // Authorised per action against the run's target page (see
+    // `tools_control`), then stored as bookkeeping on that page with the
+    // requester stamped — the caller's own kind/target/control block are
+    // replaced, never merged.
+    let control = if a.label_skill == super::tools_control::RUN_CONTROL_LABEL {
+        let c = super::tools_control::authorise_run_control(indexer, &caller, write_acl, &a.body)
+            .await?;
+        a.kind = Some("system".to_owned());
+        a.instance_page_id = c.instance_page_id.clone();
+        let mut prov = match a.provenance.take() {
+            Some(Value::Object(m)) => Value::Object(m),
+            _ => json!({}),
+        };
+        prov["control"] = c.control.clone();
+        a.provenance = Some(prov);
+        Some(c)
+    } else {
+        None
+    };
+    if a.label_skill.starts_with("escurel:") && !caller.is_admin && control.is_none() {
         return Err(JsonRpcError::invalid_params(
             "capture_event: the `escurel:` label namespace is reserved".to_owned(),
         ));
@@ -1617,7 +1639,7 @@ pub(super) async fn tool_capture_event(
             ))
         })?,
     };
-    if kind == escurel_index::EventKind::System && !caller.is_admin {
+    if kind == escurel_index::EventKind::System && !caller.is_admin && control.is_none() {
         return Err(JsonRpcError::invalid_params(
             "capture_event: `kind: system` events are written by the runner and the \
              gateway; a caller files `user` events"
@@ -1656,7 +1678,10 @@ pub(super) async fn tool_capture_event(
                 .to_owned(),
         ));
     }
-    let (root_event_id, run_id) = lineage_from_provenance(a.provenance.as_ref());
+    let (root_event_id, run_id) = match &control {
+        Some(c) => (c.root_event_id.clone(), c.run_id.clone()),
+        None => lineage_from_provenance(a.provenance.as_ref()),
+    };
     let requested = NewEvent {
         event_id: a.event_id,
         at: a.at,
