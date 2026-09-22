@@ -435,6 +435,67 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     let note = format!("\n- folded event `{event_id}`: {title}\n");
     let new_body = format!("{}{}", current_body.trim_end_matches('\n'), note);
     let new_content = format!("{frontmatter}{new_body}");
+
+    // A REVIEW packaging (`autonomy: review` — the tool list says so: it
+    // carries `create_draft` and no `update_page`) holds the write for a
+    // human instead of landing it. The echo then does what a real agent is
+    // told to: report its plan, draft against the head it read, and stop —
+    // no `assign_event`, because nothing has landed (workbench backend P1,
+    // PR11). `report_progress` is best-effort here as it is for every
+    // agent: a static-bearer runner's token cannot report, and the gateway
+    // says so without the run being any worse for it.
+    if task.allowed_tools.iter().any(|t| t == "create_draft")
+        && !task.allowed_tools.iter().any(|t| t == "update_page")
+    {
+        if task.allowed_tools.iter().any(|t| t == "report_progress") {
+            let _ = mcp.call(
+                "report_progress",
+                json!({
+                    "plan": [
+                        { "step": "read the target page", "status": "completed" },
+                        { "step": "draft the fold for review", "status": "in_progress" }
+                    ],
+                    "current": "draft the fold for review",
+                }),
+            );
+            tool_calls += 1;
+        }
+        let base_sha256 = expanded
+            .get("content_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let mut args = json!({
+            "target_page_id": instance_page_id,
+            "content": new_content,
+            "event_id": event_id,
+            "new_changeset": true,
+        });
+        if !base_sha256.is_empty() {
+            args["base_sha256"] = json!(base_sha256);
+        }
+        let drafted = mcp.call("create_draft", args)?;
+        tool_calls += 1;
+        if drafted.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(format!("echo: create_draft refused: {drafted}"));
+        }
+        let draft_id = drafted["draft"]["draft_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        return Ok(HarnessOutcome {
+            result_ref: knob_result_ref(),
+            ok: true,
+            status: HarnessStatus::Ok,
+            summary: format!(
+                "drafted the fold of event {event_id} for {instance_page_id} (draft {draft_id}); \
+                 awaiting a human"
+            ),
+            tool_calls,
+            produced_instance: Some(instance_page_id),
+        });
+    }
+
     let updated = mcp.call(
         "update_page",
         json!({ "page_id": instance_page_id, "content": new_content }),
