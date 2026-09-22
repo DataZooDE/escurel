@@ -230,6 +230,87 @@ async fn since_event_id_with_a_root_filter_replays_processed_system_events_the_i
     );
 }
 
+/// Codex triage (P1): run lifecycle ids are deterministic strings, not
+/// ULIDs — `run:X:attempt:1` and `run:X:finished` sort BELOW
+/// `run:X:started`. A lineage resume that compared ids would skip the
+/// terminal for ever. It resumes by log POSITION: everything after the
+/// row named by `since_event_id`, and everything when that row is unknown.
+#[tokio::test]
+async fn since_event_id_resumes_a_lineage_by_log_position_not_id_order() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    call(&p, &admin, "capture_event", json!({ "event_id": ROOT, "label_skill": "meeting", "title": "root", "at": "2026-09-22T09:00:00Z" })).await;
+    for (title, at) in [
+        ("run-started", "2026-09-22T09:01:00Z"),
+        ("run-attempt", "2026-09-22T09:02:00Z"),
+        ("run-finished", "2026-09-22T09:03:00Z"),
+    ] {
+        let mut e = run_event(title, Some(PAGE));
+        e["event_id"] = json!(format!("run:{RUN}:{}", title.trim_start_matches("run-")));
+        e["at"] = json!(at);
+        call(&p, &admin, "capture_event", e).await;
+    }
+    let (mut sock, ack) = subscribe(
+        &p,
+        &admin,
+        json!({ "filters": { "root_event_id": ROOT }, "since_event_id": format!("run:{RUN}:started") }),
+    )
+    .await;
+    assert_eq!(ack["type"], "event_subscribe_ack", "{ack}");
+    let got = events(&mut sock, 2).await;
+    let titles: Vec<&str> = got
+        .iter()
+        .map(|f| f["event"]["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["run-attempt", "run-finished"], "{got:?}");
+    assert!(
+        recv(&mut sock, 1).await.is_none(),
+        "nothing before the position is replayed"
+    );
+}
+
+/// Codex triage (P2): the protocol says a second `event_subscribe` replaces
+/// the first and a malformed one subscribes nothing — so a malformed
+/// REPLACEMENT must leave no subscription behind, not the broader old one.
+#[tokio::test]
+async fn an_invalid_resubscribe_clears_the_previous_subscription() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let (mut sock, ack) = subscribe(&p, &admin, json!({})).await;
+    assert_eq!(ack["type"], "event_subscribe_ack", "{ack}");
+    call(
+        &p,
+        &admin,
+        "capture_event",
+        json!({ "label_skill": "meeting", "title": "one" }),
+    )
+    .await;
+    assert_eq!(
+        events(&mut sock, 1).await.len(),
+        1,
+        "the first subscription is live"
+    );
+
+    sock.send(Message::Text(
+        json!({ "type": "event_subscribe", "subscription_id": "s2", "filters": { "kind": "robot" } }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let err = recv(&mut sock, 3).await.expect("an error frame");
+    assert_eq!(err["code"], "invalid_subscription", "{err}");
+    call(
+        &p,
+        &admin,
+        "capture_event",
+        json!({ "label_skill": "meeting", "title": "two" }),
+    )
+    .await;
+    assert!(
+        recv(&mut sock, 1).await.is_none(),
+        "the old subscription must be gone"
+    );
+}
+
 #[tokio::test]
 async fn an_invalid_filter_is_refused_with_invalid_subscription() {
     let p = start().await;

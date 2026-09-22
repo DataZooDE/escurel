@@ -96,6 +96,48 @@ fn inbox_ids(resp: &Value) -> Vec<String> {
 ///
 /// The positive control is in the same test on purpose: Alice MUST still
 /// see her own event, or a fix that hides everything from everyone passes.
+/// Codex triage (P2): the hidden-collision echo must stay indistinguishable
+/// from a first capture after the lineage columns. A fresh capture reads
+/// back self-rooted (`root_event_id` = its own id) with `kind: user`; the
+/// echo of a row the caller may not see must say the same, or a guessed id
+/// that answers `root_event_id: null` tells the caller the id is taken.
+#[tokio::test]
+async fn a_hidden_collision_echo_reads_like_a_first_capture() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, "alice");
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, "bob");
+    let fresh = call(
+        &p,
+        &alice,
+        "capture_event",
+        capture_args("EV-SHARED", "alice's text"),
+    )
+    .await;
+    let fresh = &fresh["result"]["structuredContent"];
+    assert_eq!(
+        fresh["root_event_id"], "EV-SHARED",
+        "a first capture is self-rooted: {fresh}"
+    );
+    let echo = call(
+        &p,
+        &bob,
+        "capture_event",
+        capture_args("EV-SHARED", "bob's text"),
+    )
+    .await;
+    let echo = &echo["result"]["structuredContent"];
+    assert_eq!(
+        echo["body"], "bob's text",
+        "bob sees his own submission: {echo}"
+    );
+    assert_eq!(
+        echo["root_event_id"], "EV-SHARED",
+        "…shaped exactly like a first capture: {echo}"
+    );
+    assert_eq!(echo["kind"], "user");
+    assert!(echo["run_id"].is_null());
+}
+
 #[tokio::test]
 async fn inbox_does_not_leak_another_callers_capture() {
     let p = start().await;
