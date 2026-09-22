@@ -38,6 +38,7 @@ mod healthz;
 mod inbox_poll;
 mod lineage_end_to_end;
 mod loop_controls;
+mod manual_start;
 mod minted_credential;
 mod muse_live;
 mod packager;

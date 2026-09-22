@@ -119,6 +119,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_CLAUDE_BIN` | `claude` | binary path (or a test stub) |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | `30s` | inbox-poll backstop |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | `5s` | on cancel, the wait between SIGTERM and SIGKILL for the harness subprocess |
+| `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | the harness names a manual start may ask for (comma-separated); anything else fails the run closed |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | `30s` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |
 | `ESCUREL_RUNNER_ID` | `<HOSTNAME>:<pid>` | how this runner names itself in its status reports |
 | `ESCUREL_RUNNER_EMIT_EVENTS` | `true` | write each run's lifecycle as `escurel:run` system events (see *Run lifecycle events*); `false` = the workbench sees events and drafts but no runs |
@@ -292,6 +293,30 @@ cascade is emitted, and open drafts stay open. `cancelled` is terminal for
 the poller — the event is not re-run on the next poll; a `retry` control
 re-drives it. A cancel for a run that is not live (unknown, or already at a
 terminal) is refused, and the terminal stands.
+
+## Manual start (`provenance.manual`)
+
+A human starts a run by hand by capturing an ordinary event — any label,
+any page — with a `provenance.manual` block:
+
+```json
+{ "label_skill": "renewal", "instance_page_id": "markdown/instances/renewal/c1.md",
+  "title": "renew now", "body": "…",
+  "provenance": { "manual": { "harness": "claude", "mode": "run" } } }
+```
+
+- `harness?` — which adapter to run on. The runner honours it only within
+  `ESCUREL_RUNNER_HARNESS_ALLOW`; a name outside the list fails the run
+  closed (`failed`, retriable) with `run-finished.error` naming the
+  harness and the env var — it never runs the default in its place.
+- `mode?` — `run` (the default) or `plan` (P2-5b). Anything else is
+  refused at capture (`-32602`).
+- `requested_by` — written by the gateway from your token; a value you
+  send is replaced.
+
+The run's `run-started` carries the block as `provenance.runner.manual`, so
+a lineage shows who asked and for what. Everything else about the run is
+ordinary: the same gate, the same ledger, the same lifecycle events.
 
 ## Runner status (`escurel:runner-status`)
 

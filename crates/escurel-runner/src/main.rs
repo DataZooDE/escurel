@@ -808,6 +808,8 @@ struct AttemptSink {
     summary: String,
     tool_calls: u32,
     autonomy: Option<&'static str>,
+    /// The last attempt's harness error, for `run-finished`'s reason.
+    last_error: Option<String>,
 }
 
 /// Log + count a refused run lifecycle event. The projection is
@@ -1083,6 +1085,7 @@ async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
             t
         }
         None => Trigger {
+            manual: None,
             is_system: false,
             tenant: tenant.to_owned(),
             event_id: event_id.to_owned(),
@@ -1360,6 +1363,35 @@ fn resolve_harness(
         .as_ref()
         .map(|wf| wf.harness.as_str())
         .filter(|h| !h.is_empty() && *h != default.name());
+    // A manual start's ask (workbench backend P2-5), honoured only within
+    // the allow-list: a name outside it fails the run closed — running the
+    // default in its place would do something the requester did not ask.
+    let manual = trigger
+        .manual
+        .as_ref()
+        .and_then(|m| m.harness.as_deref())
+        .filter(|h| !h.is_empty());
+    if declared.is_none()
+        && let Some(name) = manual
+    {
+        if !config.harness_allow.iter().any(|a| a == name) {
+            tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                asked = %name,
+                allow = ?config.harness_allow,
+                "manual start asks for a harness outside ESCUREL_RUNNER_HARNESS_ALLOW; refusing"
+            );
+            return Arc::new(RefusingHarness::not_allowed(name));
+        }
+        if name == default.name() {
+            return Arc::clone(default);
+        }
+        return match build_harness_named(config, name) {
+            Some(h) => h,
+            None => Arc::new(RefusingHarness::new(name)),
+        };
+    }
     let Some(name) = declared else {
         return Arc::clone(default);
     };
@@ -1821,6 +1853,10 @@ async fn dispatch_loop(
             model: None,
             max_attempts: config.max_attempts,
             target_page_id: trigger.instance_page_id.clone(),
+            manual: trigger
+                .manual
+                .as_ref()
+                .map(escurel_runner_core::ManualStart::to_value),
         };
         let emit_events = config.emit_run_events;
         if emit_events {
@@ -1954,6 +1990,7 @@ async fn dispatch_loop(
                 }
                 (None, false, _) => escurel_runner_core::RunFinish::Failed {
                     reason: "permanent".to_owned(),
+                    error: attempt_sink.lock().ok().and_then(|s| s.last_error.clone()),
                 },
             };
             let sink = attempt_sink.lock().map(|s| s.clone()).unwrap_or_default();
@@ -2341,6 +2378,9 @@ async fn attempt_run(
                     error = %e,
                     "dispatch: harness run failed"
                 );
+                if let Ok(mut s) = sink.lock() {
+                    s.last_error = Some(e.to_string());
+                }
                 return Err(harness_error_to_reconcile(&e));
             }
         };
@@ -3363,6 +3403,7 @@ mod tests {
 
     fn trigger_with_label(event_id: &str, label: &str) -> Trigger {
         Trigger {
+            manual: None,
             is_system: false,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),

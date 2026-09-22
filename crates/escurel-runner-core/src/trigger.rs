@@ -98,6 +98,9 @@ pub struct Trigger {
     /// non-workflow trigger — the dispatch loop routes a `Some` to the
     /// reducer where it otherwise calls `emit_cascade`.
     pub workflow: Option<WorkflowProvenance>,
+    /// A manual start's asks (workbench backend P2-5): `provenance.manual`,
+    /// whose `requested_by` the gateway stamped from the caller's token.
+    pub manual: Option<ManualStart>,
     /// A content address for what this event SAYS — `label_skill`, title and
     /// body — as distinct from which event record said it.
     ///
@@ -160,6 +163,7 @@ impl Trigger {
         tenant: impl Into<String>,
         trusted_subject: Option<&str>,
     ) -> Self {
+        let manual = ManualStart::from_provenance(&event.provenance);
         let instance_page_id = if event.instance_page_id.is_empty() {
             None
         } else {
@@ -192,6 +196,7 @@ impl Trigger {
             instance_page_id,
             lineage,
             workflow,
+            manual,
             content_hash: Some(content_hash(event)),
             is_system: event.kind == "system",
         }
@@ -525,5 +530,57 @@ mod tests {
         let trigger = Trigger::from_event(&event, "tenant-a");
         assert_eq!(trigger.lineage.depth, 0);
         assert_eq!(trigger.lineage.root_event_id, "01ABCDEF");
+    }
+}
+
+/// A manual start's asks (workbench backend P2-5), read from
+/// `provenance.manual`. The gateway validated `mode` and wrote
+/// `requested_by` from the token; the runner honours `harness` only within
+/// its allow-list and `mode: plan` only on a harness that can plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualStart {
+    /// The harness the requester asked for, if any.
+    pub harness: Option<String>,
+    /// `run` (the default) or `plan`.
+    pub mode: String,
+    /// Who asked — the token's subject, server-stamped.
+    pub requested_by: Option<String>,
+    /// For an approval: the plan-mode run whose plan this run executes.
+    pub approved_plan_run_id: Option<String>,
+}
+
+impl ManualStart {
+    /// `None` unless `provenance.manual` is an object.
+    #[must_use]
+    pub fn from_provenance(provenance: &serde_json::Value) -> Option<Self> {
+        let m = provenance.get("manual")?.as_object()?;
+        let text = |k: &str| {
+            m.get(k)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        Some(Self {
+            harness: text("harness"),
+            mode: text("mode").unwrap_or_else(|| "run".to_owned()),
+            requested_by: text("requested_by"),
+            approved_plan_run_id: text("approved_plan_run_id"),
+        })
+    }
+
+    /// The block as the run's own events carry it.
+    #[must_use]
+    pub fn to_value(&self) -> serde_json::Value {
+        let mut v = serde_json::json!({ "mode": self.mode });
+        if let Some(h) = &self.harness {
+            v["harness"] = serde_json::json!(h);
+        }
+        if let Some(r) = &self.requested_by {
+            v["requested_by"] = serde_json::json!(r);
+        }
+        if let Some(a) = &self.approved_plan_run_id {
+            v["approved_plan_run_id"] = serde_json::json!(a);
+        }
+        v
     }
 }

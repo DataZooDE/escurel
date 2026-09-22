@@ -320,6 +320,7 @@ async fn recovery_writes_the_missing_run_finished_for_an_orphaned_pending_row() 
         let ledger = Ledger::open(&ledger_path).expect("open ledger");
         match ledger
             .begin_run(&Trigger {
+                manual: None,
                 is_system: false,
                 tenant: TENANT.to_owned(),
                 event_id: event_id.clone(),

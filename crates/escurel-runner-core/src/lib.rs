@@ -60,7 +60,7 @@ pub use reconciler::{
 pub use recovery::{RecoveryReport, recover_pending};
 pub use run_events::{AttemptReport, RUN_EVENT_LABEL, RunEventCtx, RunFinish, now_ts};
 pub use secrecy::SecretString;
-pub use trigger::{Lineage, Trigger};
+pub use trigger::{Lineage, ManualStart, Trigger};
 pub use workflow::{
     OPERATION_STATUS_LABEL, StepTerminal, TerminalDelivery, WorkflowDriveError,
     WorkflowDriveOutcome, drive_workflow, operation_has_terminal_status, record_status_best_effort,
