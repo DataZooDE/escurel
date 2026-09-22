@@ -283,6 +283,38 @@ impl GeminiHarness {
                 .cloned()
                 .unwrap_or_default();
             if parts.is_empty() {
+                // A MALFORMED function call is the model's mistake to
+                // correct, not the run's to fail. Seen live the moment the
+                // packager asked for a plan: `gemini-2.5-flash` answered
+                // with Python-style pseudo-code for the nested `plan` array,
+                // the API returned this finish reason with no parts, and a
+                // whole attempt was lost to one bad turn. Tell the model what
+                // went wrong — appended to the LAST user turn, so the
+                // user/model alternation the API expects holds — and let it
+                // try again within the same turn budget. A model that never
+                // recovers runs out of turns below, as a FAILED outcome the
+                // reconciler can retry.
+                if body["candidates"][0]["finishReason"] == "MALFORMED_FUNCTION_CALL" {
+                    let detail = body["candidates"][0]["finishMessage"]
+                        .as_str()
+                        .unwrap_or("no detail")
+                        .to_owned();
+                    let correction = json!({ "text": format!(
+                        "Your previous function call was malformed and was NOT executed \
+                         ({detail}). Call the function again with its arguments as plain \
+                         JSON matching the declared parameters — for example an array of \
+                         objects — never as code."
+                    ) });
+                    match contents.last_mut() {
+                        Some(last) if last["role"] == "user" => {
+                            if let Some(parts) = last["parts"].as_array_mut() {
+                                parts.push(correction);
+                            }
+                        }
+                        _ => contents.push(json!({ "role": "user", "parts": [correction] })),
+                    }
+                    continue;
+                }
                 return Err(Self::upstream(format!(
                     "generateContent returned no parts: {body}"
                 )));
