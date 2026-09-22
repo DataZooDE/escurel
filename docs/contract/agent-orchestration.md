@@ -429,6 +429,21 @@ first green) → 8/9/10 in parallel (the three real adapters) → 11→12→13
 
 ## Open follow-up
 
+**Promotion does not cascade yet (found 2026-09-22 by the workbench
+backend's end-to-end test).** The header above says "cascade fires on
+promotion, because until a human promotes it nothing has landed" — the
+first half is implemented (a held write never cascades), the second is
+not: `emit_cascade` runs only in the dispatch loop, after a run the
+runner itself landed. A human's `promote_draft` / `promote_changeset`
+re-enters `update_page` and, since the workbench backend P1, publishes an
+`escurel:review` `draft-promoted` event — but no process turns that into
+the next hop. The fix is a runner subscriber on those review events
+(`event_subscribe { filters: { label_skill: "escurel:review" } }`, with
+the poller as backstop) that runs `emit_cascade` for the promoted draft's
+page under the original run's lineage; it belongs with the `run-control`
+subscriber (workbench backend P2). Until then a review-gated chain stops
+at the first human approval.
+
 ~~This design introduces orchestration automation that the current spec
 explicitly defers to v1.5 ("event-derived state projection"). We keep the
 **gateway** automation-free by housing all automation in the separate

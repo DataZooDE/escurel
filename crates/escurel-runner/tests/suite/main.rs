@@ -35,6 +35,7 @@ mod gemini_malformed_call;
 mod harness_failure_vs_gateway;
 mod healthz;
 mod inbox_poll;
+mod lineage_end_to_end;
 mod loop_controls;
 mod minted_credential;
 mod muse_live;
