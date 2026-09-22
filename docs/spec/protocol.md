@@ -1464,9 +1464,12 @@ Two shapes, chosen by the filter. A subscription scoped to a lineage
 (`filters.root_event_id` or `filters.run_id`) resumes from that lineage's
 own **event log**, any status — gap-free for the thread: a run event
 stored `processed` while the socket was down is replayed, which the inbox
-resume below could never do. Run events carry non-ULID ids, so they
-compare above any `since_event_id` and are replayed on every resume —
-dedupe by `event_id`. The bound is the list cap (10 000 rows).
+resume below could never do. This resume is by **log position**, not by
+id order: everything after the row `since_event_id` names, in the log's
+time order, and everything when that row is unknown to the lineage
+(run events carry deterministic non-ULID ids, so an id compare would
+skip a run's terminal). Dedupe by `event_id`. The bound is the list cap
+(10 000 rows).
 
 Otherwise, a reconnecting subscriber passes the last event id it
 processed as `since_event_id`: after the ack, the **still-inbox** events captured

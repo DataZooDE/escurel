@@ -2094,7 +2094,12 @@ fn echoed_event(stored: &EventInfo, requested: &NewEvent) -> EventInfo {
         body: requested.body.clone(),
         provenance: requested.provenance.clone().unwrap_or(Value::Null),
         kind: requested.kind,
-        root_event_id: requested.root_event_id.clone(),
+        // A first capture reads back SELF-ROOTED; the echo must too, or a
+        // guessed id that answers `root_event_id: null` says the id is taken.
+        root_event_id: requested
+            .root_event_id
+            .clone()
+            .or_else(|| Some(stored.event_id.clone())),
         run_id: requested.run_id.clone(),
     }
 }

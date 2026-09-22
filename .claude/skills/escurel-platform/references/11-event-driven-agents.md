@@ -270,8 +270,10 @@ nothing.
 **Resume.** With a `root_event_id` or `run_id` filter, `since_event_id`
 replays from the lineage's own event log — any status, system rows
 included — so a run event stored `processed` while you were away is
-replayed too (gap-free for the thread; dedupe by `event_id`, run events
-carry non-ULID ids and replay on every resume). Without a lineage filter,
+replayed too (gap-free for the thread). It resumes by log position:
+everything after the row you named, everything if that row is unknown;
+dedupe by `event_id`. A malformed re-subscribe drops the previous
+subscription too (it subscribes nothing). Without a lineage filter,
 pass `since_event_id` (the last event id you processed) on the
 subscribe frame to resume: the still-**inbox** events after that id
 replay oldest-first with `replayed: true` before the live stream —

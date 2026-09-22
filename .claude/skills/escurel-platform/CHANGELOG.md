@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.47 — lineage resume by position; malformed re-subscribe clears the old one
+
+- A lineage-scoped `since_event_id` resumes by log POSITION (everything
+  after the row you named; everything if unknown) instead of comparing
+  ids — run events carry deterministic non-ULID ids, so the compare could
+  skip a run's terminal.
+- A malformed `event_subscribe` replacing a live subscription now drops the
+  old one too ("subscribes nothing" means nothing).
+
 ## 0.6.46 — filtered `event_subscribe` + gap-free lineage resume (workbench backend P1)
 
 - `event_subscribe` takes `filters: {root_event_id?, run_id?, label_skill?,

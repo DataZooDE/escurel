@@ -367,6 +367,13 @@ async fn handle_socket(
                 let filter = match EventSubFilter::parse(frame.get("filters")) {
                     Ok(f) => f,
                     Err(message) => {
+                        // "Subscribes nothing" includes what was subscribed
+                        // before: a second subscribe replaces the first, and
+                        // a refused replacement must not leave the old,
+                        // possibly broader, subscription streaming.
+                        events_rx = None;
+                        event_sub_id = Value::Null;
+                        event_filter = EventSubFilter::default();
                         let _ = send_json(
                             socket,
                             json!({
@@ -410,11 +417,13 @@ async fn handle_socket(
                 //
                 // Both mark frames `replayed: true`, run the same per-event
                 // ACL as the live push, and are bounded (the list caps).
-                // Ordering: the inbox path sorts by event id (exact for
-                // server-minted ULIDs); the lineage path keeps the log's
-                // time order, because run events carry non-ULID ids —
-                // which also means a `since_event_id` compares below them
-                // and they are replayed on every resume. Dedupe by id.
+                // The inbox path resumes by id (ULIDs sort by time); the
+                // lineage path resumes by log POSITION — everything after
+                // the row `since_event_id` names, everything when that row
+                // is unknown — because run events carry deterministic
+                // non-ULID ids (`run:X:finished` sorts BELOW
+                // `run:X:started`) and an id compare would skip a run's
+                // terminal for ever. Dedupe by id either way.
                 if let Some(since) = frame.get("since_event_id").and_then(Value::as_str)
                     && let Some(handle) = state.indexer.as_ref()
                 {
@@ -442,9 +451,19 @@ async fn handle_socket(
                     };
                     match replay {
                         Ok(events) => {
+                            let lineage = event_filter.is_lineage_scoped();
+                            let start = if lineage {
+                                events
+                                    .iter()
+                                    .position(|e| e.event_id == since)
+                                    .map_or(0, |i| i + 1)
+                            } else {
+                                0
+                            };
                             for e in events
                                 .into_iter()
-                                .filter(|e| e.event_id.as_str() > since)
+                                .skip(start)
+                                .filter(|e| lineage || e.event_id.as_str() > since)
                                 .filter(|e| event_filter.matches(e))
                             {
                                 if event_push_allowed(&state, &caller, &e).await {
