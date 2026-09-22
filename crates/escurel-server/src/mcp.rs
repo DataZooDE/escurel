@@ -65,6 +65,7 @@ mod ingest;
 mod schema;
 mod tools_admin;
 mod tools_branches;
+mod tools_control;
 mod tools_drafts;
 mod tools_lineage;
 mod tools_progress;
@@ -918,6 +919,7 @@ async fn dispatch_tools_call(
                 indexer,
                 caller,
                 state.event_acl,
+                state.write_acl,
                 state.webhook.as_ref(),
                 &state.events_tx,
                 params.arguments,

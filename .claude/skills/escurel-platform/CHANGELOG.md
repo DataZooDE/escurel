@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.50 — controls as events: `escurel:run-control` (workbench P2-2)
+
+- `capture_event` accepts the `escurel:run-control` label from non-admins:
+  `cancel` / `retry` name a `run_id` and need write access to the run's
+  target page (the same `ESCUREL_WRITE_ACL` gate as `update_page`);
+  `pause` / `resume` / `requeue` are admin-only. A denial and an unknown
+  run both read `event_not_found`. The request is stored as bookkeeping
+  (`kind: system`) on the run's target page with
+  `provenance.control.requested_by` stamped from the token. The runner's
+  subscriber that acts on these lands next (P2-3b).
+
 ## 0.6.49 — a promoted draft cascades (workbench P2-1)
 
 - The runner tails `escurel:review` and, on `draft-promoted`, emits the

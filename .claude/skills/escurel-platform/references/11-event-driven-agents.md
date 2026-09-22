@@ -147,10 +147,12 @@ Every event carries three more fields on the wire: `kind`, `root_event_id`,
   should fold into an instance. Everything above is about user events.
 - **`kind: system`** is bookkeeping ABOUT a run, written by the runner and
   the gateway under the reserved `escurel:` labels (`escurel:run` for a
-  run's lifecycle, `escurel:review` for draft transitions, `escurel:runner-status`
+  run's lifecycle, `escurel:review` for draft transitions,
+  `escurel:run-control` for a human's control requests, `escurel:runner-status`
   for runner health; the pre-existing `escurel:run-status` is a workflow
   *operation's* status and stays as it is). Admin-only to capture — a forged
-  `run-finished` would be a forged run. A system event captured with an
+  `run-finished` would be a forged run — with one carve-out, `escurel:run-control`
+  (below). A system event captured with an
   `instance_page_id` is stored `processed` on that page at once (no
   `assign_event`: it was never inbox work); without one it sits unassigned.
   **The runner never dispatches a system event, nor anything under an
@@ -227,6 +229,37 @@ could not (a held write cascades nothing): the trigger event is the parent,
 per draft, so a retried decision or a changeset's paired event cascades
 once. The runner catches up to the end of the label on boot without acting
 — a promotion made while no runner was listening is not replayed.
+
+## Controls as events (`escurel:run-control`)
+
+A human cancels, retries, pauses, resumes or requeues by capturing an event
+— there is no control tool, and the gateway does nothing itself; the
+runner's subscriber acts and answers under `escurel:run-control-result`.
+
+```json
+{ "label_skill": "escurel:run-control", "title": "cancel",
+  "source": "workbench", "mime": "application/json",
+  "body": "{\"action\":\"cancel\",\"run_id\":\"01H…\",\"reason\":\"wrong document\"}" }
+```
+
+The body is JSON `{action, run_id?, event_id?, reason?}`:
+
+| action | names | who may ask |
+|---|---|---|
+| `cancel`, `retry` | `run_id` | anyone allowed to **write the run's target page** (the page its `run-started` names) — the same `ESCUREL_WRITE_ACL` gate as `update_page`; admin always |
+| `pause`, `resume` | — (the caller's tenant) | admin |
+| `requeue` | `event_id` (the dead-lettered event) | admin |
+
+A denied request and an unknown run both fail with `event_not_found` (no
+existence oracle for runs on pages you may not write). A malformed one —
+no action, an unknown action, `cancel` without a run, a body that is not
+JSON — is a plain `invalid_params`. The stored event is `kind: system`
+(whatever you passed), on the run's target page for `cancel`/`retry` and
+unassigned for the tenant-wide actions, with `provenance.control =
+{action, run_id?, event_id?, reason?, requested_by}` written from your
+token (a block you supply is replaced). It therefore never shows as inbox
+work; find it under `list_events { run_id }` or
+`list_events { label_skill: "escurel:run-control" }`.
 
 ## Reading a lineage: `list_lineage`
 
