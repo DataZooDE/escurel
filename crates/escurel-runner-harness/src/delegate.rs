@@ -341,6 +341,16 @@ impl Harness for DelegateHarness {
     }
 
     async fn run(&self, task: &TaskContext) -> Result<HarnessOutcome, HarnessError> {
+        if task.plan_mode {
+            // No plan-only mode to hand this harness (workbench backend
+            // P2-5b, OQ-3: refuse rather than run a narrowed surface it
+            // does not enforce).
+            return Err(HarnessError::Unsupported {
+                harness: "delegate",
+                reason: "plan mode is not supported by this harness; use claude, gemini or echo"
+                    .to_owned(),
+            });
+        }
         // Fail closed: a task routed to the delegate harness without delegation
         // parameters has no endpoint + no authority to delegate with. Refuse
         // (→ Permanent → dead-letter) rather than guess.

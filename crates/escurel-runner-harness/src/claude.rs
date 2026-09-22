@@ -125,9 +125,15 @@ impl ClaudeHarness {
             "--strict-mcp-config".to_owned(),
             "--output-format".to_owned(),
             "json".to_owned(),
-            // Unattended runner: no interactive permission prompts.
+            // Unattended runner: no interactive permission prompts — or, for
+            // a planning run (workbench backend P2-5b), claude's own plan
+            // mode, which reads and plans but never writes.
             "--permission-mode".to_owned(),
-            "bypassPermissions".to_owned(),
+            if task.plan_mode {
+                "plan".to_owned()
+            } else {
+                "bypassPermissions".to_owned()
+            },
         ];
         // `--allowedTools` takes a space/comma-separated list; pass each id as
         // its own token so tool names never need escaping.

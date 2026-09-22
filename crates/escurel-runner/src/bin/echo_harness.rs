@@ -441,8 +441,50 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         frontmatter = stamp_frontmatter(&frontmatter, "last_verified", &verified_at);
     }
 
-    // 3. Append a short event note and write the full page back.
-    let note = format!("\n- folded event `{event_id}`: {title}\n");
+    // A PLANNING packaging (workbench backend P2-5b — the tool list carries
+    // neither `update_page` nor `create_draft`) reports a plan and stops:
+    // nothing is written, nothing assigned, and the run ends `planned`.
+    let allowed = |t: &str| task.allowed_tools.iter().any(|x| x == t);
+    if !allowed("update_page") && !allowed("create_draft") {
+        if allowed("report_progress") {
+            let _ = mcp.call(
+                "report_progress",
+                json!({
+                    "plan": [
+                        { "step": "read the target page", "status": "pending" },
+                        { "step": format!("fold event {event_id} into {instance_page_id}"), "status": "pending" },
+                        { "step": "mark the event processed", "status": "pending" }
+                    ],
+                }),
+            );
+            tool_calls += 1;
+        }
+        return Ok(HarnessOutcome {
+            result_ref: knob_result_ref(),
+            ok: true,
+            status: HarnessStatus::Ok,
+            summary: format!(
+                "planned the fold of event {event_id} into {instance_page_id}; nothing written"
+            ),
+            tool_calls,
+            produced_instance: None,
+        });
+    }
+
+    // 3. Append a short event note and write the full page back. An
+    //    approved plan in the input (P2-5b) is acknowledged in the note by
+    //    its first step, so a test can see the plan reached the harness.
+    let approved_step = task
+        .input
+        .split_once("## Approved plan")
+        .and_then(|(_, rest)| rest.lines().find(|l| l.starts_with("- ")))
+        .map(|l| l.trim_start_matches("- ").to_owned());
+    let note = match approved_step {
+        Some(step) => {
+            format!("\n- folded event `{event_id}`: {title} (per approved plan: {step})\n")
+        }
+        None => format!("\n- folded event `{event_id}`: {title}\n"),
+    };
     let new_body = format!("{}{}", current_body.trim_end_matches('\n'), note);
     let new_content = format!("{frontmatter}{new_body}");
 

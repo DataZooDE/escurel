@@ -65,6 +65,9 @@ pub enum RunFinish {
     /// Stopped on request while live (workbench backend P2-3a); `reason` is
     /// the requester's, when they gave one.
     Cancelled { reason: String },
+    /// A plan-mode run reported its plan and stopped (P2-5b); the plan
+    /// rides in the body like every terminal's.
+    Planned,
 }
 
 /// What one attempt reported.
@@ -211,6 +214,7 @@ impl RunEventCtx {
             RunFinish::Failed { reason, .. } => ("failed", None, false, Some(reason.clone())),
             RunFinish::DeadLetter { reason } => ("dead_letter", None, false, Some(reason.clone())),
             RunFinish::Cancelled { reason } => ("cancelled", None, false, Some(reason.clone())),
+            RunFinish::Planned => ("planned", None, false, None),
         };
         let plan = self.latest_plan(client).await;
         let mut body = json!({

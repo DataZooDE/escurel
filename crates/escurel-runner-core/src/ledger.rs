@@ -78,6 +78,10 @@ pub enum RunStatus {
     /// stopped and nothing landed. Idempotency-terminal — the poller never
     /// re-runs a cancelled event; an explicit `retry` control re-drives it.
     Cancelled,
+    /// A plan-mode run (workbench backend P2-5b): the harness reported its
+    /// plan and stopped; nothing landed. Terminal — the event stays in the
+    /// inbox and is not re-run; an approval is a new manual start.
+    Planned,
 }
 
 /// The reason a run was dead-lettered by a loop control (#157). Recorded in
@@ -134,6 +138,7 @@ impl RunStatus {
             RunStatus::Failed => "failed",
             RunStatus::DeadLetter => "dead_letter",
             RunStatus::Cancelled => "cancelled",
+            RunStatus::Planned => "planned",
         }
     }
 
@@ -146,6 +151,7 @@ impl RunStatus {
             "failed" => Some(RunStatus::Failed),
             "dead_letter" | "dead" => Some(RunStatus::DeadLetter),
             "cancelled" => Some(RunStatus::Cancelled),
+            "planned" => Some(RunStatus::Planned),
             _ => None,
         }
     }
@@ -157,7 +163,10 @@ impl RunStatus {
     fn is_terminal(self) -> bool {
         matches!(
             self,
-            RunStatus::Processed | RunStatus::DeadLetter | RunStatus::Cancelled
+            RunStatus::Processed
+                | RunStatus::DeadLetter
+                | RunStatus::Cancelled
+                | RunStatus::Planned
         )
     }
 }
@@ -349,7 +358,10 @@ impl Ledger {
             match status {
                 // Idempotency-terminal: a confirmed success, a deliberate
                 // dead-letter or a cancel — drop the re-delivery.
-                RunStatus::Processed | RunStatus::DeadLetter | RunStatus::Cancelled => {
+                RunStatus::Processed
+                | RunStatus::DeadLetter
+                | RunStatus::Cancelled
+                | RunStatus::Planned => {
                     tx.commit()?;
                     return Ok(LedgerDecision::AlreadyTerminal);
                 }

@@ -163,6 +163,16 @@ impl Harness for CodexHarness {
     }
 
     async fn run(&self, task: &TaskContext) -> Result<HarnessOutcome, HarnessError> {
+        if task.plan_mode {
+            // No plan-only mode to hand this harness (workbench backend
+            // P2-5b, OQ-3: refuse rather than run a narrowed surface it
+            // does not enforce).
+            return Err(HarnessError::Unsupported {
+                harness: NAME,
+                reason: "plan mode is not supported by this harness; use claude, gemini or echo"
+                    .to_owned(),
+            });
+        }
         // A per-run CODEX_HOME isolates the run from the operator's ambient
         // `~/.codex/config.toml`: only the escurel server is visible. The
         // tempdir (and its config.toml) is removed when this future drops.

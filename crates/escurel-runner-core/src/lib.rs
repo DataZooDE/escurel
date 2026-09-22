@@ -42,8 +42,8 @@ pub use ledger::{
     DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
 };
 pub use packager::{
-    ALLOWED_TOOLS, Autonomy, Delegation, PackageError, REVIEW_TOOLS, TaskContext,
-    WORKFLOW_STEP_TOOLS, package,
+    ALLOWED_TOOLS, Autonomy, Delegation, PLAN_PARAGRAPH, PackageError, REVIEW_TOOLS, TaskContext,
+    WORKFLOW_STEP_TOOLS, package, plan_tools,
 };
 
 /// The harness selector for a step that delegates to the agent over A2A

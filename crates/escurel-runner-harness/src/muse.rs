@@ -237,6 +237,16 @@ impl Harness for MuseHarness {
     }
 
     async fn run(&self, task: &TaskContext) -> Result<HarnessOutcome, HarnessError> {
+        if task.plan_mode {
+            // No plan-only mode to hand this harness (workbench backend
+            // P2-5b, OQ-3: refuse rather than run a narrowed surface it
+            // does not enforce).
+            return Err(HarnessError::Unsupported {
+                harness: NAME,
+                reason: "plan mode is not supported by this harness; use claude, gemini or echo"
+                    .to_owned(),
+            });
+        }
         if !MuseHarness::surface_is_unnarrowed(task) {
             return Err(HarnessError::Unsupported {
                 harness: NAME,
