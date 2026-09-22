@@ -47,6 +47,7 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "append_message",
     "capture_event",
     "assign_event",
+    "report_progress",
 ];
 
 /// The narrowed tool surface for a run that must NOT commit: the read
@@ -72,6 +73,7 @@ pub const REVIEW_TOOLS: &[&str] = &[
     "validate",
     "create_draft",
     "append_message",
+    "report_progress",
 ];
 
 /// What a skill's `autonomy:` declaration means for a run.
@@ -140,7 +142,20 @@ pub const WORKFLOW_STEP_TOOLS: &[&str] = &[
     "validate",
     "update_page",
     "append_message",
+    "report_progress",
 ];
+
+/// The paragraph every packaging ends with (workbench backend FR-P-2): the
+/// agent is told to report its plan through `report_progress`, which the
+/// gateway files as `run-progress` events for the humans watching the run.
+/// Present on every autonomy and on workflow steps — it is bookkeeping, not
+/// a write, and a harness that cannot narrow tools (agy) may still call it.
+pub const PROGRESS_PARAGRAPH: &str = "\n\n## Report your plan\n\n\
+Before you act, call `report_progress` with your whole plan as a list of \
+`{step, status}` (status: pending | in_progress | completed | blocked). Call \
+it again whenever a step's status changes, sending the whole plan each time. \
+It is bookkeeping for the humans watching this run and never changes what \
+you may write.";
 
 /// How many of an instance's recent events to fold into the input. The
 /// agent gets enough history to act without drowning in it; the instance
@@ -1020,7 +1035,8 @@ fn build_instructions(
         "A new event of type `{skill}` arrived (event `{event_id}`{title}). Fold it into \
          the appropriate `{skill}` instance per the skill below. The event itself is in \
          the task input.\n\n\
-         ## Skill: {skill}\n\n{skill_body}{coordinates}{target}{gate}",
+         ## Skill: {skill}\n\n{skill_body}{coordinates}{target}{gate}{progress}",
+        progress = PROGRESS_PARAGRAPH,
         skill = trigger.label_skill,
         event_id = trigger.event_id,
         title = if title.is_empty() {
@@ -1147,6 +1163,46 @@ mod tests {
         // during the call it authorises is a failure, not a tighter bound.
         cfg.run_timeout = std::time::Duration::from_secs(5);
         assert_eq!(agent_ttl_secs(&cfg), 60);
+    }
+
+    /// `report_progress` (workbench backend P1) is bookkeeping, not a write:
+    /// every packaging — auto, review, workflow step — may call it, and every
+    /// packaging is told to.
+    #[test]
+    fn every_tool_list_allows_report_progress() {
+        for (name, list) in [
+            ("ALLOWED_TOOLS", ALLOWED_TOOLS),
+            ("REVIEW_TOOLS", REVIEW_TOOLS),
+            ("WORKFLOW_STEP_TOOLS", WORKFLOW_STEP_TOOLS),
+        ] {
+            assert!(
+                list.contains(&"report_progress"),
+                "{name} lacks report_progress"
+            );
+        }
+    }
+
+    #[test]
+    fn instructions_end_with_the_report_progress_paragraph_for_every_autonomy() {
+        let trigger = Trigger {
+            is_system: false,
+            tenant: "acme".into(),
+            event_id: "01EVENT".into(),
+            label_skill: "note".into(),
+            instance_page_id: Some("markdown/instances/note/n1.md".into()),
+            lineage: crate::Lineage::root("01EVENT"),
+            workflow: None,
+            content_hash: None,
+        };
+        for autonomy in [Autonomy::Auto, Autonomy::Review] {
+            let instr = build_instructions(&trigger, "SKILLBODY", None, autonomy);
+            assert!(
+                instr.ends_with(PROGRESS_PARAGRAPH),
+                "{autonomy:?} instructions must end with the progress paragraph: {instr}"
+            );
+        }
+        assert!(PROGRESS_PARAGRAPH.contains("`report_progress`"));
+        assert!(PROGRESS_PARAGRAPH.contains("whole plan"));
     }
 
     #[test]

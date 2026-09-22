@@ -49,7 +49,11 @@ This is the part worth internalising if you author skills:
   `list_events` history.
 - **Tools** = the gateway's `/mcp`, declared as an MCP server in the
   harness's native config, with `allowedTools` narrowed to the read tools
-  plus `validate` / `update_page` / `assign_event` / `capture_event`.
+  plus `validate` / `update_page` / `assign_event` / `capture_event` —
+  and `report_progress` on every packaging (review runs and workflow
+  steps too): the instructions end with a paragraph telling the agent to
+  report its whole plan up front and on every step change, which the
+  gateway files as `run-progress` events for the humans watching the run.
 
 **Consequence for skill authors:** any skill that can be event-triggered
 is read by a machine as its system prompt. Write those skill bodies as a
