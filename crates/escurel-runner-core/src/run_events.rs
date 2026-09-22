@@ -39,6 +39,9 @@ pub struct RunEventCtx {
     /// The page the run is folding into — where the events attach. `None`
     /// for an unassigned trigger; the events then stay unassigned too.
     pub target_page_id: Option<String>,
+    /// The manual start's block (workbench backend P2-5), when the run was
+    /// asked for by hand: `{mode, harness?, requested_by, …}`.
+    pub manual: Option<Value>,
 }
 
 /// The ledger terminal a `run-finished` reports.
@@ -50,8 +53,13 @@ pub enum RunFinish {
         produced: Option<(String, String)>,
         held: bool,
     },
-    /// Retriable by an operator re-drive.
-    Failed { reason: String },
+    /// Retriable by an operator re-drive. `reason` is the slug
+    /// (`permanent`); `error` is the last attempt's own message, when there
+    /// is one — what a human reads to know what to change.
+    Failed {
+        reason: String,
+        error: Option<String>,
+    },
     /// Terminal for the loop controls or the retry policy.
     DeadLetter { reason: String },
     /// Stopped on request while live (workbench backend P2-3a); `reason` is
@@ -105,6 +113,9 @@ impl RunEventCtx {
             if let Some(v) = value {
                 runner[key] = v;
             }
+        }
+        if let Some(m) = &self.manual {
+            runner["manual"] = m.clone();
         }
         if let Some(obj) = extra.as_object() {
             for (k, v) in obj {
@@ -197,7 +208,7 @@ impl RunEventCtx {
     ) -> Result<(), Error> {
         let (status, produced, held, reason) = match finish {
             RunFinish::Processed { produced, held } => ("processed", produced.clone(), *held, None),
-            RunFinish::Failed { reason } => ("failed", None, false, Some(reason.clone())),
+            RunFinish::Failed { reason, .. } => ("failed", None, false, Some(reason.clone())),
             RunFinish::DeadLetter { reason } => ("dead_letter", None, false, Some(reason.clone())),
             RunFinish::Cancelled { reason } => ("cancelled", None, false, Some(reason.clone())),
         };
@@ -214,6 +225,9 @@ impl RunEventCtx {
         });
         if let Some(r) = reason {
             body["reason"] = json!(r);
+        }
+        if let RunFinish::Failed { error: Some(e), .. } = finish {
+            body["error"] = json!(e);
         }
         let mut extra = json!({ "attempt": attempts });
         if let Some(a) = autonomy {

@@ -20,6 +20,8 @@ use crate::harness::{Harness, HarnessError, HarnessOutcome};
 /// See the module docs. Holds the declared name only for the diagnostic.
 pub struct RefusingHarness {
     declared: String,
+    /// Why, when it is not "cannot build".
+    reason: Option<String>,
 }
 
 impl RefusingHarness {
@@ -28,6 +30,22 @@ impl RefusingHarness {
     pub fn new(declared: impl Into<String>) -> Self {
         Self {
             declared: declared.into(),
+            reason: None,
+        }
+    }
+
+    /// A refusing harness for a manual start that asked for `declared`,
+    /// which this runner could build but is not allowed to run
+    /// (`ESCUREL_RUNNER_HARNESS_ALLOW`; workbench backend P2-5).
+    pub fn not_allowed(declared: impl Into<String>) -> Self {
+        let declared = declared.into();
+        Self {
+            reason: Some(format!(
+                "the manual start asks for harness `{declared}`, which is not in this \
+                 runner's ESCUREL_RUNNER_HARNESS_ALLOW; refusing rather than running the \
+                 default harness in its place"
+            )),
+            declared,
         }
     }
 }
@@ -39,6 +57,12 @@ impl Harness for RefusingHarness {
     }
 
     async fn run(&self, _task: &TaskContext) -> Result<HarnessOutcome, HarnessError> {
+        if let Some(reason) = &self.reason {
+            return Err(HarnessError::Unsupported {
+                harness: "refusing",
+                reason: reason.clone(),
+            });
+        }
         Err(HarnessError::Unsupported {
             harness: "refusing",
             reason: format!(

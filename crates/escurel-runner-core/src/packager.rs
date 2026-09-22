@@ -1143,6 +1143,7 @@ mod tests {
     #[test]
     fn the_event_payload_carries_provenance_when_there_is_any() {
         let trigger = Trigger {
+            manual: None,
             is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
@@ -1216,6 +1217,7 @@ mod tests {
     #[test]
     fn instructions_end_with_the_report_progress_paragraph_for_every_autonomy() {
         let trigger = Trigger {
+            manual: None,
             is_system: false,
             tenant: "acme".into(),
             event_id: "01EVENT".into(),
@@ -1307,6 +1309,7 @@ mod tests {
             harness: String::new(),
         };
         let trigger = |wf: Option<escurel_types::WorkflowProvenance>| Trigger {
+            manual: None,
             is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
@@ -1349,6 +1352,7 @@ mod tests {
     fn an_assigned_trigger_names_its_target_page_in_the_instructions() {
         let page = "markdown/instances/deep-research/dr-42.md";
         let mut trigger = Trigger {
+            manual: None,
             is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
@@ -1434,6 +1438,7 @@ mod tests {
     fn a_large_event_body_does_not_ride_in_the_instructions() {
         const MAX_ARG_STRLEN: usize = 32 * 4096;
         let trigger = Trigger {
+            manual: None,
             is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
@@ -1469,6 +1474,7 @@ mod tests {
     #[test]
     fn instructions_carry_framing_skill_body_and_event() {
         let trigger = Trigger {
+            manual: None,
             is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
@@ -1514,6 +1520,7 @@ mod tests {
     #[test]
     fn new_instance_input_tells_the_agent_to_create_one() {
         let trigger = Trigger {
+            manual: None,
             is_system: false,
             tenant: "acme".into(),
             event_id: "EVT1".into(),

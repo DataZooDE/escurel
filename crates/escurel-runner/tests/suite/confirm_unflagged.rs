@@ -107,6 +107,7 @@ async fn unflagged_trigger_resolves_the_instance_the_agent_assigned() {
         .expect("connect client");
 
     let trigger = Trigger {
+        manual: None,
         is_system: false,
         tenant: TENANT.into(),
         event_id: event_id.clone(),
@@ -170,6 +171,7 @@ async fn unassigned_event_is_not_a_confirmed_effect() {
         .expect("connect client");
 
     let trigger = Trigger {
+        manual: None,
         is_system: false,
         tenant: TENANT.into(),
         event_id: event_id.clone(),

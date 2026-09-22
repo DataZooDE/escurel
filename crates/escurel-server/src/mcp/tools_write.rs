@@ -1672,6 +1672,41 @@ pub(super) async fn tool_capture_event(
                 .to_owned(),
         ));
     }
+    // A manual start (workbench backend P2-5): `provenance.manual
+    // {harness?, mode?, approved_plan_run_id?}` asks the runner to run this
+    // event a particular way. `requested_by` is the token's subject —
+    // written here, never trusted from the caller — and `mode` is `run`
+    // (default) or `plan`; anything else is a caller mistake.
+    if let Some(manual) = a
+        .provenance
+        .as_mut()
+        .and_then(|p| p.get_mut("manual"))
+        .filter(|m| !m.is_null())
+    {
+        let Some(obj) = manual.as_object_mut() else {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: `provenance.manual` is an object `{harness?, mode?}`".to_owned(),
+            ));
+        };
+        let mode = match obj.get("mode").and_then(Value::as_str) {
+            None | Some("") | Some("run") => "run",
+            Some("plan") => "plan",
+            Some(other) => {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "capture_event: `provenance.manual.mode` is `run` or `plan`, got `{other}`"
+                )));
+            }
+        };
+        if let Some(h) = obj.get("harness")
+            && !h.is_string()
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: `provenance.manual.harness` is a harness name".to_owned(),
+            ));
+        }
+        obj.insert("mode".to_owned(), json!(mode));
+        obj.insert("requested_by".to_owned(), json!(caller.subject));
+    }
     // #390: `event_id` is the idempotency key, so "" would make EVERY
     // id-less capture the same event — first writer wins, each later one
     // silently discarded with a success receipt. An empty/whitespace key

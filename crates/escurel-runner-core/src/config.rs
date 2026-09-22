@@ -296,6 +296,11 @@ pub struct RunnerConfig {
     /// as `poll_interval`. Source: `ESCUREL_RUNNER_STATUS_INTERVAL`
     /// (default 30s).
     pub status_interval: Duration,
+    /// The harnesses a manual start may ask for by name (workbench backend
+    /// P2-5). A request outside the list fails the run closed. Source:
+    /// `ESCUREL_RUNNER_HARNESS_ALLOW` (comma-separated; default = the
+    /// configured harness alone).
+    pub harness_allow: Vec<String>,
     /// This runner's name in its status reports. Source:
     /// `ESCUREL_RUNNER_ID` (default `<HOSTNAME>:<pid>`, or `runner:<pid>`).
     pub runner_id: String,
@@ -738,6 +743,15 @@ impl RunnerConfig {
             _ => DEFAULT_DRAIN_TIMEOUT,
         };
 
+        let harness_allow: Vec<String> = match lookup("ESCUREL_RUNNER_HARNESS_ALLOW") {
+            Some(raw) if !raw.trim().is_empty() => raw
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            _ => vec![harness.clone()],
+        };
         Ok(Self {
             listen,
             gateway_url,
@@ -752,6 +766,7 @@ impl RunnerConfig {
             seen_cap,
             poll_interval,
             status_interval,
+            harness_allow,
             runner_id,
             cancel_grace,
             lint_interval,

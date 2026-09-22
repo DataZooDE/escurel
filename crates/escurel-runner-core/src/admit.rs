@@ -106,6 +106,7 @@ mod tests {
 
     fn trigger_at(depth: u32, instance: Option<&str>, instance_path: Vec<String>) -> Trigger {
         Trigger {
+            manual: None,
             is_system: false,
             tenant: "acme".into(),
             event_id: format!("EVT-{depth}"),

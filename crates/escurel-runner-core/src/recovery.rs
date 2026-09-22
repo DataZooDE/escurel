@@ -82,6 +82,7 @@ pub async fn recover_pending(
         // Reconstruct the minimal Trigger confirm_effect needs (tenant,
         // event_id, the pre-flagged target instance).
         let trigger = Trigger {
+            manual: None,
             is_system: false,
             tenant: rec.tenant.clone(),
             event_id: rec.event_id.clone(),
@@ -112,6 +113,7 @@ pub async fn recover_pending(
                     // What the ledger row still knows; the crashed process's
                     // harness, attempts and summary are gone with it.
                     let ctx = crate::RunEventCtx {
+                        manual: None,
                         run_id: run_id.0.clone(),
                         root_event_id: rec.root_event_id.clone(),
                         trigger_event_id: rec.event_id.clone(),

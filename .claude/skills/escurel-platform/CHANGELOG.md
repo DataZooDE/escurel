@@ -4,6 +4,20 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.54 — manual start: `provenance.manual {harness?, mode?}` (workbench P2-5a)
+
+- A human starts a run by hand by capturing an ordinary event with a
+  `provenance.manual` block. The gateway stamps `requested_by` from the
+  token (a caller's value is replaced), defaults `mode` to `run` and
+  refuses anything but `run` / `plan`. The runner honours `harness` only
+  within `ESCUREL_RUNNER_HARNESS_ALLOW` (default: its configured harness)
+  and otherwise fails the run closed — `run-finished.reason` says which
+  harness and why — rather than running the default in its place. The
+  run's `run-started` carries `provenance.runner.manual`. `run-finished`
+  gains `error` — the last attempt's own message — beside the `reason`
+  slug for a failed run. Plan mode itself lands next
+  (P2-5b).
+
 ## 0.6.53 — runner status heartbeat; `list_events { newest_first }` (workbench P2-4)
 
 - The runner reports its health as unassigned `escurel:runner-status`

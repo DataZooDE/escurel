@@ -201,6 +201,7 @@ mod tests {
 
     fn trigger(event_id: &str) -> Trigger {
         Trigger {
+            manual: None,
             is_system: false,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),
