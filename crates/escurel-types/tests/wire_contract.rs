@@ -251,6 +251,36 @@ fn event_provenance_is_value() {
 }
 
 #[test]
+fn event_kind_and_lineage_default_to_user_and_absent() {
+    // Mirrors event_to_json after the lineage columns: `kind` is always
+    // present on the wire; `root_event_id` / `run_id` are `null` when
+    // absent (a pre-lineage row, or a user event that belongs to no run).
+    let wire = json!({
+        "event_id": "e1", "at": null, "source": "gmail", "mime": "", "label_skill": "email",
+        "instance_page_id": null, "status": "inbox", "title": "", "body": "", "provenance": null,
+        "kind": "system", "root_event_id": "r1", "run_id": null
+    });
+    let ev: Event = serde_json::from_value(wire).unwrap();
+    assert_eq!(ev.kind, "system");
+    assert_eq!(ev.root_event_id, "r1");
+    assert_eq!(ev.run_id, "");
+    // An old gateway that sends none of the three still parses.
+    let legacy: Event = serde_json::from_value(json!({ "event_id": "e0" })).unwrap();
+    assert_eq!(legacy.kind, "user");
+    assert_eq!(legacy.root_event_id, "");
+    // Requests carry the new selectors as plain optional strings.
+    let req: ListEventsRequest =
+        serde_json::from_value(json!({ "run_id": "x", "include_system": true })).unwrap();
+    assert_eq!(req.run_id, "x");
+    assert!(req.include_system);
+    let cap: CaptureEventRequest = serde_json::from_value(json!({ "kind": "system" })).unwrap();
+    assert_eq!(cap.kind, "system");
+    let inbox: ListInboxRequest =
+        serde_json::from_value(json!({ "include_system": true })).unwrap();
+    assert!(inbox.include_system);
+}
+
+#[test]
 fn assign_event_response_has_status() {
     // tool_assign_event emits {event_id, instance_page_id, status}.
     let wire = json!({

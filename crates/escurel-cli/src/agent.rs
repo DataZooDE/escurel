@@ -225,11 +225,27 @@ pub enum EventCmd {
         /// 0 means no limit.
         #[arg(long, default_value_t = 0)]
         limit: u32,
-    },
-    /// List an instance's processed event history.
-    List {
+        /// Also list `kind: system` rows (run bookkeeping; hidden by default).
         #[arg(long)]
-        instance: String,
+        include_system: bool,
+    },
+    /// List an instance's processed event history, a lineage
+    /// (`--root-event`), or one run's own events (`--run`). Exactly one.
+    List {
+        #[arg(long, conflicts_with_all = ["root_event", "run"])]
+        instance: Option<String>,
+        /// The root event id: it and everything captured under it.
+        #[arg(long, conflicts_with = "run")]
+        root_event: Option<String>,
+        /// A run id: that run's own (system) events.
+        #[arg(long)]
+        run: Option<String>,
+        /// Narrow to `user` or `system` rows.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Also list `kind: system` rows (hidden by default).
+        #[arg(long)]
+        include_system: bool,
         /// 0 means no limit.
         #[arg(long, default_value_t = 0)]
         limit: u32,
@@ -270,6 +286,9 @@ pub struct CaptureArgs {
     /// Inline JSON provenance value.
     #[arg(long)]
     pub provenance: Option<String>,
+    /// `user` (default) or `system` (admin: bookkeeping about a run).
+    #[arg(long)]
+    pub kind: Option<String>,
 }
 
 /// Held writes — the review queue for `autonomy: review` skills.
@@ -884,23 +903,42 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
                     title: a.title,
                     body,
                     provenance: parse_json_arg(a.provenance),
+                    kind: a.kind.unwrap_or_default(),
                 })
                 .await?;
             Ok(event(stored))
         }
-        EventCmd::Inbox { limit } => {
+        EventCmd::Inbox {
+            limit,
+            include_system,
+        } => {
             let resp = client
                 .list_inbox(ListInboxRequest {
                     limit,
+                    include_system,
                     ..Default::default()
                 })
                 .await?;
             Ok(json!({ "events": resp.events.into_iter().map(event).collect::<Vec<_>>() }))
         }
-        EventCmd::List { instance, limit } => {
+        EventCmd::List {
+            instance,
+            root_event,
+            run,
+            kind,
+            include_system,
+            limit,
+        } => {
+            if instance.is_none() && root_event.is_none() && run.is_none() {
+                anyhow::bail!("event list: one of --instance, --root-event or --run is required");
+            }
             let resp = client
                 .list_events(ListEventsRequest {
-                    instance_page_id: instance,
+                    instance_page_id: instance.unwrap_or_default(),
+                    root_event_id: root_event.unwrap_or_default(),
+                    run_id: run.unwrap_or_default(),
+                    kind: kind.unwrap_or_default(),
+                    include_system,
                     limit,
                     ..Default::default()
                 })

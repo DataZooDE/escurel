@@ -216,6 +216,23 @@ pub struct EventInfo {
 /// Hard cap on `limit` for the event list surfaces.
 pub const EVENTS_MAX_LIMIT: usize = 10_000;
 
+/// What [`Indexer::list_events_filtered_page`] selects. Every `Some`
+/// narrows; `include_system` widens (the default hides `system` rows) and
+/// an explicit `kind` overrides it. The page and cursor semantics are
+/// those of [`Indexer::list_events_page`].
+#[derive(Debug, Clone, Default)]
+pub struct EventListFilter {
+    pub instance_page_id: Option<String>,
+    /// The root and everything under it: `root_event_id = ? OR event_id = ?`
+    /// (the `OR` covers a root written before the lineage columns existed).
+    pub root_event_id: Option<String>,
+    pub run_id: Option<String>,
+    pub kind: Option<EventKind>,
+    pub include_system: bool,
+    /// `inbox` | `processed`; `None` = any status.
+    pub status: Option<String>,
+}
+
 impl Indexer {
     /// The table this indexer's events methods read/write: `events`
     /// (local) or `<alias>.escurel_events` (attached Postgres, DuckLake
@@ -484,8 +501,12 @@ impl Indexer {
         cursor: Option<&str>,
         include_system: bool,
     ) -> Result<EventPage, IndexerError> {
-        self.paged_events(None, false, limit, cursor, include_system)
-            .await
+        let filter = EventListFilter {
+            status: Some("inbox".to_owned()),
+            include_system,
+            ..Default::default()
+        };
+        self.paged_events(&filter, false, limit, cursor).await
     }
 
     /// [`Self::list_events`] with a resume cursor (oldest first). This
@@ -499,13 +520,31 @@ impl Indexer {
         cursor: Option<&str>,
         include_system: bool,
     ) -> Result<EventPage, IndexerError> {
-        self.paged_events(Some(instance_page_id), true, limit, cursor, include_system)
-            .await
+        let filter = EventListFilter {
+            instance_page_id: Some(instance_page_id.to_owned()),
+            status: Some("processed".to_owned()),
+            include_system,
+            ..Default::default()
+        };
+        self.paged_events(&filter, true, limit, cursor).await
     }
 
-    /// Shared paged listing. `instance` = `Some` is the processed-history
-    /// query (ASC), `None` the inbox (DESC). Fetches `limit + 1` rows to
-    /// detect a tail; the extra row is dropped and becomes the cursor.
+    /// A paged listing over any [`EventListFilter`] — the lineage reads
+    /// (`root_event_id`, `run_id`) and the WS resume use this directly.
+    /// Same cursor contract as [`Self::list_events_page`].
+    pub async fn list_events_filtered_page(
+        &self,
+        filter: &EventListFilter,
+        asc: bool,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<EventPage, IndexerError> {
+        self.paged_events(filter, asc, limit, cursor).await
+    }
+
+    /// Shared paged listing over a [`EventListFilter`]. Fetches `limit + 1`
+    /// rows to detect a tail; the extra row is dropped and becomes the
+    /// cursor.
     ///
     /// The resume predicates mirror `ORDER BY at_ts <dir> NULLS LAST,
     /// event_id <dir>`: a non-NULL cursor row resumes within the
@@ -514,11 +553,10 @@ impl Indexer {
     /// block by `event_id` alone (ULIDs are time-ordered).
     async fn paged_events(
         &self,
-        instance: Option<&str>,
+        filter: &EventListFilter,
         asc: bool,
         limit: usize,
         cursor: Option<&str>,
-        include_system: bool,
     ) -> Result<EventPage, IndexerError> {
         let limit = limit.clamp(1, EVENTS_MAX_LIMIT);
         let cursor = match cursor {
@@ -530,15 +568,33 @@ impl Indexer {
 
         let mut where_clauses: Vec<String> = Vec::new();
         let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> = Vec::new();
-        match instance {
-            Some(inst) => {
-                where_clauses.push("instance_page_id = ? AND status = 'processed'".to_owned());
-                bindings.push(Box::new(inst.to_owned()));
-            }
-            None => where_clauses.push("status = 'inbox'".to_owned()),
+        if let Some(inst) = &filter.instance_page_id {
+            where_clauses.push("instance_page_id = ?".to_owned());
+            bindings.push(Box::new(inst.clone()));
         }
-        if !include_system {
-            where_clauses.push(HIDE_SYSTEM.to_owned());
+        if let Some(root) = &filter.root_event_id {
+            where_clauses.push("(root_event_id = ? OR event_id = ?)".to_owned());
+            bindings.push(Box::new(root.clone()));
+            bindings.push(Box::new(root.clone()));
+        }
+        if let Some(run) = &filter.run_id {
+            where_clauses.push("run_id = ?".to_owned());
+            bindings.push(Box::new(run.clone()));
+        }
+        if let Some(status) = &filter.status {
+            where_clauses.push("status = ?".to_owned());
+            bindings.push(Box::new(status.clone()));
+        }
+        match filter.kind {
+            Some(kind) => {
+                where_clauses.push("COALESCE(kind, 'user') = ?".to_owned());
+                bindings.push(Box::new(kind.as_str().to_owned()));
+            }
+            None if !filter.include_system => where_clauses.push(HIDE_SYSTEM.to_owned()),
+            None => {}
+        }
+        if where_clauses.is_empty() {
+            where_clauses.push("TRUE".to_owned());
         }
         if let Some(t) = &tenant {
             where_clauses.push("tenant = ?".to_owned());

@@ -630,12 +630,19 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  you while it sits un-triaged in the inbox. Idempotent on \
                  `event_id`: a re-capture returns the stored first-writer \
                  event — or, if that event is not yours to see, your own \
-                 submission back under the same id.",
+                 submission back under the same id. `kind: system` (admin \
+                 only) files bookkeeping about a run rather than work: it \
+                 lands `processed` on `instance_page_id` at once and is \
+                 hidden from the list surfaces unless `include_system`. \
+                 The stored event carries `kind`, `root_event_id` (its own \
+                 id unless `provenance.runner.root_event_id` names a root) \
+                 and `run_id` (from `provenance.runner.run_id`).",
             json!({
                 "type": "object",
                 "required": ["label_skill"],
                 "properties": {
                     "event_id": { "type": "string", "minLength": 1, "description": "Idempotency key: a redelivery with the same id echoes the stored event. Must be NON-EMPTY when supplied (#390); omit to mint a server ULID." },
+                    "kind": { "type": "string", "enum": ["user", "system"], "description": "Default `user`. `system` = bookkeeping about a run (admin only); skips the inbox when a page is named." },
                     "at": { "type": "string", "description": "RFC 3339 event time." },
                     "source": { "type": "string", "description": "Ingest source, e.g. gmail/meet/drive." },
                     "mime": { "type": "string", "description": "Content type, e.g. message/rfc822." },
@@ -681,12 +688,14 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  captured it, and admin sees all (`ESCUREL_EVENT_ACL`). A page \
                  may therefore come back shorter than `limit` — ONLY the \
                  absence of `next_cursor` means the listing is complete; pass \
-                 `next_cursor` back as `cursor` to continue.",
+                 `next_cursor` back as `cursor` to continue. `kind: system` \
+                 rows (run bookkeeping) are hidden unless `include_system`.",
             json!({
                 "type": "object",
                 "properties": {
                     "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
-                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor." }
+                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor." },
+                    "include_system": { "type": "boolean", "description": "Also list `kind: system` rows. Default false." }
                 }
             }),
         ),
@@ -699,16 +708,26 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  whose projection is its state), oldest first. Pass `event_id` \
                  instead to look ONE event up by id — whatever its status — \
                  which is how you discover the instance an event was assigned \
-                 to. Exactly one of `instance_page_id` or `event_id`. \
-                 Filtered by the same per-event ACL as `list_inbox`; an event \
-                 you may not see is absent, not an error. Paginated: ONLY the \
-                 absence of `next_cursor` means the history is complete; pass \
-                 it back as `cursor` to read past `limit`.",
+                 to. Or pass `root_event_id` for a LINEAGE — the root and \
+                 every event captured under it (cascade hops, runs), any \
+                 status, oldest first — or `run_id` for one run's own \
+                 events. Exactly one of `instance_page_id`, `root_event_id` \
+                 or `run_id` (or `event_id`). `kind: system` rows (run \
+                 bookkeeping) are hidden unless `include_system` (implied by \
+                 `run_id`); `kind` narrows to one kind. Filtered by the same \
+                 per-event ACL as `list_inbox`; an event you may not see is \
+                 absent, not an error. Paginated: ONLY the absence of \
+                 `next_cursor` means the listing is complete; pass it back as \
+                 `cursor` to read past `limit`.",
             json!({
                 "type": "object",
                 "properties": {
                     "instance_page_id": { "type": "string" },
                     "event_id": { "type": "string" },
+                    "root_event_id": { "type": "string", "description": "A lineage: the root event and everything under it." },
+                    "run_id": { "type": "string", "description": "One run's own (system) events." },
+                    "kind": { "type": "string", "enum": ["user", "system"], "description": "Narrow to one kind; overrides include_system." },
+                    "include_system": { "type": "boolean", "description": "Also list `kind: system` rows. Default false." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
                     "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor (listing branch only)." }
                 }

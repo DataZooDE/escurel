@@ -48,6 +48,7 @@ mod error_data;
 mod event_acl;
 mod event_pagination;
 mod events;
+mod events_kind;
 mod fusion_acl;
 mod group_members_acl;
 mod health;

@@ -503,6 +503,9 @@ impl Client {
         if !req.provenance.is_null() {
             args["provenance"] = req.provenance;
         }
+        if !req.kind.is_empty() {
+            args["kind"] = json!(req.kind);
+        }
         self.transport.call_typed("capture_event", args).await
     }
 
@@ -516,19 +519,31 @@ impl Client {
         if !req.cursor.is_empty() {
             args["cursor"] = json!(req.cursor);
         }
+        if req.include_system {
+            args["include_system"] = json!(true);
+        }
         self.transport.call_typed("list_inbox", args).await
     }
 
     /// List an instance's processed event history, oldest first — or, with
     /// [`ListEventsRequest::event_id`] set, look one event up by id.
     pub async fn list_events(&self, req: ListEventsRequest) -> Result<ListEventsResponse, Error> {
-        // Send one shape or the other, never both: `event_id` asks WHERE an
-        // event went, which makes `instance_page_id` meaningless, and the
-        // server should not have to guess which the caller meant.
+        // Send ONE selector, never several: `event_id` asks WHERE an event
+        // went, `run_id` asks for one run's own events, `root_event_id` for
+        // a lineage, `instance_page_id` for a page's history — and the
+        // server refuses a mix rather than guessing which was meant.
         let mut args = match &req.event_id {
             Some(event_id) => json!({ "event_id": event_id }),
+            None if !req.run_id.is_empty() => json!({ "run_id": req.run_id }),
+            None if !req.root_event_id.is_empty() => json!({ "root_event_id": req.root_event_id }),
             None => json!({ "instance_page_id": req.instance_page_id }),
         };
+        if !req.kind.is_empty() {
+            args["kind"] = json!(req.kind);
+        }
+        if req.include_system {
+            args["include_system"] = json!(true);
+        }
         if req.limit > 0 {
             args["limit"] = json!(req.limit);
         }

@@ -4,6 +4,26 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.41 — event `kind` + lineage columns (workbench backend P1)
+
+- Every event now carries `kind` (`user` | `system`), `root_event_id` and
+  `run_id` on the wire. `system` = bookkeeping ABOUT a run (`escurel:run`,
+  `escurel:review`, …), written by the runner and the gateway — admin-only
+  to capture. It skips the inbox: captured with `instance_page_id` it is
+  stored `processed` on that page at once, no `assign_event`.
+- `list_inbox` and `list_events` HIDE `kind: system` rows unless
+  `include_system: true`. Nothing changes for a consumer that never asks.
+- `list_events` gains two selectors beside `instance_page_id` / `event_id`:
+  `root_event_id` (a lineage — the root and everything captured under it,
+  any status, oldest first) and `run_id` (one run's own events; implies
+  `include_system`). Exactly one listing selector, or `-32602`.
+- `root_event_id` / `run_id` are promoted from `provenance.runner` at
+  capture (server-side; there is no argument for them). A user event that
+  names no root is its own root. A cascade hop names the run that emitted
+  it as `provenance.runner.parent_run_id`, not as its own `run_id`.
+- CLI: `event capture --kind`, `event inbox --include-system`,
+  `event list --instance | --root-event | --run [--kind] [--include-system]`.
+
 ## 0.6.40 — branches: registry, write context, tombstones, merge
 
 - `create_branch` / `list_branches` / `merge_branch` / `abandon_branch`, plus
