@@ -1277,6 +1277,7 @@ pub(super) async fn maybe_emit_page_edited(
             title: format!("edited {page_id}"),
             body: format!("Page {page_id} was edited out of band; re-verify."),
             provenance: Some(json!({ "edit": { "page": page_id } })),
+            ..Default::default()
         })
         .await
     {
@@ -1618,6 +1619,9 @@ pub(super) async fn tool_capture_event(
         title: a.title,
         body: a.body,
         provenance: stamp_captured_by(a.provenance, caller.subject, caller.actor),
+        // `kind` / lineage stamping is the wire step (P1 PR2); every
+        // capture through this tool is a user event until then.
+        ..Default::default()
     };
     let stored = indexer
         .capture_event(requested.clone())
@@ -1981,6 +1985,7 @@ pub(super) async fn tool_start_operation(
         title: format!("operation: {}", a.wf_skill),
         body: a.input,
         provenance,
+        ..Default::default()
     };
     let stored = indexer
         .capture_event(requested)
@@ -2040,6 +2045,9 @@ fn echoed_event(stored: &EventInfo, requested: &NewEvent) -> EventInfo {
         title: requested.title.clone(),
         body: requested.body.clone(),
         provenance: requested.provenance.clone().unwrap_or(Value::Null),
+        kind: requested.kind,
+        root_event_id: requested.root_event_id.clone(),
+        run_id: requested.run_id.clone(),
     }
 }
 
@@ -2158,6 +2166,7 @@ pub(super) async fn tool_list_inbox(
         .list_inbox_page(
             a.limit.unwrap_or(escurel_index::EVENTS_MAX_LIMIT),
             a.cursor.as_deref(),
+            false,
         )
         .await
         .map_err(|e| cursor_aware_error("list_inbox", e))?;
@@ -2235,6 +2244,7 @@ pub(super) async fn tool_list_events(
                 &a.instance_page_id,
                 a.limit.unwrap_or(escurel_index::EVENTS_MAX_LIMIT),
                 a.cursor.as_deref(),
+                false,
             )
             .await
             .map_err(|e| cursor_aware_error("list_events", e))?;

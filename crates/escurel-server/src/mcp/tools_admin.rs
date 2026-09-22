@@ -1350,6 +1350,7 @@ pub(super) async fn tool_submit_promotion(
                 // An operator submitting a pack acts as themselves.
                 None,
             ),
+            ..Default::default()
         })
         .await
         .map_err(|e| JsonRpcError::internal(format!("submit_promotion audit event: {e}")))?;

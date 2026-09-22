@@ -399,6 +399,33 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure `events.kind` + the indexed lineage columns
+    /// (`root_event_id`, `run_id`) exist — the knowledge-workbench backend's
+    /// P1 promotion of `provenance.runner` fields to real columns, plus the
+    /// user/system split that keeps run bookkeeping out of the inbox.
+    ///
+    /// Presence-checked + CHECKPOINTed for the same reason
+    /// [`Migrator::ensure_draft_changesets`] is: `events.created_at` carries
+    /// a function-valued DEFAULT, so an unconditional ALTER leaves an
+    /// unreplayable entry in the WAL and the NEXT process to open the file
+    /// fails to start. A fresh database declares the columns in
+    /// `0004_events.sql`, so on that path this costs one catalog query.
+    pub fn ensure_events_lineage(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'events' \
+               AND column_name IN ('kind', 'root_event_id', 'run_id')",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 3 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_17_EVENTS_LINEAGE)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
     /// Ensure the `resolved_links` provenance-graph VIEW (ADR-0010) exists.
     /// A VIEW, not a table — `CREATE OR REPLACE`, so it is safe (and cheap) to
     /// run on EVERY connection like the other `ensure_*` methods, and it stays
@@ -439,6 +466,9 @@ impl Migrator {
         conn.execute_batch(STAGE_4_CHAT_MESSAGES)?;
         conn.execute_batch(STAGE_5_SCENARIOS)?;
         conn.execute_batch(STAGE_6_EVENTS)?;
+        // `events.kind` + lineage columns: a no-op here (0004 declares them)
+        // — called so `up` and the reopen chain cannot disagree.
+        Self::ensure_events_lineage(conn)?;
         // Drafts: a held write awaiting a human. Added after `events`, so it
         // is ALSO applied on every reopen (`ensure_drafts`) — a tenant
         // provisioned before drafts existed must gain the table, and every
@@ -568,6 +598,7 @@ const STAGE_11_PACK_SUBSCRIPTIONS: &str = include_str!("../sql/0009_pack_subscri
 const STAGE_12_PROVENANCE_GRAPH: &str = include_str!("../sql/0010_provenance_graph.sql");
 const STAGE_13_WRITE_ATTRIBUTION: &str = include_str!("../sql/0011_write_attribution.sql");
 const STAGE_16_BRANCHES: &str = include_str!("../sql/0015_branches.sql");
+const STAGE_17_EVENTS_LINEAGE: &str = include_str!("../sql/0016_events_lineage.sql");
 
 #[cfg(test)]
 mod tests {

@@ -1941,6 +1941,7 @@ impl Indexer {
                     title: e.title,
                     body: e.body,
                     provenance: e.provenance,
+                    ..Default::default()
                 })
                 .await?;
             if processed && let Some(inst) = e.instance {

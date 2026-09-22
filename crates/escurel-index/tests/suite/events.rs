@@ -295,7 +295,7 @@ async fn inbox_pagination_descends_through_null_at_ts_rows() {
     let seen = drain_pages(|cursor| {
         let idx = &h.indexer;
         async move {
-            idx.list_inbox_page(2, cursor.as_deref())
+            idx.list_inbox_page(2, cursor.as_deref(), false)
                 .await
                 .expect("list_inbox_page")
         }
@@ -330,7 +330,7 @@ async fn history_pagination_ascends_through_null_at_ts_rows() {
     let seen = drain_pages(|cursor| {
         let idx = &h.indexer;
         async move {
-            idx.list_events_page(INSTANCE, 2, cursor.as_deref())
+            idx.list_events_page(INSTANCE, 2, cursor.as_deref(), false)
                 .await
                 .expect("list_events_page")
         }
@@ -352,4 +352,216 @@ async fn history_pagination_ascends_through_null_at_ts_rows() {
         seen, expected,
         "ASC NULLS LAST order preserved across pages"
     );
+}
+
+// --- kind: user | system, and the lineage columns ---------------------
+//
+// Knowledge-workbench backend, P1 (PR1). A `system` event is bookkeeping
+// written by the runner or the gateway about a run — never work for a
+// human or an agent. It skips the inbox: captured with a target page it is
+// stored `processed` on that page at once (no `assign_event`), and the
+// default list surfaces hide it unless asked (`include_system`).
+// `root_event_id` / `run_id` are real indexed columns so a lineage is one
+// equality read, not a JSON scan.
+
+use escurel_index::EventKind;
+
+fn run_event(title: &str, target: Option<&str>) -> NewEvent {
+    NewEvent {
+        kind: EventKind::System,
+        source: "escurel-runner".to_owned(),
+        label_skill: "escurel:run".to_owned(),
+        instance_page_id: target.map(str::to_owned),
+        title: title.to_owned(),
+        body: "{}".to_owned(),
+        root_event_id: Some("01HROOTEVENT00000000000000".to_owned()),
+        run_id: Some("01HRUNID000000000000000000".to_owned()),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_system_event_with_a_target_is_stored_processed_without_assign() {
+    let h = fresh_harness();
+    let stored = h
+        .indexer
+        .capture_event(run_event("run-started", Some(INSTANCE)))
+        .await
+        .unwrap();
+
+    assert_eq!(stored.kind, EventKind::System);
+    assert_eq!(stored.status, "processed", "no assign_event round-trip");
+    assert_eq!(stored.instance_page_id.as_deref(), Some(INSTANCE));
+    assert_eq!(
+        stored.root_event_id.as_deref(),
+        Some("01HROOTEVENT00000000000000")
+    );
+    assert_eq!(stored.run_id.as_deref(), Some("01HRUNID000000000000000000"));
+
+    assert!(
+        h.indexer.list_inbox(None).await.unwrap().is_empty(),
+        "a system event is never inbox work",
+    );
+    // It IS on the page's history — but only for a caller that asks.
+    let hidden = h
+        .indexer
+        .list_events_page(INSTANCE, 10, None, false)
+        .await
+        .unwrap();
+    assert!(hidden.events.is_empty(), "hidden by default: {hidden:?}");
+    let shown = h
+        .indexer
+        .list_events_page(INSTANCE, 10, None, true)
+        .await
+        .unwrap();
+    assert_eq!(shown.events.len(), 1);
+    assert_eq!(shown.events[0].event_id, stored.event_id);
+}
+
+#[tokio::test]
+async fn a_system_event_without_a_target_stays_inbox_but_hidden_from_list_inbox() {
+    let h = fresh_harness();
+    let stored = h
+        .indexer
+        .capture_event(run_event("runner-status", None))
+        .await
+        .unwrap();
+    assert_eq!(stored.status, "inbox", "no page to attach to yet");
+
+    assert!(
+        h.indexer.list_inbox(None).await.unwrap().is_empty(),
+        "list_inbox hides system rows",
+    );
+    let page = h.indexer.list_inbox_page(10, None, false).await.unwrap();
+    assert!(page.events.is_empty());
+    let page = h.indexer.list_inbox_page(10, None, true).await.unwrap();
+    assert_eq!(page.events.len(), 1);
+    assert_eq!(page.events[0].kind, EventKind::System);
+}
+
+#[tokio::test]
+async fn list_events_hides_system_rows_unless_include_system() {
+    let h = fresh_harness();
+    // One human event, assigned the ordinary way; two run events on the
+    // same page.
+    let user = h.indexer.capture_event(gmail_event()).await.unwrap();
+    h.indexer
+        .assign_event(&user.event_id, INSTANCE)
+        .await
+        .unwrap();
+    for title in ["run-started", "run-finished"] {
+        h.indexer
+            .capture_event(run_event(title, Some(INSTANCE)))
+            .await
+            .unwrap();
+    }
+
+    let history = h.indexer.list_events(INSTANCE, None).await.unwrap();
+    assert_eq!(history.len(), 1, "the human sees only the human event");
+    assert_eq!(history[0].event_id, user.event_id);
+    assert_eq!(history[0].kind, EventKind::User);
+
+    let all = h
+        .indexer
+        .list_events_page(INSTANCE, 10, None, true)
+        .await
+        .unwrap();
+    assert_eq!(all.events.len(), 3);
+    assert_eq!(
+        all.events
+            .iter()
+            .filter(|e| e.kind == EventKind::System)
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn a_user_event_is_self_rooted_and_kind_defaults_to_user() {
+    // Back-compat: every existing caller builds `NewEvent` with
+    // `..Default::default()` and never names `kind`. Such an event is a
+    // `user` event, and it is its OWN lineage root — so
+    // `root_event_id = <its id>` finds the root and its cascade with one
+    // equality, without a special case for "the root has no root".
+    let h = fresh_harness();
+    let stored = h.indexer.capture_event(gmail_event()).await.unwrap();
+    assert_eq!(stored.kind, EventKind::User);
+    assert_eq!(stored.status, "inbox");
+    assert_eq!(
+        stored.root_event_id.as_deref(),
+        Some(stored.event_id.as_str())
+    );
+    assert_eq!(stored.run_id, None);
+}
+
+#[test]
+fn reopening_a_pre_lineage_events_file_gains_the_columns_once() {
+    // `events.created_at` is `DEFAULT CURRENT_TIMESTAMP`, so an ALTER that
+    // is left in the WAL cannot be replayed by the NEXT process to open the
+    // file (docs/notes/discovered/2026-09-16-alter-on-a-defaulted-table-
+    // poisons-the-wal.md). The migration must be presence-checked and
+    // checkpointed: this test builds a pre-lineage file, migrates it, and
+    // then opens it twice more — the second plain open is the replay.
+    use escurel_index::Migrator;
+
+    let db_dir = TempDir::new().unwrap();
+    let path = db_dir.path().join("escurel.duckdb");
+    {
+        let conn = Connection::open(&path).unwrap();
+        Migrator::up(&conn).unwrap();
+        // Rewind `events` to its pre-lineage shape (DuckDB refuses DROP
+        // COLUMN on an indexed table, so recreate it as 0004 declared it).
+        conn.execute_batch(
+            "DROP TABLE events; \
+             CREATE TABLE events (\
+                 event_id VARCHAR PRIMARY KEY, at_ts TIMESTAMP, \
+                 source VARCHAR NOT NULL DEFAULT '', mime VARCHAR NOT NULL DEFAULT '', \
+                 label_skill VARCHAR NOT NULL DEFAULT '', instance_page_id VARCHAR, \
+                 status VARCHAR NOT NULL DEFAULT 'inbox', title VARCHAR NOT NULL DEFAULT '', \
+                 body VARCHAR NOT NULL DEFAULT '', provenance JSON, \
+                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP); \
+             CREATE INDEX events_status_at ON events (status, at_ts); \
+             CREATE INDEX events_instance_at ON events (instance_page_id, at_ts); \
+             CHECKPOINT;",
+        )
+        .unwrap();
+    }
+    let has_kind = |conn: &Connection| -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_name = 'events' AND column_name IN ('kind', 'root_event_id', 'run_id')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    {
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(has_kind(&conn), 0, "fixture is pre-lineage");
+        Migrator::ensure_events_lineage(&conn).unwrap();
+        assert_eq!(has_kind(&conn), 3);
+        // Idempotent on the same connection.
+        Migrator::ensure_events_lineage(&conn).unwrap();
+    }
+    {
+        // The replay: a fresh process opening the file after the ALTER.
+        let conn =
+            Connection::open(&path).expect("reopen after the migration must not replay an ALTER");
+        assert_eq!(has_kind(&conn), 3);
+        Migrator::ensure_events_lineage(&conn).unwrap();
+        // A pre-lineage row (no kind) reads as a user event.
+        conn.execute_batch(
+            "INSERT INTO events (event_id, label_skill, kind) VALUES ('legacy', 'email', NULL);",
+        )
+        .unwrap();
+        let kind: Option<String> = conn
+            .query_row(
+                "SELECT kind FROM events WHERE event_id = 'legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, None, "legacy rows carry NULL, readers COALESCE");
+    }
+    let _ = Connection::open(&path).expect("third open is clean too");
 }

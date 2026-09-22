@@ -546,6 +546,17 @@ CREATE TABLE crdt_snapshots (
 -- to once an (external) agent has processed it. `status='inbox'` until
 -- assigned. Events are NOT pages and are not in the `links` graph; their
 -- surface is capture_event / list_inbox / list_events / assign_event.
+--
+-- `kind` splits work from bookkeeping: a 'user' event is the above; a
+-- 'system' event is written by the runner or the gateway ABOUT a run
+-- (`escurel:run`, `escurel:review`, …), skips the inbox (captured with a
+-- target page it is stored 'processed' at once) and is hidden from the
+-- list surfaces unless asked (`include_system`). `root_event_id` / `run_id`
+-- are promoted from `provenance.runner` so a lineage ("everything under
+-- root event E1") and a run's own events are one indexed equality each; a
+-- user event is its own root. Existing files gain the three columns via
+-- `Migrator::ensure_events_lineage` (0016; presence-checked + CHECKPOINTed,
+-- see docs/notes/discovered/2026-09-16-alter-on-a-defaulted-table-poisons-the-wal.md).
 CREATE TABLE events (
   event_id          VARCHAR PRIMARY KEY,
   at_ts             TIMESTAMP,                        -- event time (`at` is a DuckDB keyword)
@@ -557,10 +568,15 @@ CREATE TABLE events (
   title             VARCHAR NOT NULL DEFAULT '',
   body              VARCHAR NOT NULL DEFAULT '',
   provenance        JSON,
-  created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  kind              VARCHAR DEFAULT 'user',           -- 'user' (work) | 'system' (run bookkeeping)
+  root_event_id     VARCHAR,                          -- lineage root (a user event is its own)
+  run_id            VARCHAR                           -- the run a system event belongs to
 );
 CREATE INDEX events_status_at   ON events(status, at_ts);          -- the inbox view
 CREATE INDEX events_instance_at ON events(instance_page_id, at_ts);-- an instance's event history
+CREATE INDEX events_root_at     ON events(root_event_id, at_ts);   -- a lineage tree
+CREATE INDEX events_run_at      ON events(run_id, at_ts);          -- a run's own events
 ```
 
 **Demo seeding (M7).** `seed_from_dir` (the `ESCUREL_SEED_DIR`
