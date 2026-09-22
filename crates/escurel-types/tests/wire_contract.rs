@@ -251,6 +251,24 @@ fn event_provenance_is_value() {
 }
 
 #[test]
+fn report_progress_request_and_response_shapes() {
+    // tool_report_progress: {plan:[{step,status}], current?, note?} →
+    // {ok, event_id, run_id, steps}.
+    let req: ReportProgressRequest = serde_json::from_value(json!({
+        "plan": [{ "step": "a", "status": "completed" }], "current": "a"
+    }))
+    .unwrap();
+    assert_eq!(req.plan[0].status, "completed");
+    assert_eq!(req.note, "");
+    let resp: ReportProgressResponse = serde_json::from_value(json!({
+        "ok": true, "event_id": "run-progress:r:abc", "run_id": "r", "steps": 1
+    }))
+    .unwrap();
+    assert!(resp.ok);
+    assert_eq!(resp.steps, 1);
+}
+
+#[test]
 fn drafts_and_changesets_carry_run_lineage() {
     // draft_to_json / list_changesets / diff_draft after the workbench P1:
     // `run_id` / `root_event_id` are `null` for a draft no run proposed.

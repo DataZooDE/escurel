@@ -291,6 +291,26 @@ pub struct CaptureArgs {
     pub kind: Option<String>,
 }
 
+/// A run's own surface — callable only with a run-bound bearer (the
+/// runner's per-run agent token, which names the run).
+#[derive(Subcommand, Debug)]
+pub enum RunCmd {
+    /// Report the run's WHOLE plan as a snapshot: `--step "read=completed"
+    /// --step "assess=in_progress"`. Status is pending | in_progress |
+    /// completed | blocked.
+    Progress {
+        /// `<step>=<status>`, repeatable, in order.
+        #[arg(long = "step", required = true)]
+        steps: Vec<String>,
+        /// The step in progress.
+        #[arg(long)]
+        current: Option<String>,
+        /// A short free-text note.
+        #[arg(long)]
+        note: Option<String>,
+    },
+}
+
 /// Held writes — the review queue for `autonomy: review` skills.
 #[derive(Subcommand, Debug)]
 pub enum DraftCmd {
@@ -497,6 +517,7 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Provenance(ProvenanceCmd::Abandoned(a)) => abandoned_paths(client, a).await,
         Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
+        Command::Run(c) => run_cmd(client, c).await,
         Command::Draft(c) => draft_cmd(client, c).await,
         Command::Branch(c) => branch_cmd(client, c).await,
         Command::Changeset(c) => changeset_cmd(client, c).await,
@@ -883,6 +904,42 @@ async fn provenance_path(client: &Client, a: PathArgs) -> Result<Value> {
         })
         .await?;
     Ok(json!({ "reachable": resp.reachable, "path": resp.path, "depth": resp.depth }))
+}
+
+async fn run_cmd(client: &Client, cmd: RunCmd) -> Result<Value> {
+    match cmd {
+        RunCmd::Progress {
+            steps,
+            current,
+            note,
+        } => {
+            let plan = steps
+                .iter()
+                .map(|s| {
+                    let (step, status) = s.rsplit_once('=').ok_or_else(|| {
+                        anyhow::anyhow!("--step expects <step>=<status>, got `{s}`")
+                    })?;
+                    Ok(escurel_client::PlanStep {
+                        step: step.to_owned(),
+                        status: status.to_owned(),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let resp = client
+                .report_progress(escurel_client::ReportProgressRequest {
+                    plan,
+                    current: current.unwrap_or_default(),
+                    note: note.unwrap_or_default(),
+                })
+                .await?;
+            Ok(json!({
+                "ok": resp.ok,
+                "event_id": resp.event_id,
+                "run_id": resp.run_id,
+                "steps": resp.steps,
+            }))
+        }
+    }
 }
 
 async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {

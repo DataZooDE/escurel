@@ -666,6 +666,38 @@ impl Indexer {
         })
     }
 
+    /// Keep only the newest `keep` `run-progress` snapshots of one run
+    /// (workbench backend FR-P-3): a harness reports its whole plan on every
+    /// step change, and `run-finished` carries the final one, so history
+    /// past this is redundant for the consumer and unbounded for the store.
+    /// Ordered by `at_ts` (the progress writer stamps microseconds) with
+    /// `event_id` as the tie-break; tenant-scoped on the shared backends.
+    ///
+    /// # Errors
+    /// When the delete fails.
+    pub async fn prune_run_progress(&self, run_id: &str, keep: usize) -> Result<(), IndexerError> {
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+        let scope = if tenant.is_some() {
+            " AND tenant = ?"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "DELETE FROM {table} WHERE run_id = ? AND label_skill = 'escurel:run' \
+             AND title = 'run-progress'{scope} AND event_id NOT IN (\
+                 SELECT event_id FROM {table} WHERE run_id = ? AND label_skill = 'escurel:run' \
+                 AND title = 'run-progress'{scope} \
+                 ORDER BY at_ts DESC NULLS LAST, event_id DESC LIMIT {keep})"
+        );
+        let conn = self.conn.lock().await;
+        match &tenant {
+            None => conn.execute(&sql, params![run_id, run_id])?,
+            Some(t) => conn.execute(&sql, params![run_id, t, run_id, t])?,
+        };
+        Ok(())
+    }
+
     /// One event by id, whatever its status — the by-event lookup the
     /// instance-scoped surfaces cannot express.
     ///
@@ -943,6 +975,13 @@ fn event_from_row(r: EventRow) -> Result<EventInfo, IndexerError> {
         root_event_id,
         run_id,
     })
+}
+
+/// Now, as RFC 3339 UTC with microseconds — an `at` that orders a burst of
+/// events captured inside one second (`TRY_CAST` reads the fraction).
+#[must_use]
+pub fn now_rfc3339_micros() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
 
 /// `usize` from our own code, capped so a caller mistake can't OOM us.

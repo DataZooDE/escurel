@@ -678,6 +678,31 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "report_progress",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Events),
+            "Report your WHOLE plan as a snapshot — call it once when you have a \
+                 plan and again whenever a step's status changes (send every step \
+                 each time, not a delta). Only a run-bound bearer (the runner's \
+                 per-run agent token) may call it: the run is read from the token, \
+                 never sent. Bookkeeping for the humans watching the run: it never \
+                 changes what you may write. Idempotent per snapshot; a run keeps \
+                 its last 50.",
+            json!({
+                "type": "object",
+                "required": ["plan"],
+                "properties": {
+                    "plan": { "type": "array", "maxItems": 100, "items": { "type": "object", "required": ["step", "status"], "properties": {
+                        "step": { "type": "string", "maxLength": 200 },
+                        "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "blocked"] }
+                    } } },
+                    "current": { "type": "string", "description": "The step in progress, if any." },
+                    "note": { "type": "string", "maxLength": 2048 }
+                }
+            }),
+        ),
+        tool_entry(
             "list_inbox",
             Execution::Deterministic,
             Scope::Agent,
@@ -1739,6 +1764,12 @@ fn output_schema_for(name: &str) -> Option<Value> {
         })),
         "capture_event" | "assign_event" => obj(json!({
             "event_id": { "type": "string" }
+        })),
+        "report_progress" => obj(json!({
+            "ok": { "type": "boolean" },
+            "event_id": { "type": "string", "description": "the run-progress event; the same id for the same snapshot" },
+            "run_id": { "type": "string" },
+            "steps": { "type": "integer" }
         })),
         "fetch_blob" => obj(json!({
             "blob": { "type": ["object", "null"] }

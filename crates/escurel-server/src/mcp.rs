@@ -66,6 +66,7 @@ mod schema;
 mod tools_admin;
 mod tools_branches;
 mod tools_drafts;
+mod tools_progress;
 mod tools_read;
 mod tools_write;
 pub(crate) use ingest::{blob_get, ingest, ingest_upload};
@@ -74,6 +75,7 @@ use schema::page_type_str;
 use tools_admin::*;
 use tools_branches::*;
 use tools_drafts::*;
+use tools_progress::*;
 use tools_read::*;
 pub(crate) use tools_write::event_to_json;
 
@@ -930,6 +932,9 @@ async fn dispatch_tools_call(
             .await
         }
         "list_inbox" => tool_list_inbox(indexer, caller, state.event_acl, params.arguments).await,
+        "report_progress" => {
+            tool_report_progress(indexer, caller, &state.events_tx, params.arguments).await
+        }
         "list_events" => tool_list_events(indexer, caller, state.event_acl, params.arguments).await,
         "list_snapshots" => tool_list_snapshots(indexer, caller, params.arguments).await,
         "list_op_authors" => {

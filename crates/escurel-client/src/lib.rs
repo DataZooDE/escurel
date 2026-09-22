@@ -69,12 +69,13 @@ pub use escurel_types::{
     ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
     ListInstancesResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
     ListSkillsResponse, LiveAck, LiveOp, MovePageRequest, MovePageResponse, NeighboursRequest,
-    NeighboursResponse, PageRef, ProvenanceAncestryRequest, ProvenanceAncestryResponse,
+    NeighboursResponse, PageRef, PlanStep, ProvenanceAncestryRequest, ProvenanceAncestryResponse,
     ProvenancePathRequest, ProvenancePathResponse, ProvenanceReportRequest,
     ProvenanceReportResponse, PurgePageRequest, PurgePageResponse, QueryInstanceRequest,
-    QueryInstanceResponse, ResolveRequest, ResolveResponse, SearchHit, SearchRequest,
-    SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse,
-    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
+    QueryInstanceResponse, ReportProgressRequest, ReportProgressResponse, ResolveRequest,
+    ResolveResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
+    TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
+    ValidationIssue, WikilinkParsed,
 };
 // Held writes (the `autonomy: review` gate): a draft is a finished change
 // that has not landed, and these are how an app shows a human what is
@@ -551,6 +552,25 @@ impl Client {
             args["cursor"] = json!(req.cursor);
         }
         self.transport.call_typed("list_events", args).await
+    }
+
+    /// Report the run's whole plan as a snapshot (`report_progress`). Only a
+    /// run-bound bearer may call this; the run is read from the token.
+    ///
+    /// # Errors
+    /// When the transport or the tool fails.
+    pub async fn report_progress(
+        &self,
+        req: ReportProgressRequest,
+    ) -> Result<ReportProgressResponse, Error> {
+        let mut args = json!({ "plan": req.plan });
+        if !req.current.is_empty() {
+            args["current"] = json!(req.current);
+        }
+        if !req.note.is_empty() {
+            args["note"] = json!(req.note);
+        }
+        self.transport.call_typed("report_progress", args).await
     }
 
     /// Bind an inbox event to an instance and mark it processed.
