@@ -69,6 +69,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("list_op_authors", Agent(&["page", "op-authors"])),
     ("assign_event", Agent(&["event", "assign"])),
     ("report_progress", Agent(&["run", "progress"])),
+    ("list_lineage", Agent(&["run", "lineage"])),
     ("create_draft", Agent(&["draft", "create"])),
     ("create_branch", Agent(&["branch", "create"])),
     ("list_branches", Agent(&["branch", "list"])),

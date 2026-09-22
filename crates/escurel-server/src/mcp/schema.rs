@@ -678,6 +678,32 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "list_lineage",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Events),
+            "Everything under a root event, as a flat list of nodes with ids \
+                 and parents for you to fold into a tree: the root and its \
+                 cascade events, the runs folded from their `escurel:run` rows \
+                 (state running | processed | failed | dead_letter, harness, \
+                 attempts, summary, the newest plan), and the changesets and \
+                 drafts those runs proposed. Parents alternate event → run → \
+                 {changeset → draft | draft | event}. A node you may not read \
+                 is absent with its subtree. Paged over the lineage's events: \
+                 pass `next_cursor` back as `cursor`; nodes are keyed by id, so \
+                 merge pages by id.",
+            json!({
+                "type": "object",
+                "required": ["root_event_id"],
+                "properties": {
+                    "root_event_id": { "type": "string" },
+                    "include": { "type": "array", "items": { "type": "string", "enum": ["events", "runs", "drafts"] }, "description": "Node types to return; empty = all. drafts implies changesets." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Events per page (default 500)." },
+                    "cursor": { "type": "string" }
+                }
+            }),
+        ),
+        tool_entry(
             "report_progress",
             Execution::Orchestration,
             Scope::Agent,
@@ -1764,6 +1790,11 @@ fn output_schema_for(name: &str) -> Option<Value> {
         })),
         "capture_event" | "assign_event" => obj(json!({
             "event_id": { "type": "string" }
+        })),
+        "list_lineage" => obj(json!({
+            "root_event_id": { "type": "string" },
+            "nodes": { "type": "array", "description": "[{id, type: event|run|changeset|draft, parent, state, …}]" },
+            "next_cursor": { "type": "string", "description": "present iff more events lie past the page" }
         })),
         "report_progress" => obj(json!({
             "ok": { "type": "boolean" },

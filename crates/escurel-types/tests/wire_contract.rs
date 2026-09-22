@@ -251,6 +251,29 @@ fn event_provenance_is_value() {
 }
 
 #[test]
+fn list_lineage_nodes_carry_id_type_parent_state_and_the_rest() {
+    // tool_list_lineage: {root_event_id, nodes:[{id, type, parent, state, …}], next_cursor?}.
+    let resp: ListLineageResponse = serde_json::from_value(json!({
+        "root_event_id": "r",
+        "nodes": [
+            { "id": "r", "type": "event", "parent": null, "state": "inbox", "label_skill": "meeting" },
+            { "id": "x", "type": "run", "parent": "r", "state": "running", "harness": "echo" }
+        ],
+        "next_cursor": "c"
+    }))
+    .unwrap();
+    assert_eq!(resp.nodes.len(), 2);
+    assert_eq!(resp.nodes[0].kind, "event");
+    assert_eq!(resp.nodes[0].parent, "");
+    assert_eq!(resp.nodes[1].parent, "r");
+    assert_eq!(resp.nodes[1].extra["harness"], "echo");
+    assert_eq!(resp.next_cursor.as_deref(), Some("c"));
+    let req: ListLineageRequest =
+        serde_json::from_value(json!({ "root_event_id": "r", "include": ["runs"] })).unwrap();
+    assert_eq!(req.include, vec!["runs"]);
+}
+
+#[test]
 fn report_progress_request_and_response_shapes() {
     // tool_report_progress: {plan:[{step,status}], current?, note?} →
     // {ok, event_id, run_id, steps}.

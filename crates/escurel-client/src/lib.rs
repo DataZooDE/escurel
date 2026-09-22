@@ -65,17 +65,17 @@ pub use error::{Error, JSONRPC_ADMIN_REQUIRED};
 pub use escurel_types::{
     AppendMessageRequest, AppendMessageResponse, AssignEventRequest, AssignEventResponse,
     CaptureEventRequest, ChatMessage, DeletePageRequest, DeletePageResponse, Edge, Event,
-    ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, ListEventsRequest,
+    ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, LineageNode, ListEventsRequest,
     ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
-    ListInstancesResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
-    ListSkillsResponse, LiveAck, LiveOp, MovePageRequest, MovePageResponse, NeighboursRequest,
-    NeighboursResponse, PageRef, PlanStep, ProvenanceAncestryRequest, ProvenanceAncestryResponse,
-    ProvenancePathRequest, ProvenancePathResponse, ProvenanceReportRequest,
-    ProvenanceReportResponse, PurgePageRequest, PurgePageResponse, QueryInstanceRequest,
-    QueryInstanceResponse, ReportProgressRequest, ReportProgressResponse, ResolveRequest,
-    ResolveResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
-    TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
-    ValidationIssue, WikilinkParsed,
+    ListInstancesResponse, ListLineageRequest, ListLineageResponse, ListMessagesRequest,
+    ListMessagesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp, MovePageRequest,
+    MovePageResponse, NeighboursRequest, NeighboursResponse, PageRef, PlanStep,
+    ProvenanceAncestryRequest, ProvenanceAncestryResponse, ProvenancePathRequest,
+    ProvenancePathResponse, ProvenanceReportRequest, ProvenanceReportResponse, PurgePageRequest,
+    PurgePageResponse, QueryInstanceRequest, QueryInstanceResponse, ReportProgressRequest,
+    ReportProgressResponse, ResolveRequest, ResolveResponse, SearchHit, SearchRequest,
+    SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse,
+    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
 };
 // Held writes (the `autonomy: review` gate): a draft is a finished change
 // that has not landed, and these are how an app shows a human what is
@@ -552,6 +552,27 @@ impl Client {
             args["cursor"] = json!(req.cursor);
         }
         self.transport.call_typed("list_events", args).await
+    }
+
+    /// Everything under a root event as nodes with parents (`list_lineage`).
+    ///
+    /// # Errors
+    /// When the transport or the tool fails.
+    pub async fn list_lineage(
+        &self,
+        req: ListLineageRequest,
+    ) -> Result<ListLineageResponse, Error> {
+        let mut args = json!({ "root_event_id": req.root_event_id });
+        if !req.include.is_empty() {
+            args["include"] = json!(req.include);
+        }
+        if req.limit > 0 {
+            args["limit"] = json!(req.limit);
+        }
+        if !req.cursor.is_empty() {
+            args["cursor"] = json!(req.cursor);
+        }
+        self.transport.call_typed("list_lineage", args).await
     }
 
     /// Report the run's whole plan as a snapshot (`report_progress`). Only a

@@ -154,7 +154,7 @@ fn decided_by_or_caller(
 ///
 /// Unparseable content fails CLOSED — nobody but an admin sees a draft whose
 /// ACL cannot be determined.
-async fn may_see(
+pub(super) async fn may_see(
     indexer: &Indexer,
     caller: &AclCaller<'_>,
     draft: &escurel_index::drafts::DraftInfo,

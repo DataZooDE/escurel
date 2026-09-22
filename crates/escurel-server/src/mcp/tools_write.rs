@@ -2229,7 +2229,7 @@ pub(super) async fn tool_list_inbox(
 
 /// An undecodable cursor is the caller's mistake (`invalid_params`),
 /// not a server fault.
-fn cursor_aware_error(tool: &str, e: IndexerError) -> JsonRpcError {
+pub(super) fn cursor_aware_error(tool: &str, e: IndexerError) -> JsonRpcError {
     match e {
         IndexerError::InvalidCursor(msg) => {
             JsonRpcError::invalid_params(format!("{tool}: cursor: {msg}"))
