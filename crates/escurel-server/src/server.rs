@@ -556,7 +556,7 @@ pub async fn serve(
         last_published_epoch: Arc::clone(&config.last_published_epoch),
         // 256 in-flight events per lagging subscriber before it is told
         // to resync — same order as the session dispatcher's buffer.
-        events_tx: tokio::sync::broadcast::channel(256).0,
+        events_tx: tokio::sync::broadcast::channel(1024).0,
     };
 
     let mut app = Router::new()

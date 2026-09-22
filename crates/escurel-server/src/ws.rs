@@ -244,6 +244,9 @@ async fn handle_socket(
     // re-runs the search whenever the index's mutation epoch moves and
     // pushes the updated hits.
     let mut search_sub: Option<(Value, Value)> = None;
+    // The current event subscription's predicate (match-all until a
+    // subscribe frame narrows it).
+    let mut event_filter = EventSubFilter::default();
     let mut search_epoch: u64 = 0;
     let mut search_tick = tokio::time::interval(std::time::Duration::from_millis(500));
     search_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -287,7 +290,9 @@ async fn handle_socket(
                 use tokio::sync::broadcast::error::RecvError;
                 match pushed {
                     Ok(event) => {
-                        if event_push_allowed(&state, &caller, &event).await {
+                        if event_filter.matches(&event)
+                            && event_push_allowed(&state, &caller, &event).await
+                        {
                             let frame = json!({
                                 "type": "event",
                                 "subscription_id": event_sub_id,
@@ -355,7 +360,28 @@ async fn handle_socket(
             // that cannot host the HTTP webhook. Idempotent: a second
             // subscribe replaces the first (fresh cursor, new id).
             "event_subscribe" => {
-                event_sub_id = frame.get("subscription_id").cloned().unwrap_or(Value::Null);
+                let sub_id = frame.get("subscription_id").cloned().unwrap_or(Value::Null);
+                // Filters (workbench backend P1): the fan-out predicate runs
+                // server-side, before the per-event ACL. A malformed one
+                // refuses the subscription outright and subscribes nothing.
+                let filter = match EventSubFilter::parse(frame.get("filters")) {
+                    Ok(f) => f,
+                    Err(message) => {
+                        let _ = send_json(
+                            socket,
+                            json!({
+                                "type": "error",
+                                "code": "invalid_subscription",
+                                "subscription_id": sub_id,
+                                "message": format!("event_subscribe: {message}"),
+                            }),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+                event_sub_id = sub_id;
+                event_filter = filter;
                 // Subscribe BEFORE the replay query below: an event that
                 // lands between the two shows up in both, and the client
                 // dedupes by `event_id` — a duplicate is recoverable, a
@@ -368,33 +394,59 @@ async fn handle_socket(
                 if send_json(socket, ack).await.is_err() {
                     break;
                 }
-                // Best-effort INBOX-ONLY resume (API review B4, contract
-                // narrowed in the 2026-08 security review): replay the
-                // still-inbox events captured after `since_event_id`,
-                // oldest first, marked `replayed: true`, before the live
-                // stream. This is `list_inbox`, NOT an event log — an
-                // event assigned/processed while the consumer was
-                // disconnected has left the inbox and is NOT replayed, so
-                // the resume is not gap-free. A consumer that must not
-                // miss terminal transitions reconciles via `list_events`.
-                // Same per-event ACL as the live push. Ordering rides the
-                // event-id sort — exact for server-minted ULIDs; a
-                // caller-supplied id scheme must be monotonic to resume
-                // on. Bounded to the most recent 10 000 inbox rows (the
-                // list_inbox cap) — a consumer further behind than that
-                // should rebuild from `list_inbox` pagination instead.
+                // Resume with `since_event_id`. Two shapes:
+                //
+                // - LINEAGE-SCOPED (a `root_event_id` / `run_id` filter):
+                //   replay from the lineage's own event log, any status —
+                //   gap-free for that thread. A run event stored `processed`
+                //   while the socket was down is exactly what a workbench
+                //   must not miss, and it never was in the inbox.
+                // - otherwise the best-effort INBOX-ONLY resume it always
+                //   was (API review B4, narrowed in the 2026-08 security
+                //   review): the still-inbox events after the id, oldest
+                //   first. Not an event log — an event assigned/processed
+                //   while the consumer was away has left the inbox and is
+                //   NOT replayed; `list_events` is the reconciliation path.
+                //
+                // Both mark frames `replayed: true`, run the same per-event
+                // ACL as the live push, and are bounded (the list caps).
+                // Ordering: the inbox path sorts by event id (exact for
+                // server-minted ULIDs); the lineage path keeps the log's
+                // time order, because run events carry non-ULID ids —
+                // which also means a `since_event_id` compares below them
+                // and they are replayed on every resume. Dedupe by id.
                 if let Some(since) = frame.get("since_event_id").and_then(Value::as_str)
                     && let Some(handle) = state.indexer.as_ref()
                 {
                     let indexer = handle.current();
-                    match indexer.list_inbox(Some(10_000)).await {
+                    let replay = if event_filter.is_lineage_scoped() {
+                        indexer
+                            .list_events_filtered_page(
+                                &escurel_index::EventListFilter {
+                                    root_event_id: event_filter.root_event_id.clone(),
+                                    run_id: event_filter.run_id.clone(),
+                                    include_system: true,
+                                    ..Default::default()
+                                },
+                                true,
+                                escurel_index::EVENTS_MAX_LIMIT,
+                                None,
+                            )
+                            .await
+                            .map(|page| page.events)
+                    } else {
+                        indexer.list_inbox(Some(10_000)).await.map(|mut events| {
+                            events.sort_by(|a, b| a.event_id.cmp(&b.event_id));
+                            events
+                        })
+                    };
+                    match replay {
                         Ok(events) => {
-                            let mut missed: Vec<_> = events
+                            for e in events
                                 .into_iter()
                                 .filter(|e| e.event_id.as_str() > since)
-                                .collect();
-                            missed.sort_by(|a, b| a.event_id.cmp(&b.event_id));
-                            for e in missed {
+                                .filter(|e| event_filter.matches(e))
+                            {
                                 if event_push_allowed(&state, &caller, &e).await {
                                     let frame = json!({
                                         "type": "event",
@@ -522,6 +574,84 @@ async fn handle_socket(
 /// `log` warns-and-delivers (the migration rung), `enforce` filters. A
 /// gateway with no indexer (session-only dev shape) delivers everything,
 /// mirroring `may_attach`'s fallback.
+/// What an `event_subscribe` wants pushed (workbench backend P1, BRD
+/// FR-W-1). Every `Some` narrows; the predicate runs server-side, BEFORE
+/// the per-event ACL, so a thread's subscriber never sees the rest of the
+/// bus. Absent = everything, which is what a subscription meant before.
+#[derive(Debug, Clone, Default)]
+struct EventSubFilter {
+    /// The root and everything captured under it (a lineage).
+    root_event_id: Option<String>,
+    run_id: Option<String>,
+    label_skill: Option<String>,
+    kind: Option<escurel_index::EventKind>,
+    instance_page_id: Option<String>,
+}
+
+impl EventSubFilter {
+    /// Parse `frame.filters`. A malformed filter is refused rather than
+    /// ignored: a subscriber that silently got everything would be worse
+    /// than one told no.
+    fn parse(filters: Option<&Value>) -> Result<Self, String> {
+        let Some(v) = filters else {
+            return Ok(Self::default());
+        };
+        let obj = v
+            .as_object()
+            .ok_or_else(|| "filters must be an object".to_owned())?;
+        let mut out = Self::default();
+        for (key, value) in obj {
+            let text = match value {
+                Value::Null => None,
+                Value::String(s) if s.is_empty() => None,
+                Value::String(s) => Some(s.clone()),
+                other => return Err(format!("filters.{key} must be a string, got {other}")),
+            };
+            match key.as_str() {
+                "root_event_id" => out.root_event_id = text,
+                "run_id" => out.run_id = text,
+                "label_skill" => out.label_skill = text,
+                "instance_page_id" => out.instance_page_id = text,
+                "kind" => {
+                    out.kind = match text {
+                        None => None,
+                        Some(k) => Some(escurel_index::EventKind::parse(&k).ok_or_else(|| {
+                            format!("filters.kind must be user | system, got `{k}`")
+                        })?),
+                    }
+                }
+                other => return Err(format!("unknown filter `{other}`")),
+            }
+        }
+        Ok(out)
+    }
+
+    /// A lineage-scoped subscription resumes from the lineage's event log,
+    /// not the inbox (see the `event_subscribe` arm).
+    fn is_lineage_scoped(&self) -> bool {
+        self.root_event_id.is_some() || self.run_id.is_some()
+    }
+
+    fn matches(&self, e: &escurel_index::EventInfo) -> bool {
+        self.root_event_id
+            .as_deref()
+            .is_none_or(|r| e.event_id == r || e.root_event_id.as_deref() == Some(r))
+            && self
+                .run_id
+                .as_deref()
+                .is_none_or(|r| e.run_id.as_deref() == Some(r))
+            && self
+                .label_skill
+                .as_deref()
+                .is_none_or(|l| e.label_skill == l)
+            && self.kind.is_none_or(|k| e.kind == k)
+            && self
+                .instance_page_id
+                .as_deref()
+                .is_none_or(|p| e.instance_page_id.as_deref() == Some(p))
+    }
+}
+
 async fn event_push_allowed(
     state: &AppState,
     caller: &WsCaller,

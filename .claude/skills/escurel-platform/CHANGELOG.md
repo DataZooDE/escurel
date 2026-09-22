@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.46 — filtered `event_subscribe` + gap-free lineage resume (workbench backend P1)
+
+- `event_subscribe` takes `filters: {root_event_id?, run_id?, label_skill?,
+  kind?, instance_page_id?}`; the predicate runs server-side before the ACL,
+  so a workbench watching one thread subscribes to that thread. A malformed
+  filter is refused (`invalid_subscription`) and subscribes nothing.
+- With a `root_event_id` / `run_id` filter, `since_event_id` replays from the
+  lineage's event log (any status, system rows included) — gap-free for
+  the thread. Unfiltered resume stays inbox-only, as before.
+- The gateway's push buffer grew from 256 to 1024 events per subscriber
+  before `event_lagged`.
+
 ## 0.6.45 — `list_lineage` (workbench backend P1)
 
 - New agent tool `list_lineage {root_event_id, include?, limit?, cursor?}` →
