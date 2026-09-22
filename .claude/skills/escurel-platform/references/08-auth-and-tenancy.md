@@ -35,6 +35,17 @@ ordinary bearer simply has none. Only a runner in **minted** mode carries
 them; a dev runner on a pasted `ESCUREL_RUNNER_TOKEN` cannot mint, so its
 runs write unstamped.
 
+A **workbench agent token** is the same shape minted by the GATEWAY
+(`mint_agent_token`) for an interactive agent with no runner behind it:
+`sub: agent:<skill>`, `act.sub: <the human who asked>`,
+`purpose: workbench_agent`, the run claims, and the human's own authority —
+an admin's mint carries `escurel:admin`, a member's carries their groups
+with every reserved `escurel:` role stripped. It needs the gateway to have
+a signing identity: `ESCUREL_AUTH_SIGNING_KEY` (an RSA private key some
+trusted issuer's JWKS publishes), `ESCUREL_AUTH_SIGNING_KID`,
+`ESCUREL_AUTH_SIGNING_ISSUER` (defaults to the OIDC issuer). Without it
+the tool answers `unsupported`.
+
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A
 mismatched tenant in a request body is rejected. `tools/list` is

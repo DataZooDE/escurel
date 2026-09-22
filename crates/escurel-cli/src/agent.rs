@@ -332,6 +332,21 @@ pub enum RunCmd {
         #[arg(long)]
         cursor: Option<String>,
     },
+    /// Mint a run-bound bearer for an interactive agent working as
+    /// `agent:<skill>` on your behalf (workbench backend P2-6).
+    MintToken {
+        #[arg(long)]
+        skill: String,
+        /// The lineage root to work under (default: the run is its own root).
+        #[arg(long)]
+        root_event: Option<String>,
+        /// The page the run works on.
+        #[arg(long)]
+        target: Option<String>,
+        /// Token life in seconds (default 1800).
+        #[arg(long, default_value_t = 0)]
+        ttl_secs: u64,
+    },
 }
 
 /// Held writes — the review queue for `autonomy: review` skills.
@@ -974,6 +989,23 @@ async fn run_cmd(client: &Client, cmd: RunCmd) -> Result<Value> {
                     include,
                     limit,
                     cursor: cursor.unwrap_or_default(),
+                })
+                .await?;
+            Ok(serde_json::to_value(resp)?)
+        }
+        RunCmd::MintToken {
+            skill,
+            root_event,
+            target,
+            ttl_secs,
+        } => {
+            let resp = client
+                .mint_agent_token(escurel_client::MintAgentTokenRequest {
+                    skill,
+                    root_event_id: root_event.unwrap_or_default(),
+                    target_page_id: target.unwrap_or_default(),
+                    ttl_secs,
+                    ..Default::default()
                 })
                 .await?;
             Ok(serde_json::to_value(resp)?)

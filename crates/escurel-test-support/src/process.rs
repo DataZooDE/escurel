@@ -149,6 +149,13 @@ pub struct ConfigOverrides {
     /// (default) is every other test — a writer or a health-only
     /// gateway.
     pub reader_mode: bool,
+    /// Give the gateway a signing identity on the test issuer's own key
+    /// (workbench backend P2-6): `mint_agent_token` then mints tokens the
+    /// gateway's verifier accepts. Requires `AuthMode::TestIssuer`.
+    pub signing: bool,
+    /// How often the gateway sweeps gateway-minted runs for expiry (P2-6);
+    /// `None` = the production default.
+    pub minted_run_sweep: Option<std::time::Duration>,
     /// Attach a DuckLake so `state.lake` is `Some` — otherwise always
     /// `None` (see `serve`'s `ServerConfig` construction). Tests for
     /// lake-durability behavior (#567: `/ingest/upload`'s synchronous
@@ -415,7 +422,27 @@ impl EscurelProcess {
             .readiness
             .clone()
             .unwrap_or_else(|| Arc::new(AlwaysReady) as Arc<dyn ReadinessProbe>);
+        let signer = if overrides.signing {
+            let issuer_ref = issuer
+                .as_ref()
+                .expect("ConfigOverrides.signing requires AuthMode::TestIssuer");
+            let (pem, kid) = issuer_ref.signing_material();
+            Some(Arc::new(
+                escurel_auth::Signer::build(
+                    issuer_ref.issuer_url.clone(),
+                    TEST_AUDIENCE.to_owned(),
+                    served_tenant.clone(),
+                    Some(kid.to_owned()),
+                    &pem,
+                )
+                .expect("test signer"),
+            ))
+        } else {
+            None
+        };
         let cfg = ServerConfig {
+            signer,
+            minted_run_sweep: overrides.minted_run_sweep,
             write_acl: overrides.write_acl.unwrap_or_default(),
             event_acl: overrides.event_acl.unwrap_or_default(),
             autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),

@@ -34,6 +34,8 @@ pub const TENANT_CLAIM: &str = "tenant";
 pub const DELEGATION_PURPOSE: &str = "internal_delegation";
 /// The claim key under which [`DELEGATION_PURPOSE`] is carried.
 pub const PURPOSE_CLAIM: &str = "purpose";
+/// The `purpose` of a gateway-minted workbench agent bearer (P2-6).
+pub const WORKBENCH_AGENT_PURPOSE: &str = "workbench_agent";
 
 /// The run-identity claims on a per-run token (workbench backend P1). Kept in
 /// lock-step with `escurel_auth::verifier` (which must not depend on this
@@ -233,6 +235,59 @@ impl Signer {
             "nbf": now,
             "exp": now + ttl_secs,
         });
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(self.kid.clone());
+        Ok(encode(
+            &header,
+            &claims,
+            &EncodingKey::from_rsa_pem(&self.private_pem)?,
+        )?)
+    }
+
+    /// Mint a **workbench agent** bearer (knowledge-workbench backend P2-6):
+    /// an interactive agent runs as `agent:<label_skill>` on a human's
+    /// behalf — `act.sub` is the human — with the HUMAN's own authority and
+    /// never more: an admin's mint carries `escurel:admin`, a member's mint
+    /// carries their groups with every reserved `escurel:` role stripped.
+    /// `purpose: workbench_agent` names the shape; the run claims make
+    /// drafts stamped and `report_progress` accepted for this run.
+    ///
+    /// # Errors
+    /// When signing fails, or `label_skill` cannot be an unambiguous subject.
+    pub fn mint_workbench_agent(
+        &self,
+        user_subject: &str,
+        label_skill: &str,
+        groups: &[String],
+        is_admin: bool,
+        ttl_secs: u64,
+        run: Option<&RunClaims>,
+    ) -> Result<String, SignError> {
+        let slug = agent_slug(label_skill)?;
+        let roles: Vec<String> = if is_admin {
+            vec!["escurel:admin".to_owned()]
+        } else {
+            groups
+                .iter()
+                .filter(|g| !g.starts_with("escurel:"))
+                .cloned()
+                .collect()
+        };
+        let now = now_secs();
+        let mut claims = json!({
+            "iss": self.issuer,
+            "aud": self.audience,
+            "sub": format!("agent:{slug}"),
+            TENANT_CLAIM: self.tenant,
+            "roles": roles,
+            "act": { "sub": user_subject },
+            PURPOSE_CLAIM: WORKBENCH_AGENT_PURPOSE,
+            "jti": ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            "iat": now,
+            "nbf": now,
+            "exp": now + ttl_secs,
+        });
+        stamp_run(&mut claims, run);
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(self.kid.clone());
         Ok(encode(

@@ -68,6 +68,8 @@ mod tools_branches;
 mod tools_control;
 mod tools_drafts;
 mod tools_lineage;
+mod tools_mint;
+pub(crate) use tools_mint::{MintedRuns, sweep_expired_minted_runs};
 mod tools_progress;
 mod tools_read;
 mod tools_write;
@@ -940,6 +942,9 @@ async fn dispatch_tools_call(
         "list_inbox" => tool_list_inbox(indexer, caller, state.event_acl, params.arguments).await,
         "report_progress" => {
             tool_report_progress(indexer, caller, &state.events_tx, params.arguments).await
+        }
+        "mint_agent_token" => {
+            tools_mint::tool_mint_agent_token(state, indexer, caller, params.arguments).await
         }
         "list_lineage" => {
             tool_list_lineage(indexer, caller, state.event_acl, params.arguments).await

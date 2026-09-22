@@ -4,6 +4,22 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.56 — `mint_agent_token`: the gateway mints run-bound agent bearers (workbench P2-6)
+
+- New tool `mint_agent_token { skill, root_event_id?, target_page_id?,
+  ttl_secs?, trace_id? }` → `{token, run_id, root_event_id, subject,
+  expires_at}` (CLI `run mint-token --skill …`). The bearer is
+  `agent:<skill>` acting for you (`act.sub` = your subject), carries YOUR
+  authority and never more (an admin's mint is admin; a member's mint is
+  their groups), `purpose: workbench_agent`, and a fresh `run_id` — so
+  drafts it makes are stamped and `report_progress` accepts it. The
+  gateway writes `run-started` (harness `workbench`) at mint and closes
+  the run `run-finished { status: "expired" }` if the token lapses
+  without a terminal (swept every 30 s, in memory). Refused `unsupported`
+  on a gateway without `ESCUREL_AUTH_SIGNING_KEY` (+ `_KID`, `_ISSUER`).
+- The signing identity (`Signer`) now lives in `escurel-auth`; the runner
+  re-exports it unchanged.
+
 ## 0.6.55 — plan mode and approval (workbench P2-5b)
 
 - A manual start with `mode: plan` runs the harness on a no-write tool

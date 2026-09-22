@@ -58,6 +58,9 @@
 //! | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | `escurel:admin` | role value granting admin |
 //! | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | `300` | JWKS cache TTL (seconds) |
 //! | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
+//! | `ESCUREL_AUTH_SIGNING_KEY` | — | RSA private key (PKCS#8 or PKCS#1 PEM) the gateway signs `mint_agent_token` bearers with; unset → the tool refuses `unsupported` |
+//! | `ESCUREL_AUTH_SIGNING_KID` | derived | the `kid` those bearers carry (must be in a trusted JWKS) |
+//! | `ESCUREL_AUTH_SIGNING_ISSUER` | the OIDC issuer | the `iss` those bearers carry (must be a trusted issuer) |
 //! | `ESCUREL_AUTH_OIDC_ISSUER_2` | — | optional SECOND trusted issuer (e.g. Carl, for the dashboard's self-minted token); shares the audience + tenant claim |
 //! | `ESCUREL_AUTH_JWKS_URI_2` | derived from issuer #2 | explicit JWKS URL for the second issuer (e.g. Carl's `<issuer>/jwks.json`) |
 //! | `ESCUREL_AUTH_OIDC_ISSUER_3` (… `_N`) | — | further trusted issuers, read as a contiguous `_2.._N` sequence (e.g. `_3` = the escurel-explore BFF's browser auth bridge); a gap stops the scan |
@@ -525,6 +528,18 @@ pub struct AuthConfig {
     pub additional_issuers: Vec<(String, Option<String>)>,
 }
 
+/// The gateway's own signing identity (workbench backend P2-6), for
+/// `mint_agent_token`. The key must be one a trusted issuer's JWKS
+/// publishes — this borrows an existing identity, it is not a second
+/// issuer.
+#[derive(Debug, Clone)]
+pub struct SigningConfig {
+    pub issuer: String,
+    pub audience: String,
+    pub kid: Option<String>,
+    pub key_pem: String,
+}
+
 /// S3 storage config (present only when backend == s3).
 #[derive(Debug, Clone)]
 pub struct S3Config {
@@ -588,6 +603,9 @@ pub struct EscurelConfig {
     pub gcs: Option<GcsConfig>,
     pub duckvfs: Option<DuckVfsConfig>,
     pub auth: Option<AuthConfig>,
+    /// `ESCUREL_AUTH_SIGNING_*` (workbench backend P2-6); `None` = the
+    /// gateway cannot mint.
+    pub signing: Option<SigningConfig>,
     pub embedding_provider: EmbeddingProvider,
     pub embedding_model: Option<String>,
     pub embedding_device: String,
@@ -1045,6 +1063,36 @@ impl EscurelConfig {
             _ => None,
         };
 
+        // --- signing (optional; workbench backend P2-6) ---
+        let signing = match env
+            .get("ESCUREL_AUTH_SIGNING_KEY")
+            .filter(|k| !k.trim().is_empty())
+        {
+            Some(key_pem) => {
+                let issuer = env
+                    .get("ESCUREL_AUTH_SIGNING_ISSUER")
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| auth.as_ref().map(|a| a.issuer.clone()))
+                    .ok_or(ConfigError::InvalidValue {
+                        var: "ESCUREL_AUTH_SIGNING_ISSUER",
+                        value: String::new(),
+                        reason: "required when ESCUREL_AUTH_SIGNING_KEY is set and no OIDC issuer is configured",
+                    })?;
+                Some(SigningConfig {
+                    issuer,
+                    audience: auth
+                        .as_ref()
+                        .map(|a| a.audience.clone())
+                        .unwrap_or_else(|| "escurel".to_owned()),
+                    kid: env
+                        .get("ESCUREL_AUTH_SIGNING_KID")
+                        .filter(|s| !s.is_empty()),
+                    key_pem,
+                })
+            }
+            None => None,
+        };
+
         // --- embedding ---
         // Default: hosted Gemini (the binary ships the `gemini` feature). With
         // no API key it falls back to ZeroEmbedder (see `load_gemini`), so
@@ -1314,6 +1362,7 @@ impl EscurelConfig {
             gcs,
             duckvfs,
             auth,
+            signing,
             embedding_provider,
             embedding_model,
             embedding_device,
@@ -1990,6 +2039,8 @@ impl EscurelConfig {
             served_tenant: Some(self.tenant.clone()),
             indexer: Some(indexer_handle),
             verifier,
+            signer: self.build_signer()?,
+            minted_run_sweep: None,
             quota,
             tenant_store: Some(tenant_store),
             crdt_backend,
@@ -2420,6 +2471,28 @@ impl EscurelConfig {
             provider: "rerank",
             feature: "rerank",
         })
+    }
+
+    /// The gateway's signing identity, when configured (P2-6). A key that
+    /// does not parse is a boot failure: a gateway that silently could not
+    /// mint would refuse every workbench session with a misleading reason.
+    fn build_signer(&self) -> Result<Option<Arc<escurel_auth::Signer>>, ConfigError> {
+        let Some(signing) = self.signing.as_ref() else {
+            return Ok(None);
+        };
+        let signer = escurel_auth::Signer::build(
+            signing.issuer.clone(),
+            signing.audience.clone(),
+            self.tenant.clone(),
+            signing.kid.clone(),
+            &signing.key_pem,
+        )
+        .map_err(|_| ConfigError::InvalidValue {
+            var: "ESCUREL_AUTH_SIGNING_KEY",
+            value: "<redacted>".to_owned(),
+            reason: "not a valid RSA private key (tried PKCS#8, PKCS#1)",
+        })?;
+        Ok(Some(Arc::new(signer)))
     }
 
     fn build_verifier(&self) -> Option<Arc<OidcVerifier>> {
