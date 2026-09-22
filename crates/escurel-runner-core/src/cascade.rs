@@ -89,6 +89,21 @@ pub async fn emit_cascade(
     parent_run_id: &str,
     effect: &ConfirmedEffect,
 ) -> Result<CascadeOutcome, CascadeError> {
+    emit_cascade_with_id(client, parent_trigger, parent_run_id, effect, None).await
+}
+
+/// [`emit_cascade`] with a caller-chosen `event_id` for the follow-on event
+/// — the promotion bridge (P2-1) uses one per promoted draft so a retried
+/// decision, a changeset's paired event or a restart cascades once:
+/// `capture_event` is first-writer-wins on the id. `None` mints a fresh id,
+/// which is right for the dispatch loop (one confirmed write, one cascade).
+pub async fn emit_cascade_with_id(
+    client: &Client,
+    parent_trigger: &Trigger,
+    parent_run_id: &str,
+    effect: &ConfirmedEffect,
+    event_id: Option<String>,
+) -> Result<CascadeOutcome, CascadeError> {
     let produced_skill = match instance_skill(&effect.instance_page_id) {
         Some(skill) => skill,
         // Cannot derive the produced instance's skill from its page id —
@@ -145,6 +160,7 @@ pub async fn emit_cascade(
 
     let event = client
         .capture_event(CaptureEventRequest {
+            event_id: event_id.unwrap_or_default(),
             source: "runner-cascade".to_owned(),
             mime: "text/plain".to_owned(),
             label_skill: produced_skill.clone(),

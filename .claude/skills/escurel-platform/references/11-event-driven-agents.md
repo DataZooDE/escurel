@@ -220,6 +220,14 @@ Best-effort: a decision never fails because the bus could not be told.
 Hidden from the default list surfaces like every system event; pushed to
 `event_subscribe` subscribers like every event.
 
+**A promotion cascades.** The runner tails this label and, on
+`draft-promoted`, emits from the promoted page the cascade the drafting run
+could not (a held write cascades nothing): the trigger event is the parent,
+`provenance.runner.parent_run_id` names the run, and the cascade id is one
+per draft, so a retried decision or a changeset's paired event cascades
+once. The runner catches up to the end of the label on boot without acting
+— a promotion made while no runner was listening is not replayed.
+
 ## Reading a lineage: `list_lineage`
 
 `list_lineage { root_event_id }` returns the whole thread under a root
