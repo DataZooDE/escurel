@@ -602,6 +602,70 @@ impl Ledger {
         Ok(row)
     }
 
+    /// A run by its id, any status (the control subscriber holds a run id,
+    /// not the event it answers).
+    pub fn find_run(&self, run_id: &str) -> Result<Option<RunRecord>, LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let mut stmt = conn.prepare(
+            "SELECT run_id, tenant, event_id, instance_page_id, content_hash,
+                    produced_instance_page_id, produced_version,
+                    status, depth, root_event_id, reason
+             FROM runs WHERE run_id = ?1",
+        )?;
+        let row = stmt
+            .query_row(rusqlite::params![run_id], |r| {
+                let status_str: String = r.get(7)?;
+                Ok(RunRecord {
+                    run_id: r.get(0)?,
+                    tenant: r.get(1)?,
+                    event_id: r.get(2)?,
+                    instance_page_id: r.get(3)?,
+                    content_hash: r.get(4)?,
+                    produced_instance_page_id: r.get(5)?,
+                    produced_version: r.get(6)?,
+                    status: RunStatus::from_str(&status_str).unwrap_or(RunStatus::Pending),
+                    depth: r.get(8)?,
+                    root_event_id: r.get(9)?,
+                    reason: r.get(10)?,
+                })
+            })
+            .ok();
+        Ok(row)
+    }
+
+    /// Re-drive a run at a non-success terminal — `failed`, `cancelled` or
+    /// `dead_letter` — under a fresh run id (a `retry` control, workbench
+    /// backend P2-3b). The row goes back to `pending`, exactly like a DLQ
+    /// requeue; the caller enqueues the trigger. A run that is `pending`
+    /// or `processed` is not retriable and reads as not found.
+    pub fn retry_run(&self, run_id: &str) -> Result<(String, String), LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let (tenant, event_id): (String, String) = conn
+            .query_row(
+                "SELECT tenant, event_id FROM runs
+                  WHERE run_id = ?1 AND status IN (?2, ?3, ?4)",
+                rusqlite::params![
+                    run_id,
+                    RunStatus::Failed.as_str(),
+                    RunStatus::Cancelled.as_str(),
+                    RunStatus::DeadLetter.as_str()
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|_| LedgerError::NotFound(format!("{run_id} (at a retriable terminal)")))?;
+        let fresh = RunId::new();
+        conn.execute(
+            "UPDATE runs
+                SET run_id = ?1, status = 'pending',
+                    produced_instance_page_id = NULL,
+                    produced_version = NULL, reason = NULL,
+                    updated_at = ?2
+              WHERE run_id = ?3",
+            rusqlite::params![fresh.as_str(), now_iso(), run_id],
+        )?;
+        Ok((tenant, event_id))
+    }
+
     /// Total run rows for a tenant (any status). Backs the integration
     /// test's "exactly one run row" assertion.
     pub fn count_runs(&self, tenant: &str) -> Result<u64, LedgerError> {

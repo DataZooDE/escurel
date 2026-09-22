@@ -46,6 +46,7 @@ mod promotion_cascades;
 mod quota_throttle;
 mod reconcile_retry;
 mod review_no_op;
+mod run_control_subscriber;
 mod run_events;
 mod run_ledger;
 mod sigterm_drain;

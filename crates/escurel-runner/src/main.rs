@@ -52,6 +52,7 @@ use escurel_runner_harness::{
 };
 use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
+use serde_json::json;
 use sha2::Sha256;
 use tokio::sync::Notify;
 
@@ -82,9 +83,14 @@ struct AppState {
     /// consults it before enqueueing so a re-delivered event is dropped.
     ledger: Arc<Ledger>,
     /// The live runs' cancel handles (workbench backend P2-3a). `POST
-    /// /debug/cancel` (and, next, the `escurel:run-control` subscriber)
-    /// stop a run through it.
+    /// /debug/cancel` and the `escurel:run-control` subscriber stop a run
+    /// through it.
     cancels: escurel_runner_core::CancelRegistry,
+    /// Where and as whom to read the gateway when a requeue rebuilds a
+    /// trigger from its event (`None` tokens = the dev/legacy path with no
+    /// credentials: the bare trigger is enqueued as before).
+    gateway_url: String,
+    tokens: Option<Arc<escurel_runner_core::TokenSource>>,
     /// The loop-control limits (#157) the gate enforces after idempotency:
     /// depth cap + per-root run budget. A trigger that would breach them is
     /// dead-lettered (with `cycle` checked against the lineage instance chain).
@@ -352,10 +358,23 @@ async fn main() -> anyhow::Result<()> {
         metrics: Arc::clone(&metrics),
         inflight: Arc::clone(&inflight),
         cancels: cancels.clone(),
+        gateway_url: config.gateway_url.clone(),
+        tokens: tokens.clone(),
         draining: Arc::clone(&draining),
         tenant: config.tenant.clone().map(Arc::from),
         lineage_trust_subject: tokens.as_ref().and_then(|t| t.subject()).map(Arc::from),
     };
+    // The run-control subscriber (workbench backend P2-3b). Same enablement
+    // as the poller and the promotion tail.
+    if let (Some(tenant), Some(source)) = (config.tenant.clone(), tokens.clone()) {
+        tokio::spawn(control_tail_loop(
+            state.clone(),
+            config.gateway_url.clone(),
+            tenant,
+            source,
+            config.poll_interval,
+        ));
+    }
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/version", get(move || version_handler(version.clone())))
@@ -572,6 +591,22 @@ fn gate_and_enqueue(
             label_skill = %trigger.label_skill,
             reason = if trigger.is_system { "system_kind" } else { "reserved_label" },
             "gate: dropping system / reserved-label event (not dispatchable)"
+        );
+        return false;
+    }
+    // A paused tenant (a `pause` control, workbench backend P2-3b) admits
+    // nothing — checked BEFORE the ledger claim so a held event leaves no
+    // row behind: it is not a run that failed, it is work not yet started.
+    // The event stays in the inbox; the poller re-offers it after `resume`.
+    if governor.is_paused(&trigger.tenant) {
+        // Records the `paused` throttle (the only effect on a paused tenant).
+        let _ = governor.try_admit(&trigger.tenant);
+        tracing::debug!(
+            target: "escurel_runner",
+            via,
+            tenant = %trigger.tenant,
+            event_id = %trigger.event_id,
+            "gate: tenant paused; holding (event stays in inbox)"
         );
         return false;
     }
@@ -991,6 +1026,82 @@ async fn dlq_list(State(state): State<AppState>) -> impl IntoResponse {
 /// "...", "event_id": "..." }`. Clears the dead-letter terminal block so the
 /// originating (still-inbox) event can be re-driven, and re-enqueues a fresh
 /// trigger so the runner picks it up immediately (the poller would too).
+/// Re-enqueue an event whose ledger row was just reset to `pending` (a DLQ
+/// requeue, a `retry` control) so the runner re-drives it now rather than
+/// at the next poll. Over quota, the poller re-drives it instead.
+///
+/// The trigger is rebuilt from the REAL event (re-read by id, through the
+/// lineage trust gate the poller applies) when the gateway can be read:
+/// a bare trigger with no label cannot be packaged (`resolve("[[]]")`
+/// fails), which used to turn every requeue into a `failed` row the
+/// poller then re-claimed — one extra failed run per requeue, and the
+/// answer to "which run did the retry start?" was wrong.
+async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
+    let from_event = match &state.tokens {
+        Some(tokens) => match connect_now(&state.gateway_url, tokens).await {
+            Some(client) => client
+                .list_events(ListEventsRequest {
+                    event_id: Some(event_id.to_owned()),
+                    ..Default::default()
+                })
+                .await
+                .ok()
+                .and_then(|page| page.events.into_iter().next())
+                .map(|event| match tokens.subject() {
+                    Some(subj) => Trigger::from_event_gated(&event, tenant.to_owned(), &subj),
+                    None => Trigger::from_event(&event, tenant.to_owned()),
+                }),
+            None => None,
+        },
+        None => None,
+    };
+    // A requeue is an OPERATOR saying "run this again". Carrying a content
+    // hash would let the content dedup refuse the one request that is
+    // explicitly a re-run.
+    let trigger = match from_event {
+        Some(mut t) => {
+            t.content_hash = None;
+            t
+        }
+        None => Trigger {
+            is_system: false,
+            tenant: tenant.to_owned(),
+            event_id: event_id.to_owned(),
+            label_skill: String::new(),
+            instance_page_id: None,
+            lineage: escurel_runner_core::Lineage::root(event_id.to_owned()),
+            workflow: None,
+            content_hash: None,
+        },
+    };
+    // Evict from the in-memory seen-set FIRST. `enqueue` drops a
+    // trigger whose event_id it has seen, so without this the
+    // requeue below is a no-op for the life of the process — the
+    // ledger says pending, the DLQ says clean, and nothing runs.
+    state.queue.forget(event_id);
+    // The row is already pending; enqueue onto the queue and take a
+    // quota slot so the dispatch loop runs it.
+    match state.governor.try_admit(tenant) {
+        (QuotaDecision::Admit, Some(slot)) => {
+            state
+                .inflight
+                .lock()
+                .expect("inflight slots mutex")
+                .insert(event_id.to_owned(), slot);
+            let _ = state.queue.enqueue(trigger);
+        }
+        _ => {
+            // Over quota right now: the poller will re-drive it.
+        }
+    }
+    tracing::info!(
+        target: "escurel_runner",
+        tenant = %tenant,
+        event_id = %event_id,
+        "requeued run; cleared terminal block"
+    );
+}
+
 async fn dlq_requeue(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<serde_json::Value>,
@@ -1016,48 +1127,7 @@ async fn dlq_requeue(
 
     match requeued {
         Ok((tenant, event_id)) => {
-            // Re-enqueue a fresh trigger directly so the runner re-drives the
-            // event immediately. The ledger row is now `pending` (re-claimed),
-            // so we enqueue onto the dispatch queue under a fresh quota slot.
-            let trigger = Trigger {
-                is_system: false,
-                tenant: tenant.clone(),
-                event_id: event_id.clone(),
-                label_skill: String::new(),
-                instance_page_id: None,
-                lineage: escurel_runner_core::Lineage::root(event_id.clone()),
-                workflow: None,
-                // A requeue is an OPERATOR saying "run this again". Carrying a
-                // content hash here would let the content dedup refuse the one
-                // request that is explicitly a re-run.
-                content_hash: None,
-            };
-            // Evict from the in-memory seen-set FIRST. `enqueue` drops a
-            // trigger whose event_id it has seen, so without this the
-            // requeue below is a no-op for the life of the process — the
-            // ledger says pending, the DLQ says clean, and nothing runs.
-            state.queue.forget(&event_id);
-            // The row is already pending; enqueue onto the queue and take a
-            // quota slot so the dispatch loop runs it.
-            match state.governor.try_admit(&tenant) {
-                (QuotaDecision::Admit, Some(slot)) => {
-                    state
-                        .inflight
-                        .lock()
-                        .expect("inflight slots mutex")
-                        .insert(event_id.clone(), slot);
-                    let _ = state.queue.enqueue(trigger);
-                }
-                _ => {
-                    // Over quota right now: the poller will re-drive it.
-                }
-            }
-            tracing::info!(
-                target: "escurel_runner",
-                tenant = %tenant,
-                event_id = %event_id,
-                "dlq: requeued dead-lettered run; cleared terminal block"
-            );
+            enqueue_requeued(&state, &tenant, &event_id).await;
             (
                 StatusCode::OK,
                 axum::Json(serde_json::json!({
@@ -2077,6 +2147,13 @@ async fn dispatch_loop(
                         reason = "bad_output",
                         "dispatch: unparseable harness output; dead-lettered (event left in inbox)"
                     ),
+                    Some(RunFailure::Cancelled) => tracing::info!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        reason = ?cancel_reason,
+                        "dispatch: run cancelled; recorded cancelled (event left in inbox, no cascade)"
+                    ),
                     _ => {
                         record_run_terminal(&metrics, &trigger.tenant, "failed");
                         tracing::warn!(
@@ -2536,19 +2613,78 @@ async fn poll_loop(
     }
 }
 
+/// A cursor over one label's event log — what the runner's subscribers
+/// read (`escurel:review`, `escurel:run-control`). [`LabelTail::catch_up`]
+/// pages to the END of the label without acting, so a fresh runner never
+/// replays a tenant's history (a stale cancel must not fire after a
+/// restart; a promotion made while no runner listened is not cascaded — a
+/// durable cursor is the follow-up); [`LabelTail::poll`] returns what
+/// arrived since. Best-effort: a failed read is retried next tick.
+struct LabelTail {
+    label: &'static str,
+    cursor: Option<String>,
+}
+
+impl LabelTail {
+    fn new(label: &'static str) -> Self {
+        Self {
+            label,
+            cursor: None,
+        }
+    }
+
+    fn request(&self) -> ListEventsRequest {
+        ListEventsRequest {
+            label_skill: self.label.to_owned(),
+            include_system: true,
+            limit: 1000,
+            cursor: self.cursor.clone().unwrap_or_default(),
+            ..Default::default()
+        }
+    }
+
+    async fn catch_up(&mut self, client: &Client) {
+        loop {
+            match client.list_events(self.request()).await {
+                Ok(page) => {
+                    if let Some(c) = page.resume_cursor {
+                        self.cursor = Some(c);
+                    }
+                    if page.next_cursor.is_none() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(target: "escurel_runner", label = self.label, error = %e, "tail: catch-up failed; starting from here");
+                    return;
+                }
+            }
+        }
+    }
+
+    async fn poll(&mut self, client: &Client) -> Vec<escurel_types::Event> {
+        match client.list_events(self.request()).await {
+            Ok(page) => {
+                if let Some(c) = page.resume_cursor {
+                    self.cursor = Some(c);
+                }
+                page.events
+            }
+            Err(e) => {
+                tracing::warn!(target: "escurel_runner", label = self.label, error = %e, "tail: poll failed; will retry");
+                Vec::new()
+            }
+        }
+    }
+}
+
 /// The promotion tail (workbench backend P2-1). Every `interval` it reads
-/// what arrived under `escurel:review` since the last poll — the label
-/// listing's `resume_cursor` is the tail — and, for each `draft-promoted`,
+/// what arrived under `escurel:review` and, for each `draft-promoted`,
 /// cascades from the promoted page under the drafting run's lineage: the
 /// ledger names the run by the draft's trigger event, the trigger event
 /// itself (re-read by id, through the same lineage trust gate the poller
 /// applies) is the parent, and the cascade id is one per draft, so a
 /// retried decision, a changeset's paired event or a restart cascades once.
-///
-/// On boot it pages to the END of the label without acting: a promotion
-/// that happened while no runner was listening is not cascaded on the next
-/// boot (a durable cursor in the ledger is the follow-up), and a fresh
-/// runner must not replay a tenant's whole review history as cascades.
 /// Best-effort and non-panicking, like the poller: the gateway stays the
 /// record; this only notifies.
 async fn promotion_tail_loop(
@@ -2571,31 +2707,8 @@ async fn promotion_tail_loop(
         return;
     };
     let self_subject = tokens.subject();
-    let tail = |cursor: Option<String>| ListEventsRequest {
-        label_skill: REVIEW_LABEL.to_owned(),
-        include_system: true,
-        limit: 1000,
-        cursor: cursor.unwrap_or_default(),
-        ..Default::default()
-    };
-    // Catch up to the end without acting.
-    let mut cursor: Option<String> = None;
-    loop {
-        match client.list_events(tail(cursor.clone())).await {
-            Ok(page) => {
-                if let Some(c) = page.resume_cursor {
-                    cursor = Some(c);
-                }
-                if page.next_cursor.is_none() {
-                    break;
-                }
-            }
-            Err(e) => {
-                tracing::warn!(target: "escurel_runner", error = %e, "promotion tail: catch-up failed; starting from here");
-                break;
-            }
-        }
-    }
+    let mut tail = LabelTail::new(REVIEW_LABEL);
+    tail.catch_up(&client).await;
     tracing::info!(target: "escurel_runner", tenant = %tenant, "promotion tail started");
 
     let mut ticker = tokio::time::interval(interval);
@@ -2607,18 +2720,8 @@ async fn promotion_tail_loop(
         let Some(client) = connect_now(&gateway_url, &tokens).await else {
             continue;
         };
-        let page = match client.list_events(tail(cursor.clone())).await {
-            Ok(page) => page,
-            Err(e) => {
-                tracing::warn!(target: "escurel_runner", error = %e, "promotion tail: poll failed; will retry");
-                continue;
-            }
-        };
-        if let Some(c) = &page.resume_cursor {
-            cursor = Some(c.clone());
-        }
-        for event in &page.events {
-            let Some(promoted) = promoted_draft(event) else {
+        for event in tail.poll(&client).await {
+            let Some(promoted) = promoted_draft(&event) else {
                 continue;
             };
             // The run that proposed the draft, by its trigger event.
@@ -2698,6 +2801,230 @@ async fn promotion_tail_loop(
                     error = %e,
                     "promotion tail: cascade emit failed (will not retry)"
                 ),
+            }
+        }
+    }
+}
+
+/// The label a control request is captured under, and the one it is
+/// answered under.
+const RUN_CONTROL_LABEL: &str = "escurel:run-control";
+const RUN_CONTROL_RESULT_LABEL: &str = "escurel:run-control-result";
+
+/// What the runner did with a control request.
+struct ControlOutcome {
+    outcome: &'static str,
+    detail: Option<String>,
+    new_run_id: Option<String>,
+}
+
+impl ControlOutcome {
+    fn done(outcome: &'static str) -> Self {
+        Self {
+            outcome,
+            detail: None,
+            new_run_id: None,
+        }
+    }
+    fn refused(detail: impl Into<String>) -> Self {
+        Self {
+            outcome: "refused",
+            detail: Some(detail.into()),
+            new_run_id: None,
+        }
+    }
+}
+
+/// Act on one authorised control request (the gateway already decided who
+/// may ask what — P2-2; this trusts `provenance.control`, which only the
+/// gateway writes).
+async fn act_on_control(
+    state: &AppState,
+    tenant: &str,
+    control: &serde_json::Value,
+) -> ControlOutcome {
+    let text = |k: &str| {
+        control[k]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let Some(action) = text("action") else {
+        return ControlOutcome::refused("no action");
+    };
+    match action.as_str() {
+        "cancel" => {
+            let Some(run_id) = text("run_id") else {
+                return ControlOutcome::refused("cancel names a run_id");
+            };
+            if state.cancels.cancel(&run_id, text("reason").as_deref()) {
+                return ControlOutcome::done("cancelled");
+            }
+            let detail = match state.ledger.find_run(&run_id) {
+                Ok(Some(rec)) => format!("run is {}", rec.status.as_str()),
+                Ok(None) => "unknown run".to_owned(),
+                Err(e) => format!("ledger: {e}"),
+            };
+            ControlOutcome {
+                outcome: "not_live",
+                detail: Some(detail),
+                new_run_id: None,
+            }
+        }
+        "retry" => {
+            let Some(run_id) = text("run_id") else {
+                return ControlOutcome::refused("retry names a run_id");
+            };
+            match state.ledger.retry_run(&run_id) {
+                Ok((run_tenant, event_id)) => {
+                    enqueue_requeued(state, &run_tenant, &event_id).await;
+                    let new_run_id = state
+                        .ledger
+                        .get_run(&run_tenant, &event_id)
+                        .ok()
+                        .flatten()
+                        .map(|r| r.run_id);
+                    ControlOutcome {
+                        outcome: "requeued",
+                        detail: None,
+                        new_run_id,
+                    }
+                }
+                Err(e) => ControlOutcome::refused(format!("not retriable: {e}")),
+            }
+        }
+        "pause" => {
+            state.governor.pause(tenant);
+            ControlOutcome::done("paused")
+        }
+        "resume" => {
+            state.governor.resume(tenant);
+            ControlOutcome::done("resumed")
+        }
+        "requeue" => {
+            let Some(event_id) = text("event_id") else {
+                return ControlOutcome::refused("requeue names an event_id");
+            };
+            match state.ledger.requeue_dead_letter_by_event(tenant, &event_id) {
+                Ok(_) => {
+                    enqueue_requeued(state, tenant, &event_id).await;
+                    let new_run_id = state
+                        .ledger
+                        .get_run(tenant, &event_id)
+                        .ok()
+                        .flatten()
+                        .map(|r| r.run_id);
+                    ControlOutcome {
+                        outcome: "requeued",
+                        detail: None,
+                        new_run_id,
+                    }
+                }
+                Err(e) => ControlOutcome::refused(format!("not dead-lettered: {e}")),
+            }
+        }
+        other => ControlOutcome::refused(format!("unknown action `{other}`")),
+    }
+}
+
+/// The run-control subscriber (workbench backend P2-3b). Every `interval`
+/// it reads what arrived under `escurel:run-control` since the last poll,
+/// acts on each request, and answers it once under
+/// `escurel:run-control-result` — a system event in the run's own record
+/// (`provenance.runner.run_id`), on the page the request was filed on, with
+/// a deterministic id per request so a re-read never answers twice. Like
+/// the promotion tail it catches up to the end of the label on boot
+/// without acting: a stale cancel must not fire after a restart.
+async fn control_tail_loop(
+    state: AppState,
+    gateway_url: String,
+    tenant: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
+    interval: std::time::Duration,
+) {
+    let Some(client) = connect_now(&gateway_url, &tokens).await else {
+        tracing::error!(
+            target: "escurel_runner",
+            "run-control tail could not build a gateway client; controls will not be acted on"
+        );
+        return;
+    };
+    let mut tail = LabelTail::new(RUN_CONTROL_LABEL);
+    tail.catch_up(&client).await;
+    tracing::info!(target: "escurel_runner", tenant = %tenant, "run-control tail started");
+
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        if state.draining.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let Some(client) = connect_now(&gateway_url, &tokens).await else {
+            continue;
+        };
+        for event in tail.poll(&client).await {
+            let control = &event.provenance["control"];
+            if !control.is_object() {
+                continue;
+            }
+            let action = control["action"].as_str().unwrap_or("").to_owned();
+            let result = act_on_control(&state, &tenant, control).await;
+            tracing::info!(
+                target: "escurel_runner",
+                request = %event.event_id,
+                action = %action,
+                outcome = result.outcome,
+                detail = ?result.detail,
+                "run-control: acted"
+            );
+            let run_id = result
+                .new_run_id
+                .clone()
+                .or_else(|| control["run_id"].as_str().map(str::to_owned));
+            let mut body = json!({
+                "action": action,
+                "outcome": result.outcome,
+                "run_id": control["run_id"],
+                "detail": result.detail,
+            });
+            if let Some(n) = &result.new_run_id {
+                body["new_run_id"] = json!(n);
+            }
+            let mut runner = json!({});
+            if let Some(r) = &run_id {
+                runner["run_id"] = json!(r);
+            }
+            if !event.root_event_id.is_empty() {
+                runner["root_event_id"] = json!(event.root_event_id);
+            }
+            let answer = client
+                .capture_event(escurel_client::CaptureEventRequest {
+                    event_id: format!("run-control-result:{}", event.event_id),
+                    source: "escurel-runner".to_owned(),
+                    mime: "application/json".to_owned(),
+                    label_skill: RUN_CONTROL_RESULT_LABEL.to_owned(),
+                    instance_page_id: event.instance_page_id.clone(),
+                    title: action.clone(),
+                    body: body.to_string(),
+                    provenance: json!({
+                        "runner": runner,
+                        "control": {
+                            "request_event_id": event.event_id,
+                            "requested_by": control["requested_by"],
+                            "action": action,
+                        },
+                    }),
+                    kind: "system".to_owned(),
+                    ..Default::default()
+                })
+                .await;
+            if let Err(e) = answer {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    request = %event.event_id,
+                    error = %e,
+                    "run-control: could not write the result (acted anyway)"
+                );
             }
         }
     }

@@ -4,6 +4,20 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.52 — the runner acts on `escurel:run-control` (workbench P2-3b)
+
+- The runner tails `escurel:run-control`, acts on each request — `cancel`,
+  `retry`, `pause`, `resume`, `requeue` — and answers it once under
+  `escurel:run-control-result` (a system event in the run's own record,
+  on the page the request was filed on; `body.outcome` is `cancelled` |
+  `not_live` | `requeued` (+ `new_run_id`) | `paused` | `resumed` |
+  `refused` (+ `detail`)). `pause` holds a tenant at the gate: nothing is
+  claimed, events stay in the inbox until `resume`. `retry` re-drives a
+  `failed` / `cancelled` / `dead_letter` run under a fresh run id.
+- A requeue (DLQ or `retry`) now rebuilds its trigger from the real event;
+  it used to enqueue a bare trigger that failed packaging and left one
+  extra `failed` run per requeue.
+
 ## 0.6.51 — a live run can be cancelled (workbench P2-3a)
 
 - The runner stops a live run on request: the harness subprocess gets

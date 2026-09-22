@@ -251,6 +251,25 @@ The body is JSON `{action, run_id?, event_id?, reason?}`:
 | `pause`, `resume` | — (the caller's tenant) | admin |
 | `requeue` | `event_id` (the dead-lettered event) | admin |
 
+The runner tails the label and answers every request once under
+`escurel:run-control-result` — `kind: system`, on the page the request was
+filed on, in the run's own record (`list_events { run_id }`), with
+`provenance.control.request_event_id` naming the request and
+`body { action, run_id, outcome, detail?, new_run_id? }`:
+
+| action | outcome | meaning |
+|---|---|---|
+| `cancel` | `cancelled` | the run was live and is being stopped (see below) |
+| `cancel` | `not_live` | nothing to stop; `detail` says the run's status (or `unknown run`) |
+| `retry` | `requeued` | a `failed` / `cancelled` / `dead_letter` run is re-driven now as `new_run_id` |
+| `pause` / `resume` | `paused` / `resumed` | the tenant admits nothing / admits again; held events stay in the inbox meanwhile |
+| `requeue` | `requeued` | the dead-lettered event is re-driven as `new_run_id` |
+| any | `refused` | not actionable; `detail` says why (`not dead-lettered: …`, `not retriable: …`) |
+
+The runner catches up to the end of the label on boot without acting, so
+a request filed while no runner was listening is not acted on later (a
+stale cancel must not fire after a restart); file it again.
+
 A denied request and an unknown run both fail with `event_not_found` (no
 existence oracle for runs on pages you may not write). A malformed one —
 no action, an unknown action, `cancel` without a run, a body that is not
