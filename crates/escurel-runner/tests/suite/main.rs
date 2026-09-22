@@ -43,6 +43,7 @@ mod minted_credential;
 mod muse_live;
 mod packager;
 mod per_run_actor_identity;
+mod plan_mode;
 mod promotion_cascades;
 mod quota_throttle;
 mod reconcile_retry;

@@ -4,6 +4,20 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.55 — plan mode and approval (workbench P2-5b)
+
+- A manual start with `mode: plan` runs the harness on a no-write tool
+  surface (the review surface minus every write) with a "plan only"
+  instruction: report the whole plan once via `report_progress` (every
+  step `pending`) and stop. The run ends `planned` — a new terminal:
+  nothing landed, the event stays in the inbox, the poller never re-runs
+  it — and `run-finished { status: "planned", plan }` carries the plan.
+  claude plans natively (`--permission-mode plan`), gemini and echo on the
+  narrowed surface; codex / agy / muse / delegate refuse (`failed`).
+- A manual start with `approved_plan_run_id` gets that run's plan
+  injected at the top of its input ("## Approved plan (run …)") and runs
+  for real. `/debug/ledger` and the runner status gain a `planned` count.
+
 ## 0.6.54 — manual start: `provenance.manual {harness?, mode?}` (workbench P2-5a)
 
 - A human starts a run by hand by capturing an ordinary event with a

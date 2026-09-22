@@ -309,8 +309,19 @@ any page — with a `provenance.manual` block:
   `ESCUREL_RUNNER_HARNESS_ALLOW`; a name outside the list fails the run
   closed (`failed`, retriable) with `run-finished.error` naming the
   harness and the env var — it never runs the default in its place.
-- `mode?` — `run` (the default) or `plan` (P2-5b). Anything else is
-  refused at capture (`-32602`).
+- `mode?` — `run` (the default) or `plan`. Anything else is refused at
+  capture (`-32602`). **Plan mode** runs the harness on a no-write surface
+  (reads + `report_progress`, nothing else) and tells it to report the
+  whole plan once, every step `pending`, and stop. The run ends `planned`
+  — nothing landed, the event stays in the inbox and is not re-run — and
+  `run-finished { status: "planned", plan }` carries the plan (`null` on a
+  static-bearer runner, whose token cannot report). claude plans natively
+  (`--permission-mode plan`); gemini and echo work on the narrowed
+  surface; codex, agy, muse and delegate refuse and the run ends `failed`
+  with `error` saying so.
+- `approved_plan_run_id?` — the plan run a human approved: its plan is
+  injected at the top of the new run's input as `## Approved plan (run …)`
+  followed by the steps, and the run executes on its ordinary surface.
 - `requested_by` — written by the gateway from your token; a value you
   send is replaced.
 

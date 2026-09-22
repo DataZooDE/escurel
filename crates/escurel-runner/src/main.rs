@@ -1210,10 +1210,15 @@ async fn debug_ledger(State(state): State<AppState>) -> impl IntoResponse {
         .ledger
         .count_all_by_status(RunStatus::Cancelled)
         .unwrap_or(0);
+    let planned = state
+        .ledger
+        .count_all_by_status(RunStatus::Planned)
+        .unwrap_or(0);
     axum::Json(serde_json::json!({
         "total": total,
         "terminal": terminal,
         "cancelled": cancelled,
+        "planned": planned,
         "succeeded": succeeded,
         "failed": failed,
         "dead_letter": dead_letter,
@@ -1936,12 +1941,19 @@ async fn dispatch_loop(
         //   a converged cascade hop ends tidily, NOT `failed` (#156/#157);
         // - retries exhausted / bad output → `dead_letter` (#158), terminal;
         // - otherwise (permanent)  → `failed` (retriable; operator may re-drive).
+        // A plan-mode run's clean no-op is `planned`, not `processed`
+        // (workbench backend P2-5b): nothing landed, on purpose.
+        let planned = trigger.manual.as_ref().is_some_and(|m| m.mode == "plan");
         let result = match (&report.confirmed, report.converged_no_op, report.failure) {
             (Some(effect), _, _) => ledger.complete(
                 &run_id,
                 RunStatus::Processed,
                 Some((effect.instance_page_id.as_str(), effect.version.as_str())),
             ),
+            (None, true, _) if planned => {
+                record_run_terminal(&metrics, &trigger.tenant, "planned");
+                ledger.complete(&run_id, RunStatus::Planned, None)
+            }
             (None, true, _) => ledger.complete(&run_id, RunStatus::Processed, None),
             (None, false, Some(RunFailure::RetriesExhausted)) => {
                 record_run_terminal(&metrics, &trigger.tenant, "dead_letter");
@@ -1967,6 +1979,7 @@ async fn dispatch_loop(
                     produced: Some((effect.instance_page_id.clone(), effect.version.clone())),
                     held: effect.held,
                 },
+                (None, true, _) if planned => escurel_runner_core::RunFinish::Planned,
                 (None, true, _) => escurel_runner_core::RunFinish::Processed {
                     produced: None,
                     held: false,
@@ -2324,6 +2337,18 @@ async fn attempt_run(
                     summary = %outcome.summary,
                     "dispatch: harness completed"
                 );
+                // A planning run (P2-5b) reported its plan and stopped: a
+                // clean terminal with nothing to confirm, never a write to
+                // reconcile.
+                if task.plan_mode {
+                    if let Ok(mut s) = sink.lock() {
+                        s.summary = outcome.summary.clone();
+                        s.tool_calls = outcome.tool_calls;
+                    }
+                    return Err(ReconcileError::Converged(
+                        "planned: the harness reported its plan and stopped".to_owned(),
+                    ));
+                }
                 if let Ok(mut s) = sink.lock() {
                     s.summary = outcome.summary.clone();
                     s.tool_calls = outcome.tool_calls;
@@ -3141,6 +3166,7 @@ fn status_snapshot(
             "failed": count(RunStatus::Failed),
             "dead_letter": count(RunStatus::DeadLetter),
             "cancelled": count(RunStatus::Cancelled),
+            "planned": count(RunStatus::Planned),
             "total": state.ledger.count_all_runs().unwrap_or(0),
         },
         "throttled": {

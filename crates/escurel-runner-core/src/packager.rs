@@ -150,6 +150,25 @@ pub const WORKFLOW_STEP_TOOLS: &[&str] = &[
 /// gateway files as `run-progress` events for the humans watching the run.
 /// Present on every autonomy and on workflow steps — it is bookkeeping, not
 /// a write, and a harness that cannot narrow tools (agy) may still call it.
+/// The tool surface of a plan-mode run: the review surface minus every
+/// write — no `create_draft`, no `append_message` — so the harness can
+/// read, think and `report_progress`, and nothing else.
+#[must_use]
+pub fn plan_tools() -> Vec<&'static str> {
+    REVIEW_TOOLS
+        .iter()
+        .copied()
+        .filter(|t| !matches!(*t, "create_draft" | "append_message"))
+        .collect()
+}
+
+/// Appended to the instructions of a plan-mode run.
+pub const PLAN_PARAGRAPH: &str = "\n\n## Plan only\n\n\
+    This is a PLANNING run. Do not write anything: no page, no draft, no message. \
+    Read what you need, then call `report_progress` ONCE with the whole plan you \
+    would follow — every step with status `pending` — and stop. A human reviews \
+    the plan and may start a run that executes it.";
+
 pub const PROGRESS_PARAGRAPH: &str = "\n\n## Report your plan\n\n\
 Before you act, call `report_progress` with your whole plan as a list of \
 `{step, status}` (status: pending | in_progress | completed | blocked). Call \
@@ -232,6 +251,11 @@ pub struct TaskContext {
     /// harness stops its child on it, an in-process one checks it between
     /// turns. `None` = not cancellable (tests, one-off packaging).
     pub cancel: Option<crate::Cancel>,
+    /// Plan mode (workbench backend P2-5b): the harness may only read and
+    /// report a plan — a subprocess adapter that can plan runs planning
+    /// (claude `--permission-mode plan`), the others refuse — and the run
+    /// ends `planned` with nothing landed.
+    pub plan_mode: bool,
     /// Tenant-scoped bearer for the `/mcp` toolset, held opaque.
     ///
     /// For now this reuses the configured `ESCUREL_RUNNER_TOKEN`. The
@@ -361,6 +385,7 @@ impl TaskContext {
         token: SecretString,
     ) -> Self {
         Self {
+            plan_mode: false,
             cancel: None,
             instructions,
             input,
@@ -724,19 +749,42 @@ pub async fn package(
     } else {
         Autonomy::from_frontmatter(&skill.frontmatter)
     };
-    let tools = if trigger.workflow.is_some() {
-        WORKFLOW_STEP_TOOLS
+    // A manual start's mode (workbench backend P2-5b). A workflow step is
+    // never a planning run: the plan is the workflow's.
+    let plan_mode =
+        trigger.workflow.is_none() && trigger.manual.as_ref().is_some_and(|m| m.mode == "plan");
+    let tools: Vec<&'static str> = if trigger.workflow.is_some() {
+        WORKFLOW_STEP_TOOLS.to_vec()
+    } else if plan_mode {
+        plan_tools()
     } else {
-        autonomy.tools()
+        autonomy.tools().to_vec()
     };
 
-    let instructions = build_instructions(
+    let mut instructions = build_instructions(
         trigger,
         &skill.body,
         trigger_event.as_ref(),
         autonomy,
         can_report_progress,
     );
+    if plan_mode {
+        instructions.push_str(PLAN_PARAGRAPH);
+    }
+    // An approval (P2-5b): the plan a human approved rides at the top of the
+    // input, so the harness executes what was reviewed rather than
+    // re-planning.
+    let input = match trigger
+        .manual
+        .as_ref()
+        .and_then(|m| m.approved_plan_run_id.as_deref())
+    {
+        Some(plan_run) => match approved_plan(client, plan_run).await {
+            Some(plan) => format!("{plan}\n\n{input}"),
+            None => input,
+        },
+        None => input,
+    };
 
     // Delegate step (async-ops Phase 4 slice 3c): when this step's effective
     // harness is `delegate`, attach the A2A delegation the DelegateHarness needs
@@ -750,6 +798,7 @@ pub async fn package(
 
     Ok(TaskContext {
         cancel: None,
+        plan_mode,
         instructions,
         input,
         autonomy,
@@ -866,6 +915,38 @@ fn render_provenance(provenance: &serde_json::Value) -> String {
 ///
 /// It is the right split independently of that limit: the system prompt
 /// carries the PROCEDURE, the input carries the DATA.
+/// The plan a plan-mode run reported (its newest `run-progress`), as the
+/// block an approval's input opens with; `None` when the run has none.
+async fn approved_plan(client: &Client, plan_run_id: &str) -> Option<String> {
+    let page = client
+        .list_events(escurel_client::ListEventsRequest {
+            run_id: plan_run_id.to_owned(),
+            include_system: true,
+            ..Default::default()
+        })
+        .await
+        .ok()?;
+    let plan = page
+        .events
+        .iter()
+        .filter(|e| e.title == "run-progress")
+        .next_back()
+        .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.body).ok())
+        .map(|b| b["plan"].clone())?;
+    let steps = plan.as_array()?;
+    if steps.is_empty() {
+        return None;
+    }
+    let mut out = format!("## Approved plan (run {plan_run_id})\n\nFollow these steps:\n");
+    for step in steps {
+        let text = step["step"].as_str().unwrap_or_default();
+        if !text.is_empty() {
+            out.push_str(&format!("- {text}\n"));
+        }
+    }
+    Some(out)
+}
+
 fn build_instructions(
     trigger: &Trigger,
     skill_body: &str,
@@ -1131,6 +1212,25 @@ fn build_input_for_new_instance(trigger: &Trigger, event: Option<&Event>) -> Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plan_mode_tools_carry_no_write_and_can_still_report() {
+        let tools = super::plan_tools();
+        for w in [
+            "update_page",
+            "create_draft",
+            "assign_event",
+            "capture_event",
+            "append_message",
+            "delete_page",
+        ] {
+            assert!(!tools.contains(&w), "{w} must not be on a planning run");
+        }
+        assert!(tools.contains(&"report_progress"));
+        assert!(tools.contains(&"expand"));
+        assert!(super::PLAN_PARAGRAPH.contains("`report_progress`"));
+        assert!(super::PLAN_PARAGRAPH.contains("Do not write"));
+    }
+
     use super::*;
 
     #[test]
@@ -1538,6 +1638,7 @@ mod tests {
     #[test]
     fn debug_redacts_the_token() {
         let ctx = TaskContext {
+            plan_mode: false,
             cancel: None,
             instructions: "i".into(),
             input: "in".into(),
