@@ -231,9 +231,12 @@ async fn list_events_by_root_event_id_returns_the_root_and_its_lineage_oldest_fi
         json!({ "root_event_id": root_id, "include_system": true }),
     )
     .await;
+    // In INGESTION order (hardening H3), not by `at`: the run-started was
+    // captured last with an earlier `at`, and a tail must still see it
+    // after the hop's cursor.
     assert_eq!(
         ids(result(&with_runs)),
-        vec![root_id.clone(), run_ev, hop_id]
+        vec![root_id.clone(), hop_id, run_ev]
     );
     // Exactly one selector.
     let both = call(

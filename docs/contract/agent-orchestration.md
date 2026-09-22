@@ -437,11 +437,8 @@ tail cursor (a promotion made while no runner listened is not replayed on
 the next boot).
 
 **Open follow-ups from the P2 second-opinion review (2026-09-22).**
-(1) The label tails (`escurel:review`, `escurel:run-control`) resume by an
-`(at, event_id)` cursor; the gateway now stamps control requests with its
-own clock, but a same-microsecond tie with a caller-supplied `event_id`
-can still sort before the cursor — the durable fix is a monotonic
-ingestion sequence on `events`, a schema change. (2) Done (H2, 2026-09-22): the tails keep their cursor in the run
+(1) Done (H3, 2026-09-22): `events.seq` is the ingestion position; label,
+lineage and run listings order and resume by it. (2) Done (H2, 2026-09-22): the tails keep their cursor in the run
 ledger and skip requests older than `ESCUREL_RUNNER_TAIL_MAX_AGE`. (3) Gateway-minted runs (`mint_agent_token`) are
 swept for expiry from an in-memory list; a restart forgets them.
 

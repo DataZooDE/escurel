@@ -97,15 +97,29 @@ pub struct EventPage {
 /// stored value exactly or a sub-second row would be replayed. Empty
 /// `at` marks `at_ts IS NULL` (the NULLS LAST block).
 #[derive(Debug)]
-struct EventCursor {
-    at: Option<String>,
-    event_id: String,
+enum EventCursor {
+    /// A page's history / the inbox: `(at_ts, event_id)`, chronological.
+    At {
+        at: Option<String>,
+        event_id: String,
+    },
+    /// A label / lineage / run listing: the ingestion position (hardening
+    /// H3), so a backdated event captured after the cursor still follows it.
+    Seq(i64),
 }
 
+/// The marker that distinguishes a seq cursor from an at cursor inside
+/// the opaque string (an `at` never starts with it).
+const SEQ_CURSOR_TAG: &str = "seq";
+
 impl EventCursor {
-    fn encode(at: Option<&str>, event_id: &str) -> String {
+    fn encode_at(at: Option<&str>, event_id: &str) -> String {
         let raw = format!("{}|{}", at.unwrap_or(""), event_id);
         URL_SAFE_NO_PAD.encode(raw.as_bytes())
+    }
+
+    fn encode_seq(seq: i64) -> String {
+        URL_SAFE_NO_PAD.encode(format!("{SEQ_CURSOR_TAG}|{seq}").as_bytes())
     }
 
     fn decode(raw: &str) -> Result<Self, IndexerError> {
@@ -114,12 +128,18 @@ impl EventCursor {
             .map_err(|e| IndexerError::InvalidCursor(format!("base64: {e}")))?;
         let s = std::str::from_utf8(&bytes)
             .map_err(|e| IndexerError::InvalidCursor(format!("utf-8: {e}")))?;
-        let (at, event_id) = s
+        let (head, tail) = s
             .split_once('|')
             .ok_or_else(|| IndexerError::InvalidCursor("missing separator".to_owned()))?;
-        Ok(EventCursor {
-            at: (!at.is_empty()).then(|| at.to_owned()),
-            event_id: event_id.to_owned(),
+        if head == SEQ_CURSOR_TAG {
+            let seq = tail
+                .parse::<i64>()
+                .map_err(|e| IndexerError::InvalidCursor(format!("seq: {e}")))?;
+            return Ok(EventCursor::Seq(seq));
+        }
+        Ok(EventCursor::At {
+            at: (!head.is_empty()).then(|| head.to_owned()),
+            event_id: tail.to_owned(),
         })
     }
 }
@@ -334,8 +354,9 @@ impl Indexer {
             (None, _) => format!(
                 "INSERT INTO {table} \
                  (event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, \
-                  kind, root_event_id, run_id) \
-                 VALUES (?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?::JSON, ?, ?, ?) \
+                  kind, root_event_id, run_id, seq) \
+                 SELECT ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?::JSON, ?, ?, ?, \
+                        COALESCE((SELECT MAX(seq) FROM {table}), 0) + 1 \
                  ON CONFLICT (event_id) DO NOTHING"
             ),
             // `created_at` is written EXPLICITLY here, unlike the local
@@ -351,15 +372,17 @@ impl Indexer {
             (Some(_), false) => format!(
                 "INSERT INTO {table} \
                  (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, created_at, \
-                  kind, root_event_id, run_id) \
-                 VALUES (?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP::TIMESTAMP, ?, ?, ?) \
+                  kind, root_event_id, run_id, seq) \
+                 SELECT ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP::TIMESTAMP, ?, ?, ?, \
+                        COALESCE((SELECT MAX(seq) FROM {table} WHERE tenant = ?), 0) + 1 \
                  ON CONFLICT (tenant, event_id) DO NOTHING"
             ),
             (Some(_), true) => format!(
                 "INSERT INTO {table} \
                  (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, \
-                  kind, root_event_id, run_id) \
-                 SELECT ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+                  kind, root_event_id, run_id, seq) \
+                 SELECT ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+                        COALESCE((SELECT MAX(seq) FROM {table} WHERE tenant = ?), 0) + 1 \
                  WHERE NOT EXISTS (\
                      SELECT 1 FROM {table} WHERE tenant = ? AND event_id = ?\
                  )"
@@ -405,6 +428,8 @@ impl Indexer {
                         kind,
                         root_event_id,
                         input.run_id,
+                        // `MAX(seq) WHERE tenant = ?` — the next position.
+                        tenant,
                         tenant,
                         event_id,
                     ],
@@ -428,6 +453,8 @@ impl Indexer {
                         kind,
                         root_event_id,
                         input.run_id,
+                        // `MAX(seq) WHERE tenant = ?` — the next position.
+                        tenant,
                     ],
                 )?;
             }
@@ -571,6 +598,13 @@ impl Indexer {
             Some(raw) => Some(EventCursor::decode(raw)?),
             None => None,
         };
+        // A page's history and the inbox are chronological (`at`); a label,
+        // a lineage or a run listing is a TAIL and pages by ingestion
+        // position, so nothing captured after a cursor can sort before it
+        // (hardening H3).
+        let by_seq = filter.label_skill.is_some()
+            || filter.root_event_id.is_some()
+            || filter.run_id.is_some();
         let table = self.events_table();
         let tenant = self.events_tenant_scope().map(str::to_owned);
 
@@ -614,8 +648,18 @@ impl Indexer {
         }
         if let Some(c) = &cursor {
             let cmp = if asc { ">" } else { "<" };
-            match &c.at {
-                Some(at) => {
+            match (by_seq, c) {
+                (true, EventCursor::Seq(seq)) => {
+                    where_clauses.push(format!("seq {cmp} ?"));
+                    bindings.push(Box::new(*seq));
+                }
+                (
+                    false,
+                    EventCursor::At {
+                        at: Some(at),
+                        event_id,
+                    },
+                ) => {
                     where_clauses.push(format!(
                         "((at_ts IS NOT NULL AND at_ts {cmp} TRY_CAST(? AS TIMESTAMP)) \
                          OR (at_ts = TRY_CAST(? AS TIMESTAMP) AND event_id {cmp} ?) \
@@ -623,15 +667,27 @@ impl Indexer {
                     ));
                     bindings.push(Box::new(at.clone()));
                     bindings.push(Box::new(at.clone()));
-                    bindings.push(Box::new(c.event_id.clone()));
+                    bindings.push(Box::new(event_id.clone()));
                 }
-                None => {
+                (false, EventCursor::At { at: None, event_id }) => {
                     where_clauses.push(format!("(at_ts IS NULL AND event_id {cmp} ?)"));
-                    bindings.push(Box::new(c.event_id.clone()));
+                    bindings.push(Box::new(event_id.clone()));
+                }
+                // A cursor of the other flavour: the listing changed shape
+                // under the client (or the client mixed selectors).
+                _ => {
+                    return Err(IndexerError::InvalidCursor(
+                        "cursor was issued by a listing of another kind".to_owned(),
+                    ));
                 }
             }
         }
         let dir = if asc { "ASC" } else { "DESC" };
+        let order = if by_seq {
+            format!("seq {dir} NULLS LAST, event_id {dir}")
+        } else {
+            format!("at_ts {dir} NULLS LAST, event_id {dir}")
+        };
         // select_cols + one extra column: the full-precision `at_ts` the
         // NEXT cursor is built from (index 13; the EventRow reader only
         // touches 0..=12, so it is invisible to the wire projection).
@@ -640,9 +696,9 @@ impl Indexer {
             .strip_suffix(&format!(" FROM {table}"))
             .expect("select_cols ends with FROM <table>");
         let sql = format!(
-            "{projection}, strftime(at_ts, '%Y-%m-%d %H:%M:%S.%f') \
+            "{projection}, strftime(at_ts, '%Y-%m-%d %H:%M:%S.%f'), seq \
              FROM {table} WHERE {} \
-             ORDER BY at_ts {dir} NULLS LAST, event_id {dir} LIMIT {}",
+             ORDER BY {order} LIMIT {}",
             where_clauses.join(" AND "),
             limit + 1,
         );
@@ -653,9 +709,13 @@ impl Indexer {
             .iter()
             .map(|b| b.as_ref() as &dyn duckdb::ToSql)
             .collect();
-        let mut rows: Vec<(EventRow, Option<String>)> = stmt
+        let mut rows: Vec<(EventRow, Option<String>, Option<i64>)> = stmt
             .query_map(param_refs.as_slice(), |row| {
-                Ok((event_row_from_row(row)?, row.get::<_, Option<String>>(13)?))
+                Ok((
+                    event_row_from_row(row)?,
+                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, Option<i64>>(14)?,
+                ))
             })?
             .collect::<duckdb::Result<Vec<_>>>()?;
         drop(stmt);
@@ -663,13 +723,14 @@ impl Indexer {
 
         let more = rows.len() > limit;
         rows.truncate(limit);
-        let resume_cursor = rows
-            .last()
-            .map(|(r, at_full)| EventCursor::encode(at_full.as_deref(), &r.0));
+        let resume_cursor = rows.last().map(|(r, at_full, seq)| match (by_seq, seq) {
+            (true, Some(seq)) => EventCursor::encode_seq(*seq),
+            _ => EventCursor::encode_at(at_full.as_deref(), &r.0),
+        });
         let next_cursor = if more { resume_cursor.clone() } else { None };
         let events = rows
             .into_iter()
-            .map(|(r, _)| event_from_row(r))
+            .map(|(r, _, _)| event_from_row(r))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(EventPage {
             events,

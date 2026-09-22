@@ -128,3 +128,59 @@ async fn runner_status_keeps_only_the_last_fifty_rows() {
     let oldest: Value = serde_json::from_str(rows[49]["body"].as_str().unwrap()).unwrap();
     assert_eq!(oldest["seq"], 5, "the first five were pruned: {oldest}");
 }
+
+/// The tail contract (hardening H3): a listing by label, root or run is in
+/// INGESTION order and resumes by it, so an event captured later with an
+/// earlier `at` (a backdated import, a caller's clock) still arrives after
+/// the cursor a subscriber holds. Before H3 the cursor was `(at, event_id)`
+/// and such an event sorted before it, never to be seen.
+#[tokio::test]
+async fn a_label_tail_never_loses_a_backdated_event() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let cap = |title: &str, at: &str| {
+        let admin = admin.clone();
+        let title = title.to_owned();
+        let at = at.to_owned();
+        let p = &p;
+        async move {
+            call(
+                p,
+                &admin,
+                "capture_event",
+                json!({ "at": at, "source": "t", "mime": "text/plain",
+                    "label_skill": "note", "title": title, "body": "" }),
+            )
+            .await
+        }
+    };
+    cap("first", "2026-09-22T10:00:05Z").await;
+    let page = call(&p, &admin, "list_events", json!({ "label_skill": "note" })).await;
+    assert_eq!(titles(&page), ["first"]);
+    let cursor = page["resume_cursor"]
+        .as_str()
+        .expect("resume cursor")
+        .to_owned();
+    // Captured AFTER the subscriber's poll, dated BEFORE the first event.
+    cap("backdated", "2026-09-22T10:00:01Z").await;
+    let next = call(
+        &p,
+        &admin,
+        "list_events",
+        json!({ "label_skill": "note", "cursor": cursor }),
+    )
+    .await;
+    assert_eq!(titles(&next), ["backdated"], "the tail must see it: {next}");
+    // And a full listing is ingestion order, not `at` order.
+    let all = call(&p, &admin, "list_events", json!({ "label_skill": "note" })).await;
+    assert_eq!(titles(&all), ["first", "backdated"], "{all}");
+    // A page's own history stays chronological by `at`.
+    let hist = call(
+        &p,
+        &admin,
+        "list_events",
+        json!({ "root_event_id": all["events"][0]["event_id"] }),
+    )
+    .await;
+    assert!(!hist["events"].as_array().unwrap().is_empty(), "{hist}");
+}

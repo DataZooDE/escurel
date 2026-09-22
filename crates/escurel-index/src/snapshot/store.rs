@@ -146,6 +146,7 @@ impl IndexStore for SingleFileStore {
         // (presence-checked), so a tenant DB provisioned before them gains
         // them before the first run event is captured.
         Migrator::ensure_events_lineage(&conn)?;
+        Migrator::ensure_events_seq(&conn)?;
         // Held writes awaiting a human: ensure on EVERY boot (idempotent),
         // like the credential registry. Drafts arrived after every deployed
         // tenant was provisioned, so without this a tenant would serve the

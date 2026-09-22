@@ -30,10 +30,14 @@ CREATE TABLE events (
     -- See 0016_events_lineage.sql, which adds these three to an existing file.
     kind              VARCHAR DEFAULT 'user',
     root_event_id     VARCHAR,                         -- lineage root (a user event is its own)
-    run_id            VARCHAR                          -- the run this system event belongs to
+    run_id            VARCHAR,                         -- the run this system event belongs to
+    -- Ingestion position (see 0018_events_seq.sql): label / lineage / run
+    -- listings page by it, so a backdated event still follows a cursor.
+    seq               BIGINT
 );
 
 CREATE INDEX events_status_at   ON events (status, at_ts);
 CREATE INDEX events_instance_at ON events (instance_page_id, at_ts);
 CREATE INDEX events_root_at     ON events (root_event_id, at_ts);
 CREATE INDEX events_run_at      ON events (run_id, at_ts);
+CREATE INDEX events_seq         ON events (seq);
