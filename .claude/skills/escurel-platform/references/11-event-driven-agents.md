@@ -213,7 +213,8 @@ and a lineage tree update live from the bus instead of polling
 | `changeset-already_decided` | a retried decision on a changeset already decided |
 
 `provenance.review` carries `{draft_id, changeset_id, run_id,
-root_event_id, decided_by, already_decided}`. The run lineage comes from
+root_event_id, event_id, decided_by, already_decided}` — `event_id` being
+the draft's trigger event, which is how the runner finds the run. The run lineage comes from
 the draft ROW (what the runner signed into it), never from the caller.
 Best-effort: a decision never fails because the bus could not be told.
 Hidden from the default list surfaces like every system event; pushed to

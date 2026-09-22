@@ -2229,7 +2229,11 @@ pub(super) async fn tool_list_inbox(
         .await
         .map_err(|e| cursor_aware_error("list_inbox", e))?;
     let events = acl_filter_events(indexer, &caller, event_acl, "list_inbox", page.events).await?;
-    Ok(events_page_json(events, page.next_cursor))
+    Ok(events_page_json(
+        events,
+        page.next_cursor,
+        page.resume_cursor,
+    ))
 }
 
 /// An undecodable cursor is the caller's mistake (`invalid_params`),
@@ -2246,10 +2250,18 @@ pub(super) fn cursor_aware_error(tool: &str, e: IndexerError) -> JsonRpcError {
 /// `{events, next_cursor?}` — `next_cursor` is present iff more rows
 /// lie past the page. Its ABSENCE (never a short page — the ACL filter
 /// shortens pages legitimately) is the termination signal.
-fn events_page_json(events: Vec<EventInfo>, next_cursor: Option<String>) -> Value {
+fn events_page_json(
+    events: Vec<EventInfo>,
+    next_cursor: Option<String>,
+    resume_cursor: Option<String>,
+) -> Value {
     let mut out = json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() });
     if let Some(c) = next_cursor {
         out["next_cursor"] = json!(c);
+    }
+    // Where this page ENDED, full or not — a tail's next poll starts here.
+    if let Some(c) = resume_cursor {
+        out["resume_cursor"] = json!(c);
     }
     out
 }
@@ -2282,6 +2294,11 @@ pub(super) struct ListEventsArgs {
     /// Also show `kind: system` rows. Off by default.
     #[serde(default)]
     include_system: bool,
+    /// Alone: every event under this label, any status — a TAIL for the
+    /// runner's subscribers (an `escurel:` label implies `include_system`).
+    /// With another selector: a narrowing filter.
+    #[serde(default)]
+    label_skill: Option<String>,
 }
 
 pub(super) async fn tool_list_events(
@@ -2297,15 +2314,20 @@ pub(super) async fn tool_list_events(
     // to form the query. An event with no match is an empty list, not an
     // error: "not found" is a legitimate answer here, and the caller
     // distinguishes it from "found, still in the inbox".
-    let (events, next_cursor) = if let Some(event_id) = a.event_id.as_deref() {
+    let (events, next_cursor, resume_cursor) = if let Some(event_id) = a.event_id.as_deref() {
         let events = indexer
             .get_event(event_id)
             .await
             .map_err(|e| JsonRpcError::internal(format!("list_events: {e}")))?
             .into_iter()
             .collect::<Vec<_>>();
-        (events, None)
+        (events, None, None)
     } else {
+        let label = a
+            .label_skill
+            .as_deref()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_owned);
         let selectors = [
             !a.instance_page_id.is_empty(),
             a.root_event_id.is_some(),
@@ -2314,13 +2336,18 @@ pub(super) async fn tool_list_events(
         .into_iter()
         .filter(|s| *s)
         .count();
-        if selectors != 1 {
+        if selectors > 1 || (selectors == 0 && label.is_none()) {
             return Err(JsonRpcError::invalid_params(
-                "list_events: exactly one of `instance_page_id`, `root_event_id` or `run_id` \
-                 is required (or `event_id` for a by-id lookup)"
+                "list_events: exactly one of `instance_page_id`, `root_event_id`, `run_id` or \
+                 `label_skill` is required (or `event_id` for a by-id lookup); `label_skill` \
+                 may also narrow the first three"
                     .to_owned(),
             ));
         }
+        // A reserved label IS system bookkeeping: asking for it is asking
+        // for system rows.
+        let include_system =
+            a.include_system || label.as_deref().is_some_and(|l| l.starts_with("escurel:"));
         let kind = match a.kind.as_deref() {
             None | Some("") => None,
             Some(k) => Some(escurel_index::EventKind::parse(k).ok_or_else(|| {
@@ -2329,13 +2356,13 @@ pub(super) async fn tool_list_events(
                 ))
             })?),
         };
-        let filter = if !a.instance_page_id.is_empty() {
+        let mut filter = if !a.instance_page_id.is_empty() {
             // A page's history: assigned events only, as ever.
             escurel_index::EventListFilter {
                 instance_page_id: Some(a.instance_page_id.clone()),
                 status: Some("processed".to_owned()),
                 kind,
-                include_system: a.include_system,
+                include_system,
                 ..Default::default()
             }
         } else if let Some(root) = a.root_event_id.clone() {
@@ -2344,10 +2371,10 @@ pub(super) async fn tool_list_events(
             escurel_index::EventListFilter {
                 root_event_id: Some(root),
                 kind,
-                include_system: a.include_system,
+                include_system,
                 ..Default::default()
             }
-        } else {
+        } else if a.run_id.is_some() {
             // A run has only system events; asking for one is asking for them.
             escurel_index::EventListFilter {
                 run_id: a.run_id.clone(),
@@ -2355,7 +2382,15 @@ pub(super) async fn tool_list_events(
                 include_system: true,
                 ..Default::default()
             }
+        } else {
+            // A label alone: every event under it, any status — the tail.
+            escurel_index::EventListFilter {
+                kind,
+                include_system,
+                ..Default::default()
+            }
         };
+        filter.label_skill = label;
         let page = indexer
             .list_events_filtered_page(
                 &filter,
@@ -2365,7 +2400,7 @@ pub(super) async fn tool_list_events(
             )
             .await
             .map_err(|e| cursor_aware_error("list_events", e))?;
-        (page.events, page.next_cursor)
+        (page.events, page.next_cursor, page.resume_cursor)
     };
     // Both branches are filtered: the by-event lookup is a direct read of
     // one row and must not be a way around the instance-scoped listing.
@@ -2373,7 +2408,7 @@ pub(super) async fn tool_list_events(
     // event that does not exist, which is what this surface already
     // returns for a miss, so no existence is disclosed here either.
     let events = acl_filter_events(indexer, &caller, event_acl, "list_events", events).await?;
-    Ok(events_page_json(events, next_cursor))
+    Ok(events_page_json(events, next_cursor, resume_cursor))
 }
 
 #[derive(Deserialize)]

@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.48 — `list_events` tails a label; review events name the trigger (workbench P2-0)
+
+- `list_events { label_skill }` alone lists every event under that label,
+  any status (an `escurel:` label implies `include_system`); with another
+  selector it narrows. Every `list_inbox` / `list_events` page now carries
+  `resume_cursor` — the cursor of its LAST row, full or not — so a poller
+  tails a label: pass it back as `cursor` and the next page is exactly what
+  arrived since. `next_cursor` keeps its meaning (more rows already exist).
+- `provenance.review.event_id` (and `body.event_id`) = the draft's trigger
+  event on every review event.
+- CLI: `event list --label <skill>`.
+
 ## 0.6.47 — lineage resume by position; malformed re-subscribe clears the old one
 
 - A lineage-scoped `since_event_id` resumes by log POSITION (everything

@@ -240,6 +240,10 @@ pub enum EventCmd {
         /// A run id: that run's own (system) events.
         #[arg(long)]
         run: Option<String>,
+        /// A label: alone, every event under it (a tail); with another
+        /// selector, a narrowing filter.
+        #[arg(long)]
+        label: Option<String>,
         /// Narrow to `user` or `system` rows.
         #[arg(long)]
         kind: Option<String>,
@@ -1014,18 +1018,22 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
             instance,
             root_event,
             run,
+            label,
             kind,
             include_system,
             limit,
         } => {
-            if instance.is_none() && root_event.is_none() && run.is_none() {
-                anyhow::bail!("event list: one of --instance, --root-event or --run is required");
+            if instance.is_none() && root_event.is_none() && run.is_none() && label.is_none() {
+                anyhow::bail!(
+                    "event list: one of --instance, --root-event, --run or --label is required"
+                );
             }
             let resp = client
                 .list_events(ListEventsRequest {
                     instance_page_id: instance.unwrap_or_default(),
                     root_event_id: root_event.unwrap_or_default(),
                     run_id: run.unwrap_or_default(),
+                    label_skill: label.unwrap_or_default(),
                     kind: kind.unwrap_or_default(),
                     include_system,
                     limit,

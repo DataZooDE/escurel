@@ -251,6 +251,19 @@ fn event_provenance_is_value() {
 }
 
 #[test]
+fn list_events_label_selector_and_resume_cursor() {
+    let req: ListEventsRequest =
+        serde_json::from_value(json!({ "label_skill": "escurel:review" })).unwrap();
+    assert_eq!(req.label_skill, "escurel:review");
+    let page: ListEventsResponse =
+        serde_json::from_value(json!({ "events": [], "resume_cursor": "r" })).unwrap();
+    assert_eq!(page.resume_cursor.as_deref(), Some("r"));
+    assert!(page.next_cursor.is_none());
+    let inbox: ListInboxResponse = serde_json::from_value(json!({ "events": [] })).unwrap();
+    assert!(inbox.resume_cursor.is_none());
+}
+
+#[test]
 fn list_lineage_nodes_carry_id_type_parent_state_and_the_rest() {
     // tool_list_lineage: {root_event_id, nodes:[{id, type, parent, state, …}], next_cursor?}.
     let resp: ListLineageResponse = serde_json::from_value(json!({
@@ -632,6 +645,7 @@ fn roundtrip_events() {
     });
     rt(ListInboxResponse {
         next_cursor: None,
+        resume_cursor: None,
         events: vec![Event::default()],
     });
     rt(AssignEventResponse {
