@@ -21,6 +21,13 @@ const SKILL: &str =
     "---\ntype: skill\nid: renewal\nautonomy: review\nvisibility: public\n---\n# renewal\n";
 const PAGE_BODY: &str = "---\ntype: instance\nid: c1\nskill: renewal\n---\n# C1\n\nBASELINE.\n";
 const PAGE: &str = "markdown/instances/renewal/c1.md";
+/// An owner-private skill whose one instance is OWNED BY the agent
+/// principal a member could mint (`agent:renewal`). The workbench token
+/// must not confer that ownership on the human who minted it.
+const VAULT_SKILL: &str =
+    "---\ntype: skill\nid: vault\nvisibility: owner\nowner_field: credential\n---\n# vault\n";
+const VAULT_PAGE_BODY: &str = "---\ntype: instance\nid: v1\nskill: vault\ncredential: \"agent:renewal\"\n---\n# v1\n\nSECRET-OF-THE-AGENT\n";
+const VAULT_PAGE: &str = "markdown/instances/vault/v1.md";
 
 async fn start(signing: bool) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
@@ -34,7 +41,9 @@ async fn start(signing: bool) -> EscurelProcess {
             FixtureBuilder::new()
                 .tenant(TENANT)
                 .skill("renewal", SKILL)
+                .skill("vault", VAULT_SKILL)
                 .instance("renewal", "c1", PAGE_BODY)
+                .instance("vault", "v1", VAULT_PAGE_BODY)
                 .done(),
         ),
     })
@@ -147,6 +156,16 @@ async fn a_minted_token_names_the_agent_keeps_the_human_and_carries_the_run() {
     )
     .await;
     assert_eq!(pr["run_id"], run_id, "{pr}");
+
+    // The token carries alice's authority, not the agent principal's: a page
+    // owned by `agent:renewal` stays hidden from her minted token (codex
+    // second-opinion review of P2, P1: the ACL subject is the human).
+    let peek = rpc(&p, &token, "expand", json!({ "page_id": VAULT_PAGE })).await;
+    assert!(!peek.to_string().contains("SECRET-OF-THE-AGENT"), "{peek}");
+    assert!(
+        peek["result"]["structuredContent"]["page"].is_null() || peek.get("error").is_some(),
+        "{peek}"
+    );
 
     // The run exists as a run: started at mint, on the target page, by alice.
     let own = call(&p, &admin, "list_events", json!({ "run_id": run_id })).await;

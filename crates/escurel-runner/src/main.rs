@@ -1058,32 +1058,58 @@ async fn dlq_list(State(state): State<AppState>) -> impl IntoResponse {
 /// poller then re-claimed — one extra failed run per requeue, and the
 /// answer to "which run did the retry start?" was wrong.
 async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
-    let from_event = match &state.tokens {
-        Some(tokens) => match connect_now(&state.gateway_url, tokens).await {
-            Some(client) => client
+    // The row is pending under a fresh run id. If anything below fails to
+    // queue it, put it back to retriable `failed` so the poller re-drives
+    // it: a `pending` row with nothing queued is dropped as in-flight by
+    // every later poll and wedges forever (codex second-opinion review of
+    // P2, P1).
+    let park = |why: &str| {
+        if let Ok(Some(rec)) = state.ledger.get_run(tenant, event_id) {
+            let _ = state
+                .ledger
+                .mark(&escurel_runner_core::RunId(rec.run_id), RunStatus::Failed);
+        }
+        tracing::info!(
+            target: "escurel_runner",
+            tenant = %tenant,
+            event_id = %event_id,
+            why,
+            "requeue: not queued now; left retriable for the poller"
+        );
+    };
+    let trigger = match &state.tokens {
+        Some(tokens) => {
+            // With credentials the trigger is rebuilt from the REAL event
+            // (a bare one cannot be packaged); a read that fails leaves the
+            // row for the poller rather than queueing something that would
+            // fail at once.
+            let Some(client) = connect_now(&state.gateway_url, tokens).await else {
+                park("gateway unreachable");
+                return;
+            };
+            let event = client
                 .list_events(ListEventsRequest {
                     event_id: Some(event_id.to_owned()),
                     ..Default::default()
                 })
                 .await
                 .ok()
-                .and_then(|page| page.events.into_iter().next())
-                .map(|event| match tokens.subject() {
-                    Some(subj) => Trigger::from_event_gated(&event, tenant.to_owned(), &subj),
-                    None => Trigger::from_event(&event, tenant.to_owned()),
-                }),
-            None => None,
-        },
-        None => None,
-    };
-    // A requeue is an OPERATOR saying "run this again". Carrying a content
-    // hash would let the content dedup refuse the one request that is
-    // explicitly a re-run.
-    let trigger = match from_event {
-        Some(mut t) => {
+                .and_then(|page| page.events.into_iter().next());
+            let Some(event) = event else {
+                park("event unreadable");
+                return;
+            };
+            let mut t = match tokens.subject() {
+                Some(subj) => Trigger::from_event_gated(&event, tenant.to_owned(), &subj),
+                None => Trigger::from_event(&event, tenant.to_owned()),
+            };
+            // A requeue is an OPERATOR saying "run this again". Carrying a
+            // content hash would let the content dedup refuse the one
+            // request that is explicitly a re-run.
             t.content_hash = None;
             t
         }
+        // The credential-less dev path keeps the bare trigger it always had.
         None => Trigger {
             manual: None,
             is_system: false,
@@ -1101,8 +1127,6 @@ async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
     // requeue below is a no-op for the life of the process — the
     // ledger says pending, the DLQ says clean, and nothing runs.
     state.queue.forget(event_id);
-    // The row is already pending; enqueue onto the queue and take a
-    // quota slot so the dispatch loop runs it.
     match state.governor.try_admit(tenant) {
         (QuotaDecision::Admit, Some(slot)) => {
             state
@@ -1110,10 +1134,22 @@ async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
                 .lock()
                 .expect("inflight slots mutex")
                 .insert(event_id.to_owned(), slot);
-            let _ = state.queue.enqueue(trigger);
+            if !matches!(
+                state.queue.enqueue(trigger),
+                escurel_runner_core::EnqueueOutcome::Enqueued
+            ) {
+                state
+                    .inflight
+                    .lock()
+                    .expect("inflight slots mutex")
+                    .remove(event_id);
+                park("queue full");
+                return;
+            }
         }
         _ => {
-            // Over quota right now: the poller will re-drive it.
+            park("over quota");
+            return;
         }
     }
     tracing::info!(
@@ -1773,6 +1809,7 @@ async fn dispatch_loop(
                     .lock()
                     .expect("inflight slots mutex")
                     .remove(&trigger.event_id);
+                cancels.finish(run_id.as_str());
                 continue;
             }
             match drive_workflow(
@@ -1837,6 +1874,7 @@ async fn dispatch_loop(
                 .lock()
                 .expect("inflight slots mutex")
                 .remove(&trigger.event_id);
+            cancels.finish(run_id.as_str());
             continue;
         }
 
@@ -2738,6 +2776,11 @@ async fn poll_loop(
 struct LabelTail {
     label: &'static str,
     cursor: Option<String>,
+    /// Set once the boot catch-up reached the END of the label. Until it
+    /// does, `poll` keeps catching up and acts on nothing — a transient
+    /// gateway error at boot must not turn history into fresh requests
+    /// (codex second-opinion review of P2, P1).
+    caught_up: bool,
 }
 
 impl LabelTail {
@@ -2745,6 +2788,7 @@ impl LabelTail {
         Self {
             label,
             cursor: None,
+            caught_up: false,
         }
     }
 
@@ -2766,11 +2810,12 @@ impl LabelTail {
                         self.cursor = Some(c);
                     }
                     if page.next_cursor.is_none() {
+                        self.caught_up = true;
                         return;
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(target: "escurel_runner", label = self.label, error = %e, "tail: catch-up failed; starting from here");
+                    tracing::warn!(target: "escurel_runner", label = self.label, error = %e, "tail: catch-up failed; will retry before acting");
                     return;
                 }
             }
@@ -2778,6 +2823,11 @@ impl LabelTail {
     }
 
     async fn poll(&mut self, client: &Client) -> Vec<escurel_types::Event> {
+        if !self.caught_up {
+            self.catch_up(client).await;
+            // Whatever was read while catching up is history, not requests.
+            return Vec::new();
+        }
         match client.list_events(self.request()).await {
             Ok(page) => {
                 if let Some(c) = page.resume_cursor {

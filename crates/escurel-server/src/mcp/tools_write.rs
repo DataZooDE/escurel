@@ -1614,6 +1614,10 @@ pub(super) async fn tool_capture_event(
             .await?;
         a.kind = Some("system".to_owned());
         a.instance_page_id = c.instance_page_id.clone();
+        // The runner tails this label by `(at, event_id)`: a request
+        // backdated by its caller would sort before the tail's cursor and
+        // never be acted on. Control requests are timestamped here.
+        a.at = Some(escurel_index::now_rfc3339_micros());
         let mut prov = match a.provenance.take() {
             Some(Value::Object(m)) => Value::Object(m),
             _ => json!({}),

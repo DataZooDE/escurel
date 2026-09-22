@@ -177,7 +177,9 @@ pub enum AuthError {
 /// audit lineage only — never for an authorization decision (#510).
 const ACT_CLAIM: &str = "act";
 
-use crate::signer::{DELEGATION_PURPOSE, PURPOSE_CLAIM as DELEGATION_PURPOSE_CLAIM};
+use crate::signer::{
+    DELEGATION_PURPOSE, PURPOSE_CLAIM as DELEGATION_PURPOSE_CLAIM, WORKBENCH_AGENT_PURPOSE,
+};
 
 /// The run-identity claims a runner mints onto a per-run token (workbench
 /// backend P1). Kept in lock-step with
@@ -396,8 +398,26 @@ impl OidcVerifier {
             trace_id: claim_str(TRACE_ID_CLAIM),
         });
 
+        // A gateway-minted WORKBENCH agent token (P2-6) names the agent as
+        // `sub` and the human as `act.sub`, but its authority is the human's:
+        // the ACL resolves ownership and directory groups from the subject,
+        // so the subject must be the human — otherwise a member could mint
+        // `agent:<x>` and inherit whatever that principal owns (codex
+        // second-opinion review of P2). The agent stays visible as the actor
+        // for attribution. A runner-minted per-run token is not touched: its
+        // authority IS the agent's (admin), by design.
+        let workbench = claims
+            .rest
+            .get(DELEGATION_PURPOSE_CLAIM)
+            .and_then(serde_json::Value::as_str)
+            == Some(WORKBENCH_AGENT_PURPOSE);
+        let (subject, actor) = match (workbench, actor) {
+            (true, Some(human)) => (human, Some(claims.sub)),
+            (_, actor) => (claims.sub, actor),
+        };
+
         Ok(AuthContext {
-            subject: claims.sub,
+            subject,
             tenant_id,
             role,
             groups,
