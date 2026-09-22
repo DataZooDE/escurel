@@ -52,6 +52,10 @@ pub struct Metrics {
     runner_queue_depth: IntGauge,
     /// `escurel_runner_cascade_depth_max` — deepest cascade hop seen.
     runner_cascade_depth_max: IntGauge,
+    /// `escurel_runner_run_events_failed_total{kind}` — run lifecycle
+    /// events the gateway refused (best-effort projection; the run itself
+    /// is unaffected).
+    runner_run_events_failed: IntCounterVec,
 }
 
 impl Metrics {
@@ -139,6 +143,15 @@ impl Metrics {
         )
         .expect("valid counter opts");
 
+        let runner_run_events_failed = IntCounterVec::new(
+            Opts::new(
+                "escurel_runner_run_events_failed_total",
+                "Run lifecycle events (run-started/attempt/finished) the gateway refused.",
+            ),
+            &["kind"],
+        )
+        .expect("valid counter opts");
+
         let runner_throttled = IntCounterVec::new(
             Opts::new(
                 "escurel_runner_throttled_total",
@@ -191,6 +204,9 @@ impl Metrics {
             .register(Box::new(runner_throttled.clone()))
             .expect("register escurel_runner_throttled_total");
         registry
+            .register(Box::new(runner_run_events_failed.clone()))
+            .expect("register escurel_runner_run_events_failed_total");
+        registry
             .register(Box::new(runner_queue_depth.clone()))
             .expect("register escurel_runner_queue_depth");
         registry
@@ -209,6 +225,7 @@ impl Metrics {
             runner_runs,
             writes,
             runner_throttled,
+            runner_run_events_failed,
             runner_queue_depth,
             runner_cascade_depth_max,
         }
@@ -283,6 +300,14 @@ impl Metrics {
 
     pub fn inc_runner_run(&self, tenant: &str, status: &str) {
         self.runner_runs.with_label_values(&[tenant, status]).inc();
+    }
+
+    /// Record one run lifecycle event the gateway refused, by `kind`
+    /// (`started` / `attempt` / `finished`).
+    pub fn inc_runner_run_event_failed(&self, kind: &str) {
+        self.runner_run_events_failed
+            .with_label_values(&[kind])
+            .inc();
     }
 
     /// Record one quota throttle, by `reason` (`runs_per_min` /

@@ -43,6 +43,7 @@ mod per_run_actor_identity;
 mod quota_throttle;
 mod reconcile_retry;
 mod review_no_op;
+mod run_events;
 mod run_ledger;
 mod sigterm_drain;
 mod system_events_not_dispatched;

@@ -1249,6 +1249,7 @@ mod tests {
             lineage_path: vec!["R0".into(), "R0-HOP1".into()],
             instance_path: vec![],
             trace_id: None,
+            parent_run_id: None,
         };
         let other = trigger("R9");
         let _ = ledger.begin_run(&hop0).expect("hop0");

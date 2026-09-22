@@ -381,6 +381,7 @@ mod tests {
                 lineage_path: vec!["ROOT0".into(), "HOP1".into()],
                 instance_path: vec!["markdown/instances/meeting/m1.md".into()],
                 trace_id: None,
+                parent_run_id: None,
             },
         );
         let runner = build_runner_provenance(&parent, "run-9", &effect())["runner"].clone();

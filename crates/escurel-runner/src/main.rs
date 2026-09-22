@@ -726,6 +726,28 @@ fn record_run_terminal(metrics: &Metrics, tenant: &str, status: &str) {
     metrics.inc_runner_run(tenant, status);
 }
 
+/// What the last attempt's harness reported, for `run-finished`.
+#[derive(Debug, Default, Clone)]
+struct AttemptSink {
+    summary: String,
+    tool_calls: u32,
+    autonomy: Option<&'static str>,
+}
+
+/// Log + count a refused run lifecycle event. The projection is
+/// best-effort by contract: the ledger decided, the event only describes.
+fn record_run_event(metrics: &Metrics, kind: &str, result: Result<(), escurel_client::Error>) {
+    if let Err(e) = result {
+        metrics.inc_runner_run_event_failed(kind);
+        tracing::warn!(
+            target: "escurel_runner",
+            kind,
+            error = %e,
+            "run event refused by the gateway (best-effort); run unaffected"
+        );
+    }
+}
+
 /// Resolve the authoritative tenant for an inbound `POST /trigger` (async-ops
 /// Phase 1). The runner is single-tenant by deployment, so its own configured
 /// tenant is authoritative and the request body can never *name* a tenant — it
@@ -1621,6 +1643,31 @@ async fn dispatch_loop(
         // runner's configured one answers for everything else. Outside the
         // retry closure because a retry is the same step, not a new choice.
         let step_harness = resolve_harness(&config, &harness, &trigger);
+        // The run's lifecycle as `escurel:run` events (workbench backend
+        // P1): a projection of the ledger for the humans watching the run,
+        // best-effort — a refusal is logged and counted, never acted on.
+        let run_ctx = escurel_runner_core::RunEventCtx {
+            run_id: run_id.0.clone(),
+            root_event_id: trigger.lineage.root_event_id.clone(),
+            trigger_event_id: trigger.event_id.clone(),
+            parent_run_id: trigger.lineage.parent_run_id.clone(),
+            depth: trigger.lineage.depth,
+            lineage_path: trigger.lineage.lineage_path.clone(),
+            trace_id: Some(trace_id.clone()),
+            harness: step_harness.name().to_owned(),
+            model: None,
+            max_attempts: config.max_attempts,
+            target_page_id: trigger.instance_page_id.clone(),
+        };
+        let emit_events = config.emit_run_events;
+        if emit_events {
+            record_run_event(&metrics, "started", run_ctx.emit_started(&client).await);
+        }
+        // What the last attempt reported — the harness summary, its tool-call
+        // count and the packaged autonomy — for `run-finished`.
+        let attempt_sink = std::sync::Mutex::new(AttemptSink::default());
+        let (client_ref, ctx_ref, metrics_ref, sink_ref) =
+            (&client, &run_ctx, &metrics, &attempt_sink);
         let report = run_with_retry(&config, |attempt| {
             // BOUNDED. The gateway client times out one request at 60s, but a
             // run is not one request — a dozen model turns, each with tool
@@ -1643,16 +1690,41 @@ async fn dispatch_loop(
                 step_harness.as_ref(),
                 attempt,
                 Some(&run_claims),
+                sink_ref,
             );
             let bound = config.run_timeout;
             async move {
-                match tokio::time::timeout(bound, fut).await {
+                let started_at = escurel_runner_core::now_ts();
+                let result = match tokio::time::timeout(bound, fut).await {
                     Ok(result) => result,
                     Err(_) => Err(ReconcileError::Transient(format!(
                         "run attempt exceeded {}s and was abandoned",
                         bound.as_secs()
                     ))),
+                };
+                if emit_events {
+                    let (outcome, error) = match &result {
+                        Ok(_) => ("ok", None),
+                        Err(ReconcileError::Converged(r)) => ("converged", Some(r.clone())),
+                        Err(e) if e.to_string().contains("abandoned") => {
+                            ("timeout", Some(e.to_string()))
+                        }
+                        Err(e) => ("failed", Some(e.to_string())),
+                    };
+                    let report = escurel_runner_core::AttemptReport {
+                        attempt,
+                        started_at,
+                        ended_at: escurel_runner_core::now_ts(),
+                        outcome,
+                        error,
+                    };
+                    record_run_event(
+                        metrics_ref,
+                        "attempt",
+                        ctx_ref.emit_attempt(client_ref, &report).await,
+                    );
                 }
+                result
             }
         })
         .await;
@@ -1680,6 +1752,46 @@ async fn dispatch_loop(
             }
             (None, false, _) => ledger.complete(&run_id, RunStatus::Failed, None),
         };
+        if emit_events {
+            let finish = match (&report.confirmed, report.converged_no_op, report.failure) {
+                (Some(effect), _, _) => escurel_runner_core::RunFinish::Processed {
+                    produced: Some((effect.instance_page_id.clone(), effect.version.clone())),
+                    held: effect.held,
+                },
+                (None, true, _) => escurel_runner_core::RunFinish::Processed {
+                    produced: None,
+                    held: false,
+                },
+                (None, false, Some(RunFailure::RetriesExhausted)) => {
+                    escurel_runner_core::RunFinish::DeadLetter {
+                        reason: "retries_exhausted".to_owned(),
+                    }
+                }
+                (None, false, Some(RunFailure::BadOutput)) => {
+                    escurel_runner_core::RunFinish::DeadLetter {
+                        reason: "bad_output".to_owned(),
+                    }
+                }
+                (None, false, _) => escurel_runner_core::RunFinish::Failed {
+                    reason: "permanent".to_owned(),
+                },
+            };
+            let sink = attempt_sink.lock().map(|s| s.clone()).unwrap_or_default();
+            record_run_event(
+                &metrics,
+                "finished",
+                run_ctx
+                    .emit_finished(
+                        &client,
+                        report.attempts,
+                        &finish,
+                        &sink.summary,
+                        sink.tool_calls,
+                        sink.autonomy,
+                    )
+                    .await,
+            );
+        }
         if report.confirmed.is_none() && report.converged_no_op {
             record_run_terminal(&metrics, &trigger.tenant, "converged");
             tracing::info!(
@@ -1926,6 +2038,9 @@ fn mint_trace_id() -> String {
 ///   it could not do the work);
 /// - read-back not yet converged → **transient** (the idempotent
 ///   `assign_event`/`update_page` re-run can finish a partial success).
+// Eight inputs describe one attempt of one run (its identity, its harness,
+// where to report what it did); bundling them would only move the count.
+#[allow(clippy::too_many_arguments)]
 async fn attempt_run(
     trigger: &Trigger,
     client: &Client,
@@ -1934,6 +2049,7 @@ async fn attempt_run(
     harness: &dyn Harness,
     attempt: u32,
     run: Option<&escurel_runner_core::RunClaims>,
+    sink: &std::sync::Mutex<AttemptSink>,
 ) -> Result<ConfirmedEffect, ReconcileError> {
     let task: TaskContext = package(trigger, client, config, Some(tokens), run)
         .await
@@ -1973,6 +2089,14 @@ async fn attempt_run(
                     summary = %outcome.summary,
                     "dispatch: harness completed"
                 );
+                if let Ok(mut s) = sink.lock() {
+                    s.summary = outcome.summary.clone();
+                    s.tool_calls = outcome.tool_calls;
+                    s.autonomy = Some(match task.autonomy {
+                        Autonomy::Auto => "auto",
+                        Autonomy::Review => "review",
+                    });
+                }
                 // A self-reported FAILURE is not evidence either.
                 //
                 // This used to return here, before the read-back — which

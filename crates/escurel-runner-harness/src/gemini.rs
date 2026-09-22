@@ -337,10 +337,15 @@ impl GeminiHarness {
                 // call anyway; refusing it before the wire keeps the scoped
                 // token off a call the packager never allowed.
                 if !task.allowed_tools.contains(&name) {
+                    // Name what IS available: a model that only hears "not
+                    // allowed" retries the same name until its turns run out.
                     responses.push(json!({
                         "functionResponse": {
                             "name": name,
-                            "response": { "error": "tool not allowed for this run" },
+                            "response": { "error": format!(
+                                "tool `{name}` is not available for this run; call one of: {}",
+                                task.allowed_tools.join(", ")
+                            ) },
                         }
                     }));
                     continue;

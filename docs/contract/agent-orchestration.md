@@ -297,9 +297,15 @@ Almost everything is runner-only. The one gateway change needed:
   extending the contract" rule (see
   [`../adr/0003-capture-webhook-hmac-auth.md`](../adr/0003-capture-webhook-hmac-auth.md)).
 
-Deferred / not recommended: promoting lineage fields to indexed `events`
-columns (start with `provenance`); a gateway change-feed for `update_page`
-commits (more automation surface — keep the cascade bridge in the runner).
+Since promoted (workbench backend P1, 2026-09-22): `root_event_id` and
+`run_id` are indexed `events` columns the gateway fills from
+`provenance.runner` at capture, and every event carries `kind: user |
+system`; the runner writes each run's lifecycle back as `escurel:run`
+system events (`run-started` / `run-attempt` / `run-finished`, a
+best-effort projection of the ledger — see the consumer skill's
+`11-event-driven-agents.md`). Still deferred: a gateway change-feed for
+`update_page` commits (more automation surface — keep the cascade bridge
+in the runner).
 
 The gateway stays automation-free: it still only *notifies*; the runner
 still owns every decision to *act*.
