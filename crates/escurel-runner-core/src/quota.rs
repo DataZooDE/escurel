@@ -43,6 +43,9 @@ pub enum ThrottleReason {
     RunsPerMin,
     /// The tenant already has its maximum concurrent runs in flight.
     MaxConcurrent,
+    /// The tenant is paused by a `pause` control (workbench backend P2-3b):
+    /// nothing is admitted until `resume`; the events stay in the inbox.
+    Paused,
 }
 
 impl ThrottleReason {
@@ -51,6 +54,7 @@ impl ThrottleReason {
         match self {
             ThrottleReason::RunsPerMin => "runs_per_min",
             ThrottleReason::MaxConcurrent => "max_concurrent",
+            ThrottleReason::Paused => "paused",
         }
     }
 }
@@ -107,6 +111,9 @@ pub struct Governor {
     harness_sem: Arc<Semaphore>,
     throttled_runs_per_min: Arc<AtomicU64>,
     throttled_max_concurrent: Arc<AtomicU64>,
+    throttled_paused: Arc<AtomicU64>,
+    /// Tenants a `pause` control has stopped admission for.
+    paused: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 /// A held run slot. Decrements the tenant's in-flight count on drop, so a
@@ -141,7 +148,49 @@ impl Governor {
             harness_sem: Arc::new(Semaphore::new(limits.max_harness_procs.max(1))),
             throttled_runs_per_min: Arc::new(AtomicU64::new(0)),
             throttled_max_concurrent: Arc::new(AtomicU64::new(0)),
+            throttled_paused: Arc::new(AtomicU64::new(0)),
+            paused: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
+    }
+
+    /// Stop admitting runs for `tenant` until [`Self::resume`]. In-flight
+    /// runs finish; new triggers are throttled (`paused`) and stay in the
+    /// inbox for the poller. Returns `false` if it was already paused.
+    pub fn pause(&self, tenant: &str) -> bool {
+        self.paused
+            .lock()
+            .expect("governor pause mutex")
+            .insert(tenant.to_owned())
+    }
+
+    /// Admit runs for `tenant` again. Returns `false` if it was not paused.
+    pub fn resume(&self, tenant: &str) -> bool {
+        self.paused
+            .lock()
+            .expect("governor pause mutex")
+            .remove(tenant)
+    }
+
+    #[must_use]
+    pub fn is_paused(&self, tenant: &str) -> bool {
+        self.paused
+            .lock()
+            .expect("governor pause mutex")
+            .contains(tenant)
+    }
+
+    /// The paused tenants, sorted.
+    #[must_use]
+    pub fn paused_tenants(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .paused
+            .lock()
+            .expect("governor pause mutex")
+            .iter()
+            .cloned()
+            .collect();
+        v.sort();
+        v
     }
 
     /// Try to admit a run for `tenant`. On [`QuotaDecision::Admit`] the
@@ -156,6 +205,11 @@ impl Governor {
     /// [`Self::try_admit`] with an injectable clock (tests roll the window
     /// without sleeping a real minute).
     pub fn try_admit_at(&self, tenant: &str, now: Instant) -> (QuotaDecision, Option<RunSlot>) {
+        // A paused tenant admits nothing (P2-3b): the cheapest gate, first.
+        if self.is_paused(tenant) {
+            self.throttled_paused.fetch_add(1, Ordering::Relaxed);
+            return (QuotaDecision::Throttle(ThrottleReason::Paused), None);
+        }
         let mut map = self.tenants.lock().expect("governor mutex");
         let state = map
             .entry(tenant.to_owned())
@@ -210,12 +264,15 @@ impl Governor {
         match reason {
             ThrottleReason::RunsPerMin => self.throttled_runs_per_min.load(Ordering::Relaxed),
             ThrottleReason::MaxConcurrent => self.throttled_max_concurrent.load(Ordering::Relaxed),
+            ThrottleReason::Paused => self.throttled_paused.load(Ordering::Relaxed),
         }
     }
 
     /// Total throttles across all reasons.
     pub fn throttled_total(&self) -> u64 {
-        self.throttled(ThrottleReason::RunsPerMin) + self.throttled(ThrottleReason::MaxConcurrent)
+        self.throttled(ThrottleReason::RunsPerMin)
+            + self.throttled(ThrottleReason::MaxConcurrent)
+            + self.throttled(ThrottleReason::Paused)
     }
 }
 
