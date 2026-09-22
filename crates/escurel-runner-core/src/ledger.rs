@@ -33,9 +33,9 @@
 //! `pending`."
 //!
 //! This module is the **durable authority** for that idempotency. It is a
-//! thin embedded SQLite store (via `rusqlite` with the `bundled` feature,
-//! so it carries its own SQLite and drags none of escurel-index's DuckDB
-//! into the independent runner). A unique constraint on
+//! thin embedded DuckDB file (owner decision 2026-09-22: DuckDB is the only
+//! embedded store in escurel; the runner epic's SQLite was a deviation, and
+//! a SQLite-era file is imported once on open). A unique constraint on
 //! `(tenant, event_id)` makes "exactly one run per event" a database
 //! invariant rather than an application convention, so two racing triggers
 //! for the same event yield exactly one [`LedgerDecision::Created`].
@@ -48,7 +48,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{Connection, OptionalExtension};
+use duckdb::Connection;
 
 use crate::Trigger;
 
@@ -219,9 +219,13 @@ pub enum LedgerDecision {
 /// Errors raised by the run ledger.
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
-    /// The underlying SQLite store returned an error.
-    #[error("run ledger sqlite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    /// The underlying DuckDB store returned an error.
+    #[error("run ledger duckdb error: {0}")]
+    Store(#[from] duckdb::Error),
+    /// A SQLite-era ledger file could not be imported (the runner refuses to
+    /// start on an empty ledger: it would re-run every event it once ran).
+    #[error("run ledger: legacy SQLite ledger at {path} could not be imported: {reason}")]
+    LegacyImport { path: String, reason: String },
     /// A run id referenced by [`Ledger::mark`] was not found.
     #[error("run ledger: run {0} not found")]
     NotFound(String),
@@ -283,8 +287,18 @@ impl Ledger {
     /// re-opening an existing file is a no-op migration — that is what
     /// gives the ledger its survive-a-restart durability.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, LedgerError> {
+        let path = path.as_ref();
+        // A ledger written by the SQLite-era runner (before 2026-09-22) at
+        // this path — or at the old default next to a new default — is
+        // imported ONCE: its rows are the idempotency history, and a runner
+        // that started on an empty ledger would re-run everything it once
+        // ran. The legacy file is kept aside as `<name>.sqlite.legacy`.
+        let legacy = legacy_sqlite_at(path);
         let conn = Connection::open(path)?;
         Self::migrate(&conn)?;
+        if let Some(legacy_path) = legacy {
+            import_legacy_sqlite(&conn, &legacy_path)?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -302,10 +316,6 @@ impl Ledger {
     }
 
     fn migrate(conn: &Connection) -> Result<(), LedgerError> {
-        // WAL keeps readers from blocking the single writer; a busy_timeout
-        // makes the rare lock contention wait rather than error.
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS runs (
                  run_id           TEXT PRIMARY KEY,
@@ -351,7 +361,7 @@ impl Ledger {
     /// the write see a consistent snapshot.
     pub fn begin_run(&self, trigger: &Trigger) -> Result<LedgerDecision, LedgerError> {
         let mut conn = self.conn.lock().expect("run ledger mutex");
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let tx = conn.transaction()?;
 
         // Fast path: a row already exists.
         if let Some(status) = lookup_status(&tx, &trigger.tenant, &trigger.event_id)? {
@@ -373,12 +383,12 @@ impl Ledger {
                     let run_id = RunId::new();
                     tx.execute(
                         "UPDATE runs
-                            SET run_id = ?1, status = 'pending',
+                            SET run_id = $1, status = 'pending',
                                 produced_instance_page_id = NULL,
                                 produced_version = NULL, reason = NULL,
-                                updated_at = ?2
-                          WHERE tenant = ?3 AND event_id = ?4",
-                        rusqlite::params![
+                                updated_at = $2
+                          WHERE tenant = $3 AND event_id = $4",
+                        duckdb::params![
                             run_id.as_str(),
                             now_iso(),
                             trigger.tenant,
@@ -419,13 +429,17 @@ impl Ledger {
             && let Some(prior) = tx
                 .query_row(
                     "SELECT run_id FROM runs
-                      WHERE tenant = ?1 AND instance_page_id = ?2
-                        AND content_hash = ?3 AND status = 'processed'
+                      WHERE tenant = $1 AND instance_page_id = $2
+                        AND content_hash = $3 AND status = 'processed'
                       LIMIT 1",
-                    rusqlite::params![trigger.tenant, instance, hash],
+                    duckdb::params![trigger.tenant, instance, hash],
                     |r| r.get::<_, String>(0),
                 )
-                .optional()?
+                .map(Some)
+                .or_else(|e| match e {
+                    duckdb::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(other),
+                })?
         {
             // Record a TERMINAL row for this event id rather than dropping it
             // bare. Without one the poller re-pulls the same inbox event every
@@ -439,9 +453,9 @@ impl Ledger {
                 "INSERT INTO runs
                      (run_id, tenant, event_id, instance_page_id, content_hash,
                       status, depth, root_event_id, created_at, updated_at, reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'dead_letter', ?6, ?7, ?8, ?8, 'duplicate_content')
+                 VALUES ($1, $2, $3, $4, $5, 'dead_letter', $6, $7, $8, $8, 'duplicate_content')
                  ON CONFLICT(tenant, event_id) DO NOTHING",
-                rusqlite::params![
+                duckdb::params![
                     run_id.as_str(),
                     trigger.tenant,
                     trigger.event_id,
@@ -465,9 +479,9 @@ impl Ledger {
             "INSERT INTO runs
                  (run_id, tenant, event_id, instance_page_id, content_hash,
                   status, depth, root_event_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?8)
+             VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $8)
              ON CONFLICT(tenant, event_id) DO NOTHING",
-            rusqlite::params![
+            duckdb::params![
                 run_id.as_str(),
                 trigger.tenant,
                 trigger.event_id,
@@ -500,8 +514,8 @@ impl Ledger {
     pub fn mark(&self, run_id: &RunId, status: RunStatus) -> Result<(), LedgerError> {
         let conn = self.conn.lock().expect("run ledger mutex");
         let changed = conn.execute(
-            "UPDATE runs SET status = ?1, updated_at = ?2 WHERE run_id = ?3",
-            rusqlite::params![status.as_str(), now_iso(), run_id.as_str()],
+            "UPDATE runs SET status = $1, updated_at = $2 WHERE run_id = $3",
+            duckdb::params![status.as_str(), now_iso(), run_id.as_str()],
         )?;
         if changed == 0 {
             return Err(LedgerError::NotFound(run_id.0.clone()));
@@ -527,12 +541,12 @@ impl Ledger {
         let conn = self.conn.lock().expect("run ledger mutex");
         let changed = conn.execute(
             "UPDATE runs
-                SET status = ?1,
-                    produced_instance_page_id = ?2,
-                    produced_version = ?3,
-                    updated_at = ?4
-              WHERE run_id = ?5",
-            rusqlite::params![
+                SET status = $1,
+                    produced_instance_page_id = $2,
+                    produced_version = $3,
+                    updated_at = $4
+              WHERE run_id = $5",
+            duckdb::params![
                 status.as_str(),
                 instance,
                 version,
@@ -552,8 +566,8 @@ impl Ledger {
     pub fn dead_letter(&self, run_id: &RunId, reason: DeadLetterReason) -> Result<(), LedgerError> {
         let conn = self.conn.lock().expect("run ledger mutex");
         let changed = conn.execute(
-            "UPDATE runs SET status = ?1, reason = ?2, updated_at = ?3 WHERE run_id = ?4",
-            rusqlite::params![
+            "UPDATE runs SET status = $1, reason = $2, updated_at = $3 WHERE run_id = $4",
+            duckdb::params![
                 RunStatus::DeadLetter.as_str(),
                 reason.as_str(),
                 now_iso(),
@@ -577,8 +591,8 @@ impl Ledger {
     ) -> Result<u64, LedgerError> {
         let conn = self.conn.lock().expect("run ledger mutex");
         let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM runs WHERE tenant = ?1 AND root_event_id = ?2",
-            rusqlite::params![tenant, root_event_id],
+            "SELECT COUNT(*) FROM runs WHERE tenant = $1 AND root_event_id = $2",
+            duckdb::params![tenant, root_event_id],
             |r| r.get(0),
         )?;
         Ok(n as u64)
@@ -591,10 +605,10 @@ impl Ledger {
             "SELECT run_id, tenant, event_id, instance_page_id, content_hash,
                     produced_instance_page_id, produced_version,
                     status, depth, root_event_id, reason
-             FROM runs WHERE tenant = ?1 AND event_id = ?2",
+             FROM runs WHERE tenant = $1 AND event_id = $2",
         )?;
         let row = stmt
-            .query_row(rusqlite::params![tenant, event_id], |r| {
+            .query_row(duckdb::params![tenant, event_id], |r| {
                 let status_str: String = r.get(7)?;
                 Ok(RunRecord {
                     run_id: r.get(0)?,
@@ -622,10 +636,10 @@ impl Ledger {
             "SELECT run_id, tenant, event_id, instance_page_id, content_hash,
                     produced_instance_page_id, produced_version,
                     status, depth, root_event_id, reason
-             FROM runs WHERE run_id = ?1",
+             FROM runs WHERE run_id = $1",
         )?;
         let row = stmt
-            .query_row(rusqlite::params![run_id], |r| {
+            .query_row(duckdb::params![run_id], |r| {
                 let status_str: String = r.get(7)?;
                 Ok(RunRecord {
                     run_id: r.get(0)?,
@@ -655,8 +669,8 @@ impl Ledger {
         let (tenant, event_id): (String, String) = conn
             .query_row(
                 "SELECT tenant, event_id FROM runs
-                  WHERE run_id = ?1 AND status IN (?2, ?3, ?4)",
-                rusqlite::params![
+                  WHERE run_id = $1 AND status IN ($2, $3, $4)",
+                duckdb::params![
                     run_id,
                     RunStatus::Failed.as_str(),
                     RunStatus::Cancelled.as_str(),
@@ -668,12 +682,12 @@ impl Ledger {
         let fresh = RunId::new();
         conn.execute(
             "UPDATE runs
-                SET run_id = ?1, status = 'pending',
+                SET run_id = $1, status = 'pending',
                     produced_instance_page_id = NULL,
                     produced_version = NULL, reason = NULL,
-                    updated_at = ?2
-              WHERE run_id = ?3",
-            rusqlite::params![fresh.as_str(), now_iso(), run_id],
+                    updated_at = $2
+              WHERE run_id = $3",
+            duckdb::params![fresh.as_str(), now_iso(), run_id],
         )?;
         Ok((tenant, event_id))
     }
@@ -683,8 +697,8 @@ impl Ledger {
     pub fn count_runs(&self, tenant: &str) -> Result<u64, LedgerError> {
         let conn = self.conn.lock().expect("run ledger mutex");
         let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM runs WHERE tenant = ?1",
-            rusqlite::params![tenant],
+            "SELECT COUNT(*) FROM runs WHERE tenant = $1",
+            duckdb::params![tenant],
             |r| r.get(0),
         )?;
         Ok(n as u64)
@@ -703,8 +717,8 @@ impl Ledger {
     pub fn count_all_by_status(&self, status: RunStatus) -> Result<u64, LedgerError> {
         let conn = self.conn.lock().expect("run ledger mutex");
         let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM runs WHERE status = ?1",
-            rusqlite::params![status.as_str()],
+            "SELECT COUNT(*) FROM runs WHERE status = $1",
+            duckdb::params![status.as_str()],
             |r| r.get(0),
         )?;
         Ok(n as u64)
@@ -720,11 +734,11 @@ impl Ledger {
             "SELECT run_id, tenant, event_id, instance_page_id, content_hash,
                     produced_instance_page_id, produced_version,
                     status, depth, root_event_id, reason
-             FROM runs WHERE status = ?1
+             FROM runs WHERE status = $1
              ORDER BY updated_at DESC",
         )?;
         let rows = stmt
-            .query_map(rusqlite::params![RunStatus::DeadLetter.as_str()], |r| {
+            .query_map(duckdb::params![RunStatus::DeadLetter.as_str()], |r| {
                 let status_str: String = r.get(7)?;
                 Ok(RunRecord {
                     run_id: r.get(0)?,
@@ -758,20 +772,20 @@ impl Ledger {
         let conn = self.conn.lock().expect("run ledger mutex");
         let (tenant, event_id): (String, String) = conn
             .query_row(
-                "SELECT tenant, event_id FROM runs WHERE run_id = ?1 AND status = ?2",
-                rusqlite::params![run_id, RunStatus::DeadLetter.as_str()],
+                "SELECT tenant, event_id FROM runs WHERE run_id = $1 AND status = $2",
+                duckdb::params![run_id, RunStatus::DeadLetter.as_str()],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(|_| LedgerError::NotFound(run_id.to_owned()))?;
         let fresh = RunId::new();
         conn.execute(
             "UPDATE runs
-                SET run_id = ?1, status = 'pending',
+                SET run_id = $1, status = 'pending',
                     produced_instance_page_id = NULL,
                     produced_version = NULL, reason = NULL,
-                    updated_at = ?2
-              WHERE run_id = ?3",
-            rusqlite::params![fresh.as_str(), now_iso(), run_id],
+                    updated_at = $2
+              WHERE run_id = $3",
+            duckdb::params![fresh.as_str(), now_iso(), run_id],
         )?;
         Ok((tenant, event_id))
     }
@@ -788,20 +802,20 @@ impl Ledger {
         let _existing: String = conn
             .query_row(
                 "SELECT run_id FROM runs
-                  WHERE tenant = ?1 AND event_id = ?2 AND status = ?3",
-                rusqlite::params![tenant, event_id, RunStatus::DeadLetter.as_str()],
+                  WHERE tenant = $1 AND event_id = $2 AND status = $3",
+                duckdb::params![tenant, event_id, RunStatus::DeadLetter.as_str()],
                 |r| r.get(0),
             )
             .map_err(|_| LedgerError::NotFound(format!("{tenant}/{event_id}")))?;
         let fresh = RunId::new();
         conn.execute(
             "UPDATE runs
-                SET run_id = ?1, status = 'pending',
+                SET run_id = $1, status = 'pending',
                     produced_instance_page_id = NULL,
                     produced_version = NULL, reason = NULL,
-                    updated_at = ?2
-              WHERE tenant = ?3 AND event_id = ?4",
-            rusqlite::params![fresh.as_str(), now_iso(), tenant, event_id],
+                    updated_at = $2
+              WHERE tenant = $3 AND event_id = $4",
+            duckdb::params![fresh.as_str(), now_iso(), tenant, event_id],
         )?;
         Ok(fresh.0)
     }
@@ -816,10 +830,10 @@ impl Ledger {
             "SELECT run_id, tenant, event_id, instance_page_id, content_hash,
                     produced_instance_page_id, produced_version,
                     status, depth, root_event_id, reason
-             FROM runs WHERE status = ?1",
+             FROM runs WHERE status = $1",
         )?;
         let rows = stmt
-            .query_map(rusqlite::params![RunStatus::Pending.as_str()], |r| {
+            .query_map(duckdb::params![RunStatus::Pending.as_str()], |r| {
                 let status_str: String = r.get(7)?;
                 Ok(RunRecord {
                     run_id: r.get(0)?,
@@ -844,14 +858,114 @@ impl Ledger {
 /// SQLite has no `ADD COLUMN IF NOT EXISTS`, so we attempt the `ALTER` and
 /// treat the "duplicate column name" error as a successful no-op — that is
 /// what makes re-opening an already-migrated ledger file idempotent.
+/// If `path` holds a SQLite file (or does not exist while its `.sqlite`
+/// sibling — the old default name — does), move that file aside and return
+/// where it now is, so `open` can create the DuckDB file at `path` and
+/// import from it. `None` when there is nothing to import.
+fn legacy_sqlite_at(path: &Path) -> Option<std::path::PathBuf> {
+    fn is_sqlite(p: &Path) -> bool {
+        std::fs::File::open(p)
+            .and_then(|mut f| {
+                use std::io::Read as _;
+                let mut head = [0u8; 16];
+                f.read_exact(&mut head)
+                    .map(|()| head.starts_with(b"SQLite format 3\0"))
+            })
+            .unwrap_or(false)
+    }
+    let candidate = if path.exists() {
+        if is_sqlite(path) {
+            Some(path.to_path_buf())
+        } else {
+            None
+        }
+    } else {
+        let sibling = path.with_extension("sqlite");
+        (sibling != path && is_sqlite(&sibling)).then_some(sibling)
+    }?;
+    let aside = candidate.with_extension("sqlite.legacy");
+    std::fs::rename(&candidate, &aside).ok()?;
+    Some(aside)
+}
+
+/// Copy every run row out of a SQLite-era ledger through DuckDB's `sqlite`
+/// extension. Fails closed: a ledger that cannot be imported is a boot
+/// failure, never an empty ledger.
+fn import_legacy_sqlite(conn: &Connection, legacy: &Path) -> Result<(), LedgerError> {
+    let fail = |e: duckdb::Error| LedgerError::LegacyImport {
+        path: legacy.display().to_string(),
+        reason: e.to_string(),
+    };
+    let quoted = legacy.display().to_string().replace('\'', "''");
+    conn.execute_batch("INSTALL sqlite; LOAD sqlite;")
+        .map_err(fail)?;
+    conn.execute_batch(&format!(
+        "ATTACH '{quoted}' AS legacy_ledger (TYPE sqlite);"
+    ))
+    .map_err(fail)?;
+    // The legacy table may lack the columns later migrations added; take
+    // what it has by name and let the rest default.
+    let mut stmt = conn
+        .prepare(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_catalog = 'legacy_ledger' AND table_name = 'runs'",
+        )
+        .map_err(fail)?;
+    let cols: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(fail)?
+        .collect::<Result<_, _>>()
+        .map_err(fail)?;
+    drop(stmt);
+    let known = [
+        "run_id",
+        "tenant",
+        "event_id",
+        "instance_page_id",
+        "content_hash",
+        "status",
+        "depth",
+        "root_event_id",
+        "created_at",
+        "updated_at",
+        "produced_instance_page_id",
+        "produced_version",
+        "reason",
+    ];
+    let take: Vec<&str> = known
+        .iter()
+        .copied()
+        .filter(|k| cols.iter().any(|c| c == k))
+        .collect();
+    if take.is_empty() {
+        return Err(LedgerError::LegacyImport {
+            path: legacy.display().to_string(),
+            reason: "no `runs` table with known columns".to_owned(),
+        });
+    }
+    let list = take.join(", ");
+    let imported = conn
+        .execute(
+            &format!("INSERT INTO runs ({list}) SELECT {list} FROM legacy_ledger.runs"),
+            [],
+        )
+        .map_err(fail)?;
+    conn.execute_batch("DETACH legacy_ledger;").map_err(fail)?;
+    tracing::info!(
+        target: "escurel_runner",
+        legacy = %legacy.display(),
+        imported,
+        "run ledger: imported the SQLite-era ledger into DuckDB (legacy file kept aside)"
+    );
+    Ok(())
+}
+
 fn add_column_if_missing(conn: &Connection, column: &str) -> Result<(), LedgerError> {
     let sql = format!("ALTER TABLE runs ADD COLUMN {column} TEXT");
     match conn.execute(&sql, []) {
         Ok(_) => Ok(()),
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column") => {
-            Ok(())
-        }
-        Err(e) => Err(LedgerError::Sqlite(e)),
+        Err(e) if e.to_string().contains("already exists") => Ok(()),
+        Err(e) => Err(LedgerError::Store(e)),
     }
 }
 
@@ -861,9 +975,9 @@ fn lookup_status(
     tenant: &str,
     event_id: &str,
 ) -> Result<Option<RunStatus>, LedgerError> {
-    let mut stmt = conn.prepare("SELECT status FROM runs WHERE tenant = ?1 AND event_id = ?2")?;
+    let mut stmt = conn.prepare("SELECT status FROM runs WHERE tenant = $1 AND event_id = $2")?;
     let status: Option<String> = stmt
-        .query_row(rusqlite::params![tenant, event_id], |r| r.get(0))
+        .query_row(duckdb::params![tenant, event_id], |r| r.get(0))
         .ok();
     Ok(status.and_then(|s| RunStatus::from_str(&s)))
 }
@@ -1028,7 +1142,78 @@ mod tests {
         );
     }
 
-    /// The #149 core DoD, against a **real SQLite file in a tempdir** (not
+    /// The ledger is a DuckDB file (owner decision 2026-09-22: escurel uses
+    /// DuckDB everywhere; the runner epic's SQLite was a deviation).
+    #[test]
+    fn the_ledger_is_a_duckdb_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ledger.duckdb");
+        {
+            let ledger = Ledger::open(&path).expect("open");
+            let t = trigger("evt-duck");
+            assert!(matches!(
+                ledger.begin_run(&t),
+                Ok(LedgerDecision::Created(_))
+            ));
+        }
+        let head = std::fs::read(&path).expect("read");
+        assert_eq!(
+            &head[8..12],
+            b"DUCK",
+            "a DuckDB file carries `DUCK` at offset 8"
+        );
+    }
+
+    /// A ledger file written by the SQLite-era runner is imported ONCE on
+    /// open: every row survives (idempotency history must not be lost), the
+    /// path now holds a DuckDB file, and the legacy file is kept aside.
+    #[test]
+    fn a_legacy_sqlite_ledger_is_imported_once_on_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ledger.sqlite");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/legacy-ledger.sqlite"
+            ),
+            &path,
+        )
+        .expect("fixture");
+        let ledger = Ledger::open(&path).expect("open imports the legacy ledger");
+        assert_eq!(
+            ledger.count_all_runs().expect("count"),
+            2,
+            "both legacy rows imported"
+        );
+        assert_eq!(
+            ledger
+                .count_all_by_status(RunStatus::Processed)
+                .expect("count"),
+            1
+        );
+        assert_eq!(
+            ledger
+                .count_all_by_status(RunStatus::Pending)
+                .expect("count"),
+            1
+        );
+        let pending = ledger.list_pending().expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert!(!pending[0].tenant.is_empty() && !pending[0].event_id.is_empty());
+        drop(ledger);
+        let head = std::fs::read(&path).expect("read");
+        assert_eq!(&head[8..12], b"DUCK", "the path now holds a DuckDB file");
+        let legacy = path.with_extension("sqlite.legacy");
+        assert!(
+            legacy.exists(),
+            "the legacy file is kept aside, not deleted"
+        );
+        // Re-open: no second import, same rows.
+        let reopened = Ledger::open(&path).expect("re-open");
+        assert_eq!(reopened.count_all_runs().expect("count"), 2);
+    }
+
+    /// The #149 core DoD, against a **real DuckDB file in a tempdir** (not
     /// `:memory:`, so the persistence case is genuine):
     /// - `begin_run(A)` → Created; mark processed; `begin_run(A)` →
     ///   AlreadyTerminal (idempotency).

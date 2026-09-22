@@ -133,7 +133,7 @@ Core internal pieces:
    dedup collapses the overlap.
 3. **Dispatch queue** — bounded per-tenant work queue (backpressure +
    fairness + the natural quota-gating point).
-4. **Run ledger** — runner-local durable store (its own SQLite/DuckDB file,
+4. **Run ledger** — runner-local durable store (its own DuckDB file — DuckDB is the only embedded store in escurel; a SQLite-era ledger is imported once on boot —
    *not* the tenant store). One row per run; the basis of all loop controls.
 5. **Skill/context packager** — turns a `Trigger` into a `TaskContext`:
    `label_skill` → skill page body via `resolve` + `expand` (instructions)

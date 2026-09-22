@@ -118,6 +118,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_HARNESS` | `echo` | **`echo` is the default — set `claude` or nothing runs an LLM** |
 | `ESCUREL_RUNNER_CLAUDE_BIN` | `claude` | binary path (or a test stub) |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | `30s` | inbox-poll backstop |
+| `ESCUREL_RUNNER_LEDGER_PATH` | `./escurel-runner-ledger.duckdb` | the runner's durable run ledger (a DuckDB file; a SQLite-era file there is imported once) |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | `5s` | on cancel, the wait between SIGTERM and SIGKILL for the harness subprocess |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | the harness names a manual start may ask for (comma-separated); anything else fails the run closed |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | `30s` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |

@@ -24,8 +24,15 @@ fn runner_binary_serves_healthz() {
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
 
+    // One ledger file per runner: DuckDB allows a single writer per file, so
+    // two tests sharing the default path would fail the second boot.
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
     let child = Command::new(env!("CARGO_BIN_EXE_escurel-runner"))
         .env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.keep().join("ledger.duckdb"),
+        )
         .spawn()
         .expect("spawn escurel-runner binary");
     let _guard = ChildGuard(child);

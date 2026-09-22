@@ -131,7 +131,7 @@ pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// file, *never* the tenant store). Relative to the process CWD so a dev
 /// run drops it in place; deployments set [`crate::RunnerConfig::ledger_path`]
 /// to a host-volume path under `/data` (see the substrate contract).
-pub const DEFAULT_LEDGER_PATH: &str = "./escurel-runner-ledger.sqlite";
+pub const DEFAULT_LEDGER_PATH: &str = "./escurel-runner-ledger.duckdb";
 
 /// Errors raised while loading [`RunnerConfig`] from the environment.
 #[derive(Debug, thiserror::Error)]
@@ -317,7 +317,9 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_LINT_INTERVAL` (default: unset/disabled).
     pub lint_interval: Option<Duration>,
     /// Filesystem path of the runner-local durable run ledger (its own
-    /// SQLite file — the idempotency authority that survives a restart).
+    /// DuckDB file — the idempotency authority that survives a restart; a
+    /// SQLite-era file at the path, or at the old `.sqlite` default beside a
+    /// new default, is imported once on boot).
     /// Source: `ESCUREL_RUNNER_LEDGER_PATH` (default
     /// [`DEFAULT_LEDGER_PATH`]).
     pub ledger_path: String,
