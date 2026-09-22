@@ -71,6 +71,7 @@ pub async fn recover_pending(ledger: &Arc<Ledger>, client: &Client) -> RecoveryR
         // Reconstruct the minimal Trigger confirm_effect needs (tenant,
         // event_id, the pre-flagged target instance).
         let trigger = Trigger {
+            is_system: false,
             tenant: rec.tenant.clone(),
             event_id: rec.event_id.clone(),
             label_skill: String::new(),

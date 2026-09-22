@@ -44,5 +44,6 @@ mod reconcile_retry;
 mod review_no_op;
 mod run_ledger;
 mod sigterm_drain;
+mod system_events_not_dispatched;
 mod trigger;
 mod workflow_end_to_end;
