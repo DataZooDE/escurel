@@ -84,14 +84,18 @@ pub const REVIEW_TOOLS: &[&str] = &[
 /// differently or not at all, and the runner committed regardless. This is
 /// where the declaration becomes behaviour.
 ///
-/// Two values, not three: `confirm` and `review` differ in what a HUMAN is
-/// asked, not in what the runner may write, and both mean "do not land it".
+/// `confirm` and `review` differ in what a HUMAN is asked, not in what the
+/// runner may write: both mean "do not land it". `Confirm` is carried
+/// through to the run's record so the workbench knows to notify.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Autonomy {
     /// The agent commits directly.
     Auto,
     /// The agent produces a draft; a human lands it.
     Review,
+    /// As `Review`, and the human is to be asked explicitly (workbench
+    /// backend P2-7): the run says `autonomy: confirm` on its events.
+    Confirm,
 }
 
 impl Autonomy {
@@ -106,6 +110,7 @@ impl Autonomy {
     pub fn from_frontmatter(frontmatter: &serde_json::Value) -> Self {
         match frontmatter.get("autonomy").and_then(|v| v.as_str()) {
             Some("auto") => Self::Auto,
+            Some("confirm") => Self::Confirm,
             _ => Self::Review,
         }
     }
@@ -115,7 +120,7 @@ impl Autonomy {
     pub fn tools(self) -> &'static [&'static str] {
         match self {
             Self::Auto => ALLOWED_TOOLS,
-            Self::Review => REVIEW_TOOLS,
+            Self::Review | Self::Confirm => REVIEW_TOOLS,
         }
     }
 }
@@ -960,9 +965,9 @@ fn build_instructions(
     // a turn and writes a confused transcript. Say it once, plainly.
     let gate = match autonomy {
         Autonomy::Auto => String::new(),
-        Autonomy::Review => format!(
+        Autonomy::Review | Autonomy::Confirm => format!(
             "\n\n## This change must be REVIEWED before it lands\n\n\
-             `{skill}` declares `autonomy: review`, so you do not write pages. \
+             `{skill}` declares `autonomy: {policy}`, so you do not write pages. \
              Follow the procedure above as written, and wherever it tells you to \
              WRITE a page, create a draft of that page instead:\n\n\
              - read the target with `expand` — ALWAYS, and FIRST. It is the \
@@ -998,6 +1003,11 @@ fn build_instructions(
              draft at all.\n\n\
              Do not try to write or assign — you have neither verb. The event \
              stays in the inbox on purpose until a human decides.",
+            policy = if autonomy == Autonomy::Confirm {
+                "confirm"
+            } else {
+                "review"
+            },
             skill = trigger.label_skill,
         ),
     };
@@ -1038,7 +1048,7 @@ fn build_instructions(
                      processed and ends the run. A page written without it reads \
                      as unfinished work and will be re-run."
                 ),
-                Autonomy::Review => String::new(),
+                Autonomy::Review | Autonomy::Confirm => String::new(),
             };
             // The verb this run actually has. Naming `update_page` to a
             // review run is worse than useless: it has no such tool, and the
@@ -1046,7 +1056,7 @@ fn build_instructions(
             // contract has to be stated in terms of the write it CAN make.
             let (verb, write) = match autonomy {
                 Autonomy::Auto => ("`update_page`", "write"),
-                Autonomy::Review => ("`create_draft`", "draft"),
+                Autonomy::Review | Autonomy::Confirm => ("`create_draft`", "draft"),
             };
             let fields = match page
                 .strip_prefix("markdown/instances/")
@@ -1327,7 +1337,7 @@ mod tests {
             workflow: None,
             content_hash: None,
         };
-        for autonomy in [Autonomy::Auto, Autonomy::Review] {
+        for autonomy in [Autonomy::Auto, Autonomy::Review, Autonomy::Confirm] {
             let instr = build_instructions(&trigger, "SKILLBODY", None, autonomy, true);
             assert!(
                 instr.ends_with(PROGRESS_PARAGRAPH),

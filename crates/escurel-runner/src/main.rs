@@ -1362,6 +1362,7 @@ fn resolve_harness(
     config: &RunnerConfig,
     default: &Arc<dyn Harness>,
     trigger: &Trigger,
+    skill_harness: Option<&str>,
 ) -> Arc<dyn Harness> {
     let declared = trigger
         .workflow
@@ -1371,11 +1372,15 @@ fn resolve_harness(
     // A manual start's ask (workbench backend P2-5), honoured only within
     // the allow-list: a name outside it fails the run closed — running the
     // default in its place would do something the requester did not ask.
+    // Priority: a workflow step's declaration, then the manual ask, then
+    // the skill page's own `harness:` (P2-7) — the last two within the
+    // allow-list.
     let manual = trigger
         .manual
         .as_ref()
         .and_then(|m| m.harness.as_deref())
-        .filter(|h| !h.is_empty());
+        .filter(|h| !h.is_empty())
+        .or(skill_harness.filter(|h| !h.is_empty()));
     if declared.is_none()
         && let Some(name) = manual
     {
@@ -1842,7 +1847,12 @@ async fn dispatch_loop(
         // declare its own (`harness:` on the phase, else on the plan) and the
         // runner's configured one answers for everything else. Outside the
         // retry closure because a retry is the same step, not a new choice.
-        let step_harness = resolve_harness(&config, &harness, &trigger);
+        // The skill's own asks (workbench backend P2-7): a `harness:` on the
+        // skill page is honoured like a manual one, within the allow-list.
+        let skill_harness = escurel_runner_core::skill_contract(&client, &trigger.label_skill)
+            .await
+            .and_then(|c| c.harness);
+        let step_harness = resolve_harness(&config, &harness, &trigger, skill_harness.as_deref());
         // The run's lifecycle as `escurel:run` events (workbench backend
         // P1): a projection of the ledger for the humans watching the run,
         // best-effort — a refusal is logged and counted, never acted on.
@@ -2132,6 +2142,18 @@ async fn dispatch_loop(
                         depth = trigger.lineage.depth + 1,
                         "cascade: emitted lineage-tagged follow-on event"
                     ),
+                    Ok(CascadeOutcome::NotAllowed { produced_skill }) => tracing::info!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        produced_skill = %produced_skill,
+                        "cascade: the skill's `actions` do not include the produced skill; no follow-on"
+                    ),
+                    Ok(CascadeOutcome::DepthCapped { max_depth }) => tracing::info!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        max_depth,
+                        "cascade: the skill's `cascade.max_depth` is reached; no follow-on"
+                    ),
                     Ok(CascadeOutcome::NotCrossSkill) => tracing::debug!(
                         target: "escurel_runner",
                         event_id = %trigger.event_id,
@@ -2355,6 +2377,7 @@ async fn attempt_run(
                     s.autonomy = Some(match task.autonomy {
                         Autonomy::Auto => "auto",
                         Autonomy::Review => "review",
+                        Autonomy::Confirm => "confirm",
                     });
                 }
                 // A self-reported FAILURE is not evidence either.
@@ -2453,7 +2476,7 @@ async fn attempt_run(
 
     let confirmed = match task.autonomy {
         Autonomy::Auto => confirm_effect(client, trigger).await,
-        Autonomy::Review => confirm_draft(client, trigger).await,
+        Autonomy::Review | Autonomy::Confirm => confirm_draft(client, trigger).await,
     };
     match confirmed {
         Ok(mut effect) => {
@@ -2881,6 +2904,18 @@ async fn promotion_tail_loop(
                     cascaded_event_id = %event_id,
                     label_skill = %label_skill,
                     "promotion tail: a promoted draft cascaded under its run's lineage"
+                ),
+                Ok(CascadeOutcome::NotAllowed { produced_skill }) => tracing::info!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    produced_skill = %produced_skill,
+                    "cascade: the skill's `actions` do not include the produced skill; no follow-on"
+                ),
+                Ok(CascadeOutcome::DepthCapped { max_depth }) => tracing::info!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    max_depth,
+                    "cascade: the skill's `cascade.max_depth` is reached; no follow-on"
                 ),
                 Ok(CascadeOutcome::NotCrossSkill) => tracing::debug!(
                     target: "escurel_runner",

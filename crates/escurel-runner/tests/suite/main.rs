@@ -53,6 +53,7 @@ mod run_events;
 mod run_ledger;
 mod runner_status;
 mod sigterm_drain;
+mod skill_contract_runner;
 mod system_events_not_dispatched;
 mod trigger;
 mod workflow_end_to_end;

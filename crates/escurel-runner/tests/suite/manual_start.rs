@@ -71,15 +71,24 @@ async fn wait_for_terminal(listen: &str, event_id: &str) -> Value {
     }
 }
 
+/// The run's event with `title`, waiting briefly: the runner writes its
+/// lifecycle events best-effort right after the ledger's terminal, so a
+/// read the instant `/debug/run` flips can precede `run-finished`.
 async fn run_event(p: &EscurelProcess, token: &str, run_id: &str, title: &str) -> Value {
-    let own = call(p, token, "list_events", json!({ "run_id": run_id })).await;
-    own["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["title"] == title)
-        .cloned()
-        .unwrap_or_else(|| panic!("no {title}: {own}"))
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let own = call(p, token, "list_events", json!({ "run_id": run_id })).await;
+        if let Some(e) = own["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["title"] == title)
+        {
+            return e.clone();
+        }
+        assert!(Instant::now() < deadline, "no {title}: {own}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 #[tokio::test]

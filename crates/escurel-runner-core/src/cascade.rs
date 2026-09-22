@@ -55,6 +55,81 @@ pub enum CascadeOutcome {
     /// produced instance's skill matched the event's own label), so there
     /// is no follow-on to announce.
     NotCrossSkill,
+    /// No cascade: the parent skill's `actions:` does not list the produced
+    /// skill (workbench backend P2-7).
+    NotAllowed {
+        /// The skill that was written to and not fanned out to.
+        produced_skill: String,
+    },
+    /// No cascade: the next hop would exceed the parent skill's
+    /// `cascade.max_depth` (P2-7).
+    DepthCapped {
+        /// The declared cap.
+        max_depth: u32,
+    },
+}
+
+/// What a skill page declares for the runner (workbench backend P2-7):
+/// the adapter it asks for, the skills it may fan out to, where its
+/// cross-skill writes cascade, and how deep.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillContract {
+    pub harness: Option<String>,
+    /// Empty = undeclared = no restriction.
+    pub actions: Vec<String>,
+    /// `cascade.target`, or the older flat `cascade_target`.
+    pub cascade_target: Option<String>,
+    /// `cascade.max_depth`.
+    pub max_depth: Option<u32>,
+}
+
+/// Read a skill's contract off its page; `None` when the skill cannot be
+/// resolved or expanded (the caller treats that as "nothing declared").
+pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContract> {
+    let resolved = client
+        .resolve(ResolveRequest {
+            wikilink: format!("[[{skill}]]"),
+            ..Default::default()
+        })
+        .await
+        .ok()?;
+    let page_id = resolved.page?.page_id;
+    let expanded = client
+        .expand(ExpandRequest {
+            page_id,
+            ..Default::default()
+        })
+        .await
+        .ok()?;
+    let fm = &expanded.frontmatter;
+    let text = |v: Option<&serde_json::Value>| {
+        v.and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let cascade = fm.get("cascade").and_then(|v| v.as_object());
+    Some(SkillContract {
+        harness: text(fm.get("harness")),
+        actions: fm
+            .get("actions")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        cascade_target: text(cascade.and_then(|c| c.get("target")))
+            .or_else(|| text(fm.get("cascade_target"))),
+        max_depth: cascade
+            .and_then(|c| c.get("max_depth"))
+            .and_then(|v| v.as_u64())
+            .map(|d| d.min(u64::from(u32::MAX)) as u32),
+    })
 }
 
 /// The `cascade_target` value meaning "the instance this run just wrote".
@@ -115,9 +190,24 @@ pub async fn emit_cascade_with_id(
     if produced_skill == parent_trigger.label_skill {
         return Ok(CascadeOutcome::NotCrossSkill);
     }
+    let depth = parent_trigger.lineage.depth + 1;
+    // The parent skill's own contract (P2-7): which skills it may fan out
+    // to, and how deep its chains go. Undeclared = the historical
+    // behaviour (any cross-skill write cascades; the runner's global depth
+    // cap is the only limit).
+    let parent = skill_contract(client, &parent_trigger.label_skill)
+        .await
+        .unwrap_or_default();
+    if !parent.actions.is_empty() && !parent.actions.iter().any(|a| a == &produced_skill) {
+        return Ok(CascadeOutcome::NotAllowed { produced_skill });
+    }
+    if let Some(max_depth) = parent.max_depth
+        && depth > max_depth
+    {
+        return Ok(CascadeOutcome::DepthCapped { max_depth });
+    }
 
     let provenance = build_runner_provenance(parent_trigger, parent_run_id, effect);
-    let depth = parent_trigger.lineage.depth + 1;
     let title = format!("{produced_skill} updated by {}", parent_trigger.label_skill);
     let body = format!(
         "Instance {} was updated while processing {} event {} (root {}, depth {depth}).",
@@ -134,7 +224,10 @@ pub async fn emit_cascade_with_id(
     // hop produces no cross-skill change, so the chain converges (the #156
     // behaviour). This keeps the cascade in-corpus and data-driven, never
     // hardcoded.
-    let cascade_target = match resolve_cascade_target(client, &produced_skill).await {
+    let cascade_target = match skill_contract(client, &produced_skill)
+        .await
+        .and_then(|c| c.cascade_target)
+    {
         // **`produced` — the instance this run just wrote.**
         //
         // A static page id cannot express the chain most corpora actually
@@ -222,36 +315,6 @@ fn build_runner_provenance(
         runner.insert("trace_id".into(), json!(trace_id));
     }
     json!({ "runner": runner })
-}
-
-/// Resolve a skill's optional `cascade_target` — the instance page id a
-/// confirmed cross-skill write of that skill should pre-flag its follow-on
-/// event onto. Reads the skill page's frontmatter via `resolve` → `expand`.
-/// Returns `None` (best-effort) on any read failure or when the skill does not
-/// declare a `cascade_target`, so a missing target degrades to an unassigned
-/// (converging) cascade rather than erroring the run.
-async fn resolve_cascade_target(client: &Client, skill: &str) -> Option<String> {
-    let resolved = client
-        .resolve(ResolveRequest {
-            wikilink: format!("[[{skill}]]"),
-            ..Default::default()
-        })
-        .await
-        .ok()?;
-    let page_id = resolved.page?.page_id;
-    let expanded = client
-        .expand(ExpandRequest {
-            page_id,
-            ..Default::default()
-        })
-        .await
-        .ok()?;
-    expanded
-        .frontmatter
-        .get("cascade_target")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
 }
 
 /// Derive an instance's skill from its page id.
