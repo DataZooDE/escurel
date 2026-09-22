@@ -168,6 +168,7 @@ pub fn attach_drafts_lake(conn: &Connection, cfg: &LakeConfig) -> Result<(), Sna
         "base_version VARCHAR",
         "run_id VARCHAR",
         "root_event_id VARCHAR",
+        "seq BIGINT",
     ] {
         conn.execute_batch(&format!(
             "ALTER TABLE {APPEND_LAKE_ALIAS}.{DRAFTS_PG_TABLE_NAME} \
@@ -184,7 +185,12 @@ pub fn attach_events_lake(conn: &Connection, cfg: &LakeConfig) -> Result<(), Sna
     // A lake table provisioned before `kind` + the lineage columns existed
     // gains them on attach, as the drafts table does for `changeset_id`.
     // No indexes: DuckLake has none, so a lineage read there is a scan.
-    for col in ["kind VARCHAR", "root_event_id VARCHAR", "run_id VARCHAR"] {
+    for col in [
+        "kind VARCHAR",
+        "root_event_id VARCHAR",
+        "run_id VARCHAR",
+        "seq BIGINT",
+    ] {
         conn.execute_batch(&format!(
             "ALTER TABLE {APPEND_LAKE_ALIAS}.{EVENTS_PG_TABLE_NAME} \
              ADD COLUMN IF NOT EXISTS {col};"

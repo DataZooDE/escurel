@@ -171,7 +171,7 @@ Every event carries three more fields on the wire: `kind`, `root_event_id`,
   `provenance.runner.root_event_id` at capture (server-side — there is no
   argument for it). `list_events { root_event_id }` is therefore the whole
   thread under a root: the root itself, its cascade hops, and — with
-  `include_system` — its runs, any status, oldest first.
+  `include_system` — its runs, any status, in ingestion order.
 - **`run_id`** is the run a system event belongs to (from
   `provenance.runner.run_id`). A cascade hop is *emitted by* a run and names
   it as `provenance.runner.parent_run_id`; it does not carry the run's id
@@ -367,6 +367,16 @@ ledger), `throttled` (`{runs_per_min, max_concurrent, paused}` counters),
 (`null` until the first poll). A runner that has gone quiet is one whose
 latest row's `at` is older than its interval. The gateway keeps a tenant's
 last 50 rows, so the label never grows.
+
+### Tails page by ingestion order
+
+A listing by `label_skill`, `root_event_id` or `run_id` is a **tail**: it
+is ordered and resumed by the ingestion position (`events.seq`), never by
+`at`, so an event captured after your poll with an earlier `at` — a
+backdated import, a caller's clock — still follows the cursor you hold.
+A page's own history and the inbox stay chronological by `at`. A cursor
+is opaque and bound to the listing that issued it; one from a different
+kind of listing is refused as invalid.
 
 ## Reading a lineage: `list_lineage`
 

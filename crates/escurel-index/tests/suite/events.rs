@@ -476,6 +476,175 @@ async fn list_events_hides_system_rows_unless_include_system() {
     );
 }
 
+/// Hardening H3: a label listing is INGESTION order and resumes by it, so
+/// an event captured after a poll with an earlier `at` still follows the
+/// cursor; a page's own history stays chronological.
+#[tokio::test]
+async fn a_label_listing_is_ingestion_ordered_and_a_backdated_event_follows_the_cursor() {
+    use escurel_index::EventListFilter;
+    let h = fresh_harness();
+    let mut first = gmail_event();
+    first.at = Some("2026-04-01T09:00:05Z".to_owned());
+    first.title = "first".to_owned();
+    let first = h.indexer.capture_event(first).await.unwrap();
+    let page = h
+        .indexer
+        .list_events_filtered_page(
+            &EventListFilter {
+                label_skill: Some("email".to_owned()),
+                ..Default::default()
+            },
+            true,
+            10,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 1);
+    let cursor = page.resume_cursor.expect("resume cursor");
+    // Captured AFTER the poll, dated BEFORE the first event.
+    let mut late = gmail_event();
+    late.at = Some("2026-04-01T09:00:01Z".to_owned());
+    late.title = "backdated".to_owned();
+    let late = h.indexer.capture_event(late).await.unwrap();
+    let next = h
+        .indexer
+        .list_events_filtered_page(
+            &EventListFilter {
+                label_skill: Some("email".to_owned()),
+                ..Default::default()
+            },
+            true,
+            10,
+            Some(&cursor),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        next.events
+            .iter()
+            .map(|e| e.event_id.as_str())
+            .collect::<Vec<_>>(),
+        [late.event_id.as_str()]
+    );
+    let all = h
+        .indexer
+        .list_events_filtered_page(
+            &EventListFilter {
+                label_skill: Some("email".to_owned()),
+                ..Default::default()
+            },
+            true,
+            10,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        all.events
+            .iter()
+            .map(|e| e.title.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "backdated"],
+        "ingestion order, not `at` order"
+    );
+    // A page's history: assign both to a page, list by page → `at` order.
+    let page_id = "markdown/instances/customer/acme.md";
+    h.indexer
+        .assign_event(&first.event_id, page_id)
+        .await
+        .unwrap();
+    h.indexer
+        .assign_event(&late.event_id, page_id)
+        .await
+        .unwrap();
+    let hist = h
+        .indexer
+        .list_events_filtered_page(
+            &EventListFilter {
+                instance_page_id: Some(page_id.to_owned()),
+                status: Some("processed".to_owned()),
+                ..Default::default()
+            },
+            true,
+            10,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        hist.events
+            .iter()
+            .map(|e| e.title.as_str())
+            .collect::<Vec<_>>(),
+        ["backdated", "first"],
+        "a page's history stays chronological"
+    );
+}
+
+/// The `seq` migration (H3) is presence-checked and checkpointed like the
+/// lineage one, and numbers existing rows in the `(at_ts, event_id)` order
+/// the tails used until now.
+#[test]
+fn reopening_a_pre_seq_events_file_backfills_seq_once() {
+    use escurel_index::Migrator;
+    let db_dir = TempDir::new().unwrap();
+    let path = db_dir.path().join("escurel.duckdb");
+    {
+        let conn = Connection::open(&path).unwrap();
+        Migrator::up(&conn).unwrap();
+        // Rewind `events` to its pre-seq (0016) shape.
+        conn.execute_batch(
+            "DROP TABLE events; \
+             CREATE TABLE events (\
+                 event_id VARCHAR PRIMARY KEY, at_ts TIMESTAMP, \
+                 source VARCHAR NOT NULL DEFAULT '', mime VARCHAR NOT NULL DEFAULT '', \
+                 label_skill VARCHAR NOT NULL DEFAULT '', instance_page_id VARCHAR, \
+                 status VARCHAR NOT NULL DEFAULT 'inbox', title VARCHAR NOT NULL DEFAULT '', \
+                 body VARCHAR NOT NULL DEFAULT '', provenance JSON, \
+                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+                 kind VARCHAR DEFAULT 'user', root_event_id VARCHAR, run_id VARCHAR); \
+             INSERT INTO events (event_id, at_ts, label_skill) VALUES \
+                 ('b-later', TIMESTAMP '2026-04-01 09:00:05', 'email'), \
+                 ('a-earlier', TIMESTAMP '2026-04-01 09:00:01', 'email'), \
+                 ('c-undated', NULL, 'email'); \
+             CHECKPOINT;",
+        )
+        .unwrap();
+    }
+    let seqs = |conn: &Connection| -> Vec<(String, Option<i64>)> {
+        let mut stmt = conn
+            .prepare("SELECT event_id, seq FROM events ORDER BY seq NULLS LAST, event_id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    {
+        let conn = Connection::open(&path).unwrap();
+        Migrator::ensure_events_seq(&conn).unwrap();
+        assert_eq!(
+            seqs(&conn),
+            vec![
+                ("a-earlier".to_owned(), Some(1)),
+                ("b-later".to_owned(), Some(2)),
+                ("c-undated".to_owned(), Some(3)),
+            ],
+            "backfilled in (at_ts, event_id) order, undated last"
+        );
+        Migrator::ensure_events_seq(&conn).unwrap();
+        assert_eq!(seqs(&conn).len(), 3, "idempotent");
+    }
+    {
+        let conn =
+            Connection::open(&path).expect("reopen after the migration must not replay an ALTER");
+        Migrator::ensure_events_seq(&conn).unwrap();
+        assert_eq!(seqs(&conn)[2], ("c-undated".to_owned(), Some(3)));
+    }
+    let _ = Connection::open(&path).expect("third open is clean too");
+}
+
 #[tokio::test]
 async fn a_user_event_is_self_rooted_and_kind_defaults_to_user() {
     // Back-compat: every existing caller builds `NewEvent` with

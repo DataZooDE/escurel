@@ -571,12 +571,14 @@ CREATE TABLE events (
   created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   kind              VARCHAR DEFAULT 'user',           -- 'user' (work) | 'system' (run bookkeeping)
   root_event_id     VARCHAR,                          -- lineage root (a user event is its own)
-  run_id            VARCHAR                           -- the run a system event belongs to
+  run_id            VARCHAR,                          -- the run a system event belongs to
+  seq               BIGINT                            -- ingestion position: label / lineage / run listings page by it (H3)
 );
 CREATE INDEX events_status_at   ON events(status, at_ts);          -- the inbox view
 CREATE INDEX events_instance_at ON events(instance_page_id, at_ts);-- an instance's event history
 CREATE INDEX events_root_at     ON events(root_event_id, at_ts);   -- a lineage tree
 CREATE INDEX events_run_at      ON events(run_id, at_ts);          -- a run's own events
+CREATE INDEX events_seq         ON events(seq);                     -- tail order (0018_events_seq.sql)
 ```
 
 **Demo seeding (M7).** `seed_from_dir` (the `ESCUREL_SEED_DIR`

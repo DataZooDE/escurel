@@ -105,6 +105,7 @@ pub fn migrate_events_pg_lineage_sql() -> Vec<String> {
         "kind VARCHAR DEFAULT 'user'",
         "root_event_id VARCHAR",
         "run_id VARCHAR",
+        "seq BIGINT",
     ]
     .into_iter()
     .map(|col| {
@@ -115,7 +116,8 @@ pub fn migrate_events_pg_lineage_sql() -> Vec<String> {
     });
     let pg_sql = format!(
         "CREATE INDEX IF NOT EXISTS escurel_events_root_at ON {EVENTS_PG_TABLE_NAME} (tenant, root_event_id, at_ts); \
-         CREATE INDEX IF NOT EXISTS escurel_events_run_at ON {EVENTS_PG_TABLE_NAME} (tenant, run_id, at_ts);"
+         CREATE INDEX IF NOT EXISTS escurel_events_run_at ON {EVENTS_PG_TABLE_NAME} (tenant, run_id, at_ts); \
+         CREATE INDEX IF NOT EXISTS escurel_events_seq ON {EVENTS_PG_TABLE_NAME} (tenant, seq);"
     );
     let escaped = pg_sql.replace('\'', "''");
     alters
@@ -256,17 +258,19 @@ mod tests {
     #[test]
     fn lineage_migration_adds_columns_via_duckdb_and_indexes_via_postgres() {
         let sqls = migrate_events_pg_lineage_sql();
-        assert_eq!(sqls.len(), 4, "{sqls:?}");
-        for (sql, col) in sqls.iter().zip(["kind", "root_event_id", "run_id"]) {
+        // kind, root_event_id, run_id (0016) + seq (0018), then the indexes.
+        assert_eq!(sqls.len(), 5, "{sqls:?}");
+        for (sql, col) in sqls.iter().zip(["kind", "root_event_id", "run_id", "seq"]) {
             assert!(
                 sql.contains(&format!("ADD COLUMN IF NOT EXISTS {col}")),
                 "{sql}"
             );
         }
-        let idx = &sqls[3];
+        let idx = &sqls[4];
         assert!(idx.starts_with(&format!("CALL postgres_execute('{EVENTS_PG_ALIAS}'")));
         assert!(idx.contains("escurel_events_root_at"));
         assert!(idx.contains("escurel_events_run_at"));
+        assert!(idx.contains("escurel_events_seq"));
         assert!(
             create_events_pg_table_sql().contains("kind              VARCHAR    DEFAULT 'user'")
         );

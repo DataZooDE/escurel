@@ -2897,7 +2897,18 @@ impl LabelTail {
                 fresh
             }
             Err(e) => {
-                tracing::warn!(target: "escurel_runner", label = self.label, error = %e, "tail: poll failed; will retry");
+                let msg = e.to_string();
+                if msg.contains("cursor") {
+                    // The gateway no longer understands our cursor (a
+                    // listing changed shape under us — H3 moved the tails
+                    // to ingestion order). Start over from the end of the
+                    // label rather than retry the same refusal for ever.
+                    tracing::warn!(target: "escurel_runner", label = self.label, error = %msg, "tail: cursor refused; re-positioning at the end of the label");
+                    self.cursor = None;
+                    self.caught_up = false;
+                } else {
+                    tracing::warn!(target: "escurel_runner", label = self.label, error = %msg, "tail: poll failed; will retry");
+                }
                 Vec::new()
             }
         }

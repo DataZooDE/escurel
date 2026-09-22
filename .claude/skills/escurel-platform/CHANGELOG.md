@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.62 — tails page by ingestion order (`events.seq`)
+
+- `list_events` by `label_skill`, `root_event_id` or `run_id` is ordered
+  and resumed by a new ingestion position (`events.seq`, assigned at
+  capture; existing rows backfilled in their old `(at, event_id)` order),
+  so an event captured after a poll with an earlier `at` still follows the
+  cursor. A page's history and the inbox stay chronological by `at`. A
+  cursor from one kind of listing is refused by the other. The runner
+  re-positions a tail whose cursor the gateway refuses.
+
 ## 0.6.61 — the runner's label tails resume where they left off
 
 - The tails on `escurel:review` and `escurel:run-control` keep their

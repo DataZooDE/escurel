@@ -451,6 +451,26 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure `events.seq` — the ingestion position the label / lineage /
+    /// run listings page by (hardening H3) — exists and every row has one.
+    /// Presence-checked and CHECKPOINTed like [`Self::ensure_events_lineage`],
+    /// for the same WAL reason; the backfill numbers existing rows in the
+    /// `(at_ts, event_id)` order the tails used until now.
+    pub fn ensure_events_seq(conn: &Connection) -> Result<(), MigrationError> {
+        let present: i64 = conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'main' AND table_name = 'events' AND column_name = 'seq'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 1 {
+            return Ok(());
+        }
+        conn.execute_batch(STAGE_19_EVENTS_SEQ)?;
+        conn.execute_batch("CHECKPOINT;")?;
+        Ok(())
+    }
+
     /// Ensure the `resolved_links` provenance-graph VIEW (ADR-0010) exists.
     /// A VIEW, not a table — `CREATE OR REPLACE`, so it is safe (and cheap) to
     /// run on EVERY connection like the other `ensure_*` methods, and it stays
@@ -494,6 +514,7 @@ impl Migrator {
         // `events.kind` + lineage columns: a no-op here (0004 declares them)
         // — called so `up` and the reopen chain cannot disagree.
         Self::ensure_events_lineage(conn)?;
+        Self::ensure_events_seq(conn)?;
         // Drafts: a held write awaiting a human. Added after `events`, so it
         // is ALSO applied on every reopen (`ensure_drafts`) — a tenant
         // provisioned before drafts existed must gain the table, and every
@@ -626,6 +647,7 @@ const STAGE_13_WRITE_ATTRIBUTION: &str = include_str!("../sql/0011_write_attribu
 const STAGE_16_BRANCHES: &str = include_str!("../sql/0015_branches.sql");
 const STAGE_17_EVENTS_LINEAGE: &str = include_str!("../sql/0016_events_lineage.sql");
 const STAGE_18_DRAFT_RUN_LINEAGE: &str = include_str!("../sql/0017_drafts_run_lineage.sql");
+const STAGE_19_EVENTS_SEQ: &str = include_str!("../sql/0018_events_seq.sql");
 
 #[cfg(test)]
 mod tests {
