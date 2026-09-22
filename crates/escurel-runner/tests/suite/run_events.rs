@@ -292,3 +292,88 @@ async fn a_gateway_that_refuses_the_run_event_does_not_fail_the_run() {
         "refused, so absent: {r}"
     );
 }
+
+/// Crash recovery (P1 PR7b — BRD FR-R-5): a run that landed but died before
+/// its terminal was recorded is reconciled on the next boot — and its
+/// `run-finished` is written then, so the projection never misses a
+/// terminal the ledger reached. Idempotent by event id: a run that had
+/// already written its own is a no-op.
+#[tokio::test]
+async fn recovery_writes_the_missing_run_finished_for_an_orphaned_pending_row() {
+    use escurel_runner_core::{Ledger, LedgerDecision, Lineage, Trigger};
+
+    let gw = gateway().await;
+    let event_id = capture(&gw).await;
+    // The effect landed: the event is folded into the page (assigned).
+    call(
+        &gw,
+        Role::Admin,
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": PAGE }),
+    )
+    .await;
+    // …but the runner died before recording the terminal: an orphaned
+    // `pending` row in its ledger, seeded through the real ledger API.
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let ledger_path = ledger_dir.path().join("ledger.sqlite");
+    let run_id = {
+        let ledger = Ledger::open(&ledger_path).expect("open ledger");
+        match ledger
+            .begin_run(&Trigger {
+                is_system: false,
+                tenant: TENANT.to_owned(),
+                event_id: event_id.clone(),
+                label_skill: SKILL.to_owned(),
+                instance_page_id: Some(PAGE.to_owned()),
+                lineage: Lineage::root(event_id.clone()),
+                workflow: None,
+                content_hash: None,
+            })
+            .expect("begin_run")
+        {
+            LedgerDecision::Created(id) => id.0,
+            other => panic!("expected a fresh pending row, got {other:?}"),
+        }
+    };
+
+    let listen = format!("127.0.0.1:{}", free_port());
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", gw.mint_token(TENANT, Role::Admin))
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env("ESCUREL_RUNNER_LEDGER_PATH", &ledger_path)
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn runner"));
+
+    // Recovery runs on boot: the row is confirmed and marked processed.
+    let (recovered_run, status) = await_terminal(&listen, &event_id).await;
+    assert_eq!(recovered_run, run_id);
+    assert_eq!(status, "processed");
+
+    let events = run_events(&gw, &run_id).await;
+    let titles: Vec<&str> = events
+        .iter()
+        .map(|e| e["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        titles,
+        ["run-finished"],
+        "only the terminal is reconstructible: {events:?}"
+    );
+    let e = &events[0];
+    assert_eq!(e["event_id"], format!("run:{run_id}:finished"));
+    assert_eq!(e["instance_page_id"], PAGE);
+    assert_eq!(e["provenance"]["runner"]["harness"], "recovery", "{e}");
+    assert_eq!(e["provenance"]["runner"]["run_id"], run_id);
+    let finished = body(e);
+    assert_eq!(finished["status"], "processed", "{finished}");
+    assert_eq!(finished["produced_instance"], PAGE);
+    assert!(
+        finished["summary"]
+            .as_str()
+            .is_some_and(|s| s.contains("reconciled")),
+        "{finished}"
+    );
+}

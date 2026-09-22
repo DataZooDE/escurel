@@ -192,7 +192,10 @@ re-emission is idempotent. **The ledger stays the source of truth**: these
 are its projection and are best-effort — a gateway that refuses them (a
 non-admin runner bearer cannot write the `escurel:` namespace) is logged
 and counted (`escurel_runner_run_events_failed_total{kind}`), and the run
-lands regardless.
+lands regardless. A run whose process died before recording its terminal
+is reconciled on the next boot, and its `run-finished` is written then
+(`provenance.runner.harness: recovery`, `attempts: 0`) — so a terminal the
+ledger reached is never missing from the projection.
 
 ## Watching the bus from an open session: `event_subscribe`
 
