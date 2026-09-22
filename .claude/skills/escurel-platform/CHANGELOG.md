@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.42 — drafts record the run that proposed them (workbench backend P1)
+
+- `Draft`, `Changeset` and `diff_draft` carry `run_id` / `root_event_id`:
+  the run a held write came from and that run's lineage root. Stamped by
+  the server from the caller's per-run agent token (`references/08`) —
+  there is no argument for them, and a caller-supplied one is ignored. A
+  human's draft carries `null` for both.
+
 ## 0.6.41 — event `kind` + lineage columns (workbench backend P1)
 
 - Every event now carries `kind` (`user` | `system`), `root_event_id` and

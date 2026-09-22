@@ -281,6 +281,10 @@ async fn mcp_inner(
     // per-run agent token names the runner that delegated to it. Audit
     // lineage only — never read for an authorization decision.
     let actor = auth_ctx.as_ref().and_then(|c| c.actor.clone());
+    // The run this token was minted for (workbench backend P1): a per-run
+    // agent bearer names its run; the gateway stamps that lineage onto what
+    // the run writes. Never read for an authorization decision.
+    let run = auth_ctx.as_ref().and_then(|c| c.run.clone());
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
@@ -320,6 +324,7 @@ async fn mcp_inner(
                 &subject,
                 &token_groups,
                 actor.as_deref(),
+                run.as_ref(),
                 req.params,
             )
             .await;
@@ -629,6 +634,9 @@ const SHARED_SURFACE_PROBES: &[SharedSurfaceProbe] = &[
     (schema::Surface::Crdt, Indexer::has_shared_crdt),
 ];
 
+// Eight inputs describe one authenticated call (who, for whom, for which run);
+// bundling them would only move the count somewhere less legible.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_tools_call(
     state: &crate::server::AppState,
     tenant_id: &str,
@@ -636,6 +644,7 @@ async fn dispatch_tools_call(
     subject: &str,
     token_groups: &[String],
     actor: Option<&str>,
+    run: Option<&escurel_auth::RunClaims>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -696,6 +705,8 @@ async fn dispatch_tools_call(
         is_admin: matches!(role, None | Some(Role::Admin)),
         token_groups,
         actor,
+        run_id: run.map(|r| r.run_id.as_str()),
+        root_event_id: run.and_then(|r| r.root_event_id.as_deref()),
     };
 
     // The admin gate, once, from the registry.

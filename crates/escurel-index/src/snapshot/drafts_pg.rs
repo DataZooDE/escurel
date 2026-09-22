@@ -66,9 +66,36 @@ pub fn create_drafts_pg_table_sql() -> String {
             changeset_id    VARCHAR, \
             created_at      TIMESTAMP NOT NULL DEFAULT now(), \
             decided_at      TIMESTAMP, \
+            base_version    VARCHAR, \
+            run_id          VARCHAR, \
+            root_event_id   VARCHAR, \
             PRIMARY KEY (tenant, draft_id)\
         );"
     )
+}
+
+/// The columns a shared drafts table gained after its first deployment, as
+/// idempotent `ADD COLUMN IF NOT EXISTS` statements (through DuckDB, which
+/// the postgres extension supports): `changeset_id` (#509 §1),
+/// `base_version` (#509 §2 — the projection has read it since, so a table
+/// without it broke every draft read on this backend), and the run lineage
+/// (workbench backend P1). `CREATE TABLE IF NOT EXISTS` never alters an
+/// existing relation, so a deployed table keeps its old shape without these.
+pub fn migrate_drafts_pg_columns_sql() -> Vec<String> {
+    [
+        "changeset_id VARCHAR",
+        "base_version VARCHAR",
+        "run_id VARCHAR",
+        "root_event_id VARCHAR",
+    ]
+    .into_iter()
+    .map(|col| {
+        format!(
+            "ALTER TABLE {DRAFTS_PG_ALIAS}.{DRAFTS_PG_TABLE_NAME} \
+             ADD COLUMN IF NOT EXISTS {col};"
+        )
+    })
+    .collect()
 }
 
 /// Run the attach + idempotent table creation on `conn`.
@@ -79,13 +106,12 @@ pub fn attach_drafts_pg(conn: &Connection, catalog_dsn: &str) -> Result<(), Snap
     conn.execute_batch("INSTALL postgres; LOAD postgres;")?;
     conn.execute_batch(&attach_drafts_pg_sql(catalog_dsn)?)?;
     conn.execute_batch(&create_drafts_pg_table_sql())?;
-    // A shared table provisioned before changesets existed (#509 §1) gains
-    // the column here rather than in a migration step an operator has to
-    // remember — same reasoning as `Migrator::ensure_drafts` locally.
-    conn.execute_batch(&format!(
-        "ALTER TABLE {DRAFTS_PG_ALIAS}.{DRAFTS_PG_TABLE_NAME} \
-         ADD COLUMN IF NOT EXISTS changeset_id VARCHAR;"
-    ))?;
+    // A shared table provisioned before a column existed gains it here
+    // rather than in a migration step an operator has to remember — same
+    // reasoning as `Migrator::ensure_drafts` locally.
+    for sql in migrate_drafts_pg_columns_sql() {
+        conn.execute_batch(&sql)?;
+    }
     Ok(())
 }
 

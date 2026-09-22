@@ -93,6 +93,11 @@ pub struct DraftInfo {
     /// the byte CAS. `None` where there is no CRDT backend to merge against,
     /// which is meaningful rather than missing.
     pub base_version: Option<String>,
+    /// The run that proposed this, from the caller's per-run token
+    /// (workbench backend P1); `None` for a draft no run proposed.
+    pub run_id: Option<String>,
+    /// That run's lineage root event; `None` with `run_id`.
+    pub root_event_id: Option<String>,
 }
 
 /// A changeset as a queue row (#509 §1): the held writes of one run, counted
@@ -109,6 +114,10 @@ pub struct ChangesetInfo {
     pub author: String,
     /// RFC 3339, the oldest member's creation time.
     pub created_at: String,
+    /// The run that proposed it (every member carries the same one).
+    pub run_id: Option<String>,
+    /// That run's lineage root event.
+    pub root_event_id: Option<String>,
 }
 
 /// Input to [`Indexer::create_draft`].
@@ -130,6 +139,10 @@ pub struct NewDraft {
     /// The target's CRDT version at drafting time (#509 §2). `None` when the
     /// deployment has no CRDT backend.
     pub base_version: Option<String>,
+    /// The run that proposes this, from the caller's token; server-set.
+    pub run_id: Option<String>,
+    /// That run's lineage root event; server-set.
+    pub root_event_id: Option<String>,
 }
 
 /// Hex sha256 of a draft's bytes. Free function so the server can compute the
@@ -158,6 +171,8 @@ fn row_to_draft(row: &duckdb::Row<'_>) -> duckdb::Result<DraftInfo> {
         created_at: row.get::<_, Option<String>>(10)?.unwrap_or_default(),
         changeset_id: row.get(11)?,
         base_version: row.get(12)?,
+        run_id: row.get(13)?,
+        root_event_id: row.get(14)?,
     })
 }
 
@@ -165,7 +180,8 @@ fn select_cols(table: &str) -> String {
     format!(
         "SELECT draft_id, target_page_id, content, content_sha256, base_sha256, \
          author, event_id, status, reason, decided_by, \
-         strftime(created_at, '%Y-%m-%dT%H:%M:%SZ'), changeset_id, base_version \
+         strftime(created_at, '%Y-%m-%dT%H:%M:%SZ'), changeset_id, base_version, \
+         run_id, root_event_id \
          FROM {table}"
     )
 }
@@ -227,8 +243,9 @@ impl Indexer {
                 &format!(
                     "INSERT INTO {table} \
                      (tenant, draft_id, target_page_id, content, content_sha256, base_sha256, \
-                      author, event_id, changeset_id, base_version, status, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)"
+                      author, event_id, changeset_id, base_version, run_id, root_event_id, \
+                      status, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)"
                 ),
                 duckdb::params![
                     t,
@@ -241,6 +258,8 @@ impl Indexer {
                     &draft.event_id,
                     &draft.changeset_id,
                     &draft.base_version,
+                    &draft.run_id,
+                    &draft.root_event_id,
                 ],
             )?;
         } else {
@@ -248,8 +267,9 @@ impl Indexer {
                 &format!(
                     "INSERT INTO {table} \
                      (draft_id, target_page_id, content, content_sha256, base_sha256, \
-                      author, event_id, changeset_id, base_version, status, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)"
+                      author, event_id, changeset_id, base_version, run_id, root_event_id, \
+                      status, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)"
                 ),
                 duckdb::params![
                     &draft_id,
@@ -261,6 +281,8 @@ impl Indexer {
                     &draft.event_id,
                     &draft.changeset_id,
                     &draft.base_version,
+                    &draft.run_id,
+                    &draft.root_event_id,
                 ],
             )?;
         }
@@ -399,6 +421,19 @@ impl Indexer {
         Ok(out)
     }
 
+    /// Every draft, whatever its status, under a lineage root (the run that
+    /// proposed it was triggered somewhere under `root_event_id`), oldest
+    /// first — the drafts half of a lineage tree. One indexed read.
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn list_drafts_for_root(
+        &self,
+        root_event_id: &str,
+    ) -> Result<Vec<DraftInfo>, IndexerError> {
+        self.drafts_where("root_event_id = ?", root_event_id).await
+    }
+
     /// Every draft in one changeset, oldest first — the order the run
     /// proposed them, which is the order a reviewer reads them in and the
     /// order promotion applies them in.
@@ -412,23 +447,33 @@ impl Indexer {
         &self,
         changeset_id: &str,
     ) -> Result<Vec<DraftInfo>, IndexerError> {
+        self.drafts_where("changeset_id = ?", changeset_id).await
+    }
+
+    /// The shared query behind the two listings above: one bound predicate,
+    /// tenant-scoped on the shared backends, oldest first.
+    async fn drafts_where(
+        &self,
+        predicate: &str,
+        value: &str,
+    ) -> Result<Vec<DraftInfo>, IndexerError> {
         let table = self.drafts_table();
         let tenant = self.drafts_tenant_scope().map(str::to_owned);
         let conn = self.conn.lock().await;
         let (sql, params): (String, Vec<String>) = match &tenant {
             Some(t) => (
                 format!(
-                    "{} WHERE tenant = ? AND changeset_id = ? ORDER BY created_at ASC",
+                    "{} WHERE tenant = ? AND {predicate} ORDER BY created_at ASC",
                     select_cols(&table)
                 ),
-                vec![t.clone(), changeset_id.to_owned()],
+                vec![t.clone(), value.to_owned()],
             ),
             None => (
                 format!(
-                    "{} WHERE changeset_id = ? ORDER BY created_at ASC",
+                    "{} WHERE {predicate} ORDER BY created_at ASC",
                     select_cols(&table)
                 ),
-                vec![changeset_id.to_owned()],
+                vec![value.to_owned()],
             ),
         };
         let mut stmt = conn.prepare(&sql)?;
@@ -472,7 +517,8 @@ impl Indexer {
                     COUNT(*) FILTER (WHERE status = 'promoted'), \
                     COUNT(*) FILTER (WHERE status = 'discarded'), \
                     MIN(author), \
-                    strftime(MIN(created_at), '%Y-%m-%dT%H:%M:%SZ') AS created \
+                    strftime(MIN(created_at), '%Y-%m-%dT%H:%M:%SZ') AS created, \
+                    MIN(run_id), MIN(root_event_id) \
              FROM {table} {where_tenant} \
              GROUP BY changeset_id ORDER BY created DESC{cap}"
         );
@@ -498,6 +544,8 @@ impl Indexer {
                 .to_owned(),
                 author: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
                 created_at: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                run_id: row.get(7)?,
+                root_event_id: row.get(8)?,
             })
         })?;
         let mut out = Vec::new();

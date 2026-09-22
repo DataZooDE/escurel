@@ -36,6 +36,13 @@ pub struct Draft {
     pub reason: String,
     pub decided_by: String,
     pub created_at: String,
+    /// The run that proposed it, from the caller's per-run token (`null` on
+    /// the wire for a draft no run proposed — a human's).
+    #[serde(deserialize_with = "null_as_default")]
+    pub run_id: String,
+    /// That run's lineage root event (`null` with `run_id`).
+    #[serde(deserialize_with = "null_as_default")]
+    pub root_event_id: String,
 }
 
 /// `create_draft` arguments.
@@ -212,6 +219,11 @@ pub struct DiffDraftResponse {
     /// is a merge rather than a write. Worth showing a reviewer BEFORE they
     /// approve, rather than as a failed promotion afterwards.
     pub base_moved: bool,
+    /// The run that proposed the draft (`null` for a human's).
+    #[serde(deserialize_with = "null_as_default")]
+    pub run_id: String,
+    #[serde(deserialize_with = "null_as_default")]
+    pub root_event_id: String,
     pub frontmatter_changes: Vec<FrontmatterChange>,
     pub block_changes: Vec<BlockChange>,
     pub issues: Vec<crate::ValidationIssue>,
@@ -231,6 +243,11 @@ pub struct Changeset {
     pub status: String,
     pub author: String,
     pub created_at: String,
+    /// The run that proposed it (`null` when no run did).
+    #[serde(deserialize_with = "null_as_default")]
+    pub run_id: String,
+    #[serde(deserialize_with = "null_as_default")]
+    pub root_event_id: String,
     pub event_ids: Vec<String>,
     pub target_page_ids: Vec<String>,
 }

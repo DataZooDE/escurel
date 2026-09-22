@@ -250,6 +250,60 @@ fn fts_index_on_blocks_body_works_end_to_end() {
     );
 }
 
+/// `drafts.created_at` is `DEFAULT CURRENT_TIMESTAMP`, so an ALTER left in
+/// the WAL cannot be replayed by the NEXT process to open the file
+/// (docs/notes/discovered/2026-09-16-alter-on-a-defaulted-table-poisons-the-wal.md).
+/// The lineage columns (`run_id`, `root_event_id`) must therefore arrive
+/// presence-checked + checkpointed: build a pre-lineage file, migrate it,
+/// then open it twice more — the second plain open is the replay.
+#[test]
+fn reopening_a_pre_lineage_drafts_file_gains_the_columns_once() {
+    let (conn, dir) = fresh_db();
+    Migrator::up(&conn).expect("schema migration succeeds");
+    // DuckDB refuses DROP COLUMN on an indexed table: recreate the 0012-0014
+    // shape instead.
+    conn.execute_batch(
+        "DROP TABLE drafts; \
+         CREATE TABLE drafts (\
+             draft_id VARCHAR PRIMARY KEY, target_page_id VARCHAR NOT NULL, \
+             content VARCHAR NOT NULL, content_sha256 VARCHAR NOT NULL, base_sha256 VARCHAR, \
+             author VARCHAR NOT NULL DEFAULT '', event_id VARCHAR, \
+             status VARCHAR NOT NULL DEFAULT 'open', reason VARCHAR NOT NULL DEFAULT '', \
+             decided_by VARCHAR NOT NULL DEFAULT '', \
+             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, decided_at TIMESTAMP, \
+             changeset_id VARCHAR, base_version VARCHAR); \
+         CREATE INDEX drafts_status_created ON drafts (status, created_at); \
+         CREATE INDEX drafts_changeset ON drafts (changeset_id, status); \
+         CHECKPOINT;",
+    )
+    .unwrap();
+    let path = dir.path().join("escurel.duckdb");
+    drop(conn);
+    let lineage_cols = |conn: &Connection| -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_name = 'drafts' AND column_name IN ('run_id', 'root_event_id')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    {
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(lineage_cols(&conn), 0, "fixture is pre-lineage");
+        Migrator::ensure_drafts(&conn).expect("reopen chain");
+        assert_eq!(lineage_cols(&conn), 2);
+        Migrator::ensure_drafts(&conn).expect("idempotent");
+    }
+    {
+        let conn =
+            Connection::open(&path).expect("reopen after the migration must not replay an ALTER");
+        assert_eq!(lineage_cols(&conn), 2);
+        Migrator::ensure_drafts(&conn).expect("no-op on the third boot");
+    }
+    let _ = Connection::open(&path).expect("third open is clean too");
+}
+
 #[test]
 fn running_up_twice_returns_error() {
     let (conn, _dir) = fresh_db();

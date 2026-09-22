@@ -159,6 +159,8 @@ fn analyst(subject: &str) -> AclCaller<'_> {
         is_admin: false,
         token_groups: &[],
         actor: None,
+        run_id: None,
+        root_event_id: None,
     }
 }
 
