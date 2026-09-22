@@ -800,6 +800,7 @@ mod tests {
 
     fn trigger(event_id: &str) -> Trigger {
         Trigger {
+            is_system: false,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),
             label_skill: "note".to_owned(),
@@ -823,6 +824,7 @@ mod tests {
         let ledger = Ledger::open(dir.path().join("l.sqlite").to_str().unwrap()).expect("open");
 
         let with = |event_id: &str, instance: Option<&str>, hash: Option<&str>| Trigger {
+            is_system: false,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),
             label_skill: "email".to_owned(),

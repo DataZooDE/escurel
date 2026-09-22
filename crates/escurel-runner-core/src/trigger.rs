@@ -107,6 +107,13 @@ pub struct Trigger {
     /// carries no content to hash), which simply means no content dedup — the
     /// event-id idempotency still applies.
     pub content_hash: Option<String>,
+    /// `true` for a `kind: system` event — bookkeeping ABOUT a run
+    /// (`run-started`, a review transition, runner health) rather than
+    /// work. The gateway hides these from the inbox the poller reads; the
+    /// webhook path does not, so the dispatch gate refuses them by this
+    /// flag. A runner that dispatched its own `run-finished` would hand
+    /// itself a job per run, forever.
+    pub is_system: bool,
 }
 
 impl Trigger {
@@ -182,6 +189,7 @@ impl Trigger {
             lineage,
             workflow,
             content_hash: Some(content_hash(event)),
+            is_system: event.kind == "system",
         }
     }
 }
@@ -307,6 +315,18 @@ mod tests {
         assert_eq!(trigger.tenant, "tenant-a");
         assert_eq!(trigger.event_id, "01ABCDEF");
         assert_eq!(trigger.label_skill, "note");
+    }
+
+    #[test]
+    fn a_system_event_is_flagged_so_the_gate_can_drop_it() {
+        // `kind: system` is bookkeeping about a run (`run-started`, a review
+        // transition, runner health). The gateway hides it from the inbox the
+        // poller reads, but the webhook path hands the runner the raw event —
+        // so the trigger must carry the flag for the gate to refuse it.
+        let mut event = sample_event();
+        event.kind = "system".to_owned();
+        assert!(Trigger::from_event(&event, "tenant-a").is_system);
+        assert!(!Trigger::from_event(&sample_event(), "tenant-a").is_system);
     }
 
     #[test]

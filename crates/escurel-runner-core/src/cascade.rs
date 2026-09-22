@@ -281,6 +281,7 @@ mod tests {
 
     fn trigger(label: &str, event_id: &str, lineage: Lineage) -> Trigger {
         Trigger {
+            is_system: false,
             tenant: "acme".into(),
             event_id: event_id.into(),
             label_skill: label.into(),
