@@ -284,6 +284,7 @@ impl Harness for MuseHarness {
             // closed rather than piped-and-unwritten.
             stdin: None,
             timeout: self.timeout,
+            cancel: task.cancel.as_ref(),
         })
         .await?;
 

@@ -290,6 +290,11 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_POLL_INTERVAL` (default
     /// [`DEFAULT_POLL_INTERVAL`]).
     pub poll_interval: Duration,
+    /// How long a cancelled run's harness subprocess gets between SIGTERM
+    /// and SIGKILL (workbench backend P2-3a). Same duration grammar as
+    /// `poll_interval`. Source: `ESCUREL_RUNNER_CANCEL_GRACE` (default
+    /// [`crate::DEFAULT_CANCEL_GRACE`], 5s).
+    pub cancel_grace: Duration,
     /// How often the runner synthesizes a `lint` invocation (compile-first-wiki
     /// G2): each tick it `capture_event`s a `label_skill: lint` event with a
     /// deterministic per-window id, so the reactive loop drives the scheduled
@@ -562,6 +567,13 @@ impl RunnerConfig {
             _ => DEFAULT_POLL_INTERVAL,
         };
 
+        let cancel_grace = match lookup("ESCUREL_RUNNER_CANCEL_GRACE") {
+            Some(raw) if !raw.is_empty() => {
+                parse_duration(&raw).ok_or(ConfigError::InvalidPollInterval { value: raw })?
+            }
+            _ => crate::DEFAULT_CANCEL_GRACE,
+        };
+
         // Opt-in lint schedule: unset ⇒ disabled. Reuses the poll-interval
         // duration grammar/error (both are "how often to tick").
         let lint_interval = match lookup("ESCUREL_RUNNER_LINT_INTERVAL") {
@@ -714,6 +726,7 @@ impl RunnerConfig {
             queue_cap,
             seen_cap,
             poll_interval,
+            cancel_grace,
             lint_interval,
             ledger_path,
             harness,

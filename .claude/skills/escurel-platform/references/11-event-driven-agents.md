@@ -118,6 +118,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_HARNESS` | `echo` | **`echo` is the default — set `claude` or nothing runs an LLM** |
 | `ESCUREL_RUNNER_CLAUDE_BIN` | `claude` | binary path (or a test stub) |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | `30s` | inbox-poll backstop |
+| `ESCUREL_RUNNER_CANCEL_GRACE` | `5s` | on cancel, the wait between SIGTERM and SIGKILL for the harness subprocess |
 | `ESCUREL_RUNNER_EMIT_EVENTS` | `true` | write each run's lifecycle as `escurel:run` system events (see *Run lifecycle events*); `false` = the workbench sees events and drafts but no runs |
 | `ESCUREL_RUNNER_MAX_DEPTH` | `8` | cascade depth budget |
 | `ESCUREL_RUNNER_TENANT_MAX_CONCURRENT`, `…_RUNS_PER_MIN` | — | per-tenant limits |
@@ -260,6 +261,16 @@ unassigned for the tenant-wide actions, with `provenance.control =
 token (a block you supply is replaced). It therefore never shows as inbox
 work; find it under `list_events { run_id }` or
 `list_events { label_skill: "escurel:run-control" }`.
+
+**What a cancel does.** The runner stops the harness subprocess (SIGTERM,
+`ESCUREL_RUNNER_CANCEL_GRACE`, SIGKILL; the in-process Gemini loop stops
+between turns), records the run `cancelled` in its ledger, and writes
+`run-finished { status: "cancelled", reason }` with the requester's reason.
+Nothing lands: the page is untouched, the trigger event stays `inbox`, no
+cascade is emitted, and open drafts stay open. `cancelled` is terminal for
+the poller — the event is not re-run on the next poll; a `retry` control
+re-drives it. A cancel for a run that is not live (unknown, or already at a
+terminal) is refused, and the terminal stands.
 
 ## Reading a lineage: `list_lineage`
 

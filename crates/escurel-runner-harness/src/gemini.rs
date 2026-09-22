@@ -252,6 +252,11 @@ impl GeminiHarness {
         let mut summary = String::new();
 
         for _turn in 0..self.max_turns {
+            // In-process, so no child to signal: the cancel lands between
+            // turns (a turn in flight finishes its HTTP call first).
+            if task.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return Err(HarnessError::Cancelled { harness: NAME });
+            }
             let request = json!({
                 "systemInstruction": { "parts": [{ "text": task.instructions }] },
                 "contents": contents,

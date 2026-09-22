@@ -228,6 +228,10 @@ pub struct TaskContext {
     /// and the dispatch loop reads it to know that a held write must not
     /// cascade.
     pub autonomy: Autonomy,
+    /// The run's cancel handle (workbench backend P2-3a): a subprocess
+    /// harness stops its child on it, an in-process one checks it between
+    /// turns. `None` = not cancellable (tests, one-off packaging).
+    pub cancel: Option<crate::Cancel>,
     /// Tenant-scoped bearer for the `/mcp` toolset, held opaque.
     ///
     /// For now this reuses the configured `ESCUREL_RUNNER_TOKEN`. The
@@ -357,6 +361,7 @@ impl TaskContext {
         token: SecretString,
     ) -> Self {
         Self {
+            cancel: None,
             instructions,
             input,
             mcp_endpoint,
@@ -744,6 +749,7 @@ pub async fn package(
     let delegation = build_delegation(trigger, cfg, tokens, requester.as_deref())?;
 
     Ok(TaskContext {
+        cancel: None,
         instructions,
         input,
         autonomy,
@@ -1525,6 +1531,7 @@ mod tests {
     #[test]
     fn debug_redacts_the_token() {
         let ctx = TaskContext {
+            cancel: None,
             instructions: "i".into(),
             input: "in".into(),
             mcp_endpoint: "http://gw/mcp".into(),

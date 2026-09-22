@@ -75,6 +75,7 @@ impl Harness for EchoHarness {
             // Streamed in, then closed so the harness's read-to-end completes.
             stdin: Some(&payload),
             timeout: self.timeout,
+            cancel: task.cancel.as_ref(),
         })
         .await?;
 

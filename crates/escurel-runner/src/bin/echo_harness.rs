@@ -309,6 +309,16 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    // Test-only idle (workbench backend P2-3a): `ESCUREL_ECHO_SLEEP_MS`
+    // holds the harness before it acts, so a test can cancel a run that is
+    // genuinely in flight. Off unless set.
+    if let Some(ms) = std::env::var("ESCUREL_ECHO_SLEEP_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
     // Test-only failure injection (async-ops Phase 0.3 DoD): when
     // `ESCUREL_ECHO_FAIL_SKILL` matches this event's `label_skill`, fail
     // deterministically. The run then exhausts its retries and dead-letters —

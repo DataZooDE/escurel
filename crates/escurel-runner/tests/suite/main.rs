@@ -19,6 +19,7 @@
 
 mod agy_live;
 mod autonomy_gate;
+mod cancellable_runs;
 mod cascade_lineage;
 mod cascade_produced;
 mod cascade_trace;

@@ -54,6 +54,9 @@ pub enum RunFinish {
     Failed { reason: String },
     /// Terminal for the loop controls or the retry policy.
     DeadLetter { reason: String },
+    /// Stopped on request while live (workbench backend P2-3a); `reason` is
+    /// the requester's, when they gave one.
+    Cancelled { reason: String },
 }
 
 /// What one attempt reported.
@@ -196,6 +199,7 @@ impl RunEventCtx {
             RunFinish::Processed { produced, held } => ("processed", produced.clone(), *held, None),
             RunFinish::Failed { reason } => ("failed", None, false, Some(reason.clone())),
             RunFinish::DeadLetter { reason } => ("dead_letter", None, false, Some(reason.clone())),
+            RunFinish::Cancelled { reason } => ("cancelled", None, false, Some(reason.clone())),
         };
         let plan = self.latest_plan(client).await;
         let mut body = json!({

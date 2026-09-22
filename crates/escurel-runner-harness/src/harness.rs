@@ -75,6 +75,14 @@ pub enum HarnessError {
         /// The configured timeout.
         timeout_ms: u64,
     },
+    /// The run was cancelled while the harness was live (workbench backend
+    /// P2-3a): a subprocess was stopped (SIGTERM, a grace, SIGKILL), an
+    /// in-process loop returned between turns.
+    #[error("harness {harness:?} cancelled")]
+    Cancelled {
+        /// The adapter name.
+        harness: &'static str,
+    },
     /// The harness exited non-zero (and emitted no parseable outcome).
     #[error("harness {harness:?} exited with status {code:?}: {stderr}")]
     NonZeroExit {
@@ -179,6 +187,11 @@ pub(crate) struct Spawn<'a> {
     /// the timeout — that is why this closes rather than leaving the handle.
     pub stdin: Option<&'a [u8]>,
     pub timeout: std::time::Duration,
+    /// The run's cancel handle (workbench backend P2-3a). On cancel the
+    /// child gets SIGTERM, [`escurel_runner_core::Cancel::grace`], then
+    /// SIGKILL, and the run reports [`HarnessError::Cancelled`]. `None` =
+    /// not cancellable.
+    pub cancel: Option<&'a escurel_runner_core::Cancel>,
 }
 
 /// Run `spawn` to completion and return its captured output.
@@ -231,16 +244,55 @@ pub(crate) async fn run_capture(spawn: Spawn<'_>) -> Result<std::process::Output
             .map_err(|source| HarnessError::Io { harness, source })?;
     }
 
-    let output = match tokio::time::timeout(spawn.timeout, child.wait_with_output()).await {
-        Ok(result) => result.map_err(|source| HarnessError::Io { harness, source })?,
-        Err(_elapsed) => {
-            // The cancelled `wait_with_output` future drops the `Child` it
-            // consumed; `kill_on_drop` then reaps the overrunning child.
+    // Read both pipes concurrently with the wait: a child that fills a pipe
+    // nobody drains would block, and the wait must stay selectable against
+    // the deadline and the cancel handle (which `wait_with_output`, owning
+    // the child, is not).
+    let stdout = child.stdout.take().map(|mut h| {
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut h, &mut buf).await;
+            buf
+        })
+    });
+    let stderr = child.stderr.take().map(|mut h| {
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut h, &mut buf).await;
+            buf
+        })
+    });
+    let cancelled = async {
+        match spawn.cancel {
+            Some(c) => c.cancelled().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    let status = tokio::select! {
+        result = child.wait() => result.map_err(|source| HarnessError::Io { harness, source })?,
+        () = tokio::time::sleep(spawn.timeout) => {
+            // The `Child` is dropped on return; `kill_on_drop` reaps it.
             return Err(HarnessError::Timeout {
                 harness,
                 timeout_ms: spawn.timeout.as_millis() as u64,
             });
         }
+        () = cancelled => {
+            let grace = spawn.cancel.map_or(std::time::Duration::ZERO, |c| c.grace);
+            stop_child(&mut child, grace).await;
+            return Err(HarnessError::Cancelled { harness });
+        }
+    };
+    let collect = |h: Option<tokio::task::JoinHandle<Vec<u8>>>| async move {
+        match h {
+            Some(h) => h.await.unwrap_or_default(),
+            None => Vec::new(),
+        }
+    };
+    let output = std::process::Output {
+        status,
+        stdout: collect(stdout).await,
+        stderr: collect(stderr).await,
     };
 
     if !output.status.success() {
@@ -252,6 +304,29 @@ pub(crate) async fn run_capture(spawn: Spawn<'_>) -> Result<std::process::Output
         });
     }
     Ok(output)
+}
+
+/// Stop a cancelled child: SIGTERM so a harness that cleans up (a CLI
+/// flushing its session, an MCP client closing) may, wait `grace`, then
+/// SIGKILL. A child that ignores SIGTERM is still gone after the grace.
+async fn stop_child(child: &mut tokio::process::Child, grace: std::time::Duration) {
+    if let Some(pid) = child.id() {
+        // Through the `kill` utility rather than `libc::kill`: the workspace
+        // forbids `unsafe`, tokio's own `start_kill` is SIGKILL-only, and a
+        // fork per cancel is nothing. `child.id()` is `Some` only while the
+        // child is live, so the pid is ours and unreaped.
+        let _ = tokio::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+    }
+    if tokio::time::timeout(grace, child.wait()).await.is_err() {
+        let _ = child.kill().await;
+    }
 }
 
 /// Symlink every entry of `from` into `into`, skipping names in `skip`.
@@ -280,4 +355,94 @@ pub(crate) fn link_entries(
         std::os::unix::fs::symlink(entry.path(), target)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["-c".to_owned(), script.to_owned()]
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_child_is_stopped_and_the_run_reports_cancelled() {
+        let cancel = escurel_runner_core::Cancel::new(Duration::from_secs(2));
+        let c = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            c.cancel();
+        });
+        let started = Instant::now();
+        let args = sh("sleep 30");
+        let result = run_capture(Spawn {
+            harness: "test",
+            bin: "sh",
+            args: &args,
+            envs: Vec::new(),
+            stdin: None,
+            timeout: Duration::from_secs(60),
+            cancel: Some(&cancel),
+        })
+        .await;
+        assert!(
+            matches!(result, Err(HarnessError::Cancelled { harness: "test" })),
+            "{result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "stopped, not waited out"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_child_that_ignores_sigterm_is_killed_after_the_grace() {
+        let cancel = escurel_runner_core::Cancel::new(Duration::from_millis(300));
+        let c = cancel.clone();
+        // After the shell has installed its trap; a SIGTERM before that
+        // would simply end it.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            c.cancel();
+        });
+        let started = Instant::now();
+        let args = sh("trap '' TERM; sleep 30");
+        let result = run_capture(Spawn {
+            harness: "test",
+            bin: "sh",
+            args: &args,
+            envs: Vec::new(),
+            stdin: None,
+            timeout: Duration::from_secs(60),
+            cancel: Some(&cancel),
+        })
+        .await;
+        assert!(
+            matches!(result, Err(HarnessError::Cancelled { .. })),
+            "{result:?}"
+        );
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(650) && took < Duration::from_secs(5),
+            "{took:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_uncancelled_run_still_completes_normally() {
+        let args = sh("printf hello");
+        let output = run_capture(Spawn {
+            harness: "test",
+            bin: "sh",
+            args: &args,
+            envs: Vec::new(),
+            stdin: None,
+            timeout: Duration::from_secs(10),
+            cancel: None,
+        })
+        .await
+        .expect("runs");
+        assert_eq!(output.stdout, b"hello");
+    }
 }

@@ -100,6 +100,10 @@ pub enum ReconcileError {
     /// caller can record the precise DLQ reason.
     #[error("harness produced unparseable output: {0}")]
     BadOutput(String),
+    /// The run was cancelled while live (workbench backend P2-3a): the
+    /// harness was stopped on request. Never retried.
+    #[error("run cancelled: {0}")]
+    Cancelled(String),
     /// **Not a failure** — the run was a *clean no-op*: the harness ran
     /// successfully but had genuinely nothing to do (no cross-skill change, no
     /// instance to write), so there is no effect to confirm. A converged
@@ -389,6 +393,9 @@ pub enum RunFailure {
     /// `bad_output` (#158). Surfaced as a distinct permanent sub-kind so the
     /// dispatch loop can label the DLQ entry precisely.
     BadOutput,
+    /// The run was cancelled while live (workbench backend P2-3a). The
+    /// caller records `cancelled`: terminal, no retry, no cascade.
+    Cancelled,
 }
 
 /// The result of [`run_with_retry`]: whether the run ultimately succeeded
@@ -486,6 +493,23 @@ where
                     confirmed: None,
                     converged_no_op: false,
                     failure: Some(RunFailure::BadOutput),
+                    attempts: tries,
+                };
+            }
+            Err(ReconcileError::Cancelled(reason)) => {
+                // Somebody asked for this run to stop. Not a failure of the
+                // attempt, so no retry: the retry policy exists for the
+                // world misbehaving, not for a human changing their mind.
+                tracing::info!(
+                    target: "escurel_runner",
+                    attempt = tries,
+                    reason = %reason,
+                    "reconcile: run cancelled; stopping (no retry)"
+                );
+                return RunReport {
+                    confirmed: None,
+                    converged_no_op: false,
+                    failure: Some(RunFailure::Cancelled),
                     attempts: tries,
                 };
             }
