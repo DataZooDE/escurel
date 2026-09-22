@@ -469,8 +469,15 @@ async fn validate_accepts_the_reserved_skill_namespace() {
                  # onboarding\n\
                  Then follow [[skill::customer]].\n";
     let issues = h.indexer.validate(None, draft).await.unwrap();
+    // A skill page without a `summary:` draws the workbench's
+    // `summary_missing` WARNING (P2-7); what this test guards is that
+    // nothing here is an error.
+    let errors: Vec<_> = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .collect();
     assert!(
-        issues.is_empty(),
+        errors.is_empty(),
         "a wikilink into the reserved `skill::` namespace must validate when \
          the referenced SKILL exists — `resolve` honours the namespace, so a \
          page that resolves must also be writable: {issues:?}"

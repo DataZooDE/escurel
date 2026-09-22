@@ -4,6 +4,20 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.57 — the skill contract keys: `summary`, `harness`, `actions[]`, `cascade{}` (workbench P2-7a)
+
+- `list_skills` rows carry what a skill page declares: `summary` (the
+  one-liner for skill lists), `harness` (the adapter it asks for),
+  `actions` (the skills it may fan out to), `cascade {target, max_depth}`.
+  Absent keys stay absent.
+- `validate` lints them on a skill page: `summary_missing` (warning),
+  `summary_too_long` (> 200 characters), `harness_unknown` (not one of
+  echo | claude | codex | agy | muse | gemini | delegate),
+  `action_skill_unknown` (an entry naming a skill the corpus does not have,
+  at `frontmatter.actions[i]`; a non-list at `frontmatter.actions`).
+  The runner's side (honouring `harness`, capping `cascade`, filtering by
+  `actions`, `autonomy: confirm`) is P2-7b.
+
 ## 0.6.56 — `mint_agent_token`: the gateway mints run-bound agent bearers (workbench P2-6)
 
 - New tool `mint_agent_token { skill, root_event_id?, target_page_id?,

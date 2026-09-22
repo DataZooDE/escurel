@@ -117,6 +117,79 @@ impl Issue {
 /// fail-closed default (review) already covers that. The finding fires only
 /// when an author reached for the key and missed, which is the one case
 /// nothing else in the system can see.
+/// The longest `summary:` the workbench renders in a skill list (workbench
+/// backend P2-7). Longer belongs in the body.
+pub const SUMMARY_MAX_CHARS: usize = 200;
+
+/// The harness adapters a skill may name (`harness:`). Kept in lock-step
+/// with the runner's `build_harness_named`; a name outside it is a lint
+/// finding here and a refused run there.
+pub const KNOWN_HARNESSES: [&str; 7] = [
+    "echo", "claude", "codex", "agy", "muse", "gemini", "delegate",
+];
+
+/// `summary:` on a skill page (workbench backend P2-7): absent is a
+/// warning (the workbench falls back to `description`), over
+/// [`SUMMARY_MAX_CHARS`] is an error.
+fn check_summary(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
+    if page_type != PageType::Skill {
+        return None;
+    }
+    let text = fields
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match text {
+        None => Some(
+            Issue::warning(
+                "summary_missing",
+                "frontmatter.summary",
+                "a skill declares a one-line `summary:` for skill lists (the workbench \
+                 shows `description` until it does)",
+            )
+            .with_suggestion("add `summary: <one line, under 200 characters>`"),
+        ),
+        Some(s) if s.chars().count() > SUMMARY_MAX_CHARS => Some(Issue::error(
+            "summary_too_long",
+            "frontmatter.summary",
+            format!(
+                "`summary:` is {} characters; at most {SUMMARY_MAX_CHARS} (the rest belongs in the body)",
+                s.chars().count()
+            ),
+        )),
+        Some(_) => None,
+    }
+}
+
+/// `harness:` on a skill page names an adapter the runner has.
+fn check_harness(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
+    if page_type != PageType::Skill {
+        return None;
+    }
+    let raw = fields.get("harness")?;
+    let suggestion = format!("use one of: {}", KNOWN_HARNESSES.join(" | "));
+    match raw.as_str().map(str::trim) {
+        Some(name) if KNOWN_HARNESSES.contains(&name) => None,
+        Some(name) => Some(
+            Issue::error(
+                "harness_unknown",
+                "frontmatter.harness",
+                format!("`harness: {name}` names no harness adapter"),
+            )
+            .with_suggestion(suggestion),
+        ),
+        None => Some(
+            Issue::error(
+                "harness_unknown",
+                "frontmatter.harness",
+                "`harness:` must be a string naming the adapter",
+            )
+            .with_suggestion(suggestion),
+        ),
+    }
+}
+
 fn check_autonomy(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
     if page_type != PageType::Skill {
         return None;
@@ -592,6 +665,45 @@ impl Indexer {
         // The human-in-the-loop policy a skill declares (heron#5 / CR-1).
         // Cheap, local, and independent of every skill lookup below.
         issues.extend(check_autonomy(parsed.frontmatter.page_type, fields));
+        // The workbench's skill-contract keys (P2-7): the one-liner and the
+        // adapter, both local; the fan-out list needs the corpus (below).
+        issues.extend(check_summary(parsed.frontmatter.page_type, fields));
+        issues.extend(check_harness(parsed.frontmatter.page_type, fields));
+        if parsed.frontmatter.page_type == PageType::Skill
+            && let Some(raw) = fields.get("actions")
+        {
+            match raw.as_sequence() {
+                None => issues.push(Issue::error(
+                    "action_skill_unknown",
+                    "frontmatter.actions",
+                    "`actions:` must be a list of skill ids this skill may fan out to",
+                )),
+                Some(seq) => {
+                    let mut named: Vec<(usize, String)> = Vec::new();
+                    for (i, entry) in seq.iter().enumerate() {
+                        match entry.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                            Some(name) => named.push((i, name.to_owned())),
+                            None => issues.push(Issue::error(
+                                "action_skill_unknown",
+                                format!("frontmatter.actions[{i}]"),
+                                "an `actions` entry must be a skill id",
+                            )),
+                        }
+                    }
+                    let wanted: HashSet<&str> = named.iter().map(|(_, n)| n.as_str()).collect();
+                    let known = self.resolve_skills(&wanted).await?;
+                    for (i, name) in named {
+                        if !known.contains_key(&name) {
+                            issues.push(Issue::error(
+                                "action_skill_unknown",
+                                format!("frontmatter.actions[{i}]"),
+                                format!("`actions` names skill `{name}`, which this corpus does not have"),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         // The invocation-parameter block a skill declares (heron#11 / CR-7).
         issues.extend(check_params(parsed.frontmatter.page_type, fields));
         // The instance-shape block a skill declares (#508). Checked on the
