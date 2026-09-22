@@ -13,6 +13,13 @@
 //! - [`Indexer::list_events`] — an instance's processed event history.
 //! - [`Indexer::assign_event`] — assign an inbox event to an instance
 //!   (→ `processed`), the (simulated) agent's act of folding it into state.
+//!
+//! Every event has a [`EventKind`]: `user` is work (the above); `system`
+//! is bookkeeping ABOUT a run, written by the runner or the gateway. A
+//! system event never enters the inbox as work — captured with a target
+//! page it is stored `processed` on that page at once — and the list
+//! surfaces hide it unless asked (`include_system`). `root_event_id` and
+//! `run_id` are indexed columns so a lineage is one equality read.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -113,11 +120,52 @@ impl EventCursor {
 }
 
 fn select_cols(table: &str) -> String {
+    // `kind` is COALESCEd: rows written before `0016_events_lineage.sql`
+    // carry NULL and are user events by definition.
     format!(
         "SELECT event_id, strftime(at_ts, '%Y-%m-%dT%H:%M:%SZ'), \
-         source, mime, label_skill, instance_page_id, status, title, body, provenance::VARCHAR \
+         source, mime, label_skill, instance_page_id, status, title, body, provenance::VARCHAR, \
+         COALESCE(kind, 'user'), root_event_id, run_id \
          FROM {table}"
     )
+}
+
+/// The default list surfaces' filter: bookkeeping stays out of a human's
+/// (or an agent's) view unless asked for with `include_system`.
+const HIDE_SYSTEM: &str = "COALESCE(kind, 'user') <> 'system'";
+
+/// Whether an event is work (`user`) or bookkeeping about a run (`system`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EventKind {
+    /// Something happened that a skill should fold into an instance — every
+    /// event the inbox has ever carried. The default.
+    #[default]
+    User,
+    /// A run's lifecycle, progress, review transitions, runner health
+    /// (`escurel:run`, `escurel:review`, …). Skips the inbox; hidden from
+    /// the default list surfaces.
+    System,
+}
+
+impl EventKind {
+    /// The stored / wire string.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::System => "system",
+        }
+    }
+
+    /// `None` for anything but the two known strings.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "user" => Some(Self::User),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
 }
 
 /// Input to [`Indexer::capture_event`]. `event_id` is server-generated
@@ -135,6 +183,14 @@ pub struct NewEvent {
     pub title: String,
     pub body: String,
     pub provenance: Option<serde_json::Value>,
+    /// `user` (the default) or `system`; see [`EventKind`].
+    pub kind: EventKind,
+    /// The lineage root. `None` ⇒ this event is its own root (the stored
+    /// row then carries its own id), which is every user event that is
+    /// not a cascade hop.
+    pub root_event_id: Option<String>,
+    /// The run this system event belongs to; `None` for user events.
+    pub run_id: Option<String>,
 }
 
 /// One event row, projected for the inbox / event-history surfaces.
@@ -151,6 +207,10 @@ pub struct EventInfo {
     pub title: String,
     pub body: String,
     pub provenance: serde_json::Value,
+    pub kind: EventKind,
+    /// `None` only for a row written before the lineage columns existed.
+    pub root_event_id: Option<String>,
+    pub run_id: Option<String>,
 }
 
 /// Hard cap on `limit` for the event list surfaces.
@@ -183,10 +243,14 @@ impl Indexer {
         }
     }
 
-    /// Append one event to the global store; it lands in the inbox
-    /// (`status = 'inbox'`). Returns the stored event with its resolved
-    /// id + timestamp. A non-null `instance_page_id` is a *candidate*
-    /// label only — the event stays in the inbox until `assign_event`.
+    /// Append one event to the global store. A `user` event lands in the
+    /// inbox (`status = 'inbox'`); a non-null `instance_page_id` is then a
+    /// *candidate* label only — the event stays in the inbox until
+    /// `assign_event`. A `system` event with a target page is stored
+    /// `processed` on it at once (bookkeeping is never inbox work); without
+    /// one it stays `inbox` but hidden from the default list surfaces.
+    /// Returns the stored event with its resolved id + timestamp.
+    /// `root_event_id` defaults to the event's own id.
     ///
     /// **Idempotent on `event_id`.** A caller-supplied `event_id` that
     /// already exists is a no-op (`ON CONFLICT DO NOTHING`) — the existing
@@ -213,6 +277,16 @@ impl Indexer {
             Some(v) => serde_json::to_string(v)?,
             None => "null".to_owned(),
         };
+        let status = if input.kind == EventKind::System && input.instance_page_id.is_some() {
+            "processed"
+        } else {
+            "inbox"
+        };
+        let kind = input.kind.as_str();
+        let root_event_id = input
+            .root_event_id
+            .clone()
+            .unwrap_or_else(|| event_id.clone());
 
         let conn = self.conn.lock().await;
         let table = self.events_table();
@@ -234,8 +308,9 @@ impl Indexer {
         let sql = match (self.events_tenant_scope(), lake) {
             (None, _) => format!(
                 "INSERT INTO {table} \
-                 (event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance) \
-                 VALUES (?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ?::JSON) \
+                 (event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, \
+                  kind, root_event_id, run_id) \
+                 VALUES (?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?::JSON, ?, ?, ?) \
                  ON CONFLICT (event_id) DO NOTHING"
             ),
             // `created_at` is written EXPLICITLY here, unlike the local
@@ -250,14 +325,16 @@ impl Indexer {
             // whole event bus, on the DEFAULT events backend.
             (Some(_), false) => format!(
                 "INSERT INTO {table} \
-                 (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, created_at) \
-                 VALUES (?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ?, CURRENT_TIMESTAMP::TIMESTAMP) \
+                 (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, created_at, \
+                  kind, root_event_id, run_id) \
+                 VALUES (?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP::TIMESTAMP, ?, ?, ?) \
                  ON CONFLICT (tenant, event_id) DO NOTHING"
             ),
             (Some(_), true) => format!(
                 "INSERT INTO {table} \
-                 (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance) \
-                 SELECT ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, 'inbox', ?, ?, ? \
+                 (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, \
+                  kind, root_event_id, run_id) \
+                 SELECT ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
                  WHERE NOT EXISTS (\
                      SELECT 1 FROM {table} WHERE tenant = ? AND event_id = ?\
                  )"
@@ -274,9 +351,13 @@ impl Indexer {
                         input.mime,
                         input.label_skill,
                         input.instance_page_id,
+                        status,
                         input.title,
                         input.body,
                         provenance_json,
+                        kind,
+                        root_event_id,
+                        input.run_id,
                     ],
                 )?;
             }
@@ -292,9 +373,13 @@ impl Indexer {
                         input.mime,
                         input.label_skill,
                         input.instance_page_id,
+                        status,
                         input.title,
                         input.body,
                         provenance_json,
+                        kind,
+                        root_event_id,
+                        input.run_id,
                         tenant,
                         event_id,
                     ],
@@ -311,9 +396,13 @@ impl Indexer {
                         input.mime,
                         input.label_skill,
                         input.instance_page_id,
+                        status,
                         input.title,
                         input.body,
                         provenance_json,
+                        kind,
+                        root_event_id,
+                        input.run_id,
                     ],
                 )?;
             }
@@ -342,11 +431,12 @@ impl Indexer {
         event_from_row(row)
     }
 
-    /// Unprocessed events (the inbox), newest first.
+    /// Unprocessed `user` events (the inbox), newest first. System rows
+    /// are hidden; [`Self::list_inbox_page`] can include them.
     pub async fn list_inbox(&self, limit: Option<usize>) -> Result<Vec<EventInfo>, IndexerError> {
         let table = self.events_table();
         let tenant = self.events_tenant_scope().map(str::to_owned);
-        let mut where_clauses = vec!["status = 'inbox'".to_owned()];
+        let mut where_clauses = vec!["status = 'inbox'".to_owned(), HIDE_SYSTEM.to_owned()];
         if tenant.is_some() {
             where_clauses.push("tenant = ?".to_owned());
         }
@@ -359,8 +449,9 @@ impl Indexer {
         self.hydrate_events(&sql, None, tenant.as_deref()).await
     }
 
-    /// An instance's processed event history, oldest first (the event
-    /// sequence whose projection is the instance's state).
+    /// An instance's processed `user` event history, oldest first (the
+    /// event sequence whose projection is the instance's state). System
+    /// rows are hidden; [`Self::list_events_page`] can include them.
     pub async fn list_events(
         &self,
         instance_page_id: &str,
@@ -368,7 +459,10 @@ impl Indexer {
     ) -> Result<Vec<EventInfo>, IndexerError> {
         let table = self.events_table();
         let tenant = self.events_tenant_scope().map(str::to_owned);
-        let mut where_clauses = vec!["instance_page_id = ? AND status = 'processed'".to_owned()];
+        let mut where_clauses = vec![
+            "instance_page_id = ? AND status = 'processed'".to_owned(),
+            HIDE_SYSTEM.to_owned(),
+        ];
         if tenant.is_some() {
             where_clauses.push("tenant = ?".to_owned());
         }
@@ -383,24 +477,29 @@ impl Indexer {
     }
 
     /// [`Self::list_inbox`] with a resume cursor (newest first).
+    /// `include_system` shows the bookkeeping rows the default hides.
     pub async fn list_inbox_page(
         &self,
         limit: usize,
         cursor: Option<&str>,
+        include_system: bool,
     ) -> Result<EventPage, IndexerError> {
-        self.paged_events(None, false, limit, cursor).await
+        self.paged_events(None, false, limit, cursor, include_system)
+            .await
     }
 
     /// [`Self::list_events`] with a resume cursor (oldest first). This
     /// is what makes an instance's history past `limit` reachable at
     /// all — without it the tail was permanently silent.
+    /// `include_system` shows the bookkeeping rows the default hides.
     pub async fn list_events_page(
         &self,
         instance_page_id: &str,
         limit: usize,
         cursor: Option<&str>,
+        include_system: bool,
     ) -> Result<EventPage, IndexerError> {
-        self.paged_events(Some(instance_page_id), true, limit, cursor)
+        self.paged_events(Some(instance_page_id), true, limit, cursor, include_system)
             .await
     }
 
@@ -419,6 +518,7 @@ impl Indexer {
         asc: bool,
         limit: usize,
         cursor: Option<&str>,
+        include_system: bool,
     ) -> Result<EventPage, IndexerError> {
         let limit = limit.clamp(1, EVENTS_MAX_LIMIT);
         let cursor = match cursor {
@@ -436,6 +536,9 @@ impl Indexer {
                 bindings.push(Box::new(inst.to_owned()));
             }
             None => where_clauses.push("status = 'inbox'".to_owned()),
+        }
+        if !include_system {
+            where_clauses.push(HIDE_SYSTEM.to_owned());
         }
         if let Some(t) = &tenant {
             where_clauses.push("tenant = ?".to_owned());
@@ -462,8 +565,8 @@ impl Indexer {
         }
         let dir = if asc { "ASC" } else { "DESC" };
         // select_cols + one extra column: the full-precision `at_ts` the
-        // NEXT cursor is built from (index 10; the EventRow reader only
-        // touches 0..=9, so it is invisible to the wire projection).
+        // NEXT cursor is built from (index 13; the EventRow reader only
+        // touches 0..=12, so it is invisible to the wire projection).
         let projection = select_cols(&table);
         let projection = projection
             .strip_suffix(&format!(" FROM {table}"))
@@ -484,7 +587,7 @@ impl Indexer {
             .collect();
         let mut rows: Vec<(EventRow, Option<String>)> = stmt
             .query_map(param_refs.as_slice(), |row| {
-                Ok((event_row_from_row(row)?, row.get::<_, Option<String>>(10)?))
+                Ok((event_row_from_row(row)?, row.get::<_, Option<String>>(13)?))
             })?
             .collect::<duckdb::Result<Vec<_>>>()?;
         drop(stmt);
@@ -723,6 +826,9 @@ type EventRow = (
     String,
     String,
     Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
 );
 
 fn event_row_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<EventRow> {
@@ -737,15 +843,35 @@ fn event_row_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<EventRow> {
         row.get(7)?,
         row.get(8)?,
         row.get(9)?,
+        row.get(10)?,
+        row.get(11)?,
+        row.get(12)?,
     ))
 }
 
 fn event_from_row(r: EventRow) -> Result<EventInfo, IndexerError> {
-    let (event_id, at, source, mime, label_skill, instance_page_id, status, title, body, prov) = r;
+    let (
+        event_id,
+        at,
+        source,
+        mime,
+        label_skill,
+        instance_page_id,
+        status,
+        title,
+        body,
+        prov,
+        kind,
+        root_event_id,
+        run_id,
+    ) = r;
     let provenance = match prov {
         Some(s) => serde_json::from_str(&s)?,
         None => serde_json::Value::Null,
     };
+    // Anything the store did not write as `system` is a user event —
+    // there is no third kind, and refusing to read a row would hide it.
+    let kind = EventKind::parse(&kind).unwrap_or(EventKind::User);
     Ok(EventInfo {
         event_id,
         at,
@@ -757,6 +883,9 @@ fn event_from_row(r: EventRow) -> Result<EventInfo, IndexerError> {
         title,
         body,
         provenance,
+        kind,
+        root_event_id,
+        run_id,
     })
 }
 

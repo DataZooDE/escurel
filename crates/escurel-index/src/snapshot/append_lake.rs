@@ -106,7 +106,10 @@ pub fn create_events_lake_table_sql() -> String {
             status           VARCHAR   NOT NULL, \
             title            VARCHAR, \
             body             VARCHAR, \
-            provenance       VARCHAR\
+            provenance       VARCHAR, \
+            kind             VARCHAR, \
+            root_event_id    VARCHAR, \
+            run_id           VARCHAR\
         );"
     )
 }
@@ -166,6 +169,15 @@ pub fn attach_drafts_lake(conn: &Connection, cfg: &LakeConfig) -> Result<(), Sna
 pub fn attach_events_lake(conn: &Connection, cfg: &LakeConfig) -> Result<(), SnapshotError> {
     attach_append_lake(conn, cfg)?;
     conn.execute_batch(&create_events_lake_table_sql())?;
+    // A lake table provisioned before `kind` + the lineage columns existed
+    // gains them on attach, as the drafts table does for `changeset_id`.
+    // No indexes: DuckLake has none, so a lineage read there is a scan.
+    for col in ["kind VARCHAR", "root_event_id VARCHAR", "run_id VARCHAR"] {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {APPEND_LAKE_ALIAS}.{EVENTS_PG_TABLE_NAME} \
+             ADD COLUMN IF NOT EXISTS {col};"
+        ))?;
+    }
     Ok(())
 }
 

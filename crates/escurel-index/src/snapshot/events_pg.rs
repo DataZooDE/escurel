@@ -82,9 +82,47 @@ pub fn create_events_pg_table_sql() -> String {
             body              VARCHAR    NOT NULL DEFAULT '', \
             provenance        VARCHAR, \
             created_at        TIMESTAMP  NOT NULL DEFAULT now(), \
+            kind              VARCHAR    DEFAULT 'user', \
+            root_event_id     VARCHAR, \
+            run_id            VARCHAR, \
             PRIMARY KEY (tenant, event_id)\
         );"
     )
+}
+
+/// Idempotently add `kind` + the lineage columns (`sql/0016_events_lineage.sql`)
+/// to an already-deployed shared events table, and their indexes.
+/// `CREATE TABLE IF NOT EXISTS` never alters an existing relation, so a
+/// table that predates them keeps its old shape without this.
+///
+/// The ALTERs go through DuckDB (the postgres extension supports
+/// `ADD COLUMN IF NOT EXISTS`, as `attach_drafts_pg` relies on); the
+/// indexes do not — `CREATE INDEX` on an attached table is not translated —
+/// so they run on the Postgres side via `postgres_execute`, like the PK
+/// migration above.
+pub fn migrate_events_pg_lineage_sql() -> Vec<String> {
+    let alters = [
+        "kind VARCHAR DEFAULT 'user'",
+        "root_event_id VARCHAR",
+        "run_id VARCHAR",
+    ]
+    .into_iter()
+    .map(|col| {
+        format!(
+            "ALTER TABLE {EVENTS_PG_ALIAS}.{EVENTS_PG_TABLE_NAME} \
+                 ADD COLUMN IF NOT EXISTS {col};"
+        )
+    });
+    let pg_sql = format!(
+        "CREATE INDEX IF NOT EXISTS escurel_events_root_at ON {EVENTS_PG_TABLE_NAME} (tenant, root_event_id, at_ts); \
+         CREATE INDEX IF NOT EXISTS escurel_events_run_at ON {EVENTS_PG_TABLE_NAME} (tenant, run_id, at_ts);"
+    );
+    let escaped = pg_sql.replace('\'', "''");
+    alters
+        .chain(std::iter::once(format!(
+            "CALL postgres_execute('{EVENTS_PG_ALIAS}', '{escaped}');"
+        )))
+        .collect()
 }
 
 /// In-place migration of an ALREADY-DEPLOYED events table from the old
@@ -146,6 +184,11 @@ pub fn attach_events_pg(conn: &Connection, catalog_dsn: &str) -> Result<(), Snap
     // EXISTS` above is a no-op on an existing relation, so the old shape
     // survives it and must be ALTERed here (see the fn doc).
     conn.execute_batch(&migrate_events_pg_pk_sql())?;
+    // Same idempotent upgrade for the `kind` + lineage columns and their
+    // indexes (see the fn doc).
+    for sql in migrate_events_pg_lineage_sql() {
+        conn.execute_batch(&sql)?;
+    }
     // The migration ran on the Postgres side, behind DuckDB's back —
     // DuckDB caches an attached table's schema (constraints included)
     // and would keep binding `ON CONFLICT (tenant, event_id)` against
@@ -204,6 +247,28 @@ mod tests {
         assert!(
             !sql.contains("event_id          VARCHAR    NOT NULL PRIMARY KEY"),
             "no single-column event_id PK: {sql}"
+        );
+    }
+
+    /// The lineage upgrade is column-by-column `IF NOT EXISTS` through
+    /// DuckDB, and its indexes go to the Postgres side (DuckDB does not
+    /// translate `CREATE INDEX` on an attached table).
+    #[test]
+    fn lineage_migration_adds_columns_via_duckdb_and_indexes_via_postgres() {
+        let sqls = migrate_events_pg_lineage_sql();
+        assert_eq!(sqls.len(), 4, "{sqls:?}");
+        for (sql, col) in sqls.iter().zip(["kind", "root_event_id", "run_id"]) {
+            assert!(
+                sql.contains(&format!("ADD COLUMN IF NOT EXISTS {col}")),
+                "{sql}"
+            );
+        }
+        let idx = &sqls[3];
+        assert!(idx.starts_with(&format!("CALL postgres_execute('{EVENTS_PG_ALIAS}'")));
+        assert!(idx.contains("escurel_events_root_at"));
+        assert!(idx.contains("escurel_events_run_at"));
+        assert!(
+            create_events_pg_table_sql().contains("kind              VARCHAR    DEFAULT 'user'")
         );
     }
 

@@ -449,6 +449,7 @@ async fn record_and_dispatch_ingest(
                 // ingest path carries no delegated run.
                 None,
             ),
+            ..Default::default()
         })
         .await;
     let event = match event {
