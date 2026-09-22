@@ -780,6 +780,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "label_skill": { "type": "string", "description": "Alone: every event under this label, any status (a tail; an escurel: label implies include_system). With another selector: a narrowing filter." },
                     "kind": { "type": "string", "enum": ["user", "system"], "description": "Narrow to one kind; overrides include_system." },
                     "include_system": { "type": "boolean", "description": "Also list `kind: system` rows. Default false." },
+                    "newest_first": { "type": "boolean", "description": "Turn the listing around (newest first); with limit 1, the latest row. Default false (oldest first: the tail shape)." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
                     "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor (listing branch only)." }
                 }

@@ -127,6 +127,9 @@ pub struct ListEventsRequest {
     pub kind: String,
     /// Also list `kind: system` rows (hidden by default).
     pub include_system: bool,
+    /// Newest first instead of the oldest-first tail; `limit: 1` is then
+    /// the latest row (how `escurel:runner-status` is read).
+    pub newest_first: bool,
     /// Alone (no other selector): every event under this label, any status
     /// — the tail the runner's subscribers poll (an `escurel:` label implies
     /// `include_system`). With a selector: a narrowing filter.

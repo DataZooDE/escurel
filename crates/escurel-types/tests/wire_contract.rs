@@ -358,6 +358,12 @@ fn event_kind_and_lineage_default_to_user_and_absent() {
         serde_json::from_value(json!({ "run_id": "x", "include_system": true })).unwrap();
     assert_eq!(req.run_id, "x");
     assert!(req.include_system);
+    assert!(!req.newest_first, "oldest first is the default");
+    let req: ListEventsRequest = serde_json::from_value(
+        json!({ "label_skill": "escurel:runner-status", "newest_first": true }),
+    )
+    .unwrap();
+    assert!(req.newest_first);
     let cap: CaptureEventRequest = serde_json::from_value(json!({ "kind": "system" })).unwrap();
     assert_eq!(cap.kind, "system");
     let inbox: ListInboxRequest =

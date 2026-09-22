@@ -4,6 +4,21 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.53 — runner status heartbeat; `list_events { newest_first }` (workbench P2-4)
+
+- The runner reports its health as unassigned `escurel:runner-status`
+  system events: `started` on boot, `changed` at once when what it reports
+  changes (a run starts or ends, a tenant pauses), `heartbeat` every
+  `ESCUREL_RUNNER_STATUS_INTERVAL` (default `30s`) otherwise, `stopping` on
+  drain. Body: `runner_id` (`ESCUREL_RUNNER_ID`), `version`, `harness`,
+  `tenant`, `live_runs[{run_id, event_id, instance_page_id}]`,
+  `paused_tenants`, `runs{pending, processed, failed, dead_letter,
+  cancelled, total}`, `throttled{…}`, `harness_permits_available`,
+  `uptime_s`, `last_poll_age_ms`. The gateway keeps a tenant's last 50 rows.
+- `list_events` gains `newest_first` (CLI `event list --newest-first`):
+  turn any listing around; with `limit: 1` it is the latest row — how the
+  runner's status is read.
+
 ## 0.6.52 — the runner acts on `escurel:run-control` (workbench P2-3b)
 
 - The runner tails `escurel:run-control`, acts on each request — `cancel`,

@@ -50,6 +50,7 @@ mod event_acl;
 mod event_pagination;
 mod events;
 mod events_kind;
+mod events_newest_first;
 mod fusion_acl;
 mod group_members_acl;
 mod health;

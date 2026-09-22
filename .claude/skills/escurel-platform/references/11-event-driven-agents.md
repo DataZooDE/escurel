@@ -119,6 +119,8 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_CLAUDE_BIN` | `claude` | binary path (or a test stub) |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | `30s` | inbox-poll backstop |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | `5s` | on cancel, the wait between SIGTERM and SIGKILL for the harness subprocess |
+| `ESCUREL_RUNNER_STATUS_INTERVAL` | `30s` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |
+| `ESCUREL_RUNNER_ID` | `<HOSTNAME>:<pid>` | how this runner names itself in its status reports |
 | `ESCUREL_RUNNER_EMIT_EVENTS` | `true` | write each run's lifecycle as `escurel:run` system events (see *Run lifecycle events*); `false` = the workbench sees events and drafts but no runs |
 | `ESCUREL_RUNNER_MAX_DEPTH` | `8` | cascade depth budget |
 | `ESCUREL_RUNNER_TENANT_MAX_CONCURRENT`, `…_RUNS_PER_MIN` | — | per-tenant limits |
@@ -290,6 +292,27 @@ cascade is emitted, and open drafts stay open. `cancelled` is terminal for
 the poller — the event is not re-run on the next poll; a `retry` control
 re-drives it. A cancel for a run that is not live (unknown, or already at a
 terminal) is refused, and the terminal stands.
+
+## Runner status (`escurel:runner-status`)
+
+The runner reports its own health as unassigned `kind: system` events
+under `escurel:runner-status` — `started` on boot, `changed` the moment
+what it reports changes (a run starts or ends, a tenant is paused),
+`heartbeat` every `ESCUREL_RUNNER_STATUS_INTERVAL` while nothing does,
+`stopping` on drain. Read the latest:
+
+```json
+{ "label_skill": "escurel:runner-status", "newest_first": true, "limit": 1 }
+```
+
+The body: `runner_id`, `version`, `harness`, `tenant`, `live_runs`
+(`[{run_id, event_id, instance_page_id}]`), `paused_tenants`, `runs`
+(`{pending, processed, failed, dead_letter, cancelled, total}` from the
+ledger), `throttled` (`{runs_per_min, max_concurrent, paused}` counters),
+`harness_permits_available`, `draining`, `uptime_s`, `last_poll_age_ms`
+(`null` until the first poll). A runner that has gone quiet is one whose
+latest row's `at` is older than its interval. The gateway keeps a tenant's
+last 50 rows, so the label never grows.
 
 ## Reading a lineage: `list_lineage`
 
