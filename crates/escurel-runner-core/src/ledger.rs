@@ -343,6 +343,41 @@ impl Ledger {
         // place via `ALTER TABLE` so an existing ledger file migrates rather
         // than rebuilds.
         add_column_if_missing(conn, "reason")?;
+        // The label tails' resume cursors (hardening H2): one row per label
+        // the runner subscribes to (`escurel:review`, `escurel:run-control`),
+        // so a restart resumes where it left off instead of skipping to the
+        // end of the label.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS tail_cursors (
+                 label      TEXT PRIMARY KEY,
+                 cursor     TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );",
+        )?;
+        Ok(())
+    }
+
+    /// The persisted resume cursor for a label tail, if any.
+    pub fn tail_cursor(&self, label: &str) -> Result<Option<String>, LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let mut stmt = conn.prepare("SELECT cursor FROM tail_cursors WHERE label = $1")?;
+        let cursor = stmt
+            .query_row(duckdb::params![label], |r| r.get::<_, String>(0))
+            .map(Some)
+            .or_else(|e| match e {
+                duckdb::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        Ok(cursor)
+    }
+
+    /// Persist a label tail's resume cursor (replacing the previous one).
+    pub fn put_tail_cursor(&self, label: &str, cursor: &str) -> Result<(), LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        conn.execute(
+            "INSERT OR REPLACE INTO tail_cursors (label, cursor, updated_at) VALUES ($1, $2, $3)",
+            duckdb::params![label, cursor, now_iso()],
+        )?;
         Ok(())
     }
 
@@ -1144,6 +1179,41 @@ mod tests {
 
     /// The ledger is a DuckDB file (owner decision 2026-09-22: escurel uses
     /// DuckDB everywhere; the runner epic's SQLite was a deviation).
+    #[test]
+    fn a_tail_cursor_round_trips_and_survives_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ledger.duckdb");
+        {
+            let ledger = Ledger::open(&path).expect("open");
+            assert_eq!(
+                ledger.tail_cursor("escurel:run-control").expect("get"),
+                None
+            );
+            ledger
+                .put_tail_cursor("escurel:run-control", "c1")
+                .expect("put");
+            ledger
+                .put_tail_cursor("escurel:run-control", "c2")
+                .expect("replace");
+            assert_eq!(
+                ledger
+                    .tail_cursor("escurel:run-control")
+                    .expect("get")
+                    .as_deref(),
+                Some("c2")
+            );
+        }
+        let reopened = Ledger::open(&path).expect("re-open");
+        assert_eq!(
+            reopened
+                .tail_cursor("escurel:run-control")
+                .expect("get")
+                .as_deref(),
+            Some("c2")
+        );
+        assert_eq!(reopened.tail_cursor("escurel:review").expect("get"), None);
+    }
+
     #[test]
     fn the_ledger_is_a_duckdb_file() {
         let dir = tempfile::tempdir().expect("tempdir");

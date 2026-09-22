@@ -119,6 +119,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_CLAUDE_BIN` | `claude` | binary path (or a test stub) |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | `30s` | inbox-poll backstop |
 | `ESCUREL_RUNNER_LEDGER_PATH` | `./escurel-runner-ledger.duckdb` | the runner's durable run ledger (a DuckDB file; a SQLite-era file there is imported once) |
+| `ESCUREL_RUNNER_TAIL_MAX_AGE` | `10m` | how old a review / run-control request may be and still be acted on after a restart; older ones are skipped, not replayed |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | `5s` | on cancel, the wait between SIGTERM and SIGKILL for the harness subprocess |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | the harness names a manual start may ask for (comma-separated); anything else fails the run closed |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | `30s` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |
@@ -233,7 +234,8 @@ could not (a held write cascades nothing): the trigger event is the parent,
 `provenance.runner.parent_run_id` names the run, and the cascade id is one
 per draft, so a retried decision or a changeset's paired event cascades
 once. The runner catches up to the end of the label on boot without acting
-— a promotion made while no runner was listening is not replayed.
+— a promotion made while no runner was listening is cascaded after the
+restart if younger than `ESCUREL_RUNNER_TAIL_MAX_AGE`, else skipped.
 
 ## Controls as events (`escurel:run-control`)
 
@@ -270,9 +272,11 @@ filed on, in the run's own record (`list_events { run_id }`), with
 | `requeue` | `requeued` | the dead-lettered event is re-driven as `new_run_id` |
 | any | `refused` | not actionable; `detail` says why (`not dead-lettered: …`, `not retriable: …`) |
 
-The runner catches up to the end of the label on boot without acting, so
-a request filed while no runner was listening is not acted on later (a
-stale cancel must not fire after a restart); file it again.
+The runner keeps its place on the label in its ledger: a request filed
+while no runner was listening is acted on after the restart if it is
+younger than `ESCUREL_RUNNER_TAIL_MAX_AGE` (default 10 minutes); an older
+one is skipped with a warning, never replayed. Only a first boot (no
+cursor yet) starts from the end of the label.
 
 A denied request and an unknown run both fail with `event_not_found` (no
 existence oracle for runs on pages you may not write). A malformed one —
