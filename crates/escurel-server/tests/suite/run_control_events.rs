@@ -202,6 +202,24 @@ async fn a_stranger_and_an_unknown_run_read_the_same_event_not_found() {
     );
 }
 
+/// The runner tails the label by `(at, event_id)`; a request backdated by
+/// its caller would sort before the tail's cursor and never be acted on
+/// (codex second-opinion review of P2). Control requests get the server's
+/// clock, whatever the caller sent.
+#[tokio::test]
+async fn a_control_request_is_stamped_with_the_servers_clock() {
+    let p = start().await;
+    let ops = p.mint_token_with_sub(TENANT, Role::Admin, "ops:jo");
+    let mut req = control("pause", None);
+    req["at"] = json!("2000-01-01T00:00:00Z");
+    let r = call(&p, &ops, "capture_event", req).await;
+    let at = r["at"].as_str().unwrap_or("");
+    assert!(
+        at.starts_with("20") && !at.starts_with("2000-01-01"),
+        "server time, not the caller's: {r}"
+    );
+}
+
 #[tokio::test]
 async fn pause_resume_and_requeue_are_admin_only() {
     let p = start().await;

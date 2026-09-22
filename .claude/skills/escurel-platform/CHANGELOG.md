@@ -4,6 +4,23 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.59 — P2 second-opinion review triage
+
+- A workbench agent token (`mint_agent_token`) is authorised AS THE HUMAN
+  who minted it: the gateway's ACL subject is `act.sub`, the agent
+  (`sub`) is the actor — so what the agent writes is attributed
+  `captured_by: <human>`, `captured_via: agent:<skill>`, and an instance
+  owned by the agent principal confers nothing on the human.
+- An `escurel:run-control` request is timestamped by the gateway (a
+  caller's `at` is replaced): the runner tails the label by time, and a
+  backdated request would never be acted on.
+- Runner: a `retry` / requeue that cannot be queued right now (paused,
+  over quota, queue full, event unreadable) leaves the row `failed`
+  (retriable) for the poller instead of `pending` with nothing queued;
+  the label tails keep catching up until they reach the end of the label
+  before acting on anything; workflow invocation runs no longer linger in
+  `live_runs`.
+
 ## 0.6.58 — the runner honours the skill contract (workbench P2-7b)
 
 - `autonomy: confirm` on a skill holds the write exactly like `review`

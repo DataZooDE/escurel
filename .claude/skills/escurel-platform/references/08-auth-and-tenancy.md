@@ -40,7 +40,11 @@ A **workbench agent token** is the same shape minted by the GATEWAY
 `sub: agent:<skill>`, `act.sub: <the human who asked>`,
 `purpose: workbench_agent`, the run claims, and the human's own authority —
 an admin's mint carries `escurel:admin`, a member's carries their groups
-with every reserved `escurel:` role stripped. It needs the gateway to have
+with every reserved `escurel:` role stripped. The gateway authorises it AS
+THE HUMAN: the ACL subject is `act.sub`, the agent is the actor, so what
+the agent writes reads `captured_by: <human>` / `captured_via:
+agent:<skill>`, and an instance owned by the agent principal confers
+nothing on the human who minted it. It needs the gateway to have
 a signing identity: `ESCUREL_AUTH_SIGNING_KEY` (an RSA private key some
 trusted issuer's JWKS publishes), `ESCUREL_AUTH_SIGNING_KID`,
 `ESCUREL_AUTH_SIGNING_ISSUER` (defaults to the OIDC issuer). Without it

@@ -55,6 +55,30 @@ async fn capture(p: &EscurelProcess, token: &str, title: &str) -> String {
     r["event_id"].as_str().unwrap().to_owned()
 }
 
+/// Wait until the run's `run-started` exists: the gateway authorises a
+/// cancel / retry through it, and the runner writes it best-effort right
+/// after claiming the run, so a request sent the instant `/debug/run`
+/// flips to pending can precede it.
+async fn wait_for_run_started(p: &EscurelProcess, token: &str, run_id: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let own = call(p, token, "list_events", json!({ "run_id": run_id })).await;
+        if own["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["title"] == "run-started")
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no run-started for {run_id}: {own}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// A control request, as the gateway authorises and stamps it (P2-2).
 async fn control(p: &EscurelProcess, token: &str, body: Value) -> String {
     let r = call(
@@ -122,6 +146,76 @@ fn body_of(e: &Value) -> Value {
     serde_json::from_str(e["body"].as_str().unwrap()).unwrap()
 }
 
+/// A `retry` that lands while the tenant is paused is throttled at
+/// admission; the row must go back to a retriable terminal for the poller
+/// to re-drive after `resume`, not sit `pending` with nothing queued
+/// (codex second-opinion review of P2, P1).
+#[tokio::test]
+async fn a_throttled_retry_is_re_driven_by_the_poller_not_wedged() {
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("renewal", SKILL_BODY)
+                .instance("renewal", "c1", INSTANCE_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let admin = gw.mint_token_with_sub(TENANT, Role::Admin, "ops:jo");
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &admin)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.keep().join("ledger.sqlite"),
+        )
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms")
+        .env("ESCUREL_RUNNER_CANCEL_GRACE", "1s")
+        .env("ESCUREL_ECHO_SLEEP_MS", ECHO_SLEEP_MS);
+    let _runner = ChildGuard(cmd.spawn().expect("spawn runner"));
+
+    // Run 1, cancelled → a retriable terminal.
+    let e1 = capture(&gw, &admin, "renew one").await;
+    let run1 = wait_for_status(&listen, &e1, &["pending"], Duration::from_secs(30)).await["run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait_for_run_started(&gw, &admin, &run1).await;
+    control(&gw, &admin, json!({ "action": "cancel", "run_id": run1 })).await;
+    wait_for_status(&listen, &e1, &["cancelled"], Duration::from_secs(10)).await;
+
+    // Paused, the retry is admitted by nobody: answered `requeued`, and the
+    // row must not be left `pending` with nothing queued.
+    let req = control(&gw, &admin, json!({ "action": "pause" })).await;
+    wait_for_result(&gw, &admin, &req).await;
+    let req = control(&gw, &admin, json!({ "action": "retry", "run_id": run1 })).await;
+    let result = wait_for_result(&gw, &admin, &req).await;
+    assert_eq!(body_of(&result)["outcome"], "requeued", "{result}");
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let run = wait_for_status(
+        &listen,
+        &e1,
+        &["failed", "processed"],
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_ne!(run["status"], "pending", "{run}");
+
+    // Resumed, the poller re-drives it to completion.
+    let req = control(&gw, &admin, json!({ "action": "resume" })).await;
+    wait_for_result(&gw, &admin, &req).await;
+    let run = wait_for_status(&listen, &e1, &["processed"], Duration::from_secs(40)).await;
+    assert_eq!(run["status"], "processed", "{run}");
+}
+
 #[tokio::test]
 async fn the_runner_acts_on_control_events_and_answers_each_one() {
     let gw = EscurelProcess::spawn(Opts {
@@ -159,6 +253,7 @@ async fn the_runner_acts_on_control_events_and_answers_each_one() {
     let e1 = capture(&gw, &admin, "renew one").await;
     let run = wait_for_status(&listen, &e1, &["pending"], Duration::from_secs(30)).await;
     let run1 = run["run_id"].as_str().unwrap().to_owned();
+    wait_for_run_started(&gw, &admin, &run1).await;
     let req = control(
         &gw,
         &admin,
@@ -193,6 +288,7 @@ async fn the_runner_acts_on_control_events_and_answers_each_one() {
     assert_eq!(body_of(finished)["reason"], "wrong document");
 
     // --- cancel of a run that is not live: answered, not acted on.
+    wait_for_run_started(&gw, &admin, &run1).await;
     let req = control(&gw, &admin, json!({ "action": "cancel", "run_id": run1 })).await;
     let result = wait_for_result(&gw, &admin, &req).await;
     assert_eq!(body_of(&result)["outcome"], "not_live", "{result}");

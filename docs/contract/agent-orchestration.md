@@ -436,6 +436,16 @@ draft. The gap below is kept as the record of why. Still open: a durable
 tail cursor (a promotion made while no runner listened is not replayed on
 the next boot).
 
+**Open follow-ups from the P2 second-opinion review (2026-09-22).**
+(1) The label tails (`escurel:review`, `escurel:run-control`) resume by an
+`(at, event_id)` cursor; the gateway now stamps control requests with its
+own clock, but a same-microsecond tie with a caller-supplied `event_id`
+can still sort before the cursor — the durable fix is a monotonic
+ingestion sequence on `events`, a schema change. (2) The tails keep no
+durable cursor: a runner restart catches up to the end of each label and
+acts on nothing older. (3) Gateway-minted runs (`mint_agent_token`) are
+swept for expiry from an in-memory list; a restart forgets them.
+
 *Original finding.* **Promotion did not cascade (found 2026-09-22 by the
 workbench backend's end-to-end test).** The header above says "cascade fires on
 promotion, because until a human promotes it nothing has landed" — the
