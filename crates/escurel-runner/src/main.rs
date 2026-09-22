@@ -81,6 +81,10 @@ struct AppState {
     /// The durable run ledger — the idempotency authority (#149). The gate
     /// consults it before enqueueing so a re-delivered event is dropped.
     ledger: Arc<Ledger>,
+    /// The live runs' cancel handles (workbench backend P2-3a). `POST
+    /// /debug/cancel` (and, next, the `escurel:run-control` subscriber)
+    /// stop a run through it.
+    cancels: escurel_runner_core::CancelRegistry,
     /// The loop-control limits (#157) the gate enforces after idempotency:
     /// depth cap + per-root run budget. A trigger that would breach them is
     /// dead-lettered (with `cycle` checked against the lineage instance chain).
@@ -192,6 +196,7 @@ async fn main() -> anyhow::Result<()> {
 
     // In-flight quota slots, shared gate → dispatch loop (#158).
     let inflight: InflightSlots = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let cancels = escurel_runner_core::CancelRegistry::new();
 
     // Crash recovery (#158): before opening for traffic, reconcile any
     // orphaned `pending` rows left by a previous crash. A confirmed effect is
@@ -258,6 +263,7 @@ async fn main() -> anyhow::Result<()> {
                 governor.clone(),
                 Arc::clone(&metrics),
                 Arc::clone(&inflight),
+                cancels.clone(),
                 Arc::clone(&drained),
             ));
         }
@@ -345,6 +351,7 @@ async fn main() -> anyhow::Result<()> {
         governor,
         metrics: Arc::clone(&metrics),
         inflight: Arc::clone(&inflight),
+        cancels: cancels.clone(),
         draining: Arc::clone(&draining),
         tenant: config.tenant.clone().map(Arc::from),
         lineage_trust_subject: tokens.as_ref().and_then(|t| t.subject()).map(Arc::from),
@@ -359,6 +366,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/debug/seen", get(debug_seen))
         .route("/debug/ledger", get(debug_ledger))
         .route("/debug/run", get(debug_run))
+        .route("/debug/cancel", post(debug_cancel))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
@@ -1106,9 +1114,14 @@ async fn debug_ledger(State(state): State<AppState>) -> impl IntoResponse {
         .ledger
         .count_all_by_status(RunStatus::DeadLetter)
         .unwrap_or(0);
+    let cancelled = state
+        .ledger
+        .count_all_by_status(RunStatus::Cancelled)
+        .unwrap_or(0);
     axum::Json(serde_json::json!({
         "total": total,
         "terminal": terminal,
+        "cancelled": cancelled,
         "succeeded": succeeded,
         "failed": failed,
         "dead_letter": dead_letter,
@@ -1121,6 +1134,50 @@ async fn debug_ledger(State(state): State<AppState>) -> impl IntoResponse {
 /// the no-mock integration test can assert the run was recorded `succeeded`
 /// WITH the produced instance + version straight from the real sqlite ledger.
 /// Read-only; no secrets. Not part of the gateway-facing contract.
+/// `POST /debug/cancel {run_id} | {tenant, event_id}, reason?` — stop a live
+/// run (workbench backend P2-3a). 200 `{run_id, cancelled: true}` when the
+/// run was live and is now being stopped; 404 when no such run is live
+/// (unknown, or already at a terminal — the ledger's answer stands). The
+/// `escurel:run-control` subscriber (P2-3b) goes through the same registry.
+async fn debug_cancel(
+    State(state): State<AppState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let reason = body
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .filter(|r| !r.is_empty());
+    let run_id = if let Some(run_id) = body.get("run_id").and_then(|v| v.as_str()) {
+        Some(run_id.to_owned())
+    } else if let (Some(tenant), Some(event_id)) = (
+        body.get("tenant").and_then(|v| v.as_str()),
+        body.get("event_id").and_then(|v| v.as_str()),
+    ) {
+        match state.ledger.get_run(tenant, event_id) {
+            Ok(Some(rec)) => Some(rec.run_id),
+            _ => None,
+        }
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": "provide run_id, or tenant + event_id" })),
+        );
+    };
+    match run_id {
+        Some(run_id) if state.cancels.cancel(&run_id, reason) => {
+            tracing::info!(target: "escurel_runner", run_id = %run_id, reason = ?reason, "run cancel requested");
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({ "run_id": run_id, "cancelled": true })),
+            )
+        }
+        _ => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "no such live run" })),
+        ),
+    }
+}
+
 async fn debug_run(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -1415,6 +1472,7 @@ async fn dispatch_loop(
     governor: Governor,
     metrics: Arc<Metrics>,
     inflight: InflightSlots,
+    cancels: escurel_runner_core::CancelRegistry,
     drained: Arc<Notify>,
 ) {
     // A PROBE, not the client this loop will use.
@@ -1526,6 +1584,8 @@ async fn dispatch_loop(
         // backend P1): the gateway stamps a draft's `run_id` / `root_event_id`
         // from it and authorises `report_progress` by it, so it is a claim the
         // runner signs, never a header the harness could set.
+        // Cancellable from here to the terminal (workbench backend P2-3a).
+        let cancel = cancels.register(run_id.as_str(), config.cancel_grace);
         let run_claims = escurel_runner_core::RunClaims {
             run_id: run_id.0.clone(),
             root_event_id: trigger.lineage.root_event_id.clone(),
@@ -1704,6 +1764,7 @@ async fn dispatch_loop(
                 step_harness.as_ref(),
                 attempt,
                 Some(&run_claims),
+                &cancel,
                 sink_ref,
             );
             let bound = config.run_timeout;
@@ -1720,6 +1781,7 @@ async fn dispatch_loop(
                     let (outcome, error) = match &result {
                         Ok(_) => ("ok", None),
                         Err(ReconcileError::Converged(r)) => ("converged", Some(r.clone())),
+                        Err(ReconcileError::Cancelled(r)) => ("cancelled", Some(r.clone())),
                         Err(e) if e.to_string().contains("abandoned") => {
                             ("timeout", Some(e.to_string()))
                         }
@@ -1764,8 +1826,16 @@ async fn dispatch_loop(
                 record_run_terminal(&metrics, &trigger.tenant, "dead_letter");
                 ledger.dead_letter(&run_id, DeadLetterReason::BadOutput)
             }
+            (None, false, Some(RunFailure::Cancelled)) => {
+                record_run_terminal(&metrics, &trigger.tenant, "cancelled");
+                ledger.complete(&run_id, RunStatus::Cancelled, None)
+            }
             (None, false, _) => ledger.complete(&run_id, RunStatus::Failed, None),
         };
+        // The run is no longer live; the requester's reason, if cancelled.
+        let cancel_reason = cancels
+            .finish(run_id.as_str())
+            .map(|r| r.unwrap_or_else(|| "cancelled".to_owned()));
         if emit_events {
             let finish = match (&report.confirmed, report.converged_no_op, report.failure) {
                 (Some(effect), _, _) => escurel_runner_core::RunFinish::Processed {
@@ -1784,6 +1854,13 @@ async fn dispatch_loop(
                 (None, false, Some(RunFailure::BadOutput)) => {
                     escurel_runner_core::RunFinish::DeadLetter {
                         reason: "bad_output".to_owned(),
+                    }
+                }
+                (None, false, Some(RunFailure::Cancelled)) => {
+                    escurel_runner_core::RunFinish::Cancelled {
+                        reason: cancel_reason
+                            .clone()
+                            .unwrap_or_else(|| "cancelled".to_owned()),
                     }
                 }
                 (None, false, _) => escurel_runner_core::RunFinish::Failed {
@@ -1958,6 +2035,9 @@ async fn dispatch_loop(
                             }
                             Some(RunFailure::BadOutput) => Some(StepTerminal::Failed("bad_output")),
                             Some(RunFailure::Permanent) => Some(StepTerminal::Failed("permanent")),
+                            // A cancelled step fails its operation with the
+                            // reason a human can act on (P2-3a).
+                            Some(RunFailure::Cancelled) => Some(StepTerminal::Failed("cancelled")),
                             // No failure and not converged: not a real terminal
                             // (should not occur) — leave the operation running.
                             None => None,
@@ -2063,9 +2143,10 @@ async fn attempt_run(
     harness: &dyn Harness,
     attempt: u32,
     run: Option<&escurel_runner_core::RunClaims>,
+    cancel: &escurel_runner_core::Cancel,
     sink: &std::sync::Mutex<AttemptSink>,
 ) -> Result<ConfirmedEffect, ReconcileError> {
-    let task: TaskContext = package(trigger, client, config, Some(tokens), run)
+    let mut task: TaskContext = package(trigger, client, config, Some(tokens), run)
         .await
         .map_err(|e| {
             tracing::warn!(
@@ -2077,6 +2158,13 @@ async fn attempt_run(
             );
             package_error_to_reconcile(e)
         })?;
+    task.cancel = Some(cancel.clone());
+    // Cancelled while packaging (or between attempts): don't start a harness.
+    if cancel.is_cancelled() {
+        return Err(ReconcileError::Cancelled(
+            "cancelled before the harness started".to_owned(),
+        ));
+    }
 
     // The instance as it stands BEFORE the agent runs, so a write can be told
     // from a run that touched nothing. Only for a pre-flagged auto run, which
@@ -2310,6 +2398,7 @@ fn harness_error_to_reconcile(e: &escurel_runner_harness::HarnessError) -> Recon
             ReconcileError::Transient(e.to_string())
         }
         H::BadOutcome { .. } => ReconcileError::BadOutput(e.to_string()),
+        H::Cancelled { .. } => ReconcileError::Cancelled(e.to_string()),
         // Permanent, and deliberately so: the harness refused this task
         // before running it, and a retry re-runs the same refusal. The
         // dead-letter carries the reason, which names the harness that can

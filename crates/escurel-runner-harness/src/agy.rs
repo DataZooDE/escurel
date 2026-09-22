@@ -257,6 +257,7 @@ impl Harness for AgyHarness {
             // EOF, or `agy` waits for a second turn until the run times out.
             stdin: Some(Self::stdin_message(task).as_bytes()),
             timeout: self.timeout,
+            cancel: task.cancel.as_ref(),
         })
         .await?;
 

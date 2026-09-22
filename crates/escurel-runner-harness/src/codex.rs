@@ -209,6 +209,7 @@ impl Harness for CodexHarness {
             // codex reads the prompt until stdin closes.
             stdin: Some(Self::build_prompt(task).as_bytes()),
             timeout: self.timeout,
+            cancel: task.cancel.as_ref(),
         })
         .await?;
 

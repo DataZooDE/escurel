@@ -74,6 +74,10 @@ pub enum RunStatus {
     /// deliberate, permanent block. Idempotency-terminal; only a DLQ
     /// requeue overrides it. Carries a `reason` (see [`DeadLetterReason`]).
     DeadLetter,
+    /// Run cancelled while live (workbench backend P2-3a): the harness was
+    /// stopped and nothing landed. Idempotency-terminal — the poller never
+    /// re-runs a cancelled event; an explicit `retry` control re-drives it.
+    Cancelled,
 }
 
 /// The reason a run was dead-lettered by a loop control (#157). Recorded in
@@ -129,6 +133,7 @@ impl RunStatus {
             RunStatus::Processed => "processed",
             RunStatus::Failed => "failed",
             RunStatus::DeadLetter => "dead_letter",
+            RunStatus::Cancelled => "cancelled",
         }
     }
 
@@ -140,6 +145,7 @@ impl RunStatus {
             "processed" => Some(RunStatus::Processed),
             "failed" => Some(RunStatus::Failed),
             "dead_letter" | "dead" => Some(RunStatus::DeadLetter),
+            "cancelled" => Some(RunStatus::Cancelled),
             _ => None,
         }
     }
@@ -149,7 +155,10 @@ impl RunStatus {
     /// `failed` is deliberately NOT terminal here (it is retriable); see the
     /// module-level matrix.
     fn is_terminal(self) -> bool {
-        matches!(self, RunStatus::Processed | RunStatus::DeadLetter)
+        matches!(
+            self,
+            RunStatus::Processed | RunStatus::DeadLetter | RunStatus::Cancelled
+        )
     }
 }
 
@@ -338,9 +347,9 @@ impl Ledger {
         // Fast path: a row already exists.
         if let Some(status) = lookup_status(&tx, &trigger.tenant, &trigger.event_id)? {
             match status {
-                // Idempotency-terminal: a confirmed success or a deliberate
-                // dead-letter — drop the re-delivery.
-                RunStatus::Processed | RunStatus::DeadLetter => {
+                // Idempotency-terminal: a confirmed success, a deliberate
+                // dead-letter or a cancel — drop the re-delivery.
+                RunStatus::Processed | RunStatus::DeadLetter | RunStatus::Cancelled => {
                     tx.commit()?;
                     return Ok(LedgerDecision::AlreadyTerminal);
                 }

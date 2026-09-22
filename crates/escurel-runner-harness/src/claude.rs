@@ -178,6 +178,7 @@ impl Harness for ClaudeHarness {
             // `claude -p` reads the prompt until stdin closes.
             stdin: Some(task.input.as_bytes()),
             timeout: self.timeout,
+            cancel: task.cancel.as_ref(),
         })
         .await?;
 

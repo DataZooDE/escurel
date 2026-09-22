@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.51 — a live run can be cancelled (workbench P2-3a)
+
+- The runner stops a live run on request: the harness subprocess gets
+  SIGTERM, `ESCUREL_RUNNER_CANCEL_GRACE` (default `5s`), then SIGKILL; the
+  Gemini loop stops between turns. The ledger records the run `cancelled`
+  (terminal: the poller never re-runs it; a `retry` control will), its
+  `run-finished` says `status: cancelled` with the requester's reason,
+  nothing lands, the trigger stays `inbox`, no cascade. Today the seam is
+  the runner's `POST /debug/cancel {run_id | tenant+event_id, reason?}`;
+  the `escurel:run-control` subscriber (P2-3b) goes through the same path.
+  `/debug/ledger` gains a `cancelled` count.
+
 ## 0.6.50 — controls as events: `escurel:run-control` (workbench P2-2)
 
 - `capture_event` accepts the `escurel:run-control` label from non-admins:
