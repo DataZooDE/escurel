@@ -420,6 +420,7 @@ async fn caller_scoped_token(
     client: &Client,
     cfg: &RunnerConfig,
     tokens: &crate::TokenSource,
+    run: Option<&crate::RunClaims>,
 ) -> Result<CallerToken, PackageError> {
     let Some(wf) = &trigger.workflow else {
         // An ordinary event-triggered run: mint the run its OWN agent identity
@@ -430,7 +431,7 @@ async fn caller_scoped_token(
         // the attribution is worth less than failing the run, and the run is
         // no more privileged either way.
         return Ok(
-            match tokens.mint_agent(&trigger.label_skill, agent_ttl_secs(cfg)) {
+            match tokens.mint_agent(&trigger.label_skill, agent_ttl_secs(cfg), run) {
                 Ok(Some(token)) => CallerToken::Agent { token },
                 Ok(None) => CallerToken::NotWorkflow,
                 Err(e) => {
@@ -484,7 +485,7 @@ async fn caller_scoped_token(
     // `mint_scoped` strips any privileged (`escurel:`) role (F1), so a caller
     // can never mint an admin token even if the mutable board says otherwise.
     match tokens
-        .mint_scoped(subject, &groups)
+        .mint_scoped(subject, &groups, run)
         .map_err(|e| PackageError::Auth(e.to_string()))?
     {
         Some(scoped) => Ok(CallerToken::Scoped {
@@ -500,11 +501,17 @@ async fn caller_scoped_token(
 /// Reads (only) through `client`: `resolve("[[<label_skill>]]")` →
 /// `expand` for the instructions, and `expand` + `list_events` for the
 /// instance input. Never writes — writes are the harness's job over `/mcp`.
+///
+/// `run` is the run's identity (ledger run id, lineage root, trace). It is
+/// minted INTO the per-run token so the gateway can stamp a draft's lineage
+/// and authorise `report_progress` without trusting anything the harness
+/// sends; `None` only where no run exists yet (a bare test package).
 pub async fn package(
     trigger: &Trigger,
     client: &Client,
     cfg: &RunnerConfig,
     tokens: Option<&crate::TokenSource>,
+    run: Option<&crate::RunClaims>,
 ) -> Result<TaskContext, PackageError> {
     // Taken from the source at PACKAGE time, not held from boot: a minted
     // bearer is re-minted before it lapses, and a run packaged with an
@@ -520,7 +527,7 @@ pub async fn package(
     // The requester subject, captured when the run is scoped — used as the
     // delegation `obo` for a delegate step (audit only).
     let mut requester: Option<String> = None;
-    let token = match caller_scoped_token(trigger, client, cfg, tokens).await? {
+    let token = match caller_scoped_token(trigger, client, cfg, tokens, run).await? {
         CallerToken::Scoped { token, subject } => {
             requester = Some(subject);
             SecretString::from(token)

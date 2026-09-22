@@ -56,6 +56,34 @@ pub const TTL_SECS: u64 = 30 * 60;
 /// life left than a slow run might need.
 const REFRESH_MARGIN_SECS: u64 = 5 * 60;
 
+/// The run-identity claims on a per-run token (workbench backend P1). Kept in
+/// lock-step with `escurel_auth::verifier` (which must not depend on this
+/// crate); the gateway reads them to stamp a draft's lineage and to authorise
+/// `report_progress` — so they ride on the token the runner SIGNS, never on a
+/// header the harness could set.
+pub const RUN_ID_CLAIM: &str = "run_id";
+pub const ROOT_EVENT_ID_CLAIM: &str = "root_event_id";
+pub const TRACE_ID_CLAIM: &str = "trace_id";
+
+/// The run a per-run token belongs to. `trace_id` is the lineage's OTel
+/// trace (one per cascade lineage) when the runner has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunClaims {
+    pub run_id: String,
+    pub root_event_id: String,
+    pub trace_id: Option<String>,
+}
+
+fn stamp_run(claims: &mut serde_json::Value, run: Option<&RunClaims>) {
+    if let Some(run) = run {
+        claims[RUN_ID_CLAIM] = json!(run.run_id);
+        claims[ROOT_EVENT_ID_CLAIM] = json!(run.root_event_id);
+        if let Some(trace) = &run.trace_id {
+            claims[TRACE_ID_CLAIM] = json!(trace);
+        }
+    }
+}
+
 /// Errors from building or using the signing identity.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -159,12 +187,13 @@ impl TokenSource {
         &self,
         subject: &str,
         groups: &[String],
+        run: Option<&RunClaims>,
     ) -> Result<Option<String>, AuthError> {
         match self {
             Self::Static(_) => Ok(None),
             Self::Minted {
                 signer, ttl_secs, ..
-            } => Ok(Some(signer.mint_scoped(subject, groups, *ttl_secs)?)),
+            } => Ok(Some(signer.mint_scoped(subject, groups, *ttl_secs, run)?)),
         }
     }
 
@@ -224,12 +253,18 @@ impl TokenSource {
         &self,
         label_skill: &str,
         ttl_secs: u64,
+        run: Option<&RunClaims>,
     ) -> Result<Option<String>, AuthError> {
         match self {
             Self::Static(_) => Ok(None),
             Self::Minted {
                 signer, subject, ..
-            } => Ok(Some(signer.mint_agent(subject, label_skill, ttl_secs)?)),
+            } => Ok(Some(signer.mint_agent(
+                subject,
+                label_skill,
+                ttl_secs,
+                run,
+            )?)),
         }
     }
 
@@ -352,7 +387,7 @@ impl Signer {
         // the reserved `escurel:run-status` status events, which the gateway
         // admits only for admin (async-ops F1). This is NOT the identity a
         // background RUN executes under — that is [`Self::mint_scoped`].
-        self.mint_with_roles(subject, &["escurel:admin".to_owned()], ttl_secs)
+        self.mint_with_roles(subject, &["escurel:admin".to_owned()], ttl_secs, None)
     }
 
     /// Mint a **per-run, caller-scoped** bearer (async-ops Phase 2c-i): the
@@ -378,13 +413,14 @@ impl Signer {
         subject: &str,
         groups: &[String],
         ttl_secs: u64,
+        run: Option<&RunClaims>,
     ) -> Result<String, AuthError> {
         let scoped: Vec<String> = groups
             .iter()
             .filter(|g| !g.starts_with("escurel:"))
             .cloned()
             .collect();
-        self.mint_with_roles(subject, &scoped, ttl_secs)
+        self.mint_with_roles(subject, &scoped, ttl_secs, run)
     }
 
     /// Mint an INTERNAL-DELEGATION bearer (fleet #801 Phase 4, AD-7): the token
@@ -460,10 +496,11 @@ impl Signer {
         runner_subject: &str,
         label_skill: &str,
         ttl_secs: u64,
+        run: Option<&RunClaims>,
     ) -> Result<String, AuthError> {
         let slug = agent_slug(label_skill)?;
         let now = now_secs();
-        let claims = json!({
+        let mut claims = json!({
             "iss": self.issuer,
             "aud": self.audience,
             "sub": format!("agent:{slug}"),
@@ -479,6 +516,7 @@ impl Signer {
             "nbf": now,
             "exp": now + ttl_secs,
         });
+        stamp_run(&mut claims, run);
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(self.kid.clone());
         Ok(encode(
@@ -493,9 +531,10 @@ impl Signer {
         subject: &str,
         roles: &[String],
         ttl_secs: u64,
+        run: Option<&RunClaims>,
     ) -> Result<String, AuthError> {
         let now = now_secs();
-        let claims = json!({
+        let mut claims = json!({
             "iss": self.issuer,
             "aud": self.audience,
             "sub": subject,
@@ -504,6 +543,7 @@ impl Signer {
             "iat": now,
             "exp": now + ttl_secs,
         });
+        stamp_run(&mut claims, run);
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(self.kid.clone());
         Ok(encode(
@@ -795,7 +835,7 @@ mod tests {
         .expect("signer");
 
         let token = signer
-            .mint_agent("escurel-runner", "inbox-scan", 120)
+            .mint_agent("escurel-runner", "inbox-scan", 120, None)
             .expect("mint agent");
         let claims = claims_of(&token);
 
@@ -833,12 +873,12 @@ mod tests {
 
         let inbox = claims_of(
             &signer
-                .mint_agent("escurel-runner", "inbox-scan", 60)
+                .mint_agent("escurel-runner", "inbox-scan", 60, None)
                 .expect("a"),
         );
         let hygiene = claims_of(
             &signer
-                .mint_agent("escurel-runner", "crm-hygiene", 60)
+                .mint_agent("escurel-runner", "crm-hygiene", 60, None)
                 .expect("b"),
         );
 
@@ -865,7 +905,7 @@ mod tests {
 
         for bad in ["", "   ", "has space", "with:colon", "../escalate"] {
             assert!(
-                signer.mint_agent("escurel-runner", bad, 60).is_err(),
+                signer.mint_agent("escurel-runner", bad, 60, None).is_err(),
                 "{bad:?} must not mint a subject"
             );
         }
@@ -891,7 +931,7 @@ mod tests {
         };
 
         let token = minted
-            .mint_agent("inbox-scan", 90)
+            .mint_agent("inbox-scan", 90, None)
             .expect("mint")
             .expect("a minting source scopes the run");
         let claims = claims_of(&token);
@@ -900,10 +940,95 @@ mod tests {
 
         assert!(
             TokenSource::Static("pasted-bearer".into())
-                .mint_agent("inbox-scan", 90)
+                .mint_agent("inbox-scan", 90, None)
                 .expect("no error")
                 .is_none(),
             "a static source cannot scope a run; the caller falls back to the runner"
+        );
+    }
+
+    fn run() -> RunClaims {
+        RunClaims {
+            run_id: "01HRUN".into(),
+            root_event_id: "01HROOT".into(),
+            trace_id: Some("0123456789abcdef0123456789abcdef".into()),
+        }
+    }
+
+    /// The run's identity rides ON the token (workbench backend P1): the
+    /// gateway stamps a draft's `run_id` / `root_event_id` from it and
+    /// authorises `report_progress` by it, so it must be unforgeable by the
+    /// harness — a claim the runner signed, not a header the agent sends.
+    #[test]
+    fn mint_agent_carries_run_claims_when_given() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let minted = TokenSource::Minted {
+            signer,
+            ttl_secs: 120,
+            subject: "escurel-runner".into(),
+            cached: Mutex::new(None),
+        };
+        let token = minted
+            .mint_agent("inbox-scan", 90, Some(&run()))
+            .expect("mint")
+            .expect("minting source");
+        let claims = claims_of(&token);
+        assert_eq!(claims["sub"], "agent:inbox-scan", "{claims}");
+        assert_eq!(claims[RUN_ID_CLAIM], "01HRUN", "{claims}");
+        assert_eq!(claims[ROOT_EVENT_ID_CLAIM], "01HROOT", "{claims}");
+        assert_eq!(
+            claims[TRACE_ID_CLAIM], "0123456789abcdef0123456789abcdef",
+            "{claims}"
+        );
+        // Without a run (recovery, a bare mint) the claims are simply absent.
+        let bare = minted
+            .mint_agent("inbox-scan", 90, None)
+            .expect("mint")
+            .expect("minting source");
+        assert!(claims_of(&bare).get(RUN_ID_CLAIM).is_none());
+    }
+
+    /// A workflow run's requester-scoped token carries the run too, and the
+    /// run claims never smuggle a privileged role back in.
+    #[test]
+    fn mint_scoped_carries_run_claims_and_still_strips_privileged_roles() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let minted = TokenSource::Minted {
+            signer,
+            ttl_secs: 120,
+            subject: "escurel-runner".into(),
+            cached: Mutex::new(None),
+        };
+        let token = minted
+            .mint_scoped(
+                "alice",
+                &["team-acme".to_owned(), "escurel:admin".to_owned()],
+                Some(&run()),
+            )
+            .expect("mint")
+            .expect("minting source");
+        let claims = claims_of(&token);
+        assert_eq!(claims["sub"], "alice");
+        assert_eq!(claims[RUN_ID_CLAIM], "01HRUN", "{claims}");
+        assert_eq!(claims[ROOT_EVENT_ID_CLAIM], "01HROOT", "{claims}");
+        assert_eq!(
+            claims["roles"],
+            serde_json::json!(["team-acme"]),
+            "{claims}"
         );
     }
 
@@ -927,8 +1052,14 @@ mod tests {
             cached: Mutex::new(None),
         };
 
-        let first = minted.mint_agent("inbox-scan", 90).expect("a").expect("a");
-        let second = minted.mint_agent("inbox-scan", 90).expect("b").expect("b");
+        let first = minted
+            .mint_agent("inbox-scan", 90, None)
+            .expect("a")
+            .expect("a");
+        let second = minted
+            .mint_agent("inbox-scan", 90, None)
+            .expect("b")
+            .expect("b");
         assert_ne!(
             claims_of(&first)["jti"],
             serde_json::Value::Null,

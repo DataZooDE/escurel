@@ -92,6 +92,52 @@ fn now() -> u64 {
         .as_secs()
 }
 
+/// The run's identity on a per-run agent token (workbench backend P1):
+/// `run_id` / `root_event_id` / `trace_id` come out on the context so the
+/// gateway can stamp lineage and authorise `report_progress`. Absent claims
+/// are absent, never an error — a token is not invalid for lacking them, and
+/// an empty `run_id` is no run at all.
+#[tokio::test]
+async fn run_claims_are_exposed_on_auth_context_and_absent_by_default() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+    let base = json!({
+        "iss": issuer, "aud": AUDIENCE, "sub": "agent:inbox-scan", "tenant": "acme",
+        "iat": now, "exp": now + 600, "roles": ["escurel:agent"],
+    });
+
+    let mut with_run = base.clone();
+    with_run["run_id"] = json!("01HRUN");
+    with_run["root_event_id"] = json!("01HROOT");
+    with_run["trace_id"] = json!("0123456789abcdef0123456789abcdef");
+    let ctx = v
+        .verify(&sign_token(&keys, with_run))
+        .await
+        .expect("verify");
+    let run = ctx.run.expect("run claims are exposed");
+    assert_eq!(run.run_id, "01HRUN");
+    assert_eq!(run.root_event_id.as_deref(), Some("01HROOT"));
+    assert_eq!(
+        run.trace_id.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+
+    let ctx = v
+        .verify(&sign_token(&keys, base.clone()))
+        .await
+        .expect("verify");
+    assert!(ctx.run.is_none(), "an ordinary token belongs to no run");
+
+    let mut empty = base;
+    empty["run_id"] = json!("");
+    let ctx = v.verify(&sign_token(&keys, empty)).await.expect("verify");
+    assert!(ctx.run.is_none(), "an empty run_id is no run");
+}
+
 #[tokio::test]
 async fn verifies_a_well_formed_token_to_agent_role() {
     let server = MockServer::start().await;
