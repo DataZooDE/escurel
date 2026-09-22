@@ -294,6 +294,19 @@ the poller — the event is not re-run on the next poll; a `retry` control
 re-drives it. A cancel for a run that is not live (unknown, or already at a
 terminal) is refused, and the terminal stands.
 
+## What the runner reads off a skill page
+
+Besides `autonomy` (`auto` lands, `review` and `confirm` hold a draft —
+`confirm` additionally marks the run's events `autonomy: confirm` so the
+workbench asks the human explicitly), the runner honours the contract keys
+of references/01: `harness:` (like a manual start's ask, within
+`ESCUREL_RUNNER_HARNESS_ALLOW`; a workflow step's declaration wins; outside
+the list the run fails closed), `actions:` (a confirmed cross-skill write
+cascades only to a listed skill; undeclared = any), `cascade.target`
+(where the hop is pre-flagged; `produced` = the page just written) and
+`cascade.max_depth` (the deepest hop this skill's chains reach; the
+runner's global `ESCUREL_RUNNER_MAX_DEPTH` still caps everything).
+
 ## Manual start (`provenance.manual`)
 
 A human starts a run by hand by capturing an ordinary event — any label,

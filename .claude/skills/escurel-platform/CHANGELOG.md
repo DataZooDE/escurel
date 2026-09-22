@@ -4,6 +4,20 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.58 — the runner honours the skill contract (workbench P2-7b)
+
+- `autonomy: confirm` on a skill holds the write exactly like `review`
+  (a draft, a changeset, no cascade) and the run's events say
+  `autonomy: confirm`, so the workbench knows to ask the human explicitly.
+- A skill page's `harness:` is honoured like a manual start's, within
+  `ESCUREL_RUNNER_HARNESS_ALLOW` (a workflow step's own declaration still
+  wins; a name outside the list fails the run closed).
+- A skill's `actions:` limits which skills its confirmed writes cascade
+  to (undeclared = any cross-skill write, as before); `cascade.max_depth`
+  caps how deep its chains go (the runner's global
+  `ESCUREL_RUNNER_MAX_DEPTH` still applies); `cascade.target` pre-flags
+  the hop (the flat `cascade_target:` still works).
+
 ## 0.6.57 — the skill contract keys: `summary`, `harness`, `actions[]`, `cascade{}` (workbench P2-7a)
 
 - `list_skills` rows carry what a skill page declares: `summary` (the

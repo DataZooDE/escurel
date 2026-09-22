@@ -34,7 +34,9 @@ pub use auth::{
     AuthError, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, RunClaims, Signer, TRACE_ID_CLAIM, TokenSource,
 };
 pub use cancel::{Cancel, CancelRegistry, DEFAULT_CANCEL_GRACE};
-pub use cascade::{CascadeError, CascadeOutcome, emit_cascade, emit_cascade_with_id};
+pub use cascade::{
+    CascadeError, CascadeOutcome, SkillContract, emit_cascade, emit_cascade_with_id, skill_contract,
+};
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
 pub use escurel_runner_workflow::OperationStatus;
