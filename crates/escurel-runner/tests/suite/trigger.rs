@@ -57,8 +57,14 @@ fn sign(secret: &str, body: &[u8]) -> String {
 /// Spawn the runner, optionally with a webhook secret, and wait until it
 /// answers `/healthz`.
 fn spawn_runner(listen: &str, secret: Option<&str>) -> ChildGuard {
+    // One ledger file per runner: DuckDB allows a single writer per file, so
+    // two tests sharing the default path would fail the second boot.
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
-    cmd.env("ESCUREL_RUNNER_LISTEN", listen);
+    cmd.env("ESCUREL_RUNNER_LISTEN", listen).env(
+        "ESCUREL_RUNNER_LEDGER_PATH",
+        ledger_dir.keep().join("ledger.duckdb"),
+    );
     if let Some(secret) = secret {
         cmd.env("ESCUREL_WEBHOOK_SECRET", secret);
     }

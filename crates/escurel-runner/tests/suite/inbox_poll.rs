@@ -98,8 +98,15 @@ async fn poller_pulls_inbox_event_and_dedups_with_webhook() {
     let token = gateway.mint_token(TENANT, Role::Agent);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
+    // One ledger file per runner: DuckDB allows a single writer per file, so
+    // two tests sharing the default path would fail the second boot.
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
     cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.keep().join("ledger.duckdb"),
+        )
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
         .env("ESCUREL_RUNNER_TENANT", TENANT)
         .env("ESCUREL_RUNNER_TOKEN", &token)

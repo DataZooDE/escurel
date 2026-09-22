@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.60 — the runner's run ledger is a DuckDB file
+
+- `ESCUREL_RUNNER_LEDGER_PATH` now names a DuckDB file (default
+  `./escurel-runner-ledger.duckdb`; SQLite is gone from escurel). A
+  SQLite-era ledger at the configured path — or at the old `.sqlite`
+  default beside the new default — is imported ONCE on boot through
+  DuckDB's `sqlite` extension and kept aside as `<name>.sqlite.legacy`; an
+  import that fails is a boot failure, never an empty ledger (that would
+  re-run every event the runner once ran). Same tables, same semantics.
+
 ## 0.6.59 — P2 second-opinion review triage
 
 - A workbench agent token (`mint_agent_token`) is authorised AS THE HUMAN

@@ -89,7 +89,7 @@ ESCUREL_RUNNER_TENANT=default \
 ESCUREL_RUNNER_TOKEN=demo \
 ESCUREL_RUNNER_HARNESS=claude \
 ESCUREL_RUNNER_POLL_INTERVAL=2s \
-ESCUREL_RUNNER_LEDGER_PATH=/tmp/runner-ledger.sqlite \
+ESCUREL_RUNNER_LEDGER_PATH=/tmp/runner-ledger.duckdb \
   cargo run -p escurel-runner   # (or the built target/debug/escurel-runner)
 # wait for GET http://127.0.0.1:8088/healthz
 ```
@@ -104,7 +104,7 @@ ESCUREL_RUNNER_LEDGER_PATH=/tmp/runner-ledger.sqlite \
 | `ESCUREL_RUNNER_CLAUDE_BIN` | `claude` | the `claude` binary (override to point at a stub) |
 | `ESCUREL_RUNNER_CLAUDE_MODEL` | `opus` | optional `--model` for claude |
 | `ESCUREL_RUNNER_LISTEN` | `127.0.0.1:8088` | runner HTTP (`/trigger`, `/debug/*`, `/dlq`, `/metrics`) |
-| `ESCUREL_RUNNER_LEDGER_PATH` | `/tmp/runner-ledger.sqlite` | durable run ledger |
+| `ESCUREL_RUNNER_LEDGER_PATH` | `/tmp/runner-ledger.duckdb` | durable run ledger |
 
 (Full set incl. retry/loop-control/quota knobs: `escurel-runner-core/src/config.rs`.)
 
