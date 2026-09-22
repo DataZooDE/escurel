@@ -245,12 +245,16 @@ async fn publish_review_event(
         "root_event_id": t.lineage.root_event_id,
         "decided_by": t.decided_by,
         "already_decided": t.already_decided,
+        // The draft's TRIGGER event: what the runner's promotion subscriber
+        // looks the run up by (`(tenant, event_id)` is the ledger's key).
+        "event_id": t.lineage.event_id,
     });
     let body = json!({
         "transition": t.title,
         "draft_id": draft_id,
         "changeset_id": changeset_id,
         "target_page_id": t.lineage.target_page_id,
+        "event_id": t.lineage.event_id,
         "decided_by": t.decided_by,
         "reason": t.reason,
     });

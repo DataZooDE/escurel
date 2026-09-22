@@ -777,6 +777,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "event_id": { "type": "string" },
                     "root_event_id": { "type": "string", "description": "A lineage: the root event and everything under it." },
                     "run_id": { "type": "string", "description": "One run's own (system) events." },
+                    "label_skill": { "type": "string", "description": "Alone: every event under this label, any status (a tail; an escurel: label implies include_system). With another selector: a narrowing filter." },
                     "kind": { "type": "string", "enum": ["user", "system"], "description": "Narrow to one kind; overrides include_system." },
                     "include_system": { "type": "boolean", "description": "Also list `kind: system` rows. Default false." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
@@ -1782,7 +1783,8 @@ fn output_schema_for(name: &str) -> Option<Value> {
         })),
         "list_inbox" | "list_events" => obj(json!({
             "events": { "type": "array" },
-            "next_cursor": { "type": "string", "description": "present iff rows lie past the page; absence (only) means done" }
+            "next_cursor": { "type": "string", "description": "present iff rows lie past the page; absence (only) means done" },
+            "resume_cursor": { "type": "string", "description": "the cursor of the page's LAST row (present iff non-empty, full or not): a tail's next poll starts here" }
         })),
         "list_messages" => obj(json!({
             "messages": { "type": "array" },

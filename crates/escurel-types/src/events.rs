@@ -90,6 +90,10 @@ pub struct ListInboxResponse {
     /// limit and legitimately shortens pages).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// The cursor of this page's LAST row (present iff the page is
+    /// non-empty, full or not): a tail resumes from it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -123,6 +127,10 @@ pub struct ListEventsRequest {
     pub kind: String,
     /// Also list `kind: system` rows (hidden by default).
     pub include_system: bool,
+    /// Alone (no other selector): every event under this label, any status
+    /// — the tail the runner's subscribers poll (an `escurel:` label implies
+    /// `include_system`). With a selector: a narrowing filter.
+    pub label_skill: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -132,6 +140,9 @@ pub struct ListEventsResponse {
     /// See [`ListInboxResponse::next_cursor`] — same contract.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// See [`ListInboxResponse::resume_cursor`] — a tail resumes here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_cursor: Option<String>,
 }
 
 /// One step of an agent's plan, as `report_progress` snapshots it.

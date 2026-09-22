@@ -259,6 +259,112 @@ async fn list_events_by_run_id_returns_only_that_runs_system_events() {
     assert!(ids(result(&none)).is_empty());
 }
 
+/// P2-0: a subscriber that has no WebSocket (the runner) TAILS a label:
+/// `list_events { label_skill }` alone lists every event under that label,
+/// any status; an `escurel:` label implies `include_system`; and the page
+/// carries a `resume_cursor` for its LAST row even when it is not full, so
+/// the next poll starts exactly after what was seen.
+#[tokio::test]
+async fn list_events_by_label_skill_is_a_tail_over_that_label() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let status = |n: u32| {
+        json!({
+            "kind": "system", "label_skill": "escurel:runner-status", "title": format!("status {n}"),
+            "at": format!("2026-09-22T09:00:{n:02}.000000Z"), "source": "escurel-runner",
+        })
+    };
+    let a = result(&call(&p, &admin, "capture_event", status(1)).await)["event_id"].clone();
+    let b = result(&call(&p, &admin, "capture_event", status(2)).await)["event_id"].clone();
+    call(
+        &p,
+        &admin,
+        "capture_event",
+        json!({ "label_skill": "meeting", "title": "noise" }),
+    )
+    .await;
+
+    let page1 = call(
+        &p,
+        &admin,
+        "list_events",
+        json!({ "label_skill": "escurel:runner-status", "limit": 1 }),
+    )
+    .await;
+    let page1 = result(&page1);
+    assert_eq!(ids(page1), vec![a.as_str().unwrap()], "{page1}");
+    let cursor = page1["next_cursor"]
+        .as_str()
+        .expect("more rows lie past the page")
+        .to_owned();
+    let page2 = call(
+        &p,
+        &admin,
+        "list_events",
+        json!({ "label_skill": "escurel:runner-status", "limit": 1, "cursor": cursor }),
+    )
+    .await;
+    let page2 = result(&page2);
+    assert_eq!(ids(page2), vec![b.as_str().unwrap()], "{page2}");
+    assert!(
+        page2.get("next_cursor").is_none(),
+        "nothing past the page: {page2}"
+    );
+    let resume = page2["resume_cursor"]
+        .as_str()
+        .expect("a short page still says where it ended")
+        .to_owned();
+
+    // The tail: a later capture is exactly what the next poll returns.
+    let c = result(&call(&p, &admin, "capture_event", status(3)).await)["event_id"].clone();
+    let page3 = call(
+        &p,
+        &admin,
+        "list_events",
+        json!({ "label_skill": "escurel:runner-status", "cursor": resume }),
+    )
+    .await;
+    let page3 = result(&page3);
+    assert_eq!(ids(page3), vec![c.as_str().unwrap()], "{page3}");
+    // An empty page has no cursor to resume from; keep the last one.
+    let page4 = call(
+        &p,
+        &admin,
+        "list_events",
+        json!({ "label_skill": "escurel:runner-status", "cursor": page3["resume_cursor"] }),
+    )
+    .await;
+    assert!(ids(result(&page4)).is_empty());
+    assert!(result(&page4).get("resume_cursor").is_none());
+}
+
+#[tokio::test]
+async fn label_skill_narrows_another_selector() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let agent = p.mint_token(TENANT, Role::Agent);
+    let (root_id, _hop, run_ev) = seed_lineage(&p, &admin, &agent).await;
+    // Only the run rows of the lineage — the `escurel:` label implies system.
+    let r = call(
+        &p,
+        &admin,
+        "list_events",
+        json!({ "root_event_id": root_id, "label_skill": "escurel:run" }),
+    )
+    .await;
+    assert_eq!(ids(result(&r)), vec![run_ev], "{r}");
+    // A user label alone lists any status: the inbox root AND the hop.
+    let r = call(
+        &p,
+        &agent,
+        "list_events",
+        json!({ "label_skill": "decision-record" }),
+    )
+    .await;
+    assert_eq!(ids(result(&r)).len(), 1, "{r}");
+    assert_eq!(result(&r)["events"][0]["status"], "inbox");
+}
+
 #[tokio::test]
 async fn lineage_columns_are_extracted_from_provenance_runner_at_capture() {
     let p = start().await;

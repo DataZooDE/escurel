@@ -83,6 +83,11 @@ pub enum EventsBackend {
 pub struct EventPage {
     pub events: Vec<EventInfo>,
     pub next_cursor: Option<String>,
+    /// The cursor of the LAST row on this page — present iff the page is
+    /// non-empty, full or not. A tail resumes from it: the next poll returns
+    /// exactly what was captured after what this page showed. (`next_cursor`
+    /// only says whether more rows already lie past the page.)
+    pub resume_cursor: Option<String>,
 }
 
 /// Cursor payload: base64url(`"<at-us-or-empty>|<event_id>"`). `at` is
@@ -227,6 +232,9 @@ pub struct EventListFilter {
     /// (the `OR` covers a root written before the lineage columns existed).
     pub root_event_id: Option<String>,
     pub run_id: Option<String>,
+    /// Every event under one label — the runner's subscribers tail a
+    /// system label this way (`escurel:review`, `escurel:run-control`).
+    pub label_skill: Option<String>,
     pub kind: Option<EventKind>,
     pub include_system: bool,
     /// `inbox` | `processed`; `None` = any status.
@@ -581,6 +589,10 @@ impl Indexer {
             where_clauses.push("run_id = ?".to_owned());
             bindings.push(Box::new(run.clone()));
         }
+        if let Some(label) = &filter.label_skill {
+            where_clauses.push("label_skill = ?".to_owned());
+            bindings.push(Box::new(label.clone()));
+        }
         if let Some(status) = &filter.status {
             where_clauses.push("status = ?".to_owned());
             bindings.push(Box::new(status.clone()));
@@ -649,13 +661,12 @@ impl Indexer {
         drop(stmt);
         drop(conn);
 
-        let next_cursor = if rows.len() > limit {
-            rows.truncate(limit);
-            rows.last()
-                .map(|(r, at_full)| EventCursor::encode(at_full.as_deref(), &r.0))
-        } else {
-            None
-        };
+        let more = rows.len() > limit;
+        rows.truncate(limit);
+        let resume_cursor = rows
+            .last()
+            .map(|(r, at_full)| EventCursor::encode(at_full.as_deref(), &r.0));
+        let next_cursor = if more { resume_cursor.clone() } else { None };
         let events = rows
             .into_iter()
             .map(|(r, _)| event_from_row(r))
@@ -663,6 +674,7 @@ impl Indexer {
         Ok(EventPage {
             events,
             next_cursor,
+            resume_cursor,
         })
     }
 

@@ -181,6 +181,39 @@ async fn creating_promoting_and_discarding_a_draft_publish_review_system_events_
     assert_eq!(tree["events"].as_array().unwrap().len(), 4, "{tree}");
 }
 
+/// P2-0: the runner's promotion subscriber needs the draft's TRIGGER event
+/// to find the run in its ledger, so every review event names it.
+#[tokio::test]
+async fn review_events_carry_the_drafts_trigger_event() {
+    let p = start().await;
+    let agent = p.mint_token_for_run(TENANT, Role::Agent, "agent:note", RUN, ROOT);
+    let human = p.mint_token_with_sub(TENANT, Role::Agent, "alice");
+    let mut args = draft_args("v2 answering an event.");
+    args["event_id"] = json!("01HTRIGGER");
+    args["new_changeset"] = json!(true);
+    let r = call(&p, &agent, "create_draft", args).await;
+    assert_eq!(r["ok"], true, "{r}");
+    let cs = r["draft"]["changeset_id"].as_str().unwrap().to_owned();
+    call(
+        &p,
+        &human,
+        "promote_changeset",
+        json!({ "changeset_id": cs }),
+    )
+    .await;
+    let events = review_events(&p).await;
+    assert_eq!(
+        titles(&events),
+        ["draft-created", "draft-promoted", "changeset-promoted"],
+        "{events:?}"
+    );
+    for e in &events {
+        assert_eq!(e["provenance"]["review"]["event_id"], "01HTRIGGER", "{e}");
+        let body: Value = serde_json::from_str(e["body"].as_str().unwrap()).unwrap();
+        assert_eq!(body["event_id"], "01HTRIGGER");
+    }
+}
+
 #[tokio::test]
 async fn promoting_an_already_decided_changeset_publishes_already_decided() {
     let p = start().await;

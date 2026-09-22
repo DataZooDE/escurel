@@ -537,8 +537,16 @@ impl Client {
             Some(event_id) => json!({ "event_id": event_id }),
             None if !req.run_id.is_empty() => json!({ "run_id": req.run_id }),
             None if !req.root_event_id.is_empty() => json!({ "root_event_id": req.root_event_id }),
-            None => json!({ "instance_page_id": req.instance_page_id }),
+            None if !req.instance_page_id.is_empty() => {
+                json!({ "instance_page_id": req.instance_page_id })
+            }
+            // A label alone is the tail; the server refuses a call with
+            // nothing at all, as it should.
+            None => json!({}),
         };
+        if !req.label_skill.is_empty() {
+            args["label_skill"] = json!(req.label_skill);
+        }
         if !req.kind.is_empty() {
             args["kind"] = json!(req.kind);
         }
