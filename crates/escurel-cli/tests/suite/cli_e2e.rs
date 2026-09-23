@@ -208,6 +208,68 @@ async fn skill_list_emits_autonomy_and_the_contract_keys() {
     h.process.shutdown().await;
 }
 
+/// The typed shape keys (`params`, `fields` with `render`, `blocks`) reach
+/// the CLI's `skill list` as the wire carries them, present only when
+/// declared (live smoke of P3 found them dropped).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skill_list_carries_params_fields_and_blocks() {
+    const TYPED_SKILL: &str = "---\ntype: skill\nid: typed\ndescription: d.\n\
+        params:\n  - {name: window, kind: string, required: true}\n\
+        fields:\n  - {name: arr_eur, kind: float, render: money}\n\
+        blocks:\n  - {anchor: summary, title: Summary, kind: markdown}\n---\n# typed\n";
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("customer", CUSTOMER_SKILL)
+                .skill("typed", TYPED_SKILL)
+                .done(),
+        ),
+        config_overrides: ConfigOverrides {
+            gateway_version: Some("1.0.0-test".to_owned()),
+            ..Default::default()
+        },
+    })
+    .await;
+    let http_addr = process
+        .base_url()
+        .strip_prefix("http://")
+        .unwrap()
+        .to_owned();
+    let bearer = process.mint_token(TENANT, Role::Agent);
+    let h = Harness {
+        process,
+        http_addr,
+        bearer,
+    };
+    let out = run_args(&h, v(&["skill", "list"])).await;
+    let val = json(&out);
+    let by_id = |id: &str| {
+        val["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{val}"))
+    };
+    let typed = by_id("typed");
+    assert_eq!(typed["params"][0]["name"], "window", "{typed}");
+    assert_eq!(typed["params"][0]["required"], true, "{typed}");
+    assert_eq!(typed["fields"][0]["name"], "arr_eur", "{typed}");
+    assert_eq!(typed["fields"][0]["render"], "money", "{typed}");
+    assert_eq!(typed["blocks"][0]["anchor"], "summary", "{typed}");
+    let plain = by_id("customer");
+    for key in ["params", "fields", "blocks"] {
+        assert!(
+            plain.get(key).is_none(),
+            "{key} absent stays absent: {plain}"
+        );
+    }
+    h.process.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn instance_list_honours_switches() {
     let h = start().await;
@@ -265,6 +327,12 @@ async fn page_expand_emits_body_and_wikilinks() {
     let out = run_args(&h, v(&["page", "expand", &page_id])).await;
     let val = json(&out);
     assert!(val["body"].as_str().unwrap().contains("Acme Corp"));
+    // `last_written_by` (#357) rides on the wire's `page`; the CLI carries
+    // it (null for a seeded page nobody has written through the gateway).
+    assert!(
+        val["page"].get("last_written_by").is_some(),
+        "page carries last_written_by: {val}"
+    );
     assert!(
         val["wikilinks_out"]
             .as_array()
@@ -337,6 +405,37 @@ async fn page_validate_accepts_well_formed_body() {
     let out = run_stdin(&h, v(&["page", "validate", &page_id]), ACME_INSTANCE).await;
     let val = json(&out);
     assert_eq!(val["ok"], true, "issues: {:?}", val["issues"]);
+    h.process.shutdown().await;
+}
+
+/// A finding's `severity` (what decides `ok`) and `suggestion` reach the
+/// CLI's `page validate` output (live smoke of P3 found them dropped).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn page_validate_emits_severity_and_suggestion() {
+    let h = start().await;
+    const BAD_SKILL: &str = "---\ntype: skill\nid: x\ndescription: d.\nsummary: s.\n\
+        fields:\n  - {name: a, render: sparkle}\n---\n# x\n";
+    let out = run_stdin(
+        &h,
+        v(&["page", "validate", "markdown/skills/x.md"]),
+        BAD_SKILL,
+    )
+    .await;
+    let val = json(&out);
+    let issue = val["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["code"] == "field_render_unknown")
+        .cloned()
+        .unwrap_or_else(|| panic!("{val}"));
+    assert_eq!(issue["severity"], "warning", "{issue}");
+    assert!(
+        issue["suggestion"]
+            .as_str()
+            .is_some_and(|s| s.contains("money")),
+        "{issue}"
+    );
     h.process.shutdown().await;
 }
 

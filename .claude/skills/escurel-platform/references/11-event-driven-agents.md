@@ -404,8 +404,9 @@ kind of listing is refused as invalid.
 
 Every `/mcp` call made with a run-bound bearer — the runner's per-run
 agent token, or one from `mint_agent_token` — is recorded on the gateway
-in `run_tool_calls`: the tool, `ok` or `error` (with the error's
-`data.code`), duration, request and response sizes in bytes (never the
+in `run_tool_calls`: the tool, its status — `ok`, `rejected` (the gateway
+answered `ok: false`, e.g. a refused write) or `error` (a JSON-RPC error,
+with its `data.code`) — duration, request and response sizes in bytes (never the
 payloads), the subject and the time. An ordinary bearer records nothing.
 Rows live as long as the run's record does. Read them with
 `get_run_tool_calls { run_id, limit?, after? }` — oldest first, `after` =

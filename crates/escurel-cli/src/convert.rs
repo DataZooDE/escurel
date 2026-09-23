@@ -35,6 +35,7 @@ pub fn page_ref(p: PageRef) -> Value {
         "slug": opt(&p.slug),
         "skill": p.skill,
         "page_type": p.page_type,
+        "last_written_by": p.last_written_by,
     })
 }
 

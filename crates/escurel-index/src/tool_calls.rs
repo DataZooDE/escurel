@@ -109,7 +109,7 @@ impl Indexer {
         let conn = self.conn.lock().await;
         let placeholders = vec!["?"; run_ids.len()].join(", ");
         let mut stmt = conn.prepare(&format!(
-            "SELECT run_id, count(*), count(*) FILTER (WHERE status = 'error'), \
+            "SELECT run_id, count(*), count(*) FILTER (WHERE status <> 'ok'), \
                     COALESCE(sum(duration_ms), 0) \
              FROM run_tool_calls WHERE run_id IN ({placeholders}) GROUP BY run_id"
         ))?;

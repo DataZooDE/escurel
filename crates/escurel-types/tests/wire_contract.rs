@@ -579,7 +579,18 @@ fn roundtrip_core() {
         slug: "s".into(),
         skill: "sk".into(),
         page_type: "instance".into(),
+        last_written_by: Some("agent:sk".into()),
     });
+    // Absent on the wire (every non-`expand` PageRef) decodes to None and
+    // is omitted again on the way back out.
+    let bare: PageRef = serde_json::from_value(json!({ "page_id": "p" })).unwrap();
+    assert_eq!(bare.last_written_by, None);
+    assert!(
+        serde_json::to_value(&bare)
+            .unwrap()
+            .get("last_written_by")
+            .is_none()
+    );
     rt(WikilinkParsed {
         skill: "sk".into(),
         id: "i".into(),

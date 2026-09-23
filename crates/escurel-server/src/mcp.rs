@@ -463,7 +463,10 @@ async fn mcp_inner(
                         run_id: run.run_id.clone(),
                         root_event_id: run.root_event_id.clone(),
                         tool: tool.clone(),
-                        status: if r.is_ok() { "ok" } else { "error" }.to_owned(),
+                        // The same three-valued status the metrics and the
+                        // audit line carry: a write the gateway REJECTED
+                        // (`ok: false`) is neither ok nor a protocol error.
+                        status: status.to_owned(),
                         error_code,
                         duration_ms,
                         request_bytes: request_bytes as u64,
