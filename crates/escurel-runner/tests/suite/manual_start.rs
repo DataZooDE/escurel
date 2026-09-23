@@ -183,12 +183,12 @@ async fn a_manual_start_names_its_harness_within_the_allow_list_and_who_asked() 
     let e2 = r["event_id"].as_str().unwrap().to_owned();
     let run = wait_for_terminal(&listen, &e2).await;
     assert_eq!(
-        run["status"], "failed",
+        run["status"], "dead_letter",
         "refused, not run on the default: {run}"
     );
     let finished = run_event(&gw, &admin, run["run_id"].as_str().unwrap(), "run-finished").await;
     let body: Value = serde_json::from_str(finished["body"].as_str().unwrap()).unwrap();
-    assert_eq!(body["status"], "failed", "{body}");
+    assert_eq!(body["status"], "dead_letter", "{body}");
     assert_eq!(body["reason"], "permanent", "{body}");
     assert!(
         body["error"].as_str().unwrap_or("").contains("codex"),

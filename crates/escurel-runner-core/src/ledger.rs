@@ -11,9 +11,15 @@
 //! | `pending`     | no (in-flight)        | created, not yet reconciled              |
 //! | `processed`   | **yes**               | confirmed success — never re-run         |
 //! | `dead_letter` | **yes**               | depth/cycle/budget block — never re-run  |
-//! | `failed`      | **no (retriable)**    | transient exhaustion — an operator       |
-//! |               |                       | re-drive / the poller backstop MAY       |
+//! | `failed`      | **no (retriable)**    | not yet run to a verdict (an enqueue     |
+//! |               |                       | that could not be admitted, a restart    |
+//! |               |                       | orphan) — the poller backstop MAY        |
 //! |               |                       | re-attempt it                            |
+//!
+//! A run that reached a verdict never ends `failed`: a permanent failure
+//! (`permanent`), an exhausted retry budget (`retries_exhausted`) and
+//! unparseable output (`bad_output`) all dead-letter, so one refused event
+//! costs one run, not the per-root budget (live smoke of P3, 2026-09-23).
 //!
 //! The #149 gate originally treated `failed` as terminal-for-idempotency,
 //! which permanently wedged an event that merely failed *transiently*. #155
@@ -107,6 +113,13 @@ pub enum DeadLetterReason {
     /// the parent plan could not be advanced, so the run is dead-lettered
     /// (rather than left `processed`) to surface the stall to the DLQ.
     ReducerFailed,
+    /// A permanent failure (a non-zero harness exit, a 4xx, a refused write,
+    /// a harness outside the allow-list): re-running the same request would
+    /// not change the answer. Dead-lettered (owner decision after the live
+    /// smoke of P3, 2026-09-23) rather than left as a retriable `failed` row,
+    /// which the poller re-claimed as a NEW run every interval until the
+    /// per-root budget was spent. A human `requeue` / `retry` re-drives it.
+    Permanent,
 }
 
 impl DeadLetterReason {
@@ -119,6 +132,7 @@ impl DeadLetterReason {
             DeadLetterReason::RetriesExhausted => "retries_exhausted",
             DeadLetterReason::BadOutput => "bad_output",
             DeadLetterReason::ReducerFailed => "reducer_failed",
+            DeadLetterReason::Permanent => "permanent",
         }
     }
 }

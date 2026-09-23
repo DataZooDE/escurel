@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.73 — a permanent failure dead-letters
+
+- A run that fails permanently (a non-zero harness exit, a refused write,
+  a 4xx, a harness outside `ESCUREL_RUNNER_HARNESS_ALLOW`) now ends
+  `dead_letter` with `reason: permanent` and the attempt's `error` on
+  `run-finished`, and waits in the runner's DLQ for a `requeue` / `retry`
+  control. It used to end `failed` (retriable), which the poller re-claimed
+  as a new run every interval until `ESCUREL_RUNNER_MAX_RUNS_PER_ROOT` was
+  spent — 64 runs per refused event. `failed` now only means "no verdict
+  yet" (an enqueue that could not be admitted, a restart orphan).
+
 ## 0.6.72 — live smoke of P3: four consumer gaps
 
 - `run_tool_calls` / `get_run_tool_calls` record a write the gateway
