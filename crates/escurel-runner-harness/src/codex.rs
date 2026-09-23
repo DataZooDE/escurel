@@ -39,7 +39,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use escurel_runner_core::TaskContext;
 
-use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus};
+use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus, Usage};
 
 /// The adapter's stable name — the `ESCUREL_RUNNER_HARNESS=codex` selector
 /// and the value reported by [`Harness::name`].
@@ -247,6 +247,8 @@ fn parse_outcome(final_message: &str, jsonl: &[u8]) -> Result<HarnessOutcome, Ha
 
     let mut tool_calls: u32 = 0;
     let mut saw_error = false;
+    // `turn.completed` events carry the turn's `usage`; the run's is the sum.
+    let mut usage: Option<Usage> = None;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -263,6 +265,17 @@ fn parse_outcome(final_message: &str, jsonl: &[u8]) -> Result<HarnessOutcome, Ha
         if is_error_event(&event) {
             saw_error = true;
         }
+        if event["type"] == "turn.completed"
+            && let Some(u) = event.get("usage").and_then(serde_json::Value::as_object)
+        {
+            let count = |k: &str| u.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+            usage.get_or_insert_with(Usage::default).accumulate(&Usage {
+                input_tokens: count("input_tokens") + count("cached_input_tokens"),
+                output_tokens: count("output_tokens"),
+                cost_usd: None,
+                model: None,
+            });
+        }
     }
 
     let ok = !saw_error;
@@ -277,6 +290,7 @@ fn parse_outcome(final_message: &str, jsonl: &[u8]) -> Result<HarnessOutcome, Ha
 
     Ok(HarnessOutcome {
         result_ref: None,
+        usage,
         ok,
         status: if ok {
             HarnessStatus::Ok
@@ -441,6 +455,24 @@ mod tests {
         assert_eq!(outcome.summary, "folded the event");
         assert_eq!(outcome.tool_calls, 2);
         assert_eq!(outcome.produced_instance, None);
+    }
+
+    #[test]
+    fn turn_usage_is_summed_and_absent_usage_is_none() {
+        let jsonl = br#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":9}}
+{"type":"turn.completed","usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":11}}"#;
+        let usage = parse_outcome("ok", jsonl)
+            .expect("parse")
+            .usage
+            .expect("usage");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (190, 20));
+        assert_eq!(usage.cost_usd, None);
+        assert_eq!(
+            parse_outcome("ok", br#"{"type":"turn.completed"}"#)
+                .expect("parse")
+                .usage,
+            None
+        );
     }
 
     #[test]

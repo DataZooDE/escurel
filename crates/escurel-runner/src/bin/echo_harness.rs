@@ -29,7 +29,7 @@
 use std::io::Read;
 use std::process::ExitCode;
 
-use escurel_runner_harness::{HarnessOutcome, HarnessStatus, HarnessTask};
+use escurel_runner_harness::{HarnessOutcome, HarnessStatus, HarnessTask, Usage};
 use serde_json::{Value, json};
 
 fn main() -> ExitCode {
@@ -286,6 +286,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
             // Nothing to fold — a clean no-op pass.
             return Ok(HarnessOutcome {
                 result_ref: None,
+                usage: None,
                 ok: true,
                 status: HarnessStatus::Ok,
                 summary: "no unassigned inbox event with a target instance".to_owned(),
@@ -461,6 +462,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         }
         return Ok(HarnessOutcome {
             result_ref: knob_result_ref(),
+            usage: None,
             ok: true,
             status: HarnessStatus::Ok,
             summary: format!(
@@ -537,6 +539,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
             .to_owned();
         return Ok(HarnessOutcome {
             result_ref: knob_result_ref(),
+            usage: None,
             ok: true,
             status: HarnessStatus::Ok,
             summary: format!(
@@ -568,6 +571,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
 
     Ok(HarnessOutcome {
         result_ref: knob_result_ref(),
+        usage: knob_usage(),
         ok: true,
         status: HarnessStatus::Ok,
         summary: format!(
@@ -589,6 +593,25 @@ fn knob_result_ref() -> Option<serde_json::Value> {
         .ok()
         .filter(|s| !s.is_empty())?;
     Some(serde_json::json!({ "kind": "scenario_parquet", "scenario_id": scenario_id }))
+}
+
+/// Test-only knob: `ESCUREL_ECHO_USAGE=<input>,<output>[,<cost_usd>]` makes
+/// the echo report that token usage (model `echo`) on its fold outcome, so the
+/// runner's usage path (sum across attempts → `run-finished.body.usage` →
+/// metrics) is exercised end to end without a paid harness. Unset or
+/// malformed ⇒ `None`, what a harness that reports nothing looks like.
+fn knob_usage() -> Option<Usage> {
+    let raw = std::env::var("ESCUREL_ECHO_USAGE").ok()?;
+    let mut parts = raw.split(',');
+    let input_tokens = parts.next()?.trim().parse().ok()?;
+    let output_tokens = parts.next()?.trim().parse().ok()?;
+    let cost_usd = parts.next().and_then(|c| c.trim().parse().ok());
+    Some(Usage {
+        input_tokens,
+        output_tokens,
+        cost_usd,
+        model: Some("echo".to_owned()),
+    })
 }
 
 /// The current time as an RFC 3339 string (UTC, second precision) — the
@@ -808,6 +831,7 @@ fn lint_scan(
 
     Ok(HarnessOutcome {
         result_ref: None,
+        usage: None,
         ok: true,
         status: HarnessStatus::Ok,
         summary: format!("lint scan recorded {} issue(s)", findings.len()),
@@ -905,6 +929,7 @@ fn curate_index(
 
     Ok(HarnessOutcome {
         result_ref: None,
+        usage: None,
         ok: true,
         status: HarnessStatus::Ok,
         summary: format!("curated index over {} categories", skills.len()),
@@ -999,6 +1024,7 @@ fn eval_score(
 
     Ok(HarnessOutcome {
         result_ref: None,
+        usage: None,
         ok: true,
         status: HarnessStatus::Ok,
         summary: format!("eval {}: {}", task_id, if passed { "pass" } else { "fail" }),
@@ -1073,6 +1099,7 @@ fn improve_apply(
 
     Ok(HarnessOutcome {
         result_ref: None,
+        usage: None,
         ok: true,
         status: HarnessStatus::Ok,
         summary: format!("improved {target_page}"),

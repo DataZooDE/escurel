@@ -56,7 +56,7 @@ pub use gemini::{
     DEFAULT_BASE_URL as GEMINI_DEFAULT_BASE_URL, DEFAULT_MODEL as GEMINI_DEFAULT_MODEL,
     GeminiHarness,
 };
-pub use harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus};
+pub use harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus, Usage};
 pub use muse::MuseHarness;
 pub use refusing::RefusingHarness;
 pub use task::HarnessTask;

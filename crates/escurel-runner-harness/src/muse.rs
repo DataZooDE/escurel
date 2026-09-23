@@ -379,6 +379,7 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
 
     Ok(HarnessOutcome {
         result_ref: None,
+        usage: None,
         ok,
         status: if ok {
             HarnessStatus::Ok

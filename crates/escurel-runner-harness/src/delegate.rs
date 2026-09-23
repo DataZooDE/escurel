@@ -216,6 +216,7 @@ impl DelegateHarness {
                         tool_calls: 0,
                         produced_instance: None,
                         result_ref: None,
+                        usage: None,
                     });
                 }
                 // Non-terminal (submitted / working / input-required / unknown):
@@ -253,6 +254,7 @@ impl DelegateHarness {
             // Set later by the seal in `run`, once the produced instance is written.
             produced_instance: None,
             result_ref,
+            usage: None,
         }
     }
 
