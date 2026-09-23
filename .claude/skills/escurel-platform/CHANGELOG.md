@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.65 — every run-bound `/mcp` call is recorded (workbench P3-1)
+
+- The gateway keeps `run_tool_calls`: one row per `/mcp` call made with a
+  run-bound bearer (the runner's per-run agent token or a
+  `mint_agent_token` bearer) — tool, `ok`/`error` (+ the error's
+  `data.code`), duration, request/response sizes in bytes (never
+  payloads), subject, time. Retention is the run's; the table lives in the
+  tenant's DuckDB only (an index rebuild drops it; the OTLP trace, P3-3,
+  is the durable record). The read surface (`get_run_tool_calls`, a
+  per-run summary on `list_lineage`) lands next.
+
 ## 0.6.64 — undated events get the server's clock; run-progress retention is configurable
 
 - `capture_event` without `at` stores the gateway's clock instead of null

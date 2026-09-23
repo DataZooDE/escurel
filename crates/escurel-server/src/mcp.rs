@@ -318,6 +318,13 @@ async fn mcp_inner(
                 .unwrap_or_default()
                 .to_owned();
             let started = std::time::Instant::now();
+            // For the run's tool-call record (P3-1): the argument size, in
+            // bytes — never the arguments.
+            let request_bytes = req
+                .params
+                .get("arguments")
+                .map(|a| a.to_string().len())
+                .unwrap_or(0);
             // MCP-shape the SUCCESS payload into a `CallToolResult`
             // (`content` + `structuredContent` + `isError:false`) so real
             // MCP clients (Claude Code) can READ the tool output. Tool
@@ -390,6 +397,42 @@ async fn mcp_inner(
                 msg = "tool.completed",
                 "tool.completed"
             );
+            // A run's own record of what it called (workbench backend
+            // P3-1): one row per call made with a run-bound bearer — tool,
+            // outcome, duration, sizes. Best-effort: the call's result is
+            // the call's result, whether or not the row lands.
+            if let (Some(run), Some(indexer)) = (
+                run.as_ref(),
+                state.indexer.as_ref().map(IndexerHandle::current),
+            ) {
+                let error_code = r.as_ref().err().and_then(|e| {
+                    e.data
+                        .as_ref()
+                        .and_then(|d| d.get("code"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
+                let response_bytes = match &r {
+                    Ok(v) => v.to_string().len(),
+                    Err(e) => e.message.len(),
+                };
+                if let Err(e) = indexer
+                    .record_tool_call(escurel_index::NewToolCall {
+                        run_id: run.run_id.clone(),
+                        root_event_id: run.root_event_id.clone(),
+                        tool: tool.clone(),
+                        status: if r.is_ok() { "ok" } else { "error" }.to_owned(),
+                        error_code,
+                        duration_ms,
+                        request_bytes: request_bytes as u64,
+                        response_bytes: response_bytes as u64,
+                        subject: subject.clone(),
+                    })
+                    .await
+                {
+                    tracing::warn!(error = %e, run_id = %run.run_id, tool = %tool, "run_tool_calls: row not recorded");
+                }
+            }
             r
         }
         other => Err(JsonRpcError::method_not_found(format!(

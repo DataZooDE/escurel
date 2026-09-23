@@ -101,6 +101,7 @@ mod remote_backend_tools;
 mod report_progress;
 mod review_events;
 mod run_control_events;
+mod run_tool_calls;
 mod schema_ergonomics;
 mod self_packaging;
 mod serve_demo;

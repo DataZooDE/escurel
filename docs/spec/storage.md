@@ -579,6 +579,23 @@ CREATE INDEX events_instance_at ON events(instance_page_id, at_ts);-- an instanc
 CREATE INDEX events_root_at     ON events(root_event_id, at_ts);   -- a lineage tree
 CREATE INDEX events_run_at      ON events(run_id, at_ts);          -- a run's own events
 CREATE INDEX events_seq         ON events(seq);                     -- tail order (0018_events_seq.sql)
+
+-- One row per /mcp call made with a run-bound bearer (0019_run_tool_calls.sql;
+-- workbench backend P3-1). Sizes only, never payloads. Local DuckDB only.
+CREATE TABLE run_tool_calls (
+  seq             BIGINT PRIMARY KEY,                -- ingestion order, the cursor
+  run_id          VARCHAR NOT NULL,
+  root_event_id   VARCHAR,
+  tool            VARCHAR NOT NULL,
+  status          VARCHAR NOT NULL,                  -- 'ok' | 'error'
+  error_code      VARCHAR,
+  duration_ms     DOUBLE NOT NULL,
+  request_bytes   BIGINT NOT NULL DEFAULT 0,
+  response_bytes  BIGINT NOT NULL DEFAULT 0,
+  subject         VARCHAR NOT NULL DEFAULT '',
+  at_ts           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX run_tool_calls_run ON run_tool_calls(run_id, seq);
 ```
 
 **Demo seeding (M7).** `seed_from_dir` (the `ESCUREL_SEED_DIR`
