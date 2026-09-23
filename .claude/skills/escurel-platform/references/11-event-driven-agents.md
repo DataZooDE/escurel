@@ -385,8 +385,13 @@ agent token, or one from `mint_agent_token` — is recorded on the gateway
 in `run_tool_calls`: the tool, `ok` or `error` (with the error's
 `data.code`), duration, request and response sizes in bytes (never the
 payloads), the subject and the time. An ordinary bearer records nothing.
-Rows live as long as the run's record does. Reading them
-(`get_run_tool_calls`, a summary per run on `list_lineage`) is P3-2.
+Rows live as long as the run's record does. Read them with
+`get_run_tool_calls { run_id, limit?, after? }` — oldest first, `after` =
+the last `seq` seen; a run you may not read (its `run-started` is the
+gate) or one that does not exist answers an empty page; a run's own bearer
+may read its calls, and that read is recorded like any other. Ask
+`list_lineage` for `include: ["tool_calls"]` and every run node carries
+`tool_call_summary { count, failed, duration_ms }`.
 
 ## Reading a lineage: `list_lineage`
 

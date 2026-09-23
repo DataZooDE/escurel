@@ -332,6 +332,15 @@ pub enum RunCmd {
         #[arg(long)]
         cursor: Option<String>,
     },
+    /// A run's recorded `/mcp` calls, oldest first (`--after <seq>` pages).
+    ToolCalls {
+        #[arg(long)]
+        run: String,
+        #[arg(long, default_value_t = 0)]
+        limit: u32,
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+    },
     /// Mint a run-bound bearer for an interactive agent working as
     /// `agent:<skill>` on your behalf (workbench backend P2-6).
     MintToken {
@@ -1006,6 +1015,16 @@ async fn run_cmd(client: &Client, cmd: RunCmd) -> Result<Value> {
                     include,
                     limit,
                     cursor: cursor.unwrap_or_default(),
+                })
+                .await?;
+            Ok(serde_json::to_value(resp)?)
+        }
+        RunCmd::ToolCalls { run, limit, after } => {
+            let resp = client
+                .get_run_tool_calls(escurel_client::GetRunToolCallsRequest {
+                    run_id: run,
+                    limit,
+                    after,
                 })
                 .await?;
             Ok(serde_json::to_value(resp)?)

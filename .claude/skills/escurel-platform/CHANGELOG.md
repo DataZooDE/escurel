@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.66 — `get_run_tool_calls`; a tool-call summary on the lineage (workbench P3-2)
+
+- New tool `get_run_tool_calls { run_id, limit?, after? }` → `{run_id,
+  calls[{seq, tool, status, error_code, duration_ms, request_bytes,
+  response_bytes, subject, at}], next_after}` (CLI `run tool-calls --run …
+  [--after <seq>]`). Oldest first; a run you may not read, or none, answers
+  empty. A run's own bearer may read its calls (that read is recorded too).
+- `list_lineage { include: [..., "tool_calls"] }` adds `tool_call_summary
+  {count, failed, duration_ms}` to each run node.
+
 ## 0.6.65 — every run-bound `/mcp` call is recorded (workbench P3-1)
 
 - The gateway keeps `run_tool_calls`: one row per `/mcp` call made with a

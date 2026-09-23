@@ -65,18 +65,18 @@ pub use error::{Error, JSONRPC_ADMIN_REQUIRED};
 pub use escurel_types::{
     AppendMessageRequest, AppendMessageResponse, AssignEventRequest, AssignEventResponse,
     CaptureEventRequest, ChatMessage, DeletePageRequest, DeletePageResponse, Edge, Event,
-    ExpandBlock, ExpandRequest, ExpandResponse, InstanceInfo, LineageNode, ListEventsRequest,
-    ListEventsResponse, ListInboxRequest, ListInboxResponse, ListInstancesRequest,
-    ListInstancesResponse, ListLineageRequest, ListLineageResponse, ListMessagesRequest,
-    ListMessagesResponse, ListSkillsRequest, ListSkillsResponse, LiveAck, LiveOp,
-    MintAgentTokenRequest, MintAgentTokenResponse, MovePageRequest, MovePageResponse,
-    NeighboursRequest, NeighboursResponse, PageRef, PlanStep, ProvenanceAncestryRequest,
-    ProvenanceAncestryResponse, ProvenancePathRequest, ProvenancePathResponse,
-    ProvenanceReportRequest, ProvenanceReportResponse, PurgePageRequest, PurgePageResponse,
-    QueryInstanceRequest, QueryInstanceResponse, ReportProgressRequest, ReportProgressResponse,
-    ResolveRequest, ResolveResponse, SearchHit, SearchRequest, SearchResponse, Skill,
-    StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest,
-    ValidateResponse, ValidationIssue, WikilinkParsed,
+    ExpandBlock, ExpandRequest, ExpandResponse, GetRunToolCallsRequest, GetRunToolCallsResponse,
+    InstanceInfo, LineageNode, ListEventsRequest, ListEventsResponse, ListInboxRequest,
+    ListInboxResponse, ListInstancesRequest, ListInstancesResponse, ListLineageRequest,
+    ListLineageResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
+    ListSkillsResponse, LiveAck, LiveOp, MintAgentTokenRequest, MintAgentTokenResponse,
+    MovePageRequest, MovePageResponse, NeighboursRequest, NeighboursResponse, PageRef, PlanStep,
+    ProvenanceAncestryRequest, ProvenanceAncestryResponse, ProvenancePathRequest,
+    ProvenancePathResponse, ProvenanceReportRequest, ProvenanceReportResponse, PurgePageRequest,
+    PurgePageResponse, QueryInstanceRequest, QueryInstanceResponse, ReportProgressRequest,
+    ReportProgressResponse, ResolveRequest, ResolveResponse, SearchHit, SearchRequest,
+    SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse,
+    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
 };
 // Held writes (the `autonomy: review` gate): a draft is a finished change
 // that has not landed, and these are how an app shows a human what is
@@ -585,6 +585,25 @@ impl Client {
             args["cursor"] = json!(req.cursor);
         }
         self.transport.call_typed("list_lineage", args).await
+    }
+
+    /// A run's recorded `/mcp` calls (`get_run_tool_calls`, workbench backend
+    /// P3-2), oldest first, paged by `after`.
+    ///
+    /// # Errors
+    /// When the transport or the tool fails.
+    pub async fn get_run_tool_calls(
+        &self,
+        req: GetRunToolCallsRequest,
+    ) -> Result<GetRunToolCallsResponse, Error> {
+        let mut args = json!({ "run_id": req.run_id });
+        if req.limit > 0 {
+            args["limit"] = json!(req.limit);
+        }
+        if req.after > 0 {
+            args["after"] = json!(req.after);
+        }
+        self.transport.call_typed("get_run_tool_calls", args).await
     }
 
     /// Mint a run-bound bearer for an interactive agent (`mint_agent_token`,

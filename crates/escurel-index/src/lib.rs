@@ -89,7 +89,9 @@ pub use snapshot::{
     IndexStore, IndexerHandle, LakeConfig, ObjectStoreSecret, OpenedIndex, PublishReport,
     SingleFileStore, SnapshotError,
 };
-pub use tool_calls::{NewToolCall, TOOL_CALLS_MAX_LIMIT, ToolCallPage, ToolCallRow};
+pub use tool_calls::{
+    NewToolCall, TOOL_CALLS_MAX_LIMIT, ToolCallPage, ToolCallRow, ToolCallSummary,
+};
 pub use traversal::{
     CORPUS_TARGET, Dir, Filter, MAX_DEPTH_CEILING, START_ALIAS, Start, Step, Traversal,
     TraversalError, parse_traversal,

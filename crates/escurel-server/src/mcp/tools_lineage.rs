@@ -98,9 +98,9 @@ pub(super) async fn tool_list_lineage(
         ));
     }
     for inc in &a.include {
-        if !matches!(inc.as_str(), "events" | "runs" | "drafts") {
+        if !matches!(inc.as_str(), "events" | "runs" | "drafts" | "tool_calls") {
             return Err(JsonRpcError::invalid_params(format!(
-                "list_lineage: `include` entries are events | runs | drafts, got `{inc}`"
+                "list_lineage: `include` entries are events | runs | drafts | tool_calls, got `{inc}`"
             )));
         }
     }
@@ -245,7 +245,21 @@ pub(super) async fn tool_list_lineage(
             }),
         });
     }
+    // A summary of each run's recorded `/mcp` calls (P3-2), only when
+    // asked for: one grouped read for every run on this page.
+    let summaries = if a.include.iter().any(|i| i == "tool_calls") {
+        let ids: Vec<String> = runs.values().map(|(id, _)| id.clone()).collect();
+        indexer
+            .run_tool_call_summaries(&ids)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_lineage tool_calls: {e}")))?
+    } else {
+        std::collections::HashMap::new()
+    };
     for (run_id, agg) in runs.into_values() {
+        let summary = summaries
+            .get(&run_id)
+            .map(|s| json!({ "count": s.count, "failed": s.failed, "duration_ms": s.duration_ms }));
         candidates.push(Candidate {
             id: run_id,
             kind: "run",
@@ -254,6 +268,9 @@ pub(super) async fn tool_list_lineage(
             value: {
                 let mut v = Value::Object(agg.attrs);
                 v["state"] = json!(agg.state);
+                if let Some(s) = summary {
+                    v["tool_call_summary"] = s;
+                }
                 v
             },
         });
