@@ -52,6 +52,13 @@ pub struct AclCaller<'a> {
     pub run_id: Option<&'a str>,
     /// That run's lineage root (`root_event_id` claim); `None` with `run_id`.
     pub root_event_id: Option<&'a str>,
+    /// The skill a NARROWED per-run agent token is confined to (`skill`
+    /// claim, workbench backend P3-6). The one claim here that IS an ACL
+    /// input, and only ever a restriction: an instance write under any other
+    /// skill is refused before the group intersection is consulted, so the
+    /// token's (tenant-wide) groups cannot reach another skill that happens
+    /// to grant the same group. `None` for every other caller.
+    pub agent_skill: Option<&'a str>,
 }
 
 /// The frontmatter field that carries a member's owning principal when an
@@ -315,6 +322,11 @@ impl Indexer {
     ) -> Result<bool, IndexerError> {
         if caller.is_admin {
             return Ok(true);
+        }
+        // A narrowed agent token writes its own skill's instances only,
+        // whatever its groups would otherwise reach (P3-6).
+        if caller.agent_skill.is_some_and(|s| s != skill) {
+            return Ok(false);
         }
         let (acl, owner_field) = self.skill_acl(skill).await?.unwrap_or((None, None));
         let mut effective = self.caller_groups(caller).await?;

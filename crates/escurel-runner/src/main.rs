@@ -1900,9 +1900,19 @@ async fn dispatch_loop(
         // retry closure because a retry is the same step, not a new choice.
         // The skill's own asks (workbench backend P2-7): a `harness:` on the
         // skill page is honoured like a manual one, within the allow-list.
-        let skill_harness = escurel_runner_core::skill_contract(&client, &trigger.label_skill)
-            .await
-            .and_then(|c| c.harness);
+        let skill_contract =
+            escurel_runner_core::skill_contract(&client, &trigger.label_skill).await;
+        let skill_harness = skill_contract.as_ref().and_then(|c| c.harness.clone());
+        // Per-skill narrowing of the run's agent token (P3-6): on, the
+        // token carries the skill's write groups — none when the skill
+        // declares no grant or could not be read, which fails closed to an
+        // agent that can write nothing rather than one that writes as admin.
+        let narrow_groups: Option<Vec<String>> = config.agent_narrow.then(|| {
+            skill_contract
+                .as_ref()
+                .map(|c| c.write_groups.clone())
+                .unwrap_or_default()
+        });
         let step_harness = resolve_harness(&config, &harness, &trigger, skill_harness.as_deref());
         // The run's lifecycle as `escurel:run` events (workbench backend
         // P1): a projection of the ledger for the humans watching the run,
@@ -1955,6 +1965,7 @@ async fn dispatch_loop(
                 step_harness.as_ref(),
                 attempt,
                 Some(&run_claims),
+                narrow_groups.as_deref(),
                 &cancel,
                 sink_ref,
             );
@@ -2376,10 +2387,11 @@ async fn attempt_run(
     harness: &dyn Harness,
     attempt: u32,
     run: Option<&escurel_runner_core::RunClaims>,
+    narrow: Option<&[String]>,
     cancel: &escurel_runner_core::Cancel,
     sink: &std::sync::Mutex<AttemptSink>,
 ) -> Result<ConfirmedEffect, ReconcileError> {
-    let mut task: TaskContext = package(trigger, client, config, Some(tokens), run)
+    let mut task: TaskContext = package(trigger, client, config, Some(tokens), run, narrow)
         .await
         .map_err(|e| {
             tracing::warn!(

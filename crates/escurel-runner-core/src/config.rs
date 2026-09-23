@@ -490,6 +490,14 @@ pub struct RunnerConfig {
     /// (`ESCUREL_RUNNER_EMIT_EVENTS`, default on). Best-effort either way;
     /// off means the workbench sees events and drafts but no runs.
     pub emit_run_events: bool,
+    /// Narrow each run's agent token to its target skill (#510 step 2,
+    /// workbench P3-6): `escurel:agent` + the skill's `acl.create` /
+    /// `acl.update` groups instead of `escurel:admin`, so the harness may
+    /// write that skill's instances and nothing else
+    /// (`ESCUREL_RUNNER_AGENT_NARROW`, default off until a corpus's write-ACL
+    /// model is verified — a skill with no write grant then runs an agent
+    /// that can write nothing). The runner's own bookkeeping keeps admin.
+    pub agent_narrow: bool,
     /// SIGTERM drain timeout: how long shutdown lets in-flight runs finish
     /// before exiting anyway (#158).
     /// Source: `ESCUREL_RUNNER_DRAIN_TIMEOUT` (default
@@ -743,6 +751,12 @@ impl RunnerConfig {
                 .as_deref(),
             Some("0" | "false" | "off" | "no")
         );
+        let agent_narrow = matches!(
+            lookup("ESCUREL_RUNNER_AGENT_NARROW")
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("1" | "true" | "on" | "yes")
+        );
 
         let max_harness_procs = match lookup("ESCUREL_RUNNER_MAX_HARNESS_PROCS") {
             Some(raw) if !raw.is_empty() => match raw.parse::<usize>() {
@@ -783,6 +797,7 @@ impl RunnerConfig {
             status_interval,
             tail_max_age,
             harness_allow,
+            agent_narrow,
             runner_id,
             cancel_grace,
             lint_interval,

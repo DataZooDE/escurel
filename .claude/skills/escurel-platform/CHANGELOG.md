@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.70 — the per-run agent token can be narrowed to its skill (workbench P3-6)
+
+- Runner flag `ESCUREL_RUNNER_AGENT_NARROW` (default off): the bearer a
+  run's harness receives carries `escurel:agent` plus the target skill's
+  `acl.create` / `acl.update` groups instead of `escurel:admin`, so under
+  `ESCUREL_WRITE_ACL=enforce` it may write that skill's instances and
+  nothing else (#510 step 2). Reserved and `escurel:` names on the skill
+  page are stripped; the runner's own bookkeeping keeps admin. See
+  references/08 § per-run agent token and the env table in references/11.
+
 ## 0.6.69 — `fields[].render` and `blocks[]` on a skill (workbench P3-5)
 
 - A skill's `fields:` entries may carry `render: text | markdown | date |

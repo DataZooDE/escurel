@@ -199,22 +199,28 @@ impl TokenSource {
     ///
     /// # Errors
     /// When signing fails, or `label_skill` cannot be an unambiguous subject.
+    ///
+    /// `narrow`: `Some(groups)` mints the token NARROWED to the target skill
+    /// (`escurel:agent` + the skill's write groups, P3-6) instead of the
+    /// runner's admin authority; `None` keeps the admin grant (the default,
+    /// `ESCUREL_RUNNER_AGENT_NARROW` off).
     pub fn mint_agent(
         &self,
         label_skill: &str,
         ttl_secs: u64,
         run: Option<&RunClaims>,
+        narrow: Option<&[String]>,
     ) -> Result<Option<String>, AuthError> {
         match self {
             Self::Static(_) => Ok(None),
             Self::Minted {
                 signer, subject, ..
-            } => Ok(Some(signer.mint_agent(
-                subject,
-                label_skill,
-                ttl_secs,
-                run,
-            )?)),
+            } => Ok(Some(match narrow {
+                Some(groups) => {
+                    signer.mint_agent_narrowed(subject, label_skill, ttl_secs, run, groups)?
+                }
+                None => signer.mint_agent(subject, label_skill, ttl_secs, run)?,
+            })),
         }
     }
 
@@ -409,7 +415,7 @@ mod tests {
         };
 
         let token = minted
-            .mint_agent("inbox-scan", 90, None)
+            .mint_agent("inbox-scan", 90, None, None)
             .expect("mint")
             .expect("a minting source scopes the run");
         let claims = claims_of(&token);
@@ -418,7 +424,7 @@ mod tests {
 
         assert!(
             TokenSource::Static("pasted-bearer".into())
-                .mint_agent("inbox-scan", 90, None)
+                .mint_agent("inbox-scan", 90, None, None)
                 .expect("no error")
                 .is_none(),
             "a static source cannot scope a run; the caller falls back to the runner"
@@ -454,11 +460,11 @@ mod tests {
         };
 
         let first = minted
-            .mint_agent("inbox-scan", 90, None)
+            .mint_agent("inbox-scan", 90, None, None)
             .expect("a")
             .expect("a");
         let second = minted
-            .mint_agent("inbox-scan", 90, None)
+            .mint_agent("inbox-scan", 90, None, None)
             .expect("b")
             .expect("b");
         assert_ne!(
@@ -501,11 +507,20 @@ mod tests {
             cached: Mutex::new(None),
         };
         let token = minted
-            .mint_agent("inbox-scan", 90, Some(&run()))
+            .mint_agent("inbox-scan", 90, Some(&run()), None)
             .expect("mint")
             .expect("minting source");
         let claims = claims_of(&token);
         assert_eq!(claims["sub"], "agent:inbox-scan", "{claims}");
+        assert_eq!(claims["roles"], serde_json::json!(["escurel:admin"]));
+        // Narrowed (P3-6): agent + the skill's groups, the run claims kept.
+        let narrowed = minted
+            .mint_agent("inbox-scan", 90, Some(&run()), Some(&["ops".to_owned()]))
+            .expect("mint")
+            .expect("minting source");
+        let claims = claims_of(&narrowed);
+        assert_eq!(claims["roles"], serde_json::json!(["escurel:agent", "ops"]));
+        assert_eq!(claims[RUN_ID_CLAIM], "01HRUN", "{claims}");
         assert_eq!(claims[RUN_ID_CLAIM], "01HRUN", "{claims}");
         assert_eq!(claims[ROOT_EVENT_ID_CLAIM], "01HROOT", "{claims}");
         assert_eq!(
@@ -514,7 +529,7 @@ mod tests {
         );
         // Without a run (recovery, a bare mint) the claims are simply absent.
         let bare = minted
-            .mint_agent("inbox-scan", 90, None)
+            .mint_agent("inbox-scan", 90, None, None)
             .expect("mint")
             .expect("minting source");
         assert!(claims_of(&bare).get(RUN_ID_CLAIM).is_none());

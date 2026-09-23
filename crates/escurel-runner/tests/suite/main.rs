@@ -17,6 +17,7 @@
 //! `tests/suite.rs`. A test target's root file resolves `mod x;` against
 //! its *own* directory, so `tests/suite.rs` would look for `tests/x.rs`.
 
+mod agent_token_narrowing;
 mod agy_live;
 mod autonomy_gate;
 mod cancellable_runs;

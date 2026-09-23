@@ -146,6 +146,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | `30s` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |
 | `ESCUREL_RUNNER_ID` | `<HOSTNAME>:<pid>` | how this runner names itself in its status reports |
 | `ESCUREL_RUNNER_EMIT_EVENTS` | `true` | write each run's lifecycle as `escurel:run` system events (see *Run lifecycle events*); `false` = the workbench sees events and drafts but no runs |
+| `ESCUREL_RUNNER_AGENT_NARROW` | off | narrow each run's agent token to its target skill: `escurel:agent` + the skill's `acl.create` / `acl.update` groups instead of `escurel:admin` (see references/08 § per-run agent token); a skill with no write grant then runs an agent that can write nothing under `ESCUREL_WRITE_ACL=enforce` |
 | `ESCUREL_RUNNER_MAX_DEPTH` | `8` | cascade depth budget |
 | `ESCUREL_RUNNER_TENANT_MAX_CONCURRENT`, `…_RUNS_PER_MIN` | — | per-tenant limits |
 
