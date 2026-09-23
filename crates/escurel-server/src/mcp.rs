@@ -179,6 +179,9 @@ pub async fn mcp(
     // full contract set (tenant/tool/transport/subject/trace_id/
     // duration_ms). `trace_id` mirrors the gateway `request_id` when no
     // OTel trace context is active.
+    // The run-bound fields (P3-3) are declared empty and recorded once auth
+    // says whose call this is: an OpenInference `TOOL` span on the run's
+    // own trace, sizes only.
     let span = tracing::info_span!(
         "mcp.request",
         request_id = %request_id,
@@ -186,14 +189,37 @@ pub async fn mcp(
         transport = "mcp_http",
         method = %req.method,
         tool = %tool_name,
+        openinference.span.kind = tracing::field::Empty,
+        escurel.run_id = tracing::field::Empty,
+        escurel.root_event_id = tracing::field::Empty,
+        input.size = tracing::field::Empty,
+        output.size = tracing::field::Empty,
     );
-    mcp_inner(state, headers, req).instrument(span).await
+    // Authenticate BEFORE the span is entered: a run-bound bearer's call is
+    // a TOOL span on the run's own trace (P3-3), and an OTel parent can
+    // only be set on a span that has not started yet.
+    let auth = crate::auth_gate::authenticate(&state, &headers).await;
+    if let Ok(Some(ctx)) = &auth
+        && let Some(run) = &ctx.run
+    {
+        span.record("openinference.span.kind", "TOOL");
+        span.record("escurel.run_id", run.run_id.as_str());
+        if let Some(root) = &run.root_event_id {
+            span.record("escurel.root_event_id", root.as_str());
+        }
+        if let Some(trace) = &run.trace_id {
+            // The request id seeds the parent's span id, so a retry lands
+            // on the same parent.
+            escurel_obs::attach_run_trace(&span, trace, &request_id);
+        }
+    }
+    mcp_inner(state, req, auth).instrument(span).await
 }
 
 async fn mcp_inner(
     state: crate::server::AppState,
-    headers: HeaderMap,
     mut req: JsonRpcRequest,
+    auth: Result<Option<escurel_auth::AuthContext>, axum::response::Response>,
 ) -> axum::response::Response {
     tracing::info!(msg = "mcp.request.start", "mcp.request.start");
 
@@ -201,8 +227,9 @@ async fn mcp_inner(
         return error_response(req.id, -32600, "invalid jsonrpc version");
     }
 
-    // Auth gate — only enforced when a verifier is configured.
-    let auth_ctx = match crate::auth_gate::authenticate(&state, &headers).await {
+    // Auth gate — only enforced when a verifier is configured; resolved by
+    // the outer handler (before the span started) and handed in.
+    let auth_ctx = match auth {
         Ok(ctx) => ctx,
         Err(resp) => return resp,
     };
@@ -398,6 +425,18 @@ async fn mcp_inner(
                 msg = "tool.completed",
                 "tool.completed"
             );
+            // The span's sizes (P3-3), for a run's call only.
+            if run.is_some() {
+                let span = tracing::Span::current();
+                span.record("input.size", request_bytes as u64);
+                span.record(
+                    "output.size",
+                    match &r {
+                        Ok(v) => v.to_string().len() as u64,
+                        Err(e) => e.message.len() as u64,
+                    },
+                );
+            }
             // A run's own record of what it called (workbench backend
             // P3-1): one row per call made with a run-bound bearer — tool,
             // outcome, duration, sizes. Best-effort: the call's result is

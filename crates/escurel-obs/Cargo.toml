@@ -25,6 +25,7 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter", "regis
 # OpenTelemetry — version-lockstep set. tracing-opentelemetry 0.33 pairs
 # with opentelemetry/opentelemetry_sdk/opentelemetry-otlp 0.32.
 tracing-opentelemetry = "0.33"
+sha2 = "0.10"
 opentelemetry = "0.32"
 opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "trace"] }

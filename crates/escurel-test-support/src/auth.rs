@@ -259,6 +259,20 @@ impl TestIssuer {
         self.resign_with_extra(&token, "root_event_id", json!(root_event_id))
     }
 
+    /// [`Self::mint_for_run`] plus the lineage's `trace_id` claim (P3-3).
+    pub(crate) fn mint_for_run_traced(
+        &self,
+        tenant: &str,
+        role: Role,
+        subject: &str,
+        run_id: &str,
+        root_event_id: &str,
+        trace_id: &str,
+    ) -> String {
+        let token = self.mint_for_run(tenant, role, subject, run_id, root_event_id);
+        self.resign_with_extra(&token, "trace_id", json!(trace_id))
+    }
+
     /// Re-sign a token with one extra top-level claim. Keeps the claim shapes
     /// in [`Self::sign_with_roles`] as the single source of truth rather than
     /// duplicating them per variant.
