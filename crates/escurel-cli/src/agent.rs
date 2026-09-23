@@ -652,6 +652,23 @@ async fn list_skills(client: &Client) -> Result<Value> {
             if let Some(shadows) = s.shadows {
                 skill["shadows"] = json!(shadows);
             }
+            // The declared policy and the workbench contract keys, as the
+            // wire carries them: present only when declared.
+            if let Some(a) = s.autonomy {
+                skill["autonomy"] = json!(a);
+            }
+            if let Some(v) = s.summary {
+                skill["summary"] = json!(v);
+            }
+            if let Some(v) = s.harness {
+                skill["harness"] = json!(v);
+            }
+            if !s.actions.is_empty() {
+                skill["actions"] = json!(s.actions);
+            }
+            if let Some(c) = s.cascade {
+                skill["cascade"] = serde_json::to_value(c).unwrap_or(Value::Null);
+            }
             skill
         })
         .collect();

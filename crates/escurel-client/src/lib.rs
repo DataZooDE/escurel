@@ -554,6 +554,9 @@ impl Client {
         if req.include_system {
             args["include_system"] = json!(true);
         }
+        if req.newest_first {
+            args["newest_first"] = json!(true);
+        }
         if req.limit > 0 {
             args["limit"] = json!(req.limit);
         }

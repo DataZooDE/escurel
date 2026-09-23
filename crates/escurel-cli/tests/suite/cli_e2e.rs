@@ -153,6 +153,61 @@ async fn skill_list_emits_seeded_skill() {
     h.process.shutdown().await;
 }
 
+/// The CLI's `skill list` carries what the wire carries: the declared
+/// policy and the workbench contract keys (live smoke, 2026-09-23: the
+/// projection dropped every one of them).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skill_list_emits_autonomy_and_the_contract_keys() {
+    const REVIEWED_SKILL: &str = "---\ntype: skill\nid: reviewed\ndescription: d.\n\
+        autonomy: review\nsummary: One line.\nharness: echo\nactions:\n  - customer\n\
+        cascade:\n  target: produced\n  max_depth: 2\n---\n# reviewed\n";
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("customer", CUSTOMER_SKILL)
+                .skill("reviewed", REVIEWED_SKILL)
+                .done(),
+        ),
+        config_overrides: ConfigOverrides {
+            gateway_version: Some("1.0.0-test".to_owned()),
+            ..Default::default()
+        },
+    })
+    .await;
+    let http_addr = process
+        .base_url()
+        .strip_prefix("http://")
+        .unwrap()
+        .to_owned();
+    let bearer = process.mint_token(TENANT, Role::Agent);
+    let h = Harness {
+        process,
+        http_addr,
+        bearer,
+    };
+    let out = run_args(&h, v(&["skill", "list"])).await;
+    let val = json(&out);
+    let reviewed = val["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "reviewed")
+        .cloned()
+        .unwrap_or_else(|| panic!("{val}"));
+    assert_eq!(reviewed["autonomy"], "review", "{reviewed}");
+    assert_eq!(reviewed["summary"], "One line.", "{reviewed}");
+    assert_eq!(reviewed["harness"], "echo", "{reviewed}");
+    assert_eq!(
+        reviewed["actions"],
+        serde_json::json!(["customer"]),
+        "{reviewed}"
+    );
+    assert_eq!(reviewed["cascade"]["max_depth"], 2, "{reviewed}");
+    h.process.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn instance_list_honours_switches() {
     let h = start().await;
