@@ -392,3 +392,30 @@ async fn lineage_columns_are_extracted_from_provenance_runner_at_capture() {
     assert_eq!(root["root_event_id"], root_id);
     assert!(root["run_id"].is_null(), "{root}");
 }
+
+/// An event captured without `at` is stamped with the gateway's clock
+/// (owner decision 2026-09-23): a page's history and the inbox order by
+/// `at`, and a null there made a whole row sort last for ever.
+#[tokio::test]
+async fn an_event_captured_without_at_is_stamped_with_the_servers_clock() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let r = call(
+        &p,
+        &admin,
+        "capture_event",
+        json!({ "source": "manual", "mime": "text/plain", "label_skill": "order", "title": "undated", "body": "" }),
+    )
+    .await;
+    let at = result(&r)["at"].as_str().unwrap_or("");
+    assert!(at.starts_with("20"), "server time, not null: {r}");
+    // A caller who sends `at` keeps it.
+    let r = call(
+        &p,
+        &admin,
+        "capture_event",
+        json!({ "at": "2020-01-02T03:04:05Z", "source": "manual", "mime": "text/plain", "label_skill": "order", "title": "dated", "body": "" }),
+    )
+    .await;
+    assert_eq!(result(&r)["at"], "2020-01-02T03:04:05Z", "{r}");
+}

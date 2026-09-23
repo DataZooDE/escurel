@@ -1721,6 +1721,12 @@ pub(super) async fn tool_capture_event(
                 .to_owned(),
         ));
     }
+    // An undated capture gets the gateway's clock (owner decision
+    // 2026-09-23): a page's history and the inbox order by `at`, and a
+    // null there sorted a row last for ever. A caller's own `at` is kept.
+    if a.at.as_deref().is_none_or(|s| s.trim().is_empty()) {
+        a.at = Some(escurel_index::now_rfc3339_micros());
+    }
     let (root_event_id, run_id) = match &control {
         Some(c) => (c.root_event_id.clone(), c.run_id.clone()),
         None => lineage_from_provenance(a.provenance.as_ref()),
