@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.68 — `run-finished` carries the run's token usage and cost (workbench P3-4)
+
+- `run-finished.body.usage` is `{input_tokens, output_tokens, cost_usd,
+  model}` summed over the run's attempts — what the harness itself
+  reported (claude: the result envelope's `usage` + `total_cost_usd`;
+  gemini: `usageMetadata` per turn; codex: `turn.completed.usage`), never
+  an estimate — and `null` when no attempt reported any (echo, agy, muse,
+  delegate). `list_lineage` carries it as `usage` on the `run` node. The
+  runner meters `escurel_runner_tokens_total{tenant,kind}` and
+  `escurel_runner_cost_usd_total{tenant}`. See references/11 § *What a
+  run cost*.
+
 ## 0.6.67 — a run's calls are TOOL spans on the run's trace (workbench P3-3)
 
 - With `ESCUREL_OBSERVABILITY_OTLP_ENDPOINT` set, every `/mcp` call made
