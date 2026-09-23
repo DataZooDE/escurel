@@ -60,10 +60,21 @@ async fn may_read_run(
     if event_acl == crate::server::EventAclMode::Off {
         return Ok(true);
     }
-    indexer
+    let allowed = indexer
         .may_read_event(caller, started)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("get_run_tool_calls acl: {e}")))
+        .map_err(|e| JsonRpcError::internal(format!("get_run_tool_calls acl: {e}")))?;
+    if !allowed && event_acl == crate::server::EventAclMode::Log {
+        // Log mode is audit-only everywhere else (`list_events`,
+        // `list_lineage`): warn, and show — a rollout on log mode must not
+        // lose this read (codex second-opinion review of P3).
+        tracing::warn!(
+            subject = %caller.subject, run_id = %run_id,
+            "event-ACL would hide this run's tool calls (log mode) — showing"
+        );
+        return Ok(true);
+    }
+    Ok(allowed)
 }
 
 pub(super) async fn tool_get_run_tool_calls(

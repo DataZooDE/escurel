@@ -103,7 +103,7 @@ lineage's `run` node), and meters it as
 |---|---|---|---|---|
 | claude | `usage.input_tokens` + cache-read + cache-creation | `usage.output_tokens` | `total_cost_usd` | first key of `modelUsage` |
 | gemini | `usageMetadata.promptTokenCount`, summed over turns | `candidatesTokenCount`, summed | — | the configured model |
-| codex | `turn.completed.usage.input_tokens` + `cached_input_tokens`, summed | `output_tokens`, summed | — | — |
+| codex | `turn.completed.usage.input_tokens`, summed (`cached_input_tokens` is a subset of it, not added) | `output_tokens`, summed | — | — |
 | echo, agy, muse, delegate | — | — | — | — (`usage: null`) |
 
 A harness that reports nothing leaves `usage` `null` and adds nothing to the

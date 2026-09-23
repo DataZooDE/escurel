@@ -2,7 +2,9 @@
 //! (knowledge-workbench backend P3-2). Real gateway, real DuckDB, raw
 //! JSON-RPC; the rows come from P3-1's hook on real run-bound calls.
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
+use escurel_test_support::{
+    AuthMode, ConfigOverrides, EscurelProcess, EventAclMode, FixtureBuilder, Opts, Role,
+};
 use serde_json::{Value, json};
 
 const TENANT: &str = "carl";
@@ -13,8 +15,16 @@ const SKILL: &str = "---\ntype: skill\nid: note\ndescription: d.\n---\n# note\n"
 const NOTE: &str = "---\ntype: instance\nid: n1\nskill: note\n---\n# n1\n";
 
 async fn start() -> EscurelProcess {
+    start_with(EventAclMode::Off).await
+}
+
+async fn start_with(event_acl: EventAclMode) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            event_acl: Some(event_acl),
+            ..Default::default()
+        },
         fixtures: Some(
             FixtureBuilder::new()
                 .tenant(TENANT)
@@ -22,7 +32,6 @@ async fn start() -> EscurelProcess {
                 .instance("note", "n1", NOTE)
                 .done(),
         ),
-        ..Default::default()
     })
     .await
 }
@@ -174,4 +183,37 @@ async fn a_runs_tool_calls_are_readable_per_run_and_summarised_on_its_lineage_no
         run.get("tool_call_summary").is_none(),
         "only when asked: {run}"
     );
+}
+
+/// Event-ACL log mode is audit-only everywhere else (`list_events`,
+/// `list_lineage`): a run whose `run-started` the caller may not read is
+/// still shown, with a warning in the log; enforce mode hides it (denial as
+/// absence). Codex second-opinion review of P3.
+#[tokio::test]
+async fn log_mode_shows_a_run_the_caller_may_not_read_and_enforce_hides_it() {
+    for (mode, expected) in [(EventAclMode::Log, 1), (EventAclMode::Enforce, 0)] {
+        let p = start_with(mode).await;
+        let admin = p.mint_token(TENANT, Role::Admin);
+        let agent = p.mint_token_for_run(TENANT, Role::Agent, "agent:note", RUN, ROOT);
+        let bob = p.mint_token_with_sub(TENANT, Role::Agent, "bob");
+        // An UNASSIGNED run-started (no target page) is readable by admin only.
+        call(
+            &p,
+            &admin,
+            "capture_event",
+            json!({ "event_id": format!("run:{RUN}:started"), "kind": "system", "source": "escurel-runner",
+                    "mime": "application/json", "label_skill": "escurel:run", "title": "run-started",
+                    "body": "{}",
+                    "provenance": { "runner": { "run_id": RUN, "root_event_id": ROOT, "event_id": ROOT } } }),
+        )
+        .await;
+        call(&p, &agent, "list_skills", json!({})).await;
+
+        let page = call(&p, &bob, "get_run_tool_calls", json!({ "run_id": RUN })).await;
+        assert_eq!(
+            page["calls"].as_array().map_or(0, Vec::len),
+            expected,
+            "{mode:?}: {page}"
+        );
+    }
 }

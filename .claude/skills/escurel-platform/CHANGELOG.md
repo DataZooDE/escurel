@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.71 — P3 codex triage: log-mode tool-call reads; codex usage
+
+- `get_run_tool_calls` under `ESCUREL_EVENT_ACL=log` shows a run whose
+  `run-started` the caller may not read (with a warning), like every other
+  event read in log mode; `enforce` still answers empty.
+- The codex adapter's `usage.input_tokens` no longer adds
+  `cached_input_tokens` (a subset of the input, not an addition).
+
 ## 0.6.70 — the per-run agent token can be narrowed to its skill (workbench P3-6)
 
 - Runner flag `ESCUREL_RUNNER_AGENT_NARROW` (default off): the bearer a

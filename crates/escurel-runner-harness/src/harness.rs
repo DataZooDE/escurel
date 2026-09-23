@@ -59,7 +59,8 @@ pub struct HarnessOutcome {
 /// Counts are what the harness's own accounting reports: for claude the
 /// result envelope's `usage` (input = fresh + cache-read + cache-creation
 /// input tokens), for gemini `usageMetadata` summed over the turns, for codex
-/// the `turn.completed` usage summed. `cost_usd` only when the harness prices
+/// the `turn.completed` usage summed (its `cached_input_tokens` is a subset of
+/// `input_tokens`, not added). `cost_usd` only when the harness prices
 /// itself (claude's `total_cost_usd`); `model` when it names one.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Usage {
