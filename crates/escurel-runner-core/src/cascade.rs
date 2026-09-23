@@ -81,6 +81,11 @@ pub struct SkillContract {
     pub cascade_target: Option<String>,
     /// `cascade.max_depth`.
     pub max_depth: Option<u32>,
+    /// The groups the skill's `acl:` block grants `create` / `update` to —
+    /// what a NARROWED per-run agent token carries (P3-6). Empty when the
+    /// skill declares no write grant (then a narrowed agent can write
+    /// nothing: the tenant default is admin-only).
+    pub write_groups: Vec<String>,
 }
 
 /// Read a skill's contract off its page; `None` when the skill cannot be
@@ -109,6 +114,23 @@ pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContrac
             .map(str::to_owned)
     };
     let cascade = fm.get("cascade").and_then(|v| v.as_object());
+    let acl = fm.get("acl").and_then(|v| v.as_object());
+    let mut write_groups: Vec<String> = Vec::new();
+    for verb in ["create", "update"] {
+        for g in acl
+            .and_then(|a| a.get(verb))
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if !write_groups.iter().any(|w| w == g) {
+                write_groups.push(g.to_owned());
+            }
+        }
+    }
     Some(SkillContract {
         harness: text(fm.get("harness")),
         actions: fm
@@ -129,6 +151,7 @@ pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContrac
             .and_then(|c| c.get("max_depth"))
             .and_then(|v| v.as_u64())
             .map(|d| d.min(u64::from(u32::MAX)) as u32),
+        write_groups,
     })
 }
 

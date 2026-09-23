@@ -131,7 +131,7 @@ async fn packages_skill_body_as_instructions_with_event_and_instance() {
     };
 
     let tokens = escurel_runner_core::TokenSource::Static(cfg.token.clone().expect("token"));
-    let ctx = package(&trigger, &client, &cfg, Some(&tokens), None)
+    let ctx = package(&trigger, &client, &cfg, Some(&tokens), None, None)
         .await
         .expect("package the trigger");
 
@@ -269,7 +269,7 @@ async fn workflow_step_trigger_is_packaged_without_the_event_surface() {
     };
 
     let tokens = escurel_runner_core::TokenSource::Static(cfg.token.clone().expect("token"));
-    let ctx = package(&trigger, &client, &cfg, Some(&tokens), None)
+    let ctx = package(&trigger, &client, &cfg, Some(&tokens), None, None)
         .await
         .expect("package the workflow-step trigger");
 

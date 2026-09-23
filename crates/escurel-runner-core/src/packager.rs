@@ -471,6 +471,7 @@ async fn caller_scoped_token(
     cfg: &RunnerConfig,
     tokens: &crate::TokenSource,
     run: Option<&crate::RunClaims>,
+    narrow: Option<&[String]>,
 ) -> Result<CallerToken, PackageError> {
     let Some(wf) = &trigger.workflow else {
         // An ordinary event-triggered run: mint the run its OWN agent identity
@@ -480,8 +481,11 @@ async fn caller_scoped_token(
         // does a `label_skill` that cannot be an unambiguous subject: losing
         // the attribution is worth less than failing the run, and the run is
         // no more privileged either way.
+        // `narrow` (P3-6, `ESCUREL_RUNNER_AGENT_NARROW`): the skill's own
+        // write groups instead of admin — the harness writes that skill's
+        // instances and nothing else.
         return Ok(
-            match tokens.mint_agent(&trigger.label_skill, agent_ttl_secs(cfg), run) {
+            match tokens.mint_agent(&trigger.label_skill, agent_ttl_secs(cfg), run, narrow) {
                 Ok(Some(token)) => CallerToken::Agent { token },
                 Ok(None) => CallerToken::NotWorkflow,
                 Err(e) => {
@@ -556,12 +560,16 @@ async fn caller_scoped_token(
 /// minted INTO the per-run token so the gateway can stamp a draft's lineage
 /// and authorise `report_progress` without trusting anything the harness
 /// sends; `None` only where no run exists yet (a bare test package).
+///
+/// `narrow`: `Some(groups)` narrows an ordinary run's agent token to those
+/// write groups (P3-6); `None` keeps the admin grant.
 pub async fn package(
     trigger: &Trigger,
     client: &Client,
     cfg: &RunnerConfig,
     tokens: Option<&crate::TokenSource>,
     run: Option<&crate::RunClaims>,
+    narrow: Option<&[String]>,
 ) -> Result<TaskContext, PackageError> {
     // Taken from the source at PACKAGE time, not held from boot: a minted
     // bearer is re-minted before it lapses, and a run packaged with an
@@ -582,7 +590,7 @@ pub async fn package(
     // claim), and a model told to call a tool that always refuses spends
     // its whole turn budget on it — seen live on a static-bearer runner.
     let mut can_report_progress = false;
-    let token = match caller_scoped_token(trigger, client, cfg, tokens, run).await? {
+    let token = match caller_scoped_token(trigger, client, cfg, tokens, run, narrow).await? {
         CallerToken::Scoped { token, subject } => {
             requester = Some(subject);
             can_report_progress = run.is_some();

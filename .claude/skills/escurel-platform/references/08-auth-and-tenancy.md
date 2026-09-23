@@ -35,6 +35,22 @@ ordinary bearer simply has none. Only a runner in **minted** mode carries
 them; a dev runner on a pasted `ESCUREL_RUNNER_TOKEN` cannot mint, so its
 runs write unstamped.
 
+Its **authority** is the runner's own — `roles: [escurel:admin]` — by
+default. With `ESCUREL_RUNNER_AGENT_NARROW=1` on the runner it is instead
+NARROWED to the target skill: `roles: [escurel:agent, <the skill's
+acl.create ∪ acl.update groups>]`, so under `ESCUREL_WRITE_ACL=enforce`
+the harness may write that skill's instances and nothing else, while the
+runner keeps admin for its own bookkeeping (run events, cascades). The
+groups come from the skill page, so — as for a run board — every
+`escurel:`-prefixed name and every reserved structural group (`public`,
+`owner`, `admin`) is stripped before signing: a skill page can grant its
+agent an engagement group, never a privileged role. A skill that declares
+no write grant runs an agent that can write nothing (the tenant default is
+admin-only), which is why the flag ships off until a corpus's write-ACL
+model is in place. Note that `assign_event` is not write-ACL gated, so a
+narrowed agent whose write was refused can still mark the event processed;
+the echo harness stops on a refused write, and a real skill should too.
+
 A **workbench agent token** is the same shape minted by the GATEWAY
 (`mint_agent_token`) for an interactive agent with no runner behind it:
 `sub: agent:<skill>`, `act.sub: <the human who asked>`,

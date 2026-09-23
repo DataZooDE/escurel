@@ -556,6 +556,15 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         json!({ "page_id": instance_page_id, "content": new_content }),
     )?;
     tool_calls += 1;
+    // A write the gateway refused (`ok: false` — a write-ACL denial, a
+    // validation error) is not a fold: stop here rather than mark the event
+    // processed on a page that did not change, as a real agent would.
+    if updated.get("ok").is_some_and(|ok| ok == false) {
+        return Err(format!(
+            "echo: update_page refused for {instance_page_id}: {}",
+            updated.get("issues").cloned().unwrap_or_default()
+        ));
+    }
     let new_version = updated
         .get("new_version")
         .and_then(Value::as_str)

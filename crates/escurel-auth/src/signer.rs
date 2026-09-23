@@ -320,6 +320,64 @@ impl Signer {
         ttl_secs: u64,
         run: Option<&RunClaims>,
     ) -> Result<String, SignError> {
+        // Same authority the runner holds today — see the doc comment.
+        self.mint_agent_with_roles(
+            runner_subject,
+            label_skill,
+            ttl_secs,
+            run,
+            vec!["escurel:admin".to_owned()],
+        )
+    }
+
+    /// Mint a per-run agent bearer NARROWED to one skill (#510 step 2,
+    /// workbench backend P3-6): `escurel:agent` plus `groups` — the target
+    /// skill's own `acl.create` / `acl.update` grants — so the harness may
+    /// write that skill's instances under the gateway's write ACL and nothing
+    /// else. Same subject, delegation chain and run claims as
+    /// [`Self::mint_agent`]; the runner keeps its admin identity for its own
+    /// bookkeeping.
+    ///
+    /// **Privilege ceiling.** `groups` come from a skill page, which any
+    /// author of that page can edit, so — as [`Self::mint_scoped`] does for
+    /// a run board — every `escurel:`-prefixed name and every reserved
+    /// structural group (`public`, `owner`, `admin`) is stripped before
+    /// signing. A skill page can grant its agent an engagement group, never
+    /// a privileged role.
+    ///
+    /// # Errors
+    /// When signing fails, or `label_skill` cannot be an unambiguous subject.
+    pub fn mint_agent_narrowed(
+        &self,
+        runner_subject: &str,
+        label_skill: &str,
+        ttl_secs: u64,
+        run: Option<&RunClaims>,
+        groups: &[String],
+    ) -> Result<String, SignError> {
+        let mut roles = vec!["escurel:agent".to_owned()];
+        for g in groups {
+            let g = g.trim();
+            if g.is_empty()
+                || g.starts_with("escurel:")
+                || matches!(g, "public" | "owner" | "admin")
+                || roles.iter().any(|r| r == g)
+            {
+                continue;
+            }
+            roles.push(g.to_owned());
+        }
+        self.mint_agent_with_roles(runner_subject, label_skill, ttl_secs, run, roles)
+    }
+
+    fn mint_agent_with_roles(
+        &self,
+        runner_subject: &str,
+        label_skill: &str,
+        ttl_secs: u64,
+        run: Option<&RunClaims>,
+        roles: Vec<String>,
+    ) -> Result<String, SignError> {
         let slug = agent_slug(label_skill)?;
         let now = now_secs();
         let mut claims = json!({
@@ -327,8 +385,7 @@ impl Signer {
             "aud": self.audience,
             "sub": format!("agent:{slug}"),
             TENANT_CLAIM: self.tenant,
-            // Same authority the runner holds today — see the doc comment.
-            "roles": ["escurel:admin"],
+            "roles": roles,
             // RFC 8693 §4.1: who is acting, i.e. the delegation chain.
             "act": { "sub": runner_subject },
             // Distinguishes two runs of the SAME skill, and makes a leaked
@@ -439,6 +496,62 @@ mod tests {
         key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
             .expect("encode")
             .to_string()
+    }
+
+    /// Workbench backend P3-6 (#510 step 2): a NARROWED agent token carries
+    /// `escurel:agent` plus the skill's own write groups — never a reserved
+    /// or `escurel:`-prefixed name smuggled in through the skill page — and
+    /// keeps the agent subject, the delegation chain and the run claims.
+    #[test]
+    fn a_narrowed_agent_token_carries_escurel_agent_and_the_skills_groups_never_admin() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let run = RunClaims {
+            run_id: "01HRUN".into(),
+            root_event_id: "01HROOT".into(),
+            trace_id: None,
+        };
+        let groups = [
+            "ops".to_owned(),
+            "escurel:admin".to_owned(),
+            "admin".to_owned(),
+            "owner".to_owned(),
+            "ops".to_owned(),
+        ];
+        let token = signer
+            .mint_agent_narrowed("escurel-runner", "renewal", 90, Some(&run), &groups)
+            .expect("mint");
+        let claims = decode_claims(&token);
+        assert_eq!(claims["sub"], "agent:renewal", "{claims}");
+        assert_eq!(claims["act"]["sub"], "escurel-runner", "{claims}");
+        assert_eq!(
+            claims["roles"],
+            serde_json::json!(["escurel:agent", "ops"]),
+            "agent + the skill's groups, deduplicated, nothing reserved: {claims}"
+        );
+        assert_eq!(claims[RUN_ID_CLAIM], "01HRUN", "{claims}");
+        // The un-narrowed mint is unchanged: admin, as every runner today.
+        let wide = signer
+            .mint_agent("escurel-runner", "renewal", 90, None)
+            .expect("mint");
+        assert_eq!(
+            decode_claims(&wide)["roles"],
+            serde_json::json!(["escurel:admin"])
+        );
+    }
+
+    fn decode_claims(token: &str) -> serde_json::Value {
+        let part = token.split('.').nth(1).expect("payload");
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(part)
+            .expect("b64");
+        serde_json::from_slice(&bytes).expect("json")
     }
 
     #[test]
