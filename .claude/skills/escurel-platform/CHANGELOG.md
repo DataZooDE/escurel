@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.72 — live smoke of P3: four consumer gaps
+
+- `run_tool_calls` / `get_run_tool_calls` record a write the gateway
+  refused (`ok: false`) as `status: rejected` — it was `ok`; the lineage's
+  `tool_call_summary.failed` counts rejections too.
+- CLI `skill list` carries `params`, `fields` (with `render`) and `blocks`
+  as the wire does (present only when declared).
+- CLI `page validate` (and every other command that reports issues)
+  carries each issue's `severity` and `suggestion`.
+- `PageRef.last_written_by` (typed client + CLI `page expand`) — the wire
+  had it since #357; the typed shapes dropped it.
+
 ## 0.6.71 — P3 codex triage: log-mode tool-call reads; codex usage
 
 - `get_run_tool_calls` under `ESCUREL_EVENT_ACL=log` shows a run whose

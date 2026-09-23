@@ -63,6 +63,17 @@ async fn a_run_bound_call_leaves_a_row_and_an_ordinary_call_does_not() {
     assert!(ok.get("error").is_none(), "{ok}");
     let err = rpc(&p, &agent, "resolve", json!({ "wikilink": 42 })).await;
     assert!(err.get("error").is_some(), "{err}");
+    // A write the gateway REJECTED (`ok: false` — here a page with no
+    // frontmatter at all) is neither `ok` nor a JSON-RPC error: it is
+    // recorded `rejected`, and counts as failed (live smoke of P3).
+    let rej = rpc(
+        &p,
+        &agent,
+        "update_page",
+        json!({ "page_id": "markdown/instances/note/n9.md", "content": "no frontmatter\n" }),
+    )
+    .await;
+    assert!(rej.get("error").is_none(), "{rej}");
     // An ordinary call leaves nothing.
     let _ = rpc(&p, &plain, "list_skills", json!({})).await;
 
@@ -74,8 +85,21 @@ async fn a_run_bound_call_leaves_a_row_and_an_ordinary_call_does_not() {
         .collect();
     assert_eq!(
         tools,
-        [("list_skills", "ok"), ("resolve", "error")],
+        [
+            ("list_skills", "ok"),
+            ("resolve", "error"),
+            ("update_page", "rejected")
+        ],
         "{page:?}"
+    );
+    let summary = indexer
+        .run_tool_call_summaries(&[RUN.to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(summary[RUN].count, 3, "{summary:?}");
+    assert_eq!(
+        summary[RUN].failed, 2,
+        "an error and a rejection both failed: {summary:?}"
     );
     let first = &page.calls[0];
     assert_eq!(first.run_id, RUN);
@@ -98,5 +122,10 @@ async fn a_run_bound_call_leaves_a_row_and_an_ordinary_call_does_not() {
         .await
         .unwrap();
     assert_eq!(rest.calls[0].tool, "resolve");
-    assert!(rest.next_after.is_none());
+    let last = indexer
+        .list_run_tool_calls(RUN, 1, rest.next_after)
+        .await
+        .unwrap();
+    assert_eq!(last.calls[0].tool, "update_page");
+    assert!(last.next_after.is_none());
 }

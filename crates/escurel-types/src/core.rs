@@ -13,6 +13,12 @@ pub struct PageRef {
     pub slug: String,
     pub skill: String,
     pub page_type: String,
+    /// The verified principal behind the page's most recent write (#357),
+    /// where the server emits it (`expand`); `None` where it does not, or
+    /// for a page last written before the gateway recorded one. Omitted
+    /// from the wire when absent, so every other `PageRef` is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_written_by: Option<String>,
 }
 
 /// The parsed components of a wikilink. Each empty-string segment

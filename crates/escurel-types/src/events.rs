@@ -198,7 +198,8 @@ pub struct GetRunToolCallsRequest {
 pub struct RunToolCall {
     pub seq: i64,
     pub tool: String,
-    /// `ok` | `error`.
+    /// `ok` | `rejected` (the gateway answered `ok: false`) | `error` (a
+    /// JSON-RPC error).
     pub status: String,
     #[serde(deserialize_with = "null_as_default")]
     pub error_code: String,

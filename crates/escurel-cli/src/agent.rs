@@ -678,6 +678,19 @@ async fn list_skills(client: &Client) -> Result<Value> {
             if let Some(c) = s.cascade {
                 skill["cascade"] = serde_json::to_value(c).unwrap_or(Value::Null);
             }
+            // The typed shapes (#508 / CR-7 / P3-5), as the wire carries
+            // them: what one run takes, what the instances look like (with
+            // each field's `render` hint), and the instance-body layout.
+            // Omitted when the skill declares none, as on the wire.
+            if !s.params.is_empty() {
+                skill["params"] = serde_json::to_value(s.params).unwrap_or(Value::Null);
+            }
+            if !s.fields.is_empty() {
+                skill["fields"] = serde_json::to_value(s.fields).unwrap_or(Value::Null);
+            }
+            if !s.blocks.is_empty() {
+                skill["blocks"] = serde_json::to_value(s.blocks).unwrap_or(Value::Null);
+            }
             skill
         })
         .collect();
@@ -763,9 +776,11 @@ async fn validate(client: &Client, page_id: String) -> Result<Value> {
     Ok(json!({
         "ok": resp.ok,
         "issues": resp.issues.into_iter().map(|i| json!({
+            "severity": i.severity,
             "code": i.code,
             "message": i.message,
             "location": opt(&i.location),
+            "suggestion": i.suggestion,
         })).collect::<Vec<_>>(),
     }))
 }
@@ -782,9 +797,11 @@ async fn update_page(client: &Client, page_id: String) -> Result<Value> {
     Ok(json!({
         "ok": resp.ok,
         "issues": resp.issues.into_iter().map(|i| json!({
+            "severity": i.severity,
             "code": i.code,
             "message": i.message,
             "location": opt(&i.location),
+            "suggestion": i.suggestion,
         })).collect::<Vec<_>>(),
         "new_version": opt(&resp.new_version),
     }))
@@ -795,9 +812,11 @@ async fn purge_page(client: &Client, page_id: String) -> Result<Value> {
     Ok(json!({
         "ok": resp.ok,
         "issues": resp.issues.into_iter().map(|i| json!({
+            "severity": i.severity,
             "code": i.code,
             "message": i.message,
             "location": opt(&i.location),
+            "suggestion": i.suggestion,
         })).collect::<Vec<_>>(),
         "page_id": opt(&resp.page_id),
     }))
@@ -808,9 +827,11 @@ async fn move_page(client: &Client, from: String, to: String) -> Result<Value> {
     Ok(json!({
         "ok": resp.ok,
         "issues": resp.issues.into_iter().map(|i| json!({
+            "severity": i.severity,
             "code": i.code,
             "message": i.message,
             "location": opt(&i.location),
+            "suggestion": i.suggestion,
         })).collect::<Vec<_>>(),
         "from": opt(&resp.from),
         "to": opt(&resp.to),
@@ -831,9 +852,11 @@ async fn delete_page(
     Ok(json!({
         "ok": resp.ok,
         "issues": resp.issues.into_iter().map(|i| json!({
+            "severity": i.severity,
             "code": i.code,
             "message": i.message,
             "location": opt(&i.location),
+            "suggestion": i.suggestion,
         })).collect::<Vec<_>>(),
         "page_id": opt(&resp.page_id),
     }))
