@@ -105,9 +105,33 @@ pub(crate) struct McpTransport {
     // so the token honours the zeroisation contract on drop.
     _token: SecretString,
     next_id: Arc<AtomicI64>,
+    /// The run this client is acting for, when it is acting for one.
+    ///
+    /// Sent as `X-Escurel-Run-Id`, with `X-Request-Id` as
+    /// `<run_id>.<seq>`. The gateway already hoists `request_id` to the top
+    /// level of its JSON log record, so one grep joins every tool call a run
+    /// made to the run itself — which is the question "a run went missing,
+    /// where is it?" reduces to. Before this, the runner minted its own
+    /// trace id into event provenance and the client sent neither header, so
+    /// no gateway line could be joined to a runner line at all.
+    run_id: Option<String>,
 }
 
 impl McpTransport {
+    /// Tag every subsequent request with the run it belongs to.
+    pub(crate) fn set_run_id(&mut self, run_id: impl Into<String>) {
+        self.run_id = Some(run_id.into());
+    }
+
+    /// The correlation headers for one outbound request, if this client is
+    /// acting for a run. The sequence makes each call individually
+    /// addressable while keeping the run prefix greppable.
+    fn correlation(&self) -> Option<(String, String)> {
+        let run = self.run_id.as_ref()?;
+        let seq = self.next_id.load(std::sync::atomic::Ordering::Relaxed);
+        Some((run.clone(), format!("{run}.{seq}")))
+    }
+
     pub(crate) fn new(endpoint: &str, token: SecretString) -> Result<Self, Error> {
         let base = endpoint.trim_end_matches('/').to_owned();
         if !(base.starts_with("http://") || base.starts_with("https://")) {
@@ -136,6 +160,7 @@ impl McpTransport {
             bearer,
             _token: token,
             next_id: Arc::new(AtomicI64::new(1)),
+            run_id: None,
         })
     }
 
@@ -184,6 +209,11 @@ impl McpTransport {
             let mut req = self.http.post(&self.mcp_url).json(&envelope);
             if !self.bearer.is_empty() {
                 req = req.header("authorization", &self.bearer);
+            }
+            if let Some((run, request)) = self.correlation() {
+                req = req
+                    .header("x-escurel-run-id", run)
+                    .header("x-request-id", request);
             }
             match req.send().await {
                 Ok(resp) => {
@@ -274,6 +304,11 @@ impl McpTransport {
         let mut req = self.http.get(&url);
         if !self.bearer.is_empty() {
             req = req.header("authorization", &self.bearer);
+            if let Some((run, request)) = self.correlation() {
+                req = req
+                    .header("x-escurel-run-id", run)
+                    .header("x-request-id", request);
+            }
         }
         let resp = req.send().await?;
         let status = resp.status();
@@ -296,6 +331,11 @@ impl McpTransport {
         let mut req = self.http.post(&url).json(&body);
         if !self.bearer.is_empty() {
             req = req.header("authorization", &self.bearer);
+            if let Some((run, request)) = self.correlation() {
+                req = req
+                    .header("x-escurel-run-id", run)
+                    .header("x-request-id", request);
+            }
         }
         let resp = req.send().await?;
         let status = resp.status();

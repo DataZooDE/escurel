@@ -125,6 +125,21 @@ pub struct Client {
     transport: McpTransport,
 }
 
+impl Client {
+    /// Tag every request this client makes with the run it is acting for.
+    ///
+    /// The runner builds a client per run and calls this once. Every
+    /// outbound call then carries `X-Escurel-Run-Id` and an
+    /// `X-Request-Id` of `<run_id>.<seq>`, so a gateway log line can be
+    /// joined to the run that caused it. Without it the two sides share no
+    /// identifier and "a run went missing" has no query behind it.
+    #[must_use]
+    pub fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
+        self.transport.set_run_id(run_id);
+        self
+    }
+}
+
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Deliberately do not print the transport's bearer — it carries

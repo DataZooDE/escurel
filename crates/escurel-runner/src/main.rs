@@ -1752,6 +1752,16 @@ async fn dispatch_loop(
             }
         };
 
+        // Tag this run's client so every tool call it makes carries the run
+        // id. The gateway records it as a span field and mirrors the
+        // `<run_id>.<seq>` request id into `request_id`/`trace_id`, so one
+        // query returns the runner's lines for a run AND every gateway line
+        // the run caused. Before this the two sides shared no identifier:
+        // the runner minted its own trace id into event provenance and the
+        // client sent neither header, so "a run went missing" had no query
+        // behind it.
+        let client = client.with_run_id(run_id.as_str());
+
         // One OTel trace per cascade lineage (#158): the ROOT hop mints a
         // trace id; deeper hops carry it forward via `provenance.runner`. The
         // run's root span uses this id, and the cascade emitter stamps the same
