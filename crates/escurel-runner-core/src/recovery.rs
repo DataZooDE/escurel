@@ -131,7 +131,7 @@ pub async fn recover_pending(
                         held: effect.held,
                     };
                     if let Err(e) = ctx
-                        .emit_finished(client, 0, &finish, "reconciled on restart", 0, None)
+                        .emit_finished(client, 0, &finish, "reconciled on restart", 0, None, None)
                         .await
                     {
                         tracing::warn!(

@@ -90,6 +90,27 @@ Default per-run timeout 300 s.
 test can point at a stub executable that mimics the CLI's I/O contract —
 exercising invocation-build and parse without burning quota.
 
+### What a run cost
+
+Each adapter parses what its harness reports into the outcome's `usage`
+(`{input_tokens, output_tokens, cost_usd, model}`); the runner sums it over
+the run's attempts, writes it as `run-finished.body.usage` (and so onto the
+lineage's `run` node), and meters it as
+`escurel_runner_tokens_total{tenant,kind=input|output}` and
+`escurel_runner_cost_usd_total{tenant}` on its `/metrics`.
+
+| adapter | `input_tokens` | `output_tokens` | `cost_usd` | `model` |
+|---|---|---|---|---|
+| claude | `usage.input_tokens` + cache-read + cache-creation | `usage.output_tokens` | `total_cost_usd` | first key of `modelUsage` |
+| gemini | `usageMetadata.promptTokenCount`, summed over turns | `candidatesTokenCount`, summed | — | the configured model |
+| codex | `turn.completed.usage.input_tokens` + `cached_input_tokens`, summed | `output_tokens`, summed | — | — |
+| echo, agy, muse, delegate | — | — | — | — (`usage: null`) |
+
+A harness that reports nothing leaves `usage` `null` and adds nothing to the
+counters; a cost is only ever what the harness priced itself at, never an
+estimate. The echo takes `ESCUREL_ECHO_USAGE=<input>,<output>[,<cost>]`
+(test knob) to report a synthetic usage under model `echo`.
+
 ## Running it locally
 
 ```sh
@@ -189,7 +210,7 @@ run's target page (`processed`, never inbox work) and readable with
 |---|---|---|
 | `run-started` | the ledger admitted the run and a harness is about to run it | `{}` |
 | `run-attempt` | each try ends | `{attempt, started_at, ended_at, outcome: ok \| converged \| failed \| timeout, error?}` |
-| `run-finished` | the ledger reached its terminal | `{status: processed \| failed \| dead_letter, reason?, attempts, held, summary, tool_calls, produced_instance, produced_version, plan}` — `plan` is the newest `run-progress` snapshot the agent reported |
+| `run-finished` | the ledger reached its terminal | `{status: processed \| failed \| dead_letter, reason?, attempts, held, summary, tool_calls, produced_instance, produced_version, plan, usage}` — `plan` is the newest `run-progress` snapshot the agent reported; `usage` is `{input_tokens, output_tokens, cost_usd, model}` summed over the attempts, `null` when no attempt reported any (see *What a run cost*) |
 
 `provenance.runner` on each carries `run_id`, `root_event_id`, `event_id`
 (the trigger), `parent_run_id` (a cascade hop's emitting run), `depth`,
@@ -409,7 +430,7 @@ event as a flat list of nodes for you to fold into a tree:
 | type | id | parent | state | carries |
 |---|---|---|---|---|
 | `event` | the event id | the run that emitted it (`provenance.runner.parent_run_id`); `null` for the root | `inbox` / `processed` | `label_skill`, `title`, `at`, `kind`, `instance_page_id`, `parent_event_id`, `depth` |
-| `run` | the run id | the event that triggered it | `running` until its `run-finished`, then `processed` / `failed` / `dead_letter` | `harness`, `attempt`, `max_attempts`, `started_at`, `finished_at`, `summary`, `produced_instance`, `plan` (newest `run-progress`), `autonomy`, `target_page_id` |
+| `run` | the run id | the event that triggered it | `running` until its `run-finished`, then `processed` / `failed` / `dead_letter` | `harness`, `attempt`, `max_attempts`, `started_at`, `finished_at`, `summary`, `produced_instance`, `plan` (newest `run-progress`), `usage`, `autonomy`, `target_page_id` |
 | `changeset` | the changeset id | the run that proposed it | `open` / `promoted` / `discarded` / `mixed` | `drafts`, `author` |
 | `draft` | the draft id | its changeset, else its run | `open` / `promoted` / `discarded` | `target_page_id`, `author`, `decided_by`, `event_id` |
 

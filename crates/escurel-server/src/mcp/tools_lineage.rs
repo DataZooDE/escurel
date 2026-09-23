@@ -202,6 +202,7 @@ pub(super) async fn tool_list_lineage(
                         "reason",
                         "held",
                         "tool_calls",
+                        "usage",
                     ] {
                         if let Some(v) = body.get(key)
                             && !v.is_null()

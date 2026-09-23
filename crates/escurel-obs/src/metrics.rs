@@ -5,8 +5,8 @@
 //! lets the gateway hold exactly one instance behind an `Arc`.
 
 use prometheus::{
-    Encoder, Gauge, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts,
-    Registry, TextEncoder,
+    CounterVec, Encoder, Gauge, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec,
+    Opts, Registry, TextEncoder,
 };
 
 /// Latency histogram buckets, in seconds. Chosen to straddle the
@@ -48,6 +48,12 @@ pub struct Metrics {
     writes: IntCounterVec,
     /// `escurel_runner_throttled_total{reason}` — quota throttles by reason.
     runner_throttled: IntCounterVec,
+    /// `escurel_runner_tokens_total{tenant,kind}` — tokens the runs'
+    /// harnesses reported, `kind` = `input` / `output` (P3-4).
+    runner_tokens: IntCounterVec,
+    /// `escurel_runner_cost_usd_total{tenant}` — the cost the runs' harnesses
+    /// priced themselves at (only harnesses that report a cost add to it).
+    runner_cost_usd: CounterVec,
     /// `escurel_runner_queue_depth` — current dispatch-queue depth.
     runner_queue_depth: IntGauge,
     /// `escurel_runner_cascade_depth_max` — deepest cascade hop seen.
@@ -161,6 +167,24 @@ impl Metrics {
         )
         .expect("valid counter opts");
 
+        let runner_tokens = IntCounterVec::new(
+            Opts::new(
+                "escurel_runner_tokens_total",
+                "Tokens the agent-runner's harnesses reported, by tenant and kind (input | output).",
+            ),
+            &["tenant", "kind"],
+        )
+        .expect("valid counter opts");
+
+        let runner_cost_usd = CounterVec::new(
+            Opts::new(
+                "escurel_runner_cost_usd_total",
+                "Cost in USD the agent-runner's harnesses reported for their runs, by tenant.",
+            ),
+            &["tenant"],
+        )
+        .expect("valid counter opts");
+
         let runner_queue_depth = IntGauge::with_opts(Opts::new(
             "escurel_runner_queue_depth",
             "Current agent-runner dispatch-queue depth.",
@@ -204,6 +228,12 @@ impl Metrics {
             .register(Box::new(runner_throttled.clone()))
             .expect("register escurel_runner_throttled_total");
         registry
+            .register(Box::new(runner_tokens.clone()))
+            .expect("register escurel_runner_tokens_total");
+        registry
+            .register(Box::new(runner_cost_usd.clone()))
+            .expect("register escurel_runner_cost_usd_total");
+        registry
             .register(Box::new(runner_run_events_failed.clone()))
             .expect("register escurel_runner_run_events_failed_total");
         registry
@@ -225,6 +255,8 @@ impl Metrics {
             runner_runs,
             writes,
             runner_throttled,
+            runner_tokens,
+            runner_cost_usd,
             runner_run_events_failed,
             runner_queue_depth,
             runner_cascade_depth_max,
@@ -314,6 +346,20 @@ impl Metrics {
     /// `max_concurrent`).
     pub fn inc_runner_throttled(&self, reason: &str) {
         self.runner_throttled.with_label_values(&[reason]).inc();
+    }
+
+    /// Add one run's reported token usage (and its cost, when the harness
+    /// priced itself) for `tenant`.
+    pub fn add_runner_usage(&self, tenant: &str, input: u64, output: u64, cost_usd: Option<f64>) {
+        self.runner_tokens
+            .with_label_values(&[tenant, "input"])
+            .inc_by(input);
+        self.runner_tokens
+            .with_label_values(&[tenant, "output"])
+            .inc_by(output);
+        if let Some(c) = cost_usd.filter(|c| c.is_finite() && *c >= 0.0) {
+            self.runner_cost_usd.with_label_values(&[tenant]).inc_by(c);
+        }
     }
 
     /// Set the current dispatch-queue depth gauge.

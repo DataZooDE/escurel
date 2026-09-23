@@ -208,6 +208,7 @@ impl RunEventCtx {
         summary: &str,
         tool_calls: u32,
         autonomy: Option<&str>,
+        usage: Option<Value>,
     ) -> Result<(), Error> {
         let (status, produced, held, reason) = match finish {
             RunFinish::Processed { produced, held } => ("processed", produced.clone(), *held, None),
@@ -226,6 +227,9 @@ impl RunEventCtx {
             "produced_instance": produced.as_ref().map(|(p, _)| p.clone()),
             "produced_version": produced.as_ref().map(|(_, v)| v.clone()),
             "plan": plan,
+            // `{input_tokens, output_tokens, cost_usd, model}` summed over the
+            // attempts (P3-4); `null` when no attempt reported any.
+            "usage": usage,
         });
         if let Some(r) = reason {
             body["reason"] = json!(r);

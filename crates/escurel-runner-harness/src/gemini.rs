@@ -42,7 +42,7 @@ use async_trait::async_trait;
 use escurel_runner_core::TaskContext;
 use serde_json::{Value, json};
 
-use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus};
+use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus, Usage};
 
 /// The adapter's stable name — the `ESCUREL_RUNNER_HARNESS=gemini` selector.
 const NAME: &str = "gemini";
@@ -170,6 +170,20 @@ impl GeminiHarness {
         Ok(body)
     }
 
+    /// One turn's `usageMetadata` (`promptTokenCount` / `candidatesTokenCount`),
+    /// or `None` when the response carries none. Gemini does not price
+    /// itself, so `cost_usd` stays `None`; the model is the configured one.
+    fn turn_usage(body: &Value, model: &str) -> Option<Usage> {
+        let meta = body.get("usageMetadata")?.as_object()?;
+        let count = |k: &str| meta.get(k).and_then(Value::as_u64).unwrap_or(0);
+        Some(Usage {
+            input_tokens: count("promptTokenCount"),
+            output_tokens: count("candidatesTokenCount"),
+            cost_usd: None,
+            model: Some(model.to_owned()),
+        })
+    }
+
     /// Copy a JSON schema through [`SCHEMA_KEYS`], recursively.
     fn sanitize_schema(schema: &Value) -> Value {
         let Some(obj) = schema.as_object() else {
@@ -250,6 +264,9 @@ impl GeminiHarness {
         let mut tool_calls: u32 = 0;
         let mut produced_instance: Option<String> = None;
         let mut summary = String::new();
+        // Every turn is one `generateContent` call with its own
+        // `usageMetadata`; the run's usage is their sum.
+        let mut usage: Option<Usage> = None;
 
         for _turn in 0..self.max_turns {
             // In-process, so no child to signal: the cancel lands between
@@ -283,6 +300,9 @@ impl GeminiHarness {
                 )));
             }
 
+            if let Some(turn) = Self::turn_usage(&body, &self.model) {
+                usage.get_or_insert_with(Usage::default).accumulate(&turn);
+            }
             let parts = body["candidates"][0]["content"]["parts"]
                 .as_array()
                 .cloned()
@@ -394,6 +414,7 @@ impl GeminiHarness {
                 // No tool calls this turn: the model is done talking.
                 return Ok(HarnessOutcome {
                     result_ref: None,
+                    usage: usage.clone(),
                     ok: true,
                     status: HarnessStatus::Ok,
                     summary: summary.trim().to_owned(),
@@ -410,6 +431,7 @@ impl GeminiHarness {
         // that if this is not dressed up as success.
         Ok(HarnessOutcome {
             result_ref: None,
+            usage,
             ok: false,
             status: HarnessStatus::Failed,
             summary: format!(
@@ -469,6 +491,21 @@ mod tests {
         assert!(out.get("$schema").is_none());
         assert!(out["properties"]["page_id"].get("default").is_none());
         assert!(out["properties"]["tags"]["items"].get("default").is_none());
+    }
+
+    #[test]
+    fn a_turns_usage_metadata_is_read_and_absent_metadata_is_none() {
+        let body = json!({ "candidates": [], "usageMetadata": {
+            "promptTokenCount": 640, "candidatesTokenCount": 57, "totalTokenCount": 697 } });
+        let usage = GeminiHarness::turn_usage(&body, "gemini-2.5-flash").expect("usage");
+        assert_eq!(usage.input_tokens, 640);
+        assert_eq!(usage.output_tokens, 57);
+        assert_eq!(usage.cost_usd, None);
+        assert_eq!(usage.model.as_deref(), Some("gemini-2.5-flash"));
+        assert_eq!(
+            GeminiHarness::turn_usage(&json!({ "candidates": [] }), "m"),
+            None
+        );
     }
 
     /// A schema that is not an object at all must still produce something

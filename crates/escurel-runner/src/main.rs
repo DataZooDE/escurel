@@ -48,7 +48,7 @@ use escurel_runner_core::{
 use escurel_runner_core::{DeadLetterReason, RunId, StepTerminal};
 use escurel_runner_harness::{
     AgyHarness, ClaudeHarness, CodexHarness, DelegateHarness, EchoHarness, GeminiHarness, Harness,
-    MuseHarness, RefusingHarness,
+    MuseHarness, RefusingHarness, Usage,
 };
 use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
@@ -812,6 +812,17 @@ struct AttemptSink {
     autonomy: Option<&'static str>,
     /// The last attempt's harness error, for `run-finished`'s reason.
     last_error: Option<String>,
+    /// Token usage summed over every attempt that reported one (P3-4).
+    usage: Option<Usage>,
+}
+
+impl AttemptSink {
+    /// Fold one attempt's usage in; `None` leaves the sum untouched.
+    fn add_usage(&mut self, usage: Option<&Usage>) {
+        if let Some(u) = usage {
+            self.usage.get_or_insert_with(Usage::default).accumulate(u);
+        }
+    }
 }
 
 /// Log + count a refused run lifecycle event. The projection is
@@ -2057,6 +2068,14 @@ async fn dispatch_loop(
                 },
             };
             let sink = attempt_sink.lock().map(|s| s.clone()).unwrap_or_default();
+            if let Some(u) = &sink.usage {
+                metrics.add_runner_usage(
+                    &trigger.tenant,
+                    u.input_tokens,
+                    u.output_tokens,
+                    u.cost_usd,
+                );
+            }
             record_run_event(
                 &metrics,
                 "finished",
@@ -2068,6 +2087,7 @@ async fn dispatch_loop(
                         &sink.summary,
                         sink.tool_calls,
                         sink.autonomy,
+                        sink.usage.as_ref().map(|u| serde_json::json!(u)),
                     )
                     .await,
             );
@@ -2411,6 +2431,7 @@ async fn attempt_run(
                     if let Ok(mut s) = sink.lock() {
                         s.summary = outcome.summary.clone();
                         s.tool_calls = outcome.tool_calls;
+                        s.add_usage(outcome.usage.as_ref());
                     }
                     return Err(ReconcileError::Converged(
                         "planned: the harness reported its plan and stopped".to_owned(),
@@ -2419,6 +2440,7 @@ async fn attempt_run(
                 if let Ok(mut s) = sink.lock() {
                     s.summary = outcome.summary.clone();
                     s.tool_calls = outcome.tool_calls;
+                    s.add_usage(outcome.usage.as_ref());
                     s.autonomy = Some(match task.autonomy {
                         Autonomy::Auto => "auto",
                         Autonomy::Review => "review",

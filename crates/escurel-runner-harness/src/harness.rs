@@ -20,7 +20,7 @@ pub enum HarnessStatus {
 /// handed back to the runner's reconciler. Enough for the minimal reconcile
 /// in #151 and the richer retry/cascade logic in #155+ to act on without a
 /// second round-trip.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HarnessOutcome {
     /// Whether the run succeeded.
     pub ok: bool,
@@ -46,6 +46,45 @@ pub struct HarnessOutcome {
     /// subprocess wire contract back-compatible with harnesses that omit it.
     #[serde(default)]
     pub result_ref: Option<serde_json::Value>,
+    /// What the run cost, as the harness reported it (workbench backend
+    /// P3-4). `None` for a harness that reports nothing (echo, agy, muse,
+    /// delegate); the runner sums it across attempts onto `run-finished` and
+    /// meters it. `#[serde(default)]` keeps older subprocess harnesses valid.
+    #[serde(default)]
+    pub usage: Option<Usage>,
+}
+
+/// Token usage and cost of one harness invocation.
+///
+/// Counts are what the harness's own accounting reports: for claude the
+/// result envelope's `usage` (input = fresh + cache-read + cache-creation
+/// input tokens), for gemini `usageMetadata` summed over the turns, for codex
+/// the `turn.completed` usage summed. `cost_usd` only when the harness prices
+/// itself (claude's `total_cost_usd`); `model` when it names one.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+impl Usage {
+    /// Fold `other` into `self`: tokens and cost add up (a cost stays `None`
+    /// only while nobody reported one), the model is the last one reported.
+    pub fn accumulate(&mut self, other: &Usage) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cost_usd = match (self.cost_usd, other.cost_usd) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
+        };
+        if other.model.is_some() {
+            self.model = other.model.clone();
+        }
+    }
 }
 
 /// Errors raised by a harness adapter while managing its subprocess.

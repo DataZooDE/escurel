@@ -25,7 +25,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use escurel_runner_core::TaskContext;
 
-use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus};
+use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus, Usage};
 
 /// The adapter's stable name — the `ESCUREL_RUNNER_HARNESS=claude` selector
 /// and the value reported by [`Harness::name`].
@@ -207,6 +207,10 @@ impl Harness for ClaudeHarness {
 ///   much the model did; the JSON envelope carries no exact tool-call count).
 /// - `produced_instance` ← `None`: the envelope does not name the page the
 ///   model wrote; the runner's reconcile reads that back from the gateway.
+/// - `usage` ← the envelope's `usage` block (input = `input_tokens` +
+///   `cache_read_input_tokens` + `cache_creation_input_tokens`),
+///   `total_cost_usd`, and the model from `modelUsage`'s first key. `None`
+///   when the envelope carries no `usage` at all.
 fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
     let envelope: serde_json::Value =
         serde_json::from_slice(stdout).map_err(|source| HarnessError::BadOutcome {
@@ -244,6 +248,7 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
 
     Ok(HarnessOutcome {
         result_ref: None,
+        usage: parse_usage(&envelope),
         ok,
         status: if ok {
             HarnessStatus::Ok
@@ -253,6 +258,30 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
         summary,
         tool_calls,
         produced_instance: None,
+    })
+}
+
+/// The `usage` block of the result envelope, or `None` when there is none.
+fn parse_usage(envelope: &serde_json::Value) -> Option<Usage> {
+    let usage = envelope.get("usage")?.as_object()?;
+    let count = |k: &str| {
+        usage
+            .get(k)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    };
+    Some(Usage {
+        input_tokens: count("input_tokens")
+            + count("cache_read_input_tokens")
+            + count("cache_creation_input_tokens"),
+        output_tokens: count("output_tokens"),
+        cost_usd: envelope
+            .get("total_cost_usd")
+            .and_then(serde_json::Value::as_f64),
+        model: envelope
+            .get("modelUsage")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|m| m.keys().next().cloned()),
     })
 }
 
@@ -402,6 +431,30 @@ mod tests {
         assert_eq!(outcome.status, HarnessStatus::Ok);
         assert_eq!(outcome.summary, "folded the event");
         assert_eq!(outcome.tool_calls, 4);
+    }
+
+    #[test]
+    fn parses_usage_cost_and_model_off_the_envelope() {
+        let stdout = br#"{"type":"result","subtype":"success","is_error":false,
+            "result":"done","num_turns":2,"total_cost_usd":0.0412,
+            "usage":{"input_tokens":12,"cache_creation_input_tokens":300,
+                     "cache_read_input_tokens":1000,"output_tokens":88},
+            "modelUsage":{"claude-sonnet-5":{"inputTokens":12,"outputTokens":88}}}"#;
+        let usage = parse_outcome(stdout).expect("parse").usage.expect("usage");
+        assert_eq!(
+            usage.input_tokens, 1312,
+            "fresh + cache-read + cache-creation"
+        );
+        assert_eq!(usage.output_tokens, 88);
+        assert_eq!(usage.cost_usd, Some(0.0412));
+        assert_eq!(usage.model.as_deref(), Some("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn an_envelope_without_usage_reports_none() {
+        let stdout = br#"{"type":"result","subtype":"success","is_error":false,
+            "result":"done","num_turns":1}"#;
+        assert_eq!(parse_outcome(stdout).expect("parse").usage, None);
     }
 
     #[test]
