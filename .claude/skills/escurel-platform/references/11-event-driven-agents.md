@@ -425,6 +425,16 @@ token, the gateway makes each call's `mcp.request` span a child of it
 `escurel.root_event_id`, `input.size` / `output.size` — sizes, never
 payloads), so a collector shows one trace per run.
 
+Independently of the token, the runner tags the client it builds for a
+run (`Client::with_run_id`, #533): every call then carries
+`X-Escurel-Run-Id: <run_id>` and `X-Request-Id: <run_id>.<seq>`, and the
+gateway's JSON log line for the call records `run_id` and mirrors that
+request id, so one `run_id=<ulid>` query over the logs returns the
+runner's lines for a run and every gateway line it caused — including
+the runner's own bookkeeping calls, which carry no run claim. The header
+is log correlation only: authorisation, lineage stamping and
+`run_tool_calls` read the token's `run_id` claim, never the header.
+
 ## Reading a lineage: `list_lineage`
 
 `list_lineage { root_event_id }` returns the whole thread under a root

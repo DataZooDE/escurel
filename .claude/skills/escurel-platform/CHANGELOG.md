@@ -4,6 +4,13 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.74 — run correlation headers documented (#533)
+
+- `Client::with_run_id` sends `X-Escurel-Run-Id` and `X-Request-Id:
+  <run_id>.<seq>`; the gateway logs `run_id` per call. Log correlation
+  only — the token's `run_id` claim stays the authority for everything
+  else. Landed in #533 without its skill entry; references/05 and /11.
+
 ## 0.6.73 — a permanent failure dead-letters
 
 - A run that fails permanently (a non-zero harness exit, a refused write,
