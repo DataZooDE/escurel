@@ -140,6 +140,12 @@ pub struct AuthContext {
     /// Authorization NEVER reads this: the authority is the subject's own
     /// (`role`, `groups`). It is audit lineage, not a capability.
     pub actor: Option<String>,
+    /// The skill a NARROWED per-run agent token is confined to (`skill`
+    /// claim, workbench backend P3-6). Unlike `run` and `actor` this IS an
+    /// authorization input — a restriction, never a grant: the write ACL
+    /// refuses an instance write under any other skill. `None` for every
+    /// other token.
+    pub agent_skill: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,7 +191,7 @@ use crate::signer::{
 /// backend P1). Kept in lock-step with
 /// `escurel_runner_core::auth::{RUN_ID_CLAIM, ROOT_EVENT_ID_CLAIM, TRACE_ID_CLAIM}`
 /// — same dependency direction as the delegation constants above.
-use crate::signer::{ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, TRACE_ID_CLAIM};
+use crate::signer::{ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, SKILL_CLAIM, TRACE_ID_CLAIM};
 
 /// The run a per-run token belongs to, as the runner minted it: the ledger
 /// run id, the lineage root event, and the lineage's trace when there is
@@ -416,6 +422,8 @@ impl OidcVerifier {
             (_, actor) => (claims.sub, actor),
         };
 
+        let agent_skill = claim_str(SKILL_CLAIM);
+
         Ok(AuthContext {
             subject,
             tenant_id,
@@ -423,6 +431,7 @@ impl OidcVerifier {
             groups,
             actor,
             run,
+            agent_skill,
         })
     }
 

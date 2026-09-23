@@ -45,6 +45,11 @@ pub const WORKBENCH_AGENT_PURPOSE: &str = "workbench_agent";
 pub const RUN_ID_CLAIM: &str = "run_id";
 pub const ROOT_EVENT_ID_CLAIM: &str = "root_event_id";
 pub const TRACE_ID_CLAIM: &str = "trace_id";
+/// The skill a NARROWED per-run agent token is confined to (workbench
+/// backend P3-6): the gateway's write ACL refuses an instance write under
+/// any other skill, whatever groups the token also carries. Absent on an
+/// un-narrowed token. Lock-step with `escurel_auth::verifier`.
+pub const SKILL_CLAIM: &str = "skill";
 
 /// The run a per-run token belongs to. `trace_id` is the lineage's OTel
 /// trace (one per cascade lineage) when the runner has one.
@@ -327,6 +332,7 @@ impl Signer {
             ttl_secs,
             run,
             vec!["escurel:admin".to_owned()],
+            false,
         )
     }
 
@@ -367,7 +373,7 @@ impl Signer {
             }
             roles.push(g.to_owned());
         }
-        self.mint_agent_with_roles(runner_subject, label_skill, ttl_secs, run, roles)
+        self.mint_agent_with_roles(runner_subject, label_skill, ttl_secs, run, roles, true)
     }
 
     fn mint_agent_with_roles(
@@ -377,6 +383,7 @@ impl Signer {
         ttl_secs: u64,
         run: Option<&RunClaims>,
         roles: Vec<String>,
+        narrowed: bool,
     ) -> Result<String, SignError> {
         let slug = agent_slug(label_skill)?;
         let now = now_secs();
@@ -396,6 +403,12 @@ impl Signer {
             "exp": now + ttl_secs,
         });
         stamp_run(&mut claims, run);
+        if narrowed {
+            // Groups are tenant-wide; the skill claim is what confines the
+            // token to THIS skill's instances at the write boundary (codex
+            // second-opinion review of P3).
+            claims[SKILL_CLAIM] = json!(label_skill);
+        }
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(self.kid.clone());
         Ok(encode(
@@ -536,14 +549,18 @@ mod tests {
             "agent + the skill's groups, deduplicated, nothing reserved: {claims}"
         );
         assert_eq!(claims[RUN_ID_CLAIM], "01HRUN", "{claims}");
-        // The un-narrowed mint is unchanged: admin, as every runner today.
-        let wide = signer
-            .mint_agent("escurel-runner", "renewal", 90, None)
-            .expect("mint");
         assert_eq!(
-            decode_claims(&wide)["roles"],
-            serde_json::json!(["escurel:admin"])
+            claims[SKILL_CLAIM], "renewal",
+            "confined to the skill, not only to its groups: {claims}"
         );
+        // The un-narrowed mint is unchanged: admin, as every runner today.
+        let wide = decode_claims(
+            &signer
+                .mint_agent("escurel-runner", "renewal", 90, None)
+                .expect("mint"),
+        );
+        assert_eq!(wide["roles"], serde_json::json!(["escurel:admin"]));
+        assert!(wide.get(SKILL_CLAIM).is_none(), "{wide}");
     }
 
     fn decode_claims(token: &str) -> serde_json::Value {

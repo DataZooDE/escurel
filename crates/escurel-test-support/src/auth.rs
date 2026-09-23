@@ -259,6 +259,17 @@ impl TestIssuer {
         self.resign_with_extra(&token, "root_event_id", json!(root_event_id))
     }
 
+    /// A per-run agent bearer NARROWED to `skill` as the runner mints it
+    /// under `ESCUREL_RUNNER_AGENT_NARROW` (P3-6): `sub: agent:<skill>`,
+    /// `roles: [escurel:agent, groups…]`, the `skill` claim.
+    pub(crate) fn mint_narrowed(&self, tenant: &str, skill: &str, groups: &[&str]) -> String {
+        let mut roles = vec!["escurel:agent".to_owned()];
+        roles.extend(groups.iter().map(|g| (*g).to_owned()));
+        let token = self.sign_with_roles(tenant, &format!("agent:{skill}"), &roles);
+        let token = self.resign_with_extra(&token, "act", json!({ "sub": "escurel-runner" }));
+        self.resign_with_extra(&token, "skill", json!(skill))
+    }
+
     /// [`Self::mint_for_run`] plus the lineage's `trace_id` claim (P3-3).
     pub(crate) fn mint_for_run_traced(
         &self,

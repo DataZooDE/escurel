@@ -26,6 +26,7 @@
 
 mod admin_mcp_tools;
 mod admin_publish;
+mod agent_skill_claim;
 mod atomic_approve;
 mod auth_quota;
 mod autonomy;

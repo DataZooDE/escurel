@@ -321,6 +321,7 @@ async fn mcp_inner(
     // agent bearer names its run; the gateway stamps that lineage onto what
     // the run writes. Never read for an authorization decision.
     let run = auth_ctx.as_ref().and_then(|c| c.run.clone());
+    let agent_skill = auth_ctx.as_ref().and_then(|c| c.agent_skill.clone());
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
@@ -368,6 +369,7 @@ async fn mcp_inner(
                 &token_groups,
                 actor.as_deref(),
                 run.as_ref(),
+                agent_skill.as_deref(),
                 req.params,
             )
             .await;
@@ -736,6 +738,7 @@ async fn dispatch_tools_call(
     token_groups: &[String],
     actor: Option<&str>,
     run: Option<&escurel_auth::RunClaims>,
+    agent_skill: Option<&str>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -798,6 +801,7 @@ async fn dispatch_tools_call(
         actor,
         run_id: run.map(|r| r.run_id.as_str()),
         root_event_id: run.and_then(|r| r.root_event_id.as_deref()),
+        agent_skill,
     };
 
     // The admin gate, once, from the registry.

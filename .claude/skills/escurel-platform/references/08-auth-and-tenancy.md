@@ -50,6 +50,12 @@ admin-only), which is why the flag ships off until a corpus's write-ACL
 model is in place. Note that `assign_event` is not write-ACL gated, so a
 narrowed agent whose write was refused can still mark the event processed;
 the echo harness stops on a refused write, and a real skill should too.
+Groups are tenant-wide, so a narrowed token also carries a `skill` claim
+(the target skill's id) and the write ACL refuses an instance write under
+any other skill before it consults the groups — a token narrowed to
+`renewal` cannot write `billing` even when both grant `ops`. It is the one
+claim on the token that is an authorization input, and only ever a
+restriction.
 
 A **workbench agent token** is the same shape minted by the GATEWAY
 (`mint_agent_token`) for an interactive agent with no runner behind it:

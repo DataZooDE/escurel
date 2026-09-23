@@ -388,6 +388,7 @@ async fn record_and_dispatch_ingest(
                 actor: None,
                 run_id: None,
                 root_event_id: None,
+                agent_skill: None,
             };
             let may_create = indexer
                 .may_write_instance(&acl_caller, sk, None, &Value::Object(incoming))
@@ -773,6 +774,7 @@ async fn blob_get_inner(
         actor: None,
         run_id: None,
         root_event_id: None,
+        agent_skill: None,
     };
     match super::tools_read::resolve_readable_blob(&indexer, &caller, page_id).await {
         Ok(Some((content_type, bytes))) => (

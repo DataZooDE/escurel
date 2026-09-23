@@ -102,6 +102,7 @@ fn member(subject: &str) -> AclCaller<'_> {
         actor: None,
         run_id: None,
         root_event_id: None,
+        agent_skill: None,
     }
 }
 fn admin<'a>() -> AclCaller<'a> {
@@ -112,6 +113,7 @@ fn admin<'a>() -> AclCaller<'a> {
         actor: None,
         run_id: None,
         root_event_id: None,
+        agent_skill: None,
     }
 }
 

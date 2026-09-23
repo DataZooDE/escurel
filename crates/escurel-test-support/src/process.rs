@@ -665,6 +665,16 @@ impl EscurelProcess {
         issuer.mint_for_run(tenant, role, subject, run_id, root_event_id)
     }
 
+    /// A per-run agent bearer NARROWED to `skill` with `groups` (P3-6), as a
+    /// runner under `ESCUREL_RUNNER_AGENT_NARROW` mints it — so a test can
+    /// pin what such a token may and may not write.
+    pub fn mint_token_narrowed(&self, tenant: &str, skill: &str, groups: &[&str]) -> String {
+        let issuer = self.issuer.as_ref().expect(
+            "EscurelProcess::mint_token_narrowed requires AuthMode::TestIssuer; spawned with a different mode",
+        );
+        issuer.mint_narrowed(tenant, skill, groups)
+    }
+
     /// [`Self::mint_token_for_run`] with the lineage's `trace_id` claim, so a
     /// test can assert the gateway joins the run's trace (P3-3).
     pub fn mint_token_for_run_traced(
