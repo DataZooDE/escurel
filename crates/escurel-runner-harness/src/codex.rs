@@ -269,8 +269,10 @@ fn parse_outcome(final_message: &str, jsonl: &[u8]) -> Result<HarnessOutcome, Ha
             && let Some(u) = event.get("usage").and_then(serde_json::Value::as_object)
         {
             let count = |k: &str| u.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+            // `cached_input_tokens` is the cached SUBSET of `input_tokens`,
+            // not an addition to it (codex second-opinion review of P3).
             usage.get_or_insert_with(Usage::default).accumulate(&Usage {
-                input_tokens: count("input_tokens") + count("cached_input_tokens"),
+                input_tokens: count("input_tokens"),
                 output_tokens: count("output_tokens"),
                 cost_usd: None,
                 model: None,
@@ -465,7 +467,11 @@ mod tests {
             .expect("parse")
             .usage
             .expect("usage");
-        assert_eq!((usage.input_tokens, usage.output_tokens), (190, 20));
+        assert_eq!(
+            (usage.input_tokens, usage.output_tokens),
+            (150, 20),
+            "cached input is a subset of input, never added to it"
+        );
         assert_eq!(usage.cost_usd, None);
         assert_eq!(
             parse_outcome("ok", br#"{"type":"turn.completed"}"#)
