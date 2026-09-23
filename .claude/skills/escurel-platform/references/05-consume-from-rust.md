@@ -38,6 +38,15 @@ let client = Client::connect(
   `None` when the envelope carried no `data`. The enum is intentionally
   small; additions are breaking.
 
+## Correlating a client's calls with a run
+
+`Client::with_run_id(run_id)` tags every subsequent call with
+`X-Escurel-Run-Id` and an `X-Request-Id` of `<run_id>.<seq>`, which the
+gateway records on its log line for the call. The runner does this for
+each run it drives; an app that drives work on behalf of a run it knows
+can do the same. It is log correlation only — it grants nothing and
+stamps nothing (see references/11 § *A run's tool calls*).
+
 ## The typed methods
 
 Each takes a `*Request` and returns a `*Response`, both re-exported from
