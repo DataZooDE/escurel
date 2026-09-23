@@ -378,6 +378,16 @@ A page's own history and the inbox stay chronological by `at`. A cursor
 is opaque and bound to the listing that issued it; one from a different
 kind of listing is refused as invalid.
 
+## A run's tool calls
+
+Every `/mcp` call made with a run-bound bearer — the runner's per-run
+agent token, or one from `mint_agent_token` — is recorded on the gateway
+in `run_tool_calls`: the tool, `ok` or `error` (with the error's
+`data.code`), duration, request and response sizes in bytes (never the
+payloads), the subject and the time. An ordinary bearer records nothing.
+Rows live as long as the run's record does. Reading them
+(`get_run_tool_calls`, a summary per run on `list_lineage`) is P3-2.
+
 ## Reading a lineage: `list_lineage`
 
 `list_lineage { root_event_id }` returns the whole thread under a root

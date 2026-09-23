@@ -45,6 +45,7 @@ pub mod retrieval;
 pub mod schema;
 pub mod search;
 pub mod snapshot;
+mod tool_calls;
 mod traversal;
 pub mod validate;
 
@@ -88,6 +89,7 @@ pub use snapshot::{
     IndexStore, IndexerHandle, LakeConfig, ObjectStoreSecret, OpenedIndex, PublishReport,
     SingleFileStore, SnapshotError,
 };
+pub use tool_calls::{NewToolCall, TOOL_CALLS_MAX_LIMIT, ToolCallPage, ToolCallRow};
 pub use traversal::{
     CORPUS_TARGET, Dir, Filter, MAX_DEPTH_CEILING, START_ALIAS, Start, Step, Traversal,
     TraversalError, parse_traversal,

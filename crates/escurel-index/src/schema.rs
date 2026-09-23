@@ -471,6 +471,14 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure `run_tool_calls` (workbench backend P3-1) exists. Plain
+    /// `IF NOT EXISTS` DDL, no function-valued default touched on an
+    /// existing table, so it is safe on every open.
+    pub fn ensure_run_tool_calls(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_20_RUN_TOOL_CALLS)?;
+        Ok(())
+    }
+
     /// Ensure the `resolved_links` provenance-graph VIEW (ADR-0010) exists.
     /// A VIEW, not a table — `CREATE OR REPLACE`, so it is safe (and cheap) to
     /// run on EVERY connection like the other `ensure_*` methods, and it stays
@@ -515,6 +523,7 @@ impl Migrator {
         // — called so `up` and the reopen chain cannot disagree.
         Self::ensure_events_lineage(conn)?;
         Self::ensure_events_seq(conn)?;
+        Self::ensure_run_tool_calls(conn)?;
         // Drafts: a held write awaiting a human. Added after `events`, so it
         // is ALSO applied on every reopen (`ensure_drafts`) — a tenant
         // provisioned before drafts existed must gain the table, and every
@@ -648,6 +657,7 @@ const STAGE_16_BRANCHES: &str = include_str!("../sql/0015_branches.sql");
 const STAGE_17_EVENTS_LINEAGE: &str = include_str!("../sql/0016_events_lineage.sql");
 const STAGE_18_DRAFT_RUN_LINEAGE: &str = include_str!("../sql/0017_drafts_run_lineage.sql");
 const STAGE_19_EVENTS_SEQ: &str = include_str!("../sql/0018_events_seq.sql");
+const STAGE_20_RUN_TOOL_CALLS: &str = include_str!("../sql/0019_run_tool_calls.sql");
 
 #[cfg(test)]
 mod tests {
