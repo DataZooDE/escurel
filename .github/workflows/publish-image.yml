@@ -72,8 +72,8 @@ jobs:
   publish-runner:
     name: build + push escurel-runner → ghcr
     runs-on: ubuntu-latest
-    # No libduckdb and no extension cache: this one is a plain Rust release
-    # build, so it needs far less headroom than the gateway.
+    # Runner release build links libduckdb dynamically (DuckDB-backed ledger);
+    # runtime stage packages libduckdb.so and libstdc++6.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4

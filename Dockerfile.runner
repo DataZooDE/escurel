@@ -18,10 +18,11 @@
 # surface.
 
 # ---- builder -------------------------------------------------------------
-# Pinned to the workspace toolchain (rust-toolchain.toml: 1.91.0). rusqlite is
-# `bundled`, so the ledger's SQLite is compiled from source here — the base
-# image's cc is enough, and nothing is needed at runtime. reqwest uses rustls,
-# so there is no OpenSSL either.
+# Pinned to the workspace toolchain (rust-toolchain.toml: 1.91.0).
+# libduckdb-sys downloads the precompiled libduckdb release (.cargo/config.toml:
+# DUCKDB_DOWNLOAD_LIB=1), which links dynamically: the binary carries
+# `NEEDED libduckdb.so` with no rpath, so the runtime stage must ship the
+# shared object too.
 FROM rust:1.91-bookworm AS builder
 WORKDIR /build
 COPY . .
@@ -36,16 +37,20 @@ RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release -p escurel-runner \
     && cp target/release/escurel-runner /usr/local/bin/escurel-runner \
-    && cp target/release/escurel-echo-harness /usr/local/bin/escurel-echo-harness
+    && cp target/release/escurel-echo-harness /usr/local/bin/escurel-echo-harness \
+    && cp "$(find target -name libduckdb.so -print -quit)" /usr/local/lib/libduckdb.so
 
 # ---- runtime -------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 # ca-certificates: TLS to the gateway and the model API. curl: HEALTHCHECK.
+# libstdc++6: downloaded libduckdb links it dynamically and debian-slim does not ship it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/escurel-runner /usr/local/bin/escurel-runner
 COPY --from=builder /usr/local/bin/escurel-echo-harness /usr/local/bin/escurel-echo-harness
+COPY --from=builder /usr/local/lib/libduckdb.so /usr/lib/libduckdb.so
+RUN ldconfig
 
 ARG SERVICE_LABEL=escurel-runner
 LABEL service="${SERVICE_LABEL}"
@@ -56,7 +61,7 @@ LABEL service="${SERVICE_LABEL}"
 # deployment that mounts a volume keeps it, and so one that does not is at
 # least obvious about where it went.
 ENV ESCUREL_RUNNER_LISTEN=0.0.0.0:8088 \
-    ESCUREL_RUNNER_LEDGER_PATH=/data/escurel-runner-ledger.sqlite
+    ESCUREL_RUNNER_LEDGER_PATH=/data/escurel-runner-ledger.duckdb
 EXPOSE 8088
 VOLUME ["/data"]
 
