@@ -393,6 +393,14 @@ may read its calls, and that read is recorded like any other. Ask
 `list_lineage` for `include: ["tool_calls"]` and every run node carries
 `tool_call_summary { count, failed, duration_ms }`.
 
+With `ESCUREL_OBSERVABILITY_OTLP_ENDPOINT` set on the gateway, the same
+calls are exported as OpenInference `TOOL` spans on the run's own trace:
+the runner mints one `trace_id` per lineage and puts it on the per-run
+token, the gateway makes each call's `mcp.request` span a child of it
+(`openinference.span.kind = TOOL`, `escurel.run_id`,
+`escurel.root_event_id`, `input.size` / `output.size` — sizes, never
+payloads), so a collector shows one trace per run.
+
 ## Reading a lineage: `list_lineage`
 
 `list_lineage { root_event_id }` returns the whole thread under a root

@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.67 — a run's calls are TOOL spans on the run's trace (workbench P3-3)
+
+- With `ESCUREL_OBSERVABILITY_OTLP_ENDPOINT` set, every `/mcp` call made
+  with a run-bound bearer is exported as an OpenInference `TOOL` span
+  (`openinference.span.kind`, `escurel.run_id`, `escurel.root_event_id`,
+  `input.size` / `output.size` in bytes — never payloads) whose parent is
+  the run's own trace: the token's `trace_id` claim, with a parent span id
+  derived from the request id. One trace per run in your collector.
+
 ## 0.6.66 — `get_run_tool_calls`; a tool-call summary on the lineage (workbench P3-2)
 
 - New tool `get_run_tool_calls { run_id, limit?, after? }` → `{run_id,

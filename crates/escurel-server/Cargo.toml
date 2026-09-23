@@ -119,6 +119,9 @@ tokio-tungstenite = "0.24"
 wiremock = "0.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "testing"] }
 # Live Postgres testcontainer for the `live-ducklake` chat re-homing test
 # (tests/reader_role_chat.rs, DuckLake PR 8).
 testcontainers-modules = { version = "0.15", features = ["postgres"] }

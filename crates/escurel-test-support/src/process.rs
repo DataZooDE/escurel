@@ -665,6 +665,24 @@ impl EscurelProcess {
         issuer.mint_for_run(tenant, role, subject, run_id, root_event_id)
     }
 
+    /// [`Self::mint_token_for_run`] with the lineage's `trace_id` claim, so a
+    /// test can assert the gateway joins the run's trace (P3-3).
+    pub fn mint_token_for_run_traced(
+        &self,
+        tenant: &str,
+        role: Role,
+        subject: &str,
+        run_id: &str,
+        root_event_id: &str,
+        trace_id: &str,
+    ) -> String {
+        let issuer = self
+            .issuer
+            .as_ref()
+            .expect("EscurelProcess::mint_token_for_run_traced requires AuthMode::TestIssuer");
+        issuer.mint_for_run_traced(tenant, role, subject, run_id, root_event_id, trace_id)
+    }
+
     /// Mint a bearer with an explicit `sub` and arbitrary token groups
     /// in the `roles` claim — for RBAC tests exercising custom token
     /// groups (`moderator`, `team-acme`, …). Set `admin` to also stamp
