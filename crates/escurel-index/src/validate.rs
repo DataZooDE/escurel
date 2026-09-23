@@ -364,8 +364,13 @@ fn check_fields(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
         ]
     };
 
-    // (name, declared kind, declared values) per entry.
-    type Entry<'a> = (String, Option<&'a YamlValue>, Option<&'a YamlValue>);
+    // (name, declared kind, declared values, declared render) per entry.
+    type Entry<'a> = (
+        String,
+        Option<&'a YamlValue>,
+        Option<&'a YamlValue>,
+        Option<&'a YamlValue>,
+    );
     let entries: Vec<Entry<'_>> = if let Some(seq) = raw.as_sequence() {
         let mut out = Vec::new();
         for item in seq {
@@ -380,6 +385,7 @@ fn check_fields(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
                 name.to_owned(),
                 m.and_then(|m| m.get("kind").or_else(|| m.get("type"))),
                 m.and_then(|m| m.get("values")),
+                m.and_then(|m| m.get("render")),
             ));
         }
         out
@@ -392,6 +398,7 @@ fn check_fields(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
                     name.to_owned(),
                     attrs.and_then(|m| m.get("kind").or_else(|| m.get("type"))),
                     attrs.and_then(|m| m.get("values")),
+                    attrs.and_then(|m| m.get("render")),
                 ))
             })
             .collect()
@@ -403,7 +410,28 @@ fn check_fields(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
     };
 
     let mut issues = Vec::new();
-    for (name, kind, values) in entries {
+    for (name, kind, values, render) in entries {
+        // `render:` is a hint a client switches on; an unknown one is passed
+        // through and ignored there, so this is a warning, not a refusal
+        // (workbench backend P3-5).
+        if let Some(r) = render
+            && !r
+                .as_str()
+                .is_some_and(|r| KNOWN_RENDERS.contains(&r.trim()))
+        {
+            let shown = r.as_str().map_or_else(|| format!("{r:?}"), str::to_owned);
+            issues.push(
+                Issue::warning(
+                    "field_render_unknown",
+                    format!("frontmatter.fields.{name}.render"),
+                    format!(
+                        "`render: {shown}` on field `{name}` is not a render hint a client \
+                         knows; it is passed through and ignored"
+                    ),
+                )
+                .with_suggestion(format!("use one of: {}", KNOWN_RENDERS.join(" | "))),
+            );
+        }
         let parsed = kind
             .and_then(YamlValue::as_str)
             .and_then(crate::FieldKind::parse);
@@ -450,6 +478,53 @@ fn check_fields(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
         }
     }
     issues
+}
+
+/// The render hints the workbench knows (workbench backend P3-5).
+const KNOWN_RENDERS: &[&str] = &[
+    "text", "markdown", "date", "datetime", "money", "link", "badge",
+];
+
+/// `blocks:` on a skill page is a sequence of `{anchor, title?, kind?}`
+/// mappings (workbench backend P3-5). A block without an anchor has nowhere
+/// to render, so that — and a `blocks:` that is not a sequence — is an error
+/// at the offending location.
+fn check_blocks(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
+    if page_type != PageType::Skill {
+        return Vec::new();
+    }
+    let Some(raw) = fields.get("blocks") else {
+        return Vec::new();
+    };
+    let suggestion = "e.g. `- {anchor: summary, title: Summary, kind: markdown}`";
+    let Some(seq) = raw.as_sequence() else {
+        return vec![
+            Issue::error(
+                "blocks_malformed",
+                "frontmatter.blocks",
+                "`blocks:` must be a sequence of `{anchor, title?, kind?}` entries",
+            )
+            .with_suggestion(suggestion),
+        ];
+    };
+    seq.iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item.as_mapping()
+                .and_then(|m| m.get("anchor"))
+                .and_then(YamlValue::as_str)
+                .is_none_or(|a| a.trim().is_empty())
+        })
+        .map(|(i, _)| {
+            Issue::error(
+                "blocks_malformed",
+                format!("frontmatter.blocks[{i}]"),
+                "every `blocks:` entry must be a mapping with a non-empty `anchor:` — a \
+                 block with no anchor has nowhere to render",
+            )
+            .with_suggestion(suggestion)
+        })
+        .collect()
 }
 
 /// Check one instance frontmatter value against the field its skill declared
@@ -710,6 +785,8 @@ impl Indexer {
         // SKILL page, so a malformed schema reaches its author once rather
         // than every instance's author repeatedly.
         issues.extend(check_fields(parsed.frontmatter.page_type, fields));
+        // The instance-body layout a skill declares (workbench P3-5).
+        issues.extend(check_blocks(parsed.frontmatter.page_type, fields));
         // A stored corpus traversal (#511). Checked HERE rather than at query
         // time: a bound that is only enforced when someone runs the query is a
         // bound that ships broken, and the author finds out from a stranger.

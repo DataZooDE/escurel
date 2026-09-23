@@ -4,6 +4,19 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.69 — `fields[].render` and `blocks[]` on a skill (workbench P3-5)
+
+- A skill's `fields:` entries may carry `render: text | markdown | date |
+  datetime | money | link | badge` — a display hint, passed through on
+  `list_skills.fields[].render` verbatim (an unknown one is the
+  `field_render_unknown` warning from `validate`, and still passed
+  through).
+- A skill may declare `blocks: [{anchor, title?, kind?}]`, the layout of
+  its instance bodies; `list_skills` reports it as `blocks[]` in the
+  author's order, omitted when undeclared. A `blocks:` that is not a
+  sequence, or an entry without an `anchor`, is `blocks_malformed`
+  (error). Nothing in the gateway keys off either; see references/01.
+
 ## 0.6.68 — `run-finished` carries the run's token usage and cost (workbench P3-4)
 
 - `run-finished.body.usage` is `{input_tokens, output_tokens, cost_usd,

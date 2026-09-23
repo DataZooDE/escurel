@@ -117,6 +117,18 @@ pub(super) async fn tool_list_skills(
                         max: f.max,
                         label: f.label,
                         description: f.description,
+                        render: f.render,
+                    })
+                    .collect(),
+                // The declared instance-body layout (P3-5): verbatim, in
+                // the author's order, omitted when undeclared.
+                blocks: s
+                    .blocks
+                    .into_iter()
+                    .map(|b| escurel_types::SkillBlock {
+                        anchor: b.anchor,
+                        title: b.title,
+                        kind: b.kind,
                     })
                     .collect(),
             })

@@ -458,6 +458,25 @@ pub struct Skill {
     /// `fields:`, so those rows stay byte-identical to what they were.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<SkillField>,
+    /// The declared layout of this skill's instance bodies (`blocks:`,
+    /// workbench backend P3-5), in the author's order — what a workbench
+    /// renders an instance page as. Pass-through: the gateway neither
+    /// enforces it nor reads bodies by it. Omitted from the wire when the
+    /// skill declares none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<SkillBlock>,
+}
+
+/// One block of a skill's declared instance layout (`blocks:`). MCP wire
+/// keys: `anchor`, and `title` / `kind` when the author set them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SkillBlock {
+    pub anchor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// One instance field a skill declares. MCP wire keys: `name`, `kind`,
@@ -489,6 +508,11 @@ pub struct SkillField {
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// `render:` — how a client shows the value (`text | markdown | date |
+    /// datetime | money | link | badge`), passed through verbatim; absent
+    /// when undeclared. A client ignores a hint it does not know.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub render: Option<String>,
 }
 
 /// One invocation parameter a skill declares. MCP wire keys: `name`,

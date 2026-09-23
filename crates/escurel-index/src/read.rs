@@ -96,6 +96,10 @@ pub struct SkillInfo {
     /// when the skill declares none, which is every skill that predates
     /// typing and behaves exactly as it did.
     pub fields: Vec<SkillField>,
+    /// The declared layout of this skill's instance bodies (the `blocks:`
+    /// sequence, workbench backend P3-5), in the author's order. Empty when
+    /// undeclared. Pass-through only.
+    pub blocks: Vec<SkillBlock>,
 }
 
 /// One invocation parameter a skill page declares via `params:`
@@ -206,6 +210,49 @@ pub struct SkillField {
     /// A human caption and prose, for a generated instance form.
     pub label: Option<String>,
     pub description: Option<String>,
+    /// `render:` — how a client shows the value (workbench backend P3-5):
+    /// `text | markdown | date | datetime | money | link | badge`. Passed
+    /// through verbatim, even unrecognised (`validate` warns
+    /// `field_render_unknown`; a client ignores a hint it does not know).
+    /// `None` when undeclared. Nothing in the gateway keys off it.
+    pub render: Option<String>,
+}
+
+/// One block of a skill's declared instance body layout (the `blocks:`
+/// sequence, workbench backend P3-5): the anchor a client renders the block
+/// under, its caption and its kind. Pass-through only — the gateway neither
+/// enforces the layout nor reads the body by it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillBlock {
+    pub anchor: String,
+    pub title: Option<String>,
+    pub kind: Option<String>,
+}
+
+/// Project the `blocks:` sequence from a skill page's indexed frontmatter,
+/// in the author's order. Entries without an `anchor:` — and a `blocks:`
+/// that is not a sequence — yield nothing here and a `blocks_malformed`
+/// error from `validate`.
+pub fn parse_blocks(fm: &serde_json::Value) -> Vec<SkillBlock> {
+    let text = |item: &serde_json::Value, key: &str| {
+        item.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    fm.get("blocks")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    Some(SkillBlock {
+                        anchor: text(item, "anchor")?,
+                        title: text(item, "title"),
+                        kind: text(item, "kind"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// What an instance field may hold.
@@ -316,6 +363,7 @@ fn field_from(name: &str, attrs: &serde_json::Value) -> SkillField {
         max: number("max"),
         label: text("label"),
         description: text("description"),
+        render: text("render"),
     }
 }
 
@@ -694,6 +742,7 @@ impl Indexer {
                 actions: string_array_field(&fm, "actions"),
                 cascade: parse_cascade(&fm),
                 params: parse_params(&fm),
+                blocks: parse_blocks(&fm),
             });
         }
 
