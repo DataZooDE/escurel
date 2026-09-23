@@ -121,6 +121,7 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `event capture\|inbox\|list\|assign` | `capture_event` / `list_inbox` / `list_events` / `assign_event` (`event list --instance \| --root-event \| --run \| --label`, `--include-system` on `inbox`/`list`, `list --newest-first`, `capture --kind`) |
 | `run progress` | `report_progress` (needs a run-bound bearer; `--step <step>=<status>`, repeatable) |
 | `run mint-token` | `mint_agent_token` (`--skill`, `--root-event`, `--target`, `--ttl-secs`) |
+| `run tool-calls` | `get_run_tool_calls` (`--run`, `--limit`, `--after <seq>`) |
 | `run lineage` | `list_lineage` (`--root-event <id> [--include events|runs|drafts]… [--limit N] [--cursor]`) |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
 | `session open\|apply\|close` | `open_session` / `apply_op` / `close_session` |

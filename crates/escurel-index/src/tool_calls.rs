@@ -49,6 +49,14 @@ pub struct ToolCallPage {
     pub next_after: Option<i64>,
 }
 
+/// A run's calls in one line (for the lineage's run node).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ToolCallSummary {
+    pub count: u64,
+    pub failed: u64,
+    pub duration_ms: f64,
+}
+
 /// The most calls one page returns.
 pub const TOOL_CALLS_MAX_LIMIT: usize = 1000;
 
@@ -84,6 +92,44 @@ impl Indexer {
             ],
         )?;
         Ok(seq)
+    }
+
+    /// One summary per run id that has calls (runs without any are absent).
+    ///
+    /// # Errors
+    /// When the read fails.
+    pub async fn run_tool_call_summaries(
+        &self,
+        run_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, ToolCallSummary>, IndexerError> {
+        let mut out = std::collections::HashMap::new();
+        if run_ids.is_empty() {
+            return Ok(out);
+        }
+        let conn = self.conn.lock().await;
+        let placeholders = vec!["?"; run_ids.len()].join(", ");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT run_id, count(*), count(*) FILTER (WHERE status = 'error'), \
+                    COALESCE(sum(duration_ms), 0) \
+             FROM run_tool_calls WHERE run_id IN ({placeholders}) GROUP BY run_id"
+        ))?;
+        let refs: Vec<&dyn duckdb::ToSql> =
+            run_ids.iter().map(|r| r as &dyn duckdb::ToSql).collect();
+        let rows = stmt.query_map(refs.as_slice(), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                ToolCallSummary {
+                    count: r.get::<_, i64>(1)?.max(0) as u64,
+                    failed: r.get::<_, i64>(2)?.max(0) as u64,
+                    duration_ms: r.get::<_, f64>(3)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (run_id, summary) = row?;
+            out.insert(run_id, summary);
+        }
+        Ok(out)
     }
 
     /// A run's calls, oldest first, `after` the given `seq` (cursor).

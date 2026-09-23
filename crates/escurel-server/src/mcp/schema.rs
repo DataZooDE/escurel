@@ -704,6 +704,24 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "get_run_tool_calls",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Events),
+            "A run's `/mcp` calls, oldest first: tool, ok/error (+ error_code), \
+                 duration_ms, request/response bytes, subject, at. Paged by `after` \
+                 (a call's `seq`). A run you may not read, or none, answers empty.",
+            json!({
+                "type": "object",
+                "required": ["run_id"],
+                "properties": {
+                    "run_id": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Default 100." },
+                    "after": { "type": "integer", "description": "The `seq` of the last call seen; the next page starts after it." }
+                }
+            }),
+        ),
+        tool_entry(
             "mint_agent_token",
             Execution::Orchestration,
             Scope::Agent,
@@ -1821,6 +1839,11 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "root_event_id": { "type": "string" },
             "nodes": { "type": "array", "description": "[{id, type: event|run|changeset|draft, parent, state, …}]" },
             "next_cursor": { "type": "string", "description": "present iff more events lie past the page" }
+        })),
+        "get_run_tool_calls" => obj(json!({
+            "run_id": { "type": "string" },
+            "calls": { "type": "array" },
+            "next_after": { "type": ["integer", "null"] }
         })),
         "mint_agent_token" => obj(json!({
             "token": { "type": "string" },

@@ -70,6 +70,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("assign_event", Agent(&["event", "assign"])),
     ("report_progress", Agent(&["run", "progress"])),
     ("mint_agent_token", Agent(&["run", "mint-token"])),
+    ("get_run_tool_calls", Agent(&["run", "tool-calls"])),
     ("list_lineage", Agent(&["run", "lineage"])),
     ("create_draft", Agent(&["draft", "create"])),
     ("create_branch", Agent(&["branch", "create"])),

@@ -71,6 +71,7 @@ mod tools_lineage;
 mod tools_mint;
 pub(crate) use tools_mint::sweep_expired_minted_runs;
 mod tools_progress;
+mod tools_tool_calls;
 pub use tools_progress::DEFAULT_RUN_PROGRESS_KEEP;
 mod tools_read;
 mod tools_write;
@@ -996,6 +997,15 @@ async fn dispatch_tools_call(
         }
         "mint_agent_token" => {
             tools_mint::tool_mint_agent_token(state, indexer, caller, params.arguments).await
+        }
+        "get_run_tool_calls" => {
+            tools_tool_calls::tool_get_run_tool_calls(
+                indexer,
+                caller,
+                state.event_acl,
+                params.arguments,
+            )
+            .await
         }
         "list_lineage" => {
             tool_list_lineage(indexer, caller, state.event_acl, params.arguments).await

@@ -181,6 +181,44 @@ pub struct ReportProgressResponse {
     pub steps: u32,
 }
 
+/// `get_run_tool_calls` arguments (workbench backend P3-2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GetRunToolCallsRequest {
+    pub run_id: String,
+    /// 0 = the server's default (100).
+    pub limit: u32,
+    /// The `seq` of the last call seen; 0 = from the start.
+    pub after: i64,
+}
+
+/// One recorded `/mcp` call of a run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RunToolCall {
+    pub seq: i64,
+    pub tool: String,
+    /// `ok` | `error`.
+    pub status: String,
+    #[serde(deserialize_with = "null_as_default")]
+    pub error_code: String,
+    pub duration_ms: f64,
+    pub request_bytes: u64,
+    pub response_bytes: u64,
+    pub subject: String,
+    pub at: String,
+}
+
+/// `get_run_tool_calls` result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GetRunToolCallsResponse {
+    pub run_id: String,
+    pub calls: Vec<RunToolCall>,
+    #[serde(deserialize_with = "null_as_default")]
+    pub next_after: Option<i64>,
+}
+
 /// `mint_agent_token` arguments (workbench backend P2-6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]

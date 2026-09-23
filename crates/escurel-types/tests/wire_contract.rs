@@ -290,6 +290,16 @@ fn list_lineage_nodes_carry_id_type_parent_state_and_the_rest() {
 fn report_progress_request_and_response_shapes() {
     // tool_report_progress: {plan:[{step,status}], current?, note?} →
     // {ok, event_id, run_id, steps}.
+    let calls: GetRunToolCallsResponse = serde_json::from_value(json!({
+        "run_id": "r",
+        "calls": [{ "seq": 1, "tool": "expand", "status": "ok", "error_code": null,
+                    "duration_ms": 1.5, "request_bytes": 10, "response_bytes": 20,
+                    "subject": "agent:x", "at": "2026-09-23T06:00:00Z" }],
+        "next_after": null
+    }))
+    .unwrap();
+    assert_eq!(calls.calls[0].tool, "expand");
+    assert!(calls.next_after.is_none());
     let mint: MintAgentTokenResponse = serde_json::from_value(json!({
         "token": "t", "run_id": "r", "root_event_id": "r", "subject": "agent:renewal",
         "expires_at": "2026-09-22T12:00:00Z"
