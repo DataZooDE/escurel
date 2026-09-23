@@ -97,29 +97,31 @@ Frontmatter rules the indexer enforces at write time:
   `fields`, so a client can build an instance form from the catalogue
   alone.
 
+  A field may also carry a **`render:` hint** — how a client SHOWS the
+  value, as distinct from `kind` (what it IS): `text | markdown | date |
+  datetime | money | link | badge`. `list_skills` passes it through on
+  `fields[].render` verbatim; an unrecognised hint is a `validate`
+  **warning** (`field_render_unknown`) and is still passed through, so a
+  client ignores what it does not know. Nothing in the gateway keys off
+  it.
+
+- A skill may declare **`blocks:`** — the layout of its instance BODIES,
+  as the sequence of sections a workbench renders an instance page as:
+
   ```yaml
-  fields:
-    - {name: hotness, kind: enum, values: [hot, warm, cold]}
-    - {name: opened,  kind: date, required: true}
-    - {name: arr_eur, kind: float, min: 0}
+  blocks:
+    - {anchor: summary,  title: Summary,  kind: markdown}
+    - {anchor: timeline, title: Timeline, kind: events}
   ```
 
-  `kind` ∈ `string | int | float | bool | date | datetime | enum | link`.
-  A value that does not fit its declared kind
-  (`frontmatter_field_type`), falls outside a declared enum
-  (`frontmatter_enum_value`) or breaks a `min`/`max`
-  (`frontmatter_field_range`) is an **error** and **rejects the write** —
-  on `update_page` and on `create_draft` alike. An unrecognised `kind:`
-  degrades to `string` with a warning; `kind: enum` with no `values:`
-  is rejected on the skill page, because it would enforce nothing.
-
-  **Typing is opt-in per skill.** A skill with no `fields:` block behaves
-  exactly as it always did, so an existing untyped corpus stays as
-  writable as it was — declaring the block is the migration step. Declare
-  both during a migration if you like: `required_frontmatter` stays the
-  authority on presence, `fields:` adds shape. `list_skills` publishes
-  `fields`, so a client can build an instance form from the catalogue
-  alone.
+  `anchor` is required (a block with no anchor has nowhere to render);
+  `title` and `kind` are the author's, passed through as written. Wire:
+  `list_skills` → `blocks[{anchor, title?, kind?}]`, in the author's
+  order, omitted when undeclared. `validate` rejects a `blocks:` that is
+  not a sequence, or an entry without an anchor, as `blocks_malformed`
+  (**error**, at `frontmatter.blocks` / `frontmatter.blocks[i]`). The
+  gateway neither enforces the layout nor reads bodies by it — it is a
+  declaration for renderers.
 
 Three frontmatter fields are **server-governed** — your app never writes
 them: `layer:` (stamped by pack import; a draft declaring `layer: base@…`

@@ -216,6 +216,36 @@ fn skill_wire_shape() {
 }
 
 #[test]
+fn skill_field_render_and_blocks_round_trip_and_are_omitted_when_undeclared() {
+    // Workbench backend P3-5: `fields[].render` and `blocks[]` are
+    // pass-through declarations; absent stays absent on the wire.
+    let wire = json!({
+        "id": "account",
+        "description": "d",
+        "fields": [
+            { "name": "arr_eur", "kind": "float", "required": false, "render": "money" },
+            { "name": "opened", "kind": "date", "required": true },
+        ],
+        "blocks": [
+            { "anchor": "summary", "title": "Summary", "kind": "markdown" },
+            { "anchor": "refs" },
+        ],
+    });
+    let skill: Skill = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(skill.fields[0].render.as_deref(), Some("money"));
+    assert_eq!(skill.fields[1].render, None);
+    assert_eq!(skill.blocks.len(), 2);
+    assert_eq!(skill.blocks[1].anchor, "refs");
+    assert_eq!(skill.blocks[1].title, None);
+    let back = serde_json::to_value(&skill).unwrap();
+    assert_eq!(back["fields"], wire["fields"]);
+    assert_eq!(back["blocks"], wire["blocks"]);
+    let bare: Skill = serde_json::from_value(json!({ "id": "n", "description": "d" })).unwrap();
+    assert!(bare.blocks.is_empty());
+    assert!(serde_json::to_value(&bare).unwrap().get("blocks").is_none());
+}
+
+#[test]
 fn skill_layer_defaults_to_overlay_on_old_servers() {
     // An old server that doesn't emit `layer` must parse to the overlay
     // default — pre-layer skills are tenant-authored and editable.
