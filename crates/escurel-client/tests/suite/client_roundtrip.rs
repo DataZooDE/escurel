@@ -470,3 +470,41 @@ async fn token_is_not_leaked_in_debug_output() {
     );
     p.shutdown().await;
 }
+
+/// `ListEventsRequest.newest_first` must reach the wire (live smoke,
+/// 2026-09-23: the client built its arguments by hand and dropped it, so
+/// `--newest-first --limit 1` returned the OLDEST row).
+#[tokio::test]
+async fn list_events_newest_first_reaches_the_gateway() {
+    let p = start().await;
+    let client = authed_client(&p).await;
+    for (i, title) in ["first", "second"].iter().enumerate() {
+        client
+            .capture_event(escurel_client::CaptureEventRequest {
+                at: format!("2026-09-23T10:00:0{i}Z"),
+                source: "t".to_owned(),
+                mime: "text/plain".to_owned(),
+                label_skill: "note".to_owned(),
+                title: (*title).to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    let newest = client
+        .list_events(ListEventsRequest {
+            label_skill: "note".to_owned(),
+            newest_first: true,
+            limit: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(newest.events.len(), 1);
+    assert_eq!(
+        newest.events[0].title, "second",
+        "newest first: {:?}",
+        newest.events
+    );
+    p.shutdown().await;
+}

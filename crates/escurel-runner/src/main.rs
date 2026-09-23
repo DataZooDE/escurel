@@ -2285,6 +2285,11 @@ async fn dispatch_loop(
                         reason = ?cancel_reason,
                         "dispatch: run cancelled; recorded cancelled (event left in inbox, no cascade)"
                     ),
+                    // A clean no-op (converged, or a planning run) was already
+                    // logged and metered above as its own terminal; it is not
+                    // a failure (live smoke 2026-09-23: this arm counted every
+                    // converged run as `failed` and said so in the log).
+                    None if report.converged_no_op => {}
                     _ => {
                         record_run_terminal(&metrics, &trigger.tenant, "failed");
                         tracing::warn!(
