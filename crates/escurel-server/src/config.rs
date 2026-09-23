@@ -58,6 +58,7 @@
 //! | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | `escurel:admin` | role value granting admin |
 //! | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | `300` | JWKS cache TTL (seconds) |
 //! | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
+//! | `ESCUREL_RUN_PROGRESS_KEEP` | `50` | how many `run-progress` snapshots a run keeps (pruned at capture) |
 //! | `ESCUREL_AUTH_SIGNING_KEY` | — | RSA private key (PKCS#8 or PKCS#1 PEM) the gateway signs `mint_agent_token` bearers with; unset → the tool refuses `unsupported` |
 //! | `ESCUREL_AUTH_SIGNING_KID` | derived | the `kid` those bearers carry (must be in a trusted JWKS) |
 //! | `ESCUREL_AUTH_SIGNING_ISSUER` | the OIDC issuer | the `iss` those bearers carry (must be a trusted issuer) |
@@ -2070,6 +2071,18 @@ impl EscurelConfig {
             emit_edit_events: std::env::var("ESCUREL_EMIT_EDIT_EVENTS")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
+            run_progress_keep: match std::env::var("ESCUREL_RUN_PROGRESS_KEEP") {
+                Ok(raw) if !raw.trim().is_empty() => {
+                    raw.trim().parse::<usize>().ok().filter(|n| *n >= 1).ok_or(
+                        ConfigError::InvalidValue {
+                            var: "ESCUREL_RUN_PROGRESS_KEEP",
+                            value: raw,
+                            reason: "expected a positive integer",
+                        },
+                    )?
+                }
+                _ => crate::mcp::DEFAULT_RUN_PROGRESS_KEEP,
+            },
             demo_dir: self.demo_dir.clone(),
             webhook_url: self.webhook_url.clone(),
             webhook_secret: self.webhook_secret.clone(),

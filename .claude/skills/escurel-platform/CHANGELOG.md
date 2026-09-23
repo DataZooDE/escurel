@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.64 — undated events get the server's clock; run-progress retention is configurable
+
+- `capture_event` without `at` stores the gateway's clock instead of null
+  (a caller's own `at` is kept), so a page's history and the inbox — which
+  order by `at` — never carry a row that sorts last for ever.
+- `ESCUREL_RUN_PROGRESS_KEEP` (default `50`) sets how many `run-progress`
+  snapshots a run keeps; older ones are pruned at capture.
+
 ## 0.6.63 — minted runs expire across restarts
 
 - The expiry sweep for `mint_agent_token` runs reads what is still open

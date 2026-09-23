@@ -157,6 +157,48 @@ async fn the_same_plan_reported_twice_is_one_event() {
     assert_eq!(run_events(&p, RUN).await.len(), 2);
 }
 
+/// The retention is configurable (`ESCUREL_RUN_PROGRESS_KEEP`; owner
+/// decision 2026-09-23): a gateway keeping three snapshots keeps exactly
+/// the newest three.
+#[tokio::test]
+async fn run_progress_retention_is_configurable() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+        config_overrides: escurel_test_support::ConfigOverrides {
+            run_progress_keep: Some(3),
+            ..Default::default()
+        },
+    })
+    .await;
+    let agent = p.mint_token_for_run(TENANT, Role::Agent, "agent:note", RUN, ROOT);
+    for i in 0..5 {
+        let r = call(
+            &p,
+            &agent,
+            "report_progress",
+            json!({ "plan": plan(&[(&format!("s{i}"), "in_progress")]) }),
+        )
+        .await;
+        assert_eq!(result(&r)["ok"], true, "{r}");
+    }
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let own = call(&p, &admin, "list_events", json!({ "run_id": RUN })).await;
+    let steps: Vec<String> = result(&own)["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["title"] == "run-progress")
+        .map(|e| {
+            serde_json::from_str::<Value>(e["body"].as_str().unwrap()).unwrap()["plan"][0]["step"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(steps, ["s2", "s3", "s4"], "the newest three survive: {own}");
+}
+
 #[tokio::test]
 async fn run_progress_is_pruned_to_the_last_fifty_per_run() {
     let p = start().await;

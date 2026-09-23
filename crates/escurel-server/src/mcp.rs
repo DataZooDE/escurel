@@ -71,6 +71,7 @@ mod tools_lineage;
 mod tools_mint;
 pub(crate) use tools_mint::sweep_expired_minted_runs;
 mod tools_progress;
+pub use tools_progress::DEFAULT_RUN_PROGRESS_KEEP;
 mod tools_read;
 mod tools_write;
 pub(crate) use ingest::{blob_get, ingest, ingest_upload};
@@ -941,7 +942,14 @@ async fn dispatch_tools_call(
         }
         "list_inbox" => tool_list_inbox(indexer, caller, state.event_acl, params.arguments).await,
         "report_progress" => {
-            tool_report_progress(indexer, caller, &state.events_tx, params.arguments).await
+            tool_report_progress(
+                indexer,
+                caller,
+                &state.events_tx,
+                state.run_progress_keep,
+                params.arguments,
+            )
+            .await
         }
         "mint_agent_token" => {
             tools_mint::tool_mint_agent_token(state, indexer, caller, params.arguments).await

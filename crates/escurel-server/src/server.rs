@@ -236,6 +236,9 @@ pub struct ServerConfig {
     /// #246: emit a `page-edited` event on an out-of-band `update_page`. Off by
     /// default (`ESCUREL_EMIT_EDIT_EVENTS`).
     pub emit_edit_events: bool,
+    /// How many `run-progress` snapshots a run keeps (`ESCUREL_RUN_PROGRESS_KEEP`,
+    /// default 50); older ones are pruned at capture.
+    pub run_progress_keep: usize,
     /// Backing store for the admin tenant-CRUD RPCs. `None`
     /// means every tenant CRUD RPC returns
     /// `Status::failed_precondition` — useful for health-only
@@ -441,6 +444,7 @@ pub(crate) struct AppState {
     /// page eagerly. Off by default; the gateway stays automation-free unless a
     /// deployment opts in via `ESCUREL_EMIT_EDIT_EVENTS`.
     pub(crate) emit_edit_events: bool,
+    pub(crate) run_progress_keep: usize,
     pub(crate) crdt_backend: Option<Arc<dyn CrdtBackend>>,
     /// #246 follow-up: serializes the whole optimistic-concurrency
     /// section of `update_page` (head-version read → staleness check /
@@ -546,6 +550,7 @@ pub async fn serve(
         quota: config.quota.clone(),
         tenant_suspended: Arc::clone(&config.tenant_suspended),
         emit_edit_events: config.emit_edit_events,
+        run_progress_keep: config.run_progress_keep,
         tenant_store: config.tenant_store.clone(),
         crdt_backend: config.crdt_backend.clone(),
         update_page_gate: Arc::new(tokio::sync::Mutex::new(())),

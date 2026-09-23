@@ -21,6 +21,8 @@ use super::{JsonRpcError, parse_args};
 /// carries the final plan, so history past this is redundant for the
 /// consumer and unbounded for the store.
 pub(super) const KEEP_SNAPSHOTS: usize = 50;
+/// The default for `ESCUREL_RUN_PROGRESS_KEEP`.
+pub const DEFAULT_RUN_PROGRESS_KEEP: usize = KEEP_SNAPSHOTS;
 const MAX_STEPS: usize = 100;
 const MAX_STEP_CHARS: usize = 200;
 const MAX_NOTE_BYTES: usize = 2048;
@@ -46,6 +48,7 @@ pub(super) async fn tool_report_progress(
     indexer: &Indexer,
     caller: escurel_index::AclCaller<'_>,
     events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<escurel_index::EventInfo>>,
+    keep: usize,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ReportProgressArgs = parse_args(args, "report_progress")?;
@@ -140,7 +143,7 @@ pub(super) async fn tool_report_progress(
         .await
         .map_err(|e| JsonRpcError::internal(format!("report_progress: {e}")))?;
     indexer
-        .prune_run_progress(run_id, KEEP_SNAPSHOTS)
+        .prune_run_progress(run_id, keep)
         .await
         .map_err(|e| JsonRpcError::internal(format!("report_progress prune: {e}")))?;
     let steps = a.plan.len();
