@@ -2011,8 +2011,10 @@ async fn dispatch_loop(
         // - confirmed effect      → `processed` (+ produced instance/version);
         // - clean no-op (converged) → `processed` with no produced instance —
         //   a converged cascade hop ends tidily, NOT `failed` (#156/#157);
-        // - retries exhausted / bad output → `dead_letter` (#158), terminal;
-        // - otherwise (permanent)  → `failed` (retriable; operator may re-drive).
+        // - retries exhausted / bad output / permanent → `dead_letter`
+        //   (#158; permanent since the live smoke of P3: a retriable `failed`
+        //   was re-claimed by the poller every interval as a new run);
+        // - otherwise (no verdict — should not occur) → `failed` (retriable).
         // A plan-mode run's clean no-op is `planned`, not `processed`
         // (workbench backend P2-5b): nothing landed, on purpose.
         let planned = trigger.manual.as_ref().is_some_and(|m| m.mode == "plan");
@@ -2034,6 +2036,10 @@ async fn dispatch_loop(
             (None, false, Some(RunFailure::BadOutput)) => {
                 record_run_terminal(&metrics, &trigger.tenant, "dead_letter");
                 ledger.dead_letter(&run_id, DeadLetterReason::BadOutput)
+            }
+            (None, false, Some(RunFailure::Permanent)) => {
+                record_run_terminal(&metrics, &trigger.tenant, "dead_letter");
+                ledger.dead_letter(&run_id, DeadLetterReason::Permanent)
             }
             (None, false, Some(RunFailure::Cancelled)) => {
                 record_run_terminal(&metrics, &trigger.tenant, "cancelled");
@@ -2059,11 +2065,19 @@ async fn dispatch_loop(
                 (None, false, Some(RunFailure::RetriesExhausted)) => {
                     escurel_runner_core::RunFinish::DeadLetter {
                         reason: "retries_exhausted".to_owned(),
+                        error: attempt_sink.lock().ok().and_then(|s| s.last_error.clone()),
                     }
                 }
                 (None, false, Some(RunFailure::BadOutput)) => {
                     escurel_runner_core::RunFinish::DeadLetter {
                         reason: "bad_output".to_owned(),
+                        error: attempt_sink.lock().ok().and_then(|s| s.last_error.clone()),
+                    }
+                }
+                (None, false, Some(RunFailure::Permanent)) => {
+                    escurel_runner_core::RunFinish::DeadLetter {
+                        reason: "permanent".to_owned(),
+                        error: attempt_sink.lock().ok().and_then(|s| s.last_error.clone()),
                     }
                 }
                 (None, false, Some(RunFailure::Cancelled)) => {
@@ -2292,8 +2306,17 @@ async fn dispatch_loop(
                     }
                 }
                 // Not confirmed, not converged: a dead-letter (retries/bad
-                // output, already metered above) or a retriable `failed`.
+                // output/permanent, already metered above) or a retriable
+                // `failed` (no verdict at all).
                 match report.failure {
+                    Some(RunFailure::Permanent) => tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %trigger.event_id,
+                        run_id = %run_id,
+                        attempts = report.attempts,
+                        reason = "permanent",
+                        "dispatch: permanent failure; dead-lettered (event left in inbox; requeue to re-drive)"
+                    ),
                     Some(RunFailure::RetriesExhausted) => tracing::warn!(
                         target: "escurel_runner",
                         event_id = %trigger.event_id,
@@ -2328,7 +2351,7 @@ async fn dispatch_loop(
                             event_id = %trigger.event_id,
                             run_id = %run_id,
                             attempts = report.attempts,
-                            "dispatch: permanent failure; recorded failed (retriable re-drive)"
+                            "dispatch: no verdict; recorded failed (retriable re-drive)"
                         );
                     }
                 }

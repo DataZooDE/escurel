@@ -177,7 +177,7 @@ async fn confirm_holds_the_write_and_a_declared_harness_is_honoured_within_the_a
     // A skill-declared harness outside the allow-list fails the run closed.
     let e = capture(&gw, &admin, "invoice", "markdown/instances/invoice/i1.md").await;
     let run = wait_for_terminal(&listen, &e).await;
-    assert_eq!(run["status"], "failed", "{run}");
+    assert_eq!(run["status"], "dead_letter", "{run}");
     let finished = run_event(&gw, &admin, run["run_id"].as_str().unwrap(), "run-finished").await;
     let body: Value = serde_json::from_str(finished["body"].as_str().unwrap()).unwrap();
     assert!(

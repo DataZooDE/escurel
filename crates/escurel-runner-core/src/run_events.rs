@@ -60,8 +60,12 @@ pub enum RunFinish {
         reason: String,
         error: Option<String>,
     },
-    /// Terminal for the loop controls or the retry policy.
-    DeadLetter { reason: String },
+    /// Terminal for the loop controls, the retry policy or a permanent
+    /// failure; `error` is the last attempt's own message, when there is one.
+    DeadLetter {
+        reason: String,
+        error: Option<String>,
+    },
     /// Stopped on request while live (workbench backend P2-3a); `reason` is
     /// the requester's, when they gave one.
     Cancelled { reason: String },
@@ -213,7 +217,9 @@ impl RunEventCtx {
         let (status, produced, held, reason) = match finish {
             RunFinish::Processed { produced, held } => ("processed", produced.clone(), *held, None),
             RunFinish::Failed { reason, .. } => ("failed", None, false, Some(reason.clone())),
-            RunFinish::DeadLetter { reason } => ("dead_letter", None, false, Some(reason.clone())),
+            RunFinish::DeadLetter { reason, .. } => {
+                ("dead_letter", None, false, Some(reason.clone()))
+            }
             RunFinish::Cancelled { reason } => ("cancelled", None, false, Some(reason.clone())),
             RunFinish::Planned => ("planned", None, false, None),
         };
@@ -234,7 +240,9 @@ impl RunEventCtx {
         if let Some(r) = reason {
             body["reason"] = json!(r);
         }
-        if let RunFinish::Failed { error: Some(e), .. } = finish {
+        if let RunFinish::Failed { error: Some(e), .. }
+        | RunFinish::DeadLetter { error: Some(e), .. } = finish
+        {
             body["error"] = json!(e);
         }
         let mut extra = json!({ "attempt": attempts });

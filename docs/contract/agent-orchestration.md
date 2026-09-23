@@ -318,7 +318,7 @@ still owns every decision to *act*.
 - **Retries** with backoff up to an attempts cap; `assign_event` /
   `update_page` are idempotent enough to converge after a partial success.
 - **Dead-letter** for exhausted retries / depth / cycle / unparseable
-  output; the originating event is left in the inbox for operator re-drive;
+  output, or a permanent failure; the originating event is left in the inbox, and only an operator `requeue` / `retry` re-drives it;
   a DLQ list/requeue path on the runner.
 - **Quotas:** per-tenant runs/min + max concurrent runs; a global harness
   subprocess cap (subprocesses are heavy).

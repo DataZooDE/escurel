@@ -203,7 +203,7 @@ async fn a_throttled_retry_is_re_driven_by_the_poller_not_wedged() {
     let run = wait_for_status(
         &listen,
         &e1,
-        &["failed", "processed"],
+        &["failed", "dead_letter", "processed"],
         Duration::from_secs(5),
     )
     .await;

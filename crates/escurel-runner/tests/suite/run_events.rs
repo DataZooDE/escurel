@@ -219,15 +219,18 @@ async fn a_run_writes_started_attempt_and_finished_system_events_on_the_target_p
 }
 
 #[tokio::test]
-async fn a_failed_run_finishes_with_status_failed_and_the_attempts_error() {
+async fn a_permanent_failure_dead_letters_with_the_attempts_error_and_is_not_re_driven() {
     let gw = gateway().await;
     let event_id = capture(&gw).await;
     // The echo's injected failure is a non-zero exit: a PERMANENT failure,
-    // which fails fast (one attempt) and lands `failed` — retriable by an
-    // operator re-drive, so not a dead letter.
+    // which fails fast (one attempt). It dead-letters (owner decision after
+    // the live smoke of P3, 2026-09-23): a retriable `failed` row was
+    // re-claimed by the poller every interval as a NEW run until the
+    // per-root budget was spent. A dead letter is idempotency-terminal — the
+    // event waits in the DLQ for a human `requeue` / `retry`.
     let (_runner, listen) = spawn_runner(&gw, Role::Admin, &[("ESCUREL_ECHO_FAIL_SKILL", SKILL)]);
     let (run_id, status) = await_terminal(&listen, &event_id).await;
-    assert_eq!(status, "failed");
+    assert_eq!(status, "dead_letter");
 
     let events = run_events(&gw, &run_id).await;
     let titles: Vec<&str> = events
@@ -249,10 +252,40 @@ async fn a_failed_run_finishes_with_status_failed_and_the_attempts_error() {
         "{attempt}"
     );
     let finished = body(&events[2]);
-    assert_eq!(finished["status"], "failed", "{finished}");
+    assert_eq!(finished["status"], "dead_letter", "{finished}");
     assert_eq!(finished["reason"], "permanent");
     assert_eq!(finished["attempts"], 1);
+    assert!(
+        finished["error"]
+            .as_str()
+            .is_some_and(|s| s.contains("injected")),
+        "the attempt's own message rides on the dead letter too: {finished}"
+    );
     assert!(finished["produced_instance"].is_null());
+
+    // Not re-driven: several poll intervals later the ledger still holds
+    // exactly this one run, and the DLQ names it with its reason.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let ledger: Value = reqwest::get(format!("http://{listen}/debug/ledger"))
+        .await
+        .expect("ledger")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(ledger["total"], 1, "re-driven: {ledger}");
+    assert_eq!(ledger["dead_letter"], 1, "{ledger}");
+    let dlq: Value = reqwest::get(format!("http://{listen}/dlq"))
+        .await
+        .expect("dlq")
+        .json()
+        .await
+        .expect("json");
+    let entry = dlq["dead_letters"]
+        .as_array()
+        .and_then(|a| a.iter().find(|d| d["run_id"] == run_id))
+        .cloned()
+        .unwrap_or_else(|| panic!("{dlq}"));
+    assert_eq!(entry["reason"], "permanent", "{entry}");
 }
 
 #[tokio::test]

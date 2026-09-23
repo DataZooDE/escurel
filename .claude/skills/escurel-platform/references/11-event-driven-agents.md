@@ -211,7 +211,7 @@ run's target page (`processed`, never inbox work) and readable with
 |---|---|---|
 | `run-started` | the ledger admitted the run and a harness is about to run it | `{}` |
 | `run-attempt` | each try ends | `{attempt, started_at, ended_at, outcome: ok \| converged \| failed \| timeout, error?}` |
-| `run-finished` | the ledger reached its terminal | `{status: processed \| failed \| dead_letter, reason?, attempts, held, summary, tool_calls, produced_instance, produced_version, plan, usage}` — `plan` is the newest `run-progress` snapshot the agent reported; `usage` is `{input_tokens, output_tokens, cost_usd, model}` summed over the attempts, `null` when no attempt reported any (see *What a run cost*) |
+| `run-finished` | the ledger reached its terminal | `{status: processed \| failed \| dead_letter \| cancelled \| planned, reason?, error?, attempts, held, summary, tool_calls, produced_instance, produced_version, plan, usage}` — a run that reached a verdict never ends `failed`: a permanent failure (a non-zero harness exit, a refused write, a harness outside the allow-list) dead-letters with `reason: permanent` and the attempt's `error`, as do `retries_exhausted` and `bad_output`, so one refused event costs one run and waits in the DLQ for a `requeue` / `retry`; `plan` is the newest `run-progress` snapshot the agent reported; `usage` is `{input_tokens, output_tokens, cost_usd, model}` summed over the attempts, `null` when no attempt reported any (see *What a run cost*) |
 
 `provenance.runner` on each carries `run_id`, `root_event_id`, `event_id`
 (the trigger), `parent_run_id` (a cascade hop's emitting run), `depth`,
@@ -347,8 +347,9 @@ any page — with a `provenance.manual` block:
 
 - `harness?` — which adapter to run on. The runner honours it only within
   `ESCUREL_RUNNER_HARNESS_ALLOW`; a name outside the list fails the run
-  closed (`failed`, retriable) with `run-finished.error` naming the
-  harness and the env var — it never runs the default in its place.
+  closed (`dead_letter`, reason `permanent`) with `run-finished.error`
+  naming the harness and the env var — it never runs the default in its
+  place.
 - `mode?` — `run` (the default) or `plan`. Anything else is refused at
   capture (`-32602`). **Plan mode** runs the harness on a no-write surface
   (reads + `report_progress`, nothing else) and tells it to report the
@@ -357,7 +358,7 @@ any page — with a `provenance.manual` block:
   `run-finished { status: "planned", plan }` carries the plan (`null` on a
   static-bearer runner, whose token cannot report). claude plans natively
   (`--permission-mode plan`); gemini and echo work on the narrowed
-  surface; codex, agy, muse and delegate refuse and the run ends `failed`
+  surface; codex, agy, muse and delegate refuse and the run dead-letters
   with `error` saying so.
 - `approved_plan_run_id?` — the plan run a human approved: its plan is
   injected at the top of the new run's input as `## Approved plan (run …)`
