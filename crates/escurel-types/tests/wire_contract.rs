@@ -623,6 +623,7 @@ fn roundtrip_agent() {
         shadow: Some(json!({ "base_page_id": "markdown/base/p/skills/s.md" })),
         version: Some("v7".into()),
         content_sha256: Some("ab".repeat(32)),
+        content: None,
         backend_projection: Some(json!({ "source": "crm_rest", "fields": { "tier": "gold" } })),
     });
     rt(ResolveResponse {
