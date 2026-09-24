@@ -100,6 +100,10 @@ pub struct ExpandRequest {
     /// Return ALL chunks of a document instance (detail/heatmap view) instead
     /// of the bounded lead. Default `false` (grounding/preview).
     pub full: bool,
+    /// Also return the STORED markdown verbatim as `content` (plain reads
+    /// only) — for an editor that must show and re-save the author's own
+    /// text. Default `false`.
+    pub raw: bool,
 }
 
 /// One body block. MCP wire keys: `anchor`, `content`.
@@ -144,6 +148,11 @@ pub struct ExpandResponse {
     /// on old servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_sha256: Option<String>,
+    /// The STORED markdown verbatim — the bytes behind `content_sha256` —
+    /// only when the request asked `raw: true` on a plain read (VS Code
+    /// workbench PR-0). Absent otherwise and on old servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
     /// Backend overlay projection: for a `sql_view` instance the bounded
     /// rows + projected source columns (REQ-SQL-06/REQ-OV-02); for a
     /// remote (openapi/mcp) instance the LIVE upstream projection

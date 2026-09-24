@@ -92,7 +92,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
                     "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." },
                     "scenario": { "type": "string", "description": "What-if overlay to read against; absent = base only." },
-                    "full": { "type": "boolean", "description": "Return ALL chunks of a document instance instead of the bounded lead (REQ-DOC-05)." }
+                    "full": { "type": "boolean", "description": "Return ALL chunks of a document instance instead of the bounded lead (REQ-DOC-05)." },
+                    "raw": { "type": "boolean", "description": "Also return the STORED markdown verbatim as `content` — the bytes behind `content_sha256` — for an editor that must show and re-save the author's own text. Plain reads only (never under as_of/scenario)." }
                 }
             }),
         ),
@@ -1867,7 +1868,8 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "body": { "type": "string" },
             "blocks": { "type": "array" },
             "wikilinks_out": { "type": "array" },
-            "content_sha256": { "type": "string", "description": "Hash of the STORED markdown bytes — pass back as update_page's base_sha256 for an atomic approve. Plain reads only (absent under as_of/scenario)." }
+            "content_sha256": { "type": "string", "description": "Hash of the STORED markdown bytes — pass back as update_page's base_sha256 for an atomic approve. Plain reads only (absent under as_of/scenario)." },
+            "content": { "type": "string", "description": "The STORED markdown verbatim, only with `raw: true` on a plain read." }
         })),
         _ => return None,
     })

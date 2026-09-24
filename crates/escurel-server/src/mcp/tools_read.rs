@@ -409,6 +409,12 @@ pub(super) struct ExpandArgs {
     /// the whole text), not the default grounding/preview path.
     #[serde(default)]
     full: bool,
+    /// Also return the STORED markdown verbatim as `content` (VS Code
+    /// workbench PR-0): the bytes whose hash is `content_sha256`, so an
+    /// editor can show and re-save the author's own text — formatting and
+    /// comments intact — under the same CAS. Plain reads only.
+    #[serde(default)]
+    raw: bool,
 }
 
 pub(super) async fn tool_expand(
@@ -479,6 +485,9 @@ pub(super) async fn tool_expand(
             {
                 use sha2::{Digest, Sha256};
                 page["content_sha256"] = json!(format!("{:x}", Sha256::digest(stored.as_bytes())));
+                if a.raw {
+                    page["content"] = json!(stored);
+                }
             }
             // #246: surface the page's current monotonic version so a client
             // can pass it back as `base_version` on the next `update_page`

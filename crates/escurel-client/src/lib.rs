@@ -235,6 +235,9 @@ impl Client {
         if req.full {
             args["full"] = json!(true);
         }
+        if req.raw {
+            args["raw"] = json!(true);
+        }
         self.transport.call_typed("expand", args).await
     }
 
