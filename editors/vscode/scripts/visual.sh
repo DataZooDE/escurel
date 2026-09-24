@@ -8,4 +8,5 @@ cd "$(dirname "$0")/.."
 VERSION="$(node -e "console.log(require('@playwright/test/package.json').version)")"
 IMAGE="mcr.microsoft.com/playwright:v${VERSION}-jammy"
 node esbuild.mjs --production >/dev/null
-exec docker run --rm --init -v "$PWD:/work" -w /work -e CI="${CI:-}" --ipc=host "$IMAGE" npx playwright test "$@"
+# As the calling user, so the files it writes (baselines, reports) stay ours.
+exec docker run --rm --init --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/work" -w /work -e CI="${CI:-}" --ipc=host "$IMAGE" npx playwright test "$@"
