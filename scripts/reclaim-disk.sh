@@ -137,6 +137,13 @@ done <<<"$WORKTREES"
 
 echo
 echo "total target/ across worktrees : $(human "$total_target_mb")"
+# editors/vscode/node_modules is the same kind of regenerable cache, once per
+# worktree; reported so the figure above stops understating the disk.
+node_mb=0
+while IFS=$'\t' read -r wt _branch; do
+	[ -n "$wt" ] && [ -d "$wt/editors/vscode/node_modules" ] && node_mb=$((node_mb + $(size_mb "$wt/editors/vscode/node_modules")))
+done <<<"$WORKTREES"
+[ "$node_mb" -gt 0 ] && echo "editors/vscode/node_modules       : $(human "$node_mb")  (rm -rf + npm ci to regenerate)"
 echo "cold (>=${OLDER_THAN}d, reclaimable) : $(human "$reclaimable_mb")  in ${#COLD_TARGETS[@]} dir(s)"
 echo "merged worktrees removable     : ${#MERGED_WTS[@]}"
 

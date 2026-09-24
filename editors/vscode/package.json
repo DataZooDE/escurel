@@ -1,0 +1,114 @@
+{
+  "name": "escurel",
+  "displayName": "Escurel Workbench",
+  "description": "Skills, instances, events and runs of an escurel gateway, inside VS Code.",
+  "version": "0.1.0",
+  "publisher": "datazoo",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DataZooDE/escurel",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.93.0",
+    "node": ">=22"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onFileSystem:escurel",
+    "onAuthenticationRequest:escurel"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Escurel",
+      "properties": {
+        "escurel.gatewayUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8080",
+          "description": "The one escurel gateway this window talks to (its /mcp and /ws live under this origin)."
+        },
+        "escurel.auth.issuer": {
+          "type": "string",
+          "default": "",
+          "description": "OIDC issuer URL for signing in (the gateway trusts it). Leave empty for a gateway that runs without a verifier (dev / on-host): no token is sent."
+        },
+        "escurel.auth.clientId": {
+          "type": "string",
+          "default": "",
+          "description": "Public OIDC client id for the PKCE / device-code flow."
+        },
+        "escurel.auth.scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "openid",
+            "profile",
+            "offline_access"
+          ],
+          "description": "Scopes requested at sign-in."
+        },
+        "escurel.shellHarness": {
+          "type": "string",
+          "default": "claude",
+          "description": "Command started in the integrated terminal by \"Start in terminal\"."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "escurel.refresh",
+        "title": "Refresh",
+        "category": "Escurel",
+        "icon": "$(refresh)"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.webview.json",
+    "lint": "eslint . && node scripts/lint-hex.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test:unit": "vitest run",
+    "test:component": "web-test-runner",
+    "test:visual": "node esbuild.mjs --production && playwright test",
+    "test:integration": "node esbuild.mjs --production && node ./dist/test/integration/runTests.js",
+    "test": "npm run typecheck && npm run lint && npm run test:unit && npm run test:component",
+    "package": "npm run build && vsce package --no-dependencies -o escurel-$npm_package_version.vsix"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "lit": "^3.2.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@open-wc/testing": "^4.0.0",
+    "@playwright/test": "^1.48.0",
+    "@types/mocha": "^10.0.9",
+    "@types/node": "^22.7.0",
+    "@types/vscode": "^1.93.0",
+    "@types/ws": "^8.5.12",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.2.0",
+    "@web/dev-server-esbuild": "^1.0.3",
+    "@web/test-runner": "^0.19.0",
+    "@web/test-runner-playwright": "^0.11.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.12.0",
+    "eslint-plugin-lit": "^2.3.1",
+    "globals": "^16.5.0",
+    "mocha": "^10.7.3",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.8.0",
+    "vitest": "^2.1.0"
+  }
+}

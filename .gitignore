@@ -57,3 +57,12 @@ Thumbs.db
 
 # agent-crew run artifacts (reports, patches, scoreboard)
 .crew/
+
+# editors/vscode (Node): regenerable cache + build output + packaged VSIX
+/editors/vscode/node_modules/
+/editors/vscode/dist/
+/editors/vscode/*.vsix
+/editors/vscode/.vscode-test/
+/editors/vscode/test-results/
+/editors/vscode/playwright-report/
+/editors/vscode/coverage/
