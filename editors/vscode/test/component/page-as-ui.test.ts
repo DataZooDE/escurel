@@ -92,7 +92,7 @@ describe('<escurel-page-as-ui>', () => {
     (qa(el, '.toggle button')[1] as HTMLButtonElement).click();
     (q(el, '.actions .skill-button .primary') as HTMLButtonElement).click();
     expect(sent).to.deep.equal([
-      { type: 'open-page', pageId: 'markdown/instances/customer/hoffmann.md' },
+      { type: 'open-wikilink', wikilink: '[[customer::hoffmann]]' },
       { type: 'view-skill', skill: 'customer-order' },
       { type: 'show-raw' },
       { type: 'start-skill', skill: 'supplier-risk', mode: 'background' },

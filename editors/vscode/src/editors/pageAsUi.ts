@@ -86,6 +86,8 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
         return void load();
       case 'open-page':
         return void vscode.commands.executeCommand('escurel.openPage', m.pageId);
+      case 'open-wikilink':
+        return void vscode.commands.executeCommand('escurel.resolve', m.wikilink);
       case 'view-skill':
         return void vscode.commands.executeCommand('escurel.viewSkill', m.skill);
       case 'show-raw':

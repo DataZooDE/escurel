@@ -31,11 +31,7 @@ export const orderPage: PageModel = {
       required: true,
       value: '[[customer::hoffmann]]',
       display: 'hoffmann',
-      link: {
-        skill: 'customer',
-        id: 'hoffmann',
-        pageId: 'markdown/instances/customer/hoffmann.md',
-      },
+      link: { skill: 'customer', id: 'hoffmann', wikilink: '[[customer::hoffmann]]' },
     },
     {
       name: 'value_eur',

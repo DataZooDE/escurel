@@ -41,7 +41,13 @@ const webview = {
 
 /** @type {import('esbuild').BuildOptions} */
 const integration = {
-  entryPoints: ['test/integration/runTests.ts', 'test/integration/suite/index.ts'],
+  entryPoints: [
+    'test/integration/runTests.ts',
+    'test/integration/suite/index.ts',
+    ...readdirSync('test/integration/suite')
+      .filter((f) => f.endsWith('.test.ts'))
+      .map((f) => `test/integration/suite/${f}`),
+  ],
   bundle: true,
   platform: 'node',
   format: 'cjs',

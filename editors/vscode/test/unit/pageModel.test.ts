@@ -74,7 +74,7 @@ describe('page model', () => {
     expect(link.link).toEqual({
       skill: 'customer',
       id: 'hoffmann',
-      pageId: 'markdown/instances/customer/hoffmann.md',
+      wikilink: '[[customer::hoffmann]]',
     });
     expect(m.fields.find((f) => f.name === 'value_eur')!.display).toBe('184,200.00');
     expect(m.fields.find((f) => f.name === 'notes')!.display).toBe('');

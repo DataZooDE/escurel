@@ -13,7 +13,8 @@ export interface FieldView {
   /** The value as the form shows it. */
   display: string;
   values?: string[];
-  link?: { skill: string; id: string; pageId: string };
+  /** A `[[skill::id]]` value: opened through `resolve`, never a guessed page id. */
+  link?: { skill: string; id: string; wikilink: string };
 }
 
 export interface ActionView {
@@ -51,6 +52,7 @@ export type StartMode = 'background' | 'plan' | 'terminal';
 export type WebviewToHost =
   | { type: 'ready' }
   | { type: 'open-page'; pageId: string }
+  | { type: 'open-wikilink'; wikilink: string }
   | { type: 'view-skill'; skill: string }
   | { type: 'show-raw' }
   | { type: 'refresh' }

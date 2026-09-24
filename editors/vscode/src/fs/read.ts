@@ -4,7 +4,13 @@ import type { EscurelClient } from '../client';
 export type PathKind =
   'root' | 'skills-root' | 'instances-root' | 'instances-skill' | 'skill' | 'instance';
 
-/** `escurel:/skills/<id>.md` ↔ `markdown/skills/<id>.md`; `escurel:/instances/<skill>/<id>.md` ↔ `markdown/instances/<skill>/<id>.md`. */
+/**
+ * `escurel:` paths mirror page ids minus the `markdown/` prefix, whatever the
+ * corpus layout: instances are `markdown/instances/<skill>__<id>.md` in the
+ * shipped corpora and `markdown/instances/<skill>/<id>.md` in some fixtures;
+ * both read as instances. `/instances/<skill>/` (no `.md`) is the per-skill
+ * directory listing.
+ */
 export function pathForPage(pageId: string): string {
   return '/' + pageId.replace(/^markdown\//, '');
 }
@@ -14,22 +20,19 @@ export function pageIdFromPath(
 ): { pageId?: string; kind: PathKind; skill?: string } | undefined {
   const parts = path.split('/').filter(Boolean);
   if (parts.length === 0) return { kind: 'root' };
+  const isPage = parts.at(-1)!.endsWith('.md');
   if (parts[0] === 'skills') {
-    if (parts.length === 1) return { pageId: undefined, kind: 'skills-root' };
-    if (parts.length === 2 && parts[1]!.endsWith('.md'))
-      return { pageId: `markdown/skills/${parts[1]}`, kind: 'skill' };
-    return undefined;
+    if (parts.length === 1) return { kind: 'skills-root' };
+    return isPage ? { pageId: `markdown/${parts.join('/')}`, kind: 'skill' } : undefined;
   }
   if (parts[0] === 'instances') {
-    if (parts.length === 1) return { pageId: undefined, kind: 'instances-root' };
-    if (parts.length === 2) return { pageId: undefined, kind: 'instances-skill', skill: parts[1] };
-    if (parts.length === 3 && parts[2]!.endsWith('.md'))
-      return {
-        pageId: `markdown/instances/${parts[1]}/${parts[2]}`,
-        kind: 'instance',
-        skill: parts[1],
-      };
-    return undefined;
+    if (parts.length === 1) return { kind: 'instances-root' };
+    if (!isPage)
+      return parts.length === 2 ? { kind: 'instances-skill', skill: parts[1] } : undefined;
+    const file = parts.at(-1)!.replace(/\.md$/, '');
+    const skill =
+      parts.length >= 3 ? parts[1] : file.includes('__') ? file.split('__')[0] : undefined;
+    return { pageId: `markdown/${parts.join('/')}`, kind: 'instance', skill };
   }
   return undefined;
 }

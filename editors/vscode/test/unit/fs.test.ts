@@ -16,20 +16,32 @@ afterAll(async () => {
 });
 
 describe('escurel: paths', () => {
-  it('maps skill and instance page ids to escurel: paths and back', () => {
+  it('maps skill and instance page ids to escurel: paths and back, flat and nested layouts alike', () => {
     expect(pathForPage('markdown/skills/customer.md')).toBe('/skills/customer.md');
-    expect(pathForPage('markdown/instances/customer/acme.md')).toBe('/instances/customer/acme.md');
+    expect(pathForPage('markdown/instances/customer__acme.md')).toBe(
+      '/instances/customer__acme.md',
+    );
     expect(pageIdFromPath('/skills/customer.md')).toEqual({
       pageId: 'markdown/skills/customer.md',
       kind: 'skill',
     });
-    expect(pageIdFromPath('/instances/customer/acme.md')).toMatchObject({
+    expect(pageIdFromPath('/instances/customer__acme.md')).toEqual({
+      pageId: 'markdown/instances/customer__acme.md',
+      kind: 'instance',
+      skill: 'customer',
+    });
+    expect(pageIdFromPath('/instances/customer/acme.md')).toEqual({
       pageId: 'markdown/instances/customer/acme.md',
       kind: 'instance',
       skill: 'customer',
     });
-    expect(pageIdFromPath('/')).toMatchObject({ kind: 'root' });
-    expect(pageIdFromPath('/skills')).toMatchObject({ kind: 'skills-root' });
+    expect(pageIdFromPath('/instances/customer')).toEqual({
+      kind: 'instances-skill',
+      skill: 'customer',
+    });
+    expect(pageIdFromPath('/')).toEqual({ kind: 'root' });
+    expect(pageIdFromPath('/skills')).toEqual({ kind: 'skills-root' });
+    expect(pageIdFromPath('/nope/x.md')).toBeUndefined();
   });
 });
 
@@ -46,7 +58,7 @@ describe('readPageMarkdown', () => {
   });
 
   it('reassembles frontmatter + body, flagged degraded, when an older gateway sends no content', async () => {
-    const r = await readPageMarkdown(client, 'markdown/instances/customer/acme.md');
+    const r = await readPageMarkdown(client, 'markdown/instances/customer__acme.md');
     expect(r?.degraded).toBe(true);
     expect(r?.text.startsWith('---\n')).toBe(true);
     expect(r?.text).toContain('\n---\n');

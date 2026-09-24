@@ -9,7 +9,13 @@ import { KnowledgeTree } from './views/knowledge';
 import { PageAsUiEditor } from './editors/pageAsUi';
 import { openPage, resolveCommand, searchCommand } from './commands/search';
 
-export function activate(context: vscode.ExtensionContext): void {
+/** What `activate` returns — the integration suite drives the extension through it. */
+export interface EscurelApi {
+  services: Services;
+  knowledge: KnowledgeTree;
+}
+
+export function activate(context: vscode.ExtensionContext): EscurelApi {
   const services = new Services(context);
   context.subscriptions.push(services);
   EscurelFileSystem.register(context, () => services.client);
@@ -77,6 +83,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
   log().info('escurel: activated');
+  return { services, knowledge };
 }
 
 export function deactivate(): void {}
