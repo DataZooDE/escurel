@@ -48,7 +48,7 @@ jobs:
 
       - run: npm ci
 
-      - name: playwright browsers
+      - name: playwright browsers (component tests)
         run: npx playwright install --with-deps chromium
 
       - run: npm run typecheck
@@ -56,6 +56,7 @@ jobs:
       - run: npm run test:unit
       - run: npm run test:component
       - run: npm run build
+      # Inside the pinned Playwright image, like the committed baselines.
       - run: npm run test:visual
 
       - name: package VSIX
