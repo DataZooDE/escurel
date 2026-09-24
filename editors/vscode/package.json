@@ -209,8 +209,27 @@
           "when": "view == escurel.knowledge && viewItem =~ /^(instance|skill)/",
           "group": "2_run@1"
         }
+      ],
+      "editor/title": [
+        {
+          "command": "escurel.showRaw",
+          "when": "resourceScheme == escurel && activeCustomEditorId == escurel.pageAsUi",
+          "group": "navigation"
+        }
       ]
-    }
+    },
+    "customEditors": [
+      {
+        "viewType": "escurel.pageAsUi",
+        "displayName": "Escurel Page",
+        "selector": [
+          {
+            "filenamePattern": "escurel:/instances/**/*.md"
+          }
+        ],
+        "priority": "default"
+      }
+    ]
   },
   "scripts": {
     "build": "node esbuild.mjs --production",

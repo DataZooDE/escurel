@@ -51,9 +51,22 @@ const integration = {
   logLevel: 'info',
 };
 
+/** @type {import('esbuild').BuildOptions} */
+const harness = {
+  entryPoints: { harness: 'test/visual/harness/main.ts' },
+  bundle: true,
+  platform: 'browser',
+  format: 'esm',
+  target: 'es2022',
+  outdir: 'dist/test/visual',
+  tsconfig: 'tsconfig.webview.json',
+  logLevel: 'info',
+};
+
 const configs = [
   host,
   ...(webviews.length ? [webview] : []),
+  harness,
   ...(existsSync('test/integration/runTests.ts') ? [integration] : []),
 ];
 

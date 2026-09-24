@@ -3,8 +3,14 @@
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["mocha"],
-    "experimentalDecorators": false,
+    "experimentalDecorators": true,
     "useDefineForClassFields": false
   },
-  "include": ["webview/**/*.ts", "src/shared/**/*.ts", "test/component/**/*.ts"]
+  "include": [
+    "webview/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/client/types.ts",
+    "test/component/**/*.ts",
+    "test/visual/harness/**/*.ts"
+  ]
 }

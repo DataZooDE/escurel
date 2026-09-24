@@ -34,6 +34,11 @@ export default tseslint.config(
     languageOptions: { globals: { ...globals.browser, ...globals.mocha } },
   },
   {
+    // chai's `expect(x).to.exist` is an expression by design.
+    files: ['test/component/**/*.ts'],
+    rules: { '@typescript-eslint/no-unused-expressions': 'off' },
+  },
+  {
     files: ['webview/**/*.ts'],
     plugins: { lit, escurel: { rules: { 'no-hex-colour': noHexColour } } },
     rules: { ...lit.configs.recommended.rules, 'escurel/no-hex-colour': 'error' },

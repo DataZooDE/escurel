@@ -6,6 +6,7 @@ import { EscurelFileSystem } from './fs/provider';
 import { registerSkillDiagnostics } from './skills/diagnostics';
 import { WikilinkProvider } from './skills/links';
 import { KnowledgeTree } from './views/knowledge';
+import { PageAsUiEditor } from './editors/pageAsUi';
 import { openPage, resolveCommand, searchCommand } from './commands/search';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -16,6 +17,7 @@ export function activate(context: vscode.ExtensionContext): void {
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);
   context.subscriptions.push(services.onDidChange(() => knowledge.refresh()));
+  PageAsUiEditor.register(context, () => services.client, services.onDidChange);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('escurel.signIn', async () => {

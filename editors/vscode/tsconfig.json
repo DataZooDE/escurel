@@ -1,13 +1,17 @@
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": { "lib": ["ES2022"], "types": ["node", "vscode", "mocha"] },
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["node", "vscode", "mocha"]
+  },
   "include": [
     "src/**/*.ts",
     "test/unit/**/*.ts",
     "test/integration/**/*.ts",
     "esbuild.mjs",
     "vitest.config.ts",
-    "playwright.config.ts"
+    "playwright.config.ts",
+    "src/shared/**/*.ts"
   ],
-  "exclude": ["src/shared/**"]
+  "exclude": []
 }
