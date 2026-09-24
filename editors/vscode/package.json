@@ -62,10 +62,26 @@
     },
     "commands": [
       {
+        "command": "escurel.signIn",
+        "title": "Sign In",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.signOut",
+        "title": "Sign Out",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.refresh",
         "title": "Refresh",
         "category": "Escurel",
         "icon": "$(refresh)"
+      }
+    ],
+    "authentication": [
+      {
+        "id": "escurel",
+        "label": "Escurel"
       }
     ]
   },
