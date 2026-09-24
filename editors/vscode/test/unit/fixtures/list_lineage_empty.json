@@ -1,0 +1,46 @@
+{
+  "tool": "list_lineage",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 19,
+    "method": "tools/call",
+    "params": {
+      "name": "list_lineage",
+      "arguments": {
+        "root_event_id": "01M38SJJEMTNW3XTYQ6YJDPJ36"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 19,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"root_event_id\":\"01M38SJJEMTNW3XTYQ6YJDPJ36\",\"nodes\":[{\"state\":\"inbox\",\"label_skill\":\"customer\",\"title\":\"hello\",\"at\":\"2026-09-24T04:07:59Z\",\"kind\":\"user\",\"instance_page_id\":\"markdown/instances/customer__alpina-biotech.md\",\"parent_event_id\":null,\"depth\":null,\"id\":\"01M38SJJEMTNW3XTYQ6YJDPJ36\",\"type\":\"event\",\"parent\":null}]}"
+        }
+      ],
+      "structuredContent": {
+        "root_event_id": "01M38SJJEMTNW3XTYQ6YJDPJ36",
+        "nodes": [
+          {
+            "state": "inbox",
+            "label_skill": "customer",
+            "title": "hello",
+            "at": "2026-09-24T04:07:59Z",
+            "kind": "user",
+            "instance_page_id": "markdown/instances/customer__alpina-biotech.md",
+            "parent_event_id": null,
+            "depth": null,
+            "id": "01M38SJJEMTNW3XTYQ6YJDPJ36",
+            "type": "event",
+            "parent": null
+          }
+        ]
+      },
+      "isError": false
+    }
+  }
+}

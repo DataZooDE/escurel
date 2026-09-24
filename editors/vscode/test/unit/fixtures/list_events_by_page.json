@@ -1,0 +1,33 @@
+{
+  "tool": "list_events",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 17,
+    "method": "tools/call",
+    "params": {
+      "name": "list_events",
+      "arguments": {
+        "instance_page_id": "markdown/instances/customer__alpina-biotech.md",
+        "newest_first": true,
+        "limit": 10
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 17,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"events\":[]}"
+        }
+      ],
+      "structuredContent": {
+        "events": []
+      },
+      "isError": false
+    }
+  }
+}

@@ -1,0 +1,447 @@
+{
+  "tool": "list_skills",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "list_skills",
+      "arguments": {}
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"skills\":[{\"id\":\"attachment\",\"description\":\"An uploaded document (text/markdown) ingested through the document backend — extracted, chunked, and embedded into one page-with-blocks. Read-only; the original blob is canonical.\",\"required_frontmatter\":[],\"optional_frontmatter\":[\"title\",\"source\",\"about\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"document\"},\"capabilities\":{\"writable\":false,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"change_order\",\"description\":\"A mid-delivery scope change against a project. Re-prices and re-baselines without spawning a new opportunity.\",\"required_frontmatter\":[\"at\",\"status\",\"project\"],\"optional_frontmatter\":[\"delta_value_eur\",\"split\",\"scope\",\"accepted_at\",\"prev_event\"],\"is_event_typed\":true,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"contact\",\"description\":\"An individual person at a customer. The unit of human relationship.\",\"required_frontmatter\":[\"name\",\"customer\"],\"optional_frontmatter\":[\"role\",\"email\",\"phone\",\"linkedin\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"customer\",\"description\":\"A buying organisation. Aggregates contacts, engagements, opportunities and projects under one entity.\",\"required_frontmatter\":[\"name\",\"country\"],\"optional_frontmatter\":[\"industry\",\"employee_band\",\"primary_owner\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"doc\",\"description\":\"A document artifact (drive/sharepoint) captured into the knowledge base, often an agent-generated analysis.\",\"required_frontmatter\":[\"at\",\"source\",\"channel\"],\"optional_frontmatter\":[\"title\",\"author\",\"provenance\",\"extracted_by\",\"promoted_at\",\"derived_from\",\"about\"],\"is_event_typed\":true,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"email\",\"description\":\"An inbound or outbound email artifact captured into the knowledge base from a source channel.\",\"required_frontmatter\":[\"at\",\"source\",\"channel\"],\"optional_frontmatter\":[\"from\",\"to\",\"subject\",\"direction\",\"provenance\",\"extracted_by\",\"promoted_at\",\"derived_from\",\"about\"],\"is_event_typed\":true,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"engagement\",\"description\":\"A first-touch interaction with a contact, or the continuous lifecycle spine for an account.\",\"required_frontmatter\":[\"at\",\"with\",\"channel\"],\"optional_frontmatter\":[\"outcome\",\"follow_up\",\"notes\",\"spine\",\"template\",\"phase\",\"commercial_model\",\"contract_value\",\"running_margin\",\"risk_surface\",\"sentiment_trend\",\"primary_sponsor\",\"champion\",\"orgunit\",\"customer\"],\"is_event_typed\":true,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"erp_order\",\"description\":\"ERP sales orders, mirrored read-only through a sql_view backend over the shipped sources/erp JSON extract. Instances are materialised views — never authored as markdown.\",\"required_frontmatter\":[],\"optional_frontmatter\":[\"customer\",\"status\",\"amount_eur\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"sql_view\"},\"capabilities\":{\"writable\":false,\"granularity\":\"page\",\"search\":\"late_materialized\",\"supports_crdt\":false},\"layer\":\"overlay\"},{\"id\":\"escurel\",\"description\":\"How this knowledge base is organised and how to navigate it. Read this first when entering a new tenant.\",\"required_frontmatter\":[],\"optional_frontmatter\":[],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"lead\",\"description\":\"A qualified follow-up under BANT. Lives between engagement and opportunity.\",\"required_frontmatter\":[\"opened\",\"status\",\"contact\"],\"optional_frontmatter\":[\"budget\",\"authority\",\"need\",\"timing\",\"expected_value_eur\",\"prev_event\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"meeting\",\"description\":\"A meeting or call recording artifact with a captured transcript, from a calendar/conferencing source.\",\"required_frontmatter\":[\"at\",\"source\",\"channel\"],\"optional_frontmatter\":[\"participants\",\"duration_min\",\"subject\",\"provenance\",\"extracted_by\",\"promoted_at\",\"derived_from\",\"about\"],\"is_event_typed\":true,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"opportunity\",\"description\":\"A named, valued sales motion. The MEDDPICC stage of the funnel.\",\"required_frontmatter\":[\"opened\",\"status\",\"customer\",\"value_eur\"],\"optional_frontmatter\":[\"contact\",\"close_date\",\"prev_review\",\"competition\",\"economic_buyer\",\"decision_process\",\"decision_criteria\",\"identified_pain\",\"metrics\",\"champion\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"orgunit\",\"description\":\"A buying centre or division inside a customer — the organisational unit an engagement actually lands in, below the legal account.\",\"required_frontmatter\":[\"name\",\"customer\"],\"optional_frontmatter\":[\"head\",\"function\",\"engagement\",\"headcount\",\"notes\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"playbook\",\"description\":\"Demo-specialised engagement playbook (shadows crm-essentials v1).\",\"required_frontmatter\":[\"name\"],\"optional_frontmatter\":[\"stage_gates\",\"review_cycle_days\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\",\"shadows\":\"base@crm-essentials@v1\"},{\"id\":\"project\",\"description\":\"A delivery engagement spawned at commercial close. Inherits opportunity context as live obligations.\",\"required_frontmatter\":[\"opened\",\"status\",\"customer\",\"opportunity\"],\"optional_frontmatter\":[\"phase\",\"lead_pm\",\"scope_clarity\",\"margin_health\",\"schedule_confidence\",\"acceptance_state\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"renewal\",\"description\":\"A renewal cycle on a delivered engagement. Qualifies with priors instead of starting cold.\",\"required_frontmatter\":[\"at\",\"status\",\"project\"],\"optional_frontmatter\":[\"propensity\",\"expected_value_eur\",\"prev_event\",\"analog\"],\"is_event_typed\":true,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"},{\"id\":\"stock_quote\",\"description\":\"Live market quote for a listed customer/peer, proxied read-only through an openapi backend against the Yahoo Finance chart API. The instance id is the ticker symbol.\",\"required_frontmatter\":[],\"optional_frontmatter\":[\"symbol\",\"price\",\"currency\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"openapi\"},\"capabilities\":{\"writable\":false,\"granularity\":\"page\",\"search\":\"none\",\"supports_crdt\":false},\"layer\":\"overlay\"},{\"id\":\"workstream\",\"description\":\"A parallel stream of delivery work inside a project or engagement — the unit a delivery team actually plans and tracks against.\",\"required_frontmatter\":[\"name\",\"status\",\"project\"],\"optional_frontmatter\":[\"owner\",\"engagement\",\"customer\",\"health\",\"notes\"],\"is_event_typed\":false,\"visibility\":\"public\",\"owner_field\":null,\"backend\":{\"kind\":\"markdown\"},\"capabilities\":{\"writable\":true,\"granularity\":\"block\",\"search\":\"hybrid\",\"supports_crdt\":true},\"layer\":\"overlay\"}]}"
+        }
+      ],
+      "structuredContent": {
+        "skills": [
+          {
+            "id": "attachment",
+            "description": "An uploaded document (text/markdown) ingested through the document backend — extracted, chunked, and embedded into one page-with-blocks. Read-only; the original blob is canonical.",
+            "required_frontmatter": [],
+            "optional_frontmatter": ["title", "source", "about"],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "document"
+            },
+            "capabilities": {
+              "writable": false,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "change_order",
+            "description": "A mid-delivery scope change against a project. Re-prices and re-baselines without spawning a new opportunity.",
+            "required_frontmatter": ["at", "status", "project"],
+            "optional_frontmatter": [
+              "delta_value_eur",
+              "split",
+              "scope",
+              "accepted_at",
+              "prev_event"
+            ],
+            "is_event_typed": true,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "contact",
+            "description": "An individual person at a customer. The unit of human relationship.",
+            "required_frontmatter": ["name", "customer"],
+            "optional_frontmatter": ["role", "email", "phone", "linkedin"],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "customer",
+            "description": "A buying organisation. Aggregates contacts, engagements, opportunities and projects under one entity.",
+            "required_frontmatter": ["name", "country"],
+            "optional_frontmatter": ["industry", "employee_band", "primary_owner"],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "doc",
+            "description": "A document artifact (drive/sharepoint) captured into the knowledge base, often an agent-generated analysis.",
+            "required_frontmatter": ["at", "source", "channel"],
+            "optional_frontmatter": [
+              "title",
+              "author",
+              "provenance",
+              "extracted_by",
+              "promoted_at",
+              "derived_from",
+              "about"
+            ],
+            "is_event_typed": true,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "email",
+            "description": "An inbound or outbound email artifact captured into the knowledge base from a source channel.",
+            "required_frontmatter": ["at", "source", "channel"],
+            "optional_frontmatter": [
+              "from",
+              "to",
+              "subject",
+              "direction",
+              "provenance",
+              "extracted_by",
+              "promoted_at",
+              "derived_from",
+              "about"
+            ],
+            "is_event_typed": true,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "engagement",
+            "description": "A first-touch interaction with a contact, or the continuous lifecycle spine for an account.",
+            "required_frontmatter": ["at", "with", "channel"],
+            "optional_frontmatter": [
+              "outcome",
+              "follow_up",
+              "notes",
+              "spine",
+              "template",
+              "phase",
+              "commercial_model",
+              "contract_value",
+              "running_margin",
+              "risk_surface",
+              "sentiment_trend",
+              "primary_sponsor",
+              "champion",
+              "orgunit",
+              "customer"
+            ],
+            "is_event_typed": true,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "erp_order",
+            "description": "ERP sales orders, mirrored read-only through a sql_view backend over the shipped sources/erp JSON extract. Instances are materialised views — never authored as markdown.",
+            "required_frontmatter": [],
+            "optional_frontmatter": ["customer", "status", "amount_eur"],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "sql_view"
+            },
+            "capabilities": {
+              "writable": false,
+              "granularity": "page",
+              "search": "late_materialized",
+              "supports_crdt": false
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "escurel",
+            "description": "How this knowledge base is organised and how to navigate it. Read this first when entering a new tenant.",
+            "required_frontmatter": [],
+            "optional_frontmatter": [],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "lead",
+            "description": "A qualified follow-up under BANT. Lives between engagement and opportunity.",
+            "required_frontmatter": ["opened", "status", "contact"],
+            "optional_frontmatter": [
+              "budget",
+              "authority",
+              "need",
+              "timing",
+              "expected_value_eur",
+              "prev_event"
+            ],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "meeting",
+            "description": "A meeting or call recording artifact with a captured transcript, from a calendar/conferencing source.",
+            "required_frontmatter": ["at", "source", "channel"],
+            "optional_frontmatter": [
+              "participants",
+              "duration_min",
+              "subject",
+              "provenance",
+              "extracted_by",
+              "promoted_at",
+              "derived_from",
+              "about"
+            ],
+            "is_event_typed": true,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "opportunity",
+            "description": "A named, valued sales motion. The MEDDPICC stage of the funnel.",
+            "required_frontmatter": ["opened", "status", "customer", "value_eur"],
+            "optional_frontmatter": [
+              "contact",
+              "close_date",
+              "prev_review",
+              "competition",
+              "economic_buyer",
+              "decision_process",
+              "decision_criteria",
+              "identified_pain",
+              "metrics",
+              "champion"
+            ],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "orgunit",
+            "description": "A buying centre or division inside a customer — the organisational unit an engagement actually lands in, below the legal account.",
+            "required_frontmatter": ["name", "customer"],
+            "optional_frontmatter": ["head", "function", "engagement", "headcount", "notes"],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "playbook",
+            "description": "Demo-specialised engagement playbook (shadows crm-essentials v1).",
+            "required_frontmatter": ["name"],
+            "optional_frontmatter": ["stage_gates", "review_cycle_days"],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay",
+            "shadows": "base@crm-essentials@v1"
+          },
+          {
+            "id": "project",
+            "description": "A delivery engagement spawned at commercial close. Inherits opportunity context as live obligations.",
+            "required_frontmatter": ["opened", "status", "customer", "opportunity"],
+            "optional_frontmatter": [
+              "phase",
+              "lead_pm",
+              "scope_clarity",
+              "margin_health",
+              "schedule_confidence",
+              "acceptance_state"
+            ],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "renewal",
+            "description": "A renewal cycle on a delivered engagement. Qualifies with priors instead of starting cold.",
+            "required_frontmatter": ["at", "status", "project"],
+            "optional_frontmatter": ["propensity", "expected_value_eur", "prev_event", "analog"],
+            "is_event_typed": true,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "stock_quote",
+            "description": "Live market quote for a listed customer/peer, proxied read-only through an openapi backend against the Yahoo Finance chart API. The instance id is the ticker symbol.",
+            "required_frontmatter": [],
+            "optional_frontmatter": ["symbol", "price", "currency"],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "openapi"
+            },
+            "capabilities": {
+              "writable": false,
+              "granularity": "page",
+              "search": "none",
+              "supports_crdt": false
+            },
+            "layer": "overlay"
+          },
+          {
+            "id": "workstream",
+            "description": "A parallel stream of delivery work inside a project or engagement — the unit a delivery team actually plans and tracks against.",
+            "required_frontmatter": ["name", "status", "project"],
+            "optional_frontmatter": ["owner", "engagement", "customer", "health", "notes"],
+            "is_event_typed": false,
+            "visibility": "public",
+            "owner_field": null,
+            "backend": {
+              "kind": "markdown"
+            },
+            "capabilities": {
+              "writable": true,
+              "granularity": "block",
+              "search": "hybrid",
+              "supports_crdt": true
+            },
+            "layer": "overlay"
+          }
+        ]
+      },
+      "isError": false
+    }
+  }
+}

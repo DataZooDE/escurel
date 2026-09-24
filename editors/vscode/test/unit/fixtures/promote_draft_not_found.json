@@ -1,0 +1,39 @@
+{
+  "tool": "promote_draft",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 24,
+    "method": "tools/call",
+    "params": {
+      "name": "promote_draft",
+      "arguments": {
+        "draft_id": "nope"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 24,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"ok\":false,\"issues\":[{\"severity\":\"error\",\"code\":\"not_found\",\"location\":\"draft_id\",\"message\":\"no draft `nope`\"}]}"
+        }
+      ],
+      "structuredContent": {
+        "ok": false,
+        "issues": [
+          {
+            "severity": "error",
+            "code": "not_found",
+            "location": "draft_id",
+            "message": "no draft `nope`"
+          }
+        ]
+      },
+      "isError": true
+    }
+  }
+}

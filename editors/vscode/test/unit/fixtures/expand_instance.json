@@ -1,0 +1,72 @@
+{
+  "tool": "expand",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": {
+      "name": "expand",
+      "arguments": {
+        "page_id": "markdown/instances/customer__alpina-biotech.md"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"page\":{\"page_id\":\"markdown/instances/customer__alpina-biotech.md\",\"slug\":\"alpina-biotech\",\"skill\":\"customer\",\"page_type\":\"instance\",\"last_written_by\":null},\"frontmatter\":{\"type\":\"instance\",\"skill\":\"customer\",\"id\":\"alpina-biotech\",\"name\":\"Alpina Biotech SA\",\"country\":\"CH\",\"industry\":\"biotech · contract research\",\"employee_band\":\"250-999\",\"primary_owner\":[[\"contact::moreau\"]]},\"body\":\"\\n# Alpina Biotech SA\\n\\nA Geneva contract-research org evaluating shared analytical sandboxes\\nfor its assay pipelines. Early-stage: a single [[engagement::alpina-spine]]\\ndriven by [[contact::moreau]], still qualifying.\\n\",\"blocks\":[{\"anchor\":\"blk-0\",\"content\":\"\\n# Alpina Biotech SA\\n\\nA Geneva contract-research org evaluating shared analytical sandboxes\\nfor its assay pipelines. Early-stage: a single [[engagement::alpina-spine]]\\ndriven by [[contact::moreau]], still qualifying.\\n\"}],\"wikilinks_out\":[{\"skill\":\"engagement\",\"id\":\"alpina-spine\",\"anchor\":null,\"version\":null,\"alias\":null},{\"skill\":\"contact\",\"id\":\"moreau\",\"anchor\":null,\"version\":null,\"alias\":null}],\"content_sha256\":\"8f2bf689b1ad293aa5a566cfd316443f86a46632b7200aac7554eb1f9b7776a3\",\"version\":\"v0\"}"
+        }
+      ],
+      "structuredContent": {
+        "page": {
+          "page_id": "markdown/instances/customer__alpina-biotech.md",
+          "slug": "alpina-biotech",
+          "skill": "customer",
+          "page_type": "instance",
+          "last_written_by": null
+        },
+        "frontmatter": {
+          "type": "instance",
+          "skill": "customer",
+          "id": "alpina-biotech",
+          "name": "Alpina Biotech SA",
+          "country": "CH",
+          "industry": "biotech · contract research",
+          "employee_band": "250-999",
+          "primary_owner": [["contact::moreau"]]
+        },
+        "body": "\n# Alpina Biotech SA\n\nA Geneva contract-research org evaluating shared analytical sandboxes\nfor its assay pipelines. Early-stage: a single [[engagement::alpina-spine]]\ndriven by [[contact::moreau]], still qualifying.\n",
+        "blocks": [
+          {
+            "anchor": "blk-0",
+            "content": "\n# Alpina Biotech SA\n\nA Geneva contract-research org evaluating shared analytical sandboxes\nfor its assay pipelines. Early-stage: a single [[engagement::alpina-spine]]\ndriven by [[contact::moreau]], still qualifying.\n"
+          }
+        ],
+        "wikilinks_out": [
+          {
+            "skill": "engagement",
+            "id": "alpina-spine",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          },
+          {
+            "skill": "contact",
+            "id": "moreau",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          }
+        ],
+        "content_sha256": "8f2bf689b1ad293aa5a566cfd316443f86a46632b7200aac7554eb1f9b7776a3",
+        "version": "v0"
+      },
+      "isError": false
+    }
+  }
+}

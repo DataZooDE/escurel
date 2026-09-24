@@ -1,0 +1,43 @@
+{
+  "tool": "update_page",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 11,
+    "method": "tools/call",
+    "params": {
+      "name": "update_page",
+      "arguments": {
+        "page_id": "markdown/instances/customer__alpina-biotech.md",
+        "content": "---\ntype: instance\nskill: customer\nid: x\n---\n# x\n",
+        "base_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 11,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"ok\":false,\"issues\":[{\"severity\":\"error\",\"code\":\"conflict\",\"location\":\"base_sha256\",\"message\":\"base_sha256 is stale — the page changed since the held write was drafted; re-diff against head_content\"}],\"head_sha256\":\"8f2bf689b1ad293aa5a566cfd316443f86a46632b7200aac7554eb1f9b7776a3\",\"head_content\":\"---\\ntype: instance\\nskill: customer\\nid: alpina-biotech\\nname: Alpina Biotech SA\\ncountry: CH\\nindustry: biotech · contract research\\nemployee_band: 250-999\\nprimary_owner: [[contact::moreau]]\\n---\\n\\n# Alpina Biotech SA\\n\\nA Geneva contract-research org evaluating shared analytical sandboxes\\nfor its assay pipelines. Early-stage: a single [[engagement::alpina-spine]]\\ndriven by [[contact::moreau]], still qualifying.\\n\"}"
+        }
+      ],
+      "structuredContent": {
+        "ok": false,
+        "issues": [
+          {
+            "severity": "error",
+            "code": "conflict",
+            "location": "base_sha256",
+            "message": "base_sha256 is stale — the page changed since the held write was drafted; re-diff against head_content"
+          }
+        ],
+        "head_sha256": "8f2bf689b1ad293aa5a566cfd316443f86a46632b7200aac7554eb1f9b7776a3",
+        "head_content": "---\ntype: instance\nskill: customer\nid: alpina-biotech\nname: Alpina Biotech SA\ncountry: CH\nindustry: biotech · contract research\nemployee_band: 250-999\nprimary_owner: [[contact::moreau]]\n---\n\n# Alpina Biotech SA\n\nA Geneva contract-research org evaluating shared analytical sandboxes\nfor its assay pipelines. Early-stage: a single [[engagement::alpina-spine]]\ndriven by [[contact::moreau]], still qualifying.\n"
+      },
+      "isError": true
+    }
+  }
+}

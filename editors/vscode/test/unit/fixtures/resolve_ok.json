@@ -1,0 +1,39 @@
+{
+  "tool": "resolve",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "tools/call",
+    "params": {
+      "name": "resolve",
+      "arguments": {
+        "wikilink": "[[customer::customer__alpina-biotech]]"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"parsed\":{\"skill\":\"customer\",\"id\":\"customer__alpina-biotech\",\"anchor\":null,\"version\":null,\"alias\":null},\"page\":null,\"exists\":false}"
+        }
+      ],
+      "structuredContent": {
+        "parsed": {
+          "skill": "customer",
+          "id": "customer__alpina-biotech",
+          "anchor": null,
+          "version": null,
+          "alias": null
+        },
+        "page": null,
+        "exists": false
+      },
+      "isError": false
+    }
+  }
+}

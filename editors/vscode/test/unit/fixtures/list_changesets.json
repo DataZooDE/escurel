@@ -1,0 +1,29 @@
+{
+  "tool": "list_changesets",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 21,
+    "method": "tools/call",
+    "params": {
+      "name": "list_changesets",
+      "arguments": {}
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 21,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"changesets\":[]}"
+        }
+      ],
+      "structuredContent": {
+        "changesets": []
+      },
+      "isError": false
+    }
+  }
+}

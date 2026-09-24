@@ -1,0 +1,55 @@
+{
+  "tool": "validate",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "method": "tools/call",
+    "params": {
+      "name": "validate",
+      "arguments": {
+        "content": "---\ntype: skill\nid: x\ndescription: d.\nfields:\n  - {name: a, render: sparkle}\nblocks: nope\n---\n# x\n",
+        "as_page_id": "markdown/skills/x.md"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"ok\":false,\"issues\":[{\"severity\":\"warning\",\"code\":\"summary_missing\",\"location\":\"frontmatter.summary\",\"message\":\"a skill declares a one-line `summary:` for skill lists (the workbench shows `description` until it does)\",\"suggestion\":\"add `summary: <one line, under 200 characters>`\"},{\"severity\":\"warning\",\"code\":\"field_render_unknown\",\"location\":\"frontmatter.fields.a.render\",\"message\":\"`render: sparkle` on field `a` is not a render hint a client knows; it is passed through and ignored\",\"suggestion\":\"use one of: text | markdown | date | datetime | money | link | badge\"},{\"severity\":\"error\",\"code\":\"blocks_malformed\",\"location\":\"frontmatter.blocks\",\"message\":\"`blocks:` must be a sequence of `{anchor, title?, kind?}` entries\",\"suggestion\":\"e.g. `- {anchor: summary, title: Summary, kind: markdown}`\"}]}"
+        }
+      ],
+      "structuredContent": {
+        "ok": false,
+        "issues": [
+          {
+            "severity": "warning",
+            "code": "summary_missing",
+            "location": "frontmatter.summary",
+            "message": "a skill declares a one-line `summary:` for skill lists (the workbench shows `description` until it does)",
+            "suggestion": "add `summary: <one line, under 200 characters>`"
+          },
+          {
+            "severity": "warning",
+            "code": "field_render_unknown",
+            "location": "frontmatter.fields.a.render",
+            "message": "`render: sparkle` on field `a` is not a render hint a client knows; it is passed through and ignored",
+            "suggestion": "use one of: text | markdown | date | datetime | money | link | badge"
+          },
+          {
+            "severity": "error",
+            "code": "blocks_malformed",
+            "location": "frontmatter.blocks",
+            "message": "`blocks:` must be a sequence of `{anchor, title?, kind?}` entries",
+            "suggestion": "e.g. `- {anchor: summary, title: Summary, kind: markdown}`"
+          }
+        ]
+      },
+      "isError": false
+    }
+  }
+}
