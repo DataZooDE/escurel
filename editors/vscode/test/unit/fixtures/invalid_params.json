@@ -1,0 +1,23 @@
+{
+  "tool": "resolve",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 13,
+    "method": "tools/call",
+    "params": {
+      "name": "resolve",
+      "arguments": {
+        "wikilink": 42
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 13,
+    "error": {
+      "code": -32602,
+      "message": "resolve: invalid type: integer `42`, expected a string"
+    }
+  }
+}

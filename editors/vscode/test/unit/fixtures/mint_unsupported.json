@@ -1,0 +1,27 @@
+{
+  "tool": "mint_agent_token",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 15,
+    "method": "tools/call",
+    "params": {
+      "name": "mint_agent_token",
+      "arguments": {
+        "skill": "customer"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 15,
+    "error": {
+      "code": -32602,
+      "message": "mint_agent_token: this gateway has no signing identity (set ESCUREL_AUTH_SIGNING_KEY, and ESCUREL_AUTH_SIGNING_KID / _ISSUER as needed)",
+      "data": {
+        "code": "unsupported",
+        "retryable": false
+      }
+    }
+  }
+}

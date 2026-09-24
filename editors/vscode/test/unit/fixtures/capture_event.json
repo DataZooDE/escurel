@@ -1,0 +1,50 @@
+{
+  "tool": "capture_event",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 16,
+    "method": "tools/call",
+    "params": {
+      "name": "capture_event",
+      "arguments": {
+        "label_skill": "customer",
+        "source": "workbench",
+        "mime": "text/plain",
+        "title": "hello",
+        "body": "hi",
+        "instance_page_id": "markdown/instances/customer__alpina-biotech.md"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 16,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"event_id\":\"01M38SJJEMTNW3XTYQ6YJDPJ36\",\"at\":\"2026-09-24T04:07:59Z\",\"source\":\"workbench\",\"mime\":\"text/plain\",\"label_skill\":\"customer\",\"instance_page_id\":\"markdown/instances/customer__alpina-biotech.md\",\"status\":\"inbox\",\"title\":\"hello\",\"body\":\"hi\",\"provenance\":{\"captured_by\":\"anonymous\"},\"kind\":\"user\",\"root_event_id\":\"01M38SJJEMTNW3XTYQ6YJDPJ36\",\"run_id\":null}"
+        }
+      ],
+      "structuredContent": {
+        "event_id": "01M38SJJEMTNW3XTYQ6YJDPJ36",
+        "at": "2026-09-24T04:07:59Z",
+        "source": "workbench",
+        "mime": "text/plain",
+        "label_skill": "customer",
+        "instance_page_id": "markdown/instances/customer__alpina-biotech.md",
+        "status": "inbox",
+        "title": "hello",
+        "body": "hi",
+        "provenance": {
+          "captured_by": "anonymous"
+        },
+        "kind": "user",
+        "root_event_id": "01M38SJJEMTNW3XTYQ6YJDPJ36",
+        "run_id": null
+      },
+      "isError": false
+    }
+  }
+}

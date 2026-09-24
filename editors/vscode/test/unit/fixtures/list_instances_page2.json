@@ -1,0 +1,50 @@
+{
+  "tool": "list_instances",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "list_instances",
+      "arguments": {
+        "skill_id": "customer",
+        "limit": 2,
+        "cursor": "fG1hcmtkb3duL2luc3RhbmNlcy9jdXN0b21lcl9faG9mZm1hbm4tYXV0b21vdGl2ZS5tZA"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"instances\":[{\"page_id\":\"markdown/instances/customer__muenchner-pharma.md\",\"skill\":\"customer\",\"frontmatter\":{\"type\":\"instance\",\"skill\":\"customer\",\"id\":\"muenchner-pharma\",\"name\":\"Münchner Pharma AG\",\"country\":\"DE\",\"industry\":\"pharma-mid-cap\",\"employee_band\":\"1000-9999\",\"primary_owner\":[[\"contact::hoffmann\"]]},\"at\":null}],\"next_cursor\":null}"
+        }
+      ],
+      "structuredContent": {
+        "instances": [
+          {
+            "page_id": "markdown/instances/customer__muenchner-pharma.md",
+            "skill": "customer",
+            "frontmatter": {
+              "type": "instance",
+              "skill": "customer",
+              "id": "muenchner-pharma",
+              "name": "Münchner Pharma AG",
+              "country": "DE",
+              "industry": "pharma-mid-cap",
+              "employee_band": "1000-9999",
+              "primary_owner": [["contact::hoffmann"]]
+            },
+            "at": null
+          }
+        ],
+        "next_cursor": null
+      },
+      "isError": false
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "tool": "update_page",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 12,
+    "method": "tools/call",
+    "params": {
+      "name": "update_page",
+      "arguments": {
+        "page_id": "markdown/instances/customer__alpina-biotech.md",
+        "content": "no frontmatter\n"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 12,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"ok\":false,\"issues\":[{\"severity\":\"error\",\"code\":\"frontmatter_parse\",\"location\":\"frontmatter\",\"message\":\"missing frontmatter: input does not start with '---'\"}]}"
+        }
+      ],
+      "structuredContent": {
+        "ok": false,
+        "issues": [
+          {
+            "severity": "error",
+            "code": "frontmatter_parse",
+            "location": "frontmatter",
+            "message": "missing frontmatter: input does not start with '---'"
+          }
+        ]
+      },
+      "isError": true
+    }
+  }
+}

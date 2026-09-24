@@ -1,0 +1,31 @@
+{
+  "tool": "expand",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "tools/call",
+    "params": {
+      "name": "expand",
+      "arguments": {
+        "page_id": "markdown/instances/nope/x.md"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"page\":null}"
+        }
+      ],
+      "structuredContent": {
+        "page": null
+      },
+      "isError": false
+    }
+  }
+}

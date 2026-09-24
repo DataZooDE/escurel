@@ -1,0 +1,139 @@
+{
+  "tool": "search",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "tools/call",
+    "params": {
+      "name": "search",
+      "arguments": {
+        "q": "customer",
+        "k": 5,
+        "granularity": "page"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"hits\":[{\"page_id\":\"markdown/skills/customer.md\",\"slug\":\"customer\",\"skill\":\"customer\",\"page_type\":\"skill\",\"anchor\":null,\"snippet\":\"# customer\\n\\nThe buying organisation. Every customer-facing instance — contact,\\nengagement, lead, opportunity, project — eventually ties back to a\\nsingle `[[customer::*]]` page via its `customer:`…\",\"score\":0.03177805800756621,\"similarity\":-1.0,\"frontmatter_excerpt\":{\"type\":\"skill\",\"id\":\"customer\",\"description\":\"A buying organisation. Aggregates contacts, engagements, opportunities and projects under one entity.\",\"required_frontmatter\":[\"name\",\"country\"],\"optional_frontmatter\":[\"industry\",\"employee_band\",\"primary_owner\"]}},{\"page_id\":\"markdown/skills/contact.md\",\"slug\":\"contact\",\"skill\":\"contact\",\"page_type\":\"skill\",\"anchor\":null,\"snippet\":\"# contact\\n\\nAn individual person. Every contact belongs to exactly one\\n`[[customer::*]]` via the `customer:` field; a person who moves jobs\\ngets a new contact page (with `succeeded_by:` linking the…\",\"score\":0.031754032258064516,\"similarity\":-1.0,\"frontmatter_excerpt\":{\"type\":\"skill\",\"id\":\"contact\",\"description\":\"An individual person at a customer. The unit of human relationship.\",\"required_frontmatter\":[\"name\",\"customer\"],\"optional_frontmatter\":[\"role\",\"email\",\"phone\",\"linkedin\"]}},{\"page_id\":\"markdown/skills/orgunit.md\",\"slug\":\"orgunit\",\"skill\":\"orgunit\",\"page_type\":\"skill\",\"anchor\":null,\"snippet\":\"# orgunit\\n\\nAn **org unit** is a division or buying centre inside a\\n[[customer::*]] — e.g. \\\"Plant Engineering\\\" or \\\"Clinical Data\\nPlatform\\\". It sits below the legal account and above the people:…\",\"score\":0.029386529386529386,\"similarity\":-1.0,\"frontmatter_excerpt\":{\"type\":\"skill\",\"id\":\"orgunit\",\"description\":\"A buying centre or division inside a customer — the organisational unit an engagement actually lands in, below the legal account.\",\"required_frontmatter\":[\"name\",\"customer\"],\"optional_frontmatter\":[\"head\",\"function\",\"engagement\",\"headcount\",\"notes\"]}},{\"page_id\":\"markdown/skills/project.md\",\"slug\":\"project\",\"skill\":\"project\",\"page_type\":\"skill\",\"anchor\":null,\"snippet\":\"# project\\n\\nA project starts the moment an `[[opportunity::*]]` reaches `won`.\\nSales commitments inherited from the opportunity become live delivery\\nobligations — they do not get copied; the project…\",\"score\":0.028083267871170464,\"similarity\":-1.0,\"frontmatter_excerpt\":{\"type\":\"skill\",\"id\":\"project\",\"description\":\"A delivery engagement spawned at commercial close. Inherits opportunity context as live obligations.\",\"required_frontmatter\":[\"opened\",\"status\",\"customer\",\"opportunity\"],\"optional_frontmatter\":[\"phase\",\"lead_pm\",\"scope_clarity\",\"margin_health\",\"schedule_confidence\",\"acceptance_state\"]}},{\"page_id\":\"markdown/skills/erp_order.md\",\"slug\":\"erp_order\",\"skill\":\"erp_order\",\"page_type\":\"skill\",\"anchor\":null,\"snippet\":\"# erp_order\\n\\nA **sql_view-backed** skill: its instances are read-only DuckDB views over\\nan external source — here the `sources/erp/*.json` order extract shipped\\nwith the demo (the offline stand-in…\",\"score\":0.027650648360030512,\"similarity\":-1.0,\"frontmatter_excerpt\":{\"type\":\"skill\",\"id\":\"erp_order\",\"description\":\"ERP sales orders, mirrored read-only through a sql_view backend over the shipped sources/erp JSON extract. Instances are materialised views — never authored as markdown.\",\"backend\":{\"kind\":\"sql_view\",\"source\":{\"connector\":\"json_dir\",\"relation\":\"examples/crm-demo/sources/erp\"},\"project\":{\"customer\":\"customer\",\"status\":\"status\",\"amount_eur\":\"amount_eur\"},\"search_text\":[\"customer\",\"status\"]},\"optional_frontmatter\":[\"customer\",\"status\",\"amount_eur\"]}}],\"granularity\":\"page\"}"
+        }
+      ],
+      "structuredContent": {
+        "hits": [
+          {
+            "page_id": "markdown/skills/customer.md",
+            "slug": "customer",
+            "skill": "customer",
+            "page_type": "skill",
+            "anchor": null,
+            "snippet": "# customer\n\nThe buying organisation. Every customer-facing instance — contact,\nengagement, lead, opportunity, project — eventually ties back to a\nsingle `[[customer::*]]` page via its `customer:`…",
+            "score": 0.03177805800756621,
+            "similarity": -1,
+            "frontmatter_excerpt": {
+              "type": "skill",
+              "id": "customer",
+              "description": "A buying organisation. Aggregates contacts, engagements, opportunities and projects under one entity.",
+              "required_frontmatter": ["name", "country"],
+              "optional_frontmatter": ["industry", "employee_band", "primary_owner"]
+            }
+          },
+          {
+            "page_id": "markdown/skills/contact.md",
+            "slug": "contact",
+            "skill": "contact",
+            "page_type": "skill",
+            "anchor": null,
+            "snippet": "# contact\n\nAn individual person. Every contact belongs to exactly one\n`[[customer::*]]` via the `customer:` field; a person who moves jobs\ngets a new contact page (with `succeeded_by:` linking the…",
+            "score": 0.031754032258064516,
+            "similarity": -1,
+            "frontmatter_excerpt": {
+              "type": "skill",
+              "id": "contact",
+              "description": "An individual person at a customer. The unit of human relationship.",
+              "required_frontmatter": ["name", "customer"],
+              "optional_frontmatter": ["role", "email", "phone", "linkedin"]
+            }
+          },
+          {
+            "page_id": "markdown/skills/orgunit.md",
+            "slug": "orgunit",
+            "skill": "orgunit",
+            "page_type": "skill",
+            "anchor": null,
+            "snippet": "# orgunit\n\nAn **org unit** is a division or buying centre inside a\n[[customer::*]] — e.g. \"Plant Engineering\" or \"Clinical Data\nPlatform\". It sits below the legal account and above the people:…",
+            "score": 0.029386529386529386,
+            "similarity": -1,
+            "frontmatter_excerpt": {
+              "type": "skill",
+              "id": "orgunit",
+              "description": "A buying centre or division inside a customer — the organisational unit an engagement actually lands in, below the legal account.",
+              "required_frontmatter": ["name", "customer"],
+              "optional_frontmatter": ["head", "function", "engagement", "headcount", "notes"]
+            }
+          },
+          {
+            "page_id": "markdown/skills/project.md",
+            "slug": "project",
+            "skill": "project",
+            "page_type": "skill",
+            "anchor": null,
+            "snippet": "# project\n\nA project starts the moment an `[[opportunity::*]]` reaches `won`.\nSales commitments inherited from the opportunity become live delivery\nobligations — they do not get copied; the project…",
+            "score": 0.028083267871170464,
+            "similarity": -1,
+            "frontmatter_excerpt": {
+              "type": "skill",
+              "id": "project",
+              "description": "A delivery engagement spawned at commercial close. Inherits opportunity context as live obligations.",
+              "required_frontmatter": ["opened", "status", "customer", "opportunity"],
+              "optional_frontmatter": [
+                "phase",
+                "lead_pm",
+                "scope_clarity",
+                "margin_health",
+                "schedule_confidence",
+                "acceptance_state"
+              ]
+            }
+          },
+          {
+            "page_id": "markdown/skills/erp_order.md",
+            "slug": "erp_order",
+            "skill": "erp_order",
+            "page_type": "skill",
+            "anchor": null,
+            "snippet": "# erp_order\n\nA **sql_view-backed** skill: its instances are read-only DuckDB views over\nan external source — here the `sources/erp/*.json` order extract shipped\nwith the demo (the offline stand-in…",
+            "score": 0.027650648360030512,
+            "similarity": -1,
+            "frontmatter_excerpt": {
+              "type": "skill",
+              "id": "erp_order",
+              "description": "ERP sales orders, mirrored read-only through a sql_view backend over the shipped sources/erp JSON extract. Instances are materialised views — never authored as markdown.",
+              "backend": {
+                "kind": "sql_view",
+                "source": {
+                  "connector": "json_dir",
+                  "relation": "examples/crm-demo/sources/erp"
+                },
+                "project": {
+                  "customer": "customer",
+                  "status": "status",
+                  "amount_eur": "amount_eur"
+                },
+                "search_text": ["customer", "status"]
+              },
+              "optional_frontmatter": ["customer", "status", "amount_eur"]
+            }
+          }
+        ],
+        "granularity": "page"
+      },
+      "isError": false
+    }
+  }
+}

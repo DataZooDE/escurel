@@ -1,0 +1,39 @@
+{
+  "tool": "resolve",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "tools/call",
+    "params": {
+      "name": "resolve",
+      "arguments": {
+        "wikilink": "[[customer::nobody]]"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"parsed\":{\"skill\":\"customer\",\"id\":\"nobody\",\"anchor\":null,\"version\":null,\"alias\":null},\"page\":null,\"exists\":false}"
+        }
+      ],
+      "structuredContent": {
+        "parsed": {
+          "skill": "customer",
+          "id": "nobody",
+          "anchor": null,
+          "version": null,
+          "alias": null
+        },
+        "page": null,
+        "exists": false
+      },
+      "isError": false
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "tool": "list_instances",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "list_instances",
+      "arguments": {
+        "skill_id": "customer",
+        "limit": 2
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"instances\":[{\"page_id\":\"markdown/instances/customer__alpina-biotech.md\",\"skill\":\"customer\",\"frontmatter\":{\"type\":\"instance\",\"skill\":\"customer\",\"id\":\"alpina-biotech\",\"name\":\"Alpina Biotech SA\",\"country\":\"CH\",\"industry\":\"biotech · contract research\",\"employee_band\":\"250-999\",\"primary_owner\":[[\"contact::moreau\"]]},\"at\":null},{\"page_id\":\"markdown/instances/customer__hoffmann-automotive.md\",\"skill\":\"customer\",\"frontmatter\":{\"type\":\"instance\",\"skill\":\"customer\",\"id\":\"hoffmann-automotive\",\"name\":\"Hoffmann Automotive GmbH\",\"country\":\"DE\",\"industry\":\"automotive · tier-1 supplier\",\"employee_band\":\"1000-9999\",\"primary_owner\":[[\"contact::lang\"]]},\"at\":null}],\"next_cursor\":\"fG1hcmtkb3duL2luc3RhbmNlcy9jdXN0b21lcl9faG9mZm1hbm4tYXV0b21vdGl2ZS5tZA\"}"
+        }
+      ],
+      "structuredContent": {
+        "instances": [
+          {
+            "page_id": "markdown/instances/customer__alpina-biotech.md",
+            "skill": "customer",
+            "frontmatter": {
+              "type": "instance",
+              "skill": "customer",
+              "id": "alpina-biotech",
+              "name": "Alpina Biotech SA",
+              "country": "CH",
+              "industry": "biotech · contract research",
+              "employee_band": "250-999",
+              "primary_owner": [["contact::moreau"]]
+            },
+            "at": null
+          },
+          {
+            "page_id": "markdown/instances/customer__hoffmann-automotive.md",
+            "skill": "customer",
+            "frontmatter": {
+              "type": "instance",
+              "skill": "customer",
+              "id": "hoffmann-automotive",
+              "name": "Hoffmann Automotive GmbH",
+              "country": "DE",
+              "industry": "automotive · tier-1 supplier",
+              "employee_band": "1000-9999",
+              "primary_owner": [["contact::lang"]]
+            },
+            "at": null
+          }
+        ],
+        "next_cursor": "fG1hcmtkb3duL2luc3RhbmNlcy9jdXN0b21lcl9faG9mZm1hbm4tYXV0b21vdGl2ZS5tZA"
+      },
+      "isError": false
+    }
+  }
+}

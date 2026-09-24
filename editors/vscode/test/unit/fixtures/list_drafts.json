@@ -1,0 +1,29 @@
+{
+  "tool": "list_drafts",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 22,
+    "method": "tools/call",
+    "params": {
+      "name": "list_drafts",
+      "arguments": {}
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 22,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"drafts\":[]}"
+        }
+      ],
+      "structuredContent": {
+        "drafts": []
+      },
+      "isError": false
+    }
+  }
+}

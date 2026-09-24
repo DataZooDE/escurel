@@ -1,0 +1,33 @@
+{
+  "tool": "get_run_tool_calls",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 20,
+    "method": "tools/call",
+    "params": {
+      "name": "get_run_tool_calls",
+      "arguments": {
+        "run_id": "nope"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 20,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"run_id\":\"nope\",\"calls\":[],\"next_after\":null}"
+        }
+      ],
+      "structuredContent": {
+        "run_id": "nope",
+        "calls": [],
+        "next_after": null
+      },
+      "isError": false
+    }
+  }
+}

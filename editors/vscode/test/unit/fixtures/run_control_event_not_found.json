@@ -1,0 +1,29 @@
+{
+  "tool": "capture_event",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 14,
+    "method": "tools/call",
+    "params": {
+      "name": "capture_event",
+      "arguments": {
+        "label_skill": "escurel:run-control",
+        "mime": "application/json",
+        "body": "{\"action\":\"cancel\",\"run_id\":\"nope\"}"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 14,
+    "error": {
+      "code": -32602,
+      "message": "capture_event: `escurel:run-control`: no such run, or not yours to control",
+      "data": {
+        "code": "event_not_found",
+        "retryable": false
+      }
+    }
+  }
+}

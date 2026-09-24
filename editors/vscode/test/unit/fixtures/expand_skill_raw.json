@@ -1,0 +1,56 @@
+{
+  "tool": "expand",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "tools/call",
+    "params": {
+      "name": "expand",
+      "arguments": {
+        "page_id": "markdown/skills/customer.md",
+        "raw": true
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"page\":{\"page_id\":\"markdown/skills/customer.md\",\"slug\":\"customer\",\"skill\":\"customer\",\"page_type\":\"skill\",\"last_written_by\":null},\"frontmatter\":{\"type\":\"skill\",\"id\":\"customer\",\"description\":\"A buying organisation. Aggregates contacts, engagements, opportunities and projects under one entity.\",\"required_frontmatter\":[\"name\",\"country\"],\"optional_frontmatter\":[\"industry\",\"employee_band\",\"primary_owner\"]},\"body\":\"\\n# customer\\n\\nThe buying organisation. Every customer-facing instance — contact,\\nengagement, lead, opportunity, project — eventually ties back to a\\nsingle `[[customer::*]]` page via its `customer:` frontmatter or via\\nan intermediate `[[contact::*]]`.\\n\\n## Required fields\\n\\n- `name` — display name (string)\\n- `country` — ISO-3166-1 alpha-2 (e.g. `DE`, `CH`)\\n\\n## Optional fields\\n\\n- `industry` — free-form vertical tag\\n- `employee_band` — `<10` / `10-99` / `100-999` / `1000-9999` / `10000+`\\n- `primary_owner` — `[[contact::*]]` of the AE (account executive)\\n\\n## Notes\\n\\nCustomers are stable; renames go via versioned `update_page` rather\\nthan file rename. Mergers/acquisitions are modelled as a new customer\\nthat links back to its predecessor with `superseded_by:`.\\n\",\"blocks\":[{\"anchor\":\"blk-0\",\"content\":\"\\n# customer\\n\\nThe buying organisation. Every customer-facing instance — contact,\\nengagement, lead, opportunity, project — eventually ties back to a\\nsingle `[[customer::*]]` page via its `customer:` frontmatter or via\\nan intermediate `[[contact::*]]`.\\n\\n## Required fields\\n\\n- `name` — display name (string)\\n- `country` — ISO-3166-1 alpha-2 (e.g. `DE`, `CH`)\\n\\n## Optional fields\\n\\n- `industry` — free-form vertical tag\\n- `employee_band` — `<10` / `10-99` / `100-999` / `1000-9999` / `10000+`\\n- `primary_owner` — `[[contact::*]]` of the AE (account executive)\\n\\n## Notes\\n\\nCustomers are stable; renames go via versioned `update_page` rather\\nthan file rename. Mergers/acquisitions are modelled as a new customer\\nthat links back to its predecessor with `superseded_by:`.\\n\"}],\"wikilinks_out\":[],\"content_sha256\":\"d885ab8525177ba18c9c7db27609223219ccf9ad4e249d7eeb34fd6197e9d864\",\"content\":\"---\\ntype: skill\\nid: customer\\ndescription: A buying organisation. Aggregates contacts, engagements, opportunities and projects under one entity.\\nrequired_frontmatter: [name, country]\\noptional_frontmatter: [industry, employee_band, primary_owner]\\n---\\n\\n# customer\\n\\nThe buying organisation. Every customer-facing instance — contact,\\nengagement, lead, opportunity, project — eventually ties back to a\\nsingle `[[customer::*]]` page via its `customer:` frontmatter or via\\nan intermediate `[[contact::*]]`.\\n\\n## Required fields\\n\\n- `name` — display name (string)\\n- `country` — ISO-3166-1 alpha-2 (e.g. `DE`, `CH`)\\n\\n## Optional fields\\n\\n- `industry` — free-form vertical tag\\n- `employee_band` — `<10` / `10-99` / `100-999` / `1000-9999` / `10000+`\\n- `primary_owner` — `[[contact::*]]` of the AE (account executive)\\n\\n## Notes\\n\\nCustomers are stable; renames go via versioned `update_page` rather\\nthan file rename. Mergers/acquisitions are modelled as a new customer\\nthat links back to its predecessor with `superseded_by:`.\\n\",\"version\":\"v0\"}"
+        }
+      ],
+      "structuredContent": {
+        "page": {
+          "page_id": "markdown/skills/customer.md",
+          "slug": "customer",
+          "skill": "customer",
+          "page_type": "skill",
+          "last_written_by": null
+        },
+        "frontmatter": {
+          "type": "skill",
+          "id": "customer",
+          "description": "A buying organisation. Aggregates contacts, engagements, opportunities and projects under one entity.",
+          "required_frontmatter": ["name", "country"],
+          "optional_frontmatter": ["industry", "employee_band", "primary_owner"]
+        },
+        "body": "\n# customer\n\nThe buying organisation. Every customer-facing instance — contact,\nengagement, lead, opportunity, project — eventually ties back to a\nsingle `[[customer::*]]` page via its `customer:` frontmatter or via\nan intermediate `[[contact::*]]`.\n\n## Required fields\n\n- `name` — display name (string)\n- `country` — ISO-3166-1 alpha-2 (e.g. `DE`, `CH`)\n\n## Optional fields\n\n- `industry` — free-form vertical tag\n- `employee_band` — `<10` / `10-99` / `100-999` / `1000-9999` / `10000+`\n- `primary_owner` — `[[contact::*]]` of the AE (account executive)\n\n## Notes\n\nCustomers are stable; renames go via versioned `update_page` rather\nthan file rename. Mergers/acquisitions are modelled as a new customer\nthat links back to its predecessor with `superseded_by:`.\n",
+        "blocks": [
+          {
+            "anchor": "blk-0",
+            "content": "\n# customer\n\nThe buying organisation. Every customer-facing instance — contact,\nengagement, lead, opportunity, project — eventually ties back to a\nsingle `[[customer::*]]` page via its `customer:` frontmatter or via\nan intermediate `[[contact::*]]`.\n\n## Required fields\n\n- `name` — display name (string)\n- `country` — ISO-3166-1 alpha-2 (e.g. `DE`, `CH`)\n\n## Optional fields\n\n- `industry` — free-form vertical tag\n- `employee_band` — `<10` / `10-99` / `100-999` / `1000-9999` / `10000+`\n- `primary_owner` — `[[contact::*]]` of the AE (account executive)\n\n## Notes\n\nCustomers are stable; renames go via versioned `update_page` rather\nthan file rename. Mergers/acquisitions are modelled as a new customer\nthat links back to its predecessor with `superseded_by:`.\n"
+          }
+        ],
+        "wikilinks_out": [],
+        "content_sha256": "d885ab8525177ba18c9c7db27609223219ccf9ad4e249d7eeb34fd6197e9d864",
+        "content": "---\ntype: skill\nid: customer\ndescription: A buying organisation. Aggregates contacts, engagements, opportunities and projects under one entity.\nrequired_frontmatter: [name, country]\noptional_frontmatter: [industry, employee_band, primary_owner]\n---\n\n# customer\n\nThe buying organisation. Every customer-facing instance — contact,\nengagement, lead, opportunity, project — eventually ties back to a\nsingle `[[customer::*]]` page via its `customer:` frontmatter or via\nan intermediate `[[contact::*]]`.\n\n## Required fields\n\n- `name` — display name (string)\n- `country` — ISO-3166-1 alpha-2 (e.g. `DE`, `CH`)\n\n## Optional fields\n\n- `industry` — free-form vertical tag\n- `employee_band` — `<10` / `10-99` / `100-999` / `1000-9999` / `10000+`\n- `primary_owner` — `[[contact::*]]` of the AE (account executive)\n\n## Notes\n\nCustomers are stable; renames go via versioned `update_page` rather\nthan file rename. Mergers/acquisitions are modelled as a new customer\nthat links back to its predecessor with `superseded_by:`.\n",
+        "version": "v0"
+      },
+      "isError": false
+    }
+  }
+}
