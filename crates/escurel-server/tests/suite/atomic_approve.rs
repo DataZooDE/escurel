@@ -252,3 +252,48 @@ async fn expand_publishes_the_guard_hash() {
     .await;
     assert_eq!(ok["ok"], json!(true), "{ok}");
 }
+
+/// `expand { raw: true }` returns the STORED markdown verbatim (VS Code
+/// workbench PR-0): the bytes whose hash is `content_sha256`, so an editor
+/// can show and re-save the author's own text — formatting and comments
+/// intact — under the same CAS. Plain reads only, off by default.
+#[tokio::test]
+async fn expand_raw_returns_the_stored_markdown_behind_content_sha256() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let (p, token) = (&p, &token);
+    let expand = |args: Value| async move {
+        let body: Value = reqwest::Client::new()
+            .post(p.mcp_url())
+            .header("authorization", format!("Bearer {token}"))
+            .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": { "name": "expand", "arguments": args } }))
+            .send()
+            .await
+            .expect("post")
+            .json()
+            .await
+            .expect("json");
+        assert!(body.get("error").is_none(), "expand error: {body}");
+        body["result"]["structuredContent"].clone()
+    };
+
+    let raw = expand(json!({ "page_id": PAGE, "raw": true })).await;
+    assert_eq!(raw["content"], json!(DRAFT_BASE), "the stored bytes: {raw}");
+    assert_eq!(
+        raw["content_sha256"],
+        json!(sha(DRAFT_BASE)),
+        "the hash is of exactly those bytes: {raw}"
+    );
+
+    // Off by default — the payload is what it always was.
+    let plain = expand(json!({ "page_id": PAGE })).await;
+    assert!(plain.get("content").is_none(), "{plain}");
+    assert_eq!(plain["content_sha256"], json!(sha(DRAFT_BASE)));
+
+    // Never on a historical read: an `as_of` body is not the stored bytes.
+    let historical = expand(json!({ "page_id": PAGE, "raw": true,
+                                    "as_of": "2099-01-01T00:00:00Z" }))
+    .await;
+    assert!(historical.get("content").is_none(), "{historical}");
+}

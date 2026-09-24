@@ -623,6 +623,7 @@ fn roundtrip_agent() {
         shadow: Some(json!({ "base_page_id": "markdown/base/p/skills/s.md" })),
         version: Some("v7".into()),
         content_sha256: Some("ab".repeat(32)),
+        content: None,
         backend_projection: Some(json!({ "source": "crm_rest", "fields": { "tier": "gold" } })),
     });
     rt(ResolveResponse {
@@ -883,9 +884,15 @@ fn expand_response_guard_fields_wire_shape() {
         "wikilinks_out": [],
         "version": "v12",
         "content_sha256": "cd".repeat(32),
+        "content": "---\ntype: instance\n---\nb\n",
     });
     let resp: ExpandResponse = serde_json::from_value(wire).unwrap();
     assert_eq!(resp.version.as_deref(), Some("v12"));
+    assert_eq!(
+        resp.content.as_deref(),
+        Some("---\ntype: instance\n---\nb\n"),
+        "the stored markdown rides as `content` when asked for (raw: true)"
+    );
     assert_eq!(
         resp.content_sha256.as_deref(),
         Some("cd".repeat(32).as_str())
@@ -897,6 +904,11 @@ fn expand_response_guard_fields_wire_shape() {
     .unwrap();
     assert!(old.version.is_none());
     assert!(old.content_sha256.is_none());
+    assert!(old.content.is_none());
+    assert!(
+        serde_json::to_value(&old).unwrap().get("content").is_none(),
+        "absent stays absent on the way out"
+    );
 }
 
 /// `list_instances` cursor plumbing: the request omits an empty cursor

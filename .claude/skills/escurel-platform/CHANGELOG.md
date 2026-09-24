@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.75 — `expand { raw: true }` returns the stored markdown
+
+- `expand` takes `raw?: bool`; on a plain read (no `as_of`/`scenario`)
+  the response then carries `content`, the stored markdown verbatim — the
+  bytes behind `content_sha256` — so an editor (the VS Code workbench) can
+  show and re-save the author's own text, formatting and comments intact,
+  under the same `update_page.base_sha256` CAS. Absent by default.
+
 ## 0.6.74 — run correlation headers documented (#533)
 
 - `Client::with_run_id` sends `X-Escurel-Run-Id` and `X-Request-Id:
