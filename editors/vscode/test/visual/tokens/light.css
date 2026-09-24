@@ -1,0 +1,28 @@
+/* A representative subset of the --vscode-* tokens VS Code's Light Modern theme injects. */
+:root {
+  --vscode-font-family: system-ui, sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-foreground: #3b3b3b;
+  --vscode-descriptionForeground: #3b3b3bb3;
+  --vscode-editor-background: #ffffff;
+  --vscode-sideBar-background: #f8f8f8;
+  --vscode-widget-border: #e5e5e5;
+  --vscode-focusBorder: #005fb8;
+  --vscode-button-background: #005fb8;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-secondaryBackground: #e5e5e5;
+  --vscode-button-secondaryForeground: #3b3b3b;
+  --vscode-badge-background: #cccccc;
+  --vscode-badge-foreground: #3b3b3b;
+  --vscode-input-background: #ffffff;
+  --vscode-input-border: #cecece;
+  --vscode-input-foreground: #3b3b3b;
+  --vscode-list-hoverBackground: #f2f2f2;
+  --vscode-textLink-foreground: #005fb8;
+  --vscode-charts-purple: #652d90;
+  --vscode-charts-blue: #007acc;
+  --vscode-charts-orange: #d18616;
+  --vscode-charts-green: #388a34;
+  --vscode-errorForeground: #f85149;
+  --vscode-editorWarning-foreground: #bf8803;
+}

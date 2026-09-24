@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.vsix
+*.tsbuildinfo
+.vscode-test/
+test-results/
+playwright-report/
+coverage/

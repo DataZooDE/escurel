@@ -1,0 +1,83 @@
+# vscode.yml — the escurel VS Code extension (editors/vscode)
+#
+# Independent of the Rust ci.yml and scoped via `paths:` so a change outside
+# editors/vscode/ never sets up Node. Every push and PR touching the
+# extension: typecheck, lint (incl. the no-literal-colours check on
+# webview/), unit + component tests, build, Playwright visual checks in
+# light / dark / high-contrast, and a VSIX artifact. The integration suite
+# (a real escurel-server) needs a built binary and is run locally /
+# by workflow_dispatch — see editors/vscode/README.md.
+
+name: vscode
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'editors/vscode/**'
+      - '.github/workflows/vscode.yml'
+  pull_request:
+    paths:
+      - 'editors/vscode/**'
+      - '.github/workflows/vscode.yml'
+
+concurrency:
+  group: vscode-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: editors/vscode
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: editors/vscode/.nvmrc
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - run: npm ci
+
+      - name: playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:unit
+      - run: npm run test:component
+      - run: npm run build
+      - run: npm run test:visual
+
+      - name: package VSIX
+        run: npm run package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: escurel-vsix
+          path: editors/vscode/*.vsix
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: editors/vscode/playwright-report
+          if-no-files-found: ignore
+
+      - name: Summary
+        run: |
+          {
+            echo "## escurel VS Code extension"
+            echo ""
+            echo "VSIX: \`$(ls *.vsix)\`"
+          } >> "$GITHUB_STEP_SUMMARY"

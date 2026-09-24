@@ -1,0 +1,8 @@
+**
+!dist/**
+!media/**
+!docs/SPEC.md
+!docs/BACKEND_GAPS.md
+!README.md
+!package.json
+!LICENSE

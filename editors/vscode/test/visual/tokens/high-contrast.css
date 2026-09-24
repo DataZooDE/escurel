@@ -1,0 +1,28 @@
+/* A representative subset of the --vscode-* tokens VS Code's Dark High Contrast theme injects. */
+:root {
+  --vscode-font-family: system-ui, sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-foreground: #ffffff;
+  --vscode-descriptionForeground: #ffffff;
+  --vscode-editor-background: #000000;
+  --vscode-sideBar-background: #000000;
+  --vscode-widget-border: #6fc3df;
+  --vscode-focusBorder: #f38518;
+  --vscode-button-background: #000000;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-secondaryBackground: #000000;
+  --vscode-button-secondaryForeground: #ffffff;
+  --vscode-badge-background: #000000;
+  --vscode-badge-foreground: #ffffff;
+  --vscode-input-background: #000000;
+  --vscode-input-border: #6fc3df;
+  --vscode-input-foreground: #ffffff;
+  --vscode-list-hoverBackground: #000000;
+  --vscode-textLink-foreground: #21a6ff;
+  --vscode-charts-purple: #b180d7;
+  --vscode-charts-blue: #3794ff;
+  --vscode-charts-orange: #d18616;
+  --vscode-charts-green: #89d185;
+  --vscode-errorForeground: #f48771;
+  --vscode-editorWarning-foreground: #ffd600;
+}
