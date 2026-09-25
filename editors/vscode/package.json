@@ -274,5 +274,19 @@
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.8.0",
     "vitest": "^2.1.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "The extension only talks to the configured escurel gateway. In a Restricted Mode window the gateway and sign-in settings come from your user settings, never from the folder.",
+      "restrictedConfigurations": [
+        "escurel.gatewayUrl",
+        "escurel.auth.issuer",
+        "escurel.auth.clientId",
+        "escurel.auth.scopes",
+        "escurel.shellHarness"
+      ]
+    },
+    "virtualWorkspaces": true
   }
 }
