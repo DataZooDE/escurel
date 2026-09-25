@@ -40,11 +40,14 @@ function answer(tool: string, args: Record<string, unknown>): Fixture | undefine
   switch (tool) {
     case 'list_instances':
       return args.cursor ? fixture('list_instances_page2') : fixture('list_instances_page1');
-    case 'expand':
-      if (args.raw) return fixture('expand_skill_raw');
-      return String(args.page_id).includes('nope')
-        ? fixture('expand_missing')
+    case 'expand': {
+      const id = String(args.page_id);
+      if (id.includes('nope')) return fixture('expand_missing');
+      // The recorded instance expand predates raw content: it plays the pre-#579 gateway.
+      return id.startsWith('markdown/skills/') && args.raw
+        ? fixture('expand_skill_raw')
         : fixture('expand_instance');
+    }
     case 'resolve':
       if (typeof args.wikilink !== 'string') return fixture('invalid_params');
       return String(args.wikilink).includes('nobody')

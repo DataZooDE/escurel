@@ -3,10 +3,14 @@ import { log } from './log';
 import { Services } from './services';
 import { EscurelAuthProvider } from './auth/provider';
 import { EscurelError } from './client';
+import { EscurelFileSystem } from './fs/provider';
+import { registerSkillDiagnostics } from './skills/diagnostics';
 
 export function activate(context: vscode.ExtensionContext): void {
   const services = new Services(context);
   context.subscriptions.push(services);
+  EscurelFileSystem.register(context, () => services.client);
+  registerSkillDiagnostics(context, () => services.client);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('escurel.signIn', async () => {
