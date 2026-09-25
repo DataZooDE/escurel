@@ -13,8 +13,13 @@ export interface FieldView {
   /** The value as the form shows it. */
   display: string;
   values?: string[];
-  /** A `[[skill::id]]` value: opened through `resolve`, never a guessed page id. */
-  link?: { skill: string; id: string; wikilink: string };
+  /**
+   * The `[[skill::id]]` references this value holds, in order. YAML parses a
+   * bare `[[skill::id]]` into the nested list `[["skill::id"]]`, and a field
+   * may hold several, so this is always a list. Opened through `resolve`,
+   * never a guessed page id.
+   */
+  links?: { skill: string; id: string; wikilink: string }[];
 }
 
 export interface ActionView {

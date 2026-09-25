@@ -46,7 +46,10 @@ export interface InstanceRow {
 const TITLE_KEYS = ['title', 'name', 'summary', 'subject', 'label'];
 
 export function instanceRow(i: Instance): InstanceRow {
-  const slug = i.page_id.split('/').pop()!.replace(/\.md$/, '');
+  // Flat corpora name a page `<skill>__<id>.md`; the tree shows the id, not
+  // the file name (a nested `<skill>/<id>.md` already reads as the id).
+  const file = i.page_id.split('/').pop()!.replace(/\.md$/, '');
+  const slug = file.startsWith(`${i.skill}__`) ? file.slice(i.skill.length + 2) : file;
   const fm = i.frontmatter ?? {};
   const title = TITLE_KEYS.map((k) => fm[k]).find(
     (v) => typeof v === 'string' && v.trim() && v !== slug,

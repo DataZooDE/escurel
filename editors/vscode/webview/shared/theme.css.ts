@@ -138,6 +138,11 @@ export const fieldRows = css`
     border-radius: 9px;
     padding: 0 8px;
   }
+  .links {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
   .markdown {
     white-space: pre-wrap;
     font-family: var(--vscode-editor-font-family);

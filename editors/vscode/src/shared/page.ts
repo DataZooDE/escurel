@@ -55,7 +55,37 @@ export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
   };
 }
 
-const WIKILINK = /^\[\[([A-Za-z0-9_.-]+)::([A-Za-z0-9_./-]+)(?:[#@|][^\]]*)?\]\]$/;
+const WIKILINK = /\[\[([A-Za-z0-9_.-]+)::([A-Za-z0-9_./-]+)(?:[#@|][^\]]*)?\]\]/g;
+/** What a bare `[[skill::id]]` looks like once YAML has eaten the brackets. */
+const BARE = /^([A-Za-z0-9_.-]+)::([A-Za-z0-9_./-]+)$/;
+
+/**
+ * The wikilinks a frontmatter value holds, whatever shape YAML gave it: a
+ * quoted `"[[skill::id]]"` string, the nested list `[["skill::id"]]` that an
+ * unquoted `[[skill::id]]` parses into, a list of either, or prose with links
+ * in it. Deduplicated, in order.
+ */
+export function wikilinksOf(value: unknown): { skill: string; id: string; wikilink: string }[] {
+  const out: { skill: string; id: string; wikilink: string }[] = [];
+  const seen = new Set<string>();
+  const add = (skill: string, id: string) => {
+    const wikilink = `[[${skill}::${id}]]`;
+    if (seen.has(wikilink)) return;
+    seen.add(wikilink);
+    out.push({ skill, id, wikilink });
+  };
+  const walk = (v: unknown, nested: boolean) => {
+    if (Array.isArray(v)) return void v.forEach((item) => walk(item, true));
+    if (typeof v !== 'string') return;
+    const matches = [...v.matchAll(WIKILINK)];
+    if (matches.length) return void matches.forEach((m) => add(m[1]!, m[2]!));
+    // Only inside a list: an unquoted `[[a::b]]` reaches us as [["a::b"]].
+    const bare = nested ? BARE.exec(v.trim()) : null;
+    if (bare) add(bare[1]!, bare[2]!);
+  };
+  walk(value, false);
+  return out;
+}
 
 export function fieldView(f: SkillField, value: unknown): FieldView {
   const render = f.render ?? defaultRender(f.kind);
@@ -69,10 +99,13 @@ export function fieldView(f: SkillField, value: unknown): FieldView {
     display: displayOf(f.kind, render, value),
     values: f.values,
   };
-  if (f.kind === 'link' && typeof value === 'string') {
-    const m = WIKILINK.exec(value.trim());
-    if (m) view.link = { skill: m[1]!, id: m[2]!, wikilink: value.trim() };
-    view.display = m ? m[2]! : value;
+  // A value that holds wikilinks renders as instance links, whether or not
+  // the skill declared the field as `kind: link` — an untyped corpus declares
+  // no fields at all, and its values still point at instances.
+  const links = wikilinksOf(value);
+  if (links.length) {
+    view.links = links;
+    view.display = links.map((l) => l.id).join(', ');
   }
   return view;
 }
