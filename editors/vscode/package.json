@@ -20,7 +20,9 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onFileSystem:escurel",
-    "onAuthenticationRequest:escurel"
+    "onAuthenticationRequest:escurel",
+    "onView:escurel.knowledge",
+    "onCommand:escurel.search"
   ],
   "contributes": {
     "configuration": {
@@ -76,6 +78,47 @@
         "title": "Refresh",
         "category": "Escurel",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "escurel.search",
+        "title": "Search\u2026",
+        "category": "Escurel",
+        "icon": "$(search)"
+      },
+      {
+        "command": "escurel.resolve",
+        "title": "Resolve Wikilink",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.openPage",
+        "title": "Open Page",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.openInstance",
+        "title": "Open instance",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.viewSkill",
+        "title": "View skill",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.showRaw",
+        "title": "Show Markdown",
+        "category": "Escurel",
+        "icon": "$(code)"
+      },
+      {
+        "command": "escurel.startSkill",
+        "title": "Start skill\u2026",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.knowledge.loadMore",
+        "title": "Load more"
       }
     ],
     "authentication": [
@@ -83,7 +126,91 @@
         "id": "escurel",
         "label": "Escurel"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "escurel",
+          "title": "Escurel",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "escurel": [
+        {
+          "id": "escurel.knowledge",
+          "name": "Knowledge",
+          "contextualTitle": "Escurel"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "escurel.knowledge",
+        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign In](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
+        "when": "escurel.connected == false"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "escurel.openPage",
+          "when": "false"
+        },
+        {
+          "command": "escurel.knowledge.loadMore",
+          "when": "false"
+        },
+        {
+          "command": "escurel.openInstance",
+          "when": "false"
+        },
+        {
+          "command": "escurel.viewSkill",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "escurel.search",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@1"
+        },
+        {
+          "command": "escurel.refresh",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "escurel.openInstance",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "inline"
+        },
+        {
+          "command": "escurel.openInstance",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "1_open@1"
+        },
+        {
+          "command": "escurel.viewSkill",
+          "when": "view == escurel.knowledge && viewItem =~ /^(instance|skill)/",
+          "group": "1_open@2"
+        },
+        {
+          "command": "escurel.showRaw",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "1_open@3"
+        },
+        {
+          "command": "escurel.startSkill",
+          "when": "view == escurel.knowledge && viewItem =~ /^(instance|skill)/",
+          "group": "2_run@1"
+        }
+      ]
+    }
   },
   "scripts": {
     "build": "node esbuild.mjs --production",
