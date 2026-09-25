@@ -337,3 +337,122 @@ async fn a_subscriber_sees_the_review_event_when_a_draft_is_promoted() {
     }
     assert_eq!(seen, ["draft-created", "draft-promoted"]);
 }
+
+/// A human's review comment is an event too (VS Code workbench PR-3): the
+/// reserved `escurel:review-comment` label, carved out of the `escurel:`
+/// guard like `escurel:run-control`, so a reviewer who may see the draft can
+/// file one without being admin. Stored `kind: system` on the draft's target
+/// page — the comment is not inbox work, and the reserved prefix keeps the
+/// runner from ever dispatching it — with the draft, the line and the author
+/// under `provenance.review`, which the caller cannot forge.
+#[tokio::test]
+async fn a_reviewer_comments_on_a_draft_and_the_comment_lands_on_its_target_page() {
+    let p = start().await;
+    let agent = p.mint_token_for_run(TENANT, Role::Agent, "agent:note", RUN, ROOT);
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, "alice");
+
+    let r = call(&p, &agent, "create_draft", draft_args("v2 from a run.")).await;
+    let draft_id = r["draft"]["draft_id"].as_str().unwrap().to_owned();
+
+    let comment = call(
+        &p,
+        &alice,
+        "capture_event",
+        json!({ "label_skill": "escurel:review-comment", "source": "workbench",
+                "mime": "text/plain", "title": "comment", "body": "the second line reads oddly",
+                "provenance": { "review": { "draft_id": draft_id, "line": 3 } } }),
+    )
+    .await;
+    // The gateway resolves the target page and the author; a caller cannot
+    // choose either.
+    assert_eq!(comment["kind"], "system", "{comment}");
+    assert_eq!(comment["instance_page_id"], PAGE, "{comment}");
+    assert_eq!(comment["status"], "processed", "not inbox work: {comment}");
+    let review = &comment["provenance"]["review"];
+    assert_eq!(review["draft_id"], draft_id, "{comment}");
+    assert_eq!(review["line"], 3, "{comment}");
+    assert_eq!(review["commented_by"], "alice", "{comment}");
+    // The draft's lineage rides along, so the comment folds into the thread
+    // of the run that proposed the draft.
+    assert_eq!(review["root_event_id"], ROOT, "{comment}");
+    assert_eq!(review["run_id"], RUN, "{comment}");
+    assert_eq!(comment["root_event_id"], ROOT, "{comment}");
+    assert_eq!(comment["run_id"], RUN, "{comment}");
+
+    // It reads back on the page beside the review transitions.
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let listed = call(
+        &p,
+        &admin,
+        "list_events",
+        json!({ "instance_page_id": PAGE, "include_system": true }),
+    )
+    .await;
+    let comments: Vec<&Value> = listed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["label_skill"] == "escurel:review-comment")
+        .collect();
+    assert_eq!(comments.len(), 1, "{listed}");
+    assert_eq!(comments[0]["body"], "the second line reads oddly");
+}
+
+/// Denial as absence, and no forging: a comment on a draft the caller may not
+/// see is refused the same way a missing draft is, and the `escurel:` guard
+/// still refuses every other reserved label from a non-admin.
+#[tokio::test]
+async fn a_comment_on_an_unseen_draft_is_refused_and_the_reserved_namespace_still_holds() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, "alice");
+
+    async fn rpc(p: &EscurelProcess, token: &str, args: Value) -> Value {
+        reqwest::Client::new()
+            .post(p.mcp_url())
+            .header("authorization", format!("Bearer {token}"))
+            .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": { "name": "capture_event", "arguments": args } }))
+            .send()
+            .await
+            .expect("post")
+            .json()
+            .await
+            .expect("json")
+    }
+
+    let missing = rpc(
+        &p,
+        &alice,
+        json!({ "label_skill": "escurel:review-comment", "mime": "text/plain", "body": "hi",
+                "provenance": { "review": { "draft_id": "no-such-draft" } } }),
+    )
+    .await;
+    assert_eq!(
+        missing["error"]["data"]["code"], "event_not_found",
+        "{missing}"
+    );
+
+    // No draft named at all is a caller mistake, not an absence.
+    let malformed = rpc(
+        &p,
+        &alice,
+        json!({ "label_skill": "escurel:review-comment", "mime": "text/plain", "body": "hi" }),
+    )
+    .await;
+    assert_eq!(malformed["error"]["code"], -32602, "{malformed}");
+
+    // The carve-out is exactly one label.
+    let forged = rpc(
+        &p,
+        &alice,
+        json!({ "label_skill": "escurel:review", "mime": "text/plain", "body": "forged" }),
+    )
+    .await;
+    assert!(
+        forged["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("reserved"),
+        "{forged}"
+    );
+}
