@@ -209,8 +209,27 @@
           "when": "view == escurel.knowledge && viewItem =~ /^(instance|skill)/",
           "group": "2_run@1"
         }
+      ],
+      "editor/title": [
+        {
+          "command": "escurel.showRaw",
+          "when": "resourceScheme == escurel && activeCustomEditorId == escurel.pageAsUi",
+          "group": "navigation"
+        }
       ]
-    }
+    },
+    "customEditors": [
+      {
+        "viewType": "escurel.pageAsUi",
+        "displayName": "Escurel Page",
+        "selector": [
+          {
+            "filenamePattern": "escurel:/instances/**/*.md"
+          }
+        ],
+        "priority": "default"
+      }
+    ]
   },
   "scripts": {
     "build": "node esbuild.mjs --production",
@@ -221,10 +240,11 @@
     "format:check": "prettier --check .",
     "test:unit": "vitest run",
     "test:component": "web-test-runner",
-    "test:visual": "node esbuild.mjs --production && playwright test",
+    "test:visual": "scripts/visual.sh",
     "test:integration": "node esbuild.mjs --production && node ./dist/test/integration/runTests.js",
     "test": "npm run typecheck && npm run lint && npm run test:unit && npm run test:component",
-    "package": "npm run build && vsce package --no-dependencies -o escurel-$npm_package_version.vsix"
+    "package": "npm run build && vsce package --no-dependencies -o escurel-$npm_package_version.vsix",
+    "test:visual:update": "scripts/visual.sh --update-snapshots"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
@@ -235,7 +255,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@open-wc/testing": "^4.0.0",
-    "@playwright/test": "^1.48.0",
+    "@playwright/test": "1.63.0",
     "@types/mocha": "^10.0.9",
     "@types/node": "^22.7.0",
     "@types/vscode": "^1.93.0",
