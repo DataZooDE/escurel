@@ -61,6 +61,14 @@ describe('knowledge model', () => {
     expect(row.label).toBe('acme');
     expect(row.description).toBe('Acme Corp');
     expect(row.pageId).toBe(inst.page_id);
+    // A flat corpus names the file `<skill>__<id>.md`; the row shows the id.
+    const flat = instanceRow({ ...inst, page_id: 'markdown/instances/customer__acme.md' });
+    expect(flat.label).toBe('acme');
+    expect(flat.description).toBe('Acme Corp');
+    // A file that merely contains `__` keeps its name.
+    expect(instanceRow({ ...inst, page_id: 'markdown/instances/other__acme.md' }).label).toBe(
+      'other__acme',
+    );
   });
 });
 

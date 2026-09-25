@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPageModel, actionLabel } from '../../src/shared/page';
+import { actionLabel, buildPageModel, fieldView } from '../../src/shared/page';
 import type { ExpandResponse, Skill } from '../../src/client';
 
 const skill: Skill = {
@@ -71,11 +71,9 @@ describe('page model', () => {
       ['notes', 'string', 'markdown'],
     ]);
     const link = m.fields.find((f) => f.name === 'customer')!;
-    expect(link.link).toEqual({
-      skill: 'customer',
-      id: 'hoffmann',
-      wikilink: '[[customer::hoffmann]]',
-    });
+    expect(link.links).toEqual([
+      { skill: 'customer', id: 'hoffmann', wikilink: '[[customer::hoffmann]]' },
+    ]);
     expect(m.fields.find((f) => f.name === 'value_eur')!.display).toBe('184,200.00');
     expect(m.fields.find((f) => f.name === 'notes')!.display).toBe('');
     expect(m.summary).toBe('Delivery at risk.');
@@ -87,6 +85,24 @@ describe('page model', () => {
 
   it('derives the action label until PR-2: "<Skill title> for <instance title> with an agent"', () => {
     expect(actionLabel('supplier-risk', '4500123')).toBe('Supplier risk for 4500123 with an agent');
+  });
+
+  it('reads wikilinks out of every shape YAML produces', () => {
+    const f = { name: 'primary_owner', kind: 'string', required: false };
+    // An unquoted `[[contact::lang]]` in YAML parses to a nested list.
+    expect(fieldView(f, [['contact::lang']]).links).toEqual([
+      { skill: 'contact', id: 'lang', wikilink: '[[contact::lang]]' },
+    ]);
+    expect(fieldView(f, '[[contact::lang]]').links?.[0]?.id).toBe('lang');
+    expect(fieldView(f, [['contact::lang'], ['contact::brandt']]).links?.map((l) => l.id)).toEqual([
+      'lang',
+      'brandt',
+    ]);
+    expect(fieldView(f, 'see [[contact::lang]] first').links?.[0]?.id).toBe('lang');
+    expect(fieldView(f, [['contact::lang'], ['contact::brandt']]).display).toBe('lang, brandt');
+    // A plain value stays plain; a bare `a::b` outside a list is not a link.
+    expect(fieldView(f, 'DE').links).toBeUndefined();
+    expect(fieldView(f, 'contact::lang').links).toBeUndefined();
   });
 
   it('a skill without fields[] shows the frontmatter keys as string fields, minus type/skill/id', () => {

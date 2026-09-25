@@ -18,24 +18,30 @@ export class EscurelField extends LitElement {
     this.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
   }
 
+  private instanceButton(link: { skill: string; id: string; wikilink: string }) {
+    const { skill, wikilink, id } = link;
+    return html`<escurel-split-button
+      class="instance-button"
+      noun="instance"
+      .label=${id}
+      title="Open instance"
+      .header=${`skill ${skill}`}
+      .items=${[
+        { id: 'open', label: `Open instance — ${id}` },
+        { id: 'skill', label: `View skill — ${skill}` },
+      ]}
+      @primary=${() => this.emit({ type: 'open-wikilink', wikilink })}
+      @select=${(e: CustomEvent<string>) =>
+        this.emit(
+          e.detail === 'open' ? { type: 'open-wikilink', wikilink } : { type: 'view-skill', skill },
+        )}
+    ></escurel-split-button>`;
+  }
+
   private value() {
     const f = this.field;
-    if (f.kind === 'link' && f.link) {
-      const { skill, wikilink } = f.link;
-      return html`<escurel-split-button
-        class="instance-button"
-        noun="instance"
-        .label=${f.display}
-        title="Open instance"
-        .header=${`skill ${skill}`}
-        .items=${[
-          { id: 'open', label: `Open instance — ${f.display}` },
-          { id: 'skill', label: `View skill — ${skill}` },
-        ]}
-        @primary=${() => this.emit({ type: 'open-wikilink', wikilink })}
-        @select=${(e: CustomEvent<string>) => this.emit(e.detail === 'open' ? { type: 'open-wikilink', wikilink } : { type: 'view-skill', skill })}
-      ></escurel-split-button>`;
-    }
+    if (f.links?.length)
+      return html`<span class="links">${f.links.map((l) => this.instanceButton(l))}</span>`;
     switch (f.render) {
       case 'badge':
         return html`<span class="badge">${f.display}</span>`;
@@ -49,12 +55,6 @@ export class EscurelField extends LitElement {
           .checked=${f.value === true}
           ?disabled=${!this.editable}
         />`;
-      case 'int':
-      case 'float':
-      case 'date':
-      case 'datetime':
-      case 'string':
-      case 'enum':
       default:
         return html`<span class="value">${f.display}</span>`;
     }
