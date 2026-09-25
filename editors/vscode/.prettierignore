@@ -3,3 +3,6 @@ node_modules
 docs/mock
 test/visual/__screenshots__
 *.vsix
+.vscode-test
+test-results
+playwright-report

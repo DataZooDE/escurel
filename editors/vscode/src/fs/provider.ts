@@ -73,7 +73,7 @@ export class EscurelFileSystem implements vscode.FileSystemProvider {
         const out: [string, vscode.FileType][] = [];
         for await (const page of this.client().listInstances({ skill_id: p.skill!, limit: 500 })) {
           for (const i of page.instances)
-            out.push([i.page_id.split('/').pop()!, vscode.FileType.File]);
+            out.push([i.page_id.replace(/^markdown\/instances\//, ''), vscode.FileType.File]);
         }
         return out;
       }

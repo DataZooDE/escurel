@@ -9,8 +9,11 @@ export default tseslint.config(
     ignores: [
       'dist/**',
       'node_modules/**',
+      '.vscode-test/**',
       'docs/mock/**',
       'test/visual/__screenshots__/**',
+      'test-results/**',
+      'playwright-report/**',
       '*.vsix',
     ],
   },

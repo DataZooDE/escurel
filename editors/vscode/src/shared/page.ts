@@ -71,7 +71,7 @@ export function fieldView(f: SkillField, value: unknown): FieldView {
   };
   if (f.kind === 'link' && typeof value === 'string') {
     const m = WIKILINK.exec(value.trim());
-    if (m) view.link = { skill: m[1]!, id: m[2]!, pageId: `markdown/instances/${m[1]}/${m[2]}.md` };
+    if (m) view.link = { skill: m[1]!, id: m[2]!, wikilink: value.trim() };
     view.display = m ? m[2]! : value;
   }
   return view;

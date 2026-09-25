@@ -21,7 +21,7 @@ export class EscurelField extends LitElement {
   private value() {
     const f = this.field;
     if (f.kind === 'link' && f.link) {
-      const { skill, pageId } = f.link;
+      const { skill, wikilink } = f.link;
       return html`<escurel-split-button
         class="instance-button"
         noun="instance"
@@ -32,8 +32,8 @@ export class EscurelField extends LitElement {
           { id: 'open', label: `Open instance — ${f.display}` },
           { id: 'skill', label: `View skill — ${skill}` },
         ]}
-        @primary=${() => this.emit({ type: 'open-page', pageId })}
-        @select=${(e: CustomEvent<string>) => this.emit(e.detail === 'open' ? { type: 'open-page', pageId } : { type: 'view-skill', skill })}
+        @primary=${() => this.emit({ type: 'open-wikilink', wikilink })}
+        @select=${(e: CustomEvent<string>) => this.emit(e.detail === 'open' ? { type: 'open-wikilink', wikilink } : { type: 'view-skill', skill })}
       ></escurel-split-button>`;
     }
     switch (f.render) {
