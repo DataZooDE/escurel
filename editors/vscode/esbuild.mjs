@@ -1,11 +1,18 @@
 // Two bundles: the extension host (CommonJS, `vscode` external) and one ESM
 // bundle per webview under webview/<name>/main.ts → dist/webview/<name>.js.
 import * as esbuild from 'esbuild';
-import { readdirSync, existsSync } from 'node:fs';
+import { readdirSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
+
+// A renamed or deleted source leaves its old bundle behind, and the integration
+// suites load every `*.test.js` they find — so a stale bundle keeps running, and
+// a test that was renamed runs twice under two names. One of those cost an hour:
+// the orphan consumed the fixture the live test needed. Never skipped in watch
+// mode either, where renames are most frequent.
+if (!watch) rmSync('dist', { recursive: true, force: true });
 
 const webviews = readdirSync('webview', { withFileTypes: true })
   .filter((d) => d.isDirectory() && existsSync(join('webview', d.name, 'main.ts')))
@@ -43,10 +50,15 @@ const webview = {
 const integration = {
   entryPoints: [
     'test/integration/runTests.ts',
-    'test/integration/suite/index.ts',
-    ...readdirSync('test/integration/suite')
-      .filter((f) => f.endsWith('.test.ts'))
-      .map((f) => `test/integration/suite/${f}`),
+    // Two suite roots, each with its own gateway: `suite` runs against the
+    // crm-demo corpus, `cascade` against a seed with an empty inbox and a real
+    // runner. See the header of runTests.ts for why they cannot share one.
+    ...['suite', 'cascade'].flatMap((dir) => [
+      `test/integration/${dir}/index.ts`,
+      ...readdirSync(`test/integration/${dir}`)
+        .filter((f) => f.endsWith('.test.ts'))
+        .map((f) => `test/integration/${dir}/${f}`),
+    ]),
   ],
   bundle: true,
   platform: 'node',
