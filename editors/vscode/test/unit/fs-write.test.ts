@@ -3,6 +3,7 @@ import { LoroDoc } from 'loro-crdt';
 import { EscurelError, type Draft, type EscurelClient } from '../../src/client';
 import {
   buildReplaceOpFromSnapshot,
+  draftForPage,
   findOpenDraftForPage,
   writeInstanceDraft,
 } from '../../src/fs/draftWrite';
@@ -314,5 +315,100 @@ describe('writeInstanceDraft: losing the create race', () => {
       writeInstanceDraft(client, 'markdown/instances/customer/acme.md', '# x\n'),
     ).rejects.toThrow(EscurelError);
     expect(client.openSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('a draft that is not yours', () => {
+  const foreign: Draft = {
+    draft_id: 'd-agent',
+    target_page_id: 'markdown/instances/customer/acme.md',
+    content: '# Acme, as an agent proposes it\n',
+    content_sha256: 'abc',
+    base_sha256: null,
+    author: 'agt:lead-scorer',
+    event_id: null,
+    changeset_id: null,
+    status: 'open',
+    reason: null,
+    decided_by: null,
+    created_at: '2026-09-26T10:00:00Z',
+    base_version: null,
+    run_id: null,
+    root_event_id: null,
+  };
+
+  it('is not read in place of the page', async () => {
+    // An agent's proposal awaiting review must not be shown as if it were the
+    // record: the reader would take unreviewed content for the page itself.
+    const client = {
+      listDrafts: vi.fn().mockResolvedValue([foreign]),
+    } as unknown as EscurelClient;
+    expect(await draftForPage(client, foreign.target_page_id, 'ada')).toBeUndefined();
+    // With no verifier there is one principal, so the same draft IS the caller's.
+    expect(await draftForPage(client, foreign.target_page_id, undefined)).toEqual(foreign);
+  });
+
+  it('is not edited, and says why before any session is opened', async () => {
+    const client = {
+      listDrafts: vi.fn().mockResolvedValue([foreign]),
+      createDraft: vi.fn(),
+      openSession: vi.fn(),
+    } as unknown as EscurelClient;
+    await expect(
+      writeInstanceDraft(client, foreign.target_page_id, '# mine\n', undefined, 'ada'),
+    ).rejects.toThrow(/not yours/);
+    expect(client.openSession).not.toHaveBeenCalled();
+    expect(client.createDraft).not.toHaveBeenCalled();
+  });
+});
+
+describe('a first save whose session cannot be opened', () => {
+  it('still counts as saved, because the new draft already holds the bytes', async () => {
+    // `create_draft` persisted this exact content. A gateway with no live CRDT
+    // mode, or one at its session cap, has therefore saved the user's work —
+    // reporting failure would leave the document dirty over content already held.
+    const client = {
+      listDrafts: vi.fn().mockResolvedValue([]),
+      createDraft: vi.fn().mockResolvedValue({
+        ok: true,
+        draft: { draft_id: 'd-new', content: '# x\n' },
+      }),
+      openSession: vi
+        .fn()
+        .mockRejectedValue(new EscurelError('unsupported', 'live CRDT mode not enabled')),
+      closeSession: vi.fn(),
+    } as unknown as EscurelClient;
+
+    const res = await writeInstanceDraft(client, 'markdown/instances/customer/acme.md', '# x\n');
+    expect(res).toEqual({ draftId: 'd-new', created: true });
+    expect(client.closeSession).not.toHaveBeenCalled();
+  });
+
+  it('fails when the draft already existed, because that edit was not stored', async () => {
+    const existing: Draft = {
+      draft_id: 'd-mine',
+      target_page_id: 'markdown/instances/customer/acme.md',
+      content: '# old\n',
+      content_sha256: 'abc',
+      base_sha256: null,
+      author: 'ada',
+      event_id: null,
+      changeset_id: null,
+      status: 'open',
+      reason: null,
+      decided_by: null,
+      created_at: '2026-09-26T10:00:00Z',
+      base_version: null,
+      run_id: null,
+      root_event_id: null,
+    };
+    const client = {
+      listDrafts: vi.fn().mockResolvedValue([existing]),
+      openSession: vi.fn().mockRejectedValue(new EscurelError('session_cap_reached', 'session cap')),
+      closeSession: vi.fn(),
+    } as unknown as EscurelClient;
+    await expect(
+      writeInstanceDraft(client, existing.target_page_id, '# new\n', undefined, 'ada'),
+    ).rejects.toThrow(EscurelError);
   });
 });

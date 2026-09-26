@@ -5,6 +5,12 @@
  */
 export interface TokenSource {
   get(): Promise<string | undefined>;
+  /**
+   * The signed-in subject, or `undefined` on a gateway with no verifier — where
+   * every caller is the same principal, so "whose is this?" has one answer.
+   * Used to tell your own held work from someone else's.
+   */
+  subject?(): Promise<string | undefined>;
   /** Fires with the new token after a refresh, so long-lived sockets reconnect. */
   onDidRefresh?(listener: (token: string | undefined) => void): { dispose(): void };
 }

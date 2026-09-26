@@ -1,5 +1,7 @@
 import { LoroDoc } from 'loro-crdt';
 import { EscurelError, type Draft, type EscurelClient } from '../client';
+import { describeError } from '../errors';
+import { log } from '../log';
 
 /**
  * Find an existing open draft for a target page, or undefined if none.
@@ -15,6 +17,28 @@ export function findOpenDraftForPage(
 }
 
 /**
+ * Whether `draft` is the caller's own — to read as work in progress, and to edit.
+ *
+ * `list_drafts` returns every draft the caller may SEE, an agent's proposal
+ * awaiting review included, and showing that in place of the page would present
+ * unreviewed content as if it were the record. An absent `subject` is a gateway
+ * with no verifier, where every caller is the same principal and the question has
+ * one answer.
+ */
+export function isOwnDraft(draft: Draft, subject?: string): boolean {
+  return subject === undefined || draft.author === subject;
+}
+
+/** The refusal for a page held by somebody else's draft. */
+function heldByAnother(draftId: string): EscurelError {
+  return new EscurelError(
+    'forbidden',
+    `escurel: this page already has an open draft (${draftId}) that is not yours — ` +
+      'review or discard it before editing',
+  );
+}
+
+/**
  * The open draft for `pageId`, if the gateway shows one.
  *
  * Read path twin of [`writeInstanceDraft`]: an instance with work in progress
@@ -23,8 +47,10 @@ export function findOpenDraftForPage(
 export async function draftForPage(
   client: EscurelClient,
   pageId: string,
+  subject?: string,
 ): Promise<Draft | undefined> {
-  return findOpenDraftForPage(await client.listDrafts(), pageId);
+  const draft = findOpenDraftForPage(await client.listDrafts(), pageId);
+  return draft && isOwnDraft(draft, subject) ? draft : undefined;
 }
 
 /**
@@ -73,9 +99,14 @@ export async function writeInstanceDraft(
   pageId: string,
   content: string,
   baseSha256?: string,
+  subject?: string,
 ): Promise<{ draftId: string; created: boolean }> {
   const drafts = await client.listDrafts();
-  const existing = findOpenDraftForPage(drafts, pageId);
+  const open = findOpenDraftForPage(drafts, pageId);
+  // Somebody else's held write blocks the page for both of us: it is not ours to
+  // edit, and a second draft against the same page would be refused anyway.
+  if (open && !isOwnDraft(open, subject)) throw heldByAnother(open.draft_id);
+  const existing = open;
   let draftId: string;
 
   if (existing) {
@@ -95,26 +126,32 @@ export async function writeInstanceDraft(
         // handing the user a conflict about a tool they never called.
         if (e instanceof EscurelError && e.kind === 'conflict') {
           const raced = findOpenDraftForPage(await client.listDrafts(), pageId);
-          if (raced) return raced.draft_id;
+          if (raced && isOwnDraft(raced, subject)) return raced.draft_id;
+          if (raced) throw heldByAnother(raced.draft_id);
         }
         throw e;
       });
   }
 
-  // A draft is personal, and `list_drafts` shows every draft the caller may SEE —
-  // an agent's included. So the draft found above may not be ours to edit, and the
-  // page cannot be drafted twice either: the honest answer is that the page is
-  // waiting on a decision, not a bare refusal from a tool the user never called.
-  const sessionInfo = await client.openSession({ draft_id: draftId }).catch((e: unknown) => {
-    if (existing && e instanceof EscurelError && e.kind === 'forbidden') {
-      throw new EscurelError(
-        'forbidden',
-        `escurel: this page already has an open draft (${draftId}) that is not yours — ` +
-          'review or discard it before editing',
+  const created = existing === undefined;
+  // A session is how an EXISTING draft is edited, so losing it loses the edit. A
+  // draft just created already holds these exact bytes, though, so a gateway with
+  // no live CRDT mode — or one at its session cap — has still saved the user's
+  // work: reporting a failed save would be a lie, and would leave the document
+  // dirty over content that is already held for review.
+  let sessionInfo;
+  try {
+    sessionInfo = await client.openSession({ draft_id: draftId });
+  } catch (e) {
+    if (created) {
+      log().warn(
+        `escurel: held ${pageId} as draft ${draftId} without a live session: ${describeError(e)}`,
       );
+      return { draftId, created };
     }
+    if (e instanceof EscurelError && e.kind === 'forbidden') throw heldByAnother(draftId);
     throw e;
-  });
+  }
 
   // Opening a second session on the same draft returns JSON-RPC -32603 and cannot
   // be recovered until the 30-minute idle TTL expires. If op application fails,
@@ -133,5 +170,5 @@ export async function writeInstanceDraft(
     }
   }
 
-  return { draftId, created: existing === undefined };
+  return { draftId, created };
 }

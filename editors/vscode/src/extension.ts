@@ -35,6 +35,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     context,
     () => services.client,
     () => awaiting.refresh(),
+    () => services.subject(),
   );
   const review = ReviewController.register(
     context,

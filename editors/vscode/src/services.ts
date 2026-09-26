@@ -44,6 +44,11 @@ export class Services implements vscode.Disposable {
     return readConfig().gatewayUrl;
   }
 
+  /** The signed-in subject, or `undefined` with no verifier configured. */
+  subject(): Promise<string | undefined> {
+    return this.auth.refresher.subject();
+  }
+
   /** `escurel.refresh`: every view refetches. */
   onDidChangeEmit(): void {
     this.changed.fire();

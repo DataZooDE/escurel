@@ -28,14 +28,16 @@ export class EscurelFileSystem implements vscode.FileSystemProvider {
   constructor(
     private readonly client: () => EscurelClient,
     private readonly refreshAwaiting?: () => void,
+    private readonly subject?: () => Promise<string | undefined>,
   ) {}
 
   static register(
     context: vscode.ExtensionContext,
     client: () => EscurelClient,
     refreshAwaiting?: () => void,
+    subject?: () => Promise<string | undefined>,
   ): EscurelFileSystem {
-    const fs = new EscurelFileSystem(client, refreshAwaiting);
+    const fs = new EscurelFileSystem(client, refreshAwaiting, subject);
     context.subscriptions.push(
       vscode.workspace.registerFileSystemProvider(SCHEME, fs, { isCaseSensitive: true }),
     );
@@ -54,10 +56,7 @@ export class EscurelFileSystem implements vscode.FileSystemProvider {
     // The size must describe what `readFile` will hand back — the draft's bytes
     // when there is one, or VS Code truncates the document to the page's length.
     const text =
-      p.kind === 'instance'
-        ? ((await draftForPage(this.client(), p.pageId).catch(() => undefined))?.content ??
-          page.text)
-        : page.text;
+      p.kind === 'instance' ? ((await this.ownDraft(p.pageId))?.content ?? page.text) : page.text;
     return {
       type: vscode.FileType.File,
       ctime: 0,
@@ -109,8 +108,14 @@ export class EscurelFileSystem implements vscode.FileSystemProvider {
     // safe. The second is that reopening the file should show what you were
     // writing, not the version you were writing against; the review diff reads
     // the page directly (`readPageMarkdown`), so its base side is unaffected.
-    const draft = await draftForPage(this.client(), p.pageId).catch(() => undefined);
+    const draft = await this.ownDraft(p.pageId);
     return Buffer.from(draft?.content ?? page.text, 'utf8');
+  }
+
+  /** This caller's own open draft for `pageId`, if any; never somebody else's. */
+  private async ownDraft(pageId: string) {
+    const subject = await this.subject?.().catch(() => undefined);
+    return draftForPage(this.client(), pageId, subject).catch(() => undefined);
   }
 
   private async read(uri: vscode.Uri, pageId: string) {
@@ -150,6 +155,7 @@ export class EscurelFileSystem implements vscode.FileSystemProvider {
           p.pageId,
           text,
           this.baseSha.get(uri.path),
+          await this.subject?.().catch(() => undefined),
         );
         // Said once, when the draft appears: that an edit is HELD rather than
         // written is the surprising part, and repeating it on every save of the
