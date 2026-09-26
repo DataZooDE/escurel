@@ -83,7 +83,7 @@
       },
       {
         "command": "escurel.search",
-        "title": "Search\u2026",
+        "title": "Search…",
         "category": "Escurel",
         "icon": "$(search)"
       },
@@ -115,12 +115,17 @@
       },
       {
         "command": "escurel.startSkill",
-        "title": "Start skill\u2026",
+        "title": "Start skill…",
         "category": "Escurel"
       },
       {
         "command": "escurel.openThread",
         "title": "Open Thread",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.openRun",
+        "title": "Open run",
         "category": "Escurel"
       },
       {
@@ -172,6 +177,11 @@
           "id": "escurel.knowledge",
           "name": "Knowledge",
           "contextualTitle": "Escurel"
+        },
+        {
+          "id": "escurel.threads",
+          "name": "Threads",
+          "icon": "$(git-branch)"
         },
         {
           "id": "escurel.awaiting",
@@ -239,6 +249,10 @@
         {
           "command": "escurel.submitComment",
           "when": "false"
+        },
+        {
+          "command": "escurel.openRun",
+          "when": "escurel.connected"
         }
       ],
       "view/title": [
@@ -261,6 +275,11 @@
           "command": "escurel.refresh",
           "when": "view == escurel.inbox",
           "group": "navigation@1"
+        },
+        {
+          "command": "escurel.refresh",
+          "when": "view == escurel.threads",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -323,6 +342,16 @@
           "command": "escurel.discard",
           "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft)$/",
           "group": "1_review@2"
+        },
+        {
+          "command": "escurel.openRun",
+          "when": "view == escurel.threads && viewItem == escurel.run",
+          "group": "navigation"
+        },
+        {
+          "command": "escurel.openThread",
+          "when": "view == escurel.inbox && viewItem =~ /escurel.event/",
+          "group": "navigation"
         }
       ],
       "editor/title": [
