@@ -15,7 +15,12 @@ export class ReviewCommentsController implements vscode.Disposable {
   private readonly controller: vscode.CommentController;
   private readonly threadsByDraft = new Map<string, vscode.CommentThread[]>();
   private readonly threadLineMap = new WeakMap<vscode.CommentThread, number | undefined>();
+  private readonly inFlightLoads = new Map<string, Promise<void>>();
   private readonly disposables: vscode.Disposable[] = [];
+
+  get commentController(): vscode.CommentController {
+    return this.controller;
+  }
 
   constructor(private readonly client: () => EscurelClient) {
     this.controller = vscode.comments.createCommentController('escurel-review', 'Escurel Review');
@@ -53,16 +58,25 @@ export class ReviewCommentsController implements vscode.Disposable {
    * into line threads on the proposed diff document.
    */
   async loadCommentsForDraft(draft: Draft): Promise<void> {
-    const proposedUri = encodeReviewUri(draft.draft_id, 'proposed');
-
-    // Clean up stale threads if this draft is re-opened or refreshed.
-    const existing = this.threadsByDraft.get(draft.draft_id);
-    if (existing) {
-      for (const t of existing) {
-        t.dispose();
-      }
-      this.threadsByDraft.delete(draft.draft_id);
+    const inFlight = this.inFlightLoads.get(draft.draft_id);
+    if (inFlight) {
+      // Coalesce with the running load: multiple callers (e.g. diff open + document open)
+      // await the same fetch rather than creating duplicate thread widgets in VS Code.
+      await inFlight;
+      return;
     }
+
+    const loadPromise = this.loadCommentsForDraftInternal(draft);
+    this.inFlightLoads.set(draft.draft_id, loadPromise);
+    try {
+      await loadPromise;
+    } finally {
+      this.inFlightLoads.delete(draft.draft_id);
+    }
+  }
+
+  private async loadCommentsForDraftInternal(draft: Draft): Promise<void> {
+    const proposedUri = encodeReviewUri(draft.draft_id, 'proposed');
 
     try {
       const eventsResponse = await this.client().listEvents({
@@ -71,6 +85,18 @@ export class ReviewCommentsController implements vscode.Disposable {
       });
 
       const threadModels = buildReviewCommentThreads(eventsResponse.events, draft.draft_id);
+
+      // Clean up stale threads immediately before creating the new set.
+      // Disposing and creating in the same synchronous turn prevents overlapping
+      // calls or window events from seeing a half-cleared or duplicated thread state.
+      const existing = this.threadsByDraft.get(draft.draft_id);
+      if (existing) {
+        for (const t of existing) {
+          t.dispose();
+        }
+        this.threadsByDraft.delete(draft.draft_id);
+      }
+
       const createdThreads: vscode.CommentThread[] = [];
 
       for (const tm of threadModels) {
@@ -157,6 +183,7 @@ export class ReviewCommentsController implements vscode.Disposable {
       }
     }
     this.threadsByDraft.clear();
+    this.inFlightLoads.clear();
     for (const d of this.disposables) {
       d.dispose();
     }

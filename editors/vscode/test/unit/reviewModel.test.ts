@@ -249,6 +249,35 @@ describe('reviewModel', () => {
         draft: draftB,
       });
     });
+
+    it('uses singular "1 draft" in promote and discard descriptions for single-draft changeset', () => {
+      const draftA: Draft = {
+        draft_id: 'd-a',
+        target_page_id: 'markdown/instances/customer__alpina-biotech.md',
+        content: '',
+        content_sha256: '',
+        base_sha256: null,
+        author: 'anonymous',
+        event_id: null,
+        changeset_id: '01M3CAHP14HT8AGG0CH60H73HM',
+        status: 'open',
+        reason: null,
+        decided_by: null,
+        created_at: '2026-09-25T10:00:00Z',
+        base_version: null,
+        run_id: null,
+        root_event_id: null,
+      };
+      const diffs = new Map<string, DiffDraftResponse>();
+      const items = buildChangesetQuickPickItems('01M3CAHP14HT8AGG0CH60H73HM', [draftA], diffs);
+
+      expect(items[0]!.description).toBe(
+        'Land all 1 draft in changeset 01M3CAHP14HT8AGG0CH60H73HM',
+      );
+      expect(items[1]!.description).toBe(
+        'Refuse all 1 draft in changeset 01M3CAHP14HT8AGG0CH60H73HM',
+      );
+    });
   });
 
   describe('resolveReviewTarget', () => {
@@ -305,6 +334,31 @@ describe('reviewModel', () => {
         draftId: 'd-active',
       });
       expect(resolveReviewTarget(undefined, undefined)).toBeUndefined();
+    });
+
+    it('resolves a real-shaped Draft with non-null changeset_id to draft, not changeset', () => {
+      const realDraft: Draft = {
+        draft_id: '01M3CAHP17503GSZN7QRRA03GA',
+        target_page_id: 'markdown/instances/engagement__ha-spine.md',
+        content: '# Title\n',
+        content_sha256: '5d4aaebe44d75d6f68c6c5468e41304ba7d5e915eb9702792cf3922ae93fea7f',
+        base_sha256: '3a9c8023486580715b08422327ea5dddafc7f5a513fda2518672856ac071827c',
+        author: 'anonymous',
+        event_id: '01M3C286Y4T8QTQPJ4DDWA6S09',
+        changeset_id: '01M3CAHP14HT8AGG0CH60H73HM',
+        status: 'open',
+        reason: null,
+        decided_by: null,
+        created_at: '2026-09-25T13:02:19Z',
+        base_version: 'v3',
+        run_id: null,
+        root_event_id: null,
+      };
+
+      expect(resolveReviewTarget(realDraft)).toEqual({
+        kind: 'draft',
+        draftId: '01M3CAHP17503GSZN7QRRA03GA',
+      });
     });
   });
 

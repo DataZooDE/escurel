@@ -154,3 +154,83 @@ export enum CommentThreadCollapsibleState {
   Collapsed = 0,
   Expanded = 1,
 }
+
+export class MarkdownString {
+  constructor(readonly value: string = '') {}
+}
+
+export interface CommentAuthorInformation {
+  name: string;
+  iconPath?: Uri;
+}
+
+export interface Comment {
+  author: CommentAuthorInformation;
+  body: MarkdownString | string;
+  mode?: CommentMode;
+  timestamp?: Date;
+}
+
+export interface CommentReply {
+  thread: CommentThread;
+  text: string;
+}
+
+export class CommentThread {
+  collapsibleState: CommentThreadCollapsibleState = CommentThreadCollapsibleState.Expanded;
+  canReply: boolean = true;
+  disposed: boolean = false;
+
+  constructor(
+    readonly uri: Uri,
+    public range: Range,
+    public comments: readonly Comment[],
+    private readonly onDispose?: (thread: CommentThread) => void,
+  ) {}
+
+  dispose(): void {
+    this.disposed = true;
+    this.onDispose?.(this);
+  }
+}
+
+export class CommentController {
+  commentingRangeProvider?: {
+    provideCommentingRanges: (document: unknown) => Range[];
+  };
+  /**
+   * The real `CommentController` keeps its threads private; this registry exists
+   * only so a test can count what the extension created. Disposal mirrors the
+   * real API, which drops a thread from the controller when the thread is disposed.
+   */
+  readonly threads: CommentThread[] = [];
+
+  constructor(
+    readonly id: string,
+    readonly label: string,
+  ) {}
+
+  createCommentThread(uri: Uri, range: Range, comments: readonly Comment[]): CommentThread {
+    const thread = new CommentThread(uri, range, comments, (t) => {
+      const idx = this.threads.indexOf(t);
+      if (idx >= 0) {
+        this.threads.splice(idx, 1);
+      }
+    });
+    this.threads.push(thread);
+    return thread;
+  }
+
+  dispose(): void {
+    for (const t of [...this.threads]) {
+      t.dispose();
+    }
+    this.threads.length = 0;
+  }
+}
+
+export const comments = {
+  createCommentController: (id: string, label: string): CommentController => {
+    return new CommentController(id, label);
+  },
+};

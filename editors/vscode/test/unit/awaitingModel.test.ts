@@ -30,6 +30,22 @@ describe('awaitingModel', () => {
       expect(row.description).toBe('3 drafts · agt:lead-scorer');
       expect(row.timestamp).toBe('2026-09-25T10:00:00Z');
     });
+
+    it('formats singular "1 draft · <author>" when changeset holds exactly one draft', () => {
+      const cs: Changeset = {
+        changeset_id: '01M3CAHP14HT8AGG0CH60H73HM',
+        run_id: null,
+        author: 'anonymous',
+        status: 'open',
+        drafts: 1,
+        target_page_ids: ['markdown/instances/engagement__ha-spine.md'],
+        event_ids: ['ev-1'],
+        created_at: '2026-09-25T13:02:19Z',
+        root_event_id: null,
+      };
+      const row = changesetRow(cs);
+      expect(row.description).toBe('1 draft · anonymous');
+    });
   });
 
   describe('draftRow', () => {

@@ -18,6 +18,7 @@ import {
   type ChangesetQuickPickItem,
   type DecisionOutcome,
 } from './reviewModel';
+import { pluralise } from '../shared/text';
 import { decodeReviewUri, encodeReviewUri } from './uri';
 
 /**
@@ -27,6 +28,7 @@ import { decodeReviewUri, encodeReviewUri } from './uri';
  */
 export class ReviewController implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly openingDrafts = new Set<string>();
 
   constructor(
     private readonly client: () => EscurelClient,
@@ -43,6 +45,13 @@ export class ReviewController implements vscode.Disposable {
       vscode.workspace.onDidOpenTextDocument(async (doc) => {
         const decoded = decodeReviewUri(doc.uri);
         if (decoded && decoded.side === 'proposed') {
+          // When openDraftReview explicitly opens a diff, it loads comments itself
+          // after vscode.diff resolves. Skip here so document activation during diff
+          // creation does not duplicate that explicit load. Window reload does not go
+          // through openDraftReview, so this path remains the sole loader for restored tabs.
+          if (this.openingDrafts.has(decoded.draftId)) {
+            return;
+          }
           const draft = this.contentProvider.getDraft(decoded.draftId);
           if (draft) {
             await this.commentsController.loadCommentsForDraft(draft);
@@ -133,7 +142,7 @@ export class ReviewController implements vscode.Disposable {
 
       const items = buildChangesetQuickPickItems(changesetId, csDrafts, diffMap);
       const selected = await vscode.window.showQuickPick<ChangesetQuickPickItem>(items, {
-        placeHolder: `Changeset ${changesetId} (${csDrafts.length} drafts)`,
+        placeHolder: `Changeset ${changesetId} (${pluralise(csDrafts.length, 'draft')})`,
       });
 
       if (!selected) return;
@@ -197,8 +206,13 @@ export class ReviewController implements vscode.Disposable {
     const proposedUri = encodeReviewUri(draft.draft_id, 'proposed');
     const title = formatDraftDiffTitle(draft);
 
-    await vscode.commands.executeCommand('vscode.diff', baseUri, proposedUri, title);
-    await this.commentsController.loadCommentsForDraft(draft);
+    this.openingDrafts.add(draft.draft_id);
+    try {
+      await vscode.commands.executeCommand('vscode.diff', baseUri, proposedUri, title);
+      await this.commentsController.loadCommentsForDraft(draft);
+    } finally {
+      this.openingDrafts.delete(draft.draft_id);
+    }
   }
 
   /**
