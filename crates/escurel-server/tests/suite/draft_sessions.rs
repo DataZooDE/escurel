@@ -656,3 +656,170 @@ async fn another_subject_may_not_attach_to_a_draft_session_over_ws() {
 
     sock.close(None).await.ok();
 }
+
+/// A client can only emit an op that MERGES if it shares the session document's
+/// history — so `open_session` hands back the document's Loro snapshot.
+///
+/// Without it a client has the text (from the draft row) but not the history: an
+/// op built on a locally-reconstructed document depends on ops the session has
+/// never seen, so Loro buffers it as pending, the text does not move, and the
+/// commit writes the bytes back unchanged. That failure is silent — `apply_op`
+/// answers `ok` with an advanced `merged_version` — which is why it is pinned
+/// here rather than left to a client to discover.
+#[tokio::test]
+async fn open_session_hands_back_a_snapshot_a_client_can_build_an_op_on() {
+    let h = start().await;
+    let token = author_token(&h);
+    let seeded = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nseeded body.\n";
+    let draft_id = draft_of(&h, seeded).await;
+
+    let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
+    let snapshot = opened["snapshot"]
+        .as_str()
+        .expect("open_session must return the session document's snapshot");
+    let sid = opened["session"].as_str().expect("session").to_owned();
+
+    // Exactly what a client does: import the snapshot, edit, export only what
+    // the session has not seen.
+    let doc = LoroDoc::new();
+    doc.import(&B64.decode(snapshot).expect("snapshot is base64"))
+        .expect("a client must be able to import the snapshot");
+    assert_eq!(
+        doc.get_text("body").to_string(),
+        seeded,
+        "the snapshot must carry the draft's bytes, not an empty document"
+    );
+    let before = doc.oplog_vv();
+    // Edited where a client edits: inside the body, leaving the document
+    // parseable, so this test measures the snapshot mechanism and nothing else.
+    let at = seeded.find("seeded body.").expect("seed body");
+    doc.get_text("body")
+        .insert(at, "EDITED-VIA-SNAPSHOT. ")
+        .unwrap();
+    doc.commit();
+    let op = B64.encode(doc.export(ExportMode::updates(&before)).unwrap());
+
+    let applied = raw(&h, &token, "apply_op", json!({ "session": sid, "op": op })).await;
+    assert!(applied.get("error").is_none(), "apply_op: {applied}");
+    let closed = call(
+        &h,
+        &token,
+        "close_session",
+        json!({ "session": sid, "commit": true }),
+    )
+    .await;
+    assert_eq!(closed["ok"], json!(true), "close_session: {closed}");
+
+    // The edit landed as an EDIT: the draft is the seeded text with the prefix,
+    // not the seed twice over and not the seed untouched.
+    let drafts = call(&h, &token, "list_drafts", json!({})).await;
+    let held = drafts["drafts"]
+        .as_array()
+        .expect("drafts")
+        .iter()
+        .find(|d| d["draft_id"] == json!(draft_id))
+        .and_then(|d| d["content"].as_str())
+        .unwrap_or_else(|| panic!("the draft must still be listed: {drafts}"))
+        .to_owned();
+    assert_eq!(
+        held,
+        seeded.replace("seeded body.", "EDITED-VIA-SNAPSHOT. seeded body."),
+        "the client's op must merge into the session's document"
+    );
+}
+
+/// A page session needs the snapshot for the same reason.
+#[tokio::test]
+async fn a_page_session_also_hands_back_its_snapshot() {
+    let h = start().await;
+    let token = author_token(&h);
+    let opened = call(&h, &token, "open_session", json!({ "page_id": PAGE })).await;
+    let snapshot = opened["snapshot"].as_str().expect("snapshot");
+    let doc = LoroDoc::new();
+    doc.import(&B64.decode(snapshot).expect("base64"))
+        .expect("import");
+    assert_eq!(
+        doc.get_text("body").to_string(),
+        BASE,
+        "a page session's snapshot must carry the page's stored bytes"
+    );
+}
+
+/// A draft mid-edit is often not parseable for a moment. Its author must not
+/// lose sight of it when that happens.
+///
+/// `may_see` decides a draft's visibility from its content's frontmatter, and
+/// failing closed on unparseable content hid the draft from EVERYONE — so a
+/// human editing live could make their own work vanish from the queue and from
+/// review with one keystroke, unable to see it, diff it, promote it or discard
+/// it until it happened to parse again.
+#[tokio::test]
+async fn an_unparseable_draft_is_still_visible_to_its_author() {
+    let h = start().await;
+    let token = author_token(&h);
+    let seeded = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nvalid for now.\n";
+    let draft_id = draft_of(&h, seeded).await;
+
+    // Break the frontmatter the way a half-typed edit does, through the session.
+    let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
+    let sid = opened["session"].as_str().expect("session").to_owned();
+    let doc = LoroDoc::new();
+    doc.import(
+        &B64.decode(opened["snapshot"].as_str().expect("snapshot"))
+            .unwrap(),
+    )
+    .expect("import");
+    let before = doc.oplog_vv();
+    doc.get_text("body").insert(0, "oops").unwrap();
+    doc.commit();
+    let op = B64.encode(doc.export(ExportMode::updates(&before)).unwrap());
+    let applied = raw(&h, &token, "apply_op", json!({ "session": sid, "op": op })).await;
+    assert!(applied.get("error").is_none(), "apply_op: {applied}");
+    let closed = call(
+        &h,
+        &token,
+        "close_session",
+        json!({ "session": sid, "commit": true }),
+    )
+    .await;
+    assert_eq!(closed["ok"], json!(true), "close_session: {closed}");
+
+    let drafts = call(&h, &token, "list_drafts", json!({})).await;
+    let row = drafts["drafts"]
+        .as_array()
+        .expect("drafts")
+        .iter()
+        .find(|d| d["draft_id"] == json!(draft_id))
+        .cloned()
+        .unwrap_or_else(|| panic!("the author must still see their own draft: {drafts}"));
+    assert!(
+        row["content"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("oops"),
+        "…holding the unparseable bytes: {row}"
+    );
+
+    // Still decidable: the author can get rid of it.
+    let discarded = call(
+        &h,
+        &token,
+        "discard_draft",
+        json!({ "draft_id": draft_id, "reason": "broke it" }),
+    )
+    .await;
+    assert_eq!(discarded["ok"], json!(true), "discard_draft: {discarded}");
+
+    // …and it stays invisible to everyone else, which is the half that must not
+    // have loosened: an undeterminable ACL still fails closed for them.
+    let stranger = h.process.mint_token_with_sub(TENANT, Role::Agent, STRANGER);
+    let theirs = call(&h, &stranger, "list_drafts", json!({})).await;
+    assert!(
+        !theirs["drafts"]
+            .as_array()
+            .expect("drafts")
+            .iter()
+            .any(|d| d["draft_id"] == json!(draft_id)),
+        "an unparseable draft must stay hidden from everyone else: {theirs}"
+    );
+}

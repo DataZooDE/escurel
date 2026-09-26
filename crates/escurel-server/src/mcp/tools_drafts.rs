@@ -152,8 +152,17 @@ fn decided_by_or_caller(
 /// places answering "who may read this?" from two different sources
 /// eventually disagree, and the disagreement is silent.
 ///
-/// Unparseable content fails CLOSED — nobody but an admin sees a draft whose
-/// ACL cannot be determined.
+/// Unparseable content fails CLOSED for everyone EXCEPT the draft's own author
+/// (and admin): the ACL cannot be determined, so nobody learns anything they
+/// could not already read — but the person who wrote it must not lose it.
+///
+/// That exemption is not a courtesy. A live draft is edited a keystroke at a
+/// time (`open_session { draft_id }`), and a document mid-edit is routinely
+/// unparseable for a moment — a half-typed frontmatter key is enough. Failing
+/// closed on the author made their own draft vanish from `list_drafts` and from
+/// review the instant that happened, with no way to see it, diff it, promote it
+/// or even discard it until it happened to parse again. The author already has
+/// the bytes; the ACL question is about everyone else.
 pub(super) async fn may_see(
     indexer: &Indexer,
     caller: &AclCaller<'_>,
@@ -163,7 +172,7 @@ pub(super) async fn may_see(
         return Ok(true);
     }
     let Ok(parsed) = escurel_md::parse(&draft.content) else {
-        return Ok(false);
+        return Ok(draft.author == caller.subject);
     };
     let skill = parsed
         .frontmatter

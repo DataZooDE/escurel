@@ -411,6 +411,20 @@ impl SessionManager {
         };
         Some(doc.current_content().await)
     }
+
+    /// The session document's Loro snapshot — what a client imports to become a
+    /// peer that can build ops on this document rather than on a look-alike of
+    /// its own. `None` when no such session is open.
+    ///
+    /// The shard lock is released before awaiting the actor, as in
+    /// [`Self::current_content`].
+    pub async fn snapshot_bytes(&self, session_id: &str) -> Option<Vec<u8>> {
+        let doc = {
+            let entry = self.entries.get(session_id)?;
+            Arc::clone(&entry.doc)
+        };
+        doc.snapshot_bytes().await.ok()
+    }
 }
 
 #[cfg(test)]
