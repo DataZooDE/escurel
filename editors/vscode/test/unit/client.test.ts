@@ -129,4 +129,29 @@ describe('typed wrapper', () => {
     });
     expect(forbidden.kind).toBe('forbidden');
   });
+
+  it('opens live session and passes draft_id or page_id', async () => {
+    const s = await client.openSession({ draft_id: 'draft-created-1' });
+    expect(s.session).toBe('sess-123');
+    expect(s.head_version).toBe('0@0');
+    expect(s.ws_url).toBe('ws://127.0.0.1:4000/crdt/ws/sess-123');
+    expect(s.snapshot).toBe('dummy-snapshot');
+    expect(gw.calls.at(-1)?.arguments.draft_id).toBe('draft-created-1');
+  });
+
+  it('applies op to an open session', async () => {
+    const res = await client.applyOp({ session: 'sess-123', op: 'b3Bz' });
+    expect(res.ok).toBe(true);
+    expect(res.merged_version).toBe('1@1');
+    expect(gw.calls.at(-1)?.arguments.session).toBe('sess-123');
+    expect(gw.calls.at(-1)?.arguments.op).toBe('b3Bz');
+  });
+
+  it('closes session and passes commit flag', async () => {
+    const res = await client.closeSession({ session: 'sess-123', commit: true });
+    expect(res.ok).toBe(true);
+    expect(res.final_version).toBe('1@1');
+    expect(gw.calls.at(-1)?.arguments.session).toBe('sess-123');
+    expect(gw.calls.at(-1)?.arguments.commit).toBe(true);
+  });
 });

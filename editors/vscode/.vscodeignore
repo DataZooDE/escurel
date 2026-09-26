@@ -6,3 +6,11 @@
 !README.md
 !package.json
 !LICENSE
+
+# `loro-crdt` is the one module that must ship UNBUNDLED: its Node build requires a
+# `.wasm` file next to itself, which a bundle cannot carry. Only the Node build and
+# the manifest that points `require` at it — the browser/bundler/web builds are dead
+# weight in an extension host. `vsce package` must therefore NOT pass
+# `--no-dependencies`, which drops node_modules wholesale.
+!node_modules/loro-crdt/package.json
+!node_modules/loro-crdt/nodejs/**

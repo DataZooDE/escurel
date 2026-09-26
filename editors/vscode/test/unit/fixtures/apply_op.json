@@ -1,0 +1,33 @@
+{
+  "tool": "apply_op",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "apply_op",
+      "arguments": {
+        "session": "sess-123",
+        "op": "b3Bz"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"ok\":true,\"merged_version\":\"1@1\"}"
+        }
+      ],
+      "structuredContent": {
+        "ok": true,
+        "merged_version": "1@1"
+      },
+      "isError": false
+    }
+  }
+}

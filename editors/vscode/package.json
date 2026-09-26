@@ -375,12 +375,13 @@
     "test:visual": "scripts/visual.sh",
     "test:integration": "node esbuild.mjs --production && node ./dist/test/integration/runTests.js",
     "test": "npm run typecheck && npm run lint && npm run test:unit && npm run test:component",
-    "package": "npm run build && vsce package --no-dependencies -o escurel-$npm_package_version.vsix",
+    "package": "npm run build && vsce package -o escurel-$npm_package_version.vsix",
     "test:visual:update": "scripts/visual.sh --update-snapshots"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "lit": "^3.2.0",
+    "loro-crdt": "1.16.3",
     "ws": "^8.18.0",
     "yaml": "^2.9.1"
   },

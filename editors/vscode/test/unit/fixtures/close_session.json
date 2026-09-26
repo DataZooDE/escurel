@@ -1,0 +1,34 @@
+{
+  "tool": "close_session",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "close_session",
+      "arguments": {
+        "session": "sess-123",
+        "commit": true
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"ok\":true,\"final_version\":\"1@1\",\"issues\":[]}"
+        }
+      ],
+      "structuredContent": {
+        "ok": true,
+        "final_version": "1@1",
+        "issues": []
+      },
+      "isError": false
+    }
+  }
+}

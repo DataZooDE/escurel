@@ -18,7 +18,7 @@ const host = {
   platform: 'node',
   format: 'cjs',
   target: 'node22',
-  external: ['vscode'],
+  external: ['vscode', 'loro-crdt'],
   outfile: 'dist/extension.js',
   sourcemap: !production,
   minify: production,
@@ -52,7 +52,10 @@ const integration = {
   platform: 'node',
   format: 'cjs',
   target: 'node22',
-  external: ['vscode', 'mocha', '@vscode/test-electron'],
+  // `loro-crdt` is external here for the same reason as in the host bundle: its
+  // Node build `require`s a `.wasm` file next to itself, which a bundle cannot
+  // carry. Bundling it makes the integration suite fail at load, not at use.
+  external: ['vscode', 'mocha', '@vscode/test-electron', 'loro-crdt'],
   outdir: 'dist/test/integration',
   logLevel: 'info',
 };

@@ -26,12 +26,16 @@ export interface EscurelApi {
 export function activate(context: vscode.ExtensionContext): EscurelApi {
   const services = new Services(context);
   context.subscriptions.push(services);
-  EscurelFileSystem.register(context, () => services.client);
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);
   const inbox = InboxTree.register(context, () => services.client);
   const awaiting = AwaitingTree.register(context, () => services.client);
+  EscurelFileSystem.register(
+    context,
+    () => services.client,
+    () => awaiting.refresh(),
+  );
   const review = ReviewController.register(
     context,
     () => services.client,

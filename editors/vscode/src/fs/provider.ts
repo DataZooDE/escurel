@@ -3,6 +3,7 @@ import { EscurelError, type EscurelClient } from '../client';
 import { log } from '../log';
 import { pageIdFromPath, pathForPage, readPageMarkdown } from './read';
 import { writeSkill } from './write';
+import { draftForPage, writeInstanceDraft } from './draftWrite';
 
 export const SCHEME = 'escurel';
 
@@ -11,8 +12,8 @@ export function uriForPage(pageId: string): vscode.Uri {
 }
 
 /**
- * `escurel:` — skills read-write (save = `update_page` with the read-time
- * `content_sha256`), instances read-only (they are edited in page-as-UI).
+ * `escurel:` — skills read-write directly (save = `update_page` with read-time
+ * `content_sha256`), instances read-write through personal drafts (SPEC §8 M2).
  * Directory listings come from `list_skills` / `list_instances` so the
  * Explorer-style views can walk the tree; nothing is cached across reads
  * (SPEC §1: online only).
@@ -24,13 +25,17 @@ export class EscurelFileSystem implements vscode.FileSystemProvider {
   private readonly baseSha = new Map<string, string | undefined>();
   private readonly degraded = new Set<string>();
 
-  constructor(private readonly client: () => EscurelClient) {}
+  constructor(
+    private readonly client: () => EscurelClient,
+    private readonly refreshAwaiting?: () => void,
+  ) {}
 
   static register(
     context: vscode.ExtensionContext,
     client: () => EscurelClient,
+    refreshAwaiting?: () => void,
   ): EscurelFileSystem {
-    const fs = new EscurelFileSystem(client);
+    const fs = new EscurelFileSystem(client, refreshAwaiting);
     context.subscriptions.push(
       vscode.workspace.registerFileSystemProvider(SCHEME, fs, { isCaseSensitive: true }),
     );
@@ -46,13 +51,19 @@ export class EscurelFileSystem implements vscode.FileSystemProvider {
     if (!p) throw vscode.FileSystemError.FileNotFound(uri);
     if (!p.pageId) return { type: vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 };
     const page = await this.read(uri, p.pageId);
-    const readonly = p.kind === 'instance';
+    // The size must describe what `readFile` will hand back — the draft's bytes
+    // when there is one, or VS Code truncates the document to the page's length.
+    const text =
+      p.kind === 'instance'
+        ? ((await draftForPage(this.client(), p.pageId).catch(() => undefined))?.content ??
+          page.text)
+        : page.text;
     return {
       type: vscode.FileType.File,
       ctime: 0,
       mtime: Date.now(),
-      size: Buffer.byteLength(page.text),
-      permissions: readonly ? vscode.FilePermission.Readonly : undefined,
+      size: Buffer.byteLength(text),
+      permissions: undefined,
     };
   }
 
@@ -85,8 +96,21 @@ export class EscurelFileSystem implements vscode.FileSystemProvider {
   async readFile(uri: vscode.Uri): Promise<Uint8Array> {
     const p = pageIdFromPath(uri.path);
     if (!p?.pageId) throw vscode.FileSystemError.FileNotFound(uri);
+    // Always read the page first: its hash is what a new draft is taken against,
+    // and the degraded-read warning belongs to the page too.
     const page = await this.read(uri, p.pageId);
-    return Buffer.from(page.text, 'utf8');
+    if (p.kind !== 'instance') return Buffer.from(page.text, 'utf8');
+
+    // An instance with work in progress reads as THAT WORK, not as the page.
+    // Two reasons, and the first is not cosmetic: an instance save lands in a
+    // draft, so the page never changes, and an editor that re-read the page
+    // would find its buffer different from the file it just saved and stay
+    // dirty for ever — every close prompting to save changes that are already
+    // safe. The second is that reopening the file should show what you were
+    // writing, not the version you were writing against; the review diff reads
+    // the page directly (`readPageMarkdown`), so its base side is unaffected.
+    const draft = await draftForPage(this.client(), p.pageId).catch(() => undefined);
+    return Buffer.from(draft?.content ?? page.text, 'utf8');
   }
 
   private async read(uri: vscode.Uri, pageId: string) {
@@ -111,19 +135,39 @@ export class EscurelFileSystem implements vscode.FileSystemProvider {
   async writeFile(uri: vscode.Uri, content: Uint8Array): Promise<void> {
     const p = pageIdFromPath(uri.path);
     if (!p?.pageId) throw vscode.FileSystemError.FileNotFound(uri);
-    if (p.kind !== 'skill')
-      throw vscode.FileSystemError.NoPermissions(
-        'escurel: instances are edited in the page view, not as raw markdown',
-      );
     const text = Buffer.from(content).toString('utf8');
     try {
-      await writeSkill(this.client(), p.pageId, text, this.baseSha.get(uri.path));
+      if (p.kind === 'skill') {
+        // A skill is authored directly on the page; an instance is proposed.
+        await writeSkill(this.client(), p.pageId, text, this.baseSha.get(uri.path));
+        // Re-read the hash for the next save (the gateway is the authority on what it stored).
+        const fresh = await readPageMarkdown(this.client(), p.pageId).catch(() => undefined);
+        this.baseSha.set(uri.path, fresh?.sha256);
+      } else if (p.kind === 'instance') {
+        // A skill is authored, an instance is proposed: instance saves route through a personal draft.
+        const res = await writeInstanceDraft(
+          this.client(),
+          p.pageId,
+          text,
+          this.baseSha.get(uri.path),
+        );
+        // Said once, when the draft appears: that an edit is HELD rather than
+        // written is the surprising part, and repeating it on every save of the
+        // same draft would be noise.
+        if (res.created) {
+          void vscode.window.showInformationMessage(
+            `escurel: held as draft ${res.draftId} — it is in "Awaiting you" until you promote it`,
+          );
+        }
+        this.refreshAwaiting?.();
+      } else {
+        throw vscode.FileSystemError.NoPermissions(
+          'escurel: only skills and instances can be saved',
+        );
+      }
     } catch (e) {
       throw this.mapError(uri, e);
     }
-    // Re-read the hash for the next save (the gateway is the authority on what it stored).
-    const fresh = await readPageMarkdown(this.client(), p.pageId).catch(() => undefined);
-    this.baseSha.set(uri.path, fresh?.sha256);
     this.emitter.fire([{ type: vscode.FileChangeType.Changed, uri }]);
   }
 

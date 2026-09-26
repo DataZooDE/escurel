@@ -394,3 +394,37 @@ export interface PromoteChangesetResponse {
     status?: string;
   }[];
 }
+
+export interface OpenSessionRequest {
+  page_id?: string;
+  draft_id?: string;
+}
+
+export interface OpenSessionResponse {
+  session: string;
+  head_version: string;
+  ws_url: string;
+  snapshot: string | null;
+}
+
+export interface ApplyOpRequest {
+  session: string;
+  op: string;
+}
+
+export interface ApplyOpResponse {
+  ok: true;
+  merged_version: string;
+}
+
+export interface CloseSessionRequest {
+  session: string;
+  commit?: boolean;
+}
+
+export interface CloseSessionResponse {
+  ok: true;
+  final_version?: string;
+  issues?: ValidationIssue[];
+  [key: string]: unknown;
+}
