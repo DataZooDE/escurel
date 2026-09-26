@@ -150,3 +150,73 @@ async fn admin_chat_purge_envelope_carries_ok() {
         "payload unchanged beside it: {out}"
     );
 }
+
+/// A schema that under-declares what its handler accepts is worse than a
+/// missing schema: a client generated from `tools/list` cannot ask for the
+/// thing, and the handler's own error message names it as valid.
+///
+/// `list_lineage`'s `include` accepted `tool_calls` — the only way to get
+/// `tool_call_summary` onto a run node, which is what a thread view needs to
+/// show "14 tool calls" without a call per run — while declaring only
+/// `events | runs | drafts`.
+#[tokio::test]
+async fn list_lineage_declares_every_include_its_handler_accepts() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let listed: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("decode");
+    let declared: Vec<String> = listed["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|t| t["name"] == json!("list_lineage"))
+        .expect("list_lineage is listed")["inputSchema"]["properties"]["include"]["items"]["enum"]
+        .as_array()
+        .expect("include.items.enum")
+        .iter()
+        .map(|v| v.as_str().unwrap_or_default().to_owned())
+        .collect();
+
+    // Every declared value is accepted: a schema may not promise what the
+    // handler refuses either.
+    for value in &declared {
+        let out = call(
+            &p,
+            &token,
+            "list_lineage",
+            json!({ "root_event_id": "01HNOSUCHROOT", "include": [value] }),
+        )
+        .await;
+        assert!(
+            out.get("error").is_none(),
+            "the schema declares `{value}` but the handler refuses it: {out}"
+        );
+    }
+
+    // …and every accepted value is declared. `tool_calls` is the one the
+    // handler names in its own refusal message, so it is not a guess.
+    let accepted = call(
+        &p,
+        &token,
+        "list_lineage",
+        json!({ "root_event_id": "01HNOSUCHROOT", "include": ["tool_calls"] }),
+    )
+    .await;
+    assert!(
+        accepted.get("error").is_none(),
+        "`tool_calls` must stay accepted: {accepted}"
+    );
+    assert!(
+        declared.iter().any(|v| v == "tool_calls"),
+        "the handler accepts `tool_calls`, so the schema must declare it; declared: {declared:?}"
+    );
+}
