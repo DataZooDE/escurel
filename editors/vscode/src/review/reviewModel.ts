@@ -8,6 +8,7 @@ import type {
 import { EscurelError } from '../client/errors';
 import { describeError } from '../errors';
 import { pageSlug } from '../shared/pageId';
+import { pluralise } from '../shared/text';
 
 export const REVIEW_SCHEME = 'escurel-review';
 
@@ -91,12 +92,12 @@ export function formatDiffSummary(diff?: DiffDraftResponse): string {
 
   const fmCount = diff.frontmatter_changes?.length ?? 0;
   if (fmCount > 0) {
-    parts.push(`${fmCount} ${fmCount === 1 ? 'field' : 'fields'}`);
+    parts.push(pluralise(fmCount, 'field'));
   }
 
   const blockCount = diff.block_changes?.length ?? 0;
   if (blockCount > 0) {
-    parts.push(`${blockCount} ${blockCount === 1 ? 'block' : 'blocks'}`);
+    parts.push(pluralise(blockCount, 'block'));
   }
 
   return parts.length > 0 ? parts.join(' · ') : 'no changes';
@@ -125,12 +126,12 @@ export function buildChangesetQuickPickItems(
     {
       action: 'promote_all',
       label: '$(check) Promote all',
-      description: `Land all ${drafts.length} drafts in changeset ${changesetId}`,
+      description: `Land all ${pluralise(drafts.length, 'draft')} in changeset ${changesetId}`,
     },
     {
       action: 'discard_all',
       label: '$(trash) Discard all',
-      description: `Refuse all ${drafts.length} drafts in changeset ${changesetId}`,
+      description: `Refuse all ${pluralise(drafts.length, 'draft')} in changeset ${changesetId}`,
     },
   ];
 
@@ -185,6 +186,17 @@ export function resolveReviewTarget(arg: unknown, activeUri?: string): ReviewTar
       }
     }
 
+    // A draft payload carries both its own `draft_id` and the parent `changeset_id`
+    // it belongs to. Checking draft identity first ensures an object naming a draft
+    // opens that draft's diff; matching changeset first would misroute any draft in
+    // a changeset into the changeset QuickPick.
+    if ('draftId' in arg && typeof (arg as { draftId: unknown }).draftId === 'string') {
+      return { kind: 'draft', draftId: (arg as { draftId: string }).draftId };
+    }
+    if ('draft_id' in arg && typeof (arg as { draft_id: unknown }).draft_id === 'string') {
+      return { kind: 'draft', draftId: (arg as { draft_id: string }).draft_id };
+    }
+
     if ('changesetId' in arg && typeof (arg as { changesetId: unknown }).changesetId === 'string') {
       return { kind: 'changeset', changesetId: (arg as { changesetId: string }).changesetId };
     }
@@ -193,13 +205,6 @@ export function resolveReviewTarget(arg: unknown, activeUri?: string): ReviewTar
       typeof (arg as { changeset_id: unknown }).changeset_id === 'string'
     ) {
       return { kind: 'changeset', changesetId: (arg as { changeset_id: string }).changeset_id };
-    }
-
-    if ('draftId' in arg && typeof (arg as { draftId: unknown }).draftId === 'string') {
-      return { kind: 'draft', draftId: (arg as { draftId: string }).draftId };
-    }
-    if ('draft_id' in arg && typeof (arg as { draft_id: unknown }).draft_id === 'string') {
-      return { kind: 'draft', draftId: (arg as { draft_id: string }).draft_id };
     }
 
     // A `vscode.Uri` arrives from an editor-title action: read its parts,

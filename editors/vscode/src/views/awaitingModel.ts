@@ -1,5 +1,6 @@
 import type { Changeset, Draft, Event, Skill } from '../client';
 import { pageSlug } from '../shared/pageId';
+import { pluralise } from '../shared/text';
 
 export type AwaitingKind = 'changeset' | 'draft' | 'confirm_gate';
 
@@ -41,7 +42,7 @@ export function changesetRow(changeset: Changeset): ChangesetRow {
     kind: 'changeset',
     id: changeset.changeset_id,
     label: changeset.changeset_id,
-    description: `${changeset.drafts} drafts · ${changeset.author}`,
+    description: `${pluralise(changeset.drafts, 'draft')} · ${changeset.author}`,
     timestamp: changeset.created_at ?? '',
     changeset,
   };

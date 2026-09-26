@@ -6,6 +6,8 @@ import { createTransport } from './transport';
 import type {
   CaptureEventRequest,
   Changeset,
+  CreateDraftRequest,
+  CreateDraftResponse,
   DiffDraftResponse,
   Draft,
   Event,
@@ -179,6 +181,10 @@ export class EscurelClient {
   }
 
   // ── review ───────────────────────────────────────────────────────
+
+  createDraft(req: CreateDraftRequest): Promise<CreateDraftResponse> {
+    return this.call('create_draft', { ...req });
+  }
 
   async listChangesets(limit?: number): Promise<Changeset[]> {
     return (await this.call<{ changesets: Changeset[] }>('list_changesets', limit ? { limit } : {}))

@@ -35,6 +35,10 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
     return tree;
   }
 
+  get badge(): vscode.ViewBadge | undefined {
+    return this.treeView?.badge;
+  }
+
   refresh(): void {
     this.changed.fire(undefined);
   }
