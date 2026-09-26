@@ -1,0 +1,132 @@
+{
+  "tool": "expand",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": {
+      "name": "expand",
+      "arguments": {
+        "page_id": "markdown/instances/engagement__ha-spine.md",
+        "raw": true
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"page\":{\"page_id\":\"markdown/instances/engagement__ha-spine.md\",\"slug\":\"ha-spine\",\"skill\":\"engagement\",\"page_type\":\"instance\",\"last_written_by\":null},\"frontmatter\":{\"type\":\"instance\",\"skill\":\"engagement\",\"id\":\"ha-spine\",\"at\":\"2026-04-20T10:00:00Z\",\"with\":[[\"contact::brandt\"]],\"channel\":\"event\",\"spine\":true,\"phase\":\"qualifying\",\"commercial_model\":\"undetermined\",\"contract_value\":\"TBD\",\"running_margin\":\"—\",\"risk_surface\":\"0.62 · elevated\",\"sentiment_trend\":\"0.60 · neutral · forming\",\"primary_sponsor\":[[\"contact::lang\"]],\"champion\":[[\"contact::brandt\"]],\"orgunit\":[[\"orgunit::ha-plant-eng\"]],\"customer\":[[\"customer::hoffmann-automotive\"]]},\"body\":\"\\n# Engagement — Hoffmann Automotive S&OP arc\\n\\nThe continuous spine for [[customer::hoffmann-automotive]] —\\nopened from the Auto Tier-2 DACH motion via [[contact::brandt]] and\\nlanding in [[orgunit::ha-plant-eng]]. Currently qualifying.\\n\\n## Lineage\\n\\n- [[lead::ha-followup]] — sales-phase · BANT · *qualified*\\n- [[opportunity::ha-erp]] — sales-phase · MEDDPICC · *negotiating*\\n- [[project::ha-rollout]] — delivery-phase · *planned*\\n\\n## Buying group\\n\\n- [[contact::lang]] — CIO · economic buyer\\n- [[contact::brandt]] — Lead Data Architect · champion\\n- [[contact::keller]] — Strategic Procurement\\n\",\"blocks\":[{\"anchor\":\"blk-0\",\"content\":\"\\n# Engagement — Hoffmann Automotive S&OP arc\\n\\nThe continuous spine for [[customer::hoffmann-automotive]] —\\nopened from the Auto Tier-2 DACH motion via [[contact::brandt]] and\\nlanding in [[orgunit::ha-plant-eng]]. Currently qualifying.\\n\\n## Lineage\\n\\n- [[lead::ha-followup]] — sales-phase · BANT · *qualified*\\n- [[opportunity::ha-erp]] — sales-phase · MEDDPICC · *negotiating*\\n- [[project::ha-rollout]] — delivery-phase · *planned*\\n\\n## Buying group\\n\\n- [[contact::lang]] — CIO · economic buyer\\n- [[contact::brandt]] — Lead Data Architect · champion\\n- [[contact::keller]] — Strategic Procurement\\n\"}],\"wikilinks_out\":[{\"skill\":\"customer\",\"id\":\"hoffmann-automotive\",\"anchor\":null,\"version\":null,\"alias\":null},{\"skill\":\"contact\",\"id\":\"brandt\",\"anchor\":null,\"version\":null,\"alias\":null},{\"skill\":\"orgunit\",\"id\":\"ha-plant-eng\",\"anchor\":null,\"version\":null,\"alias\":null},{\"skill\":\"lead\",\"id\":\"ha-followup\",\"anchor\":null,\"version\":null,\"alias\":null},{\"skill\":\"opportunity\",\"id\":\"ha-erp\",\"anchor\":null,\"version\":null,\"alias\":null},{\"skill\":\"project\",\"id\":\"ha-rollout\",\"anchor\":null,\"version\":null,\"alias\":null},{\"skill\":\"contact\",\"id\":\"lang\",\"anchor\":null,\"version\":null,\"alias\":null},{\"skill\":\"contact\",\"id\":\"brandt\",\"anchor\":null,\"version\":null,\"alias\":null},{\"skill\":\"contact\",\"id\":\"keller\",\"anchor\":null,\"version\":null,\"alias\":null}],\"content_sha256\":\"3a9c8023486580715b08422327ea5dddafc7f5a513fda2518672856ac071827c\",\"content\":\"---\\ntype: instance\\nskill: engagement\\nid: ha-spine\\nat: 2026-04-20T10:00:00Z\\nwith: [[contact::brandt]]\\nchannel: event\\nspine: true\\nphase: qualifying\\ncommercial_model: undetermined\\ncontract_value: TBD\\nrunning_margin: \\\"—\\\"\\nrisk_surface: 0.62 · elevated\\nsentiment_trend: 0.60 · neutral · forming\\nprimary_sponsor: [[contact::lang]]\\nchampion: [[contact::brandt]]\\norgunit: [[orgunit::ha-plant-eng]]\\ncustomer: [[customer::hoffmann-automotive]]\\n---\\n\\n# Engagement — Hoffmann Automotive S&OP arc\\n\\nThe continuous spine for [[customer::hoffmann-automotive]] —\\nopened from the Auto Tier-2 DACH motion via [[contact::brandt]] and\\nlanding in [[orgunit::ha-plant-eng]]. Currently qualifying.\\n\\n## Lineage\\n\\n- [[lead::ha-followup]] — sales-phase · BANT · *qualified*\\n- [[opportunity::ha-erp]] — sales-phase · MEDDPICC · *negotiating*\\n- [[project::ha-rollout]] — delivery-phase · *planned*\\n\\n## Buying group\\n\\n- [[contact::lang]] — CIO · economic buyer\\n- [[contact::brandt]] — Lead Data Architect · champion\\n- [[contact::keller]] — Strategic Procurement\\n\",\"version\":\"v3\"}"
+        }
+      ],
+      "structuredContent": {
+        "page": {
+          "page_id": "markdown/instances/engagement__ha-spine.md",
+          "slug": "ha-spine",
+          "skill": "engagement",
+          "page_type": "instance",
+          "last_written_by": null
+        },
+        "frontmatter": {
+          "type": "instance",
+          "skill": "engagement",
+          "id": "ha-spine",
+          "at": "2026-04-20T10:00:00Z",
+          "with": [["contact::brandt"]],
+          "channel": "event",
+          "spine": true,
+          "phase": "qualifying",
+          "commercial_model": "undetermined",
+          "contract_value": "TBD",
+          "running_margin": "—",
+          "risk_surface": "0.62 · elevated",
+          "sentiment_trend": "0.60 · neutral · forming",
+          "primary_sponsor": [["contact::lang"]],
+          "champion": [["contact::brandt"]],
+          "orgunit": [["orgunit::ha-plant-eng"]],
+          "customer": [["customer::hoffmann-automotive"]]
+        },
+        "body": "\n# Engagement — Hoffmann Automotive S&OP arc\n\nThe continuous spine for [[customer::hoffmann-automotive]] —\nopened from the Auto Tier-2 DACH motion via [[contact::brandt]] and\nlanding in [[orgunit::ha-plant-eng]]. Currently qualifying.\n\n## Lineage\n\n- [[lead::ha-followup]] — sales-phase · BANT · *qualified*\n- [[opportunity::ha-erp]] — sales-phase · MEDDPICC · *negotiating*\n- [[project::ha-rollout]] — delivery-phase · *planned*\n\n## Buying group\n\n- [[contact::lang]] — CIO · economic buyer\n- [[contact::brandt]] — Lead Data Architect · champion\n- [[contact::keller]] — Strategic Procurement\n",
+        "blocks": [
+          {
+            "anchor": "blk-0",
+            "content": "\n# Engagement — Hoffmann Automotive S&OP arc\n\nThe continuous spine for [[customer::hoffmann-automotive]] —\nopened from the Auto Tier-2 DACH motion via [[contact::brandt]] and\nlanding in [[orgunit::ha-plant-eng]]. Currently qualifying.\n\n## Lineage\n\n- [[lead::ha-followup]] — sales-phase · BANT · *qualified*\n- [[opportunity::ha-erp]] — sales-phase · MEDDPICC · *negotiating*\n- [[project::ha-rollout]] — delivery-phase · *planned*\n\n## Buying group\n\n- [[contact::lang]] — CIO · economic buyer\n- [[contact::brandt]] — Lead Data Architect · champion\n- [[contact::keller]] — Strategic Procurement\n"
+          }
+        ],
+        "wikilinks_out": [
+          {
+            "skill": "customer",
+            "id": "hoffmann-automotive",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          },
+          {
+            "skill": "contact",
+            "id": "brandt",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          },
+          {
+            "skill": "orgunit",
+            "id": "ha-plant-eng",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          },
+          {
+            "skill": "lead",
+            "id": "ha-followup",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          },
+          {
+            "skill": "opportunity",
+            "id": "ha-erp",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          },
+          {
+            "skill": "project",
+            "id": "ha-rollout",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          },
+          {
+            "skill": "contact",
+            "id": "lang",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          },
+          {
+            "skill": "contact",
+            "id": "brandt",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          },
+          {
+            "skill": "contact",
+            "id": "keller",
+            "anchor": null,
+            "version": null,
+            "alias": null
+          }
+        ],
+        "content_sha256": "3a9c8023486580715b08422327ea5dddafc7f5a513fda2518672856ac071827c",
+        "content": "---\ntype: instance\nskill: engagement\nid: ha-spine\nat: 2026-04-20T10:00:00Z\nwith: [[contact::brandt]]\nchannel: event\nspine: true\nphase: qualifying\ncommercial_model: undetermined\ncontract_value: TBD\nrunning_margin: \"—\"\nrisk_surface: 0.62 · elevated\nsentiment_trend: 0.60 · neutral · forming\nprimary_sponsor: [[contact::lang]]\nchampion: [[contact::brandt]]\norgunit: [[orgunit::ha-plant-eng]]\ncustomer: [[customer::hoffmann-automotive]]\n---\n\n# Engagement — Hoffmann Automotive S&OP arc\n\nThe continuous spine for [[customer::hoffmann-automotive]] —\nopened from the Auto Tier-2 DACH motion via [[contact::brandt]] and\nlanding in [[orgunit::ha-plant-eng]]. Currently qualifying.\n\n## Lineage\n\n- [[lead::ha-followup]] — sales-phase · BANT · *qualified*\n- [[opportunity::ha-erp]] — sales-phase · MEDDPICC · *negotiating*\n- [[project::ha-rollout]] — delivery-phase · *planned*\n\n## Buying group\n\n- [[contact::lang]] — CIO · economic buyer\n- [[contact::brandt]] — Lead Data Architect · champion\n- [[contact::keller]] — Strategic Procurement\n",
+        "version": "v3"
+      },
+      "isError": false
+    }
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "tool": "capture_event",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "tools/call",
+    "params": {
+      "name": "capture_event",
+      "arguments": {
+        "label_skill": "escurel:review-comment",
+        "source": "workbench",
+        "mime": "text/plain",
+        "body": "the second paragraph overstates the risk",
+        "provenance": {
+          "review": {
+            "draft_id": "01M3CAHP17503GSZN7QRRA03GA",
+            "line": 4
+          }
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"event_id\":\"01M3DTTG8MTTQE3T19QC0ZQZTT\",\"at\":\"2026-09-26T03:05:59Z\",\"source\":\"workbench\",\"mime\":\"text/plain\",\"label_skill\":\"escurel:review-comment\",\"instance_page_id\":\"markdown/instances/engagement__ha-spine.md\",\"status\":\"processed\",\"title\":\"\",\"body\":\"the second paragraph overstates the risk\",\"provenance\":{\"review\":{\"draft_id\":\"01M3CAHP17503GSZN7QRRA03GA\",\"commented_by\":\"anonymous\",\"line\":4,\"changeset_id\":\"01M3CAHP14HT8AGG0CH60H73HM\"},\"captured_by\":\"anonymous\"},\"kind\":\"system\",\"root_event_id\":\"01M3DTTG8MTTQE3T19QC0ZQZTT\",\"run_id\":null}"
+        }
+      ],
+      "structuredContent": {
+        "event_id": "01M3DTTG8MTTQE3T19QC0ZQZTT",
+        "at": "2026-09-26T03:05:59Z",
+        "source": "workbench",
+        "mime": "text/plain",
+        "label_skill": "escurel:review-comment",
+        "instance_page_id": "markdown/instances/engagement__ha-spine.md",
+        "status": "processed",
+        "title": "",
+        "body": "the second paragraph overstates the risk",
+        "provenance": {
+          "review": {
+            "draft_id": "01M3CAHP17503GSZN7QRRA03GA",
+            "commented_by": "anonymous",
+            "line": 4,
+            "changeset_id": "01M3CAHP14HT8AGG0CH60H73HM"
+          },
+          "captured_by": "anonymous"
+        },
+        "kind": "system",
+        "root_event_id": "01M3DTTG8MTTQE3T19QC0ZQZTT",
+        "run_id": null
+      },
+      "isError": false
+    }
+  }
+}

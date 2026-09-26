@@ -129,6 +129,24 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.promote",
+        "title": "Promote",
+        "category": "Escurel",
+        "icon": "$(check)"
+      },
+      {
+        "command": "escurel.discard",
+        "title": "Discard",
+        "category": "Escurel",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "escurel.submitComment",
+        "title": "Comment",
+        "category": "Escurel",
+        "icon": "$(send)"
+      },
+      {
         "command": "escurel.knowledge.loadMore",
         "title": "Load more"
       }
@@ -209,6 +227,18 @@
         {
           "command": "escurel.openReview",
           "when": "false"
+        },
+        {
+          "command": "escurel.promote",
+          "when": "resourceScheme == escurel-review"
+        },
+        {
+          "command": "escurel.discard",
+          "when": "resourceScheme == escurel-review"
+        },
+        {
+          "command": "escurel.submitComment",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -273,6 +303,26 @@
           "command": "escurel.showRaw",
           "when": "view == escurel.inbox && viewItem =~ /hasInstance/",
           "group": "1_open@2"
+        },
+        {
+          "command": "escurel.promote",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "escurel.promote",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft)$/",
+          "group": "1_review@1"
+        },
+        {
+          "command": "escurel.discard",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "escurel.discard",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft)$/",
+          "group": "1_review@2"
         }
       ],
       "editor/title": [
@@ -280,6 +330,23 @@
           "command": "escurel.showRaw",
           "when": "resourceScheme == escurel && activeCustomEditorId == escurel.pageAsUi",
           "group": "navigation"
+        },
+        {
+          "command": "escurel.promote",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@1"
+        },
+        {
+          "command": "escurel.discard",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@2"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "escurel.submitComment",
+          "group": "inline@1",
+          "when": "commentController == escurel-review"
         }
       ]
     },

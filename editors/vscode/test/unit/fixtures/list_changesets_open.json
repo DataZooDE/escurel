@@ -1,0 +1,41 @@
+{
+  "tool": "list_changesets",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "list_changesets",
+      "arguments": {}
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"changesets\":[{\"changeset_id\":\"01M3CAHP14HT8AGG0CH60H73HM\",\"drafts\":1,\"status\":\"open\",\"author\":\"anonymous\",\"created_at\":\"2026-09-25T13:02:19Z\",\"run_id\":null,\"root_event_id\":null,\"event_ids\":[\"01M3C286Y4T8QTQPJ4DDWA6S09\"],\"target_page_ids\":[\"markdown/instances/engagement__ha-spine.md\"]}]}"
+        }
+      ],
+      "structuredContent": {
+        "changesets": [
+          {
+            "changeset_id": "01M3CAHP14HT8AGG0CH60H73HM",
+            "drafts": 1,
+            "status": "open",
+            "author": "anonymous",
+            "created_at": "2026-09-25T13:02:19Z",
+            "run_id": null,
+            "root_event_id": null,
+            "event_ids": ["01M3C286Y4T8QTQPJ4DDWA6S09"],
+            "target_page_ids": ["markdown/instances/engagement__ha-spine.md"]
+          }
+        ]
+      },
+      "isError": false
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "tool": "list_drafts",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "list_drafts",
+      "arguments": {}
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"drafts\":[{\"draft_id\":\"01M3CAHP17503GSZN7QRRA03GA\",\"target_page_id\":\"markdown/instances/engagement__ha-spine.md\",\"content\":\"---\\ntype: instance\\nskill: engagement\\nid: ha-spine\\nat: 2026-04-20T10:00:00Z\\nwith: [[\\\"contact::brandt\\\"]]\\nchannel: event\\nspine: true\\nphase: qualifying\\ncommercial_model: undetermined\\ncontract_value: TBD\\nrunning_margin: —\\nrisk_surface: 0.62 · elevated\\nsentiment_trend: 0.60 · neutral · forming\\nprimary_sponsor: [[\\\"contact::lang\\\"]]\\nchampion: [[\\\"contact::brandt\\\"]]\\norgunit: [[\\\"orgunit::ha-plant-eng\\\"]]\\ncustomer: [[\\\"customer::hoffmann-automotive\\\"]]\\n---\\n\\n# Engagement — Hoffmann Automotive S&OP arc\\n\\nThe continuous spine for [[customer::hoffmann-automotive]] —\\nopened from the Auto Tier-2 DACH motion via [[contact::brandt]] and\\nlanding in [[orgunit::ha-plant-eng]]. Currently qualifying.\\n\\n## Lineage\\n\\n- [[lead::ha-followup]] — sales-phase · BANT · *qualified*\\n- [[opportunity::ha-erp]] — sales-phase · MEDDPICC · *negotiating*\\n- [[project::ha-rollout]] — delivery-phase · *planned*\\n\\n## Buying group\\n\\n- [[contact::lang]] — CIO · economic buyer\\n- [[contact::brandt]] — Lead Data Architect · champion\\n- [[contact::keller]] — Strategic Procurement\\n- folded event `01M3C286Y4T8QTQPJ4DDWA6S09`: Intro · Hoffmann Automotive plant-data platform\\n\",\"content_sha256\":\"5d4aaebe44d75d6f68c6c5468e41304ba7d5e915eb9702792cf3922ae93fea7f\",\"base_sha256\":\"3a9c8023486580715b08422327ea5dddafc7f5a513fda2518672856ac071827c\",\"author\":\"anonymous\",\"event_id\":\"01M3C286Y4T8QTQPJ4DDWA6S09\",\"status\":\"open\",\"reason\":\"\",\"decided_by\":\"\",\"created_at\":\"2026-09-25T13:02:19Z\",\"changeset_id\":\"01M3CAHP14HT8AGG0CH60H73HM\",\"base_version\":\"v3\",\"run_id\":null,\"root_event_id\":null}]}"
+        }
+      ],
+      "structuredContent": {
+        "drafts": [
+          {
+            "draft_id": "01M3CAHP17503GSZN7QRRA03GA",
+            "target_page_id": "markdown/instances/engagement__ha-spine.md",
+            "content": "---\ntype: instance\nskill: engagement\nid: ha-spine\nat: 2026-04-20T10:00:00Z\nwith: [[\"contact::brandt\"]]\nchannel: event\nspine: true\nphase: qualifying\ncommercial_model: undetermined\ncontract_value: TBD\nrunning_margin: —\nrisk_surface: 0.62 · elevated\nsentiment_trend: 0.60 · neutral · forming\nprimary_sponsor: [[\"contact::lang\"]]\nchampion: [[\"contact::brandt\"]]\norgunit: [[\"orgunit::ha-plant-eng\"]]\ncustomer: [[\"customer::hoffmann-automotive\"]]\n---\n\n# Engagement — Hoffmann Automotive S&OP arc\n\nThe continuous spine for [[customer::hoffmann-automotive]] —\nopened from the Auto Tier-2 DACH motion via [[contact::brandt]] and\nlanding in [[orgunit::ha-plant-eng]]. Currently qualifying.\n\n## Lineage\n\n- [[lead::ha-followup]] — sales-phase · BANT · *qualified*\n- [[opportunity::ha-erp]] — sales-phase · MEDDPICC · *negotiating*\n- [[project::ha-rollout]] — delivery-phase · *planned*\n\n## Buying group\n\n- [[contact::lang]] — CIO · economic buyer\n- [[contact::brandt]] — Lead Data Architect · champion\n- [[contact::keller]] — Strategic Procurement\n- folded event `01M3C286Y4T8QTQPJ4DDWA6S09`: Intro · Hoffmann Automotive plant-data platform\n",
+            "content_sha256": "5d4aaebe44d75d6f68c6c5468e41304ba7d5e915eb9702792cf3922ae93fea7f",
+            "base_sha256": "3a9c8023486580715b08422327ea5dddafc7f5a513fda2518672856ac071827c",
+            "author": "anonymous",
+            "event_id": "01M3C286Y4T8QTQPJ4DDWA6S09",
+            "status": "open",
+            "reason": "",
+            "decided_by": "",
+            "created_at": "2026-09-25T13:02:19Z",
+            "changeset_id": "01M3CAHP14HT8AGG0CH60H73HM",
+            "base_version": "v3",
+            "run_id": null,
+            "root_event_id": null
+          }
+        ]
+      },
+      "isError": false
+    }
+  }
+}

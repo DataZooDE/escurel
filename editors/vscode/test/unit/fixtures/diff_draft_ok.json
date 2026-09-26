@@ -1,0 +1,45 @@
+{
+  "tool": "diff_draft",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "diff_draft",
+      "arguments": {
+        "draft_id": "01M3CAHP17503GSZN7QRRA03GA"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"ok\":true,\"draft_id\":\"01M3CAHP17503GSZN7QRRA03GA\",\"target_page_id\":\"markdown/instances/engagement__ha-spine.md\",\"exists\":true,\"base_moved\":false,\"run_id\":null,\"root_event_id\":null,\"frontmatter_changes\":[],\"block_changes\":[{\"anchor\":\"blk-0\",\"kind\":\"replace\",\"preview\":\"# Engagement — Hoffmann Automotive S&OP arc\\n\\nThe continuous spine for [[customer::hoffmann-automotive]] —\\nopened from the Auto Tier-2 DACH motion via [[contact::brandt]] and\\nlanding in [[orgunit::ha-plant-eng]]. Currently qualifying.\\n\\n## Lineage\\n\\n- [[lead::ha-followup]] — sales-p\"}]}"
+        }
+      ],
+      "structuredContent": {
+        "ok": true,
+        "draft_id": "01M3CAHP17503GSZN7QRRA03GA",
+        "target_page_id": "markdown/instances/engagement__ha-spine.md",
+        "exists": true,
+        "base_moved": false,
+        "run_id": null,
+        "root_event_id": null,
+        "frontmatter_changes": [],
+        "block_changes": [
+          {
+            "anchor": "blk-0",
+            "kind": "replace",
+            "preview": "# Engagement — Hoffmann Automotive S&OP arc\n\nThe continuous spine for [[customer::hoffmann-automotive]] —\nopened from the Auto Tier-2 DACH motion via [[contact::brandt]] and\nlanding in [[orgunit::ha-plant-eng]]. Currently qualifying.\n\n## Lineage\n\n- [[lead::ha-followup]] — sales-p"
+          }
+        ]
+      },
+      "isError": false
+    }
+  }
+}
