@@ -6,6 +6,8 @@ import { EscurelFileSystem } from './fs/provider';
 import { registerSkillDiagnostics } from './skills/diagnostics';
 import { WikilinkProvider } from './skills/links';
 import { KnowledgeTree } from './views/knowledge';
+import { InboxTree } from './views/inbox';
+import { AwaitingTree } from './views/awaiting';
 import { PageAsUiEditor } from './editors/pageAsUi';
 import { openPage, resolveCommand, searchCommand } from './commands/search';
 
@@ -13,6 +15,8 @@ import { openPage, resolveCommand, searchCommand } from './commands/search';
 export interface EscurelApi {
   services: Services;
   knowledge: KnowledgeTree;
+  inbox: InboxTree;
+  awaiting: AwaitingTree;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi {
@@ -22,7 +26,15 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);
-  context.subscriptions.push(services.onDidChange(() => knowledge.refresh()));
+  const inbox = InboxTree.register(context, () => services.client);
+  const awaiting = AwaitingTree.register(context, () => services.client);
+  context.subscriptions.push(
+    services.onDidChange(() => {
+      knowledge.refresh();
+      inbox.refresh();
+      awaiting.refresh();
+    }),
+  );
   PageAsUiEditor.register(context, () => services.client, services.onDidChange);
 
   context.subscriptions.push(
@@ -63,7 +75,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     ),
     vscode.commands.registerCommand(
       'escurel.showRaw',
-      (arg?: string | vscode.Uri | { pageId: string }) => {
+      (arg?: string | vscode.Uri | { pageId?: string; body?: string | null }) => {
         const pageId =
           typeof arg === 'string'
             ? arg
@@ -71,10 +83,23 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
               ? arg.path.replace(/^\//, 'markdown/')
               : arg?.pageId;
         if (pageId) return openPage(pageId, true);
+        if (typeof arg === 'object' && arg && 'body' in arg && arg.body) {
+          return vscode.workspace
+            .openTextDocument({ content: arg.body, language: 'markdown' })
+            .then((doc) => vscode.window.showTextDocument(doc, { preview: true }));
+        }
         const uri = vscode.window.activeTextEditor?.document.uri;
         if (uri?.scheme === 'escurel') return vscode.window.showTextDocument(uri);
         return undefined;
       },
+    ),
+    vscode.commands.registerCommand('escurel.openThread', () =>
+      vscode.window.showInformationMessage('escurel: the Thread view arrives in M3.'),
+    ),
+    vscode.commands.registerCommand('escurel.openReview', () =>
+      vscode.window.showInformationMessage(
+        'escurel: the review surface arrives in the next slice.',
+      ),
     ),
     vscode.commands.registerCommand('escurel.startSkill', () =>
       vscode.window.showInformationMessage(
@@ -83,7 +108,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     ),
   );
   log().info('escurel: activated');
-  return { services, knowledge };
+  return { services, knowledge, inbox, awaiting };
 }
 
 export function deactivate(): void {}

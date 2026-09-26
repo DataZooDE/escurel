@@ -1,4 +1,5 @@
 import type { Instance, Skill } from '../client';
+import { pageSlug } from '../shared/pageId';
 
 /** The chips the mock shows beside a skill: autonomy, event-typed, a non-markdown backend, a non-overlay layer, shadows. */
 export function chipsForSkill(s: Skill): string[] {
@@ -46,10 +47,7 @@ export interface InstanceRow {
 const TITLE_KEYS = ['title', 'name', 'summary', 'subject', 'label'];
 
 export function instanceRow(i: Instance): InstanceRow {
-  // Flat corpora name a page `<skill>__<id>.md`; the tree shows the id, not
-  // the file name (a nested `<skill>/<id>.md` already reads as the id).
-  const file = i.page_id.split('/').pop()!.replace(/\.md$/, '');
-  const slug = file.startsWith(`${i.skill}__`) ? file.slice(i.skill.length + 2) : file;
+  const slug = pageSlug(i.page_id, i.skill);
   const fm = i.frontmatter ?? {};
   const title = TITLE_KEYS.map((k) => fm[k]).find(
     (v) => typeof v === 'string' && v.trim() && v !== slug,
