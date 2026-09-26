@@ -78,7 +78,11 @@ suite('M1', () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
   });
 
-  test('an instance opens as page-as-UI, and Show Markdown opens it read-only', async () => {
+  // Instances were read-only until the personal-draft write path landed (SPEC §7
+  // PR-1). They are writable now, and a save is HELD as a draft rather than
+  // written to the page — which `test/integration/suite/m2drafts.test.ts` walks
+  // end to end. What stays true here is that Show Markdown opens the stored bytes.
+  test('an instance opens as page-as-UI, and Show Markdown opens its markdown', async () => {
     const page = (await api.services.client.listInstancesPage({ skill_id: 'customer', limit: 1 }))
       .instances[0]!;
     await vscode.commands.executeCommand('escurel.openInstance', page.page_id);
@@ -91,7 +95,9 @@ suite('M1', () => {
     const doc = await until(() => vscode.window.activeTextEditor?.document);
     assert.equal(doc.uri.scheme, 'escurel');
     const stat = await vscode.workspace.fs.stat(doc.uri);
-    assert.equal(stat.permissions, vscode.FilePermission.Readonly);
+    assert.equal(stat.permissions, undefined, 'an instance is editable through its draft');
+    const stored = await api.services.client.expand({ page_id: page.page_id, raw: true });
+    assert.equal(doc.getText(), stored.content, 'Show Markdown shows the stored bytes');
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
   });
 

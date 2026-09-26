@@ -4,6 +4,7 @@ export const workspace = {
   getConfiguration: () => ({ get: () => undefined }),
   onDidChangeConfiguration: () => ({ dispose() {} }),
 };
+let windowStateListener: ((e: { focused: boolean }) => void) | undefined;
 export const window = {
   createOutputChannel: () => ({ info() {}, warn() {}, error() {}, debug() {}, trace() {} }),
   showInformationMessage: () => Promise.resolve(undefined),
@@ -11,6 +12,17 @@ export const window = {
   showErrorMessage: () => Promise.resolve(undefined),
   showInputBox: () => Promise.resolve(undefined),
   showQuickPick: () => Promise.resolve(undefined),
+  onDidChangeWindowState: (listener: (e: { focused: boolean }) => void) => {
+    windowStateListener = listener;
+    return {
+      dispose() {
+        if (windowStateListener === listener) windowStateListener = undefined;
+      },
+    };
+  },
+  _simulateWindowStateChange: (e: { focused: boolean }) => {
+    windowStateListener?.(e);
+  },
 };
 export const commands = {
   registerCommand: () => ({ dispose() {} }),

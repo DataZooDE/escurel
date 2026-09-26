@@ -4,8 +4,12 @@ import type { TokenSource } from '../auth/tokenSource';
 import { EscurelError } from './errors';
 import { createTransport } from './transport';
 import type {
+  ApplyOpRequest,
+  ApplyOpResponse,
   CaptureEventRequest,
   Changeset,
+  CloseSessionRequest,
+  CloseSessionResponse,
   CreateDraftRequest,
   CreateDraftResponse,
   DiffDraftResponse,
@@ -24,6 +28,8 @@ import type {
   ListLineageResponse,
   MintAgentTokenRequest,
   MintAgentTokenResponse,
+  OpenSessionRequest,
+  OpenSessionResponse,
   PromoteChangesetResponse,
   PromoteDraftResponse,
   ReportProgressRequest,
@@ -219,5 +225,19 @@ export class EscurelClient {
     reason?: string;
   }): Promise<{ ok: true; changeset_id: string; discarded: number }> {
     return this.call('discard_changeset', { ...req });
+  }
+
+  // ── live sessions ──────────────────────────────────────────────────
+
+  openSession(req: OpenSessionRequest): Promise<OpenSessionResponse> {
+    return this.call('open_session', { ...req });
+  }
+
+  applyOp(req: ApplyOpRequest): Promise<ApplyOpResponse> {
+    return this.call('apply_op', { ...req });
+  }
+
+  closeSession(req: CloseSessionRequest): Promise<CloseSessionResponse> {
+    return this.call('close_session', { ...req });
   }
 }

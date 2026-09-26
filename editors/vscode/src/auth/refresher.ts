@@ -28,6 +28,11 @@ export interface RefresherDeps {
  */
 export class TokenRefresher implements TokenSource {
   private inflight?: Promise<string | undefined>;
+
+  /** The stored session's subject; `undefined` in the no-verifier mode. */
+  async subject(): Promise<string | undefined> {
+    return (await this.deps.load())?.subject;
+  }
   private readonly listeners = new Set<(token: string | undefined) => void>();
 
   constructor(private readonly deps: RefresherDeps) {}
