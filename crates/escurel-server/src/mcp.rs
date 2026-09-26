@@ -1128,7 +1128,12 @@ async fn dispatch_tools_call(
 
 #[derive(Deserialize)]
 struct OpenSessionArgs {
-    page_id: String,
+    page_id: Option<String>,
+    /// A live PERSONAL DRAFT to edit instead of a page (SPEC §7 PR-1). The
+    /// session's ops mutate the held bytes; the target page does not move
+    /// until the draft is promoted, which keeps every guard the draft already
+    /// has. Exclusive with `page_id`.
+    draft_id: Option<String>,
 }
 
 /// Whether `caller` may WRITE the page a session targets — the SAME policy
@@ -1173,6 +1178,52 @@ async fn session_write_allowed(
     Ok(true)
 }
 
+/// The draft a session may be opened on, or a refusal.
+///
+/// A held draft is PERSONAL until it is promoted (SPEC §7): its author is the
+/// only one who may edit it, admin aside. That is stricter than the page ACL
+/// `list_drafts` reads, and deliberately so — a colleague who may write the
+/// target page still has no business typing into someone's unfinished work.
+///
+/// Absence and denial are ONE answer. "No such draft" and "not yours" must
+/// read identically, or the refusal becomes an oracle for what other people
+/// are drafting. A decided draft is the exception: the caller already knows it
+/// exists, so `already_decided` is the honest answer and the useful one.
+async fn open_draft_for_session(
+    ix: &Indexer,
+    caller: &AclCaller<'_>,
+    draft_id: &str,
+) -> Result<escurel_index::drafts::DraftInfo, JsonRpcError> {
+    let denied = || {
+        JsonRpcError {
+            code: -32000,
+            message: "open_session: no such draft, or not yours to edit".to_owned(),
+            data: None,
+        }
+        .with_code("forbidden", false)
+    };
+    let draft = ix
+        .get_draft(draft_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("open_session draft: {e}")))?
+        .ok_or_else(denied)?;
+    if !caller.is_admin && draft.author != caller.subject {
+        return Err(denied());
+    }
+    if draft.status != "open" {
+        return Err(JsonRpcError {
+            code: -32000,
+            message: format!(
+                "open_session: draft `{draft_id}` was already {} — there is nothing left to edit",
+                draft.status
+            ),
+            data: None,
+        }
+        .with_code("already_decided", false));
+    }
+    Ok(draft)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn tool_open_session(
     backend: Option<&Arc<dyn CrdtBackend>>,
@@ -1188,19 +1239,53 @@ async fn tool_open_session(
     let backend = backend
         .ok_or_else(|| JsonRpcError::internal("live CRDT mode not enabled on this server"))?;
 
+    // A session edits a page or a draft, never both and never neither: the two
+    // commit to different places, so an ambiguous target has no safe reading.
+    let (page_id, draft) = match (&a.page_id, &a.draft_id) {
+        (Some(_), Some(_)) => {
+            return Err(JsonRpcError::invalid_params(
+                "open_session: name `page_id` or `draft_id`, not both",
+            ));
+        }
+        (None, None) => {
+            return Err(JsonRpcError::invalid_params(
+                "open_session: name the page (`page_id`) or the draft (`draft_id`) to edit",
+            ));
+        }
+        (Some(page_id), None) => {
+            // `draft:` is the session-key namespace for held bytes. A page id
+            // is always a repo-relative `markdown/...` path, so one starting
+            // with the prefix is a forged draft key — it would seize the real
+            // author's one-session-per-draft reservation and route the commit
+            // into the draft store.
+            if page_id.starts_with(crate::session::DRAFT_KEY_PREFIX) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "open_session: `{}` is not a page id; name a draft with `draft_id`",
+                    crate::session::DRAFT_KEY_PREFIX
+                )));
+            }
+            (page_id.clone(), None)
+        }
+        (None, Some(draft_id)) => {
+            let ix = indexer.ok_or_else(|| {
+                JsonRpcError::internal("open_session: drafts need an indexed corpus")
+            })?;
+            let draft = open_draft_for_session(ix, &caller, draft_id).await?;
+            (draft.target_page_id.clone(), Some(draft))
+        }
+    };
+
     // Base-layer guard (REQ-LAYER-02): live co-authoring must not bypass
     // the `update_page` read-only guard — an open session's `apply_op`
     // stream would edit a base page byte by byte. The reserved-prefix
     // half is static (no indexer needed) and race-free.
-    if a.page_id
-        .starts_with(escurel_index::pack::RESERVED_BASE_PREFIX)
-    {
+    if page_id.starts_with(escurel_index::pack::RESERVED_BASE_PREFIX) {
         return Err(JsonRpcError {
             code: -32000,
             message: format!(
                 "layer_read_only: page `{}` is under the reserved `{}` namespace — \
                  pack-managed, read-only at this node",
-                a.page_id,
+                page_id,
                 escurel_index::pack::RESERVED_BASE_PREFIX
             ),
             data: None,
@@ -1211,7 +1296,7 @@ async fn tool_open_session(
     // stored base pages to guard beyond the prefix above.
     if let Some(ix) = indexer {
         let layer = ix
-            .page_layer(&a.page_id)
+            .page_layer(&page_id)
             .await
             .map_err(|e| JsonRpcError::internal(format!("open_session layer guard: {e}")))?;
         if let Some(layer) = layer.filter(|l| l.starts_with("base@")) {
@@ -1221,7 +1306,7 @@ async fn tool_open_session(
                     "layer_read_only: page `{}` is layer `{layer}` — imported from a \
                      subscribed pack and read-only at this node; author an overlay \
                      page to specialise it",
-                    a.page_id
+                    page_id
                 ),
                 data: None,
             }
@@ -1246,10 +1331,15 @@ async fn tool_open_session(
     //
     // Session-only servers (`indexer = None`) keep their behaviour: they have
     // no page corpus, so absence is their normal state rather than a gap.
-    if write_acl != crate::server::WriteAclMode::Off
+    // A DRAFT session is exempt: `open_draft_for_session` has already decided
+    // whose it is, and a draft may legitimately propose a page that does not
+    // exist yet (`create_draft` accepts a `target_page_id` with no page behind
+    // it). Denying absence here would make exactly those drafts uneditable.
+    if draft.is_none()
+        && write_acl != crate::server::WriteAclMode::Off
         && let Some(ix) = indexer
         && ix
-            .read_page_markdown(&a.page_id)
+            .read_page_markdown(&page_id)
             .await
             .map_err(|e| JsonRpcError::internal(format!("open_session existence: {e}")))?
             .is_none()
@@ -1258,7 +1348,7 @@ async fn tool_open_session(
             code: -32000,
             message: format!(
                 "open_session denied: caller `{}` may not open a session on `{}`",
-                caller.subject, a.page_id
+                caller.subject, page_id
             ),
             data: None,
         }
@@ -1267,12 +1357,12 @@ async fn tool_open_session(
 
     if write_acl != crate::server::WriteAclMode::Off
         && let Some(ix) = indexer
-        && !session_write_allowed(ix, &caller, &a.page_id, None).await?
+        && !session_write_allowed(ix, &caller, &page_id, None).await?
     {
         if write_acl == crate::server::WriteAclMode::Log {
             tracing::warn!(
                 subject = %caller.subject,
-                page_id = %a.page_id,
+                page_id = %page_id,
                 "write-ACL would deny this open_session (log mode) — allowing"
             );
         } else {
@@ -1280,7 +1370,7 @@ async fn tool_open_session(
                 code: -32000,
                 message: format!(
                     "open_session denied: caller `{}` does not own instance `{}`",
-                    caller.subject, a.page_id
+                    caller.subject, page_id
                 ),
                 data: None,
             }
@@ -1314,18 +1404,28 @@ async fn tool_open_session(
     // session manager because this is the layer that has the indexer, and a
     // session-only server (`indexer = None`) genuinely has no page to seed
     // from — its documents are the whole story.
-    let seed = match indexer {
-        Some(ix) => ix
-            .read_page_markdown(&a.page_id)
+    // A draft session starts from the DRAFT's held bytes, not the page's: the
+    // point of editing a draft is to carry on from what was proposed.
+    let seed = match (&draft, indexer) {
+        (Some(d), _) => Some(d.content.clone()),
+        (None, Some(ix)) => ix
+            .read_page_markdown(&page_id)
             .await
             .map_err(|e| JsonRpcError::internal(format!("open_session seed: {e}")))?,
-        None => None,
+        (None, None) => None,
+    };
+
+    // The session key: the draft when there is one, so its document and its
+    // one-session-per-target reservation stay separate from the page's.
+    let key = match &draft {
+        Some(d) => crate::session::draft_key(&d.draft_id),
+        None => page_id.clone(),
     };
 
     let (session_id, head) = sessions
         .open(
             Arc::clone(backend),
-            &a.page_id,
+            &key,
             guard,
             seed.as_deref(),
             caller.subject,
@@ -1380,6 +1480,13 @@ async fn tool_apply_op(
     // middle, which is the part that actually edits bytes, was not.
     if !caller.is_admin && sessions.opened_by(&a.session).as_deref() != Some(subject) {
         let permitted = match (sessions.page_id_of(&a.session), indexer) {
+            // A DRAFT session is personal: only its opener (its author) and
+            // admin may type into it. The page-write fallback below must not
+            // apply — a colleague who may write the target page still has no
+            // business editing someone's unfinished draft, and a draft key
+            // names no page, so that fallback would have allowed anyone
+            // holding the session id.
+            (Some(key), _) if crate::session::draft_id_of_key(&key).is_some() => false,
             (Some(page_id), Some(ix)) => {
                 state.write_acl == crate::server::WriteAclMode::Off
                     || session_write_allowed(ix, &caller, &page_id, None).await?
@@ -1595,6 +1702,9 @@ async fn tool_close_session(
     // to write the page, which is the same bar `open_session` set.
     if !a.commit && !caller.is_admin && sessions.opened_by(&a.session).as_deref() != Some(subject) {
         let permitted = match (sessions.page_id_of(&a.session), indexer) {
+            // A draft session is personal (see `apply_op`): abandoning someone
+            // else's draft is not a page write anyone can inherit.
+            (Some(key), _) if crate::session::draft_id_of_key(&key).is_some() => false,
             (Some(page_id), Some(ix)) => {
                 state.write_acl == crate::server::WriteAclMode::Off
                     || session_write_allowed(ix, &caller, &page_id, None).await?
@@ -1618,7 +1728,68 @@ async fn tool_close_session(
         }
     }
 
-    if let Some((page_id, ix, body)) = write_through {
+    if let Some((key, ix, body)) = write_through.as_ref().and_then(|(k, ix, b)| {
+        crate::session::draft_id_of_key(k).map(|d| (d.to_owned(), *ix, b.clone()))
+    }) {
+        // A draft session commits to the DRAFT ROW. The target page must not
+        // move: that is what promotion is for, and it is where the CAS, the
+        // write ACL and `already_decided` live.
+        //
+        // The author gate comes BEFORE the empty-body shortcut, unlike the page
+        // path below. Closing a session is itself an action — it ends the
+        // author's editing and frees the key — so a stranger holding the
+        // session id must not be able to do it by committing nothing.
+        let permitted = caller.is_admin
+            || ix
+                .get_draft(&key)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("close_session draft: {e}")))?
+                .is_some_and(|d| d.author == subject);
+        if !permitted {
+            // The session stays open, as on the page path: the author can still
+            // discard their own work. The refusal deliberately does not name the
+            // draft — the caller holds a session id, not a draft id, and saying
+            // which draft it is would hand them the second one.
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "forbidden",
+                    "location": "frontmatter",
+                    "message": format!(
+                        "write denied: caller `{subject}` is not the author of this draft"
+                    ),
+                }],
+            }));
+        }
+        // Empty is what a just-opened session that never received an op
+        // reports; saving it would blank the draft.
+        if !body.trim().is_empty()
+            && ix
+                .set_draft_content(&key, &body)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("close_session draft write: {e}")))?
+                .is_none()
+        {
+            // Decided under the session. The work is not landable any more, so
+            // the session is closed rather than left holding its quota slot for
+            // the idle TTL — but the caller is told, not silently discarded.
+            sessions
+                .close(&a.session, false)
+                .await
+                .map_err(|e| session_error_to_jsonrpc(&e, "close_session"))?;
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "already_decided",
+                    "location": "frontmatter",
+                    "message": "this draft was decided while the session was open; \
+                                its edits were not saved",
+                }],
+            }));
+        }
+    } else if let Some((page_id, ix, body)) = write_through {
         // Empty is what a just-opened session that never received an op
         // reports. Writing it would blank the page, so a no-op session stays
         // a no-op.

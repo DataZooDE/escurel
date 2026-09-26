@@ -567,6 +567,57 @@ impl Indexer {
     ///
     /// # Errors
     /// When the update fails.
+    /// Replace an OPEN draft's proposed bytes (#594 PR-1: a live personal
+    /// draft edited over CRDT ops and committed back here).
+    ///
+    /// `base_sha256` and `base_version` are deliberately untouched: they
+    /// record what the draft was made AGAINST, and editing the proposal does
+    /// not change what it would land on top of — the promote CAS must still
+    /// refuse a target that moved. `content_sha256` is recomputed, because it
+    /// is the byte binding a reviewer approves.
+    ///
+    /// Returns the updated row, or `None` when no OPEN draft with that id
+    /// exists — a decided draft is not editable, and the caller needs to tell
+    /// that apart from a successful write.
+    ///
+    /// # Errors
+    /// When the update or the read-back fails.
+    pub async fn set_draft_content(
+        &self,
+        draft_id: &str,
+        content: &str,
+    ) -> Result<Option<DraftInfo>, IndexerError> {
+        let table = self.drafts_table();
+        let tenant = self.drafts_tenant_scope().map(str::to_owned);
+        let hash = content_hash(content);
+        let n = {
+            let conn = self.conn.lock().await;
+            match &tenant {
+                Some(t) => conn.execute(
+                    &format!(
+                        "UPDATE {table} SET content = ?, content_sha256 = ? \
+                         WHERE tenant = ? AND draft_id = ? AND status = 'open'"
+                    ),
+                    duckdb::params![content, hash, t, draft_id],
+                )?,
+                None => conn.execute(
+                    &format!(
+                        "UPDATE {table} SET content = ?, content_sha256 = ? \
+                         WHERE draft_id = ? AND status = 'open'"
+                    ),
+                    duckdb::params![content, hash, draft_id],
+                )?,
+            }
+        };
+        if n == 0 {
+            return Ok(None);
+        }
+        // The queue changed shape: a reviewer looking at this draft on another
+        // device is looking at bytes that no longer exist (#474).
+        self.bump_mutation_epoch();
+        self.get_draft(draft_id).await
+    }
+
     pub async fn close_draft(
         &self,
         draft_id: &str,

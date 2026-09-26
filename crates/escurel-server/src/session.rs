@@ -38,6 +38,29 @@ use escurel_quota::SessionGuard;
 use thiserror::Error;
 use ulid::Ulid;
 
+/// The session-key prefix for a live PERSONAL DRAFT, as opposed to a page.
+///
+/// A draft session edits held bytes, not knowledge: its CRDT document and its
+/// one-session-per-target reservation must be separate from the target page's
+/// own, or a human typing into a draft would advance the page's version space
+/// and collide with a session on the page itself. The prefix cannot collide
+/// with a page id, which is always a repo-relative `markdown/...` path — and
+/// it is what tells the commit path to write the DRAFT ROW rather than the
+/// page.
+pub const DRAFT_KEY_PREFIX: &str = "draft:";
+
+/// The session key for a live draft.
+#[must_use]
+pub fn draft_key(draft_id: &str) -> String {
+    format!("{DRAFT_KEY_PREFIX}{draft_id}")
+}
+
+/// The draft a session key names, or `None` when the key is a page.
+#[must_use]
+pub fn draft_id_of_key(key: &str) -> Option<&str> {
+    key.strip_prefix(DRAFT_KEY_PREFIX)
+}
+
 /// One live editing session: the `LiveDoc` actor + the quota
 /// guard.
 struct Entry {

@@ -723,10 +723,28 @@ async fn event_push_allowed(
 /// The cost is that a session opened on a page that does not exist yet is not
 /// attachable over `/ws`. Write the page first (`update_page`, then
 /// `open_session`), which is the ordinary order anyway.
+///
+/// A **draft** session is the one target that is not a page, and its authority
+/// is identity rather than a page ACL: the held bytes are personal until the
+/// draft is promoted, so only its author (admin aside) may attach. Without this
+/// arm the key `draft:<id>` reached `expand`, which does not index drafts, and
+/// every draft session failed closed — safe, but it made live editing of a
+/// draft unreachable over `/ws`, which is the whole point of opening one.
 async fn may_attach(state: &AppState, caller: &WsCaller, page_id: &str) -> bool {
     let Some(indexer) = state.indexer.as_ref().map(IndexerHandle::current) else {
+        // A session-only gateway has no drafts either: `open_session` refuses a
+        // `draft_id` without an indexer, so no draft key can reach this arm.
         return true;
     };
+    if let Some(draft_id) = crate::session::draft_id_of_key(page_id) {
+        if caller.is_admin {
+            return true;
+        }
+        return matches!(
+            indexer.get_draft(draft_id).await,
+            Ok(Some(d)) if d.author == caller.subject()
+        );
+    }
     match indexer.expand(page_id, None, None).await {
         Ok(Some(e)) if e.page.page_type == PageType::Instance => indexer
             .may_read_instance(&caller.acl(), &e.page.skill, &e.frontmatter)
@@ -791,9 +809,14 @@ async fn session_loop(
             json!({
                 "type": "error",
                 "code": "forbidden",
-                "message": format!(
-                    "not permitted to attach to a session on page `{page_id}`"
-                ),
+                // A draft key is not named back: the caller holds a session
+                // id, and telling them which draft it belongs to would hand
+                // them the second identifier for free.
+                "message": if crate::session::draft_id_of_key(&page_id).is_some() {
+                    "not permitted to attach to this session".to_owned()
+                } else {
+                    format!("not permitted to attach to a session on page `{page_id}`")
+                },
                 "session": session_id,
             }),
         )
