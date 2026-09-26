@@ -10,6 +10,7 @@ import { InboxTree } from './views/inbox';
 import { AwaitingTree } from './views/awaiting';
 import { PageAsUiEditor } from './editors/pageAsUi';
 import { openPage, resolveCommand, searchCommand } from './commands/search';
+import { ReviewController } from './review';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -17,6 +18,7 @@ export interface EscurelApi {
   knowledge: KnowledgeTree;
   inbox: InboxTree;
   awaiting: AwaitingTree;
+  review: ReviewController;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi {
@@ -28,6 +30,11 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
   const knowledge = KnowledgeTree.register(context, () => services.client);
   const inbox = InboxTree.register(context, () => services.client);
   const awaiting = AwaitingTree.register(context, () => services.client);
+  const review = ReviewController.register(
+    context,
+    () => services.client,
+    () => awaiting.refresh(),
+  );
   context.subscriptions.push(
     services.onDidChange(() => {
       knowledge.refresh();
@@ -96,11 +103,6 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     vscode.commands.registerCommand('escurel.openThread', () =>
       vscode.window.showInformationMessage('escurel: the Thread view arrives in M3.'),
     ),
-    vscode.commands.registerCommand('escurel.openReview', () =>
-      vscode.window.showInformationMessage(
-        'escurel: the review surface arrives in the next slice.',
-      ),
-    ),
     vscode.commands.registerCommand('escurel.startSkill', () =>
       vscode.window.showInformationMessage(
         'escurel: starting a skill arrives with M4 (Runner and starting skills).',
@@ -108,7 +110,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     ),
   );
   log().info('escurel: activated');
-  return { services, knowledge, inbox, awaiting };
+  return { services, knowledge, inbox, awaiting, review };
 }
 
 export function deactivate(): void {}

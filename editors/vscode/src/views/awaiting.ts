@@ -15,7 +15,7 @@ export type Node = AwaitingRow | ErrorRow;
  * Awaiting you (SPEC §3.2): The queue of items awaiting human review or confirmation.
  * Merged from open changesets, open unparented drafts, and confirm gates.
  * Badge displays the total count of awaiting items.
- * Selecting a row runs `escurel.openReview` (stub in M2).
+ * Selecting a row runs `escurel.openReview`.
  */
 export class AwaitingTree implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();

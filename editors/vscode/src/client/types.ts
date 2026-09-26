@@ -371,6 +371,7 @@ export interface PromoteChangesetResponse {
   changeset_id: string;
   already_decided?: boolean;
   decided_by?: string;
+  partial?: boolean;
   results: {
     draft_id: string;
     page_id: string;

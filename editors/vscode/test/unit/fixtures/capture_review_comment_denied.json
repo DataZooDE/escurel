@@ -1,0 +1,34 @@
+{
+  "tool": "capture_event",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "tools/call",
+    "params": {
+      "name": "capture_event",
+      "arguments": {
+        "label_skill": "escurel:review-comment",
+        "mime": "text/plain",
+        "body": "hi",
+        "provenance": {
+          "review": {
+            "draft_id": "no-such-draft"
+          }
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "error": {
+      "code": -32602,
+      "message": "capture_event: `escurel:review-comment`: no such draft, or not yours to see",
+      "data": {
+        "code": "event_not_found",
+        "retryable": false
+      }
+    }
+  }
+}
