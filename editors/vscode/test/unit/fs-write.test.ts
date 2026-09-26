@@ -261,3 +261,58 @@ describe('writeInstanceDraft orchestration', () => {
     expect(mockClient.closeSession).toHaveBeenCalledWith({ session: 'sess-err', commit: false });
   });
 });
+
+describe('writeInstanceDraft: losing the create race', () => {
+  it('adopts the draft that appeared between the read and the create', async () => {
+    // A page carries at most one open draft, so a create that loses this race is
+    // refused with `conflict`. The draft that now exists is the one this save
+    // belongs in — the user never called `create_draft` and must not see it.
+    const raced: Draft = {
+      draft_id: 'd-raced',
+      target_page_id: 'markdown/instances/customer/acme.md',
+      content: '# Acme\n',
+      content_sha256: 'abc',
+      base_sha256: null,
+      author: 'ada',
+      event_id: null,
+      changeset_id: null,
+      status: 'open',
+      reason: null,
+      decided_by: null,
+      created_at: '2026-09-26T10:00:00Z',
+      base_version: null,
+      run_id: null,
+      root_event_id: null,
+    };
+    const doc = new LoroDoc();
+    doc.getText('body').insert(0, '# Acme\n');
+    doc.commit();
+    const snapshot = Buffer.from(doc.export({ mode: 'snapshot' })).toString('base64');
+
+    const listDrafts = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([raced]);
+    const client = {
+      listDrafts,
+      createDraft: vi.fn().mockRejectedValue(new EscurelError('conflict', 'already open')),
+      openSession: vi.fn().mockResolvedValue({ session: 's1', head_version: 'v1', snapshot }),
+      applyOp: vi.fn().mockResolvedValue({ ok: true, merged_version: 'v2' }),
+      closeSession: vi.fn().mockResolvedValue({ ok: true, final_version: 'v2', issues: [] }),
+    } as unknown as EscurelClient;
+
+    const res = await writeInstanceDraft(client, raced.target_page_id, '# Acme edited\n');
+    expect(res.draftId).toBe('d-raced');
+    expect(client.openSession).toHaveBeenCalledWith({ draft_id: 'd-raced' });
+    expect(client.closeSession).toHaveBeenCalledWith({ session: 's1', commit: true });
+  });
+
+  it('lets a refusal that is not a conflict through', async () => {
+    const client = {
+      listDrafts: vi.fn().mockResolvedValue([]),
+      createDraft: vi.fn().mockRejectedValue(new EscurelError('forbidden', 'not yours')),
+      openSession: vi.fn(),
+    } as unknown as EscurelClient;
+    await expect(
+      writeInstanceDraft(client, 'markdown/instances/customer/acme.md', '# x\n'),
+    ).rejects.toThrow(EscurelError);
+    expect(client.openSession).not.toHaveBeenCalled();
+  });
+});

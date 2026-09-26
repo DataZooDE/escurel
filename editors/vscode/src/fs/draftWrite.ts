@@ -81,12 +81,24 @@ export async function writeInstanceDraft(
   if (existing) {
     draftId = existing.draft_id;
   } else {
-    const created = await client.createDraft({
-      target_page_id: pageId,
-      content,
-      ...(baseSha256 ? { base_sha256: baseSha256 } : {}),
-    });
-    draftId = created.draft.draft_id;
+    draftId = await client
+      .createDraft({
+        target_page_id: pageId,
+        content,
+        ...(baseSha256 ? { base_sha256: baseSha256 } : {}),
+      })
+      .then((created) => created.draft.draft_id)
+      .catch(async (e: unknown) => {
+        // Lost the race: a page carries at most one open draft, and something
+        // opened one between the read above and this create. The draft that now
+        // exists is the one this save belongs in, so look it up rather than
+        // handing the user a conflict about a tool they never called.
+        if (e instanceof EscurelError && e.kind === 'conflict') {
+          const raced = findOpenDraftForPage(await client.listDrafts(), pageId);
+          if (raced) return raced.draft_id;
+        }
+        throw e;
+      });
   }
 
   // A draft is personal, and `list_drafts` shows every draft the caller may SEE —
