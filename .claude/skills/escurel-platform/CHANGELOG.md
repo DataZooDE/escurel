@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.79 — `list_lineage` declares the `include` value it always accepted
+
+- `list_lineage`'s `include` enum now declares `tool_calls` alongside
+  `events | runs | drafts`. The handler has always accepted it — and named it
+  in its own refusal message — but `tools/list` did not declare it, so a
+  client generated from the schema could not ask for the one field that puts
+  `tool_call_summary` {count, failed, duration_ms} on a run node. These
+  references already documented it correctly (02 and 11); the machine-readable
+  contract was the stale one. `escurel agent run lineage --include tool_calls`
+  already worked; its documented value list was short too.
+
 ## 0.6.78 — `open_session` returns the session's Loro snapshot
 
 - `open_session` (page or draft) now answers with `snapshot`, the base64 Loro

@@ -692,13 +692,16 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  {changeset → draft | draft | event}. A node you may not read \
                  is absent with its subtree. Paged over the lineage's events: \
                  pass `next_cursor` back as `cursor`; nodes are keyed by id, so \
-                 merge pages by id.",
+                 merge pages by id. `include: [\"tool_calls\"]` adds \
+                 `tool_call_summary` {count, failed, duration_ms} to each run, \
+                 so a thread can show a run's tool-call count without a call \
+                 per run.",
             json!({
                 "type": "object",
                 "required": ["root_event_id"],
                 "properties": {
                     "root_event_id": { "type": "string" },
-                    "include": { "type": "array", "items": { "type": "string", "enum": ["events", "runs", "drafts"] }, "description": "Node types to return; empty = all. drafts implies changesets." },
+                    "include": { "type": "array", "items": { "type": "string", "enum": ["events", "runs", "drafts", "tool_calls"] }, "description": "Node types to return; empty = all. `drafts` implies changesets. `tool_calls` is not a node type: it adds `tool_call_summary` to each run." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Events per page (default 500)." },
                     "cursor": { "type": "string" }
                 }

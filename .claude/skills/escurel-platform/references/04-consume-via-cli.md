@@ -122,7 +122,7 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `run progress` | `report_progress` (needs a run-bound bearer; `--step <step>=<status>`, repeatable) |
 | `run mint-token` | `mint_agent_token` (`--skill`, `--root-event`, `--target`, `--ttl-secs`) |
 | `run tool-calls` | `get_run_tool_calls` (`--run`, `--limit`, `--after <seq>`) |
-| `run lineage` | `list_lineage` (`--root-event <id> [--include events|runs|drafts]… [--limit N] [--cursor]`) |
+| `run lineage` | `list_lineage` (`--root-event <id> [--include events|runs|drafts|tool_calls]… [--limit N] [--cursor]`) |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
 | `session open [<page>] [--draft <id>]\|apply\|close` | `open_session` / `apply_op` / `close_session` |
 | `ingest` | `POST /ingest/upload` (HTTP endpoint) |
