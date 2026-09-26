@@ -29,6 +29,17 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);
+  // The Threads outline is declared in package.json so no later slice has to edit
+  // the manifest; a declared view with no provider shows VS Code's own error, so
+  // it gets a placeholder until that slice arrives.
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('escurel.threads', {
+      getChildren: () => [
+        { label: 'Threads arrive in M3', collapsibleState: vscode.TreeItemCollapsibleState.None },
+      ],
+      getTreeItem: (e: vscode.TreeItem) => e,
+    }),
+  );
   const inbox = InboxTree.register(context, () => services.client);
   const awaiting = AwaitingTree.register(context, () => services.client);
   EscurelFileSystem.register(
@@ -110,6 +121,9 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     ),
     vscode.commands.registerCommand('escurel.openThread', () =>
       vscode.window.showInformationMessage('escurel: the Thread view arrives in M3.'),
+    ),
+    vscode.commands.registerCommand('escurel.openRun', () =>
+      vscode.window.showInformationMessage('escurel: run detail arrives in M3.'),
     ),
     vscode.commands.registerCommand('escurel.startSkill', () =>
       vscode.window.showInformationMessage(
