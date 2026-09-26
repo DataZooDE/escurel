@@ -1628,7 +1628,33 @@ pub(super) async fn tool_capture_event(
     } else {
         None
     };
-    if a.label_skill.starts_with("escurel:") && !caller.is_admin && control.is_none() {
+    // The second carve-out (VS Code workbench PR-3): `escurel:review-comment`
+    // is how a reviewer says something about a draft. Authorised by the
+    // draft's own visibility, then filed as bookkeeping on the draft's target
+    // page — a comment is not inbox work, and the reserved prefix is what
+    // keeps the runner from ever dispatching it. The caller's own
+    // kind/target/review block are replaced, never merged.
+    let comment = if a.label_skill == super::tools_control::REVIEW_COMMENT_LABEL {
+        let c =
+            super::tools_control::authorise_review_comment(indexer, &caller, a.provenance.as_ref())
+                .await?;
+        a.kind = Some("system".to_owned());
+        a.instance_page_id = c.instance_page_id.clone();
+        let mut prov = match a.provenance.take() {
+            Some(Value::Object(m)) => Value::Object(m),
+            _ => json!({}),
+        };
+        prov["review"] = c.review.clone();
+        a.provenance = Some(prov);
+        Some(c)
+    } else {
+        None
+    };
+    if a.label_skill.starts_with("escurel:")
+        && !caller.is_admin
+        && control.is_none()
+        && comment.is_none()
+    {
         return Err(JsonRpcError::invalid_params(
             "capture_event: the `escurel:` label namespace is reserved".to_owned(),
         ));
@@ -1647,7 +1673,11 @@ pub(super) async fn tool_capture_event(
             ))
         })?,
     };
-    if kind == escurel_index::EventKind::System && !caller.is_admin && control.is_none() {
+    if kind == escurel_index::EventKind::System
+        && !caller.is_admin
+        && control.is_none()
+        && comment.is_none()
+    {
         return Err(JsonRpcError::invalid_params(
             "capture_event: `kind: system` events are written by the runner and the \
              gateway; a caller files `user` events"

@@ -321,6 +321,33 @@ the poller — the event is not re-run on the next poll; a `retry` control
 re-drives it. A cancel for a run that is not live (unknown, or already at a
 terminal) is refused, and the terminal stands.
 
+## Review comments (`escurel:review-comment`)
+
+A reviewer says something about a draft by capturing an event under the
+reserved `escurel:review-comment` label, naming the draft in
+`provenance.review.draft_id` (and a `line` when the remark hangs on one):
+
+```json
+{ "label_skill": "escurel:review-comment", "mime": "text/plain",
+  "body": "the second line reads oddly",
+  "provenance": { "review": { "draft_id": "<draft>", "line": 3 } } }
+```
+
+Like `escurel:run-control`, this is a carve-out of the reserved `escurel:`
+namespace: a NON-admin may write it, authorised by the draft's own
+visibility (a draft you may not see is refused as `event_not_found`, the
+same answer a missing one gives, so the surface confirms no draft's
+existence). The gateway resolves the target page from the draft row and
+stamps `commented_by`; a caller cannot choose either, nor the `kind`.
+
+It is stored `kind: system` on the draft's **target page** — a comment is
+not inbox work — so it is read back with `list_events { instance_page_id,
+include_system: true }` beside the `escurel:review` transitions, and it
+reaches an `event_subscribe` filtered on that page or lineage. The
+reserved prefix is also what keeps the runner out: every
+`escurel:`-prefixed event is dropped at its gate, whereas a plain
+`review-comment` label names no skill and its run would dead-letter.
+
 ## What the runner reads off a skill page
 
 Besides `autonomy` (`auto` lands, `review` and `confirm` hold a draft —

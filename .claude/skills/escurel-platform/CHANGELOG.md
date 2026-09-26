@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.76 — review comments as events (`escurel:review-comment`)
+
+- A reviewer files a comment on a draft with `capture_event { label_skill:
+  "escurel:review-comment", provenance.review: { draft_id, line? } }`. A
+  second carve-out of the reserved namespace, like `escurel:run-control`:
+  a non-admin may write it, authorised by the draft's own visibility (an
+  unseen draft answers `event_not_found`, as a missing one does). Stored
+  `kind: system` on the draft's target page with `commented_by` stamped;
+  the reserved prefix keeps the runner from dispatching it. See
+  references/11 § *Review comments*.
+
 ## 0.6.75 — `expand { raw: true }` returns the stored markdown
 
 - `expand` takes `raw?: bool`; on a plain read (no `as_of`/`scenario`)

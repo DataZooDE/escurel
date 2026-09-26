@@ -182,3 +182,80 @@ pub(super) async fn authorise_run_control(
         TENANT_ACTIONS.join("|")
     )))
 }
+
+// ── review comments ───────────────────────────────────────────────
+
+/// The reserved label a human's review comment is filed under (VS Code
+/// workbench PR-3). Reserved on purpose: the runner drops every
+/// `escurel:`-prefixed event, so a comment is never mistaken for work to
+/// dispatch — the label it would otherwise need (`review-comment`) names no
+/// skill, and such an event dead-letters.
+pub(super) const REVIEW_COMMENT_LABEL: &str = "escurel:review-comment";
+
+/// What `capture_event` stores for an authorised comment.
+pub(super) struct ReviewComment {
+    /// The draft's target page: where the comment is filed.
+    pub instance_page_id: Option<String>,
+    /// The `provenance.review` block, author and the draft's lineage
+    /// stamped. `capture_event` reads `root_event_id` / `run_id` back out of
+    /// it into the event's lineage columns, so a comment folds into the
+    /// thread of the run that proposed the draft.
+    pub review: Value,
+}
+
+/// Authorise a review comment against the draft it is about.
+///
+/// The gate is the draft's own visibility — a reviewer who may SEE a draft
+/// may say something about it — and a draft the caller may not see is
+/// refused exactly as a missing one is, so the comment surface confirms no
+/// draft's existence.
+pub(super) async fn authorise_review_comment(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    provenance: Option<&Value>,
+) -> Result<ReviewComment, JsonRpcError> {
+    let mistake = |msg: &str| {
+        JsonRpcError::invalid_params(format!("capture_event: `{REVIEW_COMMENT_LABEL}`: {msg}"))
+    };
+    let denied = || {
+        JsonRpcError::invalid_params(format!(
+            "capture_event: `{REVIEW_COMMENT_LABEL}`: no such draft, or not yours to see"
+        ))
+        .with_code("event_not_found", false)
+    };
+    let review = provenance.and_then(|p| p.get("review"));
+    let Some(draft_id) = review.and_then(|r| text(&r["draft_id"])) else {
+        return Err(mistake(
+            "`provenance.review.draft_id` names the draft the comment is about",
+        ));
+    };
+    let draft = indexer
+        .get_draft(draft_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("capture_event: draft: {e}")))?
+        .ok_or_else(denied)?;
+    if !super::tools_drafts::may_see(indexer, caller, &draft).await? {
+        return Err(denied());
+    }
+    let mut out = json!({ "draft_id": draft.draft_id, "commented_by": caller.subject });
+    // The line a comment hangs on is the caller's to state; everything else
+    // here comes from the draft row.
+    if let Some(line) = review.and_then(|r| r["line"].as_i64()) {
+        out["line"] = json!(line);
+    }
+    if let Some(changeset) = &draft.changeset_id {
+        out["changeset_id"] = json!(changeset);
+    }
+    // The draft's lineage, so the comment lands in the same thread as the
+    // run that proposed it (`lineage_from_provenance` reads these).
+    if let Some(root) = &draft.root_event_id {
+        out["root_event_id"] = json!(root);
+    }
+    if let Some(run) = &draft.run_id {
+        out["run_id"] = json!(run);
+    }
+    Ok(ReviewComment {
+        instance_page_id: Some(draft.target_page_id.clone()),
+        review: out,
+    })
+}
