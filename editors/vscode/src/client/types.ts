@@ -333,6 +333,20 @@ export interface Draft {
   root_event_id: string | null;
 }
 
+export interface CreateDraftRequest {
+  target_page_id: string;
+  content: string;
+  base_sha256?: string;
+  event_id?: string;
+  changeset_id?: string;
+  new_changeset?: boolean;
+}
+
+export interface CreateDraftResponse {
+  ok: true;
+  draft: Draft;
+}
+
 export interface Changeset {
   changeset_id: string;
   drafts: number;
