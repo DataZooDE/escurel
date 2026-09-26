@@ -4,6 +4,21 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.77 — a live session on a personal draft (`open_session { draft_id }`)
+
+- `open_session` takes `page_id` **or** `draft_id` (exactly one). With
+  `draft_id` the session edits one of your own open drafts rather than a
+  page: the ops mutate the held bytes, `close_session { commit: true }`
+  saves them back to the draft, and the target page moves only when the
+  draft is promoted — so a human can edit an instance live without writing
+  knowledge, keeping the draft's CAS, write ACL and `already_decided`
+  guards. A draft session is personal: only its author (admin aside) may
+  open, apply ops to, or discard it, and "no such draft" reads identically
+  to "not yours". A decided draft answers `already_decided`. The commit
+  leaves `base_sha256` / `base_version` alone, because editing a proposal
+  does not change what it lands on top of. CLI: `escurel agent session open
+  --draft <id>`. See references/02 § *live CRDT*.
+
 ## 0.6.76 — review comments as events (`escurel:review-comment`)
 
 - A reviewer files a comment on a draft with `capture_event { label_skill:

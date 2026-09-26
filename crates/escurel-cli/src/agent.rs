@@ -98,9 +98,16 @@ pub enum PageCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum SessionCmd {
-    /// Open a live CRDT session on a page; returns a session id + the WS
-    /// upgrade URL.
-    Open { page_id: String },
+    /// Open a live CRDT session on a page, or on one of your own open drafts
+    /// with `--draft`; returns a session id + the WS upgrade URL.
+    Open {
+        /// The page to edit. Omit when `--draft` names a draft instead.
+        page_id: Option<String>,
+        /// An open draft of yours to edit live. Its ops edit the held bytes,
+        /// not the page: the page moves only when the draft is promoted.
+        #[arg(long = "draft", conflicts_with = "page_id")]
+        draft_id: Option<String>,
+    },
     /// Apply a base64-encoded Loro op blob to an open session. The op is
     /// read from stdin unless `--op` is given.
     Apply(SessionApplyArgs),
@@ -886,7 +893,16 @@ async fn list_op_authors(client: &Client, page_id: String) -> Result<Value> {
 /// driver; the CLI is here for scripted open/apply/close.
 async fn session_cmd(client: &Client, cmd: SessionCmd) -> Result<Value> {
     let (tool, args) = match cmd {
-        SessionCmd::Open { page_id } => ("open_session", json!({ "page_id": page_id })),
+        SessionCmd::Open { page_id, draft_id } => {
+            let mut args = json!({});
+            if let Some(page_id) = page_id {
+                args["page_id"] = json!(page_id);
+            }
+            if let Some(draft_id) = draft_id {
+                args["draft_id"] = json!(draft_id);
+            }
+            ("open_session", args)
+        }
         SessionCmd::Apply(a) => {
             let op = match a.op {
                 Some(o) => o,

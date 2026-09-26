@@ -93,7 +93,7 @@ Notes:
 | `validate` | `content`, `as_page_id?` | `{issues[]}` | dry run — no commit |
 | `update_page` | `page_id`, `content`, `base_version?`+`require_exact_base?` (CRDT gateways), `base_sha256?` (every gateway) | `{ok, issues[], new_version}` | whole-page write (the public write path); the `base_*` guards are the **atomic-approve** CAS — see the autonomy note. Pass `branch` to write on a branch instead of the base timeline: the server derives the overlay page id and stamps `scenario`, so you never type it (#512) |
 | `delete_page` | `page_id`, `base_version?` | `{ok, …}` | **soft**-delete / archive. With `branch`, it is a TOMBSTONE rather than a retraction: the base page is untouched, the slug reads as absent on that branch, and the delete lands for real when the branch merges |
-| `open_session` | `page_id` | `{session, head_version, content}` | live CRDT |
+| `open_session` | `page_id` **or** `draft_id` | `{session, head_version, content}` | live CRDT. `draft_id` opens a session on one of YOUR OWN open drafts instead of a page: the ops edit the held bytes, `close_session {commit: true}` saves them back to the draft, and the target page moves only when the draft is promoted. Name exactly one target |
 | `apply_op` | `session`, `op` | `{ok, conflicts?}` | live CRDT |
 | `close_session` | `session`, `commit=true` | `{final_version, issues}` | live CRDT |
 | `start_operation` | `wf_skill`, `input?`, `idempotency_key?`, `conversation_ref?` | `{operation_id, status:'pending'}` | begin an async workflow operation; the server owns the operation id + its workflow provenance (uncoerceable), creates an owner-scoped run board, and captures the invocation — poll with `get_operation`; `idempotency_key` makes a retry re-attach, not restart |
@@ -109,6 +109,15 @@ delivered to the others as a `peer_op` frame (carrying the merged
 `merged_version` + `content` as well as the raw op), and `presence` reaches
 the other peers, which is what makes live cursors work. The originator gets
 `op_ack` and not `peer_op` — it already knows its write landed.
+
+A session on a **draft** is personal, and gated differently: only the draft's
+author (admin aside) may open one, apply ops to it, or discard it — a session id
+is not a capability over someone else's unfinished work, and "no such draft"
+reads identically to "not yours". A draft that has already been promoted or
+discarded answers `already_decided`. The commit writes the draft's `content` and
+`content_sha256` and deliberately leaves `base_sha256` / `base_version` alone:
+editing a proposal does not change what it lands on top of, so the promote CAS
+still refuses a target that moved.
 
 Three properties to design for. **Opening and committing are gated by
 `update_page`'s write ACL** (`ESCUREL_WRITE_ACL`): `open_session` refuses a

@@ -124,7 +124,7 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `run tool-calls` | `get_run_tool_calls` (`--run`, `--limit`, `--after <seq>`) |
 | `run lineage` | `list_lineage` (`--root-event <id> [--include events|runs|drafts]… [--limit N] [--cursor]`) |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
-| `session open\|apply\|close` | `open_session` / `apply_op` / `close_session` |
+| `session open [<page>] [--draft <id>]\|apply\|close` | `open_session` / `apply_op` / `close_session` |
 | `ingest` | `POST /ingest/upload` (HTTP endpoint) |
 | `admin pack export\|import\|list\|rebase\|unsubscribe\|submit-promotion` | `export_pack` / `import_pack` / `list_packs` / `rebase_pack` / `unsubscribe_pack` / `submit_promotion` (admin-gated) |
 | `admin …` | the EscurelAdmin surface |

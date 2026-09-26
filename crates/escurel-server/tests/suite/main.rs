@@ -44,6 +44,7 @@ mod delete_page;
 mod dispatch_aliases;
 mod document_ingestion;
 mod draft_lineage;
+mod draft_sessions;
 mod drafts;
 mod empty_event_id;
 mod error_data;

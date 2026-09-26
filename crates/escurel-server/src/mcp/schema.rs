@@ -894,15 +894,19 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Execution::Orchestration,
             Scope::Agent,
             Touches::shared(Surface::Crdt),
-            "Open a live CRDT session on a page; returns a session id and \
-                 the WS upgrade URL. Gated by the same write ACL as \
-                 update_page: a caller who may not write the page is refused \
-                 (`forbidden`).",
+            "Open a live CRDT session on a page or on one of your own open \
+                 drafts; returns a session id and the WS upgrade URL. Name \
+                 exactly one target. A page session is gated by the same write \
+                 ACL as update_page (`forbidden`). A draft session is personal: \
+                 only the draft's author may open one, its ops edit the held \
+                 bytes rather than the page, and `close_session {commit: true}` \
+                 saves them back to the draft — the page moves only when the \
+                 draft is promoted.",
             json!({
                 "type": "object",
-                "required": ["page_id"],
                 "properties": {
-                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
+                    "draft_id": { "type": "string", "description": "An open draft of yours to edit live, instead of a page. Exclusive with `page_id`." }
                 }
             }),
         ),
