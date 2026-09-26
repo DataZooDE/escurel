@@ -1252,7 +1252,20 @@ async fn tool_open_session(
                 "open_session: name the page (`page_id`) or the draft (`draft_id`) to edit",
             ));
         }
-        (Some(page_id), None) => (page_id.clone(), None),
+        (Some(page_id), None) => {
+            // `draft:` is the session-key namespace for held bytes. A page id
+            // is always a repo-relative `markdown/...` path, so one starting
+            // with the prefix is a forged draft key — it would seize the real
+            // author's one-session-per-draft reservation and route the commit
+            // into the draft store.
+            if page_id.starts_with(crate::session::DRAFT_KEY_PREFIX) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "open_session: `{}` is not a page id; name a draft with `draft_id`",
+                    crate::session::DRAFT_KEY_PREFIX
+                )));
+            }
+            (page_id.clone(), None)
+        }
         (None, Some(draft_id)) => {
             let ix = indexer.ok_or_else(|| {
                 JsonRpcError::internal("open_session: drafts need an indexed corpus")
@@ -1318,7 +1331,12 @@ async fn tool_open_session(
     //
     // Session-only servers (`indexer = None`) keep their behaviour: they have
     // no page corpus, so absence is their normal state rather than a gap.
-    if write_acl != crate::server::WriteAclMode::Off
+    // A DRAFT session is exempt: `open_draft_for_session` has already decided
+    // whose it is, and a draft may legitimately propose a page that does not
+    // exist yet (`create_draft` accepts a `target_page_id` with no page behind
+    // it). Denying absence here would make exactly those drafts uneditable.
+    if draft.is_none()
+        && write_acl != crate::server::WriteAclMode::Off
         && let Some(ix) = indexer
         && ix
             .read_page_markdown(&page_id)
@@ -1715,52 +1733,61 @@ async fn tool_close_session(
     }) {
         // A draft session commits to the DRAFT ROW. The target page must not
         // move: that is what promotion is for, and it is where the CAS, the
-        // write ACL and `already_decided` live. Empty is a no-op for the same
-        // reason as below.
-        if !body.trim().is_empty() {
-            // The author gate is re-checked here for the same reason the page
-            // path re-checks the write ACL: the commit is the write, and the
-            // draft may have been decided while the session was open.
-            let permitted = caller.is_admin
-                || ix
-                    .get_draft(&key)
-                    .await
-                    .map_err(|e| JsonRpcError::internal(format!("close_session draft: {e}")))?
-                    .is_some_and(|d| d.author == subject);
-            if !permitted {
-                return Ok(json!({
-                    "ok": false,
-                    "issues": [{
-                        "severity": "error",
-                        "code": "forbidden",
-                        "location": "frontmatter",
-                        "message": format!(
-                            "write denied: caller `{subject}` is not the author of draft `{key}`"
-                        ),
-                    }],
-                }));
-            }
-            if ix
+        // write ACL and `already_decided` live.
+        //
+        // The author gate comes BEFORE the empty-body shortcut, unlike the page
+        // path below. Closing a session is itself an action — it ends the
+        // author's editing and frees the key — so a stranger holding the
+        // session id must not be able to do it by committing nothing.
+        let permitted = caller.is_admin
+            || ix
+                .get_draft(&key)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("close_session draft: {e}")))?
+                .is_some_and(|d| d.author == subject);
+        if !permitted {
+            // The session stays open, as on the page path: the author can still
+            // discard their own work. The refusal deliberately does not name the
+            // draft — the caller holds a session id, not a draft id, and saying
+            // which draft it is would hand them the second one.
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "forbidden",
+                    "location": "frontmatter",
+                    "message": format!(
+                        "write denied: caller `{subject}` is not the author of this draft"
+                    ),
+                }],
+            }));
+        }
+        // Empty is what a just-opened session that never received an op
+        // reports; saving it would blank the draft.
+        if !body.trim().is_empty()
+            && ix
                 .set_draft_content(&key, &body)
                 .await
                 .map_err(|e| JsonRpcError::internal(format!("close_session draft write: {e}")))?
                 .is_none()
-            {
-                // Decided under the session. The work is not landable any
-                // more, and saying so beats a silent discard.
-                return Ok(json!({
-                    "ok": false,
-                    "issues": [{
-                        "severity": "error",
-                        "code": "already_decided",
-                        "location": "frontmatter",
-                        "message": format!(
-                            "draft `{key}` was decided while the session was open; \
-                             its edits were not saved"
-                        ),
-                    }],
-                }));
-            }
+        {
+            // Decided under the session. The work is not landable any more, so
+            // the session is closed rather than left holding its quota slot for
+            // the idle TTL — but the caller is told, not silently discarded.
+            sessions
+                .close(&a.session, false)
+                .await
+                .map_err(|e| session_error_to_jsonrpc(&e, "close_session"))?;
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "already_decided",
+                    "location": "frontmatter",
+                    "message": "this draft was decided while the session was open; \
+                                its edits were not saved",
+                }],
+            }));
         }
     } else if let Some((page_id, ix, body)) = write_through {
         // Empty is what a just-opened session that never received an op

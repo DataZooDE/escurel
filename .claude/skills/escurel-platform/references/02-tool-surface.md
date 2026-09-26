@@ -119,6 +119,14 @@ discarded answers `already_decided`. The commit writes the draft's `content` and
 editing a proposal does not change what it lands on top of, so the promote CAS
 still refuses a target that moved.
 
+Attaching to a draft session over `/ws` is gated the same way — the author only
+— rather than by the target page's read ACL, and the refusal does not name the
+draft. What a draft session does NOT give you is a read: `open_session` answers
+with a session id and a version, not content, and there is no `read_session`, so
+take the bytes to edit from the draft's own `content` (`list_drafts` /
+`diff_draft`). Snapshots and ops of a draft session are kept under the key
+`draft:<draft_id>`, separate from the page's own CRDT history.
+
 Three properties to design for. **Opening and committing are gated by
 `update_page`'s write ACL** (`ESCUREL_WRITE_ACL`): `open_session` refuses a
 caller who may not write the page (JSON-RPC `-32000`, data code

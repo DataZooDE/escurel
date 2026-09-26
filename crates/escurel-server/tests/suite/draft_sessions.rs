@@ -382,3 +382,277 @@ async fn a_session_id_does_not_let_another_subject_touch_a_personal_draft() {
         "the refused op must not be in the draft: {held:?}"
     );
 }
+
+/// A draft may propose a page that does not exist yet, and that draft must be
+/// editable like any other.
+///
+/// `open_session` refuses a PAGE that is not there — absence must not read
+/// differently from "not yours". A draft carries its own authorisation, so the
+/// same refusal applied to a create-draft would have made exactly the drafts
+/// that need the most editing the ones that cannot be edited.
+#[tokio::test]
+async fn a_draft_that_creates_a_page_can_still_be_edited() {
+    let h = start().await;
+    let token = author_token(&h);
+    let fresh = "markdown/instances/note/brand-new.md";
+    let proposed = "---\ntype: instance\nskill: note\nid: brand-new\n---\n# New\n\nfirst.\n";
+    let created = call(
+        &h,
+        &token,
+        "create_draft",
+        json!({ "target_page_id": fresh, "content": proposed, "base_sha256": "" }),
+    )
+    .await;
+    assert_eq!(created["ok"], json!(true), "create_draft: {created}");
+    let draft_id = created["draft"]["draft_id"].as_str().expect("draft_id");
+
+    let opened = raw(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
+    assert!(
+        opened.get("error").is_none(),
+        "a draft for a page that does not exist yet must still open: {opened}"
+    );
+}
+
+/// A decided draft must not leave its session holding a quota slot.
+///
+/// The commit refuses — the work is not landable — and the earlier shape of that
+/// refusal returned before closing, so the session stayed in the registry with
+/// its `concurrent_sessions` permit and its one-session-per-draft reservation
+/// until the idle TTL (30 minutes) expired.
+#[tokio::test]
+async fn a_draft_decided_under_an_open_session_does_not_wedge_it() {
+    let h = start().await;
+    let token = author_token(&h);
+    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nracing.\n";
+    let draft_id = draft_of(&h, content).await;
+    let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
+    let sid = opened["session"].as_str().expect("session").to_owned();
+    let applied = raw(
+        &h,
+        &token,
+        "apply_op",
+        json!({ "session": sid, "op": op_inserting("TOO-LATE.") }),
+    )
+    .await;
+    assert!(applied.get("error").is_none(), "apply_op: {applied}");
+
+    // Decided out from under the live session.
+    let promoted = call(&h, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
+    assert_eq!(promoted["ok"], json!(true), "promote_draft: {promoted}");
+
+    let closed = call(
+        &h,
+        &token,
+        "close_session",
+        json!({ "session": sid, "commit": true }),
+    )
+    .await;
+    assert_eq!(
+        closed["ok"],
+        json!(false),
+        "the commit must refuse: {closed}"
+    );
+    assert_eq!(
+        closed["issues"][0]["code"],
+        json!("already_decided"),
+        "…as already decided: {closed}"
+    );
+
+    // The session must be gone, not merely refused: a second call on the same
+    // id can no longer find it, which is what proves the slot was released.
+    let again = raw(
+        &h,
+        &token,
+        "close_session",
+        json!({ "session": sid, "commit": false }),
+    )
+    .await;
+    assert_eq!(
+        again["error"]["data"]["code"],
+        json!("unknown_session"),
+        "the refused commit must have closed the session: {again}"
+    );
+}
+
+/// Committing nothing is still closing someone's session, so it takes the same
+/// identity as committing something — and the refusal must not name the draft.
+#[tokio::test]
+async fn a_stranger_cannot_close_an_empty_draft_session_or_learn_its_draft() {
+    let h = start().await;
+    let token = author_token(&h);
+    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nuntouched.\n";
+    let draft_id = draft_of(&h, content).await;
+    let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
+    let sid = opened["session"].as_str().expect("session").to_owned();
+
+    // No op applied: the session's content is empty, which used to skip the
+    // whole authorisation block on the way to closing it.
+    let stranger = h.process.mint_token_with_sub(TENANT, Role::Agent, STRANGER);
+    let refused = call(
+        &h,
+        &stranger,
+        "close_session",
+        json!({ "session": sid, "commit": true }),
+    )
+    .await;
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "a stranger must not close an empty draft session: {refused}"
+    );
+    assert_eq!(refused["issues"][0]["code"], json!("forbidden"));
+    let message = refused["issues"][0]["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains(&draft_id),
+        "the refusal must not name the draft: {message:?}"
+    );
+
+    // The author's session survived the attempt.
+    let closed = call(
+        &h,
+        &token,
+        "close_session",
+        json!({ "session": sid, "commit": false }),
+    )
+    .await;
+    assert_eq!(closed["ok"], json!(true), "close_session: {closed}");
+}
+
+/// `page_id` is a page path, and the draft key namespace is not addressable
+/// through it: a forged key would seize the real author's one-session-per-draft
+/// reservation and route a commit into the draft store.
+#[tokio::test]
+async fn a_draft_key_cannot_be_forged_through_page_id() {
+    let h = start().await;
+    let token = author_token(&h);
+    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nmine.\n";
+    let draft_id = draft_of(&h, content).await;
+
+    let stranger = h.process.mint_token_with_sub(TENANT, Role::Agent, STRANGER);
+    let forged = raw(
+        &h,
+        &stranger,
+        "open_session",
+        json!({ "page_id": format!("draft:{draft_id}") }),
+    )
+    .await;
+    assert!(
+        forged.get("error").is_some(),
+        "a `draft:` page id must refuse: {forged}"
+    );
+
+    // The author's own session is still available, which is what the forgery
+    // would have taken away.
+    let opened = raw(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
+    assert!(
+        opened.get("error").is_none(),
+        "the author must still be able to open their draft: {opened}"
+    );
+}
+
+// --- the live channel ------------------------------------------
+//
+// A draft session exists to be typed into, which happens over `/ws`, not over
+// `apply_op`. The attach gate reads the session's key — so a key that is not a
+// page had to be given an authority of its own, and these two tests are what
+// say it is the right one.
+
+type Sock =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+fn ws_request(
+    url: &str,
+    bearer: &str,
+) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = url.into_client_request().unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {bearer}").parse().unwrap());
+    req
+}
+
+async fn send_frame(sock: &mut Sock, v: Value) {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::protocol::Message;
+    sock.send(Message::Text(v.to_string())).await.unwrap();
+}
+
+async fn recv_frame(sock: &mut Sock) -> Value {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::protocol::Message;
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(5), sock.next())
+        .await
+        .expect("recv timed out")
+        .expect("stream ended")
+        .expect("ws error");
+    let txt = match msg {
+        Message::Text(t) => t,
+        Message::Binary(b) => String::from_utf8(b).unwrap(),
+        other => panic!("expected a text frame, got {other:?}"),
+    };
+    serde_json::from_str(&txt).expect("json frame")
+}
+
+/// The author may attach to their own draft session over `/ws`.
+///
+/// The attach gate resolves the session's key to a page and asks the page's read
+/// ACL. A draft key resolves to no page, so the gate failed closed and live
+/// editing of a draft — the reason to open one at all — was unreachable.
+#[tokio::test]
+async fn the_author_may_attach_to_their_own_draft_session_over_ws() {
+    let h = start().await;
+    let token = author_token(&h);
+    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nlive.\n";
+    let draft_id = draft_of(&h, content).await;
+    let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
+    let sid = opened["session"].as_str().expect("session").to_owned();
+
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws_request(&h.process.ws_url(), &token))
+        .await
+        .expect("ws connect");
+    send_frame(&mut sock, json!({ "type": "hello", "session": sid })).await;
+    // Presence echoes only on an attached session, so it is the cheapest proof
+    // that the gate let this connection in.
+    send_frame(
+        &mut sock,
+        json!({ "type": "presence", "session": sid, "user": AUTHOR, "anchor": "#plan" }),
+    )
+    .await;
+    let echo = recv_frame(&mut sock).await;
+    assert_eq!(echo["type"], json!("presence"), "expected presence: {echo}");
+    assert_eq!(echo["session"], json!(sid));
+
+    sock.close(None).await.ok();
+}
+
+/// …and nobody else may, however they came by the session id — nor learn which
+/// draft it belongs to from the refusal.
+#[tokio::test]
+async fn another_subject_may_not_attach_to_a_draft_session_over_ws() {
+    let h = start().await;
+    let token = author_token(&h);
+    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nprivate.\n";
+    let draft_id = draft_of(&h, content).await;
+    let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
+    let sid = opened["session"].as_str().expect("session").to_owned();
+
+    let stranger = h.process.mint_token_with_sub(TENANT, Role::Agent, STRANGER);
+    let (mut sock, _) =
+        tokio_tungstenite::connect_async(ws_request(&h.process.ws_url(), &stranger))
+            .await
+            .expect("ws connect");
+    send_frame(&mut sock, json!({ "type": "hello", "session": sid })).await;
+    let refused = recv_frame(&mut sock).await;
+    assert_eq!(
+        refused["code"],
+        json!("forbidden"),
+        "a stranger must not attach to a draft session: {refused}"
+    );
+    let message = refused["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains(&draft_id),
+        "the refusal must not name the draft: {message:?}"
+    );
+
+    sock.close(None).await.ok();
+}
