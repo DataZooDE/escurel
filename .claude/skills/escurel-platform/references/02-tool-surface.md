@@ -93,7 +93,7 @@ Notes:
 | `validate` | `content`, `as_page_id?` | `{issues[]}` | dry run — no commit |
 | `update_page` | `page_id`, `content`, `base_version?`+`require_exact_base?` (CRDT gateways), `base_sha256?` (every gateway) | `{ok, issues[], new_version}` | whole-page write (the public write path); the `base_*` guards are the **atomic-approve** CAS — see the autonomy note. Pass `branch` to write on a branch instead of the base timeline: the server derives the overlay page id and stamps `scenario`, so you never type it (#512) |
 | `delete_page` | `page_id`, `base_version?` | `{ok, …}` | **soft**-delete / archive. With `branch`, it is a TOMBSTONE rather than a retraction: the base page is untouched, the slug reads as absent on that branch, and the delete lands for real when the branch merges |
-| `open_session` | `page_id` **or** `draft_id` | `{session, head_version, content}` | live CRDT. `draft_id` opens a session on one of YOUR OWN open drafts instead of a page: the ops edit the held bytes, `close_session {commit: true}` saves them back to the draft, and the target page moves only when the draft is promoted. Name exactly one target |
+| `open_session` | `page_id` **or** `draft_id` | `{session, head_version, snapshot, ws_url}` | live CRDT. `draft_id` opens a session on one of YOUR OWN open drafts instead of a page: the ops edit the held bytes, `close_session {commit: true}` saves them back to the draft, and the target page moves only when the draft is promoted. Name exactly one target |
 | `apply_op` | `session`, `op` | `{ok, conflicts?}` | live CRDT |
 | `close_session` | `session`, `commit=true` | `{final_version, issues}` | live CRDT |
 | `start_operation` | `wf_skill`, `input?`, `idempotency_key?`, `conversation_ref?` | `{operation_id, status:'pending'}` | begin an async workflow operation; the server owns the operation id + its workflow provenance (uncoerceable), creates an owner-scoped run board, and captures the invocation — poll with `get_operation`; `idempotency_key` makes a retry re-attach, not restart |
@@ -121,11 +121,23 @@ still refuses a target that moved.
 
 Attaching to a draft session over `/ws` is gated the same way — the author only
 — rather than by the target page's read ACL, and the refusal does not name the
-draft. What a draft session does NOT give you is a read: `open_session` answers
-with a session id and a version, not content, and there is no `read_session`, so
-take the bytes to edit from the draft's own `content` (`list_drafts` /
-`diff_draft`). Snapshots and ops of a draft session are kept under the key
+draft. Snapshots and ops of a draft session are kept under the key
 `draft:<draft_id>`, separate from the page's own CRDT history.
+
+**`open_session` returns `snapshot`** (base64 Loro snapshot), and you need it:
+import it into your own `LoroDoc` before you edit, then send only what the
+session has not seen (`export({mode: "update", from: <version before your edit>})`).
+Rebuilding a document locally from the page or draft TEXT and sending ops from
+that does not work and does not announce itself — those ops depend on a history
+the session has never seen, so Loro holds them pending, `apply_op` still answers
+`ok` with an advanced `merged_version`, and the content never moves. The field is
+best-effort (`null` if the export fails); over `/ws`, `op_ack` / `peer_op` carry
+the merged content as well.
+
+A draft whose content does not currently parse stays visible to **its author**
+(and admin) and to nobody else. A document mid-edit is routinely unparseable for
+a moment, and failing closed on the author hid their own draft from `list_drafts`
+and from review until it happened to parse again.
 
 Three properties to design for. **Opening and committing are gated by
 `update_page`'s write ACL** (`ESCUREL_WRITE_ACL`): `open_session` refuses a

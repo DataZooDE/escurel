@@ -1433,9 +1433,22 @@ async fn tool_open_session(
         .await
         .map_err(|e| session_error_to_jsonrpc(&e, "open_session"))?;
 
+    // The document's snapshot, so the caller can be a PEER. With the text alone
+    // a client can rebuild a document that reads the same and still cannot edit
+    // this one: its ops would depend on its own local history, which this
+    // document has never seen, so Loro holds them pending — the apply reports
+    // success, the version advances, and the text does not move. Best-effort:
+    // an export failure is not a reason to refuse a session a client can still
+    // drive over `/ws`, where `op_ack` carries the merged content.
+    let snapshot = sessions
+        .snapshot_bytes(&session_id)
+        .await
+        .map(|bytes| B64.encode(bytes));
+
     Ok(json!({
         "session": session_id,
         "head_version": head.as_str(),
+        "snapshot": snapshot,
         // Advisory: clients with WS support should switch to the
         // WS channel after this call. The host/scheme are not
         // injected here (the gateway doesn't know its public

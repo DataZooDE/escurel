@@ -4,6 +4,20 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.78 — `open_session` returns the session's Loro snapshot
+
+- `open_session` (page or draft) now answers with `snapshot`, the base64 Loro
+  snapshot of the session document. A client must import it before it edits:
+  ops built on a locally-rebuilt look-alike depend on history the session has
+  never seen, so Loro holds them pending while `apply_op` reports success and
+  the content silently never moves. Best-effort — `null` if the export fails.
+- A draft whose content does not parse is now visible to **its author** (and
+  admin), no longer to nobody. A document mid-edit is routinely unparseable for
+  a moment, and failing closed on the author made their own live draft vanish
+  from `list_drafts` and from review — undiffable, unpromotable, and impossible
+  to discard — until it happened to parse again. It stays hidden from everyone
+  else, as before.
+
 ## 0.6.77 — a live session on a personal draft (`open_session { draft_id }`)
 
 - `open_session` takes `page_id` **or** `draft_id` (exactly one). With

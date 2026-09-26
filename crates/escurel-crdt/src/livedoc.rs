@@ -61,6 +61,7 @@ pub struct LiveDoc {
 enum Command {
     ApplyOp(Op, oneshot::Sender<Result<Version, Error>>),
     ReadContent(oneshot::Sender<String>),
+    ReadSnapshot(oneshot::Sender<Result<Vec<u8>, Error>>),
     Close(bool, oneshot::Sender<Result<Version, Error>>),
 }
 
@@ -169,6 +170,26 @@ impl LiveDoc {
         reply_rx.await.unwrap_or_default()
     }
 
+    /// Export the document as a Loro **snapshot** — its content together with
+    /// the history a peer needs to build ops on top of it.
+    ///
+    /// This is what makes a client a peer rather than a spectator. Given only
+    /// the text, a client can reconstruct a document that LOOKS the same and
+    /// still cannot edit this one: ops it exports depend on its own local
+    /// history, which this document has never seen, so Loro holds them pending
+    /// and the text does not move. The failure is silent — the apply reports
+    /// success and the version advances — so the snapshot is not a convenience.
+    ///
+    /// # Errors
+    /// [`Error::Loro`] when the export fails.
+    pub async fn snapshot_bytes(&self) -> Result<Vec<u8>, Error> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self.tx.send(Command::ReadSnapshot(reply_tx)).await.is_err() {
+            return Err(Error::Closed);
+        }
+        reply_rx.await.map_err(|_| Error::Closed)?
+    }
+
     /// Close the actor. If `commit == true`, the actor first
     /// exports a snapshot and persists it. Returns the final
     /// `Version` at which the doc was closed.
@@ -208,6 +229,9 @@ async fn actor_loop(
             }
             Command::ReadContent(reply) => {
                 let _ = reply.send(read_body(&doc));
+            }
+            Command::ReadSnapshot(reply) => {
+                let _ = reply.send(doc.export(ExportMode::Snapshot).map_err(Error::from));
             }
             Command::Close(commit, reply) => {
                 let result =
