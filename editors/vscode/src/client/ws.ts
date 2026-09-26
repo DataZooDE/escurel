@@ -24,6 +24,8 @@ export interface EventSocketOptions {
   /** Non-blocking: `lagged` = poll to reconcile; `session_cap_reached` = refresh-on-focus from now on. */
   onWarning: (kind: WarningKind, message: string) => void;
   onError: (error: EscurelError) => void;
+  /** Fired on every successful open and subscription frame send. */
+  onConnect?: () => void;
   reconnect?: { minMs: number; maxMs: number };
 }
 
@@ -142,6 +144,7 @@ export class EventSocket {
       if (this.opts.filters && Object.keys(this.opts.filters).length)
         frame.filters = this.opts.filters;
       ws.send(JSON.stringify(frame));
+      this.opts.onConnect?.();
     });
 
     ws.on('message', (data) => this.onFrame(JSON.parse(String(data))));

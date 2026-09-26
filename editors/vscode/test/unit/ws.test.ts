@@ -240,4 +240,22 @@ describe('EventSocket', () => {
     await srv.waitFor(() => srv.upgrades[0]?.frames.length === 2);
     expect(srv.upgrades[0]!.authorization).toBeUndefined();
   });
+
+  it('invokes onConnect when the socket opens and sends subscription', async () => {
+    const srv = await startFakeWs();
+    servers.push(srv);
+    let connected = false;
+    const s = new EventSocket(
+      options(srv.url, {
+        onConnect: () => {
+          connected = true;
+        },
+      }),
+    );
+    sockets.push(s);
+    s.connect();
+    await srv.waitFor(() => connected);
+    expect(connected).toBe(true);
+  });
 });
+

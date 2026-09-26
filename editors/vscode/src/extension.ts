@@ -11,6 +11,7 @@ import { AwaitingTree } from './views/awaiting';
 import { PageAsUiEditor } from './editors/pageAsUi';
 import { openPage, resolveCommand, searchCommand } from './commands/search';
 import { ReviewController } from './review';
+import { LiveCoordinator } from './live';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -19,6 +20,7 @@ export interface EscurelApi {
   inbox: InboxTree;
   awaiting: AwaitingTree;
   review: ReviewController;
+  live: LiveCoordinator;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi {
@@ -35,6 +37,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     () => services.client,
     () => awaiting.refresh(),
   );
+  const live = LiveCoordinator.register(context, services, { inbox, awaiting });
   context.subscriptions.push(
     services.onDidChange(() => {
       knowledge.refresh();
@@ -110,7 +113,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     ),
   );
   log().info('escurel: activated');
-  return { services, knowledge, inbox, awaiting, review };
+  return { services, knowledge, inbox, awaiting, review, live };
 }
 
 export function deactivate(): void {}
