@@ -74,7 +74,11 @@ const integration = {
 
 /** @type {import('esbuild').BuildOptions} */
 const harness = {
-  entryPoints: { harness: 'test/visual/harness/main.ts' },
+  // One harness page per webview, each loading its own bundle with a recorded fixture.
+  entryPoints: {
+    harness: 'test/visual/harness/main.ts',
+    'run-harness': 'test/visual/harness/run.ts',
+  },
   bundle: true,
   platform: 'browser',
   format: 'esm',
