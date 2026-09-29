@@ -64,36 +64,18 @@ jobs:
           channel: stable
           cache: true
 
-      # The shared kit is analyzed + tested in its own package first;
-      # the app depends on it by path.
-      - name: kit — flutter pub get
-        working-directory: packages/escurel_explorer_kit
-        run: flutter pub get
-
-      - name: kit — flutter analyze
-        working-directory: packages/escurel_explorer_kit
-        run: flutter analyze
-
-      - name: kit — flutter test
-        working-directory: packages/escurel_explorer_kit
-        run: flutter test --reporter expanded
-
-      - name: flutter pub get
-        run: flutter pub get
-
-      - name: flutter analyze
-        run: flutter analyze
-
-      - name: flutter test
-        run: flutter test --reporter expanded
+      # The shared kit is analyzed + tested in its own package first; the
+      # app depends on it by path. pub get + analyze + test for both, via
+      # scripts/check.sh (also what the local pre-push hook runs).
+      - name: kit + app — flutter analyze + test
+        working-directory: .
+        run: scripts/check.sh explore
 
       # The shipped bundle is built inside the Dockerfile (http mode). Keep
       # a CI smoke build so a broken web build fails fast before docker.
       - name: flutter build web (smoke)
-        run: |
-          flutter build web --release \
-            --dart-define=ESCUREL_EXPLORE_MODE=http \
-            --dart-define=ESCUREL_EXPLORE_VERSION=${GITHUB_SHA::7}
+        working-directory: .
+        run: scripts/check.sh explore-web
 
       - uses: docker/setup-buildx-action@v3
 

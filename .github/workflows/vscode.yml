@@ -51,10 +51,9 @@ jobs:
       - name: playwright browsers (component tests)
         run: npx playwright install --with-deps chromium
 
-      - run: npm run typecheck
-      - run: npm run lint
-      - run: npm run test:unit
-      - run: npm run test:component
+      # typecheck + lint + unit + component tests: the same `npm test` the
+      # local pre-push hook runs (scripts/check.sh vscode, which adds npm ci).
+      - run: npm test
       - run: npm run build
       # Inside the pinned Playwright image, like the committed baselines.
       - run: npm run test:visual
