@@ -66,6 +66,20 @@ suite('a real run', () => {
     api = (await ext.activate()) as EscurelApi;
   });
 
+  // The echo harness folds the OLDEST inbox event carrying a target instance, and a review
+  // run leaves its event in the inbox until the draft is promoted. So a draft left open here
+  // makes the next test's run reach for this one's page, hit the one-draft-per-page rule and
+  // dead-letter — which reads exactly like a runner that never started.
+  suiteTeardown(async () => {
+    for (const d of await api.services.client.listDrafts()) {
+      if (d.status === 'open') {
+        await api.services.client
+          .discardDraft({ draft_id: d.draft_id, reason: 'integration cleanup' })
+          .catch(() => undefined);
+      }
+    }
+  });
+
   /** An order with no open draft, so this test owns the page's only draft slot. */
   async function freePage(): Promise<string> {
     const open = (await api.services.client.listDrafts()).filter((d) => d.status === 'open');

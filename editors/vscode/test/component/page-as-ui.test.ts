@@ -114,3 +114,49 @@ describe('<escurel-page-as-ui>', () => {
     expect(q(el, '.actions .skill-button [role="menu"]')).to.not.exist;
   });
 });
+
+describe('<escurel-page-as-ui> thread strip', () => {
+  const withThread = async (runStatus = 'processed') => {
+    const el = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui
+        .model=${{ ...orderPage, thread: { rootEventId: 'root-1', runId: 'run-1', runStatus } }}
+      ></escurel-page-as-ui>`,
+    );
+    await el.updateComplete;
+    return el;
+  };
+
+  it('shows where the page came from, and opens the thread and the run', async () => {
+    const el = await withThread();
+    const strip = q(el, '.thread-strip')!;
+    expect(strip).to.exist;
+    expect(text(strip)).to.contain('Thread');
+    expect(text(strip)).to.contain('processed');
+    const sent: WebviewToHost[] = [];
+    el.addEventListener('escurel-message', (e) =>
+      sent.push((e as CustomEvent<WebviewToHost>).detail),
+    );
+    (q(el, '.thread-strip .open-thread') as HTMLButtonElement).click();
+    (q(el, '.thread-strip .open-run') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([
+      { type: 'open-thread', rootEventId: 'root-1' },
+      { type: 'open-run', runId: 'run-1' },
+    ]);
+  });
+
+  it('gives its buttons names a screen reader can use', async () => {
+    const el = await withThread();
+    expect(q(el, '.open-thread')!.getAttribute('aria-label')).to.contain('Open thread');
+    expect(q(el, '.open-run')!.getAttribute('aria-label')).to.contain('Open run');
+  });
+
+  it('says so when the run that produced the page did not succeed', async () => {
+    const el = await withThread('failed');
+    expect(text(q(el, '.thread-strip'))).to.contain('failed');
+  });
+
+  it('is absent for a page no run has finished against', async () => {
+    const el = await render();
+    expect(q(el, '.thread-strip')).to.equal(null);
+  });
+});

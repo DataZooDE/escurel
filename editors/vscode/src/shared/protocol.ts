@@ -28,6 +28,14 @@ export interface ActionView {
   label: string;
 }
 
+/** Where a page came from (SPEC §3.4): the thread and the run that last finished against it. */
+export interface ThreadStrip {
+  rootEventId: string;
+  runId: string;
+  /** `processed | failed | dead_letter | cancelled | planned`, as the run finished. */
+  runStatus: string;
+}
+
 export interface PageModel {
   pageId: string;
   title: string;
@@ -47,6 +55,8 @@ export interface PageModel {
   /** False until BACKEND_GAPS PR-1 (live personal drafts) lands. */
   editable: boolean;
   actions: ActionView[];
+  /** Absent when no run has finished against this page. */
+  thread?: ThreadStrip;
 }
 
 export type HostToWebview =
@@ -61,6 +71,8 @@ export type WebviewToHost =
   | { type: 'view-skill'; skill: string }
   | { type: 'show-raw' }
   | { type: 'refresh' }
+  | { type: 'open-thread'; rootEventId: string }
+  | { type: 'open-run'; runId: string }
   | { type: 'start-skill'; skill: string; mode: StartMode };
 
 // ── the thread and run webviews (SPEC §3.5, §3.6) ────────────────────

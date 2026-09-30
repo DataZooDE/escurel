@@ -4,6 +4,7 @@ import { describeError } from '../errors';
 import { pageIdFromPath } from '../fs/read';
 import { log } from '../log';
 import { buildPageModel } from '../shared/page';
+import { findThreadStrip } from '../shared/threadStrip';
 import type { HostToWebview, WebviewToHost } from '../shared/protocol';
 
 export const VIEW_TYPE = 'escurel.pageAsUi';
@@ -64,7 +65,19 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
         const skill = skills.find((s) => s.id === e.page!.skill);
         if (!skill)
           return post({ type: 'error', message: `skill ${e.page.skill} is not in the catalogue` });
-        post({ type: 'page', model: buildPageModel(e, skill) });
+        const model = buildPageModel(e, skill);
+        // Where the page came from. A failure here must not cost the user the page: the strip
+        // is an addition to it, so it degrades to absent.
+        const strip = await findThreadStrip((cursor) =>
+          c.listEvents({
+            instance_page_id: pageId,
+            include_system: true,
+            newest_first: true,
+            limit: 50,
+            ...(cursor ? { cursor } : {}),
+          }),
+        );
+        post({ type: 'page', model: strip ? { ...model, thread: strip } : model });
       } catch (err) {
         post({ type: 'error', message: describeError(err) });
       }
@@ -90,6 +103,10 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
         return void vscode.commands.executeCommand('escurel.resolve', m.wikilink);
       case 'view-skill':
         return void vscode.commands.executeCommand('escurel.viewSkill', m.skill);
+      case 'open-thread':
+        return void vscode.commands.executeCommand('escurel.openThread', m.rootEventId);
+      case 'open-run':
+        return void vscode.commands.executeCommand('escurel.openRun', m.runId);
       case 'show-raw':
         return void vscode.commands.executeCommand('escurel.showRaw', pageId);
       case 'start-skill':
