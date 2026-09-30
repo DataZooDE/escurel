@@ -48,18 +48,127 @@ function threadViewFromFixture(fixture: LineageFixture): ThreadView {
     meta: [],
     chips: [],
     target: { open: 'nothing' },
-    collapsible: node.type === 'run',
+    collapsible: node.type === 'run' || (childrenMap.get(node.id)?.length ?? 0) > 0,
   }));
 
   return {
     rootEventId: fixture.root_event_id,
     nodes,
-    columns: ['root event', 'run · changeset', 'instances · drafts', 'cascade · depth 1'],
+    columns: [
+      'root event',
+      'run · changeset',
+      'instances · drafts',
+      'cascade · depth 1',
+      'outbound · depth 2',
+    ],
     loadingMore: false,
   };
 }
 
+// Hand-written nodes cover a second cascade generation absent from the recordings.
+function lineageNode(
+  id: string,
+  kind: ThreadNode['kind'],
+  parent: string | null,
+  children: string[],
+): ThreadNode {
+  return {
+    id,
+    kind,
+    parent,
+    children,
+    state: 'processed',
+    tone: 'neutral',
+    title: id,
+    meta: [],
+    chips: [],
+    target: { open: 'nothing' },
+    collapsible: kind === 'run' || children.length > 0,
+  };
+}
+
 describe('thread layout and focus graph', () => {
+  it('places an event directly under the root in column 1', () => {
+    // Hand-written input: the recordings have no event whose parent is the root.
+    const view: ThreadView = {
+      rootEventId: 'root',
+      nodes: [
+        lineageNode('root', 'event', null, ['child']),
+        lineageNode('child', 'event', 'root', []),
+      ],
+      columns: ['root event'],
+      loadingMore: false,
+    };
+
+    expect(layoutThread(view, new Set()).nodes.find((node) => node.id === 'child')?.column).toBe(1);
+  });
+
+  it('labels every used column across two cascade generations', () => {
+    // Hand-written input: recordings contain only one cascade generation.
+    const view: ThreadView = {
+      rootEventId: 'root',
+      nodes: [
+        lineageNode('root', 'event', null, ['run1']),
+        lineageNode('run1', 'run', 'root', ['cs1', 'hop1']),
+        lineageNode('cs1', 'changeset', 'run1', ['draft1']),
+        lineageNode('draft1', 'draft', 'cs1', []),
+        lineageNode('hop1', 'event', 'run1', ['run2']),
+        lineageNode('run2', 'run', 'hop1', ['cs2']),
+        lineageNode('cs2', 'changeset', 'run2', ['draft2']),
+        lineageNode('draft2', 'draft', 'cs2', ['hop2']),
+        lineageNode('hop2', 'event', 'draft2', []),
+      ],
+      columns: [
+        'root event',
+        'run · changeset',
+        'instances · drafts',
+        'cascade · depth 1',
+        'outbound · depth 2',
+      ],
+      loadingMore: false,
+    };
+
+    const layout = layoutThread(view, new Set());
+    const usedColumns = new Set(
+      layout.nodes.filter((node) => !node.hidden).map((node) => node.column),
+    );
+    expect(layout.columnHeaders).toHaveLength(usedColumns.size);
+    expect(layout.columnHeaders.every((header) => header.label.trim().length > 0)).toBe(true);
+    expect(layout.nodes.find((node) => node.id === 'hop2')?.column).toBe(6);
+    expect(layout.columnHeaders.at(-2)?.label).toBe('drafts · depth 2');
+    expect(layout.columnHeaders.at(-1)?.label).toBe('cascade · depth 2');
+  });
+
+  it('keeps layout and focus identical when flat nodes are reversed or rotated', () => {
+    const view = threadViewFromFixture(loadLineageFixture('lineage-cascade.json'));
+    const baseline = layoutThread(view, new Set());
+    const baselineFocus = focusGraph(view, baseline);
+    for (const nodes of [
+      [...view.nodes].reverse(),
+      [...view.nodes.slice(2), ...view.nodes.slice(0, 2)],
+    ]) {
+      const shuffledView = { ...view, nodes };
+      const shuffledLayout = layoutThread(shuffledView, new Set());
+      expect(shuffledLayout).toEqual(baseline);
+      expect(focusGraph(shuffledView, shuffledLayout)).toEqual(baselineFocus);
+    }
+  });
+
+  it('models collapsible parents and all five mock column labels in recorded views', () => {
+    const view = threadViewFromFixture(loadLineageFixture('lineage-cascade.json'));
+    expect(
+      view.nodes.every(
+        (node) => node.collapsible === (node.kind === 'run' || node.children.length > 0),
+      ),
+    ).toBe(true);
+    expect(view.columns).toEqual([
+      'root event',
+      'run · changeset',
+      'instances · drafts',
+      'cascade · depth 1',
+      'outbound · depth 2',
+    ]);
+  });
   // Test 1: Columns for the cascade shape
   it('assigns columns for cascade shape: root 0, run 1, changeset 1, draft 2, cascade event 3', () => {
     const fixture = loadLineageFixture('lineage-cascade.json');

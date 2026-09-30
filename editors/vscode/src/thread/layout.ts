@@ -13,6 +13,8 @@ export const CARD_HEIGHT = 80;
 export const GAP_X = 50;
 export const GAP_Y = 24;
 export const MARGIN = 32;
+// Same-column and backward wires need a minimum bend to remain visible beside card edges.
+const MIN_BEZIER_CURVATURE = 20;
 
 /**
  * A node is hidden only when an ancestor is collapsed, never because it is
@@ -75,24 +77,9 @@ function getNodeColumn(
   } else if (node.kind === 'draft') {
     col = parentCol + 1;
   } else if (node.kind === 'event') {
-    // A cascade hop points at the run that produced it. It advances two columns
-    // from the run so it sits to the right of the run's drafts rather than
-    // colliding with them.
     const parent = nodeMap.get(node.parent);
-    if (parent?.kind === 'run') {
-      col = parentCol + 2;
-    } else {
-      let ancestor = parent;
-      let runCol = parentCol;
-      while (ancestor) {
-        if (ancestor.kind === 'run') {
-          runCol = getNodeColumn(ancestor.id, rootId, nodeMap, colMap, visiting);
-          break;
-        }
-        ancestor = ancestor.parent ? nodeMap.get(ancestor.parent) : undefined;
-      }
-      col = runCol + 2;
-    }
+    // A run's hop clears its drafts; other events advance from their direct parent.
+    col = parentCol + (parent?.kind === 'run' ? 2 : 1);
   } else {
     col = parentCol + 1;
   }
@@ -108,7 +95,7 @@ function getNodeColumn(
  */
 function cubicBezierPath(x1: number, y1: number, x2: number, y2: number): string {
   const dx = x2 - x1;
-  const curvature = dx > 0 ? dx / 2 : Math.max(Math.abs(dx) / 2, 20);
+  const curvature = dx > 0 ? dx / 2 : Math.max(Math.abs(dx) / 2, MIN_BEZIER_CURVATURE);
   const cx1 = x1 + curvature;
   const cx2 = x2 - (dx > 0 ? curvature : -curvature);
   return `M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`;
@@ -119,7 +106,7 @@ function cubicBezierPath(x1: number, y1: number, x2: number, y2: number): string
  * so the eye immediately tracks approved drafts and executed outbound hops
  * without inspecting individual card badges.
  */
-function wireStyle(child: ThreadNode): 'solid' | 'promoted' | 'sent' {
+function wireStyle(child: ThreadNode): Wire['style'] {
   if (child.state === 'promoted') {
     return 'promoted';
   }
@@ -137,16 +124,33 @@ function wireStyle(child: ThreadNode): 'solid' | 'promoted' | 'sent' {
  */
 export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): ThreadLayout {
   const nodeMap = new Map<string, ThreadNode>(view.nodes.map((n) => [n.id, n]));
+  const orderedNodes: ThreadNode[] = [];
+  const visited = new Set<string>();
+
+  function visit(nodeId: string): void {
+    if (visited.has(nodeId)) return;
+    const node = nodeMap.get(nodeId);
+    if (!node) return;
+    visited.add(nodeId);
+    orderedNodes.push(node);
+    for (const childId of node.children) visit(childId);
+  }
+
+  visit(view.rootEventId);
+  // Orphans can appear in ACL-pruned views; ID order keeps their placement stable.
+  for (const node of [...view.nodes].sort((a, b) => a.id.localeCompare(b.id))) {
+    visit(node.id);
+  }
   const colMap = new Map<string, number>();
 
-  for (const node of view.nodes) {
+  for (const node of orderedNodes) {
     getNodeColumn(node.id, view.rootEventId, nodeMap, colMap);
   }
 
   // Determine hidden state up-front: hidden cards take zero space in the
   // grid flow so visible siblings collapse upward into freed space.
   const hiddenMap = new Map<string, boolean>();
-  for (const node of view.nodes) {
+  for (const node of orderedNodes) {
     hiddenMap.set(node.id, isAncestorCollapsed(node.id, collapsed, nodeMap));
   }
 
@@ -216,22 +220,20 @@ export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): 
 
   // Traverse from root down depth-first in children order.
   const rootNode =
-    view.nodes.find((n) => n.id === view.rootEventId) ??
-    view.nodes.find((n) => n.parent === null) ??
-    view.nodes[0];
+    nodeMap.get(view.rootEventId) ?? orderedNodes.find((n) => n.parent === null) ?? orderedNodes[0];
 
   if (rootNode) {
     assignRowRecursive(rootNode.id);
   }
 
   // Cover disconnected or unparented nodes so ACL-pruned trees still layout deterministically.
-  for (const node of view.nodes) {
+  for (const node of orderedNodes) {
     if (!assignedRow.has(node.id) && !hiddenMap.get(node.id)) {
       assignRowRecursive(node.id);
     }
   }
 
-  const laidOutNodes: LaidOutNode[] = view.nodes.map((node) => {
+  const laidOutNodes: LaidOutNode[] = orderedNodes.map((node) => {
     const isHidden = Boolean(hiddenMap.get(node.id));
     const column = colMap.get(node.id) ?? 0;
     if (isHidden) {
@@ -264,7 +266,7 @@ export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): 
   // Connect visible parent-child pairs. Wires are omitted when either end
   // is hidden by collapse to avoid orphan lines pointing into empty space.
   const wires: Wire[] = [];
-  for (const child of view.nodes) {
+  for (const child of orderedNodes) {
     if (hiddenMap.get(child.id) || !child.parent || hiddenMap.get(child.parent)) {
       continue;
     }
@@ -298,8 +300,28 @@ export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): 
 
   const usedColumns = Array.from(new Set(visibleCards.map((n) => n.column))).sort((a, b) => a - b);
 
+  function derivedHeader(col: number): string {
+    const occupant = orderedNodes.find(
+      (node) => !hiddenMap.get(node.id) && colMap.get(node.id) === col,
+    );
+    if (!occupant) return `depth ${col}`;
+    let depth = 0;
+    let ancestor: ThreadNode | undefined = occupant;
+    while (ancestor) {
+      if (ancestor.kind === 'run') depth += 1;
+      ancestor = ancestor.parent ? nodeMap.get(ancestor.parent) : undefined;
+    }
+    const role =
+      occupant.kind === 'event'
+        ? 'cascade'
+        : occupant.kind === 'draft'
+          ? 'drafts'
+          : 'run · changeset';
+    return `${role} · depth ${depth}`;
+  }
+
   const columnHeaders = usedColumns.map((col) => ({
-    label: view.columns[col] ?? '',
+    label: view.columns[col]?.trim() || derivedHeader(col),
     x: MARGIN + col * (CARD_WIDTH + GAP_X),
   }));
 
