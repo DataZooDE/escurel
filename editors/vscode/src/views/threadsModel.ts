@@ -5,6 +5,9 @@ export interface OutlineRow {
   label: string;
   description: string;
   contextValue: 'escurel.run' | 'escurel.event' | 'escurel.changeset' | 'escurel.draft';
+  kind: ThreadNode['kind'];
+  /** The gateway's state, verbatim. A row's colour comes from THIS, not from its text. */
+  state: string | null;
   collapsibleState: 'none' | 'collapsed' | 'expanded';
   target: NodeTarget;
   children: OutlineRow[];
@@ -25,6 +28,8 @@ export function outlineRows(view: ThreadView, collapsed: ReadonlySet<string>): O
       label: node.title,
       description: node.chips.map((chip) => chip.text).join(' · '),
       contextValue: `escurel.${node.kind}`,
+      kind: node.kind,
+      state: node.state,
       collapsibleState: children.length
         ? collapsed.has(node.id)
           ? 'collapsed'

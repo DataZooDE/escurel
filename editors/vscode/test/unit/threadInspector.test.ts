@@ -53,3 +53,56 @@ describe('buildInspectors', () => {
     expect(rows.some((row) => row.k === 'model' || row.k === 'reason')).toBe(false);
   });
 });
+
+describe('real data is never dropped for want of its companion', () => {
+  // Hand-written: the recording carries both halves of each pair, so it cannot show this.
+  const asRun = (extra: Record<string, unknown>) => {
+    const { view, nodes } = recorded();
+    const run = view.nodes.find((node) => node.kind === 'run')!;
+    const patched = nodes.map((n) => (n.id === run.id ? ({ ...n, ...extra } as LineageNode) : n));
+    return buildInspectors(view, patched)[run.id]!;
+  };
+
+  it('shows attempts when the maximum is absent', () => {
+    const detail = asRun({ attempts: 2, max_attempts: null });
+    expect(detail.rows).toContainEqual({ k: 'attempts', v: '2' });
+  });
+
+  it('shows the produced page when its version is absent', () => {
+    const detail = asRun({
+      produced_instance: 'markdown/instances/order__o1.md',
+      produced_version: null,
+    });
+    expect(detail.rows).toContainEqual({ k: 'produced', v: 'markdown/instances/order__o1.md' });
+  });
+});
+
+describe('labels say what they are', () => {
+  it('names the event counts as counts of what is BELOW, not fields of the node', () => {
+    // They are derived from the thread that was loaded; the gateway sends no such fields.
+    const { view, nodes } = recorded();
+    const root = view.nodes.find((n) => n.id === view.rootEventId)!;
+    const side = buildInspectors(view, nodes)[root.id]!.side.map((r) => r.k);
+    expect(side).toContain('runs below');
+    expect(side).toContain('events below');
+    expect(side).not.toContain('runs');
+  });
+
+  it('does not offer an "Open page" table that is not an action, or repeat the target', () => {
+    const { view, nodes } = recorded();
+    const draft = view.nodes.find((n) => n.kind === 'draft')!;
+    const detail = buildInspectors(view, nodes)[draft.id]!;
+    expect(detail.sideTitle).not.toBe('Open page');
+    expect(detail.rows.filter((r) => r.k === 'target')).toHaveLength(1);
+    expect([...detail.rows, ...detail.side].filter((r) => r.k === 'target_page_id')).toHaveLength(
+      0,
+    );
+  });
+
+  it('does not repeat depth in both tables', () => {
+    const { view, nodes } = recorded();
+    const hop = view.nodes.find((n) => n.kind === 'event' && n.parent !== null)!;
+    const d = buildInspectors(view, nodes)[hop.id]!;
+    expect([...d.rows, ...d.side].filter((r) => r.k === 'depth').length).toBeLessThanOrEqual(1);
+  });
+});

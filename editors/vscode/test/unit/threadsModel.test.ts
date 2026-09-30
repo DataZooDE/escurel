@@ -38,3 +38,25 @@ describe('outlineRows', () => {
     expect(outlineRows(view, new Set())[0]!.children[0]!.collapsibleState).toBe('expanded');
   });
 });
+
+describe('outline rows carry what the tree needs to show them truthfully', () => {
+  const rowsOf = () => {
+    const folded = foldLineage([lineage as ListLineageResponse]);
+    return outlineRows(toThreadView(folded), new Set());
+  };
+  const flat = (rs: ReturnType<typeof rowsOf>): ReturnType<typeof rowsOf> =>
+    rs.flatMap((r) => [r, ...flat(r.children)]);
+
+  it('keeps the node state, so a running run is not shown as a passed one', () => {
+    // The tree coloured a run green unless its description said it had failed, so a running
+    // or planned run looked like a success. The state has to travel with the row.
+    const run = flat(rowsOf()).find((r) => r.contextValue === 'escurel.run')!;
+    expect(run.state).toBe('processed');
+    expect(flat(rowsOf()).every((r) => 'state' in r)).toBe(true);
+  });
+
+  it('keeps the node kind, so each row can have its own icon', () => {
+    const kinds = new Set(flat(rowsOf()).map((r) => r.kind));
+    expect(kinds).toEqual(new Set(['event', 'run', 'changeset', 'draft']));
+  });
+});

@@ -71,19 +71,26 @@ function eventDetail(
       row('depth', raw.depth),
     ),
     sideTitle: 'Thread',
-    side: rows(row('depth', raw.depth), row('runs', counts.runs), row('events', counts.events)),
+    // Derived from the thread that was loaded, not fields of this node: the gateway sends no
+    // such counts, so the labels say what they count.
+    side: rows(row('runs below', counts.runs), row('events below', counts.events)),
   };
 }
 
 function runDetail(node: ThreadNode, raw: LineageNode): InspectorView {
+  // Each pair shows what it has: a version or a maximum the gateway did not send must not
+  // suppress the half it did.
   const attempts =
-    typeof raw.attempts === 'number' && typeof raw.max_attempts === 'number'
-      ? `${raw.attempts}/${raw.max_attempts}`
-      : undefined;
-  const produced =
-    value(raw.produced_instance) && value(raw.produced_version)
+    typeof raw.attempts !== 'number'
+      ? undefined
+      : typeof raw.max_attempts === 'number'
+        ? `${raw.attempts}/${raw.max_attempts}`
+        : String(raw.attempts);
+  const produced = value(raw.produced_instance)
+    ? value(raw.produced_version)
       ? `${raw.produced_instance} @ ${raw.produced_version}`
-      : undefined;
+      : value(raw.produced_instance)
+    : undefined;
   const summary = raw.tool_call_summary;
   const failedCalls =
     summary && typeof summary === 'object' && 'failed' in summary ? summary.failed : undefined;
@@ -146,11 +153,11 @@ function draftDetail(node: ThreadNode, raw: LineageNode): InspectorView {
       row('target', raw.target_page_id),
       row('state', raw.state, true),
       row('author', raw.author),
-      row('decided_by', raw.decided_by),
-      row('created_at', formatDateTime(raw.created_at)),
     ),
-    sideTitle: 'Open page',
-    side: rows(row('target_page_id', raw.target_page_id)),
+    // Not an action: a table headed "Open page" looked clickable and was not, and repeated the
+    // target already in the rows above.
+    sideTitle: 'Decision',
+    side: rows(row('decided_by', raw.decided_by), row('created', formatDateTime(raw.created_at))),
   };
 }
 
