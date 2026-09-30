@@ -21,7 +21,11 @@ export const theme = css`
     font: inherit;
     color: inherit;
     background: none;
-    border: 1px solid transparent;
+    /* High-contrast themes paint buttons black on black and rely on this border to
+       show where one is; VS Code sets both tokens only there, so light and dark
+       stay borderless. A transparent border here made every button in every
+       webview indistinguishable from text in high contrast. */
+    border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
     border-radius: 2px;
     padding: 2px 8px;
     cursor: pointer;

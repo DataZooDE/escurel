@@ -1,0 +1,199 @@
+{
+  "events": [
+    {
+      "event_id": "run:01M3NHM31CYWN2NXCFM3J16QB4:started",
+      "at": "2026-09-29T02:59:08Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "run-started",
+      "body": "{}",
+      "provenance": {
+        "runner": {
+          "run_id": "01M3NHM31CYWN2NXCFM3J16QB4",
+          "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+          "event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+          "depth": 0,
+          "lineage_path": [
+            "01M3NHM2YN912MYVK4R90WM4XA"
+          ],
+          "harness": "echo",
+          "max_attempts": 3,
+          "trace_id": "01a0eb1a0c48ea6f8032964bcf4a7df7",
+          "target_page_id": "markdown/instances/order/o1.md",
+          "attempt": 0
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+      "run_id": "01M3NHM31CYWN2NXCFM3J16QB4"
+    },
+    {
+      "event_id": "run-progress:01M3NHM31CYWN2NXCFM3J16QB4:19ac7dbefbb46a8d",
+      "at": "2026-09-29T02:59:08Z",
+      "source": "report_progress",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "run-progress",
+      "body": "{\"plan\":[{\"step\":\"read the target page\",\"status\":\"completed\"},{\"step\":\"draft the fold for review\",\"status\":\"in_progress\"}],\"current\":\"draft the fold for review\",\"note\":null}",
+      "provenance": {
+        "runner": {
+          "run_id": "01M3NHM31CYWN2NXCFM3J16QB4",
+          "reported_by": "agent:signal",
+          "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA"
+        },
+        "captured_by": "agent:signal"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+      "run_id": "01M3NHM31CYWN2NXCFM3J16QB4"
+    },
+    {
+      "event_id": "review:01M3NHM38CMPFAFDVDWJM8BY6P:draft-created",
+      "at": "2026-09-29T02:59:08Z",
+      "source": "escurel",
+      "mime": "application/json",
+      "label_skill": "escurel:review",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "draft-created",
+      "body": "{\"transition\":\"draft-created\",\"draft_id\":\"01M3NHM38CMPFAFDVDWJM8BY6P\",\"changeset_id\":\"01M3NHM389SQS14KZKE1FG6XGB\",\"target_page_id\":\"markdown/instances/order/o1.md\",\"event_id\":\"01M3NHM2YN912MYVK4R90WM4XA\",\"decided_by\":\"agent:signal\",\"reason\":\"\"}",
+      "provenance": {
+        "review": {
+          "draft_id": "01M3NHM38CMPFAFDVDWJM8BY6P",
+          "changeset_id": "01M3NHM389SQS14KZKE1FG6XGB",
+          "run_id": "01M3NHM31CYWN2NXCFM3J16QB4",
+          "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+          "decided_by": "agent:signal",
+          "already_decided": false,
+          "event_id": "01M3NHM2YN912MYVK4R90WM4XA"
+        },
+        "captured_by": "escurel"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+      "run_id": "01M3NHM31CYWN2NXCFM3J16QB4"
+    },
+    {
+      "event_id": "run:01M3NHM31CYWN2NXCFM3J16QB4:attempt:1",
+      "at": "2026-09-29T02:59:08Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "run-attempt",
+      "body": "{\"attempt\":1,\"started_at\":\"2026-09-29 02:59:08.035678\",\"ended_at\":\"2026-09-29 02:59:08.210808\",\"outcome\":\"ok\"}",
+      "provenance": {
+        "runner": {
+          "run_id": "01M3NHM31CYWN2NXCFM3J16QB4",
+          "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+          "event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+          "depth": 0,
+          "lineage_path": [
+            "01M3NHM2YN912MYVK4R90WM4XA"
+          ],
+          "harness": "echo",
+          "max_attempts": 3,
+          "trace_id": "01a0eb1a0c48ea6f8032964bcf4a7df7",
+          "target_page_id": "markdown/instances/order/o1.md",
+          "attempt": 1
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+      "run_id": "01M3NHM31CYWN2NXCFM3J16QB4"
+    },
+    {
+      "event_id": "run:01M3NHM31CYWN2NXCFM3J16QB4:finished",
+      "at": "2026-09-29T02:59:08Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "run-finished",
+      "body": "{\"status\":\"processed\",\"attempts\":1,\"held\":true,\"summary\":\"drafted the fold of event 01M3NHM2YN912MYVK4R90WM4XA for markdown/instances/order/o1.md (draft 01M3NHM38CMPFAFDVDWJM8BY6P); awaiting a human\",\"tool_calls\":4,\"produced_instance\":\"markdown/instances/order/o1.md\",\"produced_version\":\"9d9fc8cd7e719644205fee5c7d0ea3d28217a35cfccb3ddcfd852ccfe1aeb223\",\"plan\":[{\"step\":\"read the target page\",\"status\":\"completed\"},{\"step\":\"draft the fold for review\",\"status\":\"in_progress\"}],\"usage\":null}",
+      "provenance": {
+        "runner": {
+          "run_id": "01M3NHM31CYWN2NXCFM3J16QB4",
+          "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+          "event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+          "depth": 0,
+          "lineage_path": [
+            "01M3NHM2YN912MYVK4R90WM4XA"
+          ],
+          "harness": "echo",
+          "max_attempts": 3,
+          "trace_id": "01a0eb1a0c48ea6f8032964bcf4a7df7",
+          "target_page_id": "markdown/instances/order/o1.md",
+          "attempt": 1,
+          "autonomy": "review"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+      "run_id": "01M3NHM31CYWN2NXCFM3J16QB4"
+    },
+    {
+      "event_id": "review:01M3NHM38CMPFAFDVDWJM8BY6P:draft-promoted",
+      "at": "2026-09-29T02:59:08Z",
+      "source": "escurel",
+      "mime": "application/json",
+      "label_skill": "escurel:review",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "draft-promoted",
+      "body": "{\"transition\":\"draft-promoted\",\"draft_id\":\"01M3NHM38CMPFAFDVDWJM8BY6P\",\"changeset_id\":\"01M3NHM389SQS14KZKE1FG6XGB\",\"target_page_id\":\"markdown/instances/order/o1.md\",\"event_id\":\"01M3NHM2YN912MYVK4R90WM4XA\",\"decided_by\":\"alice\",\"reason\":\"\"}",
+      "provenance": {
+        "review": {
+          "draft_id": "01M3NHM38CMPFAFDVDWJM8BY6P",
+          "changeset_id": "01M3NHM389SQS14KZKE1FG6XGB",
+          "run_id": "01M3NHM31CYWN2NXCFM3J16QB4",
+          "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+          "decided_by": "alice",
+          "already_decided": false,
+          "event_id": "01M3NHM2YN912MYVK4R90WM4XA"
+        },
+        "captured_by": "escurel"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+      "run_id": "01M3NHM31CYWN2NXCFM3J16QB4"
+    },
+    {
+      "event_id": "review:01M3NHM389SQS14KZKE1FG6XGB:changeset-promoted",
+      "at": "2026-09-29T02:59:08Z",
+      "source": "escurel",
+      "mime": "application/json",
+      "label_skill": "escurel:review",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "changeset-promoted",
+      "body": "{\"transition\":\"changeset-promoted\",\"draft_id\":null,\"changeset_id\":\"01M3NHM389SQS14KZKE1FG6XGB\",\"target_page_id\":\"markdown/instances/order/o1.md\",\"event_id\":\"01M3NHM2YN912MYVK4R90WM4XA\",\"decided_by\":\"alice\",\"reason\":\"\"}",
+      "provenance": {
+        "review": {
+          "draft_id": null,
+          "changeset_id": "01M3NHM389SQS14KZKE1FG6XGB",
+          "run_id": "01M3NHM31CYWN2NXCFM3J16QB4",
+          "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+          "decided_by": "alice",
+          "already_decided": false,
+          "event_id": "01M3NHM2YN912MYVK4R90WM4XA"
+        },
+        "captured_by": "escurel"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHM2YN912MYVK4R90WM4XA",
+      "run_id": "01M3NHM31CYWN2NXCFM3J16QB4"
+    }
+  ],
+  "resume_cursor": "c2VxfDEw"
+}

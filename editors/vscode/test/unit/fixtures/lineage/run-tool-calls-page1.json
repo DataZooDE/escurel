@@ -1,0 +1,28 @@
+{
+  "run_id": "01M3NHM31CYWN2NXCFM3J16QB4",
+  "calls": [
+    {
+      "seq": 1,
+      "tool": "list_inbox",
+      "status": "ok",
+      "error_code": null,
+      "duration_ms": 5.8786309999999995,
+      "request_bytes": 2,
+      "response_bytes": 1058,
+      "subject": "agent:signal",
+      "at": "2026-09-29T04:59:08Z"
+    },
+    {
+      "seq": 2,
+      "tool": "expand",
+      "status": "ok",
+      "error_code": null,
+      "duration_ms": 9.290696,
+      "request_bytes": 44,
+      "response_bytes": 922,
+      "subject": "agent:signal",
+      "at": "2026-09-29T04:59:08Z"
+    }
+  ],
+  "next_after": 2
+}

@@ -14,7 +14,9 @@ type Fixture = {
 };
 
 const fixtures: Record<string, Fixture> = {};
-for (const f of readdirSync(join(__dirname, 'fixtures'))) {
+// Only the JSON files at the top level: recorded lineages live in `fixtures/lineage/`
+// and are read by the models' own tests, not replayed as `/mcp` answers.
+for (const f of readdirSync(join(__dirname, 'fixtures')).filter((n) => n.endsWith('.json'))) {
   fixtures[f.replace(/\.json$/, '')] = JSON.parse(
     readFileSync(join(__dirname, 'fixtures', f), 'utf8'),
   );
