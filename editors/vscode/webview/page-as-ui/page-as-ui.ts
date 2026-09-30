@@ -81,6 +81,27 @@ export class EscurelPageAsUi extends LitElement {
         border-color: var(--escurel-run);
         color: var(--escurel-run);
       }
+      .thread-strip {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin: 8px 0;
+        padding: 4px 8px;
+        border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+        border-radius: 3px;
+        color: var(--vscode-descriptionForeground);
+      }
+      .thread-strip button {
+        color: var(--vscode-textLink-foreground);
+        text-decoration: underline;
+      }
+      .run-status.failed,
+      .run-status.dead_letter,
+      .run-status.cancelled {
+        color: var(--vscode-errorForeground);
+      }
+
       .summary {
         white-space: pre-wrap;
       }
@@ -176,6 +197,34 @@ export class EscurelPageAsUi extends LitElement {
         </button>
         — ${m.skill.summary ?? m.skill.description}
       </div>
+
+      ${
+        m.thread
+          ? html`<div class="thread-strip">
+              <span>Thread</span>
+              <button
+                class="open-thread"
+                aria-label="Open thread for this page's last run"
+                @click=${() => this.send({ type: 'open-thread', rootEventId: m.thread!.rootEventId })}
+              >
+                Open thread
+              </button>
+              <span aria-hidden="true">→</span>
+              <button
+                class="open-run"
+                aria-label="Open run ${m.thread.runId}"
+                @click=${() => this.send({ type: 'open-run', runId: m.thread!.runId })}
+              >
+                run
+              </button>
+              <span class="run-status ${m.thread.runStatus}"
+                >${m.thread.runStatus.replace('_', ' ')}</span
+              >
+              <span aria-hidden="true">→</span>
+              <span>this page</span>
+            </div>`
+          : nothing
+      }
 
       <section class="fields">
         ${m.fields.map((f) => html`<escurel-field .field=${f} ?editable=${m.editable}></escurel-field>`)}

@@ -84,6 +84,8 @@ export class RunController implements vscode.Disposable {
     const load = async () => {
       try {
         const loaded = await loadRun(this.services.client, runId);
+        // See ThreadController: a result for a panel that has been closed is for nobody.
+        if (disposed) return;
         view = carryCalls(loaded.view, view);
         rootEventId = loaded.rootEventId;
         post({ type: 'run', view });

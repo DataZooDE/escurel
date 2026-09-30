@@ -7,7 +7,7 @@ import { log } from '../log';
 import { webviewHtml, webviewOptions } from '../shared/webviewHtml';
 import { focusGraph, layoutThread } from './layout';
 import { loadThread, type LoadedThread } from './loadThread';
-import { commandForTarget, rootEventIdOf } from './nodeTarget';
+import { commandForTarget, resolveGate, rootEventIdOf } from './nodeTarget';
 import { toThreadView } from './threadModel';
 
 /** Events arrive in bursts when a run finishes; one refetch serves the whole burst. */
@@ -123,7 +123,12 @@ export class ThreadController implements vscode.Disposable {
     };
     const load = async () => {
       try {
-        current = await loadThread(this.services.client, rootEventId);
+        const result = await loadThread(this.services.client, rootEventId);
+        // The panel can be closed while a read is in flight. A result arriving after that
+        // belongs to nobody, and announcing it would update listeners (the outline) with a
+        // thread that is no longer open — or with a stale one, if the panel was reopened.
+        if (disposed) return;
+        current = result;
         render();
         this.loaded.fire({ rootEventId, thread: current });
       } catch (err) {
@@ -157,13 +162,20 @@ export class ThreadController implements vscode.Disposable {
           return;
         }
         case 'promote':
-        case 'discard':
-          // The review commands already own the confirmation, the conflict and
-          // already-decided handling; the live event then refreshes this thread.
+        case 'discard': {
+          // Checked against the thread this host loaded, never trusted from the message: a
+          // promote writes. The review commands own conflict and already-decided handling,
+          // and the live event then refreshes this thread.
+          const gate = current && resolveGate(toThreadView(current), m);
+          if (!gate) {
+            log().warn(`thread: refused a ${m.type} for ids this thread does not offer`);
+            return;
+          }
           return void vscode.commands.executeCommand(
             m.type === 'promote' ? 'escurel.promote' : 'escurel.discard',
-            m.changesetId ? { changesetId: m.changesetId } : { draftId: m.draftId },
+            gate,
           );
+        }
         case 'toggle-collapse':
           if (!collapsed.delete(m.nodeId)) collapsed.add(m.nodeId);
           return render();

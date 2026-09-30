@@ -1,4 +1,4 @@
-import type { NodeTarget } from '../shared/protocol';
+import type { NodeTarget, ThreadView } from '../shared/protocol';
 
 /**
  * The command that owns the surface a node opens. Thread nodes never open anything
@@ -38,4 +38,24 @@ export function rootEventIdOf(arg: unknown): string | undefined {
     if (typeof o.event_id === 'string' && o.event_id) return o.event_id;
   }
   return undefined;
+}
+
+/**
+ * The review command argument a gate message is allowed to reach, or `undefined`.
+ *
+ * A message from a webview is input, however well-behaved the webview is, and Promote writes.
+ * So the ids are checked against the thread the HOST loaded: the node must exist, be of the
+ * kind the id claims, and still carry an open gate (a decided node has none). Exactly one id
+ * is accepted — a message naming both used to select the changeset silently.
+ */
+export function resolveGate(
+  view: ThreadView,
+  msg: { changesetId?: string; draftId?: string },
+): { changesetId: string } | { draftId: string } | undefined {
+  if (Boolean(msg.changesetId) === Boolean(msg.draftId)) return undefined;
+  const id = msg.changesetId ?? msg.draftId!;
+  const node = view.nodes.find((n) => n.id === id);
+  if (!node?.gate) return undefined;
+  if (msg.changesetId) return node.kind === 'changeset' ? { changesetId: id } : undefined;
+  return node.kind === 'draft' ? { draftId: id } : undefined;
 }

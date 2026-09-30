@@ -1,5 +1,6 @@
+import type { ThreadNode } from '../../src/shared/protocol';
 import { describe, expect, it } from 'vitest';
-import { commandForTarget, rootEventIdOf } from '../../src/thread/nodeTarget';
+import { commandForTarget, resolveGate, rootEventIdOf } from '../../src/thread/nodeTarget';
 
 describe('commandForTarget', () => {
   it('routes each node target to the command that already owns that surface', () => {
@@ -44,5 +45,61 @@ describe('rootEventIdOf', () => {
     expect(rootEventIdOf(undefined)).toBeUndefined();
     expect(rootEventIdOf({})).toBeUndefined();
     expect(rootEventIdOf('')).toBeUndefined();
+  });
+});
+
+describe('resolveGate', () => {
+  // A message from a webview is input, however well-behaved the webview is: it is checked
+  // against the thread the HOST loaded before it can reach a command that writes.
+  const node = (over: Record<string, unknown>) =>
+    ({
+      id: 'x',
+      kind: 'draft',
+      parent: null,
+      children: [],
+      state: 'open',
+      tone: 'instance',
+      title: 't',
+      meta: [],
+      chips: [],
+      target: { open: 'nothing' },
+      collapsible: false,
+      ...over,
+    }) as ThreadNode;
+  const view = {
+    rootEventId: 'r',
+    columns: [],
+    loadingMore: false,
+    nodes: [
+      node({ id: 'cs1', kind: 'changeset', gate: { drafts: 2, changesetId: 'cs1' } }),
+      node({ id: 'd1', kind: 'draft', gate: { drafts: 1, draftId: 'd1' } }),
+      // Decided: no gate, so nothing on the canvas offers it and nothing may act on it.
+      node({ id: 'd2', kind: 'draft', state: 'promoted' }),
+    ],
+  };
+
+  it('passes a changeset or a draft that carries an open gate', () => {
+    expect(resolveGate(view, { changesetId: 'cs1' })).toEqual({ changesetId: 'cs1' });
+    expect(resolveGate(view, { draftId: 'd1' })).toEqual({ draftId: 'd1' });
+  });
+
+  it('refuses an id the loaded thread does not hold', () => {
+    expect(resolveGate(view, { draftId: 'someone-elses-draft' })).toBeUndefined();
+    expect(resolveGate(view, { changesetId: 'unrelated' })).toBeUndefined();
+  });
+
+  it('refuses a decided draft, which has no gate', () => {
+    expect(resolveGate(view, { draftId: 'd2' })).toBeUndefined();
+  });
+
+  it('refuses a message naming both ids, or neither', () => {
+    // Both would have selected the changeset silently; the sender must say which.
+    expect(resolveGate(view, { changesetId: 'cs1', draftId: 'd1' })).toBeUndefined();
+    expect(resolveGate(view, {})).toBeUndefined();
+  });
+
+  it('refuses an id that names a node of the other kind', () => {
+    expect(resolveGate(view, { draftId: 'cs1' })).toBeUndefined();
+    expect(resolveGate(view, { changesetId: 'd1' })).toBeUndefined();
   });
 });
