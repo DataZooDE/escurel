@@ -1,5 +1,6 @@
 import type { Event, GetRunToolCallsResponse, LineageNode } from '../client';
 import type { PlanStep, RunAttempt, RunView, ToolCallRow } from '../shared/protocol';
+import { parseGatewayTime, toIsoUtc } from '../shared/time';
 
 type Body = Record<string, unknown>;
 
@@ -22,20 +23,10 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function timestamp(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  // Runner attempt timestamps have a space and no zone; Date.parse would use local time.
-  const utc = /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?$/.test(value)
-    ? `${value.replace(' ', 'T')}Z`
-    : value;
-  const date = new Date(utc);
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
-}
-
 function planSteps(value: unknown): PlanStep[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const allowed = new Set<PlanStep['status']>(['pending', 'in_progress', 'completed', 'blocked']);
-  return value.flatMap((entry: unknown): PlanStep[] => {
+  const steps = value.flatMap((entry: unknown): PlanStep[] => {
     if (entry === null || typeof entry !== 'object') return [];
     const row = entry as Record<string, unknown>;
     if (typeof row.step !== 'string' || !allowed.has(row.status as PlanStep['status'])) {
@@ -43,21 +34,20 @@ function planSteps(value: unknown): PlanStep[] | undefined {
     }
     return [{ step: row.step, status: row.status as PlanStep['status'] }];
   });
+  return steps.length ? steps : undefined;
 }
 
 /**
  * The lineage node owns summary attributes; final rows fill gaps and settle the status.
- *
- * `runEvents` is `list_events { run_id }` in its default order, oldest first — the order
- * that makes "the last `run-progress` seen" the newest plan. Ask for `newest_first` and the
- * plan shown would be the first one the run reported.
  */
 export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[]): RunView {
   let progressPlan: PlanStep[] | undefined;
+  let progressTime = Number.NEGATIVE_INFINITY;
+  let progressPosition = -1;
   let finished: Body = {};
   const attempts: RunAttempt[] = [];
 
-  for (const event of runEvents) {
+  for (const [position, event] of runEvents.entries()) {
     if (event.label_skill !== 'escurel:run') continue;
     const body = bodyOf(event);
     if (event.title === 'run-attempt') {
@@ -65,33 +55,47 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
       if (n !== undefined) {
         attempts.push({
           n,
-          startedAt: timestamp(body.started_at),
-          endedAt: timestamp(body.ended_at),
-          outcome: stringValue(body.outcome) ?? '',
+          startedAt: toIsoUtc(body.started_at),
+          endedAt: toIsoUtc(body.ended_at),
+          outcome:
+            typeof body.outcome === 'string' && body.outcome.length > 0 ? body.outcome : 'unknown',
           error: stringValue(body.error),
         });
       }
     } else if (event.title === 'run-progress') {
-      progressPlan = planSteps(body.plan) ?? progressPlan;
+      const plan = planSteps(body.plan);
+      const time = parseGatewayTime(event.at)?.getTime() ?? Number.NEGATIVE_INFINITY;
+      if (plan && (time > progressTime || (time === progressTime && position > progressPosition))) {
+        progressPlan = plan;
+        progressTime = time;
+        progressPosition = position;
+      }
     } else if (event.title === 'run-finished') {
       finished = body;
     }
   }
 
   attempts.sort((a, b) => a.n - b.n);
-  const status = stringValue(finished.status) ?? runNode?.state ?? 'running';
+  const status = (stringValue(finished.status) ?? runNode?.state ?? 'running').trim().toLowerCase();
   return {
     runId:
-      runNode?.id ?? runEvents.find((event) => event.label_skill === 'escurel:run')?.run_id ?? '',
+      runNode?.id ??
+      runEvents.find((event) => event.label_skill === 'escurel:run' && event.run_id !== null)
+        ?.run_id ??
+      '',
     status,
-    tone: ['failed', 'dead_letter', 'cancelled'].includes(status) ? 'failed' : 'run',
+    tone: ['failed', 'dead_letter', 'cancelled'].includes(status)
+      ? 'failed'
+      : ['running', 'processed', 'planned'].includes(status)
+        ? 'run'
+        : 'neutral',
     harness: stringValue(runNode?.harness) ?? stringValue(finished.harness),
     model: stringValue(runNode?.model) ?? stringValue(finished.model),
     autonomy: stringValue(runNode?.autonomy) ?? stringValue(finished.autonomy),
     targetPageId: stringValue(runNode?.target_page_id) ?? stringValue(finished.target_page_id),
     traceId: stringValue(runNode?.trace_id) ?? stringValue(finished.trace_id),
-    startedAt: timestamp(runNode?.started_at) ?? timestamp(finished.started_at),
-    finishedAt: timestamp(runNode?.finished_at) ?? timestamp(finished.finished_at),
+    startedAt: toIsoUtc(runNode?.started_at) ?? toIsoUtc(finished.started_at),
+    finishedAt: toIsoUtc(runNode?.finished_at) ?? toIsoUtc(finished.finished_at),
     depth: numberValue(runNode?.depth) ?? numberValue(finished.depth),
     attempts,
     maxAttempts: numberValue(runNode?.max_attempts) ?? numberValue(finished.max_attempts),
@@ -109,18 +113,21 @@ function callRow(call: GetRunToolCallsResponse['calls'][number]): ToolCallRow {
     tool: call.tool,
     status: call.status,
     errorCode: call.error_code,
-    durationMs: call.duration_ms,
-    bytes: { request: call.request_bytes, response: call.response_bytes },
-    at: call.at,
+    durationMs: numberValue(call.duration_ms) ?? 0,
+    bytes: {
+      request: numberValue(call.request_bytes) ?? 0,
+      response: numberValue(call.response_bytes) ?? 0,
+    },
+    at: toIsoUtc(call.at) ?? call.at,
   };
 }
 
 /**
  * Replayed pages can overlap, so seq identifies a row across every page.
  *
- * Only the page that reaches furthest decides `nextAfter`. A live refresh can re-merge
- * page 1 after the last page, and page 1's cursor is stale: taking it would put
- * "Load more" back on a run whose calls are all on screen.
+ * Pages are fetched from the start in order. An empty final page ends paging. For
+ * non-empty pages, only the one that reaches furthest decides `nextAfter`: a late
+ * page 1 refresh must not restore its stale cursor after the last page.
  */
 export function mergeToolCallPage(view: RunView, page: GetRunToolCallsResponse): RunView {
   const furthest = view.calls.reduce((max, call) => Math.max(max, call.seq), 0);
@@ -132,6 +139,11 @@ export function mergeToolCallPage(view: RunView, page: GetRunToolCallsResponse):
   return {
     ...view,
     calls: [...calls.values()].sort((a, b) => a.seq - b.seq),
-    nextAfter: pageReach >= furthest ? page.next_after : view.nextAfter,
+    nextAfter:
+      page.calls.length === 0 && page.next_after === null
+        ? null
+        : pageReach >= furthest
+          ? page.next_after
+          : view.nextAfter,
   };
 }

@@ -68,9 +68,116 @@ describe('hand-written edge inputs absent from the recordings', () => {
     const failed: LineageNode = { id: 'failed-run', type: 'run', parent: null, state: 'failed' };
     expect(buildRunView(failed, []).tone).toBe('failed');
   });
+
+  it('normalizes non-finite call metrics and timestamps while preserving unparseable times', () => {
+    // The recording has finite metrics; a nullable gateway response needs a hand-written row.
+    const nullable = {
+      ...page1.calls[0]!,
+      duration_ms: null,
+      request_bytes: Number.NaN,
+      response_bytes: Number.POSITIVE_INFINITY,
+      at: '2026-09-29 02:59:08.035678',
+    } as unknown as GetRunToolCallsResponse['calls'][number];
+    const first = mergeToolCallPage(buildRunView(undefined, []), {
+      ...page1,
+      calls: [nullable],
+    });
+    expect(first.calls[0]).toMatchObject({
+      durationMs: 0,
+      bytes: { request: 0, response: 0 },
+      at: '2026-09-29T02:59:08.035Z',
+    });
+    const second = mergeToolCallPage(first, {
+      ...page1,
+      calls: [{ ...page1.calls[1]!, at: 'unparseable' }],
+    });
+    expect(second.calls[1]?.at).toBe('unparseable');
+  });
+
+  it.each([
+    [' DEAD_LETTER ', 'dead_letter', 'failed'],
+    [' Cancelled ', 'cancelled', 'failed'],
+    [' weird ', 'weird', 'neutral'],
+  ] as const)('normalizes status %s to %s with %s tone', (raw, status, tone) => {
+    const node: LineageNode = { id: 'run', type: 'run', parent: null, state: raw };
+    expect(buildRunView(node, [])).toMatchObject({ status, tone });
+  });
+
+  it('selects the newest progress plan by timestamp in either event order', () => {
+    // The recording has one progress snapshot; an earlier one exposes order dependence.
+    const earlier: Event = {
+      ...runEvents.find((event) => event.title === 'run-progress')!,
+      event_id: 'earlier-progress',
+      at: '2026-09-29T02:59:07Z',
+      body: JSON.stringify({ plan: [{ step: 'old step', status: 'pending' }] }),
+    };
+    const events = [...runEvents.filter((event) => event.title !== 'run-finished'), earlier];
+    const expected = buildRunView(runNode, runEvents).plan;
+    expect(buildRunView(runNode, events).plan).toEqual(expected);
+    expect(buildRunView(runNode, [...events].reverse()).plan).toEqual(expected);
+    // A final plan is authoritative even when a progress snapshot has a later timestamp.
+    const finished = {
+      ...runEvents.find((e) => e.title === 'run-finished')!,
+      body: JSON.stringify({ plan: [{ step: 'final step', status: 'completed' }] }),
+    };
+    expect(buildRunView(runNode, [...events, finished]).plan).toEqual([
+      { step: 'final step', status: 'completed' },
+    ]);
+  });
+
+  it('keeps a valid plan when later plans contain no valid steps', () => {
+    // Malformed later snapshots are absent from the recording.
+    const progress = runEvents.find((event) => event.title === 'run-progress')!;
+    const invalid = {
+      ...progress,
+      event_id: 'invalid-progress',
+      at: '2026-09-29T02:59:09Z',
+      body: JSON.stringify({ plan: [{ step: 'bad', status: 'unknown' }] }),
+    };
+    const finished = {
+      ...runEvents.find((event) => event.title === 'run-finished')!,
+      body: JSON.stringify({ plan: [{ step: 'bad', status: 'unknown' }] }),
+    };
+    expect(buildRunView(undefined, [progress, invalid, finished]).plan).toEqual([
+      { step: 'read the target page', status: 'completed' },
+      { step: 'draft the fold for review', status: 'in_progress' },
+    ]);
+  });
+
+  it('uses the first run event with a non-null run id', () => {
+    // The recording has no run event with a null run id.
+    const first = { ...runEvents[0]!, run_id: null };
+    expect(buildRunView(undefined, [first, runEvents[1]!]).runId).toBe(runEvents[1]?.run_id);
+  });
+
+  it.each([
+    [' ok ', ' ok '],
+    ['', 'unknown'],
+    ['   ', '   '],
+  ])('preserves non-empty outcome %j as %j', (outcome, expected) => {
+    // Empty outcomes are absent from the recording.
+    const attempt = runEvents.find((event) => event.title === 'run-attempt')!;
+    const body = { ...(JSON.parse(attempt.body!) as Record<string, unknown>), outcome };
+    expect(
+      buildRunView(undefined, [{ ...attempt, body: JSON.stringify(body) }]).attempts[0]?.outcome,
+    ).toBe(expected);
+  });
+
+  it('uses the final row tool-call count when the node has none', () => {
+    const node = { ...runNode! };
+    delete node.tool_calls;
+    expect(buildRunView(node, runEvents).toolCallCount).toBe(4);
+  });
 });
 
 describe('a stale page arriving late', () => {
+  it('ends paging when the trailing page is empty', () => {
+    // The recorded pages both contain calls, so this terminal response is hand-written.
+    const first = mergeToolCallPage(buildRunView(undefined, []), page1);
+    expect(
+      mergeToolCallPage(first, { ...page1, calls: [], next_after: null }).nextAfter,
+    ).toBeNull();
+  });
   it('does not bring back "load more" once the last page has been read', () => {
     // A live refresh can re-merge page 1 after page 2. Its `next_after` is stale: taking
     // it would put a "Load more" button back on a run whose calls are all on screen.
