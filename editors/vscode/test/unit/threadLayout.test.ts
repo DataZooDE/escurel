@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ThreadNode, ThreadView } from '../../src/shared/protocol';
 import { CARD_WIDTH, focusGraph, layoutThread } from '../../src/thread/layout';
+import { foldLineage, toThreadView } from '../../src/thread/threadModel';
 
 interface LineageFixtureNode {
   id: string;
@@ -445,5 +446,31 @@ describe('thread layout and focus graph', () => {
     const focus = focusGraph(view, layout);
     expect(focus.first).toBe('e-empty');
     expect(Object.keys(focus.steps)).toHaveLength(0);
+  });
+});
+
+describe('layout over the real model', () => {
+  // The tests above build a ThreadView by hand, which can drift from what the model emits.
+  // This one runs the recorded cascade through `foldLineage` and `toThreadView` and lays out
+  // the result, so a model change that breaks the layout contract fails here.
+  it('lays out and navigates the recorded cascade end to end', () => {
+    const file = join(__dirname, 'fixtures', 'lineage', 'lineage-cascade.json');
+    const view = toThreadView(foldLineage([JSON.parse(readFileSync(file, 'utf8'))]));
+    const layout = layoutThread(view, new Set());
+    const focus = focusGraph(view, layout);
+
+    // Every node the gateway returned is on the canvas, reachable, and every column used
+    // has a header with text.
+    expect(layout.nodes.filter((n) => !n.hidden)).toHaveLength(view.nodes.length);
+    for (const header of layout.columnHeaders) expect(header.label).not.toBe('');
+    expect(Object.keys(focus.steps)).toHaveLength(view.nodes.length);
+
+    // Walking → from the root reaches the run, the recorded tree's second level.
+    const run = view.nodes.find((n) => n.kind === 'run')!;
+    expect(focus.steps[focus.first]?.next).toBe(run.id);
+    // A cascade hop is to the right of the run that produced it.
+    const hop = view.nodes.find((n) => n.kind === 'event' && n.parent === run.id)!;
+    const col = (id: string) => layout.nodes.find((n) => n.id === id)!.column;
+    expect(col(hop.id)).toBeGreaterThan(col(run.id));
   });
 });
