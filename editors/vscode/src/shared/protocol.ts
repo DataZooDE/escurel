@@ -218,6 +218,8 @@ export type ThreadWebviewToHost =
   | { type: 'promote'; changesetId?: string; draftId?: string }
   | { type: 'discard'; changesetId?: string; draftId?: string }
   | { type: 'toggle-collapse'; nodeId: string }
+  /** The toolbar's "Expand all": the host owns which nodes are collapsed. */
+  | { type: 'expand-all' }
   | { type: 'refresh' };
 
 // ── run detail ───────────────────────────────────────────────────────
