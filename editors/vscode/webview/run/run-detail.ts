@@ -1,23 +1,9 @@
 import { LitElement, css, html, nothing } from 'lit';
+import type { PropertyValues } from 'lit';
 import { property } from 'lit/decorators.js';
 import type { RunView, RunWebviewToHost } from '../../src/shared/protocol';
+import { formatDateTime, formatDuration } from '../../src/shared/time';
 import { theme } from '../shared/theme.css';
-
-function timestamp(value?: string): string {
-  if (!value) return '—';
-  // Runner attempt timestamps have no zone and six fractional digits; they denote UTC.
-  const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`;
-  const date = new Date(normalized);
-  return Number.isNaN(date.getTime()) ? value : date.toISOString().slice(11, 23) + ' UTC';
-}
-
-function duration(start?: string, end?: string): string {
-  if (!start || !end) return '—';
-  const parse = (value: string) =>
-    new Date(value.includes('T') ? value : `${value.replace(' ', 'T')}Z`).getTime();
-  const ms = parse(end) - parse(start);
-  return Number.isFinite(ms) && ms >= 0 ? `${ms} ms` : '—';
-}
 
 const glyphs = { completed: '✓', in_progress: '◐', pending: '○', blocked: '!' };
 
@@ -54,16 +40,11 @@ export class EscurelRunDetail extends LitElement {
         border: 1px solid currentColor;
         color: var(--escurel-run);
       }
-      .status-chip.failed,
-      .status-chip.dead_letter,
-      .status-chip.cancelled {
+      .status-chip.failed {
         color: var(--escurel-run-failed);
       }
-      .status-chip.running {
-        color: var(--vscode-charts-blue);
-      }
-      .status-chip.planned {
-        color: var(--vscode-editorWarning-foreground);
+      .status-chip.neutral {
+        color: var(--escurel-muted);
       }
       .link,
       .copy-trace {
@@ -134,6 +115,18 @@ export class EscurelRunDetail extends LitElement {
 
   @property({ attribute: false }) view?: RunView;
   @property({ attribute: false }) error?: { message: string; canReconnect: boolean };
+  private loadingMore = false;
+
+  protected override willUpdate(changed: PropertyValues<this>): void {
+    if (changed.has('view')) this.loadingMore = false;
+  }
+
+  private loadMore(after: number): void {
+    if (this.loadingMore) return;
+    this.loadingMore = true;
+    this.requestUpdate();
+    this.send({ type: 'load-more-calls', after });
+  }
 
   private send(message: RunWebviewToHost): void {
     this.dispatchEvent(
@@ -155,7 +148,7 @@ export class EscurelRunDetail extends LitElement {
               ? html`<button class="reconnect" @click=${() => this.send({ type: 'refresh' })}>
                   Reconnect
                 </button>`
-              : nothing
+              : html`<span>Close this panel and open the run again.</span>`
           }
         </div>
       `;
@@ -164,7 +157,7 @@ export class EscurelRunDetail extends LitElement {
     return html`
       <header>
         <h1>Run ${run.runId}</h1>
-        <span class="chip status-chip ${run.status}">${run.status}</span>
+        <span class="chip status-chip ${run.tone}">${run.status.replaceAll('_', ' ')}</span>
       </header>
       <div class="meta">
         ${run.harness ? html`<span>Harness ${run.harness}</span>` : nothing}
@@ -178,6 +171,7 @@ export class EscurelRunDetail extends LitElement {
               Trace ${run.traceId}
               <button
                 class="copy-trace"
+                aria-label="Copy trace id ${run.traceId}"
                 @click=${() => this.send({ type: 'copy-trace-id', traceId: run.traceId! })}
               >
                 Copy trace id
@@ -191,6 +185,7 @@ export class EscurelRunDetail extends LitElement {
               Target
               <button
                 class="link"
+                aria-label="Open target page ${run.targetPageId}"
                 @click=${() => this.send({ type: 'open-page', pageId: run.targetPageId! })}
               >
                 ${run.targetPageId}
@@ -208,8 +203,10 @@ export class EscurelRunDetail extends LitElement {
                   <div class="attempt">
                     <div class="attempt-line">
                       <strong>#${attempt.n}</strong
-                      ><span>${timestamp(attempt.startedAt)} → ${timestamp(attempt.endedAt)}</span
-                      ><span>· ${duration(attempt.startedAt, attempt.endedAt)}</span
+                      ><span
+                        >${formatDateTime(attempt.startedAt) || '—'} →
+                        ${formatDateTime(attempt.endedAt) || '—'}</span
+                      ><span>· ${formatDuration(attempt.startedAt, attempt.endedAt) || '—'}</span
                       ><span>· ${attempt.outcome}</span>
                     </div>
                     ${attempt.error ? html`<div class="attempt-error">${attempt.error}</div>` : nothing}
@@ -245,7 +242,7 @@ export class EscurelRunDetail extends LitElement {
                     <span>${call.seq} · ${call.tool} ·</span
                     ><span
                       class=${call.status === 'error' || call.status === 'rejected' ? 'call-error' : ''}
-                      >${call.status}</span
+                      >${call.status}${call.errorCode ? html` · ${call.errorCode}` : nothing}</span
                     ><span
                       >· ${call.durationMs.toFixed(1)} ms · ${call.bytes.request} request bytes /
                       ${call.bytes.response} response bytes</span
@@ -260,7 +257,7 @@ export class EscurelRunDetail extends LitElement {
                 </p>`
               : html`<p class="muted">No tool calls reported.</p>`
         }
-        ${run.nextAfter !== null ? html`<button class="load-more" @click=${() => this.send({ type: 'load-more-calls', after: run.nextAfter! })}>Load more</button>` : nothing}
+        ${typeof run.nextAfter === 'number' ? html`<button class="load-more" ?disabled=${this.loadingMore} @click=${() => this.loadMore(run.nextAfter!)}>Load more</button>` : nothing}
       </section>
       ${
         run.summary
