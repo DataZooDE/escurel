@@ -104,7 +104,11 @@ export class ThreadController implements vscode.Disposable {
     let disposed = false;
 
     const post = (m: ThreadHostToWebview) => {
-      if (!disposed) void panel.webview.postMessage(m);
+      if (disposed) return;
+      // The panel can be closed between the check above and the delivery: `postMessage` then
+      // rejects with 'Webview is disposed', which nobody is waiting on. Swallowing it here is
+      // the point: the message was for a view that no longer exists.
+      panel.webview.postMessage(m).then(undefined, () => undefined);
     };
     // Layout is cheap and depends on `collapsed`, so collapsing never refetches.
     const render = () => {

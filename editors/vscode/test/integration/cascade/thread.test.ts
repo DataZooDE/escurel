@@ -88,6 +88,22 @@ suite('thread and run detail', () => {
     await wait(500);
     assert.equal(tabs().length, 1, 'the same thread must not open twice');
 
+    // The outline follows the thread that was opened: the root event, with its run beneath.
+    // No row says "no thread open", and the empty-state message is gone.
+    assert.equal(api.threadsTree.message, undefined);
+    const [outlineRoot] = api.threadsTree.getChildren();
+    assert.ok(outlineRoot, 'the outline must list the open thread');
+    assert.equal(outlineRoot.id, rootEventId);
+    assert.equal(outlineRoot.kind, 'event');
+    assert.deepEqual(
+      outlineRoot.children.map((c) => [c.kind, c.id]),
+      [['run', runId]],
+    );
+    // A row routes through the same command the canvas uses, with the id the command reads.
+    const runItem = api.threadsTree.getTreeItem(outlineRoot.children[0]!);
+    assert.equal(runItem.command?.command, 'escurel.openRun');
+    assert.deepEqual(runItem.command?.arguments, [runId]);
+
     // Run detail, as the canvas opens it.
     const loadedRun = once<{ runId: string; view: RunView }>(api.runs.onDidLoad);
     await vscode.commands.executeCommand('escurel.openRun', runId);
@@ -100,6 +116,15 @@ suite('thread and run detail', () => {
     // The run REPORTS calls; this harness cannot expose per-call rows (no run-bound token).
     assert.ok((view.toolCallCount ?? 0) > 0, 'the run reports its tool calls');
     assert.equal(view.calls.length, 0, 'per-call detail is not available without run claims');
+  });
+
+  test('closing the thread empties the outline again', async function () {
+    this.timeout(60_000);
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    const deadline = Date.now() + 10_000;
+    while (api.threadsTree.message === undefined && Date.now() < deadline) await wait(200);
+    assert.ok(api.threadsTree.message, 'the outline must fall back to its message');
+    assert.deepEqual(api.threadsTree.getChildren(), []);
   });
 
   test('a thread the caller cannot read is an empty thread, not a crash', async function () {

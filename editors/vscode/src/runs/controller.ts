@@ -79,7 +79,11 @@ export class RunController implements vscode.Disposable {
     let disposed = false;
 
     const post = (m: RunHostToWebview) => {
-      if (!disposed) void panel.webview.postMessage(m);
+      if (disposed) return;
+      // The panel can be closed between the check above and the delivery: `postMessage` then
+      // rejects with 'Webview is disposed', which nobody is waiting on. Swallowing it here is
+      // the point: the message was for a view that no longer exists.
+      panel.webview.postMessage(m).then(undefined, () => undefined);
     };
     const load = async () => {
       try {

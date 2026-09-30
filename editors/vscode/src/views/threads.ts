@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { NodeTarget, ThreadView } from '../shared/protocol';
+import { commandForTarget } from '../thread/nodeTarget';
 import { outlineRows, type OutlineRow } from './threadsModel';
 
 /**
@@ -36,35 +37,21 @@ function colourFor(row: OutlineRow): string {
   }
 }
 
+/** The command a row runs. Shared with the canvas, so a click and a row land in one place. */
 function command(target: NodeTarget): vscode.Command | undefined {
-  switch (target.open) {
-    case 'thread':
-      return {
-        command: 'escurel.openThread',
-        title: 'Open Thread',
-        arguments: [target.rootEventId],
-      };
-    case 'run':
-      return { command: 'escurel.openRun', title: 'Open Run', arguments: [target.runId] };
-    case 'review':
-      return {
-        command: 'escurel.openReview',
-        title: 'Open Review',
-        arguments: [target.draftId ?? target.changesetId],
-      };
-    default:
-      return undefined;
-  }
+  const routed = commandForTarget(target);
+  return routed ? { command: routed.command, title: 'Open', arguments: routed.args } : undefined;
 }
 
 /** The one open thread; the host owns view registration and navigation commands. */
 export class ThreadsTree implements vscode.TreeDataProvider<OutlineRow> {
   private readonly changed = new vscode.EventEmitter<OutlineRow | undefined>();
-  private readonly selected = new vscode.EventEmitter<string>();
   readonly onDidChangeTreeData = this.changed.event;
-  readonly onDidSelect = this.selected.event;
   private view: ThreadView | undefined;
   private collapsed: ReadonlySet<string> = new Set();
+  /** The rows last handed to the tree. `reveal` needs the SAME objects, not rebuilt ones. */
+  private rows: OutlineRow[] = [];
+  private readonly parents = new Map<string, OutlineRow | undefined>();
 
   /** Set as the tree view's `message`: shown only while there is nothing to list. */
   get message(): string | undefined {
@@ -73,15 +60,37 @@ export class ThreadsTree implements vscode.TreeDataProvider<OutlineRow> {
 
   setThread(view: ThreadView | undefined): void {
     this.view = view;
+    this.rows = view ? outlineRows(view, this.collapsed) : [];
+    this.parents.clear();
+    const index = (rows: OutlineRow[], parent?: OutlineRow) => {
+      for (const r of rows) {
+        this.parents.set(r.id, parent);
+        index(r.children, r);
+      }
+    };
+    index(this.rows);
     this.refresh();
+  }
+
+  /** The row for a node id, for `TreeView.reveal`. */
+  rowFor(nodeId: string): OutlineRow | undefined {
+    const find = (rows: OutlineRow[]): OutlineRow | undefined => {
+      for (const r of rows) {
+        if (r.id === nodeId) return r;
+        const hit = find(r.children);
+        if (hit) return hit;
+      }
+      return undefined;
+    };
+    return find(this.rows);
+  }
+
+  getParent(row: OutlineRow): OutlineRow | undefined {
+    return this.parents.get(row.id);
   }
 
   refresh(): void {
     this.changed.fire(undefined);
-  }
-
-  select(nodeId: string): void {
-    if (this.view?.nodes.some((node) => node.id === nodeId)) this.selected.fire(nodeId);
   }
 
   getTreeItem(row: OutlineRow): vscode.TreeItem {
@@ -106,7 +115,6 @@ export class ThreadsTree implements vscode.TreeDataProvider<OutlineRow> {
   }
 
   getChildren(row?: OutlineRow): OutlineRow[] {
-    if (row) return row.children;
-    return this.view ? outlineRows(this.view, this.collapsed) : [];
+    return row ? row.children : this.rows;
   }
 }

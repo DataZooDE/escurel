@@ -14,6 +14,9 @@ import { ReviewController } from './review';
 import { LiveCoordinator } from './live';
 import { RunController } from './runs/controller';
 import { ThreadController } from './thread/controller';
+import { buildInspectors } from './thread/inspector';
+import { toThreadView } from './thread/threadModel';
+import { ThreadsTree } from './views/threads';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -25,6 +28,7 @@ export interface EscurelApi {
   live: LiveCoordinator;
   threads: ThreadController;
   runs: RunController;
+  threadsTree: ThreadsTree;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi {
@@ -33,17 +37,6 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);
-  // The Threads outline is declared in package.json so no later slice has to edit
-  // the manifest; a declared view with no provider shows VS Code's own error, so
-  // it gets a placeholder until that slice arrives.
-  context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('escurel.threads', {
-      getChildren: () => [
-        { label: 'Threads arrive in M3', collapsibleState: vscode.TreeItemCollapsibleState.None },
-      ],
-      getTreeItem: (e: vscode.TreeItem) => e,
-    }),
-  );
   const inbox = InboxTree.register(context, () => services.client);
   const awaiting = AwaitingTree.register(context, () => services.client);
   EscurelFileSystem.register(
@@ -58,7 +51,42 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     () => awaiting.refresh(),
   );
   const live = LiveCoordinator.register(context, services, { inbox, awaiting });
-  const threads = ThreadController.register(context, services);
+  const threadsTree = new ThreadsTree();
+  const threadsView = vscode.window.createTreeView('escurel.threads', {
+    treeDataProvider: threadsTree,
+    showCollapseAll: true,
+  });
+  threadsView.message = threadsTree.message;
+  context.subscriptions.push(threadsView);
+
+  const threads = ThreadController.register(context, services, (loaded) =>
+    buildInspectors(toThreadView(loaded), [...loaded.nodes.values()]),
+  );
+
+  // The outline follows the thread the user last looked at; closing that panel empties it.
+  let outlineRoot: string | undefined;
+  context.subscriptions.push(
+    threads.onDidLoad(({ rootEventId, thread }) => {
+      if (thread) {
+        outlineRoot = rootEventId;
+        threadsTree.setThread(toThreadView(thread));
+      } else if (outlineRoot === rootEventId) {
+        outlineRoot = undefined;
+        threadsTree.setThread(undefined);
+      }
+      threadsView.message = threadsTree.message;
+    }),
+    // Canvas → outline: a card selected on the canvas is revealed in the tree.
+    threads.onDidSelect(({ rootEventId, nodeId }) => {
+      const row = rootEventId === outlineRoot ? threadsTree.rowFor(nodeId) : undefined;
+      if (row) void threadsView.reveal(row, { select: true, focus: false });
+    }),
+    // Outline → canvas: a row selected in the tree selects and scrolls to its card.
+    threadsView.onDidChangeSelection((e) => {
+      const row = e.selection[0];
+      if (row && outlineRoot) threads.select(outlineRoot, row.id);
+    }),
+  );
   const runs = RunController.register(context, services);
   context.subscriptions.push(
     services.onDidChange(() => {
@@ -133,7 +161,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     ),
   );
   log().info('escurel: activated');
-  return { services, knowledge, inbox, awaiting, review, live, threads, runs };
+  return { services, knowledge, inbox, awaiting, review, live, threads, runs, threadsTree };
 }
 
 export function deactivate(): void {}
