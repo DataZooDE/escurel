@@ -311,6 +311,16 @@ export class EscurelThreadCanvas extends LitElement {
   private viewportStart = { x: 0, y: 0 };
 
   protected override willUpdate(changed: PropertyValues<this>): void {
+    // A selection names a node of the thread on screen. When the thread is replaced or a node
+    // disappears between loads, keeping it opened an inspector for an id the new thread does
+    // not contain, with nothing to show.
+    if (
+      this.selectedNodeId &&
+      (changed.has('view') || changed.has('layout')) &&
+      !this.view?.nodes.some((n) => n.id === this.selectedNodeId)
+    ) {
+      this.selectedNodeId = '';
+    }
     if (changed.has('focus') || changed.has('layout')) {
       const visibleNodes = this.layout?.nodes.filter((n) => !n.hidden) ?? [];
       const isCurrentValid = visibleNodes.some((n) => n.id === this.focusedNodeId);
@@ -327,6 +337,10 @@ export class EscurelThreadCanvas extends LitElement {
     this.selectedNodeId = nodeId;
     this.focusedNodeId = nodeId;
     this.panToFocusedNode();
+    // Selecting opens the inspector, which takes its share of the width from the canvas. The
+    // reveal above used the canvas as it was BEFORE that, so a card near the right edge could
+    // be clipped the moment it was selected; reveal again once the layout has settled.
+    void this.updateComplete.then(() => this.panToFocusedNode());
   }
 
   public focusNode(nodeId: string): void {
@@ -421,6 +435,11 @@ export class EscurelThreadCanvas extends LitElement {
   }
 
   private handleCardKeydown(e: KeyboardEvent, nodeId: string): void {
+    // Only keys pressed ON the card are the card's. A keydown that bubbled up from a button
+    // inside it (Promote, Discard, collapse) belongs to that button: acting on it here opened
+    // the card and cancelled the button's own activation, so none of them worked from the
+    // keyboard.
+    if (e.target !== e.currentTarget) return;
     switch (e.key) {
       case 'ArrowRight': {
         const nextId = this.focus?.steps[nodeId]?.next;

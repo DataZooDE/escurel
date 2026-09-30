@@ -419,4 +419,77 @@ describe('<escurel-thread-canvas>', () => {
     await el.updateComplete;
     expect(text(q(el, '[role="status"]'))).to.equal('No events in this thread.');
   });
+
+  // Findings from codex's review of the canvas, each verified against the code first.
+
+  it('leaves Enter and Space to a button inside a card, so Promote works from the keyboard', async () => {
+    // The card's key handler acted on any keydown that bubbled up to it, so Enter on a focused
+    // Promote button opened the card instead and was cancelled before the button could
+    // activate: Promote, Discard and collapse were unusable without a mouse.
+    const el = await renderCanvas({
+      view: gatedThreadView,
+      layout: gatedLayout,
+      focus: gatedFocus,
+    });
+    const sent: ThreadWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (e) =>
+      sent.push((e as CustomEvent<ThreadWebviewToHost>).detail),
+    );
+    const promote = q(el, '.promote-btn') as HTMLButtonElement;
+    for (const key of ['Enter', ' ']) {
+      const press = new KeyboardEvent('keydown', {
+        key,
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      });
+      promote.dispatchEvent(press);
+      expect(press.defaultPrevented, `${JSON.stringify(key)} on the button`).to.equal(false);
+    }
+    expect(sent).to.deep.equal([]);
+  });
+
+  it('clears the selection when another thread replaces the one on screen', async () => {
+    // `thread-loading` cleared the model but kept the selected id, so the next thread opened
+    // an inspector for a node it does not contain.
+    const sent: ThreadWebviewToHost[] = [];
+    const el = await fixture<EscurelThreadCanvas>(
+      html`<escurel-thread-canvas></escurel-thread-canvas>`,
+    );
+    const disconnect = connectThreadWebview({ postMessage: (m) => sent.push(m) }, el);
+    try {
+      const post = (data: unknown) => window.dispatchEvent(new MessageEvent('message', { data }));
+      post({
+        type: 'thread',
+        view: recordedThreadView,
+        layout: recordedLayout,
+        focus: recordedFocus,
+        details: recordedDetails,
+      });
+      await el.updateComplete;
+      el.selectNode(recordedThreadView.rootEventId);
+      await el.updateComplete;
+      expect(el.selectedNodeId).to.equal(recordedThreadView.rootEventId);
+      post({ type: 'thread-loading', rootEventId: 'another' });
+      await el.updateComplete;
+      expect(el.selectedNodeId).to.equal('');
+    } finally {
+      disconnect();
+    }
+  });
+
+  it('keeps a selected card in view once the inspector has taken its share of the width', async () => {
+    // Selecting opens the inspector, which takes 320px from the canvas; the reveal was
+    // computed against the canvas as it was BEFORE that, so a card near the right edge could
+    // be clipped the moment it was selected.
+    const el = await renderCanvas();
+    const last = recordedLayout.nodes.reduce((a, b) => (b.x > a.x ? b : a));
+    el.selectNode(last.id);
+    await el.updateComplete;
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    const area = el.shadowRoot!.querySelector('.canvas-area') as HTMLElement;
+    const right = (last.x + last.width) * el.viewport.zoom + el.viewport.x;
+    expect(right).to.be.at.most(area.clientWidth);
+    expect(last.x * el.viewport.zoom + el.viewport.x).to.be.at.least(0);
+  });
 });
