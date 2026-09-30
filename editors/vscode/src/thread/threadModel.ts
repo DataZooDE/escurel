@@ -1,382 +1,264 @@
 import type { LineageNode, ListLineageResponse } from '../client/types';
 import { pageSlug } from '../shared/pageId';
-import type {
-  NodeTarget,
-  NodeTone,
-  ThreadNode,
-  ThreadNodeKind,
-  ThreadView,
-} from '../shared/protocol';
+import type { ThreadNode, ThreadView } from '../shared/protocol';
 import { pluralise } from '../shared/text';
+import { formatClock, formatDuration, parseGatewayTime } from '../shared/time';
 
-/**
- * An immutable folded store of lineage nodes across any number of paged reads.
- * Keyed by node id so lookups and parenting traversals stay O(1).
- */
+/** Immutable lineage store keyed by id for paging and parent lookup. */
 export interface FoldedLineage {
   rootEventId: string;
   nodes: Map<string, LineageNode>;
 }
 
-/**
- * Terminal states can never be downgraded back to 'running' by a partial page read.
- * The gateway folds run nodes from raw event logs, and a page that captured earlier
- * rows without the concluding run-finished event will synthesise a 'running' node.
- */
 const TERMINAL_RUN_STATES = new Set(['processed', 'failed', 'dead_letter', 'cancelled', 'planned']);
 
-/**
- * Identifies if a node's parent pointer was assigned by the gateway's fallback heuristic.
- * When the true parent run is absent from a lineage page, the gateway falls back to
- * pointing drafts and changesets at the root event.
- */
-function isRootFallback(
-  node: LineageNode,
-  rootEventId: string,
-  associatedRunId?: unknown,
-): boolean {
-  if (node.type !== 'changeset' && node.type !== 'draft') {
-    return false;
-  }
+/** A root parent is a fallback only when another copy identifies its real run. */
+function isRootFallback(node: LineageNode, rootEventId: string, otherCopyRunId?: unknown): boolean {
+  if (node.type !== 'changeset' && node.type !== 'draft') return false;
   const runId =
     typeof node.run_id === 'string'
       ? node.run_id
-      : typeof associatedRunId === 'string'
-        ? associatedRunId
+      : typeof otherCopyRunId === 'string'
+        ? otherCopyRunId
         : undefined;
-
   return Boolean(node.parent && node.parent === rootEventId && runId && runId !== rootEventId);
 }
 
-/**
- * Resolves the parent between two versions of the same node across lineage pages.
- * A specific parent (e.g. run id) must never be overwritten by a root fallback,
- * while a specific parent from a later page replaces an earlier root fallback.
- */
 function resolveParent(
   existing: LineageNode,
   incoming: LineageNode,
   rootEventId: string,
 ): string | null {
-  const existingIsFallback = isRootFallback(existing, rootEventId, incoming.run_id);
-  const incomingIsFallback = isRootFallback(incoming, rootEventId, existing.run_id);
-
-  if (existingIsFallback && !incomingIsFallback) {
-    return incoming.parent;
-  }
-  if (!existingIsFallback && incomingIsFallback) {
-    return existing.parent;
-  }
+  const existingFallback = isRootFallback(existing, rootEventId, incoming.run_id);
+  const incomingFallback = isRootFallback(incoming, rootEventId, existing.run_id);
+  if (existingFallback && !incomingFallback) return incoming.parent;
+  if (!existingFallback && incomingFallback) return existing.parent;
   return incoming.parent;
 }
 
-/**
- * Preserves terminal run state across pages. A terminal run state is immutable,
- * preventing intermediate 'running' folds from corrupting settled status.
- */
-function mergeRunState(existingState?: string | null, incomingState?: string | null): string {
-  if (existingState && TERMINAL_RUN_STATES.has(existingState) && incomingState === 'running') {
-    return existingState;
+function mergeRunState(existing?: string | null, incoming?: string | null): string | null {
+  if (existing && TERMINAL_RUN_STATES.has(existing) && !TERMINAL_RUN_STATES.has(incoming ?? '')) {
+    return existing;
   }
-  if (incomingState && TERMINAL_RUN_STATES.has(incomingState) && existingState === 'running') {
-    return incomingState;
+  if (incoming && TERMINAL_RUN_STATES.has(incoming)) {
+    // Two settled reports can disagree; page order is the only available precedence.
+    return incoming;
   }
-  return incomingState || existingState || 'running';
+  return incoming ?? existing ?? null;
 }
 
-/**
- * Merges any number of list_lineage pages into a unified node store keyed by id.
- * Pure function: operates strictly on domain data with no side-effects or external state.
- */
+/** Merge pages by id, retaining real attributes through partial later snapshots. */
 export function foldLineage(pages: ListLineageResponse[]): FoldedLineage {
-  const rootEventId = pages.find((p) => p.root_event_id)?.root_event_id ?? '';
-  const nodeStore = new Map<string, LineageNode>();
-
+  if (pages.length === 0) return { rootEventId: '', nodes: new Map() };
+  const rootEventId = pages.find((page) => page.root_event_id)?.root_event_id ?? '';
+  const nodes = new Map<string, LineageNode>();
   for (const page of pages) {
     for (const incoming of page.nodes) {
-      const existing = nodeStore.get(incoming.id);
+      const existing = nodes.get(incoming.id);
       if (!existing) {
-        nodeStore.set(incoming.id, { ...incoming });
+        nodes.set(incoming.id, { ...incoming });
         continue;
       }
-
-      // Attributes union across pages; later page values win except for run state and parent
-      const merged: LineageNode = { ...existing, ...incoming };
-
+      const nonNullAttributes = Object.fromEntries(
+        Object.entries(incoming).filter(([, value]) => value !== null && value !== undefined),
+      );
+      const merged: LineageNode = { ...existing, ...nonNullAttributes };
       merged.parent = resolveParent(existing, incoming, rootEventId);
-
       if (merged.type === 'run') {
-        merged.state = mergeRunState(existing.state, incoming.state);
+        // The wire type says string, but partial gateway pages can omit the state.
+        Object.assign(merged, { state: mergeRunState(existing.state, incoming.state) });
       }
-
-      nodeStore.set(incoming.id, merged);
+      nodes.set(incoming.id, merged);
     }
   }
-
-  return {
-    rootEventId,
-    nodes: nodeStore,
-  };
+  return { rootEventId, nodes };
 }
 
-/**
- * Parses timestamps in RFC 3339 format or zoneless UTC space-separated format
- * (e.g. from runner logs) into standard Date objects.
- */
-function parseTimestamp(raw?: string | null): Date | null {
-  if (!raw) return null;
-  const clean = raw.includes(' ') && !raw.includes('Z') ? raw.replace(' ', 'T') + 'Z' : raw;
-  const d = new Date(clean);
-  return Number.isNaN(d.getTime()) ? null : d;
+/** Read string attributes from the gateway's open attribute bag in one place. */
+function stringAttr(node: LineageNode | undefined, key: string): string | undefined {
+  const value = node?.[key];
+  return typeof value === 'string' ? value : undefined;
 }
 
-/**
- * Renders time portion as UTC HH:MM:SS to guarantee deterministic, timezone-independent display.
- */
-function formatTime(raw?: string | null): string {
-  const d = parseTimestamp(raw);
-  if (!d) return '';
-  const h = String(d.getUTCHours()).padStart(2, '0');
-  const m = String(d.getUTCMinutes()).padStart(2, '0');
-  const s = String(d.getUTCSeconds()).padStart(2, '0');
-  return `${h}:${m}:${s}`;
-}
-
-/**
- * Calculates human-readable elapsed duration between two timestamps.
- */
-function formatDuration(startedAt?: string | null, finishedAt?: string | null): string {
-  const start = parseTimestamp(startedAt);
-  const end = parseTimestamp(finishedAt);
-  if (!start || !end) return '';
-  const diffSec = Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000));
-  if (diffSec < 60) return `${diffSec} s`;
-  const mins = Math.floor(diffSec / 60);
-  const secs = diffSec % 60;
-  return secs > 0 ? `${mins} m ${secs} s` : `${mins} m`;
-}
-
-/**
- * Shortens ULID/UUID identifiers for display while leaving compact IDs intact.
- */
 function shortId(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id;
+  return /^[0-9A-HJKMNP-TV-Z]{26}$/.test(id) ? id.slice(-6) : id;
 }
 
-/**
- * Extracts numeric timestamp for stable chronological ordering.
- */
-function getNodeTimestamp(node: LineageNode): number {
-  const raw = (node.at ?? node.started_at ?? node.created_at) as string | undefined;
-  const parsed = parseTimestamp(raw);
-  return parsed ? parsed.getTime() : 0;
+function timestamp(node: LineageNode): number | undefined {
+  return parseGatewayTime(node.at ?? node.started_at ?? node.created_at)?.getTime();
 }
 
-/**
- * Stable tie-breaker comparing node timestamp ascending, then id lexicographically.
- */
+function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function compareNodes(a: LineageNode, b: LineageNode): number {
-  const timeA = getNodeTimestamp(a);
-  const timeB = getNodeTimestamp(b);
-  if (timeA !== timeB) return timeA - timeB;
-  return a.id.localeCompare(b.id);
+  const aTime = timestamp(a);
+  const bTime = timestamp(b);
+  if (aTime === undefined) return bTime === undefined ? compareIds(a.id, b.id) : 1;
+  if (bTime === undefined) return -1;
+  return aTime - bTime || compareIds(a.id, b.id);
 }
 
-/**
- * Extracts tool call counts from either direct attribute or summary block.
- */
 function getToolCallCount(node: LineageNode): number | undefined {
-  if (typeof node.tool_calls === 'number') {
-    return node.tool_calls;
-  }
-  const summary = node.tool_call_summary as { count?: number } | undefined;
-  if (summary && typeof summary.count === 'number') {
-    return summary.count;
+  if (typeof node.tool_calls === 'number') return node.tool_calls;
+  const summary = node.tool_call_summary;
+  if (summary && typeof summary === 'object' && 'count' in summary) {
+    return typeof summary.count === 'number' ? summary.count : undefined;
   }
   return undefined;
 }
 
-/**
- * Translates a folded lineage graph into the protocol view required by the webview.
- * Establishes stable child order, resolves orphaned parents to root, and builds card representations.
- */
-export function toThreadView(folded: FoldedLineage): ThreadView {
-  const allNodes = Array.from(folded.nodes.values());
-
-  // 1. Resolve view parents. Orphaned nodes whose parent is absent from the node set
-  // hang off the root event so the thread graph never drops returned data.
-  const viewParentMap = new Map<string, string | null>();
-  const childrenMap = new Map<string, string[]>();
-
-  for (const node of allNodes) {
-    let parent: string | null = null;
-    if (node.id === folded.rootEventId) {
-      parent = null;
-    } else if (node.parent && folded.nodes.has(node.parent)) {
-      parent = node.parent;
-    } else {
-      parent = folded.rootEventId;
-    }
-    viewParentMap.set(node.id, parent);
-
-    if (parent) {
-      const siblings = childrenMap.get(parent) ?? [];
-      siblings.push(node.id);
-      childrenMap.set(parent, siblings);
-    }
+function resolveViewParents(folded: FoldedLineage): {
+  parents: Map<string, string | null>;
+  children: Map<string, string[]>;
+} {
+  const parents = new Map<string, string | null>();
+  const children = new Map<string, string[]>();
+  for (const node of folded.nodes.values()) {
+    const parent =
+      node.id === folded.rootEventId
+        ? null
+        : node.parent && folded.nodes.has(node.parent)
+          ? node.parent
+          : folded.rootEventId;
+    parents.set(node.id, parent);
+    if (parent) children.set(parent, [...(children.get(parent) ?? []), node.id]);
   }
-
-  // 2. Sort children lists in stable chronological order.
-  for (const children of childrenMap.values()) {
-    children.sort((aId, bId) => {
-      const nodeA = folded.nodes.get(aId);
-      const nodeB = folded.nodes.get(bId);
-      if (!nodeA || !nodeB) return aId.localeCompare(bId);
-      return compareNodes(nodeA, nodeB);
+  for (const siblings of children.values()) {
+    siblings.sort((a, b) => {
+      const first = folded.nodes.get(a);
+      const second = folded.nodes.get(b);
+      return first && second ? compareNodes(first, second) : compareIds(a, b);
     });
   }
+  return { parents, children };
+}
 
-  // 3. Transform nodes into ThreadNode protocol objects.
-  const threadNodes: ThreadNode[] = allNodes.map((node) => {
-    const parent = viewParentMap.get(node.id) ?? null;
-    const children = childrenMap.get(node.id) ?? [];
-    const state = (node.state as string) ?? null;
+type CardDetails = Pick<ThreadNode, 'title' | 'subtitle' | 'meta' | 'target' | 'gate' | 'tone'>;
 
-    const isRunFailed =
-      node.type === 'run' &&
-      (state === 'failed' || state === 'dead_letter' || state === 'cancelled');
+function eventCard(node: LineageNode): CardDetails {
+  const line = [formatClock(node.at), stringAttr(node, 'kind')].filter(Boolean).join(' · ');
+  return {
+    title: stringAttr(node, 'label_skill') ?? '',
+    subtitle: stringAttr(node, 'title'),
+    meta: line ? [line] : [],
+    tone: 'event',
+    target: { open: 'thread', rootEventId: node.id },
+  };
+}
 
-    let tone: NodeTone = 'neutral';
-    if (node.type === 'event') {
-      tone = 'event';
-    } else if (node.type === 'run') {
-      tone = isRunFailed ? 'failed' : 'run';
-    } else if (node.type === 'changeset' || node.type === 'draft') {
-      tone = 'instance';
-    }
-
-    let title = '';
-    let subtitle: string | undefined;
-    const meta: string[] = [];
-
-    if (node.type === 'event') {
-      title = (node.label_skill as string) || '';
-      subtitle = (node.title as string) || undefined;
-      const time = formatTime(node.at as string);
-      const kind = (node.kind as string) || '';
-      const line = [time, kind].filter(Boolean).join(' · ');
-      if (line) meta.push(line);
-    } else if (node.type === 'run') {
-      // Runs take their title from the triggering event's skill
-      const parentEvent = node.parent ? folded.nodes.get(node.parent) : undefined;
-      title =
-        (parentEvent?.label_skill as string) ||
-        (node.label_skill as string) ||
-        (node.skill as string) ||
-        'run';
-      subtitle = 'run';
-
-      const line1 = [node.harness, node.autonomy].filter(Boolean).join(' · ');
-      if (line1) meta.push(line1);
-
-      if (node.started_at && node.finished_at) {
-        const dur = formatDuration(node.started_at as string, node.finished_at as string);
-        meta.push(
-          `${formatTime(node.started_at as string)} → ${formatTime(node.finished_at as string)} · ${dur}`,
-        );
-      } else if (node.started_at) {
-        meta.push(formatTime(node.started_at as string));
-      }
-
-      const callCount = getToolCallCount(node);
-      if (typeof callCount === 'number') {
-        meta.push(pluralise(callCount, 'tool call'));
-      }
-
-      if (typeof node.summary === 'string' && node.summary) {
-        meta.push(node.summary);
-      }
-    } else if (node.type === 'changeset') {
-      title = `changeset ${shortId(node.id)}`;
-      const draftsCount =
-        typeof node.drafts === 'number'
-          ? node.drafts
-          : children.filter((cId) => folded.nodes.get(cId)?.type === 'draft').length;
-      meta.push(pluralise(draftsCount, 'draft'));
-    } else if (node.type === 'draft') {
-      title = pageSlug((node.target_page_id as string) || '');
-    }
-
-    const chips = state
-      ? [
-          {
-            text: state,
-            tone:
-              state === 'failed' || state === 'dead_letter' || state === 'cancelled'
-                ? ('failed' as const)
-                : tone,
-          },
-        ]
-      : [];
-
-    let target: NodeTarget = { open: 'nothing' };
-    if (node.type === 'event') {
-      target = { open: 'thread', rootEventId: node.id };
-    } else if (node.type === 'run') {
-      target = { open: 'run', runId: node.id };
-    } else if (node.type === 'changeset') {
-      target = { open: 'review', changesetId: node.id };
-    } else if (node.type === 'draft') {
-      const changesetId = typeof node.changeset_id === 'string' ? node.changeset_id : undefined;
-      target = {
-        open: 'review',
-        draftId: node.id,
-        ...(changesetId ? { changesetId } : {}),
-      };
-    }
-
-    let gate: { drafts: number; changesetId?: string; draftId?: string } | undefined;
-    if (node.type === 'changeset' && state === 'open') {
-      const draftsCount =
-        typeof node.drafts === 'number'
-          ? node.drafts
-          : children.filter((cId) => folded.nodes.get(cId)?.type === 'draft').length;
-      gate = { drafts: draftsCount, changesetId: node.id };
-    } else if (node.type === 'draft' && state === 'open' && !node.changeset_id) {
-      // Solo draft open gate (present only when the draft does not belong to a changeset)
-      const parentNode = parent ? folded.nodes.get(parent) : undefined;
-      if (parentNode?.type !== 'changeset') {
-        gate = { drafts: 1, draftId: node.id };
-      }
-    }
-
-    const collapsible = node.type === 'run' || children.length > 0;
-
-    return {
-      id: node.id,
-      kind: node.type as ThreadNodeKind,
-      parent,
-      children,
-      state,
-      tone,
-      title,
-      subtitle,
-      meta,
-      chips,
-      target,
-      gate,
-      collapsible,
-    };
-  });
-
-  // 4. Calculate column headers based on max execution depth.
-  let maxDepth = 0;
-  for (const node of allNodes) {
-    if (typeof node.depth === 'number') {
-      maxDepth = Math.max(maxDepth, node.depth);
-    }
+function runCard(node: LineageNode, folded: FoldedLineage): CardDetails {
+  const parentEvent = node.parent ? folded.nodes.get(node.parent) : undefined;
+  const state = stringAttr(node, 'state');
+  const failed = state === 'failed' || state === 'dead_letter' || state === 'cancelled';
+  const meta: string[] = [];
+  const details = [stringAttr(node, 'harness'), stringAttr(node, 'autonomy')]
+    .filter(Boolean)
+    .join(' · ');
+  if (details) meta.push(details);
+  if (node.started_at && node.finished_at) {
+    meta.push(
+      `${formatClock(node.started_at)} → ${formatClock(node.finished_at)} · ${formatDuration(node.started_at, node.finished_at)}`,
+    );
+  } else if (node.started_at) {
+    meta.push(formatClock(node.started_at));
   }
+  const count = getToolCallCount(node);
+  if (count !== undefined) meta.push(pluralise(count, 'tool call'));
+  const summary = stringAttr(node, 'summary');
+  if (summary) meta.push(summary);
+  return {
+    title:
+      stringAttr(parentEvent, 'label_skill') ??
+      stringAttr(node, 'label_skill') ??
+      stringAttr(node, 'skill') ??
+      'run',
+    subtitle: 'run',
+    meta,
+    tone: failed ? 'failed' : 'run',
+    target: { open: 'run', runId: node.id },
+  };
+}
 
+function countDrafts(node: LineageNode, children: string[], folded: FoldedLineage): number {
+  return typeof node.drafts === 'number'
+    ? node.drafts
+    : children.filter((id) => folded.nodes.get(id)?.type === 'draft').length;
+}
+
+function changesetCard(node: LineageNode, children: string[], folded: FoldedLineage): CardDetails {
+  const drafts = countDrafts(node, children, folded);
+  return {
+    title: `changeset ${shortId(node.id)}`,
+    meta: [pluralise(drafts, 'draft')],
+    tone: 'instance',
+    target: { open: 'review', changesetId: node.id },
+    gate: node.state === 'open' ? { drafts, changesetId: node.id } : undefined,
+  };
+}
+
+function draftCard(node: LineageNode, parent: string | null, folded: FoldedLineage): CardDetails {
+  const changesetId = stringAttr(node, 'changeset_id');
+  const parentNode = parent ? folded.nodes.get(parent) : undefined;
+  return {
+    title: pageSlug(stringAttr(node, 'target_page_id') ?? ''),
+    meta: [],
+    tone: 'instance',
+    target: { open: 'review', draftId: node.id, ...(changesetId ? { changesetId } : {}) },
+    gate:
+      node.state === 'open' && !node.changeset_id && parentNode?.type !== 'changeset'
+        ? { drafts: 1, draftId: node.id }
+        : undefined,
+  };
+}
+
+function buildNode(
+  node: LineageNode,
+  parent: string | null,
+  children: string[],
+  folded: FoldedLineage,
+): ThreadNode {
+  const details =
+    node.type === 'event'
+      ? eventCard(node)
+      : node.type === 'run'
+        ? runCard(node, folded)
+        : node.type === 'changeset'
+          ? changesetCard(node, children, folded)
+          : draftCard(node, parent, folded);
+  const state = stringAttr(node, 'state') ?? null;
+  const chips = state
+    ? [
+        {
+          text: state,
+          tone:
+            state === 'failed' || state === 'dead_letter' || state === 'cancelled'
+              ? ('failed' as const)
+              : details.tone,
+        },
+      ]
+    : [];
+  return {
+    id: node.id,
+    kind:
+      node.type === 'run' || node.type === 'changeset' || node.type === 'draft'
+        ? node.type
+        : 'event',
+    parent,
+    children,
+    state,
+    ...details,
+    chips,
+    collapsible: node.type === 'run' || children.length > 0,
+  };
+}
+
+function columnsFor(nodes: Iterable<LineageNode>): string[] {
+  let maxDepth = 0;
+  for (const node of nodes) {
+    if (typeof node.depth === 'number') maxDepth = Math.max(maxDepth, node.depth);
+  }
   const columns = [
     'root event',
     'run · changeset',
@@ -384,15 +266,36 @@ export function toThreadView(folded: FoldedLineage): ThreadView {
     'cascade · depth 1',
     'outbound · depth 2',
   ];
+  for (let depth = 3; depth <= maxDepth; depth++) columns.push(`cascade · depth ${depth}`);
+  return columns;
+}
 
-  for (let d = 3; d <= maxDepth; d++) {
-    columns.push(`cascade · depth ${d}`);
+/** Turn a folded graph into connected cards for the webview. */
+export function toThreadView(folded: FoldedLineage): ThreadView {
+  const { parents, children } = resolveViewParents(folded);
+  const nodes = [...folded.nodes.values()].map((node) =>
+    buildNode(node, parents.get(node.id) ?? null, children.get(node.id) ?? [], folded),
+  );
+  if (nodes.length && !folded.nodes.has(folded.rootEventId)) {
+    // The layout needs an actual parent card while a paged root has not arrived.
+    nodes.unshift({
+      id: folded.rootEventId,
+      kind: 'event',
+      parent: null,
+      children: children.get(folded.rootEventId) ?? [],
+      state: null,
+      tone: 'event',
+      title: 'root event (loading)',
+      meta: [],
+      chips: [],
+      target: { open: 'nothing' },
+      collapsible: true,
+    });
   }
-
   return {
     rootEventId: folded.rootEventId,
-    nodes: threadNodes,
-    columns,
+    nodes,
+    columns: columnsFor(folded.nodes.values()),
     loadingMore: false,
   };
 }

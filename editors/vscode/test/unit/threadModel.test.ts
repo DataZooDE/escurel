@@ -263,7 +263,7 @@ describe('threadModel', () => {
       expect(run?.collapsible).toBe(true);
 
       // Changeset card
-      expect(changeset?.title).toBe('changeset 01M3NHJJ');
+      expect(changeset?.title).toBe('changeset EYSA9X');
       expect(changeset?.tone).toBe('instance');
       expect(changeset?.meta).toEqual(['1 draft']);
       expect(changeset?.target).toEqual({ open: 'review', changesetId: changeset?.id });
@@ -320,5 +320,119 @@ describe('threadModel', () => {
         'cascade · depth 4',
       ]);
     });
+  });
+
+  it('returns an explicit empty fold and an empty view with columns', () => {
+    const folded = foldLineage([]);
+    const view = toThreadView(folded);
+    expect(folded).toEqual({ rootEventId: '', nodes: new Map() });
+    expect(view.nodes).toEqual([]);
+    expect(view.rootEventId).toBe('');
+    expect(view.columns).toHaveLength(5);
+  });
+
+  it('keeps absent run states absent across pages', () => {
+    // Hand-written: recordings always include a run state.
+    const page: ListLineageResponse = {
+      root_event_id: 'root',
+      nodes: [{ id: 'run', type: 'run', parent: 'root', state: null as unknown as string }],
+    };
+    const folded = foldLineage([page, page]);
+    expect(folded.nodes.get('run')?.state).toBeNull();
+    expect(toThreadView(folded).nodes.find((node) => node.id === 'run')?.state).toBeNull();
+  });
+
+  it.each(['processed', 'failed', 'dead_letter', 'cancelled', 'planned'])(
+    'keeps terminal %s when a later page has a non-terminal state',
+    (terminal) => {
+      // Hand-written: recordings do not cover all terminal and non-terminal combinations.
+      const page = (state: string): ListLineageResponse => ({
+        root_event_id: 'root',
+        nodes: [{ id: 'run', type: 'run', parent: 'root', state }],
+      });
+      expect(foldLineage([page(terminal), page('queued')]).nodes.get('run')?.state).toBe(terminal);
+      expect(foldLineage([page('queued'), page(terminal)]).nodes.get('run')?.state).toBe(terminal);
+    },
+  );
+
+  it('lets the later page win between terminal run states', () => {
+    // Hand-written: recordings contain one terminal state per run.
+    const page = (state: string): ListLineageResponse => ({
+      root_event_id: 'root',
+      nodes: [{ id: 'run', type: 'run', parent: 'root', state }],
+    });
+    expect(foldLineage([page('processed'), page('failed')]).nodes.get('run')?.state).toBe('failed');
+  });
+
+  it('preserves real attributes when a later page carries null or undefined', () => {
+    // Hand-written: recordings do not include a null summary on a later page.
+    const page = (summary: unknown): ListLineageResponse => ({
+      root_event_id: 'root',
+      nodes: [{ id: 'run', type: 'run', parent: 'root', state: 'processed', summary }],
+    });
+    const folded = foldLineage([page('done'), page(null), page(undefined)]);
+    expect(folded.nodes.get('run')?.summary).toBe('done');
+  });
+
+  it('adds a navigable placeholder root for page 2 alone', () => {
+    const view = toThreadView(foldLineage([paged2 as unknown as ListLineageResponse]));
+    const root = view.nodes.find((node) => node.id === view.rootEventId);
+    expect(root).toMatchObject({
+      kind: 'event',
+      title: 'root event (loading)',
+      parent: null,
+      state: null,
+      target: { open: 'nothing' },
+    });
+    expect(root?.children.length).toBeGreaterThan(0);
+    for (const node of view.nodes.filter((node) => node.id !== view.rootEventId)) {
+      expect(view.nodes.some((parent) => parent.id === node.parent)).toBe(true);
+    }
+  });
+
+  it('sorts siblings by parsed time, missing time last, then id code units', () => {
+    // Hand-written: recordings do not have missing times or case-sensitive sibling ties.
+    const nodes = ['z', 'A', 'a', 'missing'].map((id) => ({
+      id,
+      type: 'event',
+      parent: 'root',
+      state: 'inbox',
+      ...(id === 'missing'
+        ? {}
+        : { at: id === 'z' ? '2026-09-29 02:59:08.035678' : '2026-09-29T02:59:08.036Z' }),
+    }));
+    const view = toThreadView(
+      foldLineage([
+        {
+          root_event_id: 'root',
+          nodes: [{ id: 'root', type: 'event', parent: null, state: 'inbox' }, ...nodes],
+        },
+      ]),
+    );
+    expect(view.nodes.find((node) => node.id === 'root')?.children).toEqual([
+      'z',
+      'A',
+      'a',
+      'missing',
+    ]);
+  });
+
+  it('uses distinct random ULID suffixes for changeset and draft labels', () => {
+    const view = toThreadView(foldLineage([fixtureCascade as unknown as ListLineageResponse]));
+    expect(view.nodes.find((node) => node.id === '01M3NHJJNJ7P58Q9A7PWEYSA9X')?.title).toBe(
+      'changeset EYSA9X',
+    );
+    // Hand-written: the recorded draft card uses its page slug, so test compact IDs on a
+    // changeset-shaped card with the recorded draft's ULID.
+    const draftId = '01M3NHJJNME9ERH58A5BEWPKDP';
+    const synthetic = toThreadView(
+      foldLineage([
+        {
+          root_event_id: 'root',
+          nodes: [{ id: draftId, type: 'changeset', parent: 'root', state: 'open' }],
+        },
+      ]),
+    );
+    expect(synthetic.nodes.find((node) => node.id === draftId)?.title).toBe('changeset EWPKDP');
   });
 });
