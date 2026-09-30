@@ -173,9 +173,40 @@ export interface FocusGraph {
   steps: Record<string, FocusStep>;
 }
 
+/** A row of the node inspector. `tone` colours the value, from tokens only. */
+export interface InspectorRow {
+  k: string;
+  v: string;
+  tone?: 'ok' | 'warn' | 'error';
+}
+
+/**
+ * What the node inspector shows for one node (the mock's detail panel): a key/value
+ * table, an optional body, and a side table whose title varies by node kind.
+ *
+ * Built ONLY from what the gateway returned for that node. The mock shows things no tool
+ * exposes — per-run token counts, what a run read and wrote — and an inspector that
+ * invented them would be showing a design, not the thread. A row with no data is absent.
+ */
+export interface InspectorView {
+  title: string;
+  rows: InspectorRow[];
+  bodyTitle?: string;
+  body?: string;
+  sideTitle: string;
+  side: InspectorRow[];
+}
+
 export type ThreadHostToWebview =
   | { type: 'thread-loading'; rootEventId: string }
-  | { type: 'thread'; view: ThreadView; layout: ThreadLayout; focus: FocusGraph }
+  | {
+      type: 'thread';
+      view: ThreadView;
+      layout: ThreadLayout;
+      focus: FocusGraph;
+      /** Keyed by node id; a node with no entry has nothing to inspect. */
+      details: Record<string, InspectorView>;
+    }
   | { type: 'thread-error'; message: string; canReconnect: boolean }
   /** The outline selected a node: the canvas highlights it and pans to it. */
   | { type: 'thread-select'; nodeId: string };
@@ -187,6 +218,8 @@ export type ThreadWebviewToHost =
   | { type: 'promote'; changesetId?: string; draftId?: string }
   | { type: 'discard'; changesetId?: string; draftId?: string }
   | { type: 'toggle-collapse'; nodeId: string }
+  /** The toolbar's "Expand all": the host owns which nodes are collapsed. */
+  | { type: 'expand-all' }
   | { type: 'refresh' };
 
 // ── run detail ───────────────────────────────────────────────────────
