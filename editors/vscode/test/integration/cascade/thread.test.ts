@@ -54,6 +54,7 @@ suite('thread and run detail', () => {
       label_skill: 'supplier-risk',
       mime: 'text/plain',
       source: 'integration',
+      title: 'Kessler delivery risk',
       body: 'Kessler: delivery risk medium.',
       instance_page_id: page,
     });
@@ -84,6 +85,10 @@ suite('thread and run detail', () => {
         .flatMap((g) => g.tabs)
         .filter((t) => t.label.startsWith('Thread'));
     assert.equal(tabs().length, 1);
+    // Named for the EVENT, not the skill every thread from it shares.
+    // The tab label follows `panel.title` a moment later, so wait for it rather than race it.
+    for (let i = 0; i < 40 && tabs()[0]?.label === 'Thread'; i += 1) await wait(100);
+    assert.equal(tabs()[0]!.label, 'Thread · Kessler delivery risk');
     await vscode.commands.executeCommand('escurel.openThread', rootEventId);
     await wait(500);
     assert.equal(tabs().length, 1, 'the same thread must not open twice');

@@ -70,6 +70,11 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
       if (thread) {
         outlineRoot = rootEventId;
         threadsTree.setThread(toThreadView(thread));
+        // A row that gains children while the thread is live stays collapsed, so a run that
+        // arrives would be hidden until the user noticed and expanded it. Seen in a real
+        // window: the canvas showed the new run and the outline did not.
+        const root = threadsTree.rowFor(rootEventId);
+        if (root) void threadsView.reveal(root, { expand: 3, select: false, focus: false });
       } else if (outlineRoot === rootEventId) {
         outlineRoot = undefined;
         threadsTree.setThread(undefined);

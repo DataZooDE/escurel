@@ -123,7 +123,10 @@ export class ThreadController implements vscode.Disposable {
         details: this.details(current),
       });
       const root = view.nodes.find((n) => n.id === view.rootEventId);
-      panel.title = `Thread · ${root?.title ?? rootEventId.slice(-6)}`;
+      // The event's own title when it has one. `title` is the skill label, which every thread
+      // from that skill shares: two open threads were both 'Thread · supplier-risk' and could
+      // not be told apart in the tab bar.
+      panel.title = `Thread · ${root?.subtitle || root?.title || rootEventId.slice(-6)}`;
     };
     const load = async () => {
       try {
