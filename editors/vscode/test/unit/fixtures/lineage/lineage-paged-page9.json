@@ -1,0 +1,40 @@
+{
+  "root_event_id": "01M3NJP3XQ5CGA1FJN1661475W",
+  "nodes": [
+    {
+      "state": "inbox",
+      "label_skill": "order",
+      "title": "order updated by signal",
+      "at": "2026-09-29T03:17:43Z",
+      "kind": "user",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "parent_event_id": "01M3NJP3XQ5CGA1FJN1661475W",
+      "depth": 1,
+      "id": "cascade:01M3NJP42QE74V37TY4VGF0SHH",
+      "type": "event",
+      "parent": "01M3NJP3ZNSPXVVZS864PJ51K9"
+    },
+    {
+      "state": "promoted",
+      "drafts": 1,
+      "author": "agent:signal",
+      "run_id": "01M3NJP3ZNSPXVVZS864PJ51K9",
+      "id": "01M3NJP42N7Y6EFVND9WRY3Z3P",
+      "type": "changeset",
+      "parent": "01M3NJP3XQ5CGA1FJN1661475W"
+    },
+    {
+      "state": "promoted",
+      "target_page_id": "markdown/instances/order/o1.md",
+      "author": "agent:signal",
+      "decided_by": "alice",
+      "event_id": "01M3NJP3XQ5CGA1FJN1661475W",
+      "changeset_id": "01M3NJP42N7Y6EFVND9WRY3Z3P",
+      "run_id": "01M3NJP3ZNSPXVVZS864PJ51K9",
+      "created_at": "2026-09-29T05:17:43Z",
+      "id": "01M3NJP42QE74V37TY4VGF0SHH",
+      "type": "draft",
+      "parent": "01M3NJP42N7Y6EFVND9WRY3Z3P"
+    }
+  ]
+}

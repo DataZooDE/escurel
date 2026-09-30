@@ -1,0 +1,28 @@
+{
+  "run_id": "01M3NHM31CYWN2NXCFM3J16QB4",
+  "calls": [
+    {
+      "seq": 3,
+      "tool": "report_progress",
+      "status": "ok",
+      "error_code": null,
+      "duration_ms": 24.925783,
+      "request_bytes": 161,
+      "response_bytes": 346,
+      "subject": "agent:signal",
+      "at": "2026-09-29T04:59:08Z"
+    },
+    {
+      "seq": 4,
+      "tool": "create_draft",
+      "status": "ok",
+      "error_code": null,
+      "duration_ms": 24.530344999999997,
+      "request_bytes": 339,
+      "response_bytes": 1573,
+      "subject": "agent:signal",
+      "at": "2026-09-29T04:59:08Z"
+    }
+  ],
+  "next_after": null
+}

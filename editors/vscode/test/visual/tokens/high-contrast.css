@@ -8,6 +8,11 @@
   --vscode-sideBar-background: #000000;
   --vscode-widget-border: #6fc3df;
   --vscode-focusBorder: #f38518;
+  /* VS Code's high-contrast themes define these; without them the harness rendered a
+     high contrast VS Code never ships. Values from the built-in Dark High Contrast. */
+  --vscode-contrastBorder: #6fc3df;
+  --vscode-contrastActiveBorder: #f38518;
+  --vscode-button-border: #6fc3df;
   --vscode-button-background: #000000;
   --vscode-button-foreground: #ffffff;
   --vscode-button-secondaryBackground: #000000;

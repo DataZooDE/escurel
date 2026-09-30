@@ -1,0 +1,248 @@
+{
+  "events": [
+    {
+      "event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+      "at": "2026-09-29T02:58:18Z",
+      "source": "manual",
+      "mime": "text/plain",
+      "label_skill": "signal",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "supplier risk",
+      "body": "risk high",
+      "provenance": {
+        "captured_by": "test-subject"
+      },
+      "kind": "user",
+      "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+      "run_id": null
+    },
+    {
+      "event_id": "run:01M3NHJJGJ1WWAV26F5Z8Y4XKT:started",
+      "at": "2026-09-29T02:58:18Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "run-started",
+      "body": "{}",
+      "provenance": {
+        "runner": {
+          "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT",
+          "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "depth": 0,
+          "lineage_path": [
+            "01M3NHJJCWP2TXH9TQT46F70R1"
+          ],
+          "harness": "echo",
+          "max_attempts": 3,
+          "trace_id": "01a0eb194a26f1510f9b86c9f8a6cd96",
+          "target_page_id": "markdown/instances/order/o1.md",
+          "attempt": 0
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+      "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT"
+    },
+    {
+      "event_id": "run-progress:01M3NHJJGJ1WWAV26F5Z8Y4XKT:19ac7dbefbb46a8d",
+      "at": "2026-09-29T02:58:18Z",
+      "source": "report_progress",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "run-progress",
+      "body": "{\"plan\":[{\"step\":\"read the target page\",\"status\":\"completed\"},{\"step\":\"draft the fold for review\",\"status\":\"in_progress\"}],\"current\":\"draft the fold for review\",\"note\":null}",
+      "provenance": {
+        "runner": {
+          "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT",
+          "reported_by": "agent:signal",
+          "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1"
+        },
+        "captured_by": "agent:signal"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+      "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT"
+    },
+    {
+      "event_id": "review:01M3NHJJNME9ERH58A5BEWPKDP:draft-created",
+      "at": "2026-09-29T02:58:18Z",
+      "source": "escurel",
+      "mime": "application/json",
+      "label_skill": "escurel:review",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "draft-created",
+      "body": "{\"transition\":\"draft-created\",\"draft_id\":\"01M3NHJJNME9ERH58A5BEWPKDP\",\"changeset_id\":\"01M3NHJJNJ7P58Q9A7PWEYSA9X\",\"target_page_id\":\"markdown/instances/order/o1.md\",\"event_id\":\"01M3NHJJCWP2TXH9TQT46F70R1\",\"decided_by\":\"agent:signal\",\"reason\":\"\"}",
+      "provenance": {
+        "review": {
+          "draft_id": "01M3NHJJNME9ERH58A5BEWPKDP",
+          "changeset_id": "01M3NHJJNJ7P58Q9A7PWEYSA9X",
+          "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT",
+          "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "decided_by": "agent:signal",
+          "already_decided": false,
+          "event_id": "01M3NHJJCWP2TXH9TQT46F70R1"
+        },
+        "captured_by": "escurel"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+      "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT"
+    },
+    {
+      "event_id": "run:01M3NHJJGJ1WWAV26F5Z8Y4XKT:attempt:1",
+      "at": "2026-09-29T02:58:18Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "run-attempt",
+      "body": "{\"attempt\":1,\"started_at\":\"2026-09-29 02:58:18.320368\",\"ended_at\":\"2026-09-29 02:58:18.444535\",\"outcome\":\"ok\"}",
+      "provenance": {
+        "runner": {
+          "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT",
+          "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "depth": 0,
+          "lineage_path": [
+            "01M3NHJJCWP2TXH9TQT46F70R1"
+          ],
+          "harness": "echo",
+          "max_attempts": 3,
+          "trace_id": "01a0eb194a26f1510f9b86c9f8a6cd96",
+          "target_page_id": "markdown/instances/order/o1.md",
+          "attempt": 1
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+      "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT"
+    },
+    {
+      "event_id": "run:01M3NHJJGJ1WWAV26F5Z8Y4XKT:finished",
+      "at": "2026-09-29T02:58:18Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "run-finished",
+      "body": "{\"status\":\"processed\",\"attempts\":1,\"held\":true,\"summary\":\"drafted the fold of event 01M3NHJJCWP2TXH9TQT46F70R1 for markdown/instances/order/o1.md (draft 01M3NHJJNME9ERH58A5BEWPKDP); awaiting a human\",\"tool_calls\":4,\"produced_instance\":\"markdown/instances/order/o1.md\",\"produced_version\":\"2854fb902f0f30d604948b157367399dc496f2ac3ce75fda8da8fb8030a3aa18\",\"plan\":[{\"step\":\"read the target page\",\"status\":\"completed\"},{\"step\":\"draft the fold for review\",\"status\":\"in_progress\"}],\"usage\":null}",
+      "provenance": {
+        "runner": {
+          "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT",
+          "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "depth": 0,
+          "lineage_path": [
+            "01M3NHJJCWP2TXH9TQT46F70R1"
+          ],
+          "harness": "echo",
+          "max_attempts": 3,
+          "trace_id": "01a0eb194a26f1510f9b86c9f8a6cd96",
+          "target_page_id": "markdown/instances/order/o1.md",
+          "attempt": 1,
+          "autonomy": "review"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+      "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT"
+    },
+    {
+      "event_id": "review:01M3NHJJNME9ERH58A5BEWPKDP:draft-promoted",
+      "at": "2026-09-29T02:58:18Z",
+      "source": "escurel",
+      "mime": "application/json",
+      "label_skill": "escurel:review",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "draft-promoted",
+      "body": "{\"transition\":\"draft-promoted\",\"draft_id\":\"01M3NHJJNME9ERH58A5BEWPKDP\",\"changeset_id\":\"01M3NHJJNJ7P58Q9A7PWEYSA9X\",\"target_page_id\":\"markdown/instances/order/o1.md\",\"event_id\":\"01M3NHJJCWP2TXH9TQT46F70R1\",\"decided_by\":\"alice\",\"reason\":\"\"}",
+      "provenance": {
+        "review": {
+          "draft_id": "01M3NHJJNME9ERH58A5BEWPKDP",
+          "changeset_id": "01M3NHJJNJ7P58Q9A7PWEYSA9X",
+          "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT",
+          "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "decided_by": "alice",
+          "already_decided": false,
+          "event_id": "01M3NHJJCWP2TXH9TQT46F70R1"
+        },
+        "captured_by": "escurel"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+      "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT"
+    },
+    {
+      "event_id": "review:01M3NHJJNJ7P58Q9A7PWEYSA9X:changeset-promoted",
+      "at": "2026-09-29T02:58:18Z",
+      "source": "escurel",
+      "mime": "application/json",
+      "label_skill": "escurel:review",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "processed",
+      "title": "changeset-promoted",
+      "body": "{\"transition\":\"changeset-promoted\",\"draft_id\":null,\"changeset_id\":\"01M3NHJJNJ7P58Q9A7PWEYSA9X\",\"target_page_id\":\"markdown/instances/order/o1.md\",\"event_id\":\"01M3NHJJCWP2TXH9TQT46F70R1\",\"decided_by\":\"alice\",\"reason\":\"\"}",
+      "provenance": {
+        "review": {
+          "draft_id": null,
+          "changeset_id": "01M3NHJJNJ7P58Q9A7PWEYSA9X",
+          "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT",
+          "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "decided_by": "alice",
+          "already_decided": false,
+          "event_id": "01M3NHJJCWP2TXH9TQT46F70R1"
+        },
+        "captured_by": "escurel"
+      },
+      "kind": "system",
+      "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+      "run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT"
+    },
+    {
+      "event_id": "cascade:01M3NHJJNME9ERH58A5BEWPKDP",
+      "at": "2026-09-29T02:58:18Z",
+      "source": "runner-cascade",
+      "mime": "text/plain",
+      "label_skill": "order",
+      "instance_page_id": "markdown/instances/order/o1.md",
+      "status": "inbox",
+      "title": "order updated by signal",
+      "body": "Instance markdown/instances/order/o1.md was updated while processing signal event 01M3NHJJCWP2TXH9TQT46F70R1 (root 01M3NHJJCWP2TXH9TQT46F70R1, depth 1).",
+      "provenance": {
+        "runner": {
+          "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "parent_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+          "parent_run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT",
+          "depth": 1,
+          "lineage_path": [
+            "01M3NHJJCWP2TXH9TQT46F70R1"
+          ],
+          "instance_path": [
+            "markdown/instances/order/o1.md"
+          ],
+          "cause": "instance-updated:signal",
+          "changed_instance": "markdown/instances/order/o1.md",
+          "changed_version": "promoted"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "user",
+      "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
+      "run_id": null
+    }
+  ],
+  "resume_cursor": "c2VxfDEx"
+}
