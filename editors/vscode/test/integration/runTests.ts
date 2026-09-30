@@ -83,6 +83,15 @@ function corpusSeed(repo: string, root: string): string {
   return dir;
 }
 
+/**
+ * The VS Code the suites run in. Pinned, because `runTests` otherwise downloads whatever
+ * "stable" is today: 1.140.0 crashed on start (SIGTRAP) in the environment the suites had
+ * passed in the day before, with no change of ours. Bump it deliberately, with the suites
+ * run, not by waiting for a release to break them. `ESCUREL_VSCODE_VERSION=insiders` or any
+ * version string overrides it, which is how to try a new release before adopting it.
+ */
+const VSCODE_VERSION = process.env.ESCUREL_VSCODE_VERSION ?? '1.139.1';
+
 async function main(): Promise<void> {
   const root = resolve(__dirname, '..', '..', '..');
   const repo = resolve(root, '..', '..');
@@ -97,6 +106,7 @@ async function main(): Promise<void> {
   try {
     await waitForHealth(corpus.url, 60_000);
     await runTests({
+      version: VSCODE_VERSION,
       extensionDevelopmentPath: root,
       extensionTestsPath: resolve(__dirname, 'suite', 'index.js'),
       launchArgs: [workspaceFor(corpus.url), '--disable-extensions', '--disable-workspace-trust'],
@@ -138,6 +148,7 @@ async function main(): Promise<void> {
     }
 
     await runTests({
+      version: VSCODE_VERSION,
       extensionDevelopmentPath: root,
       extensionTestsPath: resolve(__dirname, 'cascade', 'index.js'),
       launchArgs: [workspaceFor(cascade.url), '--disable-extensions', '--disable-workspace-trust'],
@@ -153,7 +164,30 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+/**
+ * Electron needs a display, and a session with none — an SSH login, a locked desktop, CI —
+ * kills VS Code on start with SIGTRAP and no message. The same suite crashed in one session
+ * and passed in the next for that reason alone, so the harness supplies its own: with no
+ * display it re-runs itself under `xvfb-run`, which makes the suites independent of
+ * whoever is logged in.
+ */
+function needsVirtualDisplay(): boolean {
+  return !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY && !process.env.ESCUREL_IN_XVFB;
+}
+
+if (needsVirtualDisplay()) {
+  const child = spawn('xvfb-run', ['-a', process.execPath, ...process.argv.slice(1)], {
+    stdio: 'inherit',
+    env: { ...process.env, ESCUREL_IN_XVFB: '1' },
+  });
+  child.on('error', (e) => {
+    console.error(`no display and xvfb-run could not start (${e.message}); install xvfb`);
+    process.exit(1);
+  });
+  child.on('exit', (code) => process.exit(code ?? 1));
+} else {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

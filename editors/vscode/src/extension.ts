@@ -12,6 +12,8 @@ import { PageAsUiEditor } from './editors/pageAsUi';
 import { openPage, resolveCommand, searchCommand } from './commands/search';
 import { ReviewController } from './review';
 import { LiveCoordinator } from './live';
+import { RunController } from './runs/controller';
+import { ThreadController } from './thread/controller';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -21,6 +23,8 @@ export interface EscurelApi {
   awaiting: AwaitingTree;
   review: ReviewController;
   live: LiveCoordinator;
+  threads: ThreadController;
+  runs: RunController;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi {
@@ -54,6 +58,8 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     () => awaiting.refresh(),
   );
   const live = LiveCoordinator.register(context, services, { inbox, awaiting });
+  const threads = ThreadController.register(context, services);
+  const runs = RunController.register(context, services);
   context.subscriptions.push(
     services.onDidChange(() => {
       knowledge.refresh();
@@ -119,12 +125,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
         return undefined;
       },
     ),
-    vscode.commands.registerCommand('escurel.openThread', () =>
-      vscode.window.showInformationMessage('escurel: the Thread view arrives in M3.'),
-    ),
-    vscode.commands.registerCommand('escurel.openRun', () =>
-      vscode.window.showInformationMessage('escurel: run detail arrives in M3.'),
-    ),
+
     vscode.commands.registerCommand('escurel.startSkill', () =>
       vscode.window.showInformationMessage(
         'escurel: starting a skill arrives with M4 (Runner and starting skills).',
@@ -132,7 +133,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     ),
   );
   log().info('escurel: activated');
-  return { services, knowledge, inbox, awaiting, review, live };
+  return { services, knowledge, inbox, awaiting, review, live, threads, runs };
 }
 
 export function deactivate(): void {}

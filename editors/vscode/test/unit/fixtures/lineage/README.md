@@ -27,10 +27,9 @@ emitted the cascade hop.
 | file | recording | what it is |
 |---|---|---|
 | `lineage-event-run-changeset-draft.json` | A | `list_lineage` for a single-skill review run a human promoted: event → run → changeset → draft. |
-| `lineage-cascade.json` | B | `list_lineage`, all node types, for the cross-skill run above, including the hop `cascade:<draft_id>` whose parent is the RUN. |
-| `run-events.json` | B | `list_events { run_id }` for that run. Carries review transitions as well as `escurel:run` rows, because they share the run id. |
-| `events-cascade-root.json` | B | `list_events { root_event_id, include_system: true }`. |
-| `run-tool-calls-page1.json`, `-page2.json` | B | `get_run_tool_calls` with `limit: 2`. |
+| `lineage-cascade.json`, `events-cascade-root.json` | B1 | one cross-skill run: `list_lineage` with all node types, including the hop `cascade:<draft_id>` whose parent is the RUN, and `list_events { root_event_id, include_system: true }` for the same root. |
+| `run-events.json`, `run-tool-calls-page1.json`, `-page2.json` | B2 | a **different run**: `list_events { run_id }` (carries review transitions as well as `escurel:run` rows, because they share the run id) and `get_run_tool_calls` with `limit: 2`. Its ids do not match B1's. |
+| `run-detail-lineage.json`, `run-detail-events.json`, `run-detail-tool-calls-page1.json`, `-page2.json` | D | one run recorded WHOLE: the lineage, the run's events and both tool-call pages agree on the run id and the root. Use this set for anything that joins them. |
 | `lineage-paged-full.json` | C | the unpaged `list_lineage` of recording C, taken after stopping the runner so the log could not move. |
 | `lineage-paged-page1..9.json` | C | the same lineage with `limit: 1`, every page until `next_cursor` was absent. |
 
@@ -40,4 +39,4 @@ first appears `processed` on page 6, and a changeset's parent is the root on ear
 because its run is not on them. Folding all nine pages in any order must reproduce the
 full read exactly.
 
-Recordings B and C are separate runs, so their ids differ. Keep each set together.
+Every recording is a separate run, so ids differ between sets. Keep each set together, and never join a file from one set with a file from another: B1 and B2 were recorded separately, which is exactly how a test once joined two different runs without noticing.
