@@ -307,6 +307,8 @@ describe('thread layout and focus graph', () => {
 
       expect(parent).toBeDefined();
       expect(child).toBeDefined();
+      // A child stacked in its parent's own column is wired top to bottom, below.
+      if (parent.column === child.column) continue;
 
       // Expected parent right-middle and child left-middle
       const expectedStartX = parent.x + parent.width;
@@ -472,5 +474,30 @@ describe('layout over the real model', () => {
     const hop = view.nodes.find((n) => n.kind === 'event' && n.parent === run.id)!;
     const col = (id: string) => layout.nodes.find((n) => n.id === id)!.column;
     expect(col(hop.id)).toBeGreaterThan(col(run.id));
+  });
+});
+
+describe('wires inside one column', () => {
+  it('runs a changeset stacked under its run from the run bottom to the changeset top', () => {
+    // The changeset shares its run's column (the mock stacks them), so a right-edge to
+    // left-edge wire would leave the run's right side, loop out and double back across the
+    // card. Seen in the first screenshot of the canvas; no geometry test had a stacked pair.
+    const view = toThreadView(
+      foldLineage([
+        JSON.parse(
+          readFileSync(join(__dirname, 'fixtures', 'lineage', 'lineage-cascade.json'), 'utf8'),
+        ),
+      ]),
+    );
+    const layout = layoutThread(view, new Set());
+    const at = new Map(layout.nodes.map((n) => [n.id, n]));
+    const run = view.nodes.find((n) => n.kind === 'run')!;
+    const changeset = view.nodes.find((n) => n.kind === 'changeset')!;
+    const wire = layout.wires.find((w) => w.from === run.id && w.to === changeset.id)!;
+    const a = at.get(run.id)!;
+    const b = at.get(changeset.id)!;
+    expect(a.column).toBe(b.column);
+    const x = a.x + a.width / 2;
+    expect(wire.path).toBe(`M ${x} ${a.y + a.height} L ${b.x + b.width / 2} ${b.y}`);
   });
 });

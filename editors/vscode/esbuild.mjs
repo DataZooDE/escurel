@@ -78,6 +78,7 @@ const harness = {
   entryPoints: {
     harness: 'test/visual/harness/main.ts',
     'run-harness': 'test/visual/harness/run.ts',
+    'thread-harness': 'test/visual/harness/thread.ts',
   },
   bundle: true,
   platform: 'browser',
