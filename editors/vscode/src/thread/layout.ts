@@ -9,7 +9,10 @@ import type {
 } from '../shared/protocol';
 
 export const CARD_WIDTH = 240;
-export const CARD_HEIGHT = 80;
+// Tall enough for the most a card carries: title, subtitle, four meta lines and a row of
+// chips. At 80 the run card — the fullest — clipped its state chip and its summary, which
+// only a screenshot showed.
+export const CARD_HEIGHT = 128;
 export const GAP_X = 50;
 export const GAP_Y = 24;
 export const MARGIN = 32;
@@ -276,17 +279,20 @@ export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): 
       continue;
     }
 
-    const x1 = parentLayout.x + parentLayout.width;
-    const y1 = parentLayout.y + parentLayout.height / 2;
-    const x2 = childLayout.x;
-    const y2 = childLayout.y + childLayout.height / 2;
+    // A child in its parent's own column — a changeset under its run — hangs below it, so the
+    // wire goes bottom to top. Right edge to left edge would leave the parent's right side,
+    // loop out and double back across the card.
+    const sameColumn = parentLayout.column === childLayout.column;
+    const path = sameColumn
+      ? `M ${parentLayout.x + parentLayout.width / 2} ${parentLayout.y + parentLayout.height} L ${childLayout.x + childLayout.width / 2} ${childLayout.y}`
+      : cubicBezierPath(
+          parentLayout.x + parentLayout.width,
+          parentLayout.y + parentLayout.height / 2,
+          childLayout.x,
+          childLayout.y + childLayout.height / 2,
+        );
 
-    wires.push({
-      from: child.parent,
-      to: child.id,
-      path: cubicBezierPath(x1, y1, x2, y2),
-      style: wireStyle(child),
-    });
+    wires.push({ from: child.parent, to: child.id, path, style: wireStyle(child) });
   }
 
   const visibleCards = laidOutNodes.filter((n) => !n.hidden);
