@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>escurel run detail visual harness</title>
+    <script>
+      const theme = new URLSearchParams(location.search).get('theme') ?? 'dark';
+      document.write(`<link rel="stylesheet" href="../tokens/${theme}.css" />`);
+      document.documentElement.dataset.theme = theme;
+    </script>
+    <style>
+      body {
+        margin: 0;
+        padding: 16px;
+        background: var(--vscode-editor-background);
+        color: var(--vscode-foreground);
+        font-family: var(--vscode-font-family);
+      }
+    </style>
+  </head>
+  <body>
+    <escurel-run-detail></escurel-run-detail>
+    <script type="module" src="../../../dist/test/visual/run-harness.js"></script>
+  </body>
+</html>
