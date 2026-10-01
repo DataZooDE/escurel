@@ -10,5 +10,6 @@ cascade:
 # customer-order
 
 `cascade: { target: produced }` routes the follow-on event to the order that was just written,
-which is the third condition for a hop. The thread then shows the cascade as a second event
-under the run that caused it.
+so the next hop's run reaches for that instance. It does not decide WHETHER there is a hop —
+a cross-skill write does, filtered by the parent's `actions` — so removing it leaves the thread
+unchanged. The thread shows the hop as a second event under the run that caused it.

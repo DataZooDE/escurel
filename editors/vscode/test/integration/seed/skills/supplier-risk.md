@@ -11,6 +11,8 @@ actions: [customer-order]
 Fold the incoming signal into the customer-order instance it names.
 
 `autonomy: review`, so the runner holds its write as a draft and a human's promotion is what
-publishes it. The change lands on a `customer-order`, a DIFFERENT skill from this one, and
-`actions` lists it: both are conditions for the promotion to cascade (see
-`runner-core/src/cascade.rs`).
+publishes it. The write lands on a `customer-order`, a DIFFERENT skill from this one: that is
+what makes the promotion a cascade hop (a same-skill write never cascades). `actions` is an
+allow-list on top of that — empty means any skill, and one that does not name `customer-order`
+BLOCKS the hop, which is how the integration test proves it is looking at a real cascade
+(`runner-core/src/cascade.rs`).
