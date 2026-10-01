@@ -158,6 +158,15 @@ suite('M2', () => {
       `description must count drafts, got: ${csRows[0]!.description}`,
     );
 
+    // Named by what it changes, from the gateway's real `target_page_ids`: if those ever came
+    // back empty the label would silently fall back to the ULID, which no unit test would see.
+    assert.notEqual(csRows[0]!.label, csId, 'a reviewer must not be shown a bare ULID');
+    assert.match(
+      csRows[0]!.label,
+      /\+2$/,
+      `three pages: first named, then "+2": ${csRows[0]!.label}`,
+    );
+
     // TreeView badge reflects the total count of awaiting queue entries.
     assert.equal(api.awaiting.badge?.value, rows.length);
   });

@@ -34,6 +34,16 @@ export interface ConfirmGateRow {
 export type AwaitingRow = ChangesetRow | DraftRow | ConfirmGateRow;
 
 /**
+ * What a reviewer recognises a changeset by: the page it changes (and how many more), not its
+ * ULID. The id stays on the row, because promote and discard are addressed by it.
+ */
+function changesetLabel(changeset: Changeset): string {
+  const [first, ...rest] = changeset.target_page_ids;
+  if (!first) return changeset.changeset_id;
+  return rest.length > 0 ? `${pageSlug(first)} +${rest.length}` : pageSlug(first);
+}
+
+/**
  * A changeset is decided as a whole, so the row counts its drafts rather
  * than naming one of them.
  */
@@ -41,7 +51,7 @@ export function changesetRow(changeset: Changeset): ChangesetRow {
   return {
     kind: 'changeset',
     id: changeset.changeset_id,
-    label: changeset.changeset_id,
+    label: changesetLabel(changeset),
     description: `${pluralise(changeset.drafts, 'draft')} · ${changeset.author}`,
     timestamp: changeset.created_at ?? '',
     changeset,

@@ -52,7 +52,7 @@ export interface PageModel {
   summary?: string;
   body: string;
   lastWrittenBy?: string | null;
-  /** False until BACKEND_GAPS PR-1 (live personal drafts) lands. */
+  /** The form itself is read-only; editing happens in the Markdown view, held as a personal draft. */
   editable: boolean;
   actions: ActionView[];
   /** Absent when no run has finished against this page. */

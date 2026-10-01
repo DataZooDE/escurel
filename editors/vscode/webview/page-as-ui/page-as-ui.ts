@@ -228,8 +228,12 @@ export class EscurelPageAsUi extends LitElement {
 
       <section class="fields">
         ${m.fields.map((f) => html`<escurel-field .field=${f} ?editable=${m.editable}></escurel-field>`)}
-        <p class="muted">
-          ${m.editable ? 'Editing a field updates your live draft.' : 'Editing arrives with live personal drafts (backend PR-1); until then this form is read-only.'}
+        <p class="muted readonly-note">
+          ${
+            m.editable
+              ? 'Editing a field updates your live draft.'
+              : 'This form is read-only. Switch to Markdown to edit; a save is held as your draft until you promote it.'
+          }
         </p>
       </section>
 

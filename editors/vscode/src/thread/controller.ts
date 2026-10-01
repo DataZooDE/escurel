@@ -20,6 +20,8 @@ interface Open {
   panel: vscode.WebviewPanel;
   reload: () => void;
   select: (nodeId: string) => void;
+  toggleCollapse: (nodeId: string) => void;
+  expandAll: () => void;
   dispose: () => void;
 }
 
@@ -35,9 +37,17 @@ export class ThreadController implements vscode.Disposable {
   private readonly loaded = new vscode.EventEmitter<{
     rootEventId: string;
     thread?: LoadedThread;
+    /** The canvas's collapsed cards, so the outline can show the same subtrees closed. */
+    collapsed?: ReadonlySet<string>;
   }>();
   /** The outline follows whichever thread the user last looked at. */
   readonly onDidLoad = this.loaded.event;
+  private readonly collapseChanged = new vscode.EventEmitter<{
+    rootEventId: string;
+    collapsed: ReadonlySet<string>;
+  }>();
+  /** A card was collapsed or expanded on the canvas (or "Expand all"). */
+  readonly onDidCollapse = this.collapseChanged.event;
   private readonly selected = new vscode.EventEmitter<{ rootEventId: string; nodeId: string }>();
   readonly onDidSelect = this.selected.event;
 
@@ -58,6 +68,20 @@ export class ThreadController implements vscode.Disposable {
       vscode.commands.registerCommand('escurel.openThread', (arg?: unknown) => c.open(arg)),
     );
     return c;
+  }
+
+  /**
+   * Collapse or expand a card's subtree, exactly as a click on the canvas does (the webview's
+   * message calls the same function). Public so a caller that holds the controller — the
+   * integration suite — can do it without a click in a webview it cannot reach.
+   */
+  toggleCollapse(rootEventId: string, nodeId: string): void {
+    this.panels.get(rootEventId)?.toggleCollapse(nodeId);
+  }
+
+  /** The toolbar's "Expand all". */
+  expandAll(rootEventId: string): void {
+    this.panels.get(rootEventId)?.expandAll();
   }
 
   /** Move the canvas's selection, from the outline. */
@@ -128,6 +152,16 @@ export class ThreadController implements vscode.Disposable {
       // not be told apart in the tab bar.
       panel.title = `Thread · ${root?.subtitle || root?.title || rootEventId.slice(-6)}`;
     };
+    const toggleCollapse = (nodeId: string) => {
+      if (!collapsed.delete(nodeId)) collapsed.add(nodeId);
+      render();
+      this.collapseChanged.fire({ rootEventId, collapsed: new Set(collapsed) });
+    };
+    const expandAll = () => {
+      collapsed.clear();
+      render();
+      this.collapseChanged.fire({ rootEventId, collapsed: new Set(collapsed) });
+    };
     const load = async () => {
       try {
         const result = await loadThread(this.services.client, rootEventId);
@@ -137,7 +171,7 @@ export class ThreadController implements vscode.Disposable {
         if (disposed) return;
         current = result;
         render();
-        this.loaded.fire({ rootEventId, thread: current });
+        this.loaded.fire({ rootEventId, thread: current, collapsed: new Set(collapsed) });
       } catch (err) {
         post({ type: 'thread-error', message: describeError(err), canReconnect: true });
       }
@@ -184,11 +218,9 @@ export class ThreadController implements vscode.Disposable {
           );
         }
         case 'toggle-collapse':
-          if (!collapsed.delete(m.nodeId)) collapsed.add(m.nodeId);
-          return render();
+          return toggleCollapse(m.nodeId);
         case 'expand-all':
-          collapsed.clear();
-          return render();
+          return expandAll();
       }
     });
 
@@ -196,6 +228,8 @@ export class ThreadController implements vscode.Disposable {
       panel,
       reload: () => void load(),
       select: (nodeId) => post({ type: 'thread-select', nodeId }),
+      toggleCollapse,
+      expandAll,
       dispose: () => {
         disposed = true;
         clearTimeout(timer);
@@ -208,6 +242,7 @@ export class ThreadController implements vscode.Disposable {
   dispose(): void {
     for (const p of [...this.panels.values()]) p.panel.dispose();
     this.loaded.dispose();
+    this.collapseChanged.dispose();
     this.selected.dispose();
     log().info('escurel: thread panels closed');
   }

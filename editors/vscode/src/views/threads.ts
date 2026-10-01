@@ -58,8 +58,14 @@ export class ThreadsTree implements vscode.TreeDataProvider<OutlineRow> {
     return this.view ? undefined : THREADS_EMPTY_MESSAGE;
   }
 
-  setThread(view: ThreadView | undefined): void {
+  /**
+   * `collapsed` is the canvas's: the outline shows the same subtrees closed. A row stays
+   * expandable (its children are kept in the model), so closing one on the canvas never hides
+   * anything from someone using the tree.
+   */
+  setThread(view: ThreadView | undefined, collapsed: ReadonlySet<string> = new Set()): void {
     this.view = view;
+    this.collapsed = collapsed;
     this.rows = view ? outlineRows(view, this.collapsed) : [];
     this.parents.clear();
     const index = (rows: OutlineRow[], parent?: OutlineRow) => {
@@ -70,6 +76,11 @@ export class ThreadsTree implements vscode.TreeDataProvider<OutlineRow> {
     };
     index(this.rows);
     this.refresh();
+  }
+
+  /** The canvas collapsed or expanded something; the open thread is unchanged. */
+  setCollapsed(collapsed: ReadonlySet<string>): void {
+    if (this.view) this.setThread(this.view, collapsed);
   }
 
   /** The row for a node id, for `TreeView.reveal`. */

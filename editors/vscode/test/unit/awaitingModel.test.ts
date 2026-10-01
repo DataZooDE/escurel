@@ -11,7 +11,7 @@ import {
 
 describe('awaitingModel', () => {
   describe('changesetRow', () => {
-    it('sets label to changeset_id and description to "N drafts · <author>"', () => {
+    it('labels a one-page changeset by that page and describes it as "N drafts · <author>"', () => {
       const cs: Changeset = {
         changeset_id: 'cs-42',
         run_id: 'run-1',
@@ -26,9 +26,39 @@ describe('awaitingModel', () => {
       const row = changesetRow(cs);
       expect(row.kind).toBe('changeset');
       expect(row.id).toBe('cs-42');
-      expect(row.label).toBe('cs-42');
+      expect(row.label).toBe('alpina-biotech');
       expect(row.description).toBe('3 drafts · agt:lead-scorer');
       expect(row.timestamp).toBe('2026-09-25T10:00:00Z');
+    });
+
+    // A reviewer recognises a changeset by what it changes, not by its ULID. The id stays on the
+    // row (and in the tooltip) because it is what promote and discard are addressed by.
+    const withPages = (pages: string[]): Changeset => ({
+      changeset_id: '01M3CAHP14HT8AGG0CH60H73HM',
+      run_id: null,
+      author: 'agt:lead-scorer',
+      status: 'open',
+      drafts: pages.length,
+      target_page_ids: pages,
+      event_ids: [],
+      created_at: '2026-09-25T10:00:00Z',
+      root_event_id: null,
+    });
+
+    it('labels a changeset across several pages by the first, and how many more', () => {
+      const row = changesetRow(
+        withPages([
+          'markdown/instances/customer__alpina-biotech.md',
+          'markdown/instances/customer__brandt.md',
+          'markdown/instances/deal__q4.md',
+        ]),
+      );
+      expect(row.label).toBe('alpina-biotech +2');
+      expect(row.id).toBe('01M3CAHP14HT8AGG0CH60H73HM');
+    });
+
+    it('falls back to the id when the changeset names no page', () => {
+      expect(changesetRow(withPages([])).label).toBe('01M3CAHP14HT8AGG0CH60H73HM');
     });
 
     it('formats singular "1 draft · <author>" when changeset holds exactly one draft', () => {

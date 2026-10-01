@@ -17,6 +17,7 @@ import { ThreadController } from './thread/controller';
 import { buildInspectors } from './thread/inspector';
 import { toThreadView } from './thread/threadModel';
 import { ThreadsTree } from './views/threads';
+import type { OutlineRow } from './views/threadsModel';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -64,27 +65,43 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
   );
 
   // The outline follows the thread the user last looked at; closing that panel empties it.
+  // A row can be rebuilt (a live reload, a collapse) between asking the tree to reveal it and
+  // the tree resolving it, and `reveal` then rejects with 'Cannot resolve tree item'. Nothing
+  // waits on a reveal, so that rejection was surfacing as an unhandled one.
+  const revealQuietly = (
+    row: OutlineRow,
+    options: { expand?: number | boolean; select?: boolean; focus?: boolean },
+  ): void => {
+    void threadsView.reveal(row, options).then(undefined, () => undefined);
+  };
   let outlineRoot: string | undefined;
   context.subscriptions.push(
-    threads.onDidLoad(({ rootEventId, thread }) => {
+    threads.onDidLoad(({ rootEventId, thread, collapsed }) => {
       if (thread) {
         outlineRoot = rootEventId;
-        threadsTree.setThread(toThreadView(thread));
+        threadsTree.setThread(toThreadView(thread), collapsed);
         // A row that gains children while the thread is live stays collapsed, so a run that
         // arrives would be hidden until the user noticed and expanded it. Seen in a real
-        // window: the canvas showed the new run and the outline did not.
+        // window: the canvas showed the new run and the outline did not. Skipped once the
+        // user has collapsed something on the canvas: expanding three levels would reopen it.
         const root = threadsTree.rowFor(rootEventId);
-        if (root) void threadsView.reveal(root, { expand: 3, select: false, focus: false });
+        if (root && !collapsed?.size) {
+          revealQuietly(root, { expand: 3, select: false, focus: false });
+        }
       } else if (outlineRoot === rootEventId) {
         outlineRoot = undefined;
         threadsTree.setThread(undefined);
       }
       threadsView.message = threadsTree.message;
     }),
+    // Canvas → outline: a card collapsed on the canvas is collapsed in the tree.
+    threads.onDidCollapse(({ rootEventId, collapsed }) => {
+      if (rootEventId === outlineRoot) threadsTree.setCollapsed(collapsed);
+    }),
     // Canvas → outline: a card selected on the canvas is revealed in the tree.
     threads.onDidSelect(({ rootEventId, nodeId }) => {
       const row = rootEventId === outlineRoot ? threadsTree.rowFor(nodeId) : undefined;
-      if (row) void threadsView.reveal(row, { select: true, focus: false });
+      if (row) revealQuietly(row, { select: true, focus: false });
     }),
     // Outline → canvas: a row selected in the tree selects and scrolls to its card.
     threadsView.onDidChangeSelection((e) => {
