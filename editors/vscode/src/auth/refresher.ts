@@ -29,8 +29,24 @@ export interface RefresherDeps {
 export class TokenRefresher implements TokenSource {
   private inflight?: Promise<string | undefined>;
 
+  private fixed?: { token: string; subject: string };
+
+  /**
+   * Sign in with a bearer someone else already holds, bypassing the store and every refresh.
+   *
+   * For the integration suite, whose bearer comes from a test issuer. It is a METHOD, not a
+   * setting or an environment variable, on purpose: it is reachable only by code that
+   * already holds the extension's API object, so a running install has no way to be handed a
+   * credential from outside. Long-lived sockets are told, so they reconnect with it.
+   */
+  useStaticToken(token: string, subject: string): void {
+    this.fixed = { token, subject };
+    this.notify(token);
+  }
+
   /** The stored session's subject; `undefined` in the no-verifier mode. */
   async subject(): Promise<string | undefined> {
+    if (this.fixed) return this.fixed.subject;
     return (await this.deps.load())?.subject;
   }
   private readonly listeners = new Set<(token: string | undefined) => void>();
@@ -43,6 +59,7 @@ export class TokenRefresher implements TokenSource {
   }
 
   async get(): Promise<string | undefined> {
+    if (this.fixed) return this.fixed.token;
     const session = await this.deps.load();
     if (!session) return undefined;
     const exp = decodeExp(session.accessToken);
@@ -59,6 +76,9 @@ export class TokenRefresher implements TokenSource {
 
   /** Force a refresh (after a 401 the gateway answered on a token we thought fresh). */
   async invalidate(): Promise<string | undefined> {
+    // A fixed token cannot be refreshed: answering with it again is the honest result, and a
+    // 401 on it is the gateway's verdict, not something to retry into a loop.
+    if (this.fixed) return this.fixed.token;
     const session = await this.deps.load();
     if (!session?.refreshToken) {
       await this.deps.save(undefined);

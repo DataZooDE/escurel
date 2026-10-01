@@ -80,3 +80,40 @@ describe('TokenRefresher', () => {
     expect(cleared).toBe(true);
   });
 });
+
+describe('TokenRefresher.useStaticToken', () => {
+  // The integration suite signs in with a bearer from a test issuer. The seam is a method on
+  // an object only code holding the extension's API can reach: no environment variable and no
+  // setting reads a credential, so a running install has no way to be handed one.
+  const never = () => {
+    throw new Error('the store must not be consulted once a static token is set');
+  };
+  const refresher = () =>
+    new TokenRefresher({
+      load: async () => never(),
+      save: async () => never(),
+      refresh: async () => never(),
+    });
+
+  it('answers with the token and the subject, without touching the store', async () => {
+    const r = refresher();
+    r.useStaticToken('bearer-1', 'alice');
+    expect(await r.get()).toBe('bearer-1');
+    expect(await r.subject()).toBe('alice');
+  });
+
+  it('tells long-lived sockets, so they reconnect with the new bearer', async () => {
+    const r = refresher();
+    const seen: (string | undefined)[] = [];
+    r.onDidRefresh((t) => seen.push(t));
+    r.useStaticToken('bearer-1', 'alice');
+    r.useStaticToken('bearer-2', 'alice');
+    expect(seen).toEqual(['bearer-1', 'bearer-2']);
+  });
+
+  it('does not try to refresh a token that cannot be refreshed', async () => {
+    const r = refresher();
+    r.useStaticToken('bearer-1', 'alice');
+    expect(await r.invalidate()).toBe('bearer-1');
+  });
+});
