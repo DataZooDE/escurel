@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 import type { RunView } from '../../../src/shared/protocol';
 import type { LoadedThread } from '../../../src/thread/loadThread';
-import { activate, discardOpenDrafts, freeOrder, wait } from './support';
+import { activate, discardOpenDrafts, freeOrder, until, wait } from './support';
 
 function once<T>(event: vscode.Event<T>, ms = 30_000): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -30,6 +30,14 @@ suite('thread and run detail', () => {
     this.timeout(120_000);
     if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
     api = await activate();
+  });
+
+  // After EVERY test, not only at the end: a review run leaves its draft open, and the echo
+  // harness folds the oldest inbox event first. The next test's run would reach that page,
+  // hit the one-draft-per-page rule and dead-letter, which reads exactly like a runner that
+  // never started.
+  teardown(async () => {
+    if (api) await discardOpenDrafts(api);
   });
 
   suiteTeardown(async () => {
@@ -75,6 +83,10 @@ suite('thread and run detail', () => {
       vscode.window.tabGroups.all
         .flatMap((g) => g.tabs)
         .filter((t) => t.label.startsWith('Thread'));
+    // The editor model learns of a new panel a moment after the host has loaded its thread, so
+    // the tab is waited for rather than counted at once (this assertion failed intermittently,
+    // `0 !== 1`, with the thread loaded and the panel open). Then exactly one.
+    await until(() => (tabs().length > 0 ? true : undefined), 5_000, 'the thread tab to register');
     assert.equal(tabs().length, 1);
     // Named for the EVENT, not the skill every thread from it shares.
     // The tab label follows `panel.title` a moment later, so wait for it rather than race it.
@@ -112,6 +124,47 @@ suite('thread and run detail', () => {
     // The run REPORTS calls; this harness cannot expose per-call rows (no run-bound token).
     assert.ok((view.toolCallCount ?? 0) > 0, 'the run reports its tool calls');
     assert.equal(view.calls.length, view.toolCallCount, 'and every one of them has a row');
+  });
+
+  test('collapsing a card on the canvas collapses its row in the outline, and Expand all restores it', async function () {
+    this.timeout(180_000);
+    const page = await freeOrder(api);
+    const e1 = await api.services.client.captureEvent({
+      label_skill: 'supplier-risk',
+      mime: 'text/plain',
+      source: 'integration',
+      title: 'Collapse sync',
+      body: 'Meier-Guss: delivery slips.',
+      instance_page_id: page,
+    });
+    const root = e1.event_id;
+    let runId: string | undefined;
+    for (let i = 0; i < 100 && !runId; i += 1) {
+      const l = await api.services.client.listLineage({ root_event_id: root });
+      const run = l.nodes.find((n) => n.type === 'run' && n.state !== 'running');
+      const hasChangeset = l.nodes.some((n) => n.type === 'changeset');
+      runId = run && hasChangeset ? run.id : undefined;
+      if (!runId) await wait(400);
+    }
+    assert.ok(runId, 'the run must finish holding a changeset, so there is a subtree to collapse');
+
+    const loading = once<{ rootEventId: string; thread?: LoadedThread }>(api.threads.onDidLoad);
+    await vscode.commands.executeCommand('escurel.openThread', root);
+    await loading;
+    const state = () => api.threadsTree.rowFor(runId!)?.collapsibleState;
+    assert.equal(state(), 'expanded', 'a run with a changeset beneath it starts open');
+
+    api.threads.toggleCollapse(root, runId);
+    assert.equal(
+      state(),
+      'collapsed',
+      'collapsing the card on the canvas collapses its outline row',
+    );
+    // The rows beneath it are still in the model, so the user can expand the row on demand.
+    assert.ok(api.threadsTree.rowFor(runId)!.children.length > 0);
+
+    api.threads.expandAll(root);
+    assert.equal(state(), 'expanded', 'Expand all restores it');
   });
 
   test('closing the thread empties the outline again', async function () {
