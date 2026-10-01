@@ -17,7 +17,7 @@ import { ThreadController } from './thread/controller';
 import { buildInspectors } from './thread/inspector';
 import { toThreadView } from './thread/threadModel';
 import { ThreadsTree } from './views/threads';
-import type { OutlineRow } from './views/threadsModel';
+import { expandableRows, type OutlineRow } from './views/threadsModel';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -82,11 +82,10 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
         threadsTree.setThread(toThreadView(thread), collapsed);
         // A row that gains children while the thread is live stays collapsed, so a run that
         // arrives would be hidden until the user noticed and expanded it. Seen in a real
-        // window: the canvas showed the new run and the outline did not. Skipped once the
-        // user has collapsed something on the canvas: expanding three levels would reopen it.
-        const root = threadsTree.rowFor(rootEventId);
-        if (root && !collapsed?.size) {
-          revealQuietly(root, { expand: 3, select: false, focus: false });
+        // window: the canvas showed the new run and the outline did not. Every row the canvas
+        // has NOT collapsed is held open; one the user collapsed there is left alone.
+        for (const row of expandableRows(threadsTree.getChildren())) {
+          revealQuietly(row, { expand: true, select: false, focus: false });
         }
       } else if (outlineRoot === rootEventId) {
         outlineRoot = undefined;

@@ -42,3 +42,14 @@ export function outlineRows(view: ThreadView, collapsed: ReadonlySet<string>): O
   const root = byId.get(view.rootEventId);
   return root ? [visit(root)] : [];
 }
+
+/**
+ * The rows the tree should hold open: every row with children that the canvas has not
+ * collapsed, parents first. A collapsed row, and everything beneath it, is left as the user
+ * set it.
+ */
+export function expandableRows(rows: OutlineRow[]): OutlineRow[] {
+  return rows.flatMap((row) =>
+    row.collapsibleState === 'expanded' ? [row, ...expandableRows(row.children)] : [],
+  );
+}

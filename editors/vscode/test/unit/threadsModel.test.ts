@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ListLineageResponse } from '../../src/client/types';
 import { focusGraph, layoutThread } from '../../src/thread/layout';
 import { foldLineage, toThreadView } from '../../src/thread/threadModel';
-import { outlineRows } from '../../src/views/threadsModel';
+import { expandableRows, outlineRows } from '../../src/views/threadsModel';
 import lineage from './fixtures/lineage/lineage-cascade.json';
 
 function recorded() {
@@ -58,5 +58,31 @@ describe('outline rows carry what the tree needs to show them truthfully', () =>
   it('keeps the node kind, so each row can have its own icon', () => {
     const kinds = new Set(flat(rowsOf()).map((r) => r.kind));
     expect(kinds).toEqual(new Set(['event', 'run', 'changeset', 'draft']));
+  });
+});
+
+describe('expandableRows', () => {
+  // A live thread gains rows. A row that gains its first child stays collapsed in the tree, so
+  // the host expands every row the CANVAS has not collapsed. Skipping all of it whenever
+  // anything is collapsed would hide a new run behind an unrelated collapsed card.
+  const ids = (rows: { id: string }[]) => rows.map((r) => r.id);
+  const idOf = (kind: string) => recorded().nodes.find((n) => n.kind === kind)!.id;
+
+  it('lists every row that has children, parents first, when nothing is collapsed', () => {
+    const view = recorded();
+    const rows = expandableRows(outlineRows(view, new Set()));
+    expect(ids(rows)).toEqual([view.rootEventId, idOf('run'), idOf('changeset')]);
+  });
+
+  it('leaves a collapsed row and everything beneath it alone', () => {
+    const view = recorded();
+    const rows = expandableRows(outlineRows(view, new Set([idOf('run')])));
+    expect(ids(rows)).toEqual([view.rootEventId]);
+  });
+
+  it('keeps expanding the branches that are NOT collapsed', () => {
+    const view = recorded();
+    const rows = expandableRows(outlineRows(view, new Set([idOf('changeset')])));
+    expect(ids(rows)).toEqual([view.rootEventId, idOf('run')]);
   });
 });
