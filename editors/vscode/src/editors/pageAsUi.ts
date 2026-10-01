@@ -4,6 +4,7 @@ import { describeError } from '../errors';
 import { pageIdFromPath } from '../fs/read';
 import { log } from '../log';
 import { buildPageModel } from '../shared/page';
+import { safePost } from '../shared/safePost';
 import { findThreadStrip } from '../shared/threadStrip';
 import type { HostToWebview, WebviewToHost } from '../shared/protocol';
 
@@ -49,7 +50,7 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview')],
     };
     panel.webview.html = this.html(panel.webview);
-    const post = (m: HostToWebview) => void panel.webview.postMessage(m);
+    const post = (m: HostToWebview) => safePost(panel, m);
     const load = async () => {
       if (!pageId)
         return post({ type: 'error', message: `not an escurel page: ${doc.uri.toString()}` });

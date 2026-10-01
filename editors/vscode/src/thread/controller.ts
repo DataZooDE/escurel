@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { InspectorView, ThreadHostToWebview, ThreadWebviewToHost } from '../shared/protocol';
+import { safePost } from '../shared/safePost';
 import type { Services } from '../services';
 import { describeError } from '../errors';
 import { LiveViewSocket } from '../liveView';
@@ -129,10 +130,8 @@ export class ThreadController implements vscode.Disposable {
 
     const post = (m: ThreadHostToWebview) => {
       if (disposed) return;
-      // The panel can be closed between the check above and the delivery: `postMessage` then
-      // rejects with 'Webview is disposed', which nobody is waiting on. Swallowing it here is
-      // the point: the message was for a view that no longer exists.
-      panel.webview.postMessage(m).then(undefined, () => undefined);
+      // The panel can be closed between the check above and the delivery; see `safePost`.
+      safePost(panel, m);
     };
     // Layout is cheap and depends on `collapsed`, so collapsing never refetches.
     const render = () => {

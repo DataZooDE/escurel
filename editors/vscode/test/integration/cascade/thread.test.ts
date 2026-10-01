@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 import type { RunView } from '../../../src/shared/protocol';
 import type { LoadedThread } from '../../../src/thread/loadThread';
-import { activate, discardOpenDrafts, freeOrder, wait } from './support';
+import { activate, discardOpenDrafts, freeOrder, until, wait } from './support';
 
 function once<T>(event: vscode.Event<T>, ms = 30_000): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -83,6 +83,10 @@ suite('thread and run detail', () => {
       vscode.window.tabGroups.all
         .flatMap((g) => g.tabs)
         .filter((t) => t.label.startsWith('Thread'));
+    // The editor model learns of a new panel a moment after the host has loaded its thread, so
+    // the tab is waited for rather than counted at once (this assertion failed intermittently,
+    // `0 !== 1`, with the thread loaded and the panel open). Then exactly one.
+    await until(() => (tabs().length > 0 ? true : undefined), 5_000, 'the thread tab to register');
     assert.equal(tabs().length, 1);
     // Named for the EVENT, not the skill every thread from it shares.
     // The tab label follows `panel.title` a moment later, so wait for it rather than race it.
