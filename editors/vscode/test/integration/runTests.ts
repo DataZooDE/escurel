@@ -18,6 +18,8 @@
 // runner binary the cascade run is skipped, not failed.
 //
 //   ESCUREL_TEST_GREP=<regex>   narrow both runs to matching tests
+import type { GatewayInfo } from './gatewayInfo';
+import { runnerEnv } from './runnerEnv';
 import { runTests } from '@vscode/test-electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { cpSync, existsSync, mkdtempSync, openSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -35,16 +37,6 @@ async function waitForHealth(url: string, ms: number): Promise<void> {
     await new Promise((r) => setTimeout(r, 300));
   }
   throw new Error(`escurel-server did not answer /healthz within ${ms} ms`);
-}
-
-/** The one line of JSON `escurel-test-gateway` prints. */
-interface GatewayInfo {
-  gateway_url: string;
-  issuer_url: string;
-  kid: string;
-  signing_key: string;
-  bearer: string;
-  tenant: string;
 }
 
 /** Start the verifying gateway and read its connection line; it stays up until SIGTERM. */
@@ -185,18 +177,7 @@ async function main(): Promise<void> {
       // MINTED mode: no `ESCUREL_RUNNER_TOKEN`; given an issuer, a key id and the signing key
       // the runner signs a token per run, scoped to the agent and carrying the run's identity.
       runner = spawn(runnerBin, [], {
-        env: {
-          ...process.env,
-          ESCUREL_RUNNER_GATEWAY_URL: info.gateway_url,
-          ESCUREL_RUNNER_TENANT: info.tenant,
-          ESCUREL_RUNNER_AUTH_ISSUER: info.issuer_url,
-          ESCUREL_RUNNER_AUTH_KID: info.kid,
-          ESCUREL_RUNNER_AUTH_SIGNING_KEY: info.signing_key,
-          ESCUREL_RUNNER_HARNESS: 'echo',
-          ESCUREL_RUNNER_LISTEN: `127.0.0.1:${basePort + 3}`,
-          ESCUREL_RUNNER_LEDGER_PATH: join(dir, 'ledger.duckdb'),
-          ESCUREL_RUNNER_POLL_INTERVAL: '250ms',
-        },
+        env: runnerEnv(process.env, info, { port: basePort + 3, dir }),
         // A file, not the console: chatty at a 250 ms poll, and when a cascade does not happen
         // this is the only thing that says why.
         stdio: ['ignore', openSync(log, 'a'), openSync(log, 'a')],
