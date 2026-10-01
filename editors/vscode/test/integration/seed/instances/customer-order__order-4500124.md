@@ -1,10 +1,9 @@
 ---
 type: instance
-skill: supplier-risk
+skill: customer-order
 id: order-4500124
 customer: Brandt Maschinenbau AG
 delivery_risk: low
-eta: 2026-10-21
 ---
 
 # Order 4500124

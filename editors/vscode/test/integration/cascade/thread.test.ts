@@ -1,16 +1,13 @@
-// Thread and run detail, end to end in a real VS Code against a real gateway and runner: open
-// the thread for a real run and read what the HOST loaded. The webview is out of reach of
-// the extension host API by design (postMessage is one way), so the host exposes what it
-// loaded and the live-window pass looks at what was drawn.
-//
-// Static-bearer runner, so the lineage is event + run only (see run.test.ts for why).
+// Thread panels, the outline and run detail, in a real VS Code against a real gateway that
+// verifies tokens and a real runner. The webview is out of reach of the extension host API by
+// design (postMessage is one way), so the host exposes what it loaded and the live-window pass
+// looks at what was drawn.
 import * as assert from 'node:assert/strict';
 import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 import type { RunView } from '../../../src/shared/protocol';
 import type { LoadedThread } from '../../../src/thread/loadThread';
-
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+import { activate, discardOpenDrafts, freeOrder, wait } from './support';
 
 function once<T>(event: vscode.Event<T>, ms = 30_000): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -32,24 +29,17 @@ suite('thread and run detail', () => {
   suiteSetup(async function () {
     this.timeout(120_000);
     if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
-    const ext = vscode.extensions.getExtension('datazoo.escurel')!;
-    api = (await ext.activate()) as EscurelApi;
+    api = await activate();
   });
 
   suiteTeardown(async () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-    for (const d of await api.services.client.listDrafts()) {
-      if (d.status === 'open') {
-        await api.services.client
-          .discardDraft({ draft_id: d.draft_id, reason: 'integration cleanup' })
-          .catch(() => undefined);
-      }
-    }
+    if (api) await discardOpenDrafts(api);
   });
 
   test('opening a thread loads its lineage, and its run opens with its facts', async function () {
     this.timeout(180_000);
-    const page = 'markdown/instances/supplier-risk__order-4500131.md';
+    const page = await freeOrder(api);
     const e1 = await api.services.client.captureEvent({
       label_skill: 'supplier-risk',
       mime: 'text/plain',
@@ -76,7 +66,8 @@ suite('thread and run detail', () => {
     assert.ok(thread, 'the host must have loaded a thread');
     assert.equal(thread.truncated, false);
     const types = [...thread.nodes.values()].map((n) => n.type).sort();
-    assert.deepEqual(types, ['event', 'run']);
+    // The whole held proposal: a changeset under the run, a draft under the changeset.
+    assert.deepEqual(types, ['changeset', 'draft', 'event', 'run']);
     assert.equal(thread.nodes.get(runId)?.parent, rootEventId);
 
     // A panel exists for it, and a second open reveals it rather than opening another.
@@ -120,7 +111,7 @@ suite('thread and run detail', () => {
     assert.ok(view.traceId, 'a copyable trace id');
     // The run REPORTS calls; this harness cannot expose per-call rows (no run-bound token).
     assert.ok((view.toolCallCount ?? 0) > 0, 'the run reports its tool calls');
-    assert.equal(view.calls.length, 0, 'per-call detail is not available without run claims');
+    assert.equal(view.calls.length, view.toolCallCount, 'and every one of them has a row');
   });
 
   test('closing the thread empties the outline again', async function () {

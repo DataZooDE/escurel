@@ -18,6 +18,8 @@
 // runner binary the cascade run is skipped, not failed.
 //
 //   ESCUREL_TEST_GREP=<regex>   narrow both runs to matching tests
+import type { GatewayInfo } from './gatewayInfo';
+import { runnerEnv } from './runnerEnv';
 import { runTests } from '@vscode/test-electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { cpSync, existsSync, mkdtempSync, openSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -35,6 +37,35 @@ async function waitForHealth(url: string, ms: number): Promise<void> {
     await new Promise((r) => setTimeout(r, 300));
   }
   throw new Error(`escurel-server did not answer /healthz within ${ms} ms`);
+}
+
+/** Start the verifying gateway and read its connection line; it stays up until SIGTERM. */
+async function startVerifyingGateway(
+  bin: string,
+  seed: string,
+): Promise<{ child: ChildProcess; info: GatewayInfo }> {
+  const child = spawn(bin, ['--tenant', 'vsx', '--seed', seed, '--subject', 'alice'], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const line = await new Promise<string>((resolveLine, reject) => {
+    let buffered = '';
+    const timer = setTimeout(
+      () => reject(new Error('escurel-test-gateway printed nothing in 60 s')),
+      60_000,
+    );
+    child.stdout!.on('data', (chunk: Buffer) => {
+      buffered += chunk.toString();
+      const nl = buffered.indexOf('\n');
+      if (nl >= 0) {
+        clearTimeout(timer);
+        resolveLine(buffered.slice(0, nl));
+      }
+    });
+    child.on('exit', (code) =>
+      reject(new Error(`escurel-test-gateway exited with ${code} before it was ready`)),
+    );
+  });
+  return { child, info: JSON.parse(line) as GatewayInfo };
 }
 
 interface Gateway {
@@ -98,6 +129,8 @@ async function main(): Promise<void> {
   const bin = process.env.ESCUREL_SERVER_BIN ?? join(repo, 'target', 'release', 'escurel-server');
   const runnerBin =
     process.env.ESCUREL_RUNNER_BIN ?? join(repo, 'target', 'release', 'escurel-runner');
+  const gatewayBin =
+    process.env.ESCUREL_TEST_GATEWAY_BIN ?? join(repo, 'target', 'release', 'escurel-test-gateway');
   const grep = process.env.ESCUREL_TEST_GREP ?? '';
   const basePort = 18000 + Math.floor(Math.random() * 900);
 
@@ -117,50 +150,63 @@ async function main(): Promise<void> {
   }
 
   // ── the cascade run ──────────────────────────────────────────────
-  const cascade = startGateway(bin, basePort + 2, join(root, 'test', 'integration', 'seed'));
+  //
+  // Against a gateway that VERIFIES tokens, started by `escurel-test-gateway`: the same
+  // in-process gateway and issuer the Rust suites use, so the claims cannot drift. It has to
+  // verify: only a verified token can prove which run wrote something, so a runner minting
+  // per-run tokens against a gateway with no verifier has its tokens ignored, the agent's draft
+  // carries no run, the lineage never shows the changeset, and promoting never cascades.
   let runner: ChildProcess | undefined;
+  let gateway: ChildProcess | undefined;
   try {
-    await waitForHealth(cascade.url, 60_000);
-
-    // The runner polls the inbox only with a tenant AND a token. This gateway has
-    // no verifier, so it ignores the bearer entirely: the placeholder is what
-    // turns the poller on, not a credential.
-    if (existsSync(runnerBin)) {
-      const log = join(cascade.data, 'runner.log');
+    if (!existsSync(gatewayBin) || !existsSync(runnerBin)) {
+      console.warn(
+        `no ${existsSync(gatewayBin) ? '' : `${gatewayBin} `}${existsSync(runnerBin) ? '' : runnerBin}: the cascade suites will skip themselves`,
+      );
+    }
+    let info: GatewayInfo | undefined;
+    if (existsSync(gatewayBin) && existsSync(runnerBin)) {
+      const started = await startVerifyingGateway(
+        gatewayBin,
+        join(root, 'test', 'integration', 'seed'),
+      );
+      gateway = started.child;
+      info = started.info;
+      const dir = mkdtempSync(join(tmpdir(), 'escurel-vsx-runner-'));
+      const log = join(dir, 'runner.log');
+      // MINTED mode: no `ESCUREL_RUNNER_TOKEN`; given an issuer, a key id and the signing key
+      // the runner signs a token per run, scoped to the agent and carrying the run's identity.
       runner = spawn(runnerBin, [], {
-        env: {
-          ...process.env,
-          ESCUREL_RUNNER_GATEWAY_URL: cascade.url,
-          ESCUREL_RUNNER_TENANT: 'vsx',
-          ESCUREL_RUNNER_TOKEN: 'no-verifier',
-          ESCUREL_RUNNER_HARNESS: 'echo',
-          ESCUREL_RUNNER_LISTEN: `127.0.0.1:${basePort + 3}`,
-          ESCUREL_RUNNER_LEDGER_PATH: join(cascade.data, 'ledger.duckdb'),
-          ESCUREL_RUNNER_POLL_INTERVAL: '250ms',
-        },
-        // Its log goes to a file: chatty at a 250 ms poll, and when a cascade does
-        // not happen this file is the only thing that says why.
+        env: runnerEnv(process.env, info, { port: basePort + 3, dir }),
+        // A file, not the console: chatty at a 250 ms poll, and when a cascade does not happen
+        // this is the only thing that says why.
         stdio: ['ignore', openSync(log, 'a'), openSync(log, 'a')],
       });
       console.log(`runner log: ${log}`);
-    } else {
-      console.warn(`no runner at ${runnerBin}: the cascade suites will skip themselves`);
     }
 
     await runTests({
       version: VSCODE_VERSION,
       extensionDevelopmentPath: root,
       extensionTestsPath: resolve(__dirname, 'cascade', 'index.js'),
-      launchArgs: [workspaceFor(cascade.url), '--disable-extensions', '--disable-workspace-trust'],
+      launchArgs: [
+        workspaceFor(info?.gateway_url ?? 'http://127.0.0.1:1'),
+        '--disable-extensions',
+        '--disable-workspace-trust',
+      ],
       extensionTestsEnv: {
-        ESCUREL_TEST_GATEWAY: cascade.url,
+        ESCUREL_TEST_GATEWAY: info?.gateway_url ?? '',
         ESCUREL_TEST_GREP: grep,
         ESCUREL_TEST_RUNNER: runner ? '1' : '',
+        // The suite hands this to the extension through its API (`useStaticToken`); nothing in
+        // the shipped extension reads it, so a running install cannot be given a credential.
+        ESCUREL_TEST_BEARER: info?.bearer ?? '',
+        ESCUREL_TEST_SUBJECT: 'alice',
       },
     });
   } finally {
     runner?.kill('SIGTERM');
-    cascade.stop();
+    gateway?.kill('SIGTERM');
   }
 }
 
