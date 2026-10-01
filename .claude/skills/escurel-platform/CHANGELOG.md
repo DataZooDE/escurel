@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.80 — `escurel-test-gateway`, a verifying gateway for non-Rust harnesses
+
+- New binary in `escurel-test-support`: starts the gateway and OIDC issuer the Rust suites use,
+  seeds a tenant from a directory, prints one line of JSON (gateway URL, issuer URL, key id,
+  signing key, a ready bearer) and stays up until SIGTERM. For a TypeScript harness that needs
+  tokens checked — chiefly to run a minted-mode runner, since only a run-bound token makes the
+  gateway stamp a `run_id` on an agent's draft. See references/09 § A2.
+
 ## 0.6.79 — `list_lineage` declares the `include` value it always accepted
 
 - `list_lineage`'s `include` enum now declares `tool_calls` alongside
