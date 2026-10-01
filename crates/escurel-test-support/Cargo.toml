@@ -32,8 +32,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 wiremock = "0.6"
+
+[[bin]]
+name = "escurel-test-gateway"
+path = "src/bin/test_gateway.rs"
 
 [lints]
 workspace = true

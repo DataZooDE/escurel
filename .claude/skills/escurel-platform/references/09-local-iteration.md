@@ -148,6 +148,34 @@ one) is paid per *test* rather than per binary. On escurel's own 2-core CI
 runner that made it slower than plain `cargo test`, and faster only on a
 many-core workstation.
 
+### A2. A verifying gateway for a non-Rust harness: `escurel-test-gateway`
+
+A TypeScript (or any non-Rust) integration suite cannot call `EscurelProcess`. When it needs a
+gateway that **checks tokens** — to run a minted-mode runner, or to prove an editor against real
+auth — start the binary the test-support crate ships:
+
+```sh
+cargo build --release -p escurel-test-support --bin escurel-test-gateway
+escurel-test-gateway --tenant vsx --seed path/to/seed [--subject alice]
+# stdout, ONE line, then it stays up until SIGTERM:
+# {"gateway_url":"http://127.0.0.1:…","issuer_url":"http://127.0.0.1:…","kid":"…",
+#  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","tenant":"vsx"}
+```
+
+It is the same in-process gateway and OIDC issuer the Rust suites use, so the claims cannot
+drift from what the gateway expects. `--seed` is a directory of `skills/*.md` and
+`instances/*.md`; each becomes `markdown/skills/<name>.md` / `markdown/instances/<name>.md`
+(flat, so an instance is `<skill>__<id>.md`, as the shipped corpora lay them out). The `bearer`
+is a human's (role `agent`, subject `--subject`): it can read, draft and promote, and it
+expires in ten minutes like every token this issuer mints.
+
+Why a verifying gateway matters, and a verifier-less one cannot stand in for it: **only a token
+can prove which run wrote something.** With no verifier the gateway has no claims at all, so a
+runner's per-run token is ignored, an agent's draft carries no `run_id`, `list_lineage` shows
+the event and the run but never the changeset, and promoting it never cascades. Give a
+minted-mode runner `ESCUREL_RUNNER_AUTH_ISSUER=<issuer_url>`, `ESCUREL_RUNNER_AUTH_KID=<kid>`
+and `ESCUREL_RUNNER_AUTH_SIGNING_KEY=<signing_key>` and leave `ESCUREL_RUNNER_TOKEN` unset.
+
 ## The iterate loop
 
 1. Author/adjust seed pages (`references/07`) and your data model
