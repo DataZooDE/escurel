@@ -21,8 +21,15 @@ RUNNER_BIN="${ESCUREL_RUNNER_BIN:-$REPO/target/release/escurel-runner}"
 CODE="${ESCUREL_DEMO_CODE:-code}"
 
 stop() {
-  # The launcher's pid is not the window's: Electron forks. Match on the throwaway profile.
-  pkill -f -- "--user-data-dir $HOME_DIR/profile" 2>/dev/null || true
+  # The launcher's pid is not the window's: Electron forks, and its MAIN process lists
+  # `--user-data-dir` and the path as separate arguments, so a pattern containing both together
+  # never matches it and every restart left the previous window alive (four of them, found when a
+  # stale one answered the debugging port). Match the profile path alone. The `[p]` keeps this
+  # script's own command line out of the match.
+  pkill -f -- "${HOME_DIR}/[p]rofile" 2>/dev/null || true
+  sleep 2
+  # A window that has been up for hours ignores SIGTERM.
+  pkill -9 -f -- "${HOME_DIR}/[p]rofile" 2>/dev/null || true
   for f in code runner gateway; do
     if [ -f "$HOME_DIR/$f.pid" ]; then
       kill "$(cat "$HOME_DIR/$f.pid")" 2>/dev/null || true
