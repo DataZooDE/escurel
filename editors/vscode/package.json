@@ -146,12 +146,14 @@
       {
         "command": "escurel.pauseDispatch",
         "title": "Pause dispatch",
+        "icon": "$(debug-pause)",
         "category": "Escurel",
         "enablement": "escurel.canAdmin"
       },
       {
         "command": "escurel.resumeDispatch",
         "title": "Resume dispatch",
+        "icon": "$(debug-continue)",
         "category": "Escurel",
         "enablement": "escurel.canAdmin"
       },

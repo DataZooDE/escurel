@@ -404,7 +404,9 @@ describe('a first save whose session cannot be opened', () => {
     };
     const client = {
       listDrafts: vi.fn().mockResolvedValue([existing]),
-      openSession: vi.fn().mockRejectedValue(new EscurelError('session_cap_reached', 'session cap')),
+      openSession: vi
+        .fn()
+        .mockRejectedValue(new EscurelError('session_cap_reached', 'session cap')),
       closeSession: vi.fn(),
     } as unknown as EscurelClient;
     await expect(

@@ -3,8 +3,10 @@ import { EscurelError } from '../../src/client';
 import {
   formatStartError,
   parseStartSkillInput,
+  planReadyMessage,
   resolveStartAction,
   skillFromPageId,
+  startedMessage,
 } from '../../src/start/startSkill';
 
 describe('skillFromPageId', () => {
@@ -181,5 +183,26 @@ describe('formatStartError', () => {
     const msg = formatStartError(err);
     expect(msg).toContain('Something went wrong');
     expect(msg).not.toContain('at Object');
+  });
+});
+
+describe('what the notices say', () => {
+  // The page is named by its own id, not by the skill being STARTED: a supplier-risk start on a
+  // customer-order page showed "customer-order__order-4500123" (the raw file name) in the real window.
+  const PAGE = 'markdown/instances/customer-order__order-4500123.md';
+
+  it('names the instance the skill was started on', () => {
+    expect(startedMessage('supplier-risk', PAGE)).toBe('Started supplier-risk on order-4500123');
+  });
+
+  it('says only the skill when there is no target', () => {
+    expect(startedMessage('supplier-risk', '')).toBe('Started supplier-risk');
+  });
+
+  it('names the instance in the plan-ready notice too', () => {
+    expect(planReadyMessage('supplier-risk', PAGE)).toBe(
+      'Plan ready for supplier-risk on order-4500123',
+    );
+    expect(planReadyMessage('supplier-risk', '')).toBe('Plan ready for supplier-risk');
   });
 });

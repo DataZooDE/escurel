@@ -37,7 +37,8 @@ function capture(skill: string, pageId: string, provenance: Record<string, unkno
     ...(target ? { instance_page_id: target } : {}),
     source: 'workbench',
     mime: 'text/plain',
-    title: target ? `${skill} · ${pageSlug(target)}` : skill,
+    // The Inbox row is "<label_skill> · <title>", so the skill is not repeated here.
+    title: target ? pageSlug(target) : 'Started from the workbench',
     body: 'Started from the workbench.',
     provenance,
   };

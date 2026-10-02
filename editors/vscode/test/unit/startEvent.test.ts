@@ -40,9 +40,11 @@ describe('buildStartEvent', () => {
     ).not.toContain('requested_by');
   });
 
-  it('gives the event a title that names the skill and the instance, not a ULID', () => {
+  it('titles the event by the instance, since the Inbox already prefixes the skill', () => {
+    // The Inbox row reads "<label_skill> · <title>". A title that starts with the skill again made
+    // it "supplier-risk · supplier-risk · order-4500123" (seen in the real window).
     const e = buildStartEvent({ skill: 'supplier-risk', pageId: PAGE, mode: 'run' });
-    expect(e.title).toBe('supplier-risk · order-4500123');
+    expect(e.title).toBe('order-4500123');
   });
 });
 
@@ -83,7 +85,7 @@ describe('a start with no target instance', () => {
   it('leaves instance_page_id out, and names the event for the skill alone', () => {
     const e = buildStartEvent({ skill: 'supplier-risk', pageId: '', mode: 'run' });
     expect('instance_page_id' in e).toBe(false);
-    expect(e.title).toBe('supplier-risk');
+    expect(e.title).toBe('Started from the workbench');
   });
 
   it('does the same for an approval', () => {

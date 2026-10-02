@@ -262,10 +262,8 @@ export function registerStartSkill(
         const event = await client.captureEvent(action.event);
         await vscode.commands.executeCommand('escurel.openThread', event.event_id);
 
-        const slug = pageSlug(pageId, skill);
         if (action.mode === 'background') {
-          const msg = slug ? `Started ${skill} on ${slug}` : `Started ${skill}`;
-          void vscode.window.showInformationMessage(msg);
+          void vscode.window.showInformationMessage(startedMessage(skill, pageId));
           return;
         }
 
@@ -273,6 +271,9 @@ export function registerStartSkill(
         // captured and its thread is open; awaiting the watcher (and the "Approve plan?" notice,
         // which waits for a click) would hold the command open for as long as five minutes, and
         // anything that awaits `executeCommand('escurel.startSkill')` with it.
+        // `skill` and `pageId` are narrowed here; a closure would lose that, so take them as constants.
+        const startedSkill = skill;
+        const startedPage = pageId;
         void offerApproval();
         async function offerApproval(): Promise<void> {
           let cancelled = false;
@@ -293,10 +294,10 @@ export function registerStartSkill(
             });
 
             if (res.state === 'planned') {
-              const planMsg = slug
-                ? `Plan ready for ${skill} on ${slug}`
-                : `Plan ready for ${skill}`;
-              const choice = await vscode.window.showInformationMessage(planMsg, 'Approve plan');
+              const choice = await vscode.window.showInformationMessage(
+                planReadyMessage(startedSkill, startedPage),
+                'Approve plan',
+              );
               if (choice === 'Approve plan') {
                 await vscode.commands.executeCommand('escurel.approvePlan', {
                   runId: res.runId,
@@ -324,4 +325,15 @@ export function registerStartSkill(
 
   context.subscriptions.push(disposable);
   return disposable;
+}
+
+/** "Started <skill> on <instance>": the instance by its own id, whatever skill is being started. */
+export function startedMessage(skill: string, pageId: string | undefined): string {
+  const slug = pageId ? pageSlug(pageId) : '';
+  return slug ? `Started ${skill} on ${slug}` : `Started ${skill}`;
+}
+
+export function planReadyMessage(skill: string, pageId: string | undefined): string {
+  const slug = pageId ? pageSlug(pageId) : '';
+  return slug ? `Plan ready for ${skill} on ${slug}` : `Plan ready for ${skill}`;
 }

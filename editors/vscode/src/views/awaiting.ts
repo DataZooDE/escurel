@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
 import { describeError } from '../errors';
 import { log } from '../log';
-import { buildAwaitingRows, type AwaitingRow } from './awaitingModel';
+import { accessibleLabel, buildAwaitingRows, type AwaitingRow } from './awaitingModel';
 
 export interface ErrorRow {
   kind: 'error';
@@ -49,6 +49,7 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
         item.description = n.description;
         item.tooltip = `Changeset ${n.changeset.changeset_id}: ${n.description}`;
+        item.accessibilityInformation = { label: accessibleLabel(n) };
         item.iconPath = new vscode.ThemeIcon(
           'git-pull-request',
           new vscode.ThemeColor('charts.orange'),
@@ -65,6 +66,7 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
         item.description = n.description;
         item.tooltip = `Draft on ${n.label} by ${n.description}`;
+        item.accessibilityInformation = { label: accessibleLabel(n) };
         item.iconPath = new vscode.ThemeIcon('edit', new vscode.ThemeColor('charts.orange'));
         item.contextValue = 'awaiting.draft';
         item.command = {
@@ -78,6 +80,7 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
         item.description = n.description;
         item.tooltip = `Confirm gate: ${n.label} (${n.description})`;
+        item.accessibilityInformation = { label: accessibleLabel(n) };
         item.iconPath = new vscode.ThemeIcon('bell', new vscode.ThemeColor('charts.orange'));
         item.contextValue = 'awaiting.confirm_gate';
         item.command = {
