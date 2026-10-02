@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { createServer as createTcpServer } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { EventSocket, type EventSocketOptions } from '../../src/client/ws';
 
@@ -160,6 +161,61 @@ describe('EventSocket', () => {
     });
   });
 
+  it('closing a socket that is still connecting raises nothing', async () => {
+    // A server that accepts the connection and never answers the upgrade holds the client in
+    // the middle of its handshake. `ws` reports a socket closed in that state as an 'error'
+    // ("closed before the connection was established") on the next tick; the client used to
+    // strip every listener first, so nothing handled it and it escaped as an uncaught exception
+    // in the extension host (seen when a token change reconnected sockets).
+    const held = createTcpServer((c) => c.on('error', () => undefined));
+    await new Promise<void>((r) => held.listen(0, '127.0.0.1', r));
+    const port = (held.address() as { port: number }).port;
+    const escaped: unknown[] = [];
+    const onUncaught = (e: unknown) => escaped.push(e);
+    process.on('uncaughtException', onUncaught);
+    try {
+      const s = new EventSocket(options(`http://127.0.0.1:${port}`));
+      s.connect();
+      await new Promise((r) => setTimeout(r, 150)); // the handshake is under way
+      s.close();
+      await new Promise((r) => setTimeout(r, 150)); // the error, if there is one, fires here
+      expect(escaped).toEqual([]);
+    } finally {
+      process.off('uncaughtException', onUncaught);
+      held.close();
+    }
+  });
+
+  it('a token change while connecting raises nothing either', async () => {
+    const held = createTcpServer((c) => c.on('error', () => undefined));
+    await new Promise<void>((r) => held.listen(0, '127.0.0.1', r));
+    const port = (held.address() as { port: number }).port;
+    const escaped: unknown[] = [];
+    const onUncaught = (e: unknown) => escaped.push(e);
+    process.on('uncaughtException', onUncaught);
+    try {
+      let refresh: (t: string | undefined) => void = () => undefined;
+      const o = options(`http://127.0.0.1:${port}`);
+      o.tokens = {
+        get: async () => 'tok',
+        onDidRefresh: (l: (t: string | undefined) => void) => {
+          refresh = l;
+          return { dispose: () => undefined };
+        },
+      };
+      const s = new EventSocket(o);
+      sockets.push(s);
+      s.connect();
+      await new Promise((r) => setTimeout(r, 150));
+      refresh('tok-2'); // reconnectNow() drops the half-open socket
+      await new Promise((r) => setTimeout(r, 150));
+      expect(escaped).toEqual([]);
+    } finally {
+      process.off('uncaughtException', onUncaught);
+      held.close();
+    }
+  });
+
   it('surfaces event_lagged as a warning (the view reconciles by polling)', async () => {
     const srv = await startFakeWs();
     servers.push(srv);
@@ -258,4 +314,3 @@ describe('EventSocket', () => {
     expect(connected).toBe(true);
   });
 });
-

@@ -1,0 +1,36 @@
+{
+ "event_id": "run:01M3Y7MD5XWKPB08508JGNBW6M:started",
+ "at": "2026-10-02T11:57:42Z",
+ "source": "escurel-runner",
+ "mime": "application/json",
+ "label_skill": "escurel:run",
+ "instance_page_id": "markdown/instances/customer-order__order-4500152.md",
+ "status": "processed",
+ "title": "run-started",
+ "body": "{}",
+ "provenance": {
+  "runner": {
+   "attempt": 0,
+   "depth": 0,
+   "event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+   "harness": "refusing",
+   "lineage_path": [
+    "01M3Y7MD5FYFSDTTEM0WM64BCV"
+   ],
+   "manual": {
+    "harness": "no-such-harness",
+    "mode": "run",
+    "requested_by": "alice"
+   },
+   "max_attempts": 3,
+   "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+   "run_id": "01M3Y7MD5XWKPB08508JGNBW6M",
+   "target_page_id": "markdown/instances/customer-order__order-4500152.md",
+   "trace_id": "01a0fc7a353e36c43b5acbb89f08f9a9"
+  },
+  "captured_by": "escurel-runner"
+ },
+ "kind": "system",
+ "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+ "run_id": "01M3Y7MD5XWKPB08508JGNBW6M"
+}

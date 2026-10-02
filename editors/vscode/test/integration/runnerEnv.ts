@@ -11,10 +11,11 @@ export function runnerEnv(
   base: NodeJS.ProcessEnv,
   info: GatewayInfo,
   where: { port: number; dir: string },
+  extra: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...base };
+  const env: NodeJS.ProcessEnv = { ...base, ...extra };
   delete env.ESCUREL_RUNNER_TOKEN;
-  return {
+  const result: NodeJS.ProcessEnv = {
     ...env,
     ESCUREL_RUNNER_GATEWAY_URL: info.gateway_url,
     ESCUREL_RUNNER_TENANT: info.tenant,
@@ -25,5 +26,8 @@ export function runnerEnv(
     ESCUREL_RUNNER_LISTEN: `127.0.0.1:${where.port}`,
     ESCUREL_RUNNER_LEDGER_PATH: `${where.dir}/ledger.duckdb`,
     ESCUREL_RUNNER_POLL_INTERVAL: '250ms',
+    ...extra,
   };
+  delete result.ESCUREL_RUNNER_TOKEN;
+  return result;
 }

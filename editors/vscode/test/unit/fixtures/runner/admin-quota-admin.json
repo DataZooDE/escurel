@@ -1,0 +1,6 @@
+{
+ "error": {
+  "code": -32603,
+  "message": "no quota manager wired on this server"
+ }
+}

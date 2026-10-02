@@ -13,6 +13,8 @@ import { openPage, resolveCommand, searchCommand } from './commands/search';
 import { ReviewController } from './review';
 import { LiveCoordinator } from './live';
 import { RunController } from './runs/controller';
+import { registerControlCommands } from './runs/controlCommands';
+import { adminContextValue } from './runs/adminContext';
 import { ThreadController } from './thread/controller';
 import { buildInspectors } from './thread/inspector';
 import { toThreadView } from './thread/threadModel';
@@ -30,10 +32,16 @@ export interface EscurelApi {
   threads: ThreadController;
   runs: RunController;
   threadsTree: ThreadsTree;
+  /**
+   * The value last published to the `escurel.canAdmin` context key, which greys the admin-only
+   * controls. Read from THIS bundle: a test bundle importing the module would see its own copy.
+   */
+  canAdmin: () => boolean;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi {
   const services = new Services(context);
+  registerControlCommands(context, services);
   context.subscriptions.push(services);
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
@@ -182,7 +190,18 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     ),
   );
   log().info('escurel: activated');
-  return { services, knowledge, inbox, awaiting, review, live, threads, runs, threadsTree };
+  return {
+    services,
+    knowledge,
+    inbox,
+    awaiting,
+    review,
+    live,
+    threads,
+    runs,
+    threadsTree,
+    canAdmin: adminContextValue,
+  };
 }
 
 export function deactivate(): void {}

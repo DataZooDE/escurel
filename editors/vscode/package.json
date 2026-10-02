@@ -119,6 +119,34 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.cancelRun",
+        "title": "Cancel run",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.retryRun",
+        "title": "Retry run",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.requeue",
+        "title": "Requeue",
+        "category": "Escurel",
+        "enablement": "escurel.canAdmin"
+      },
+      {
+        "command": "escurel.pauseDispatch",
+        "title": "Pause dispatch",
+        "category": "Escurel",
+        "enablement": "escurel.canAdmin"
+      },
+      {
+        "command": "escurel.resumeDispatch",
+        "title": "Resume dispatch",
+        "category": "Escurel",
+        "enablement": "escurel.canAdmin"
+      },
+      {
         "command": "escurel.openThread",
         "title": "Open Thread",
         "category": "Escurel"
@@ -214,6 +242,18 @@
     ],
     "menus": {
       "commandPalette": [
+        {
+          "command": "escurel.cancelRun",
+          "when": "false"
+        },
+        {
+          "command": "escurel.retryRun",
+          "when": "false"
+        },
+        {
+          "command": "escurel.requeue",
+          "when": "false"
+        },
         {
           "command": "escurel.openPage",
           "when": "false"

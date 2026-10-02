@@ -36,4 +36,15 @@ describe('runnerEnv', () => {
       ESCUREL_RUNNER_HARNESS: 'echo',
     });
   });
+
+  it('lets the controls pass set echo sleep while still removing static runner tokens', () => {
+    const env = runnerEnv(
+      { ESCUREL_RUNNER_TOKEN: 'static', ESCUREL_ECHO_SLEEP_MS: '1' },
+      info,
+      { port: 9, dir: '/d' },
+      { ESCUREL_ECHO_SLEEP_MS: '4000', ESCUREL_RUNNER_TOKEN: 'extra' },
+    );
+    expect(env.ESCUREL_ECHO_SLEEP_MS).toBe('4000');
+    expect(env.ESCUREL_RUNNER_TOKEN).toBeUndefined();
+  });
 });
