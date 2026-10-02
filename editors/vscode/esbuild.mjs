@@ -50,10 +50,12 @@ const webview = {
 const integration = {
   entryPoints: [
     'test/integration/runTests.ts',
-    // Two suite roots, each with its own gateway: `suite` runs against the
+    // Three suite roots, each with its own gateway: `suite` runs against the
     // crm-demo corpus, `cascade` against a seed with an empty inbox and a real
-    // runner. See the header of runTests.ts for why they cannot share one.
-    ...['suite', 'cascade'].flatMap((dir) => [
+    // runner, `controls` the same with a runner whose harness idles, so a run is
+    // still live when it is cancelled. See the header of runTests.ts for why
+    // they cannot share one.
+    ...['suite', 'cascade', 'controls'].flatMap((dir) => [
       `test/integration/${dir}/index.ts`,
       ...readdirSync(`test/integration/${dir}`)
         .filter((f) => f.endsWith('.test.ts'))

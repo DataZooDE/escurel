@@ -1,0 +1,10 @@
+{
+ "error": {
+  "code": -32001,
+  "message": "admin role required for this tool",
+  "data": {
+   "code": "admin_required",
+   "retryable": false
+  }
+ }
+}

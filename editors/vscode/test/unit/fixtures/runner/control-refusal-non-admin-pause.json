@@ -1,0 +1,10 @@
+{
+ "error": {
+  "code": -32602,
+  "message": "capture_event: `escurel:run-control`: no such run, or not yours to control",
+  "data": {
+   "code": "event_not_found",
+   "retryable": false
+  }
+ }
+}

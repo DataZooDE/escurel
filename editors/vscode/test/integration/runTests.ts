@@ -209,6 +209,54 @@ async function main(): Promise<void> {
     runner?.kill('SIGTERM');
     gateway?.kill('SIGTERM');
   }
+
+  // Controls need a separate runner: the echo harness sleeps so cancel can reach a live run.
+  runner = undefined;
+  gateway = undefined;
+  try {
+    let info: GatewayInfo | undefined;
+    if (existsSync(gatewayBin) && existsSync(runnerBin)) {
+      const started = await startVerifyingGateway(
+        gatewayBin,
+        join(root, 'test', 'integration', 'seed'),
+      );
+      gateway = started.child;
+      info = started.info;
+      const dir = mkdtempSync(join(tmpdir(), 'escurel-vsx-controls-'));
+      const log = join(dir, 'runner.log');
+      runner = spawn(runnerBin, [], {
+        env: runnerEnv(
+          process.env,
+          info,
+          { port: basePort + 6, dir },
+          { ESCUREL_ECHO_SLEEP_MS: '4000' },
+        ),
+        stdio: ['ignore', openSync(log, 'a'), openSync(log, 'a')],
+      });
+      console.log(`controls runner log: ${log}`);
+    }
+    await runTests({
+      version: VSCODE_VERSION,
+      extensionDevelopmentPath: root,
+      extensionTestsPath: resolve(__dirname, 'controls', 'index.js'),
+      launchArgs: [
+        workspaceFor(info?.gateway_url ?? 'http://127.0.0.1:1'),
+        '--disable-extensions',
+        '--disable-workspace-trust',
+      ],
+      extensionTestsEnv: {
+        ESCUREL_TEST_GATEWAY: info?.gateway_url ?? '',
+        ESCUREL_TEST_GREP: grep,
+        ESCUREL_TEST_RUNNER: runner ? '1' : '',
+        ESCUREL_TEST_BEARER: info?.bearer ?? '',
+        ESCUREL_TEST_ADMIN_BEARER: info?.admin_bearer ?? '',
+        ESCUREL_TEST_SUBJECT: 'alice',
+      },
+    });
+  } finally {
+    runner?.kill('SIGTERM');
+    gateway?.kill('SIGTERM');
+  }
 }
 
 /**
