@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.81 — `escurel-test-gateway` also prints an `admin_bearer`
+
+- The connection line gains `admin_bearer`: the same subject with the admin role, so a harness
+  can drive the admin-only run controls (requeue, pause, resume) as well as the human ones.
+  See references/09 § A2.
+- `--bearer-file <path>` (with `--bearer-refresh-secs`, default 240) keeps a file holding a current
+  `{bearer, admin_bearer}`, for a demo that outlasts a ten-minute token.
+
 ## 0.6.80 — `escurel-test-gateway`, a verifying gateway for non-Rust harnesses
 
 - New binary in `escurel-test-support`: starts the gateway and OIDC issuer the Rust suites use,

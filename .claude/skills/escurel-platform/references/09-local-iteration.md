@@ -159,15 +159,21 @@ cargo build --release -p escurel-test-support --bin escurel-test-gateway
 escurel-test-gateway --tenant vsx --seed path/to/seed [--subject alice]
 # stdout, ONE line, then it stays up until SIGTERM:
 # {"gateway_url":"http://127.0.0.1:…","issuer_url":"http://127.0.0.1:…","kid":"…",
-#  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","tenant":"vsx"}
+#  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","admin_bearer":"eyJ…","tenant":"vsx"}
 ```
 
 It is the same in-process gateway and OIDC issuer the Rust suites use, so the claims cannot
 drift from what the gateway expects. `--seed` is a directory of `skills/*.md` and
 `instances/*.md`; each becomes `markdown/skills/<name>.md` / `markdown/instances/<name>.md`
 (flat, so an instance is `<skill>__<id>.md`, as the shipped corpora lay them out). The `bearer`
-is a human's (role `agent`, subject `--subject`): it can read, draft and promote, and it
-expires in ten minutes like every token this issuer mints.
+is a human's (role `agent`, subject `--subject`): it can read, draft and promote. The
+`admin_bearer` is the same subject with the admin role, for what only an admin may do (requeue,
+pause and resume the runner). Both expire in ten minutes like every token this issuer mints.
+
+A demo outlasts a ten-minute token. `--bearer-file <path>` writes `{"bearer", "admin_bearer"}`
+there before the line is printed and replaces it (by rename; a reader never sees half a file) with
+fresh ones every `--bearer-refresh-secs` (default 240), so whoever is signed in with it stays
+signed in. Nothing else is written.
 
 Why a verifying gateway matters, and a verifier-less one cannot stand in for it: **only a token
 can prove which run wrote something.** With no verifier the gateway has no claims at all, so a
