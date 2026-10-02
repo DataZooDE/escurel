@@ -5,9 +5,13 @@ import { describeControlRefusal, describeOutcome, findControlResult } from './co
 import { registerAdminContext } from './adminContext';
 
 type Action = ControlRequest['action'];
-type Argument = string | { runId?: string; eventId?: string; id?: string } | undefined;
+export type Argument =
+  | string
+  | { runId?: string | undefined; eventId?: string | undefined; id?: string | undefined }
+  | undefined;
 
-function controlRequest(action: Action, arg: Argument): ControlRequest {
+/** What a command's argument means: a bare id, or a tree row / message carrying `runId` / `eventId`. */
+export function controlRequest(action: Action, arg: Argument): ControlRequest {
   const id = typeof arg === 'string' ? arg : arg?.id;
   if (action === 'cancel' || action === 'retry')
     return { action, runId: typeof arg === 'string' ? arg : (arg?.runId ?? id) };

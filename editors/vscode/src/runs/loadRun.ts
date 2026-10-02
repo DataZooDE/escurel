@@ -40,10 +40,7 @@ export async function loadRun(client: EscurelClient, runId: string): Promise<Loa
         include: ['runs', 'tool_calls'],
       });
       node = lineage.nodes.find((n) => n.type === 'run' && n.id === runId);
-      const root = lineage.nodes.find(
-        (n) => n.type === 'event' && (n.id === rootEventId || n.parent === null),
-      );
-      if (typeof root?.label_skill === 'string' && root.label_skill) skill = root.label_skill;
+      skill = rootSkill(lineage.nodes, rootEventId);
     } catch {
       // A denied root does not prevent showing the run's own events.
     }
@@ -80,4 +77,16 @@ export function carryCalls(next: RunView, previous: RunView | undefined): RunVie
     calls: [...bySeq.values()].sort((a, b) => a.seq - b.seq),
     nextAfter: previous.nextAfter,
   };
+}
+
+/**
+ * The skill of the thread's root event, from its lineage. The root is found by id. A parentless
+ * event is a fallback only when the root itself is not listed: lineage prunes what the caller may
+ * not read, so a node whose parent was pruned ALSO reads as having none, and one listed before the
+ * root must not be taken for it (it would put someone else's skill on Fix skill and Approve).
+ */
+export function rootSkill(nodes: readonly LineageNode[], rootEventId: string): string | undefined {
+  const events = nodes.filter((n) => n.type === 'event');
+  const root = events.find((n) => n.id === rootEventId) ?? events.find((n) => n.parent === null);
+  return typeof root?.label_skill === 'string' && root.label_skill ? root.label_skill : undefined;
 }

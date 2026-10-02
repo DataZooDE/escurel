@@ -99,17 +99,21 @@ export class RunController implements vscode.Disposable {
       // The panel can be closed between the check above and the delivery; see `safePost`.
       safePost(panel, m);
     };
+    let loadSeq = 0;
     const load = async () => {
+      // Reads overlap (a reconnect, a live event, a manual refresh). Only the NEWEST one to start is
+      // allowed to land: a slower earlier read finishing last must not overwrite a newer state.
+      const mine = ++loadSeq;
       try {
         const loaded = await loadRun(this.services.client, runId);
         // See ThreadController: a result for a panel that has been closed is for nobody.
-        if (disposed) return;
+        if (disposed || mine !== loadSeq) return;
         const next = carryCalls(loaded.view, view) as ActionRunView;
         next.controls = visibleRunControls({
           ...next,
           controls: runControls(next.status, await this.services.admin.get()),
         });
-        if (disposed) return;
+        if (disposed || mine !== loadSeq) return;
         view = next;
         this.views.set(runId, next);
         rootEventId = loaded.rootEventId;

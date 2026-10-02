@@ -39,7 +39,7 @@ describe('<escurel-run-detail>', () => {
     const el = await render(view);
     const buttons = qa(el, 'header .run-control') as HTMLButtonElement[];
     expect(buttons.map((button) => text(button))).to.deep.equal(['Retry', 'Requeue']);
-    expect(buttons[1]!.disabled).to.equal(true);
+    expect(buttons[1]!.getAttribute('aria-disabled')).to.equal('true');
     expect(buttons[1]!.title).to.equal('Only an admin can requeue a dead letter.');
     const sent: RunWebviewToHost[] = [];
     el.addEventListener('escurel-message', (event) =>
@@ -78,7 +78,63 @@ describe('<escurel-run-detail>', () => {
       status: 'running',
       controls: [{ action: 'cancel', label: 'Cancel run', enabled: true }],
     });
-    expect(q(el, '.control-hint')).to.equal(null);
+    expect(q(el, '.control-hint') === null).to.equal(true);
+  });
+
+  it('keeps a deactivated control FOCUSABLE and announced, and sends nothing when it is clicked', async () => {
+    // A natively disabled button is skipped by Tab and ignored by screen readers, so the reason
+    // beside it would never reach the people who need it. aria-disabled keeps it in the tab order.
+    const view: RunView = {
+      ...recordedRunView,
+      status: 'dead_letter',
+      controls: [
+        {
+          action: 'requeue',
+          label: 'Requeue',
+          enabled: false,
+          disabledReason: 'Only an admin can requeue a dead letter.',
+        },
+      ],
+    };
+    const el = await render(view);
+    const requeue = q(el, 'header .run-control') as HTMLButtonElement;
+    expect(requeue.disabled).to.equal(false);
+    expect(requeue.tabIndex).to.not.equal(-1);
+    expect(requeue.getAttribute('aria-disabled')).to.equal('true');
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+    );
+    requeue.click();
+    expect(sent).to.deep.equal([]);
+  });
+
+  it('sends a control once, however many times it is clicked before the run updates', async () => {
+    const view: RunView = {
+      ...recordedRunView,
+      status: 'planned',
+      controls: [{ action: 'approve', label: 'Approve plan', enabled: true }],
+    };
+    const el = await render(view);
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+    );
+    const approve = q(el, 'header .run-control') as HTMLButtonElement;
+    approve.click();
+    approve.click();
+    approve.click();
+    expect(sent).to.have.length(1);
+    // And it is available again once the host sends the run's next state.
+    el.view = { ...view, status: 'processed', controls: [] };
+    await el.updateComplete;
+    expect(qa(el, 'header .run-control')).to.have.length(0);
+  });
+
+  it('draws no control group when the run offers nothing to do', async () => {
+    const el = await render({ ...recordedRunView, status: 'processed', controls: [] });
+    // A boolean, not the element: chai diffing a live DOM node on failure hangs the runner.
+    expect(q(el, '.controls') === null).to.equal(true);
   });
 
   it('makes Approve plan primary and posts its run id', async () => {
