@@ -240,12 +240,11 @@ describe('<escurel-run-detail>', () => {
     el.addEventListener('escurel-message', (event) =>
       sent.push((event as CustomEvent<RunWebviewToHost>).detail),
     );
-    expect(q(el, '.link')?.getAttribute('aria-label')).to.equal(
-      `Open target page ${recordedRunView.targetPageId}`,
-    );
-    expect(q(el, '.copy-trace')?.getAttribute('aria-label')).to.equal(
-      `Copy trace id ${recordedRunView.traceId}`,
-    );
+    // The visible text is the accessible name; the id is a tooltip, never read aloud in place of it.
+    expect(text(q(el, '.link'))).to.equal(recordedRunView.targetPageId);
+    expect(q(el, '.link')?.getAttribute('aria-label')).to.equal(null);
+    expect(text(q(el, '.copy-trace'))).to.equal('Copy trace id');
+    expect(q(el, '.copy-trace')?.getAttribute('aria-label')).to.equal(null);
     (q(el, '.link') as HTMLButtonElement).click();
     expect(sent).to.deep.equal([{ type: 'open-page', pageId: recordedRunView.targetPageId }]);
   });
@@ -300,6 +299,20 @@ describe('<escurel-run-detail>', () => {
       expect(el.error).to.equal(undefined);
     } finally {
       disconnect();
+    }
+  });
+
+  it('names the copy and open buttons by what they do, and keeps ids out of the accessible name', async () => {
+    const el = await render();
+    const copy = el.shadowRoot!.querySelector('.copy-trace') as HTMLElement | null;
+    const open = el.shadowRoot!.querySelector('button.link') as HTMLElement | null;
+    expect(copy !== null && open !== null, 'the recorded run has a trace and a target').to.equal(
+      true,
+    );
+    for (const b of [copy, open]) {
+      expect(/[0-9a-f]{16,}|[0-9A-Z]{20,}/.test(b!.getAttribute('aria-label') ?? '')).to.equal(
+        false,
+      );
     }
   });
 });

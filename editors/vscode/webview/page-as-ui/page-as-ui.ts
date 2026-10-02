@@ -212,13 +212,13 @@ export class EscurelPageAsUi extends LitElement {
               <span aria-hidden="true">→</span>
               <button
                 class="open-run"
-                aria-label="Open run ${m.thread.runId}"
+                title=${m.thread.runId}
                 @click=${() => this.send({ type: 'open-run', runId: m.thread!.runId })}
               >
-                run
+                Open run
               </button>
               <span class="run-status ${m.thread.runStatus}"
-                >${m.thread.runStatus.replace('_', ' ')}</span
+                >${m.thread.runStatus.replaceAll('_', ' ')}</span
               >
               <span aria-hidden="true">→</span>
               <span>this page</span>

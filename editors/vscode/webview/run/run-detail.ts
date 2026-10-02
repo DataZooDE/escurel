@@ -268,7 +268,7 @@ export class EscurelRunDetail extends LitElement {
               Trace ${run.traceId}
               <button
                 class="copy-trace"
-                aria-label="Copy trace id ${run.traceId}"
+                title=${run.traceId}
                 @click=${() => this.send({ type: 'copy-trace-id', traceId: run.traceId! })}
               >
                 Copy trace id
@@ -282,7 +282,7 @@ export class EscurelRunDetail extends LitElement {
               Target
               <button
                 class="link"
-                aria-label="Open target page ${run.targetPageId}"
+                title="Open the target page"
                 @click=${() => this.send({ type: 'open-page', pageId: run.targetPageId! })}
               >
                 ${run.targetPageId}

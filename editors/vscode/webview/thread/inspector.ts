@@ -70,7 +70,7 @@ export class EscurelThreadInspector extends LitElement {
         user-select: none;
         box-sizing: border-box;
       }
-      .control-button:hover:not(:disabled) {
+      .control-button:hover:not([aria-disabled='true']) {
         background: var(
           --vscode-button-secondaryHoverBackground,
           var(--vscode-button-hoverBackground)
@@ -80,14 +80,14 @@ export class EscurelThreadInspector extends LitElement {
         color: var(--vscode-button-foreground);
         background: var(--vscode-button-background);
       }
-      .control-button.primary:hover:not(:disabled) {
+      .control-button.primary:hover:not([aria-disabled='true']) {
         background: var(--vscode-button-hoverBackground);
       }
       .control-button:focus-visible {
         outline: 1px solid var(--vscode-focusBorder);
         outline-offset: 1px;
       }
-      .control-button:disabled {
+      .control-button[aria-disabled='true'] {
         opacity: 0.5;
         cursor: not-allowed;
       }
@@ -155,7 +155,7 @@ export class EscurelThreadInspector extends LitElement {
 
   private renderSkillActions(skills: { pageId: string; actions: ActionView[] }) {
     return html`
-      <div class="actions skills" role="toolbar" aria-label="Skills">
+      <div class="actions skills" role="group" aria-label="Skills">
         ${skills.actions.map(
           (a) => html`
             <escurel-split-button
@@ -180,15 +180,15 @@ export class EscurelThreadInspector extends LitElement {
     // deactivated is on the page as text and the button points at it.
     const reason = controls.find((c) => !c.enabled && c.disabledReason)?.disabledReason;
     return html`
-      <div class="actions controls" role="toolbar" aria-label="Run controls">
+      <div class="actions controls" role="group" aria-label="Run controls">
         ${controls.map(
           (c) => html`
             <button
               class="control-button ${c.action === 'approve' ? 'primary' : ''}"
-              ?disabled=${!c.enabled}
+              aria-disabled=${c.enabled ? nothing : 'true'}
               title=${c.disabledReason ?? c.label}
               aria-describedby=${!c.enabled && c.disabledReason ? 'control-hint' : nothing}
-              @click=${() => this.onRunControl(c.action)}
+              @click=${() => c.enabled && this.onRunControl(c.action)}
             >
               ${c.label}
             </button>
