@@ -150,3 +150,19 @@ export function buildAwaitingRows(inputs: AwaitingInputs): AwaitingRow[] {
 
   return sortAwaitingNewestFirst(rows);
 }
+
+/**
+ * What a screen reader announces for a row, in place of the visible text. VS Code falls back to the
+ * tooltip, which carried the changeset's ULID, so a reviewer heard an id where the screen shows the
+ * order. This says what the row is ABOUT.
+ */
+export function accessibleLabel(row: AwaitingRow): string {
+  switch (row.kind) {
+    case 'changeset':
+      return `Changeset for ${row.label}, ${row.description}`;
+    case 'draft':
+      return `Draft for ${row.label}, ${row.description}`;
+    case 'confirm_gate':
+      return `Waiting for you: ${row.label}, ${row.description}`;
+  }
+}

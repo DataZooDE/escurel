@@ -84,4 +84,16 @@ describe('inline buttons', () => {
     );
     expect(withoutIcon).toEqual([]);
   });
+
+  // The same is true of a view's title bar: its actions are icons, and one without an icon is drawn
+  // as its TITLE TEXT instead, which overlaps its neighbour ("Pause disp...Resume dispatch" in the
+  // Runner view, seen in a screenshot of the real window).
+  it('every action in a view title bar has an icon', () => {
+    const inTitle = (manifest.contributes.menus['view/title'] ?? []).map((m) => m.command);
+    expect(inTitle.length).toBeGreaterThan(0);
+    const withoutIcon = [...new Set(inTitle)].filter(
+      (id) => !manifest.contributes.commands.find((c) => c.command === id)?.icon,
+    );
+    expect(withoutIcon).toEqual([]);
+  });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Changeset, Draft, Event, Skill } from '../../src/client';
 import {
+  accessibleLabel,
   buildAwaitingRows,
   changesetRow,
   confirmGateRow,
@@ -346,5 +347,41 @@ describe('awaitingModel', () => {
       const sorted = sortAwaitingNewestFirst([r1, r2, r3]);
       expect(sorted.map((r) => r.id)).toEqual(['b', 'c', 'a']);
     });
+  });
+});
+
+describe('accessibleLabel', () => {
+  // A screen reader announces this INSTEAD of the visible text. The tooltip held the changeset's ULID,
+  // so a reviewer heard an id where the screen shows the order (seen in the real window).
+  it('says what the row is about, never a ULID', () => {
+    const cs: Changeset = {
+      changeset_id: '01M3YK3053EHB2Q3KZQQFG85JM',
+      run_id: null,
+      author: 'agent:supplier-risk',
+      status: 'open',
+      drafts: 1,
+      target_page_ids: ['markdown/instances/customer-order__order-4500131.md'],
+      event_ids: [],
+      created_at: '2026-10-02T10:00:00Z',
+      root_event_id: null,
+    };
+    const label = accessibleLabel(changesetRow(cs));
+    expect(label).toBe('Changeset for order-4500131, 1 draft · agent:supplier-risk');
+    expect(label).not.toMatch(/[0-9A-Z]{26}/);
+  });
+
+  it('describes a draft and a confirm gate by what they are', () => {
+    const draft = draftRow({
+      draft_id: '01M3YK3053EHB2Q3KZQQFG85JM',
+      target_page_id: 'markdown/instances/customer-order__order-4500123.md',
+      author: 'alice',
+    } as Draft);
+    expect(accessibleLabel(draft)).toBe('Draft for order-4500123, alice');
+    const gate = confirmGateRow({
+      event_id: '01M3YK3053EHB2Q3KZQQFG85JM',
+      title: 'Approve the refund',
+      label_skill: 'refund',
+    } as Event);
+    expect(accessibleLabel(gate)).toBe('Waiting for you: Approve the refund, confirm · refund');
   });
 });

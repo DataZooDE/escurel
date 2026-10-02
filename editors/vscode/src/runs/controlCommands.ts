@@ -46,7 +46,6 @@ export function registerControlCommands(
       try {
         const request = controlRequest(action, arg);
         const event = await services.client.captureEvent(buildControlEvent(request));
-        void vscode.window.showInformationMessage(`Asked the runner to ${label[action]} ...`);
         await vscode.window.withProgress(
           {
             location: vscode.ProgressLocation.Notification,
