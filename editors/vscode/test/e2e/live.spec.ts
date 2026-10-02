@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test';
 import { expect, test, webviewWith } from './fixtures';
 
 // One window for the whole file, played in order: each scenario leaves the stack as the next one can
@@ -5,7 +6,7 @@ import { expect, test, webviewWith } from './fixtures';
 // to look at, because "the assertion passed" says nothing about whether it looks right.
 test.describe.configure({ mode: 'serial' });
 
-const pane = (page: import('@playwright/test').Page, title: string) =>
+const pane = (page: Page, title: string) =>
   page.locator('.pane', { has: page.locator('.pane-header', { hasText: title }) });
 
 test('the story is on screen: knowledge, threads, awaiting, inbox and the runner', async ({

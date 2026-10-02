@@ -9,7 +9,7 @@ import {
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { tmpdir, homedir } from 'node:os';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 /**
@@ -41,13 +41,16 @@ async function freePort(): Promise<number> {
   });
 }
 
+/** A tool's structured result: whatever the gateway returned, read by the test that asked. */
+export type ToolResult = Record<string, unknown>;
+
 export interface Stack {
   page: Page;
   /** What the demo driver left behind: the root events and changesets of the story. */
   story: { rootA: string; rootB: string; promoted: string; awaiting: string };
   gatewayUrl: string;
   /** Call a gateway tool as the signed-in human (alice), for setting up or checking state. */
-  call: (name: string, args: Record<string, unknown>, admin?: boolean) => Promise<any>;
+  call: (name: string, args: Record<string, unknown>, admin?: boolean) => Promise<ToolResult>;
   /** Console and page errors collected since the window opened. */
   errors: string[];
   shot: (name: string) => Promise<void>;
@@ -55,6 +58,7 @@ export interface Stack {
 
 export const test = base.extend<object, { stack: Stack }>({
   stack: [
+    // eslint-disable-next-line no-empty-pattern -- Playwright requires the fixtures argument to be a destructuring pattern.
     async ({}, use) => {
       const home = mkdtempSync(join(homedir(), '.cache', 'escurel-e2e-'));
       const artifacts = resolve(__dirname, 'artifacts');
@@ -138,7 +142,10 @@ export const test = base.extend<object, { stack: Stack }>({
               params: { name, arguments: args },
             }),
           });
-          const body: any = await res.json();
+          const body = (await res.json()) as {
+            error?: unknown;
+            result: { structuredContent: ToolResult };
+          };
           if (body.error) throw new Error(`${name}: ${JSON.stringify(body.error)}`);
           return body.result.structuredContent;
         },
