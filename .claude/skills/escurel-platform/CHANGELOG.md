@@ -4,6 +4,11 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.6.82 — `escurel-test-gateway` can mint agent tokens
+
+- The test gateway is started with a signing identity on its issuer's own key, so
+  `mint_agent_token` answers instead of `unsupported`. See references/09 § A2.
+
 ## 0.6.81 — `escurel-test-gateway` also prints an `admin_bearer`
 
 - The connection line gains `admin_bearer`: the same subject with the admin role, so a harness

@@ -251,3 +251,34 @@ async fn a_bearer_file_is_written_at_once_and_kept_fresh() {
     let ok = call(&g, now["bearer"].as_str(), "list_skills", json!({})).await;
     assert_eq!(ok.status(), 200);
 }
+
+/// `mint_agent_token` is how the extension starts a skill in a terminal under a governed run. A
+/// gateway with no signing identity answers it `unsupported`, so a harness could not exercise the
+/// feature at all (found when the extension's terminal-start integration test got exactly that).
+#[tokio::test]
+async fn the_gateway_can_mint_an_agent_token() {
+    let g = start(&[]);
+    let bearer = g.info["bearer"].as_str().unwrap().to_owned();
+    let resp = call(
+        &g,
+        Some(&bearer),
+        "mint_agent_token",
+        json!({ "skill": "note", "target_page_id": "markdown/instances/note__plan.md" }),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body.get("error").is_none(),
+        "a signing identity must be wired: {body}"
+    );
+    let minted = &body["result"]["structuredContent"];
+    assert!(
+        minted["token"].as_str().is_some_and(|t| !t.is_empty()),
+        "a token: {body}"
+    );
+    assert!(
+        minted["run_id"].as_str().is_some_and(|r| !r.is_empty()),
+        "a run id: {body}"
+    );
+}

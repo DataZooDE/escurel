@@ -23,6 +23,8 @@
 //! plenty for a test run and is not extended here, because a long-lived credential printed to
 //! stdout is the thing to avoid.
 //!
+//! The gateway also holds a signing identity on the issuer's own key, so `mint_agent_token` works.
+//!
 //! A demo outlasts that. `--bearer-file <path>` writes `{bearer, admin_bearer}` there BEFORE the
 //! line is printed and replaces it (by rename, so a reader never sees half a file) with fresh
 //! ones every `--bearer-refresh-secs` (default 240). Nothing else is ever written.
@@ -167,6 +169,9 @@ async fn main() {
         config_overrides: ConfigOverrides {
             // Live CRDT sessions, so the editor's personal-draft path works against it.
             live_crdt: true,
+            // A signing identity on the issuer's own key, so `mint_agent_token` works: starting
+            // a skill in a terminal under a governed run needs it.
+            signing: true,
             ..Default::default()
         },
     })
