@@ -1,3 +1,4 @@
+import { markdownStyles, renderMarkdown } from '../shared/markdown-view';
 import { LitElement, css, html, nothing } from 'lit';
 import { property, state } from 'lit/decorators.js';
 import type { PageModel, StartMode, WebviewToHost } from '../../src/shared/protocol';
@@ -24,6 +25,7 @@ export class EscurelPageAsUi extends LitElement {
     theme,
     splitButton,
     fieldRows,
+    markdownStyles,
     css`
       :host {
         padding: 12px 20px 40px;
@@ -106,8 +108,6 @@ export class EscurelPageAsUi extends LitElement {
         white-space: pre-wrap;
       }
       .body {
-        white-space: pre-wrap;
-        font-family: var(--vscode-editor-font-family);
         border: 1px solid var(--escurel-border);
         border-radius: 2px;
         padding: 8px 12px;
@@ -248,7 +248,7 @@ export class EscurelPageAsUi extends LitElement {
 
       <section>
         <h2>Body</h2>
-        <div class="body">${m.body}</div>
+        <div class="body md">${renderMarkdown(m.body)}</div>
       </section>
 
       ${

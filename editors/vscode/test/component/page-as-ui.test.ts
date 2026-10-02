@@ -68,6 +68,33 @@ describe('<escurel-page-as-ui>', () => {
     ).to.equal(true);
   });
 
+  it('renders the body as markdown: the items table is a table, not source text', async () => {
+    const el = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui
+        .model=${{
+          ...orderPage,
+          body: '## Items\n\n| Item | Material | Qty |\n|---|---|---:|\n| 10 | GH-4711 | 240 |\n\n## History\n\n- created from customer PO',
+        }}
+      ></escurel-page-as-ui>`,
+    );
+    await el.updateComplete;
+    expect(text(q(el, '.body h2'))).to.equal('Items');
+    expect(qa(el, '.body table thead th').map((c) => text(c))).to.deep.equal([
+      'Item',
+      'Material',
+      'Qty',
+    ]);
+    expect(qa(el, '.body table tbody td').map((c) => text(c))).to.deep.equal([
+      '10',
+      'GH-4711',
+      '240',
+    ]);
+    expect(qa(el, '.body ul li')).to.have.length(1);
+    // No leftover markdown syntax shown to the reader.
+    expect(text(q(el, '.body'))).to.not.contain('|---');
+    expect(text(q(el, '.body'))).to.not.contain('## ');
+  });
+
   it('renders the actions as Skill split buttons with the four-item menu', async () => {
     const el = await render();
     const buttons = qa(el, '.actions .skill-button');
