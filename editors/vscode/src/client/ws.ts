@@ -76,17 +76,28 @@ export class EventSocket {
     this.refreshSub = undefined;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    this.ws?.removeAllListeners();
-    this.ws?.close();
+    this.abandon();
+  }
+
+  /**
+   * Let go of the current socket. Every listener is removed so a late frame or close cannot drive
+   * the client, but an `error` listener is put straight back: closing a socket that is still
+   * connecting makes `ws` emit 'error' ("closed before the connection was established") on the
+   * next tick, and with no listener that is an uncaught exception in the extension host.
+   */
+  private abandon(): void {
+    const ws = this.ws;
     this.ws = undefined;
+    if (!ws) return;
+    ws.removeAllListeners();
+    ws.on('error', () => undefined);
+    ws.close();
   }
 
   private reconnectNow(): void {
     if (this.closedByUs) return;
     this.attempt = 0;
-    this.ws?.removeAllListeners();
-    this.ws?.close();
-    this.ws = undefined;
+    this.abandon();
     void this.open();
   }
 

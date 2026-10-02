@@ -44,6 +44,10 @@ export function describeOutcome(result: ControlResult): string {
       return 'Dispatch paused.';
     case 'resumed':
       return 'Dispatch resumed.';
+    case 'refused':
+      return result.detail
+        ? `The runner refused: ${result.detail}.`
+        : 'The runner refused that request.';
     default:
       return result.outcome;
   }
@@ -69,4 +73,25 @@ export function describeControlRefusal(error: unknown): string {
   if (error instanceof EscurelError && error.kind === 'event_not_found')
     return 'No such run, or not yours to control.';
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Look for the runner's answer to `request`, newest results first, a few pages deep. The newest
+ * page alone can miss it: a runner that works through a batch of requests writes many results
+ * before the next poll, and the one asked for would sit past the first page for good.
+ */
+export async function findControlResult(
+  fetchPage: (cursor?: string) => Promise<{ events: Event[]; next_cursor?: string | null }>,
+  request: { eventId: string; action: string; runId?: string },
+  maxPages = 5,
+): Promise<ControlResult | undefined> {
+  let cursor: string | undefined;
+  for (let page = 0; page < maxPages; page += 1) {
+    const { events, next_cursor } = await fetchPage(cursor);
+    const found = matchResult(events, request);
+    if (found) return found;
+    if (!next_cursor) return undefined;
+    cursor = next_cursor;
+  }
+  return undefined;
 }

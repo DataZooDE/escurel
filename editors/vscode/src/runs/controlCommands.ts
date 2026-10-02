@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { Services } from '../services';
 import { buildControlEvent, type ControlRequest } from './controls';
-import { describeControlRefusal, describeOutcome, matchResult } from './controlResult';
+import { describeControlRefusal, describeOutcome, findControlResult } from './controlResult';
 import { registerAdminContext } from './adminContext';
 
 type Action = ControlRequest['action'];
@@ -52,17 +52,21 @@ export function registerControlCommands(
           async (_progress, cancellation) => {
             const deadline = Date.now() + 30_000;
             while (!cancellation.isCancellationRequested && Date.now() < deadline) {
-              const page = await services.client.listEvents({
-                label_skill: 'escurel:run-control-result',
-                newest_first: true,
-                include_system: true,
-                limit: 20,
-              });
-              const result = matchResult(page.events, {
-                eventId: event.event_id,
-                action,
-                ...('runId' in request && request.runId ? { runId: request.runId } : {}),
-              });
+              const result = await findControlResult(
+                (cursor) =>
+                  services.client.listEvents({
+                    label_skill: 'escurel:run-control-result',
+                    newest_first: true,
+                    include_system: true,
+                    limit: 50,
+                    ...(cursor ? { cursor } : {}),
+                  }),
+                {
+                  eventId: event.event_id,
+                  action,
+                  ...('runId' in request && request.runId ? { runId: request.runId } : {}),
+                },
+              );
               if (result) {
                 void vscode.window.showInformationMessage(describeOutcome(result));
                 return;

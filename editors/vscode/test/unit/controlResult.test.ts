@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '../../src/client/types';
-import { describeOutcome, matchResult, parseControlResult } from '../../src/runs/controlResult';
+import {
+  describeOutcome,
+  findControlResult,
+  matchResult,
+  parseControlResult,
+} from '../../src/runs/controlResult';
 import recorded from './fixtures/runner/run-control-results.json';
 
 const events = recorded.events as Event[];
@@ -37,5 +42,64 @@ describe('recorded runner control results', () => {
       'future_outcome',
     );
     expect(parseControlResult({ ...events[0]!, body: '{' })).toBeUndefined();
+  });
+});
+
+describe('a refusal says why', () => {
+  // The runner answers `outcome: "refused"` with the reason in `detail` (runner main.rs,
+  // ControlOutcome::refused): "that run is not retriable because ...". Showing only the word
+  // would leave the user unable to tell what to do about it.
+  it('includes the runner’s reason', () => {
+    expect(
+      describeOutcome({
+        action: 'retry',
+        outcome: 'refused',
+        detail: 'run is still running',
+        runId: 'r',
+      }),
+    ).toBe('The runner refused: run is still running.');
+  });
+
+  it('still says it was refused when no reason came with it', () => {
+    expect(describeOutcome({ action: 'retry', outcome: 'refused', runId: 'r' })).toBe(
+      'The runner refused that request.',
+    );
+  });
+});
+
+describe('findControlResult', () => {
+  const answer = (id: string, action = 'pause') =>
+    ({
+      event_id: `res-${id}`,
+      label_skill: 'escurel:run-control-result',
+      title: action,
+      body: JSON.stringify({ action, outcome: 'paused', detail: null, run_id: null }),
+      provenance: { control: { request_event_id: id } },
+    }) as never;
+  const pages = (all: unknown[][]) => {
+    let calls = 0;
+    const fetchPage = async (cursor?: string) => {
+      const i = cursor ? Number(cursor) : 0;
+      calls += 1;
+      return {
+        events: all[i] as never[],
+        ...(i + 1 < all.length ? { next_cursor: String(i + 1) } : {}),
+      };
+    };
+    return { fetchPage, calls: () => calls };
+  };
+
+  it('finds the answer on a later page, not only the newest', async () => {
+    const { fetchPage } = pages([[answer('a')], [answer('b')], [answer('want')]]);
+    const found = await findControlResult(fetchPage, { eventId: 'want', action: 'pause' });
+    expect(found?.outcome).toBe('paused');
+  });
+
+  it('stops asking after a bounded number of pages', async () => {
+    const { fetchPage, calls } = pages(Array.from({ length: 20 }, (_, i) => [answer(`x${i}`)]));
+    expect(
+      await findControlResult(fetchPage, { eventId: 'missing', action: 'pause' }, 3),
+    ).toBeUndefined();
+    expect(calls()).toBe(3);
   });
 });
