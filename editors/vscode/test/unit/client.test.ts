@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { detectAdminState } from '../../src/auth/adminState';
 import { EscurelClient } from '../../src/client';
 import { EscurelError } from '../../src/client/errors';
 import { fixture, startMockGateway, type MockGateway } from './mockGateway';
@@ -14,6 +15,28 @@ beforeAll(async () => {
 afterAll(async () => {
   await client.close();
   await gw.close();
+});
+
+describe('listTools', () => {
+  // The gateway filters tools/list by role and tags each tool with its scope; that is how the
+  // extension tells an admin from anyone else without decoding a token.
+  it('returns each tool with its scope, as listed for THIS bearer', async () => {
+    const asHuman = await client.listTools();
+    expect(asHuman.length).toBeGreaterThan(0);
+    expect(asHuman.every((t) => t.scope === 'agent')).toBe(true);
+    expect(detectAdminState(asHuman)).toBe('not-admin');
+
+    token = 'admin';
+    try {
+      await client.close();
+      const asAdmin = await client.listTools();
+      expect(asAdmin.some((t) => t.name === 'admin_quota' && t.scope === 'admin')).toBe(true);
+      expect(detectAdminState(asAdmin)).toBe('admin');
+    } finally {
+      token = 'tok-1';
+      await client.close();
+    }
+  });
 });
 
 describe('typed wrapper', () => {

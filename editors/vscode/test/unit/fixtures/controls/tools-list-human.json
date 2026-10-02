@@ -1,0 +1,182 @@
+{
+ "result": {
+  "tools": [
+   {
+    "name": "list_skills",
+    "scope": "agent"
+   },
+   {
+    "name": "list_instances",
+    "scope": "agent"
+   },
+   {
+    "name": "get_operation",
+    "scope": "agent"
+   },
+   {
+    "name": "resolve",
+    "scope": "agent"
+   },
+   {
+    "name": "expand",
+    "scope": "agent"
+   },
+   {
+    "name": "fetch_blob",
+    "scope": "agent"
+   },
+   {
+    "name": "neighbours",
+    "scope": "agent"
+   },
+   {
+    "name": "provenance_ancestry",
+    "scope": "agent"
+   },
+   {
+    "name": "provenance_report",
+    "scope": "agent"
+   },
+   {
+    "name": "search",
+    "scope": "agent"
+   },
+   {
+    "name": "query_instance",
+    "scope": "agent"
+   },
+   {
+    "name": "validate",
+    "scope": "agent"
+   },
+   {
+    "name": "create_draft",
+    "scope": "agent"
+   },
+   {
+    "name": "list_changesets",
+    "scope": "agent"
+   },
+   {
+    "name": "promote_changeset",
+    "scope": "agent"
+   },
+   {
+    "name": "discard_changeset",
+    "scope": "agent"
+   },
+   {
+    "name": "create_branch",
+    "scope": "agent"
+   },
+   {
+    "name": "list_branches",
+    "scope": "agent"
+   },
+   {
+    "name": "merge_branch",
+    "scope": "agent"
+   },
+   {
+    "name": "abandon_branch",
+    "scope": "agent"
+   },
+   {
+    "name": "diff_draft",
+    "scope": "agent"
+   },
+   {
+    "name": "list_drafts",
+    "scope": "agent"
+   },
+   {
+    "name": "promote_draft",
+    "scope": "agent"
+   },
+   {
+    "name": "discard_draft",
+    "scope": "agent"
+   },
+   {
+    "name": "update_page",
+    "scope": "agent"
+   },
+   {
+    "name": "delete_page",
+    "scope": "agent"
+   },
+   {
+    "name": "move_page",
+    "scope": "agent"
+   },
+   {
+    "name": "append_message",
+    "scope": "agent"
+   },
+   {
+    "name": "list_messages",
+    "scope": "agent"
+   },
+   {
+    "name": "capture_event",
+    "scope": "agent"
+   },
+   {
+    "name": "start_operation",
+    "scope": "agent"
+   },
+   {
+    "name": "list_lineage",
+    "scope": "agent"
+   },
+   {
+    "name": "get_run_tool_calls",
+    "scope": "agent"
+   },
+   {
+    "name": "mint_agent_token",
+    "scope": "agent"
+   },
+   {
+    "name": "report_progress",
+    "scope": "agent"
+   },
+   {
+    "name": "list_inbox",
+    "scope": "agent"
+   },
+   {
+    "name": "list_events",
+    "scope": "agent"
+   },
+   {
+    "name": "list_snapshots",
+    "scope": "agent"
+   },
+   {
+    "name": "list_op_authors",
+    "scope": "agent"
+   },
+   {
+    "name": "assign_event",
+    "scope": "agent"
+   },
+   {
+    "name": "open_session",
+    "scope": "agent"
+   },
+   {
+    "name": "apply_op",
+    "scope": "agent"
+   },
+   {
+    "name": "close_session",
+    "scope": "agent"
+   },
+   {
+    "name": "write_instance",
+    "scope": "agent"
+   }
+  ]
+ }
+}

@@ -11,11 +11,8 @@ import { EscurelError } from './errors';
  * refresh needs no new transport; a plain-HTTP refusal (401/403/429, no
  * envelope) is turned into an `EscurelError` before the SDK sees it.
  */
-export function createTransport(
-  gatewayUrl: string,
-  tokens: TokenSource,
-): StreamableHTTPClientTransport {
-  const fetchWithAuth = async (input: string | URL, init?: RequestInit): Promise<Response> => {
+export function authedFetch(tokens: TokenSource) {
+  return async (input: string | URL, init?: RequestInit): Promise<Response> => {
     const headers = new Headers(init?.headers);
     const token = await tokens.get();
     if (token) headers.set('authorization', `Bearer ${token}`);
@@ -31,7 +28,18 @@ export function createTransport(
     }
     return res;
   };
-  return new StreamableHTTPClientTransport(new URL('/mcp', gatewayUrl.replace(/\/+$/, '') + '/'), {
+}
+
+export function mcpUrl(gatewayUrl: string): URL {
+  return new URL('/mcp', gatewayUrl.replace(/\/+$/, '') + '/');
+}
+
+export function createTransport(
+  gatewayUrl: string,
+  tokens: TokenSource,
+): StreamableHTTPClientTransport {
+  const fetchWithAuth = authedFetch(tokens);
+  return new StreamableHTTPClientTransport(mcpUrl(gatewayUrl), {
     fetch: fetchWithAuth as unknown as typeof fetch,
   });
 }

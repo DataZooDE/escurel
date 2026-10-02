@@ -201,6 +201,7 @@ async function main(): Promise<void> {
         // The suite hands this to the extension through its API (`useStaticToken`); nothing in
         // the shipped extension reads it, so a running install cannot be given a credential.
         ESCUREL_TEST_BEARER: info?.bearer ?? '',
+        ESCUREL_TEST_ADMIN_BEARER: info?.admin_bearer ?? '',
         ESCUREL_TEST_SUBJECT: 'alice',
       },
     });

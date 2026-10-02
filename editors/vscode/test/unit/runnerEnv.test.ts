@@ -7,6 +7,7 @@ const info = {
   kid: 'k',
   signing_key: 'KEY',
   bearer: 'b',
+  admin_bearer: 'a',
   tenant: 'vsx',
 };
 

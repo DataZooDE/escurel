@@ -114,6 +114,25 @@ export async function startMockGateway(): Promise<MockGateway> {
         res.writeHead(202).end();
         return;
       }
+      if (msg.method === 'tools/list') {
+        // Recorded from the real gateway, once for an admin's token and once for a human's.
+        const admin = req.headers.authorization === 'Bearer admin';
+        const recorded = JSON.parse(
+          readFileSync(
+            join(
+              __dirname,
+              'fixtures/controls',
+              admin ? 'tools-list-admin.json' : 'tools-list-human.json',
+            ),
+            'utf8',
+          ),
+        ) as { result: { tools: Record<string, unknown>[] } };
+        const tools = recorded.result.tools.map((t) => ({ inputSchema: { type: 'object' }, ...t }));
+        res
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools } }));
+        return;
+      }
       const { name, arguments: args = {} } = msg.params;
       calls.push({ name, arguments: args, authorization: req.headers.authorization });
       const f = answer(name, args);

@@ -70,3 +70,16 @@ export async function discardOpenDrafts(api: EscurelApi): Promise<void> {
     }
   }
 }
+
+/**
+ * Sign the extension in as the admin (same subject, admin role) for what only an admin may do.
+ * Returns a function that signs it back in as the ordinary human.
+ */
+export function signInAsAdmin(api: EscurelApi): () => void {
+  const admin = process.env.ESCUREL_TEST_ADMIN_BEARER;
+  const human = process.env.ESCUREL_TEST_BEARER;
+  assert.ok(admin && human, 'the harness must provide both bearers');
+  const subject = process.env.ESCUREL_TEST_SUBJECT ?? 'alice';
+  api.services.auth.refresher.useStaticToken(admin, subject);
+  return () => api.services.auth.refresher.useStaticToken(human, subject);
+}

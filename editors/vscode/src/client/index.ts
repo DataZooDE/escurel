@@ -1,8 +1,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
+import type { ToolInfo } from '../auth/adminState';
 import type { TokenSource } from '../auth/tokenSource';
 import { EscurelError } from './errors';
-import { createTransport } from './transport';
+import { authedFetch, createTransport, mcpUrl } from './transport';
 import type {
   ApplyOpRequest,
   ApplyOpResponse,
@@ -111,6 +112,54 @@ export class EscurelClient {
     if (tool !== 'validate' && (result.isError || payload.ok === false))
       throw EscurelError.fromPayload(tool, payload);
     return payload as T;
+  }
+
+  /**
+   * `tools/list`: what this token may call, each tool tagged with its `scope`. The gateway
+   * filters it by role, which is the only thing the extension reads to tell an admin (see
+   * `detectAdminState`).
+   *
+   * A raw request, not the SDK's `listTools()`: the SDK validates each tool against its own
+   * schema and drops the fields it does not know, and `scope` is exactly the one needed.
+   */
+  async listTools(): Promise<ToolInfo[]> {
+    const send = authedFetch(this.opts.tokens);
+    const tools: ToolInfo[] = [];
+    let cursor: string | undefined;
+    try {
+      do {
+        const res = await send(mcpUrl(this.opts.gatewayUrl), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/list',
+            ...(cursor ? { params: { cursor } } : {}),
+          }),
+        });
+        const body = (await res.json()) as {
+          result?: { tools?: { name: string; scope?: unknown }[]; nextCursor?: string };
+          error?: { code: number; message: string; data?: unknown };
+        };
+        if (body.error)
+          throw EscurelError.fromRpc(
+            'tools/list',
+            body.error.code,
+            body.error.message,
+            body.error.data,
+          );
+        for (const t of body.result?.tools ?? []) {
+          tools.push(
+            typeof t.scope === 'string' ? { name: t.name, scope: t.scope } : { name: t.name },
+          );
+        }
+        cursor = body.result?.nextCursor;
+      } while (cursor);
+    } catch (e) {
+      throw this.mapError('tools/list', e);
+    }
+    return tools;
   }
 
   // ── catalogue + pages ────────────────────────────────────────────
