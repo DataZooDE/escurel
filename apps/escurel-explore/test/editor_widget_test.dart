@@ -150,9 +150,11 @@ void main() {
     await tester.tap(find.text('acme'));
     await tester.pumpAndSettle();
 
-    // Tap the only wikilink pill on screen.
-    expect(find.byType(WikilinkPill), findsAtLeastNWidgets(1));
-    await tester.tap(find.byType(WikilinkPill).first);
+    // Tap the body's [[contact::dora]] pill. Not `.first`: the frontmatter's
+    // `skill: customer` renders as a pill too, and it comes first.
+    final doraPill = find.widgetWithText(WikilinkPill, 'contact::dora');
+    expect(doraPill, findsOneWidget);
+    await tester.tap(doraPill);
     await tester.pumpAndSettle();
 
     // Editor switched to contact__dora.
