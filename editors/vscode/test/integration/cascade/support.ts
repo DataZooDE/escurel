@@ -69,6 +69,25 @@ export async function discardOpenDrafts(api: EscurelApi): Promise<void> {
         .catch(() => undefined);
     }
   }
+  await settleInbox(api);
+}
+
+/**
+ * Mark everything still in the inbox that has a target page as processed.
+ *
+ * The echo harness folds the OLDEST inbox event with a target page. A review run leaves its event
+ * there until its draft is promoted, a plan run leaves its event there on purpose, and a
+ * dead-lettered event stays there for a requeue, so one test's leftover silently becomes the event
+ * every LATER test's run folds instead of its own (each of those runs is then a clean no-op and the
+ * test times out waiting for a draft that never comes). Cleaning up after each test, rather than
+ * hunting each test's own leftovers, is what keeps the suites independent.
+ */
+export async function settleInbox(api: EscurelApi): Promise<void> {
+  const page = await api.services.client.listInbox({ limit: 100 });
+  for (const e of page.events) {
+    if (e.instance_page_id)
+      await markProcessed(e.event_id, e.instance_page_id).catch(() => undefined);
+  }
 }
 
 /**

@@ -1,7 +1,9 @@
-import type { LineageNode } from '../client/types';
+import type { AdminState } from '../auth/adminState';
+import type { LineageNode, Skill } from '../client/types';
 import { pageSlug } from '../shared/pageId';
 import type { InspectorRow, InspectorView, ThreadNode, ThreadView } from '../shared/protocol';
 import { formatDateTime, formatDuration } from '../shared/time';
+import { buildNodeActions } from './inspectorActions';
 
 function value(raw: unknown): string | undefined {
   if (raw === null || raw === undefined || raw === '') return undefined;
@@ -161,25 +163,53 @@ function draftDetail(node: ThreadNode, raw: LineageNode): InspectorView {
   };
 }
 
+export interface InspectorExtras {
+  admin?: AdminState;
+  skills?: readonly Skill[];
+}
+
 /** Join real lineage attributes to display nodes without filling absent gateway fields. */
 export function buildInspectors(
   view: ThreadView,
   nodes: LineageNode[],
+  extras?: InspectorExtras,
 ): Record<string, InspectorView> {
   const byId = new Map(view.nodes.map((node) => [node.id, node]));
   const rawById = new Map(nodes.map((node) => [node.id, node]));
   const details: Record<string, InspectorView> = {};
   for (const node of view.nodes) {
     const raw = rawById.get(node.id);
-    if (!raw) continue;
-    details[node.id] =
-      node.kind === 'event'
-        ? eventDetail(node, raw, byId)
-        : node.kind === 'run'
-          ? runDetail(node, raw)
-          : node.kind === 'changeset'
-            ? changesetDetail(node, raw, byId, rawById)
-            : draftDetail(node, raw);
+    let detail: InspectorView;
+    if (raw) {
+      detail =
+        node.kind === 'event'
+          ? eventDetail(node, raw, byId)
+          : node.kind === 'run'
+            ? runDetail(node, raw)
+            : node.kind === 'changeset'
+              ? changesetDetail(node, raw, byId, rawById)
+              : draftDetail(node, raw);
+    } else if (node.target.open === 'page') {
+      detail = {
+        title: node.title,
+        rows: [],
+        sideTitle: '',
+        side: [],
+      };
+    } else {
+      continue;
+    }
+
+    const actions = buildNodeActions(node, raw, {
+      admin: extras?.admin,
+      skills: extras?.skills,
+      rawById,
+      lineageNodes: nodes,
+    });
+    if (actions) {
+      detail.actions = actions;
+    }
+    details[node.id] = detail;
   }
   return details;
 }
