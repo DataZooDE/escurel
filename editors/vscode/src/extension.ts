@@ -23,6 +23,7 @@ import { expandableRows, type OutlineRow } from './views/threadsModel';
 import { registerStartInTerminal } from './start/terminal';
 import { registerStartSkill } from './start/startSkill';
 import { registerApprovePlan } from './start/approvePlan';
+import { registerRunnerView, type RunnerTree } from './views/runner';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -40,6 +41,7 @@ export interface EscurelApi {
    * controls. Read from THIS bundle: a test bundle importing the module would see its own copy.
    */
   canAdmin: () => boolean;
+  runner: RunnerTree;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi {
@@ -52,6 +54,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
   const knowledge = KnowledgeTree.register(context, () => services.client);
   const inbox = InboxTree.register(context, () => services.client);
   const awaiting = AwaitingTree.register(context, () => services.client);
+  const runner = registerRunnerView(context, services);
   EscurelFileSystem.register(
     context,
     () => services.client,
@@ -202,6 +205,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     runs,
     threadsTree,
     canAdmin: adminContextValue,
+    runner,
   };
 }
 
