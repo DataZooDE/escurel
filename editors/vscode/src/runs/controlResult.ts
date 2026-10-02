@@ -38,8 +38,11 @@ export function describeOutcome(result: ControlResult): string {
       return 'Run cancelled.';
     case 'not_live':
       return `That run is not running any more${result.detail ? ` (${result.detail})` : ''}.`;
-    case 'requeued':
-      return result.newRunId ? `Requeued; new run ${result.newRunId}.` : 'Requeued.';
+    case 'requeued': {
+      // The runner answers a retry and a requeue the same way; the person asked for one of them.
+      const done = result.action === 'retry' ? 'Retried' : 'Requeued';
+      return result.newRunId ? `${done}; a new run has started.` : `${done}.`;
+    }
     case 'paused':
       return 'Dispatch paused.';
     case 'resumed':
