@@ -8,6 +8,8 @@ export default defineConfig({
   testMatch: '*.spec.ts',
   timeout: 180_000,
   expect: { timeout: 30_000 },
+  // A selector that matches nothing must fail in seconds, not wait out the whole test timeout.
+  use: { actionTimeout: 30_000, screenshot: 'only-on-failure' },
   workers: 1,
   fullyParallel: false,
   reporter: [['list']],

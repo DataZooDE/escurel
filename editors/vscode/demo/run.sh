@@ -92,7 +92,7 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
   "update.mode": "none",
   "extensions.autoUpdate": false,
   "window.restoreWindows": "none",
-  "window.zoomLevel": 1,
+  "window.zoomLevel": ${ESCUREL_DEMO_ZOOM:-1},
   "chat.disableAIFeatures": true,
   "workbench.secondarySideBar.defaultVisibility": "visible",
   "workbench.layoutControl.enabled": false,

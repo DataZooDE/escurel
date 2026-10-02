@@ -77,6 +77,9 @@ export const test = base.extend<object, { stack: Stack }>({
         ESCUREL_TEST_GATEWAY_BIN: join(bin, 'escurel-test-gateway'),
         ESCUREL_RUNNER_BIN: join(bin, 'escurel-runner'),
         ESCUREL_ECHO_SLEEP_MS: '6000',
+        // No zoom: Playwright maps clicks into a nested webview with the page's own scale, and a zoomed
+        // window (the demo's default) puts them on the wrong element.
+        ESCUREL_DEMO_ZOOM: '0',
       };
       const run = join(EXT, 'demo', 'run.sh');
       execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });
@@ -161,9 +164,15 @@ export const test = base.extend<object, { stack: Stack }>({
 
 export { expect };
 
-/** The webview (an iframe inside an iframe) that contains `selector`, whichever tab it is in. */
+/**
+ * The VISIBLE webview (an iframe inside an iframe) that contains `selector`.
+ *
+ * VS Code keeps the webview of every open tab in the DOM and hides the inactive ones with
+ * `visibility: hidden`, so a plain `iframe.webview` also matches the tab you are not looking at,
+ * and a click on it lands on whatever is on top.
+ */
 export async function webviewWith(page: Page, selector: string): Promise<FrameLocator> {
-  const outer = page.locator('iframe.webview');
+  const outer = page.locator('iframe.webview:visible');
   let found: FrameLocator | undefined;
   await expect
     .poll(
@@ -171,7 +180,7 @@ export async function webviewWith(page: Page, selector: string): Promise<FrameLo
         const n = await outer.count();
         for (let i = 0; i < n; i += 1) {
           const inner = page
-            .frameLocator('iframe.webview')
+            .frameLocator('iframe.webview:visible')
             .nth(i)
             .frameLocator('iframe#active-frame');
           if ((await inner.locator(selector).count()) > 0) {

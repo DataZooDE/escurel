@@ -47,10 +47,17 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
 
 test('run detail opens from the canvas with its plan and tool calls', async ({ stack }) => {
   const { page } = stack;
+  // Scenario 2 started a skill, which opened that event's thread in a NEW tab. Go back to the story's
+  // thread, the one with a finished run, as a person would.
+  await page.locator('.tab', { hasText: 'PO 4500087412' }).first().click();
   const wv = await webviewWith(page, 'escurel-thread-canvas');
+  // The canvas is panned to whatever was selected last; Fit brings every card back into view.
+  await wv.getByRole('button', { name: 'Fit' }).click();
+  // By its visible text: a card's accessible name is its title, subtitle and state, not its meta lines.
   await wv
     .locator('escurel-thread-canvas')
-    .getByRole('treeitem', { name: /echo · review/ })
+    .getByRole('treeitem')
+    .filter({ hasText: 'echo · review' })
     .first()
     .dblclick();
   await expect(page.locator('.tab .label-name', { hasText: /^Run / })).toBeVisible();
