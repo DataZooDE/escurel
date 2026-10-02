@@ -32,18 +32,36 @@ export async function loadRun(client: EscurelClient, runId: string): Promise<Loa
   // Denial is absence: the node may be missing while the run's own events are readable, and
   // run detail is still worth showing from them.
   let node: LineageNode | undefined;
+  let skill: string | undefined;
   if (rootEventId) {
-    const lineage = await client.listLineage({
-      root_event_id: rootEventId,
-      include: ['runs', 'tool_calls'],
-    });
-    node = lineage.nodes.find((n) => n.type === 'run' && n.id === runId);
+    try {
+      const lineage = await client.listLineage({
+        root_event_id: rootEventId,
+        include: ['runs', 'tool_calls'],
+      });
+      node = lineage.nodes.find((n) => n.type === 'run' && n.id === runId);
+      const root = lineage.nodes.find(
+        (n) => n.type === 'event' && (n.id === rootEventId || n.parent === null),
+      );
+      if (typeof root?.label_skill === 'string' && root.label_skill) skill = root.label_skill;
+    } catch {
+      // A denied root does not prevent showing the run's own events.
+    }
   }
 
   const calls = await client.getRunToolCalls({ run_id: runId, limit: CALLS_PAGE });
   const view = mergeToolCallPage(buildRunView(node, events), calls);
+  const started = events.find((e) => e.title === 'run-started');
+  const runner = started?.provenance?.runner;
+  const eventId =
+    runner && typeof runner === 'object' ? (runner as Record<string, unknown>).event_id : undefined;
+  const enriched = {
+    ...view,
+    ...(skill ? { skill } : {}),
+    ...(typeof eventId === 'string' && eventId ? { triggerEventId: eventId } : {}),
+  };
   // The id is known even when neither the node nor an event carried it.
-  return { view: view.runId ? view : { ...view, runId }, rootEventId };
+  return { view: enriched.runId ? enriched : { ...enriched, runId }, rootEventId };
 }
 
 /**

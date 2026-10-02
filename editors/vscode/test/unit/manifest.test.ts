@@ -24,12 +24,30 @@ const manifest = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.js
     commands: { command: string }[];
     views: Record<string, { id: string }[]>;
     configuration: { properties: Record<string, unknown> };
+    menus: Record<string, { command: string; when?: string; group?: string }[]>;
   };
   capabilities: { untrustedWorkspaces: { restrictedConfigurations: string[] } };
 };
 const code = sources(join(__dirname, '..', '..', 'src')).join('\n');
 
 describe('the manifest and the code agree', () => {
+  it('declares only known commands in menus and wires the Runner controls', () => {
+    const declared = new Set(manifest.contributes.commands.map((c) => c.command));
+    const entries = Object.values(manifest.contributes.menus).flat();
+    expect(entries.filter((entry) => !declared.has(entry.command))).toEqual([]);
+    const runner = entries.filter((entry) => entry.when?.includes('escurel.runner'));
+    expect(runner.map((entry) => entry.command).sort()).toEqual(
+      [
+        'escurel.cancelRun',
+        'escurel.pauseDispatch',
+        'escurel.requeue',
+        'escurel.resumeDispatch',
+        'escurel.resumeDispatch',
+        'escurel.retryRun',
+      ].sort(),
+    );
+  });
+
   it('every declared command is registered', () => {
     const declared = manifest.contributes.commands.map((c) => c.command);
     const missing = declared.filter((c) => !code.includes(`'${c}'`));

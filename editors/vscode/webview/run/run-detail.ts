@@ -27,13 +27,49 @@ export class EscurelRunDetail extends LitElement {
       }
       header,
       .meta,
-      .trace {
+      .trace,
+      .controls {
         display: flex;
         align-items: center;
         gap: 8px;
         flex-wrap: wrap;
       }
       .meta {
+        color: var(--escurel-muted);
+      }
+      .controls {
+        margin-left: auto;
+      }
+      .run-control {
+        color: var(--vscode-button-secondaryForeground);
+        background: var(--vscode-button-secondaryBackground);
+        border: 1px solid var(--vscode-contrastBorder, transparent);
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      .run-control:hover:not(:disabled) {
+        background: var(--vscode-button-secondaryHoverBackground);
+      }
+      .run-control.primary {
+        color: var(--vscode-button-foreground);
+        background: var(--vscode-button-background);
+      }
+      .run-control.primary:hover:not(:disabled) {
+        background: var(--vscode-button-hoverBackground);
+      }
+      .run-control:focus-visible {
+        outline: 2px solid var(--vscode-focusBorder);
+        outline-offset: 2px;
+      }
+      .run-control:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .control-hint {
+        flex-basis: 100%;
+        margin: 0;
+        text-align: right;
+        font-size: 0.9em;
         color: var(--escurel-muted);
       }
       .status-chip {
@@ -138,6 +174,12 @@ export class EscurelRunDetail extends LitElement {
     );
   }
 
+  /** The reason a control is deactivated, as text: a tooltip reaches neither keyboard nor touch. */
+  private controlHint(run: RunView) {
+    const reason = (run.controls ?? []).find((c) => !c.enabled && c.disabledReason)?.disabledReason;
+    return reason ? html`<p class="control-hint" id="control-hint">${reason}</p>` : nothing;
+  }
+
   override render() {
     if (this.error)
       return html`
@@ -158,6 +200,25 @@ export class EscurelRunDetail extends LitElement {
       <header>
         <h1>Run ${run.runId}</h1>
         <span class="chip status-chip ${run.tone}">${run.status.replaceAll('_', ' ')}</span>
+        <div class="controls" role="group" aria-label="Run controls">
+          ${(run.controls ?? []).map(
+            (control) => html`
+              <button
+                class="run-control ${control.action === 'approve' ? 'primary' : ''}"
+                ?disabled=${!control.enabled}
+                title=${control.disabledReason ?? ''}
+                aria-describedby=${!control.enabled && control.disabledReason ? 'control-hint' : nothing}
+                @click=${() =>
+                  control.action === 'fix-skill' && run.skill
+                    ? this.send({ type: 'view-skill', skill: run.skill })
+                    : this.send({ type: 'run-control', action: control.action, runId: run.runId })}
+              >
+                ${control.label}
+              </button>
+            `,
+          )}
+        </div>
+        ${this.controlHint(run)}
       </header>
       <div class="meta">
         ${run.harness ? html`<span>Harness ${run.harness}</span>` : nothing}

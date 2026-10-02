@@ -363,6 +363,16 @@
           "command": "escurel.refresh",
           "when": "view == escurel.threads",
           "group": "navigation"
+        },
+        {
+          "command": "escurel.pauseDispatch",
+          "when": "view == escurel.runner",
+          "group": "navigation"
+        },
+        {
+          "command": "escurel.resumeDispatch",
+          "when": "view == escurel.runner",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -435,6 +445,26 @@
           "command": "escurel.openThread",
           "when": "view == escurel.inbox && viewItem =~ /escurel.event/",
           "group": "navigation"
+        },
+        {
+          "command": "escurel.cancelRun",
+          "when": "view == escurel.runner && viewItem == liveRun",
+          "group": "inline"
+        },
+        {
+          "command": "escurel.retryRun",
+          "when": "view == escurel.runner && viewItem == deadLetter",
+          "group": "1_control"
+        },
+        {
+          "command": "escurel.requeue",
+          "when": "view == escurel.runner && viewItem == deadLetter",
+          "group": "1_control"
+        },
+        {
+          "command": "escurel.resumeDispatch",
+          "when": "view == escurel.runner && viewItem == paused",
+          "group": "1_control"
         }
       ],
       "editor/title": [

@@ -22,6 +22,98 @@ const qa = (el: Element, selector: string) => [...el.shadowRoot!.querySelectorAl
 const text = (element: Element | null) => (element?.textContent ?? '').replace(/\s+/g, ' ').trim();
 
 describe('<escurel-run-detail>', () => {
+  it('renders header controls, explains disabled Requeue and posts the exact action', async () => {
+    const view: RunView = {
+      ...recordedRunView,
+      status: 'dead_letter',
+      controls: [
+        { action: 'retry', label: 'Retry', enabled: true },
+        {
+          action: 'requeue',
+          label: 'Requeue',
+          enabled: false,
+          disabledReason: 'Only an admin can requeue a dead letter.',
+        },
+      ],
+    };
+    const el = await render(view);
+    const buttons = qa(el, 'header .run-control') as HTMLButtonElement[];
+    expect(buttons.map((button) => text(button))).to.deep.equal(['Retry', 'Requeue']);
+    expect(buttons[1]!.disabled).to.equal(true);
+    expect(buttons[1]!.title).to.equal('Only an admin can requeue a dead letter.');
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+    );
+    buttons[0]!.click();
+    expect(sent).to.deep.equal([{ type: 'run-control', action: 'retry', runId: view.runId }]);
+  });
+
+  it('says WHY a control is deactivated in text, not only in a tooltip', async () => {
+    // A tooltip does not reach a keyboard, a touch screen or a screen reader. The reason is on the
+    // page, and the disabled button points at it.
+    const view: RunView = {
+      ...recordedRunView,
+      status: 'dead_letter',
+      controls: [
+        { action: 'retry', label: 'Retry', enabled: true },
+        {
+          action: 'requeue',
+          label: 'Requeue',
+          enabled: false,
+          disabledReason: 'Only an admin can requeue a dead letter.',
+        },
+      ],
+    };
+    const el = await render(view);
+    const hint = q(el, '.control-hint') as HTMLElement;
+    expect(text(hint)).to.contain('Only an admin can requeue a dead letter.');
+    const requeue = (qa(el, 'header .run-control') as HTMLButtonElement[])[1]!;
+    expect(requeue.getAttribute('aria-describedby')).to.equal(hint.id);
+  });
+
+  it('shows no hint when every control is available', async () => {
+    const el = await render({
+      ...recordedRunView,
+      status: 'running',
+      controls: [{ action: 'cancel', label: 'Cancel run', enabled: true }],
+    });
+    expect(q(el, '.control-hint')).to.equal(null);
+  });
+
+  it('makes Approve plan primary and posts its run id', async () => {
+    const view: RunView = {
+      ...recordedRunView,
+      status: 'planned',
+      controls: [{ action: 'approve', label: 'Approve plan', enabled: true }],
+    };
+    const el = await render(view);
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+    );
+    const button = q(el, 'header .run-control') as HTMLButtonElement;
+    expect(button.classList.contains('primary')).to.equal(true);
+    button.click();
+    expect(sent).to.deep.equal([{ type: 'run-control', action: 'approve', runId: view.runId }]);
+  });
+
+  it('posts the host-provided skill for Fix skill', async () => {
+    const view: RunView = {
+      ...recordedRunView,
+      skill: 'signal',
+      status: 'failed',
+      controls: [{ action: 'fix-skill', label: 'Fix skill', enabled: true }],
+    };
+    const el = await render(view);
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+    );
+    (q(el, 'header .run-control') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([{ type: 'view-skill', skill: 'signal' }]);
+  });
+
   it('builds the component fixture with the recorded run model and call pages', () => {
     const node = (lineage.nodes as LineageNode[]).find((item) => item.type === 'run');
     const model = buildRunView(node, runEvents.events as Event[]);
