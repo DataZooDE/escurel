@@ -1,7 +1,7 @@
 import { LitElement, css, html, nothing } from 'lit';
 import type { PropertyValues } from 'lit';
-import { property } from 'lit/decorators.js';
-import type { RunView, RunWebviewToHost } from '../../src/shared/protocol';
+import { property, state } from 'lit/decorators.js';
+import type { RunControl, RunView, RunWebviewToHost } from '../../src/shared/protocol';
 import { formatDateTime, formatDuration } from '../../src/shared/time';
 import { theme } from '../shared/theme.css';
 
@@ -27,13 +27,49 @@ export class EscurelRunDetail extends LitElement {
       }
       header,
       .meta,
-      .trace {
+      .trace,
+      .controls {
         display: flex;
         align-items: center;
         gap: 8px;
         flex-wrap: wrap;
       }
       .meta {
+        color: var(--escurel-muted);
+      }
+      .controls {
+        margin-left: auto;
+      }
+      .run-control {
+        color: var(--vscode-button-secondaryForeground);
+        background: var(--vscode-button-secondaryBackground);
+        border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      .run-control:hover:not([aria-disabled='true']) {
+        background: var(--vscode-button-secondaryHoverBackground);
+      }
+      .run-control.primary {
+        color: var(--vscode-button-foreground);
+        background: var(--vscode-button-background);
+      }
+      .run-control.primary:hover:not([aria-disabled='true']) {
+        background: var(--vscode-button-hoverBackground);
+      }
+      .run-control:focus-visible {
+        outline: 2px solid var(--vscode-focusBorder);
+        outline-offset: 2px;
+      }
+      .run-control[aria-disabled='true'] {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .control-hint {
+        flex-basis: 100%;
+        margin: 0;
+        text-align: right;
+        font-size: 0.9em;
         color: var(--escurel-muted);
       }
       .status-chip {
@@ -116,9 +152,42 @@ export class EscurelRunDetail extends LitElement {
   @property({ attribute: false }) view?: RunView;
   @property({ attribute: false }) error?: { message: string; canReconnect: boolean };
   private loadingMore = false;
+  /**
+   * A control was sent and the run has not been reported again. The host acts on the click and the
+   * run updates by itself a moment later; until then a second click would send the same control
+   * twice (two retries, two approvals). Released when the next run state arrives, or after a few
+   * seconds in case it never does.
+   */
+  @state() private controlPending = false;
+  private pendingTimer?: ReturnType<typeof setTimeout>;
 
   protected override willUpdate(changed: PropertyValues<this>): void {
-    if (changed.has('view')) this.loadingMore = false;
+    if (changed.has('view')) {
+      this.loadingMore = false;
+      this.releaseControls();
+    }
+  }
+
+  override disconnectedCallback(): void {
+    clearTimeout(this.pendingTimer);
+    super.disconnectedCallback();
+  }
+
+  private releaseControls(): void {
+    clearTimeout(this.pendingTimer);
+    this.controlPending = false;
+  }
+
+  private onControl(run: RunView, control: RunControl): void {
+    // aria-disabled keeps a deactivated control reachable and announced, so the click is what is
+    // refused here, not the focus.
+    if (!control.enabled || this.controlPending) return;
+    this.controlPending = true;
+    clearTimeout(this.pendingTimer);
+    this.pendingTimer = setTimeout(() => this.releaseControls(), 5_000);
+    if (control.action === 'fix-skill' && run.skill)
+      this.send({ type: 'view-skill', skill: run.skill });
+    else this.send({ type: 'run-control', action: control.action, runId: run.runId });
   }
 
   private loadMore(after: number): void {
@@ -136,6 +205,12 @@ export class EscurelRunDetail extends LitElement {
         composed: true,
       }),
     );
+  }
+
+  /** The reason a control is deactivated, as text: a tooltip reaches neither keyboard nor touch. */
+  private controlHint(run: RunView) {
+    const reason = (run.controls ?? []).find((c) => !c.enabled && c.disabledReason)?.disabledReason;
+    return reason ? html`<p class="control-hint" id="control-hint">${reason}</p>` : nothing;
   }
 
   override render() {
@@ -158,6 +233,28 @@ export class EscurelRunDetail extends LitElement {
       <header>
         <h1>Run ${run.runId}</h1>
         <span class="chip status-chip ${run.tone}">${run.status.replaceAll('_', ' ')}</span>
+        ${
+          (run.controls ?? []).length > 0
+            ? html`<div class="controls" role="group" aria-label="Run controls">
+                ${(run.controls ?? []).map(
+                  (control) => html`
+                    <button
+                      class="run-control ${control.action === 'approve' ? 'primary' : ''}"
+                      aria-disabled=${!control.enabled || this.controlPending ? 'true' : nothing}
+                      title=${control.disabledReason ?? ''}
+                      aria-describedby=${
+                        !control.enabled && control.disabledReason ? 'control-hint' : nothing
+                      }
+                      @click=${() => this.onControl(run, control)}
+                    >
+                      ${control.label}
+                    </button>
+                  `,
+                )}
+              </div>`
+            : nothing
+        }
+        ${this.controlHint(run)}
       </header>
       <div class="meta">
         ${run.harness ? html`<span>Harness ${run.harness}</span>` : nothing}

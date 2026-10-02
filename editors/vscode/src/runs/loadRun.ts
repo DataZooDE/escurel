@@ -32,18 +32,33 @@ export async function loadRun(client: EscurelClient, runId: string): Promise<Loa
   // Denial is absence: the node may be missing while the run's own events are readable, and
   // run detail is still worth showing from them.
   let node: LineageNode | undefined;
+  let skill: string | undefined;
   if (rootEventId) {
-    const lineage = await client.listLineage({
-      root_event_id: rootEventId,
-      include: ['runs', 'tool_calls'],
-    });
-    node = lineage.nodes.find((n) => n.type === 'run' && n.id === runId);
+    try {
+      const lineage = await client.listLineage({
+        root_event_id: rootEventId,
+        include: ['runs', 'tool_calls'],
+      });
+      node = lineage.nodes.find((n) => n.type === 'run' && n.id === runId);
+      skill = rootSkill(lineage.nodes, rootEventId);
+    } catch {
+      // A denied root does not prevent showing the run's own events.
+    }
   }
 
   const calls = await client.getRunToolCalls({ run_id: runId, limit: CALLS_PAGE });
   const view = mergeToolCallPage(buildRunView(node, events), calls);
+  const started = events.find((e) => e.title === 'run-started');
+  const runner = started?.provenance?.runner;
+  const eventId =
+    runner && typeof runner === 'object' ? (runner as Record<string, unknown>).event_id : undefined;
+  const enriched = {
+    ...view,
+    ...(skill ? { skill } : {}),
+    ...(typeof eventId === 'string' && eventId ? { triggerEventId: eventId } : {}),
+  };
   // The id is known even when neither the node nor an event carried it.
-  return { view: view.runId ? view : { ...view, runId }, rootEventId };
+  return { view: enriched.runId ? enriched : { ...enriched, runId }, rootEventId };
 }
 
 /**
@@ -62,4 +77,16 @@ export function carryCalls(next: RunView, previous: RunView | undefined): RunVie
     calls: [...bySeq.values()].sort((a, b) => a.seq - b.seq),
     nextAfter: previous.nextAfter,
   };
+}
+
+/**
+ * The skill of the thread's root event, from its lineage. The root is found by id. A parentless
+ * event is a fallback only when the root itself is not listed: lineage prunes what the caller may
+ * not read, so a node whose parent was pruned ALSO reads as having none, and one listed before the
+ * root must not be taken for it (it would put someone else's skill on Fix skill and Approve).
+ */
+export function rootSkill(nodes: readonly LineageNode[], rootEventId: string): string | undefined {
+  const events = nodes.filter((n) => n.type === 'event');
+  const root = events.find((n) => n.id === rootEventId) ?? events.find((n) => n.parent === null);
+  return typeof root?.label_skill === 'string' && root.label_skill ? root.label_skill : undefined;
 }

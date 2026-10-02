@@ -7,6 +7,9 @@ import { LiveViewSocket } from '../liveView';
 import { webviewHtml, webviewOptions } from '../shared/webviewHtml';
 import { carryCalls, loadRun } from './loadRun';
 import { mergeToolCallPage } from './runModel';
+import { runControls } from './controls';
+import { resolveRunAction, visibleRunControls, type ActionRunView } from './runActions';
+import { log } from '../log';
 
 const REFETCH_DEBOUNCE_MS = 300;
 
@@ -27,6 +30,7 @@ export function runIdOf(arg: unknown): string | undefined {
  */
 export class RunController implements vscode.Disposable {
   private readonly panels = new Map<string, vscode.WebviewPanel>();
+  private readonly views = new Map<string, ActionRunView>();
   private readonly disposers: (() => void)[] = [];
   private readonly loaded = new vscode.EventEmitter<{ runId: string; view: RunView }>();
   /** What the host last loaded for a run — the only view of it outside the webview. */
@@ -73,6 +77,17 @@ export class RunController implements vscode.Disposable {
     this.wire(runId, panel);
   }
 
+  /** The panel and integration tests use this same guarded host path. */
+  async handleWebviewMessage(runId: string, message: unknown): Promise<void> {
+    const view = this.views.get(runId);
+    const action = view && resolveRunAction(view, message);
+    if (!action) {
+      log().warn('run detail: rejected invalid action');
+      return;
+    }
+    await vscode.commands.executeCommand(action.command, action.args);
+  }
+
   private wire(runId: string, panel: vscode.WebviewPanel): void {
     let view: RunView | undefined;
     let rootEventId: string | undefined;
@@ -84,12 +99,23 @@ export class RunController implements vscode.Disposable {
       // The panel can be closed between the check above and the delivery; see `safePost`.
       safePost(panel, m);
     };
+    let loadSeq = 0;
     const load = async () => {
+      // Reads overlap (a reconnect, a live event, a manual refresh). Only the NEWEST one to start is
+      // allowed to land: a slower earlier read finishing last must not overwrite a newer state.
+      const mine = ++loadSeq;
       try {
         const loaded = await loadRun(this.services.client, runId);
         // See ThreadController: a result for a panel that has been closed is for nobody.
-        if (disposed) return;
-        view = carryCalls(loaded.view, view);
+        if (disposed || mine !== loadSeq) return;
+        const next = carryCalls(loaded.view, view) as ActionRunView;
+        next.controls = visibleRunControls({
+          ...next,
+          controls: runControls(next.status, await this.services.admin.get()),
+        });
+        if (disposed || mine !== loadSeq) return;
+        view = next;
+        this.views.set(runId, next);
         rootEventId = loaded.rootEventId;
         post({ type: 'run', view });
         this.loaded.fire({ runId, view });
@@ -104,6 +130,7 @@ export class RunController implements vscode.Disposable {
 
     post({ type: 'run-loading', runId });
     const live = new LiveViewSocket(this.services, { run_id: runId }, schedule, () => void load());
+    const adminSub = this.services.admin.onDidChange(schedule);
 
     const sub = panel.webview.onDidReceiveMessage(async (m: RunWebviewToHost) => {
       switch (m.type) {
@@ -137,6 +164,9 @@ export class RunController implements vscode.Disposable {
           await vscode.env.clipboard.writeText(m.traceId);
           void vscode.window.showInformationMessage('escurel: trace id copied.');
           return;
+        case 'run-control':
+        case 'view-skill':
+          return void this.handleWebviewMessage(runId, m);
       }
     });
 
@@ -144,8 +174,10 @@ export class RunController implements vscode.Disposable {
       disposed = true;
       clearTimeout(timer);
       live.dispose();
+      adminSub.dispose();
       sub.dispose();
       this.panels.delete(runId);
+      this.views.delete(runId);
     };
     this.disposers.push(dispose);
     panel.onDidDispose(dispose);

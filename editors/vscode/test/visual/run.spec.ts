@@ -9,3 +9,17 @@ test('run detail renders in the current theme', async ({ page }, testInfo) => {
     fullPage: true,
   });
 });
+
+// The control bar is part of the run header and has to look right in every theme, including its
+// deactivated button (a control that is not yours still shows, with the reason on hover).
+for (const state of ['running', 'planned', 'dead_letter']) {
+  test(`run detail with controls: ${state}`, async ({ page }, testInfo) => {
+    const theme = (testInfo.project.metadata as { theme: string }).theme;
+    await page.goto(`/test/visual/harness/run.html?theme=${theme}&state=${state}`);
+    await page.locator('escurel-run-detail .run-control').first().waitFor();
+    await expect(page).toHaveScreenshot(`run-detail-${state}.png`, {
+      maxDiffPixelRatio: 0.01,
+      fullPage: true,
+    });
+  });
+}

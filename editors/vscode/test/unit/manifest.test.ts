@@ -21,15 +21,33 @@ function sources(dir: string): string[] {
 
 const manifest = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8')) as {
   contributes: {
-    commands: { command: string }[];
+    commands: { command: string; icon?: string }[];
     views: Record<string, { id: string }[]>;
     configuration: { properties: Record<string, unknown> };
+    menus: Record<string, { command: string; when?: string; group?: string }[]>;
   };
   capabilities: { untrustedWorkspaces: { restrictedConfigurations: string[] } };
 };
 const code = sources(join(__dirname, '..', '..', 'src')).join('\n');
 
 describe('the manifest and the code agree', () => {
+  it('declares only known commands in menus and wires the Runner controls', () => {
+    const declared = new Set(manifest.contributes.commands.map((c) => c.command));
+    const entries = Object.values(manifest.contributes.menus).flat();
+    expect(entries.filter((entry) => !declared.has(entry.command))).toEqual([]);
+    const runner = entries.filter((entry) => entry.when?.includes('escurel.runner'));
+    expect(runner.map((entry) => entry.command).sort()).toEqual(
+      [
+        'escurel.cancelRun',
+        'escurel.pauseDispatch',
+        'escurel.requeue',
+        'escurel.resumeDispatch',
+        'escurel.resumeDispatch',
+        'escurel.retryRun',
+      ].sort(),
+    );
+  });
+
   it('every declared command is registered', () => {
     const declared = manifest.contributes.commands.map((c) => c.command);
     const missing = declared.filter((c) => !code.includes(`'${c}'`));
@@ -48,5 +66,22 @@ describe('the manifest and the code agree', () => {
     const declared = Object.keys(manifest.contributes.configuration.properties);
     const allowed = new Set(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations);
     expect(declared.filter((k) => !allowed.has(k))).toEqual([]);
+  });
+});
+
+describe('inline buttons', () => {
+  // A button shown inline on a tree row has no label, only its icon: a command with none renders as
+  // nothing at all, and the action is simply not there. Nothing else catches it, since the command is
+  // declared, registered and in the menu.
+  it('every command shown inline in a view has an icon', () => {
+    const inline = Object.values(manifest.contributes.menus)
+      .flat()
+      .filter((m) => m.group === 'inline' || m.group?.startsWith('inline@'))
+      .map((m) => m.command);
+    expect(inline.length).toBeGreaterThan(0);
+    const withoutIcon = [...new Set(inline)].filter(
+      (id) => !manifest.contributes.commands.find((c) => c.command === id)?.icon,
+    );
+    expect(withoutIcon).toEqual([]);
   });
 });
