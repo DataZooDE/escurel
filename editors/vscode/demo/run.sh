@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Start (or stop) a demo of the escurel VS Code extension: a real gateway that verifies tokens, a
+# real runner, a story already played into it, and a VS Code window signed in and ready.
+#
+#   demo/run.sh start     build what is missing, start everything, open the window
+#   demo/run.sh stop      stop it all (the window is left to you to close)
+#   demo/run.sh status
+#
+# Binaries (override with the env vars): ESCUREL_TEST_GATEWAY_BIN, ESCUREL_RUNNER_BIN, under
+# <repo>/target/release by default. Everything lives in $ESCUREL_DEMO_HOME (default
+# ~/.cache/escurel-demo, on the real disk) and uses a throwaway VS Code profile, so your own
+# editor settings and extensions are untouched.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXT="$(cd "$HERE/.." && pwd)"
+REPO="$(cd "$EXT/../.." && pwd)"
+HOME_DIR="${ESCUREL_DEMO_HOME:-$HOME/.cache/escurel-demo}"
+GATEWAY_BIN="${ESCUREL_TEST_GATEWAY_BIN:-$REPO/target/release/escurel-test-gateway}"
+RUNNER_BIN="${ESCUREL_RUNNER_BIN:-$REPO/target/release/escurel-runner}"
+CODE="${ESCUREL_DEMO_CODE:-code}"
+
+stop() {
+  # The launcher's pid is not the window's: Electron forks. Match on the throwaway profile.
+  pkill -f -- "--user-data-dir $HOME_DIR/profile" 2>/dev/null || true
+  for f in code runner gateway; do
+    if [ -f "$HOME_DIR/$f.pid" ]; then
+      kill "$(cat "$HOME_DIR/$f.pid")" 2>/dev/null || true
+      rm -f "$HOME_DIR/$f.pid"
+    fi
+  done
+}
+
+case "${1:-start}" in
+  stop) stop; echo "demo stopped"; exit 0 ;;
+  status)
+    for f in gateway runner code; do
+      if [ -f "$HOME_DIR/$f.pid" ] && kill -0 "$(cat "$HOME_DIR/$f.pid")" 2>/dev/null; then echo "$f: running"; else echo "$f: not running"; fi
+    done
+    exit 0 ;;
+  start) ;;
+  *) echo "usage: $0 start|stop|status" >&2; exit 2 ;;
+esac
+
+for bin in "$GATEWAY_BIN" "$RUNNER_BIN"; do
+  [ -x "$bin" ] || { echo "missing $bin (cargo build --release -p escurel-test-support -p escurel-runner)" >&2; exit 1; }
+done
+if [ ! -f "$EXT/dist/extension.js" ]; then (cd "$EXT" && npm run build >/dev/null); fi
+
+stop
+rm -rf "$HOME_DIR"
+mkdir -p "$HOME_DIR/workspace" "$HOME_DIR/profile/User" "$HOME_DIR/ext"
+
+# The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token).
+setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HERE/seed" --subject alice \
+  --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
+echo $! > "$HOME_DIR/gateway.pid"
+for _ in $(seq 1 120); do [ -s "$HOME_DIR/gateway.json" ] && break; sleep 0.5; done
+[ -s "$HOME_DIR/gateway.json" ] || { echo "the gateway printed nothing; see $HOME_DIR/gateway.log" >&2; exit 1; }
+
+field() { python3 -c "import json,sys; print(json.loads(open('$HOME_DIR/gateway.json').readline())['$1'])"; }
+PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+
+# The runner, MINTED mode: it signs a token per run, which is what lets the gateway tell which run
+# wrote what, so the thread shows a changeset under its run.
+env -u ESCUREL_RUNNER_TOKEN \
+  ESCUREL_RUNNER_GATEWAY_URL="$(field gateway_url)" ESCUREL_RUNNER_TENANT="$(field tenant)" \
+  ESCUREL_RUNNER_AUTH_ISSUER="$(field issuer_url)" ESCUREL_RUNNER_AUTH_KID="$(field kid)" \
+  ESCUREL_RUNNER_AUTH_SIGNING_KEY="$(field signing_key)" ESCUREL_RUNNER_HARNESS=echo \
+  ESCUREL_RUNNER_LISTEN="127.0.0.1:$PORT" ESCUREL_RUNNER_LEDGER_PATH="$HOME_DIR/ledger.duckdb" \
+  ESCUREL_RUNNER_POLL_INTERVAL=250ms \
+  setsid nohup "$RUNNER_BIN" > "$HOME_DIR/runner.log" 2>&1 < /dev/null &
+echo $! > "$HOME_DIR/runner.pid"
+
+echo "playing the story (a few seconds)..."
+node "$HERE/driver.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" > "$HOME_DIR/story.json"
+
+cat > "$HOME_DIR/profile/User/settings.json" <<JSON
+{
+  "escurel.gatewayUrl": "$(field gateway_url)",
+  "security.workspace.trust.enabled": false,
+  "workbench.startupEditor": "none",
+  "workbench.tips.enabled": false,
+  "telemetry.telemetryLevel": "off",
+  "update.mode": "none",
+  "extensions.autoUpdate": false,
+  "window.restoreWindows": "none",
+  "window.zoomLevel": 1,
+  "chat.disableAIFeatures": true,
+  "workbench.secondarySideBar.defaultVisibility": "hidden",
+  "workbench.layoutControl.enabled": false,
+  "workbench.welcomePage.walkthroughs.openOnInstall": false
+}
+JSON
+
+# The window. ESCUREL_DEMO_* tell the bootstrap extension where the bearer and the story are.
+ESCUREL_DEMO_BEARER_FILE="$HOME_DIR/bearer.json" ESCUREL_DEMO_STORY="$HOME_DIR/story.json" \
+  setsid nohup "$CODE" --user-data-dir "$HOME_DIR/profile" --extensions-dir "$HOME_DIR/ext" \
+  --extensionDevelopmentPath="$EXT" --extensionDevelopmentPath="$HERE/bootstrap" \
+  ${ESCUREL_DEMO_CDP_PORT:+--remote-debugging-port=$ESCUREL_DEMO_CDP_PORT} \
+  --new-window "$HOME_DIR/workspace" > "$HOME_DIR/code.log" 2>&1 < /dev/null &
+echo $! > "$HOME_DIR/code.pid"
+
+echo "ready. gateway $(field gateway_url); story: $(cat "$HOME_DIR/story.json")"
+echo "stop it with: $0 stop"

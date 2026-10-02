@@ -1,0 +1,14 @@
+{
+  "name": "escurel-demo-bootstrap",
+  "displayName": "escurel demo bootstrap",
+  "publisher": "datazoo",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ]
+}
