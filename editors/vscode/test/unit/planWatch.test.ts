@@ -91,6 +91,21 @@ describe('watchPlan', () => {
     }
   });
 
+  it('stops at once when the plan run is cancelled, instead of polling to the timeout', async () => {
+    let polls = 0;
+    const res = await watchPlan({
+      rootEventId: '01EVT1',
+      fetchLineage: async () => {
+        polls += 1;
+        return { nodes: [{ id: '01RUN_C', type: 'run', state: 'cancelled', parent: '01EVT1' }] };
+      },
+      sleep: async () => {},
+    });
+    expect(res.state).toBe('failed');
+    if (res.state === 'failed') expect(res.reason).toMatch(/cancel/i);
+    expect(polls).toBe(1);
+  });
+
   it('detects a dead_letter run and reports its reason', async () => {
     const deadLetterNode: LineageNode = {
       id: '01RUN_DEAD',

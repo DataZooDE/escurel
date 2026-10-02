@@ -27,12 +27,14 @@ export async function resolveApprovalSubject(
   let skill = hints?.skill;
   let pageId = hints?.pageId;
 
-  if (skill && pageId) {
+  // An explicit empty page means the plan was started with no target instance; that is an answer,
+  // not a gap to fill from the run.
+  if (skill && pageId !== undefined) {
     return { skill, pageId };
   }
 
   const { view, rootEventId } = await loadRun(client, runId);
-  if (!pageId && view.targetPageId) {
+  if (pageId === undefined && view.targetPageId) {
     pageId = view.targetPageId;
   }
 
@@ -50,10 +52,10 @@ export async function resolveApprovalSubject(
     }
   }
 
-  if (!pageId && !skill) {
+  if (pageId === undefined && !skill) {
     throw new Error('Cannot approve plan: missing target page and skill');
   }
-  if (!pageId) {
+  if (pageId === undefined) {
     throw new Error('Cannot approve plan: missing target page');
   }
   if (!skill) {

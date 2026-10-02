@@ -115,3 +115,14 @@ describe('resolveApprovalSubject', () => {
     );
   });
 });
+
+describe('resolveApprovalSubject for a plan with no target', () => {
+  it('keeps an explicit empty page: the plan was started without one, it is not missing', async () => {
+    const client = { listLineage: async () => ({ nodes: [] }) } as never;
+    const res = await resolveApprovalSubject(client, '01RUN', {
+      skill: 'supplier-risk',
+      pageId: '',
+    });
+    expect(res).toEqual({ skill: 'supplier-risk', pageId: '' });
+  });
+});

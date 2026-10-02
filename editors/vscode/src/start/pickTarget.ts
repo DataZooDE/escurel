@@ -142,51 +142,58 @@ export async function pickTarget(
   qp.matchOnDescription = true;
   qp.matchOnDetail = true;
   qp.busy = true;
-  qp.show();
 
   const updateItems = () => {
     qp.items = model.visibleItems() as (TargetItem & vscode.QuickPickItem)[];
   };
 
-  try {
-    await model.loadNextPage();
-    qp.busy = false;
-    updateItems();
+  return new Promise<string | undefined>((resolve, reject) => {
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      qp.dispose();
+      settle();
+    };
 
-    return await new Promise<string | undefined>((resolve) => {
-      qp.onDidChangeValue((val) => {
-        model.setQuery(val);
-        updateItems();
-      });
-
-      qp.onDidAccept(async () => {
-        const selected = qp.selectedItems[0];
-        if (!selected) {
-          resolve(undefined);
-          qp.dispose();
-          return;
-        }
-
-        const decision = resolveTargetSelection(selected);
-        if (decision.action === 'load-more') {
-          qp.busy = true;
-          await model.loadNextPage();
-          qp.busy = false;
-          updateItems();
-          return;
-        }
-
-        resolve(decision.pageId);
-        qp.dispose();
-      });
-
-      qp.onDidHide(() => {
-        resolve(undefined);
-        qp.dispose();
-      });
+    // Every handler is registered BEFORE the first page is fetched and before the picker is
+    // shown. Dismissing it while that fetch is in flight is an ordinary thing to do, and a hide
+    // nobody was listening for left the command pending for ever.
+    qp.onDidHide(() => finish(() => resolve(undefined)));
+    qp.onDidChangeValue((val) => {
+      model.setQuery(val);
+      updateItems();
     });
-  } catch (err) {
-    qp.dispose();
-    throw err;
-  }
+    qp.onDidAccept(async () => {
+      const selected = qp.selectedItems[0];
+      if (!selected) {
+        finish(() => resolve(undefined));
+        return;
+      }
+      const decision = resolveTargetSelection(selected);
+      if (decision.action === 'load-more') {
+        qp.busy = true;
+        try {
+          await model.loadNextPage();
+        } catch (err) {
+          finish(() => reject(err));
+          return;
+        }
+        qp.busy = false;
+        updateItems();
+        return;
+      }
+      finish(() => resolve(decision.pageId));
+    });
+
+    qp.show();
+    model
+      .loadNextPage()
+      .then(() => {
+        if (settled) return;
+        qp.busy = false;
+        updateItems();
+      })
+      .catch((err: unknown) => finish(() => reject(err)));
+  });
 }

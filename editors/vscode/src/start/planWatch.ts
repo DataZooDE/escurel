@@ -52,6 +52,16 @@ export async function watchPlan(options: PlanWatchOptions): Promise<PlanWatchRes
         if (runNode.state === 'planned') {
           return { state: 'planned', runId: runNode.id, node: runNode };
         }
+        if (runNode.state === 'cancelled') {
+          // A cancelled plan run is over; polling on to the timeout would end in a misleading
+          // "timed out" warning for a run somebody stopped.
+          return {
+            state: 'failed',
+            runId: runNode.id,
+            reason: 'The plan run was cancelled.',
+            node: runNode,
+          };
+        }
         if (runNode.state === 'failed' || runNode.state === 'dead_letter') {
           const reason =
             (runNode.summary as string | undefined) ||

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Instance } from '../../src/client/types';
+import { quickPicks } from './mocks/vscode';
 import {
   NO_TARGET_ITEM,
   TargetModel,
   formatTargetItem,
+  pickTarget,
   resolveTargetSelection,
 } from '../../src/start/pickTarget';
 
@@ -165,5 +167,27 @@ describe('resolveTargetSelection', () => {
       isLoadMore: true,
     });
     expect(res).toEqual({ action: 'load-more' });
+  });
+});
+
+describe('pickTarget when the picker is dismissed while it loads', () => {
+  // The first page of instances is fetched while the picker is already on screen. Closing it in
+  // that window used to leave the command pending for ever: the hide handler was registered only
+  // after the fetch returned, so a hide that had already happened was never heard.
+  it('settles with undefined instead of hanging', async () => {
+    let release!: (page: unknown) => void;
+    const client = {
+      listInstancesPage: () => new Promise((resolve) => (release = resolve)),
+    } as never;
+    quickPicks.length = 0;
+    const picked = pickTarget(client, 'customer-order');
+    quickPicks[0]!.fire('hide'); // dismissed while the first page is still on its way
+    release({ instances: [], next_cursor: null });
+    const outcome = await Promise.race([
+      picked,
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 300)),
+    ]);
+    expect(outcome).toBeUndefined();
+    expect(quickPicks[0]!.disposed).toBe(true);
   });
 });
