@@ -62,6 +62,12 @@
           "default": "claude",
           "scope": "application",
           "description": "Command started in the integrated terminal by \"Start in terminal\"."
+        },
+        "escurel.harness": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "The harness to ask the runner for; empty = the runner's default; a name the runner does not allow makes the run fail."
         }
       }
     },
@@ -150,6 +156,11 @@
       {
         "command": "escurel.startInTerminal",
         "title": "Start in terminal",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.approvePlan",
+        "title": "Approve plan",
         "category": "Escurel"
       },
       {
@@ -278,6 +289,10 @@
         },
         {
           "command": "escurel.startInTerminal",
+          "when": "false"
+        },
+        {
+          "command": "escurel.approvePlan",
           "when": "false"
         },
         {
@@ -496,7 +511,8 @@
         "escurel.auth.issuer",
         "escurel.auth.clientId",
         "escurel.auth.scopes",
-        "escurel.shellHarness"
+        "escurel.shellHarness",
+        "escurel.harness"
       ]
     },
     "virtualWorkspaces": true

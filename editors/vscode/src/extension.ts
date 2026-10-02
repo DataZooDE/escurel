@@ -21,6 +21,8 @@ import { toThreadView } from './thread/threadModel';
 import { ThreadsTree } from './views/threads';
 import { expandableRows, type OutlineRow } from './views/threadsModel';
 import { registerStartInTerminal } from './start/terminal';
+import { registerStartSkill } from './start/startSkill';
+import { registerApprovePlan } from './start/approvePlan';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -185,11 +187,8 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
       },
     ),
 
-    vscode.commands.registerCommand('escurel.startSkill', () =>
-      vscode.window.showInformationMessage(
-        'escurel: starting a skill arrives with M4 (Runner and starting skills).',
-      ),
-    ),
+    registerStartSkill(context, services),
+    registerApprovePlan(context, services),
   );
   log().info('escurel: activated');
   return {

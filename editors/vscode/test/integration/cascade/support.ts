@@ -83,3 +83,28 @@ export function signInAsAdmin(api: EscurelApi): () => void {
   api.services.auth.refresher.useStaticToken(admin, subject);
   return () => api.services.auth.refresher.useStaticToken(human, subject);
 }
+
+/**
+ * Mark an event processed and attach it to a page (`assign_event`), so it leaves the inbox.
+ *
+ * A run that ends `planned` leaves its event in the inbox on purpose, and the echo harness folds
+ * the OLDEST inbox event that has a target page, so such an event would swallow every later test's
+ * run. This is test hygiene, done with a raw call because the extension has no use for the tool.
+ */
+export async function markProcessed(eventId: string, pageId: string): Promise<void> {
+  const url = process.env.ESCUREL_TEST_GATEWAY;
+  const bearer = process.env.ESCUREL_TEST_BEARER;
+  assert.ok(url && bearer, 'the harness must provide the gateway URL and a bearer');
+  const res = await fetch(`${url.replace(/\/+$/, '')}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'assign_event', arguments: { event_id: eventId, instance_page_id: pageId } },
+    }),
+  });
+  const body = (await res.json()) as { error?: unknown };
+  assert.equal(body.error, undefined, `assign_event: ${JSON.stringify(body.error)}`);
+}
