@@ -1,3 +1,4 @@
+import { renderMarkdown } from '../shared/markdown-view';
 import { LitElement, html, nothing } from 'lit';
 import { property } from 'lit/decorators.js';
 import type { FieldView } from '../../src/shared/protocol';
@@ -46,7 +47,7 @@ export class EscurelField extends LitElement {
       case 'badge':
         return html`<span class="badge">${f.display}</span>`;
       case 'markdown':
-        return html`<div class="markdown">${f.display}</div>`;
+        return html`<div class="markdown md">${renderMarkdown(f.display)}</div>`;
     }
     switch (f.kind) {
       case 'bool':

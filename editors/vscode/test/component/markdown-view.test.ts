@@ -1,0 +1,68 @@
+import { expect } from '@open-wc/testing';
+import { render } from 'lit';
+import { renderMarkdown } from '../../webview/shared/markdown-view';
+
+function mount(src: string): HTMLElement {
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  render(renderMarkdown(src), host);
+  return host;
+}
+
+describe('renderMarkdown', () => {
+  it('renders the order items as a real table with aligned numbers', () => {
+    const host = mount(
+      [
+        '| Item | Material | Qty | Net value |',
+        '|---|---|---:|---:|',
+        '| 10 | GH-4711 | 240 | 62,400.00 |',
+      ].join('\n'),
+    );
+    expect(Array.from(host.querySelectorAll('thead th')).map((c) => c.textContent)).to.deep.equal([
+      'Item',
+      'Material',
+      'Qty',
+      'Net value',
+    ]);
+    const cells = Array.from(host.querySelectorAll('tbody td'));
+    expect(cells.map((c) => c.textContent)).to.deep.equal(['10', 'GH-4711', '240', '62,400.00']);
+    expect(cells[2]!.classList.contains('align-right')).to.equal(true);
+    expect(cells[3]!.classList.contains('align-right')).to.equal(true);
+    expect(cells[0]!.classList.contains('align-right')).to.equal(false);
+  });
+
+  it('renders headings, lists, emphasis and code as elements', () => {
+    const host = mount('## History\n\n- one\n- **two**\n\nUse `sales_doc`.');
+    expect(host.querySelector('h2')?.textContent).to.equal('History');
+    expect(host.querySelectorAll('ul > li')).to.have.length(2);
+    expect(host.querySelector('li strong')?.textContent).to.equal('two');
+    expect(host.querySelector('p code')?.textContent).to.equal('sales_doc');
+  });
+
+  it('links http(s) targets safely and never links a javascript: one', () => {
+    const host = mount('[ok](https://sap.example/x) and [bad](javascript:alert(1))');
+    const links = Array.from(host.querySelectorAll('a'));
+    expect(links).to.have.length(1);
+    expect(links[0]!.getAttribute('href')).to.equal('https://sap.example/x');
+    expect(links[0]!.getAttribute('rel')).to.contain('noopener');
+    expect(host.textContent).to.contain('javascript:alert(1)'); // shown as text, inert
+  });
+
+  it('puts raw HTML on the page as TEXT, never as elements', () => {
+    const host = mount(
+      '<script>window.__pwned = 1</script> <img src=x onerror="window.__pwned = 2">',
+    );
+    expect(host.querySelector('script')).to.equal(null);
+    expect(host.querySelector('img')).to.equal(null);
+    expect(host.textContent).to.contain('<script>');
+    expect((window as unknown as { __pwned?: number }).__pwned).to.equal(undefined);
+  });
+
+  it('shows a wikilink as an inert chip, not a link it cannot resolve', () => {
+    const host = mount('see [[supplier::meier-guss|the vendor]]');
+    const chip = host.querySelector('.wikilink');
+    expect(chip?.textContent).to.equal('the vendor');
+    expect(chip?.getAttribute('title')).to.equal('supplier::meier-guss');
+    expect(host.querySelector('a')).to.equal(null);
+  });
+});
