@@ -5,6 +5,7 @@ export interface EscurelConfig {
   gatewayUrl: string;
   auth: { issuer: string; clientId: string; scopes: string[] };
   shellHarness: string;
+  harness: string;
 }
 
 export function readConfig(): EscurelConfig {
@@ -17,6 +18,7 @@ export function readConfig(): EscurelConfig {
       scopes: c.get<string[]>('auth.scopes') ?? ['openid', 'profile', 'offline_access'],
     },
     shellHarness: c.get<string>('shellHarness') ?? 'claude',
+    harness: c.get<string>('harness') ?? '',
   };
 }
 

@@ -4,6 +4,34 @@ export const workspace = {
   getConfiguration: () => ({ get: () => undefined }),
   onDidChangeConfiguration: () => ({ dispose() {} }),
 };
+/** A QuickPick the test can drive: it records handlers and lets the test fire them. */
+export class FakeQuickPick {
+  placeholder = '';
+  matchOnDescription = false;
+  matchOnDetail = false;
+  busy = false;
+  items: unknown[] = [];
+  selectedItems: unknown[] = [];
+  disposed = false;
+  private handlers: Record<string, ((...a: unknown[]) => void)[]> = {};
+  private on(name: string) {
+    return (h: (...a: unknown[]) => void) => {
+      (this.handlers[name] ??= []).push(h);
+      return { dispose() {} };
+    };
+  }
+  onDidChangeValue = this.on('value');
+  onDidAccept = this.on('accept');
+  onDidHide = this.on('hide');
+  show() {}
+  dispose() {
+    this.disposed = true;
+  }
+  fire(name: 'value' | 'accept' | 'hide', ...args: unknown[]) {
+    for (const h of this.handlers[name] ?? []) h(...args);
+  }
+}
+export const quickPicks: FakeQuickPick[] = [];
 let windowStateListener: ((e: { focused: boolean }) => void) | undefined;
 export const window = {
   createOutputChannel: () => ({ info() {}, warn() {}, error() {}, debug() {}, trace() {} }),
@@ -12,6 +40,11 @@ export const window = {
   showErrorMessage: () => Promise.resolve(undefined),
   showInputBox: () => Promise.resolve(undefined),
   showQuickPick: () => Promise.resolve(undefined),
+  createQuickPick: () => {
+    const qp = new FakeQuickPick();
+    quickPicks.push(qp);
+    return qp;
+  },
   onDidChangeWindowState: (listener: (e: { focused: boolean }) => void) => {
     windowStateListener = listener;
     return {

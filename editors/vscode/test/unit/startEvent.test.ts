@@ -76,3 +76,19 @@ describe('manualModeFor', () => {
     expect(manualModeFor('terminal')).toBeUndefined();
   });
 });
+
+describe('a start with no target instance', () => {
+  // "No target instance" is a real choice in the picker: a skill that is not about one page. An
+  // empty string for instance_page_id is not "none"; the key is left out.
+  it('leaves instance_page_id out, and names the event for the skill alone', () => {
+    const e = buildStartEvent({ skill: 'supplier-risk', pageId: '', mode: 'run' });
+    expect('instance_page_id' in e).toBe(false);
+    expect(e.title).toBe('supplier-risk');
+  });
+
+  it('does the same for an approval', () => {
+    const e = buildApprovalEvent({ skill: 's', pageId: '', planRunId: '01RUN' });
+    expect('instance_page_id' in e).toBe(false);
+    expect(e.provenance).toEqual({ manual: { mode: 'run', approved_plan_run_id: '01RUN' } });
+  });
+});

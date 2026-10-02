@@ -29,12 +29,15 @@ function manual(mode: ManualMode, harness: string | undefined, extra: Record<str
 }
 
 function capture(skill: string, pageId: string, provenance: Record<string, unknown>) {
+  // A blank page is "no target instance", a real choice: the key is left out (an empty string is
+  // not "none"), and the event is named for the skill alone.
+  const target = pageId.trim();
   const event: CaptureEventRequest = {
     label_skill: skill,
-    instance_page_id: pageId,
+    ...(target ? { instance_page_id: target } : {}),
     source: 'workbench',
     mime: 'text/plain',
-    title: `${skill} · ${pageSlug(pageId)}`,
+    title: target ? `${skill} · ${pageSlug(target)}` : skill,
     body: 'Started from the workbench.',
     provenance,
   };
