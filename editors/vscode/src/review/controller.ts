@@ -85,7 +85,7 @@ export class ReviewController implements vscode.Disposable {
     if (arg && typeof arg === 'object' && 'kind' in arg) {
       if (arg.kind === 'confirm_gate') {
         void vscode.window.showInformationMessage(
-          'escurel: this run requires confirmation but has not proposed a markdown change.',
+          'Nothing to review yet: the agent is waiting for your confirmation and has not proposed a change.',
         );
         return;
       }
@@ -108,7 +108,7 @@ export class ReviewController implements vscode.Disposable {
       return;
     }
 
-    void vscode.window.showInformationMessage('escurel: select an item awaiting review.');
+    void vscode.window.showInformationMessage('Select an item awaiting review.');
   }
 
   /**
@@ -121,9 +121,7 @@ export class ReviewController implements vscode.Disposable {
       const csDrafts = drafts.filter((d) => d.changeset_id === changesetId);
 
       if (csDrafts.length === 0) {
-        void vscode.window.showInformationMessage(
-          `escurel: changeset ${changesetId} has no open drafts.`,
-        );
+        void vscode.window.showInformationMessage(`Changeset ${changesetId} has no open drafts.`);
         return;
       }
 
@@ -156,7 +154,7 @@ export class ReviewController implements vscode.Disposable {
       }
     } catch (err) {
       void vscode.window.showErrorMessage(
-        `escurel: failed to load changeset ${changesetId} — ${describeError(err)}`,
+        `Failed to load changeset ${changesetId} — ${describeError(err)}`,
       );
     }
   }
@@ -186,7 +184,7 @@ export class ReviewController implements vscode.Disposable {
 
     if (!draft) {
       const id = typeof draftOrId === 'string' ? draftOrId : 'unknown';
-      void vscode.window.showErrorMessage(`escurel: draft ${id} not found or no longer open.`);
+      void vscode.window.showErrorMessage(`Draft ${id} not found or no longer open.`);
       return;
     }
 
@@ -196,7 +194,7 @@ export class ReviewController implements vscode.Disposable {
       const diff = await this.client().diffDraft({ draft_id: draft.draft_id });
       const check = checkBaseMoved(diff);
       if (check.baseMoved && check.warning) {
-        void vscode.window.showWarningMessage(`escurel: ${check.warning}`);
+        void vscode.window.showWarningMessage(`${check.warning}`);
       }
     } catch (err) {
       log().warn(`review: diff_draft failed for ${draft.draft_id}: ${describeError(err)}`);
@@ -223,7 +221,7 @@ export class ReviewController implements vscode.Disposable {
     const target = resolveReviewTarget(arg, activeUri);
 
     if (!target) {
-      void vscode.window.showErrorMessage('escurel: no active review or item selected to promote.');
+      void vscode.window.showErrorMessage('No active review or item selected to promote.');
       return;
     }
 
@@ -233,13 +231,13 @@ export class ReviewController implements vscode.Disposable {
       try {
         await this.client().promoteDraft({ draft_id: target.draftId });
         outcome = interpretPromoteDraftSuccess(target.draftId);
-        void vscode.window.showInformationMessage(`escurel: ${outcome.message}`);
+        void vscode.window.showInformationMessage(`${outcome.message}`);
       } catch (err) {
         outcome = interpretPromoteDraftError(err, target.draftId);
         if (outcome.kind === 'already_decided') {
-          void vscode.window.showInformationMessage(`escurel: ${outcome.message}`);
+          void vscode.window.showInformationMessage(`${outcome.message}`);
         } else {
-          void vscode.window.showErrorMessage(`escurel: ${outcome.message}`);
+          void vscode.window.showErrorMessage(`${outcome.message}`);
         }
       }
 
@@ -257,9 +255,9 @@ export class ReviewController implements vscode.Disposable {
       const res = await this.client().promoteChangeset({ changeset_id: target.changesetId });
       outcome = interpretPromoteChangesetResult(res);
       if (outcome.kind === 'partial') {
-        void vscode.window.showWarningMessage(`escurel: ${outcome.message}`);
+        void vscode.window.showWarningMessage(`${outcome.message}`);
       } else {
-        void vscode.window.showInformationMessage(`escurel: ${outcome.message}`);
+        void vscode.window.showInformationMessage(`${outcome.message}`);
       }
     } catch (err) {
       if (err instanceof EscurelError && err.kind === 'already_decided') {
@@ -269,7 +267,7 @@ export class ReviewController implements vscode.Disposable {
           closeDiff: true,
           refresh: true,
         };
-        void vscode.window.showInformationMessage(`escurel: ${outcome.message}`);
+        void vscode.window.showInformationMessage(`${outcome.message}`);
       } else {
         outcome = {
           kind: 'error',
@@ -277,7 +275,7 @@ export class ReviewController implements vscode.Disposable {
           closeDiff: false,
           refresh: false,
         };
-        void vscode.window.showErrorMessage(`escurel: ${outcome.message}`);
+        void vscode.window.showErrorMessage(`${outcome.message}`);
       }
     }
 
@@ -297,7 +295,7 @@ export class ReviewController implements vscode.Disposable {
     const target = resolveReviewTarget(arg, activeUri);
 
     if (!target) {
-      void vscode.window.showErrorMessage('escurel: no active review or item selected to discard.');
+      void vscode.window.showErrorMessage('No active review or item selected to discard.');
       return;
     }
 
@@ -315,13 +313,13 @@ export class ReviewController implements vscode.Disposable {
       try {
         await this.client().discardDraft({ draft_id: target.draftId, reason });
         outcome = interpretDiscardResult('draft', target.draftId);
-        void vscode.window.showInformationMessage(`escurel: ${outcome.message}`);
+        void vscode.window.showInformationMessage(`${outcome.message}`);
       } catch (err) {
         outcome = interpretDiscardError(err, 'draft', target.draftId);
         if (outcome.kind === 'already_decided') {
-          void vscode.window.showInformationMessage(`escurel: ${outcome.message}`);
+          void vscode.window.showInformationMessage(`${outcome.message}`);
         } else {
-          void vscode.window.showErrorMessage(`escurel: ${outcome.message}`);
+          void vscode.window.showErrorMessage(`${outcome.message}`);
         }
       }
 
@@ -338,13 +336,13 @@ export class ReviewController implements vscode.Disposable {
     try {
       await this.client().discardChangeset({ changeset_id: target.changesetId, reason });
       outcome = interpretDiscardResult('changeset', target.changesetId);
-      void vscode.window.showInformationMessage(`escurel: ${outcome.message}`);
+      void vscode.window.showInformationMessage(`${outcome.message}`);
     } catch (err) {
       outcome = interpretDiscardError(err, 'changeset', target.changesetId);
       if (outcome.kind === 'already_decided') {
-        void vscode.window.showInformationMessage(`escurel: ${outcome.message}`);
+        void vscode.window.showInformationMessage(`${outcome.message}`);
       } else {
-        void vscode.window.showErrorMessage(`escurel: ${outcome.message}`);
+        void vscode.window.showErrorMessage(`${outcome.message}`);
       }
     }
 

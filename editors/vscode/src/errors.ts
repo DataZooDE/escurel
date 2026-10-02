@@ -5,7 +5,7 @@ export function describeError(e: unknown): string {
   if (e instanceof EscurelError) {
     switch (e.kind) {
       case 'unauthorized':
-        return 'not signed in, or the token expired — run "Escurel: Sign In"';
+        return 'not signed in, or the token expired — run "Escurel: Sign in"';
       case 'transport':
         return `cannot reach the gateway (${e.message})`;
       case 'session_cap_reached':

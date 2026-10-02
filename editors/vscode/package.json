@@ -78,12 +78,12 @@
     "commands": [
       {
         "command": "escurel.signIn",
-        "title": "Sign In",
+        "title": "Sign in",
         "category": "Escurel"
       },
       {
         "command": "escurel.signOut",
-        "title": "Sign Out",
+        "title": "Sign out",
         "category": "Escurel"
       },
       {
@@ -100,12 +100,12 @@
       },
       {
         "command": "escurel.resolve",
-        "title": "Resolve Wikilink",
+        "title": "Resolve wikilink",
         "category": "Escurel"
       },
       {
         "command": "escurel.openPage",
-        "title": "Open Page",
+        "title": "Open page",
         "category": "Escurel"
       },
       {
@@ -173,7 +173,7 @@
       },
       {
         "command": "escurel.openThread",
-        "title": "Open Thread",
+        "title": "Open thread",
         "category": "Escurel"
       },
       {
@@ -183,7 +183,7 @@
       },
       {
         "command": "escurel.openReview",
-        "title": "Open Review",
+        "title": "Open review",
         "category": "Escurel"
       },
       {
@@ -264,22 +264,22 @@
     "viewsWelcome": [
       {
         "view": "escurel.knowledge",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign In](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
+        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
         "when": "escurel.connected == false"
       },
       {
         "view": "escurel.awaiting",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign In](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
+        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
         "when": "escurel.connected == false"
       },
       {
         "view": "escurel.inbox",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign In](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
+        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
         "when": "escurel.connected == false"
       },
       {
         "view": "escurel.runner",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign In](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
+        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
         "when": "escurel.connected == false"
       }
     ],

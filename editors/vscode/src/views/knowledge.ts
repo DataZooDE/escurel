@@ -1,3 +1,4 @@
+import { errorRowSpec } from './errorRow';
 import * as vscode from 'vscode';
 import type { EscurelClient, Instance } from '../client';
 import { uriForPage } from '../fs/provider';
@@ -88,8 +89,11 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         return item;
       }
       case 'error': {
-        const item = new vscode.TreeItem(n.message, vscode.TreeItemCollapsibleState.None);
+        const spec = errorRowSpec(n.message);
+        const item = new vscode.TreeItem(spec.label, vscode.TreeItemCollapsibleState.None);
         item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('errorForeground'));
+        item.tooltip = spec.tooltip;
+        item.command = { command: spec.command, title: 'Try again' };
         item.contextValue = 'error';
         return item;
       }

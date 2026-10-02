@@ -1,3 +1,4 @@
+import { errorRowSpec } from './errorRow';
 import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
 import { describeError } from '../errors';
@@ -55,14 +56,17 @@ export class InboxTree implements vscode.TreeDataProvider<Node> {
         }
         item.command = {
           command: 'escurel.openThread',
-          title: 'Open Thread',
+          title: 'Open thread',
           arguments: [n.event.root_event_id ?? n.event.event_id],
         };
         return item;
       }
       case 'error': {
-        const item = new vscode.TreeItem(n.message, vscode.TreeItemCollapsibleState.None);
+        const spec = errorRowSpec(n.message);
+        const item = new vscode.TreeItem(spec.label, vscode.TreeItemCollapsibleState.None);
         item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('errorForeground'));
+        item.tooltip = spec.tooltip;
+        item.command = { command: spec.command, title: 'Try again' };
         item.contextValue = 'error';
         return item;
       }
