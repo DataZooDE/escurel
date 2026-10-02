@@ -170,6 +170,11 @@ is a human's (role `agent`, subject `--subject`): it can read, draft and promote
 `admin_bearer` is the same subject with the admin role, for what only an admin may do (requeue,
 pause and resume the runner). Both expire in ten minutes like every token this issuer mints.
 
+A demo outlasts a ten-minute token. `--bearer-file <path>` writes `{"bearer", "admin_bearer"}`
+there before the line is printed and replaces it (by rename; a reader never sees half a file) with
+fresh ones every `--bearer-refresh-secs` (default 240), so whoever is signed in with it stays
+signed in. Nothing else is written.
+
 Why a verifying gateway matters, and a verifier-less one cannot stand in for it: **only a token
 can prove which run wrote something.** With no verifier the gateway has no claims at all, so a
 runner's per-run token is ignored, an agent's draft carries no `run_id`, `list_lineage` shows

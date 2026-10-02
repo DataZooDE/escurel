@@ -7,6 +7,7 @@
 //!
 //! ```text
 //! escurel-test-gateway --tenant vsx --seed test/integration/seed [--subject alice]
+//!                       [--bearer-file <path> [--bearer-refresh-secs 240]]
 //! {"gateway_url":"http://127.0.0.1:…","issuer_url":"http://127.0.0.1:…","kid":"…",
 //!  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","admin_bearer":"eyJ…","tenant":"vsx"}
 //! ```
@@ -21,6 +22,10 @@
 //! resume the runner). Both expire in ten minutes, like every token this issuer mints; that is
 //! plenty for a test run and is not extended here, because a long-lived credential printed to
 //! stdout is the thing to avoid.
+//!
+//! A demo outlasts that. `--bearer-file <path>` writes `{bearer, admin_bearer}` there BEFORE the
+//! line is printed and replaces it (by rename, so a reader never sees half a file) with fresh
+//! ones every `--bearer-refresh-secs` (default 240). Nothing else is ever written.
 
 use std::path::{Path, PathBuf};
 
@@ -31,12 +36,17 @@ struct Args {
     tenant: String,
     seed: PathBuf,
     subject: String,
+    /// Keep this file holding a current `{bearer, admin_bearer}` (a demo outlasts a token).
+    bearer_file: Option<PathBuf>,
+    bearer_refresh_secs: u64,
 }
 
 fn parse() -> Result<Args, String> {
     let mut tenant = None;
     let mut seed = None;
     let mut subject = "alice".to_owned();
+    let mut bearer_file = None;
+    let mut bearer_refresh_secs = 240;
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let value = |it: &mut dyn Iterator<Item = String>| {
@@ -46,6 +56,12 @@ fn parse() -> Result<Args, String> {
             "--tenant" => tenant = Some(value(&mut it)?),
             "--seed" => seed = Some(PathBuf::from(value(&mut it)?)),
             "--subject" => subject = value(&mut it)?,
+            "--bearer-file" => bearer_file = Some(PathBuf::from(value(&mut it)?)),
+            "--bearer-refresh-secs" => {
+                bearer_refresh_secs = value(&mut it)?
+                    .parse()
+                    .map_err(|_| "--bearer-refresh-secs is a whole number of seconds".to_owned())?;
+            }
             "-h" | "--help" => {
                 return Err(
                     "usage: escurel-test-gateway --tenant <id> --seed <dir> [--subject <sub>]"
@@ -59,7 +75,27 @@ fn parse() -> Result<Args, String> {
         tenant: tenant.ok_or("--tenant is required")?,
         seed: seed.ok_or("--seed is required")?,
         subject,
+        bearer_file,
+        bearer_refresh_secs: bearer_refresh_secs.max(1),
     })
+}
+
+/// Replace `path` with `contents` so a reader sees the old file or the new one, never half of
+/// either: write a sibling, then rename it over.
+fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// A fresh `{bearer, admin_bearer}` pair for the signed-in subject, written atomically.
+fn write_bearers(process: &EscurelProcess, args: &Args, path: &Path) -> std::io::Result<()> {
+    let contents = json!({
+        "bearer": process.mint_token_with_sub(&args.tenant, Role::Agent, &args.subject),
+        "admin_bearer": process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject),
+    })
+    .to_string();
+    write_atomically(path, &contents)
 }
 
 /// `skills/` and `instances/` markdown files, in a stable order so a seed replays the same way
@@ -139,6 +175,15 @@ async fn main() {
     let (signing_key, kid) = process.signing_material();
     let bearer = process.mint_token_with_sub(&args.tenant, Role::Agent, &args.subject);
     let admin_bearer = process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject);
+    // A demo outlasts a ten-minute token. The file is written BEFORE the line is printed, so a
+    // reader that waits for the line always finds a bearer, and then kept fresh. Only what the
+    // flag asked for is written, and only to the path given.
+    if let Some(path) = &args.bearer_file {
+        if let Err(e) = write_bearers(&process, &args, path) {
+            eprintln!("cannot write {}: {e}", path.display());
+            std::process::exit(2);
+        }
+    }
     // One line, flushed: the parent reads exactly this and nothing else from stdout.
     println!(
         "{}",
@@ -155,9 +200,24 @@ async fn main() {
 
     // Stay up until signalled, then shut the gateway down cleanly rather than leave its
     // data directory and ports behind.
+    let rotate = async {
+        let Some(path) = &args.bearer_file else {
+            return std::future::pending::<()>().await;
+        };
+        let mut tick =
+            tokio::time::interval(std::time::Duration::from_secs(args.bearer_refresh_secs));
+        tick.tick().await; // the first tick is immediate; the file was written above
+        loop {
+            tick.tick().await;
+            if let Err(e) = write_bearers(&process, &args, path) {
+                eprintln!("cannot refresh {}: {e}", path.display());
+            }
+        }
+    };
     tokio::select! {
         _ = term.recv() => {}
         _ = tokio::signal::ctrl_c() => {}
+        () = rotate => {}
     }
     process.shutdown().await;
 }

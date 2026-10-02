@@ -9,6 +9,8 @@ pin (see `SKILL.md` → "How this skill is installed").
 - The connection line gains `admin_bearer`: the same subject with the admin role, so a harness
   can drive the admin-only run controls (requeue, pause, resume) as well as the human ones.
   See references/09 § A2.
+- `--bearer-file <path>` (with `--bearer-refresh-secs`, default 240) keeps a file holding a current
+  `{bearer, admin_bearer}`, for a demo that outlasts a ten-minute token.
 
 ## 0.6.80 — `escurel-test-gateway`, a verifying gateway for non-Rust harnesses
 

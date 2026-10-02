@@ -208,3 +208,46 @@ async fn it_prints_an_admin_bearer_beside_the_ordinary_one() {
         "the admin bearer must pass the admin gate: {allowed}"
     );
 }
+
+/// A demo outlasts a ten-minute token. `--bearer-file` keeps a file holding a CURRENT bearer for
+/// whoever is signed in with it, rewritten in place by rename so a reader never sees half of it.
+#[tokio::test]
+async fn a_bearer_file_is_written_at_once_and_kept_fresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bearer.json");
+    let g = start(&[
+        "--bearer-file",
+        file.to_str().unwrap(),
+        "--bearer-refresh-secs",
+        "1",
+    ]);
+
+    let read =
+        || -> Value { serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap() };
+    let first = read();
+    assert_eq!(
+        first["bearer"], g.info["bearer"],
+        "written before the line is printed"
+    );
+    assert_eq!(first["admin_bearer"], g.info["admin_bearer"]);
+
+    let mut rotated = false;
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        // Every read parses: the file is replaced, never truncated in place.
+        let now = read();
+        if now["bearer"] != first["bearer"] {
+            rotated = true;
+            break;
+        }
+    }
+    assert!(
+        rotated,
+        "the bearer in the file must be replaced by a fresh one"
+    );
+
+    // The fresh one is accepted by the gateway.
+    let now = read();
+    let ok = call(&g, now["bearer"].as_str(), "list_skills", json!({})).await;
+    assert_eq!(ok.status(), 200);
+}
