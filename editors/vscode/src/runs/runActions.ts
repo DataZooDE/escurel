@@ -53,3 +53,13 @@ export function resolveRunAction(
       return view.skill ? { command: 'escurel.viewSkill', args: view.skill } : undefined;
   }
 }
+
+/** The trace id to copy: the one the HOST holds for this run, never a string the webview sends. */
+export function traceIdToCopy(view: RunView | undefined): string | undefined {
+  return view?.traceId || undefined;
+}
+
+/** A "load more" is accepted only for the exact cursor the host offered with the last page. */
+export function acceptLoadMore(view: RunView, after: unknown): boolean {
+  return typeof after === 'number' && Number.isInteger(after) && after === view.nextAfter;
+}

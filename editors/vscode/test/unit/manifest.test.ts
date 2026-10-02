@@ -97,3 +97,21 @@ describe('inline buttons', () => {
     expect(withoutIcon).toEqual([]);
   });
 });
+
+describe('settings that decide where a credential goes or what runs', () => {
+  // A setting with no scope can be set by a repository's .vscode/settings.json, and once the user
+  // clicks "Trust" it is honoured. For these that means the user's bearer token goes to a host the
+  // repository chose, or a command it chose runs. Restricted Mode does not help: it is the OTHER
+  // case. They are user-level (application) settings only.
+  it.each([
+    'escurel.gatewayUrl',
+    'escurel.auth.issuer',
+    'escurel.auth.clientId',
+    'escurel.auth.scopes',
+    'escurel.shellHarness',
+    'escurel.harness',
+  ])('%s cannot be set by a workspace', (id) => {
+    const prop = manifest.contributes.configuration.properties[id] as { scope?: string };
+    expect(prop.scope).toBe('application');
+  });
+});

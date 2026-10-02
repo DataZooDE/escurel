@@ -34,10 +34,11 @@ export class TokenRefresher implements TokenSource {
   /**
    * Sign in with a bearer someone else already holds, bypassing the store and every refresh.
    *
-   * For the integration suite, whose bearer comes from a test issuer. It is a METHOD, not a
-   * setting or an environment variable, on purpose: it is reachable only by code that
-   * already holds the extension's API object, so a running install has no way to be handed a
-   * credential from outside. Long-lived sockets are told, so they reconnect with it.
+   * For the integration suite, the e2e tests and the demo, whose bearer comes from a test issuer.
+   * It is a METHOD, not a setting or an environment variable, on purpose, and the API object that
+   * reaches it is only returned in Test and Development mode (see `exposedApi`): a production
+   * install exports nothing, so no other extension can call it or read the token store.
+   * Long-lived sockets are told, so they reconnect with it.
    */
   useStaticToken(token: string, subject: string): void {
     this.fixed = { token, subject };

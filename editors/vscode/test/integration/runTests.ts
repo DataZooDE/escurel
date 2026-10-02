@@ -91,15 +91,22 @@ function startGateway(bin: string, port: number, seed: string): Gateway {
   return { url: `http://127.0.0.1:${port}`, data, stop: () => gw.kill('SIGTERM') };
 }
 
-/** A workspace whose settings point the extension at `gatewayUrl`. */
-function workspaceFor(gatewayUrl: string): string {
+/**
+ * An empty workspace, and a user-data dir whose USER settings point the extension at `gatewayUrl`.
+ *
+ * The gateway URL is a user-level (application-scoped) setting on purpose: a repository's own
+ * `.vscode/settings.json` must not be able to say where the user's bearer token goes. So the
+ * suites, like a real user, set it in the user's settings, not in the workspace.
+ */
+function workspaceArgs(gatewayUrl: string): string[] {
   const ws = mkdtempSync(join(tmpdir(), 'escurel-vsx-ws-'));
-  mkdirSync(join(ws, '.vscode'));
+  const userData = mkdtempSync(join(tmpdir(), 'escurel-vsx-user-'));
+  mkdirSync(join(userData, 'User'), { recursive: true });
   writeFileSync(
-    join(ws, '.vscode', 'settings.json'),
+    join(userData, 'User', 'settings.json'),
     JSON.stringify({ 'escurel.gatewayUrl': gatewayUrl }),
   );
-  return ws;
+  return [ws, '--user-data-dir', userData];
 }
 
 /**
@@ -142,7 +149,11 @@ async function main(): Promise<void> {
       version: VSCODE_VERSION,
       extensionDevelopmentPath: root,
       extensionTestsPath: resolve(__dirname, 'suite', 'index.js'),
-      launchArgs: [workspaceFor(corpus.url), '--disable-extensions', '--disable-workspace-trust'],
+      launchArgs: [
+        ...workspaceArgs(corpus.url),
+        '--disable-extensions',
+        '--disable-workspace-trust',
+      ],
       extensionTestsEnv: { ESCUREL_TEST_GATEWAY: corpus.url, ESCUREL_TEST_GREP: grep },
     });
   } finally {
@@ -190,7 +201,7 @@ async function main(): Promise<void> {
       extensionDevelopmentPath: root,
       extensionTestsPath: resolve(__dirname, 'cascade', 'index.js'),
       launchArgs: [
-        workspaceFor(info?.gateway_url ?? 'http://127.0.0.1:1'),
+        ...workspaceArgs(info?.gateway_url ?? 'http://127.0.0.1:1'),
         '--disable-extensions',
         '--disable-workspace-trust',
       ],
@@ -240,7 +251,7 @@ async function main(): Promise<void> {
       extensionDevelopmentPath: root,
       extensionTestsPath: resolve(__dirname, 'controls', 'index.js'),
       launchArgs: [
-        workspaceFor(info?.gateway_url ?? 'http://127.0.0.1:1'),
+        ...workspaceArgs(info?.gateway_url ?? 'http://127.0.0.1:1'),
         '--disable-extensions',
         '--disable-workspace-trust',
       ],

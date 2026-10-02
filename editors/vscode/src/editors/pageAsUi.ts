@@ -1,3 +1,4 @@
+import { resolvePageMessage } from './pageMessages';
 import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
 import { describeError } from '../errors';
@@ -6,7 +7,7 @@ import { log } from '../log';
 import { buildPageModel } from '../shared/page';
 import { safePost } from '../shared/safePost';
 import { findThreadStrip } from '../shared/threadStrip';
-import type { HostToWebview, WebviewToHost } from '../shared/protocol';
+import type { HostToWebview, PageModel, WebviewToHost } from '../shared/protocol';
 
 export const VIEW_TYPE = 'escurel.pageAsUi';
 
@@ -51,6 +52,9 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     };
     panel.webview.html = this.html(panel.webview);
     const post = (m: HostToWebview) => safePost(panel, m);
+    // The model the host last built: a webview message is judged against THIS, never against what
+    // the webview claims.
+    let current: PageModel | undefined;
     const load = async () => {
       if (!pageId)
         return post({ type: 'error', message: `not an escurel page: ${doc.uri.toString()}` });
@@ -78,13 +82,16 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
             ...(cursor ? { cursor } : {}),
           }),
         );
-        post({ type: 'page', model: strip ? { ...model, thread: strip } : model });
+        current = strip ? { ...model, thread: strip } : model;
+        post({ type: 'page', model: current });
       } catch (err) {
         post({ type: 'error', message: describeError(err) });
       }
     };
     const subs: vscode.Disposable[] = [
-      panel.webview.onDidReceiveMessage((m: WebviewToHost) => this.onMessage(m, pageId, load)),
+      panel.webview.onDidReceiveMessage((m: WebviewToHost) =>
+        this.onMessage(m, pageId, current, load),
+      ),
       this.onDidChange(() => void load()),
       panel.onDidChangeViewState((e) => {
         if (e.webviewPanel.active) void load();
@@ -93,30 +100,31 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     panel.onDidDispose(() => subs.forEach((s) => s.dispose()));
   }
 
-  private onMessage(m: WebviewToHost, pageId: string | undefined, load: () => Promise<void>): void {
+  private onMessage(
+    m: WebviewToHost,
+    pageId: string | undefined,
+    model: PageModel | undefined,
+    load: () => Promise<void>,
+  ): void {
     switch (m.type) {
       case 'ready':
       case 'refresh':
         return void load();
-      case 'open-page':
-        return void vscode.commands.executeCommand('escurel.openPage', m.pageId);
-      case 'open-wikilink':
-        return void vscode.commands.executeCommand('escurel.resolve', m.wikilink);
-      case 'view-skill':
-        return void vscode.commands.executeCommand('escurel.viewSkill', m.skill);
-      case 'open-thread':
-        return void vscode.commands.executeCommand('escurel.openThread', m.rootEventId);
-      case 'open-run':
-        return void vscode.commands.executeCommand('escurel.openRun', m.runId);
       case 'show-raw':
         return void vscode.commands.executeCommand('escurel.showRaw', pageId);
-      case 'start-skill':
-        log().info(`escurel: start ${m.skill} (${m.mode}) on ${pageId}`);
-        return void vscode.commands.executeCommand('escurel.startSkill', {
-          skill: m.skill,
-          pageId,
-          mode: m.mode,
-        });
+      default: {
+        // Everything else is decided from the host's model, not from what the webview says.
+        const resolved = resolvePageMessage(model, m);
+        if (!resolved) {
+          log().warn(
+            `escurel: refused a page message of type ${String((m as { type?: unknown }).type)}`,
+          );
+          return;
+        }
+        if (m.type === 'start-skill')
+          log().info(`escurel: start ${m.skill} (${m.mode}) on ${pageId}`);
+        return void vscode.commands.executeCommand(resolved.command, ...resolved.args);
+      }
     }
   }
 

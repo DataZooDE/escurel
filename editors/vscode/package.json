@@ -32,21 +32,25 @@
       "properties": {
         "escurel.gatewayUrl": {
           "type": "string",
+          "scope": "application",
           "default": "http://127.0.0.1:8080",
           "description": "The one escurel gateway this window talks to (its /mcp and /ws live under this origin)."
         },
         "escurel.auth.issuer": {
           "type": "string",
+          "scope": "application",
           "default": "",
           "description": "OIDC issuer URL for signing in (the gateway trusts it). Leave empty for a gateway that runs without a verifier (dev / on-host): no token is sent."
         },
         "escurel.auth.clientId": {
           "type": "string",
+          "scope": "application",
           "default": "",
           "description": "Public OIDC client id for the PKCE / device-code flow."
         },
         "escurel.auth.scopes": {
           "type": "array",
+          "scope": "application",
           "items": {
             "type": "string"
           },
@@ -66,7 +70,7 @@
         "escurel.harness": {
           "type": "string",
           "default": "",
-          "scope": "machine-overridable",
+          "scope": "application",
           "description": "The harness to ask the runner for; empty = the runner's default; a name the runner does not allow makes the run fail."
         }
       }

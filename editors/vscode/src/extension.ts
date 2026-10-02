@@ -1,3 +1,4 @@
+import { exposedApi } from './shared/apiExposure';
 import * as vscode from 'vscode';
 import { log } from './log';
 import { Services } from './services';
@@ -44,7 +45,7 @@ export interface EscurelApi {
   runner: RunnerTree;
 }
 
-export function activate(context: vscode.ExtensionContext): EscurelApi {
+export function activate(context: vscode.ExtensionContext): EscurelApi | undefined {
   const services = new Services(context);
   registerControlCommands(context, services);
   context.subscriptions.push(services);
@@ -194,7 +195,10 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     registerApprovePlan(context, services),
   );
   log().info('escurel: activated');
-  return {
+  // Other extensions can read an extension's `exports`, and this object holds the token store. A
+  // production install hands out nothing; the test, e2e and demo harnesses (Test / Development mode)
+  // get the API they drive the extension through.
+  return exposedApi(context.extensionMode === vscode.ExtensionMode.Production, {
     services,
     knowledge,
     inbox,
@@ -206,7 +210,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
     threadsTree,
     canAdmin: adminContextValue,
     runner,
-  };
+  });
 }
 
 export function deactivate(): void {}
