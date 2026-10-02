@@ -26,6 +26,7 @@ export default tseslint.config(
       'test/integration/**/*.ts',
       'test/visual/**/*.ts',
       'scripts/**',
+      'demo/**',
       'eslint/**',
       '*.mjs',
       '*.ts',
@@ -35,6 +36,11 @@ export default tseslint.config(
   {
     files: ['webview/**/*.ts', 'test/component/**/*.ts'],
     languageOptions: { globals: { ...globals.browser, ...globals.mocha } },
+  },
+  {
+    // The demo's bootstrap is a plain CommonJS extension: VS Code loads it with `require`.
+    files: ['demo/bootstrap/**'],
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
   {
     // chai's `expect(x).to.exist` is an expression by design.
