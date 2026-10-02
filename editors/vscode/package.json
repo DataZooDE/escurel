@@ -90,7 +90,7 @@
       },
       {
         "command": "escurel.search",
-        "title": "Search…",
+        "title": "Search\u2026",
         "category": "Escurel",
         "icon": "$(search)"
       },
@@ -123,7 +123,7 @@
       },
       {
         "command": "escurel.startSkill",
-        "title": "Start skill…",
+        "title": "Start skill\u2026",
         "category": "Escurel"
       },
       {
@@ -520,7 +520,8 @@
     "test:integration": "node esbuild.mjs --production && node ./dist/test/integration/runTests.js",
     "test": "npm run typecheck && npm run lint && npm run test:unit && npm run test:component",
     "package": "npm run build && vsce package -o escurel-$npm_package_version.vsix",
-    "test:visual:update": "scripts/visual.sh --update-snapshots=all"
+    "test:visual:update": "scripts/visual.sh --update-snapshots=all",
+    "test:e2e": "playwright test -c test/e2e/playwright.config.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

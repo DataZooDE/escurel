@@ -104,7 +104,7 @@ JSON
 ESCUREL_DEMO_BEARER_FILE="$HOME_DIR/bearer.json" ESCUREL_DEMO_STORY="$HOME_DIR/story.json" \
   setsid nohup "$CODE" --user-data-dir "$HOME_DIR/profile" --extensions-dir "$HOME_DIR/ext" \
   --extensionDevelopmentPath="$EXT" --extensionDevelopmentPath="$HERE/bootstrap" \
-  ${ESCUREL_DEMO_CDP_PORT:+--remote-debugging-port=$ESCUREL_DEMO_CDP_PORT} \
+  ${ESCUREL_DEMO_CDP_PORT:+--remote-debugging-port=$ESCUREL_DEMO_CDP_PORT} ${ESCUREL_DEMO_CODE_ARGS:-} \
   --new-window "$HOME_DIR/workspace" > "$HOME_DIR/code.log" 2>&1 < /dev/null &
 echo $! > "$HOME_DIR/code.pid"
 
