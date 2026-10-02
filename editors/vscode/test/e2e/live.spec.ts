@@ -171,6 +171,26 @@ test('a failed run is listed under Dead letters, and Requeue is there but deacti
   await page.keyboard.press('Escape');
 });
 
+test('a failed run can be retried from the Runner view, and the person is told what happened', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  const dead = pane(page, 'Runner').getByRole('treeitem', { name: /order-4500152/ });
+  await dead.click({ button: 'right' });
+  // VS Code's own context menu acts on Enter; a synthetic click on its item is not reliable.
+  await page.getByRole('menuitem', { name: /Retry run/ }).hover();
+  await page.keyboard.press('Enter');
+  // The request goes out as an event; the runner answers it; the person is told the outcome in words.
+  // First the person is told the request is out, then what the runner answered, in words and with no id.
+  await expect(
+    page.locator('.notification-toast', { hasText: /Waiting for runner to retry/ }),
+  ).toBeVisible();
+  const answer = page.locator('.notification-toast', { hasText: /Retried; a new run has started/ });
+  await expect(answer).toBeVisible({ timeout: 40_000 });
+  expect(await answer.innerText()).not.toMatch(/[0-9A-Z]{20,}/);
+  await stack.shot('07b-retry-answer');
+});
+
 test('a live run can be cancelled from its run detail', async ({ stack }) => {
   const { page } = stack;
   await stack.call('capture_event', {

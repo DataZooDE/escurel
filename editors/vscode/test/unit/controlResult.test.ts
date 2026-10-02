@@ -15,7 +15,7 @@ describe('recorded runner control results', () => {
     expect(events.map((event) => describeOutcome(parseControlResult(event)!))).toEqual([
       'Dispatch resumed.',
       'Dispatch paused.',
-      'Requeued; new run 01M3Y7NK030SE8TVFA6XJ097NH.',
+      'Requeued; a new run has started.',
       'That run is not running any more (run is dead_letter).',
     ]);
   });
@@ -101,5 +101,18 @@ describe('findControlResult', () => {
       await findControlResult(fetchPage, { eventId: 'missing', action: 'pause' }, 3),
     ).toBeUndefined();
     expect(calls()).toBe(3);
+  });
+});
+
+describe('describeOutcome: retry and requeue', () => {
+  it('says what the PERSON did (retry vs requeue) and keeps run ids out of the sentence', () => {
+    const requeued = { outcome: 'requeued', runId: null, newRunId: '01M3Y7NK030SE8TVFA6XJ097NH' };
+    expect(describeOutcome({ action: 'retry', ...requeued })).toBe(
+      'Retried; a new run has started.',
+    );
+    expect(describeOutcome({ action: 'requeue', ...requeued })).toBe(
+      'Requeued; a new run has started.',
+    );
+    expect(describeOutcome({ action: 'retry', outcome: 'requeued', runId: null })).toBe('Retried.');
   });
 });
