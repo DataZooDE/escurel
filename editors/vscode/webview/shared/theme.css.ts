@@ -96,6 +96,10 @@ export const splitButton = css`
     border: 1px solid var(--vscode-menu-border, var(--escurel-border));
     box-shadow: 0 2px 8px var(--vscode-widget-shadow);
   }
+  .split [role='menu'].up {
+    top: auto;
+    bottom: calc(100% + 4px);
+  }
   .split [role='menuitem'] {
     display: block;
     width: 100%;

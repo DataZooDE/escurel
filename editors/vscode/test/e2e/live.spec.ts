@@ -84,6 +84,50 @@ test('a sales order opens as a real order page: SAP fields and an items table', 
   await stack.shot('06-order-page');
 });
 
+test('the Skill menu works from the keyboard alone, and Escape gives the focus back', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  const wv = await webviewWith(page, 'escurel-page-as-ui');
+  const chevron = wv.getByRole('button', { name: /More actions for .*with an agent/ }).first();
+  await chevron.focus();
+  await page.keyboard.press('ArrowDown');
+  const menu = wv.getByRole('menu').first();
+  await expect(menu).toBeVisible();
+  // The four ways to start, in the order the spec fixes, with the first one focused.
+  await expect(menu.getByRole('menuitem')).toHaveText([
+    'Start in background',
+    'First make a plan',
+    'Start in terminal',
+    'View skill',
+  ]);
+  await expect(menu.getByRole('menuitem').first()).toBeFocused();
+  // Every item can be reached on screen, even though this page is scrolled to its end.
+  await expect(menu.getByRole('menuitem').last()).toBeInViewport({ ratio: 1 });
+  await stack.shot('07-skill-menu-keyboard');
+  await page.keyboard.press('ArrowDown');
+  await expect(menu.getByRole('menuitem').nth(1)).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(chevron).toBeFocused();
+});
+
+test('"First make a plan" ends in a plan the person is asked to approve', async ({ stack }) => {
+  const { page } = stack;
+  const wv = await webviewWith(page, 'escurel-page-as-ui');
+  const chevron = wv.getByRole('button', { name: /More actions for .*with an agent/ }).first();
+  await chevron.focus();
+  await page.keyboard.press('ArrowDown');
+  await wv.getByRole('menuitem', { name: 'First make a plan' }).click();
+  // The runner drafts a plan and stops; VS Code asks, in a notification, whether to carry it out.
+  const toast = page.locator('.notification-toast', { hasText: /Plan ready for/ });
+  await expect(toast).toBeVisible({ timeout: 60_000 });
+  await expect(toast.getByRole('button', { name: 'Approve plan' })).toBeVisible();
+  await stack.shot('08-plan-ready');
+  // Not now: nothing is run behind the person's back.
+  await page.keyboard.press('Escape');
+});
+
 test('a failed run is listed under Dead letters, and Requeue is there but deactivated for a human', async ({
   stack,
 }) => {

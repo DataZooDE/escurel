@@ -59,9 +59,24 @@ export class EscurelSplitButton extends LitElement {
   }
   private openMenu(): void {
     this.open = true;
-    void this.updateComplete.then(() =>
-      (this.renderRoot.querySelector('[role="menuitem"]') as HTMLElement | null)?.focus(),
-    );
+    void this.updateComplete.then(() => {
+      this.placeMenu();
+      (this.renderRoot.querySelector('[role="menuitem"]') as HTMLElement | null)?.focus();
+    });
+  }
+  /**
+   * Open downward, as menus do, unless that would run off the bottom of the viewport and there is
+   * room above: a page scrolled to its end otherwise showed only the first item of the menu.
+   */
+  private placeMenu(): void {
+    const menu = this.renderRoot.querySelector<HTMLElement>('[role="menu"]');
+    if (!menu) return;
+    menu.classList.remove('up');
+    const r = menu.getBoundingClientRect();
+    const trigger = this.renderRoot.querySelector<HTMLElement>('.split')?.getBoundingClientRect();
+    if (r.bottom > window.innerHeight && trigger && trigger.top >= r.height + 4) {
+      menu.classList.add('up');
+    }
   }
   private close(): void {
     if (!this.open) return;
