@@ -6,13 +6,18 @@ import { describeError } from '../errors';
 import { log } from '../log';
 import type { Services } from '../services';
 import {
+  ESCUREL_RUNNER_STATUS_INTERVAL_MS,
   buildRunnerRows,
+  estimateHeartbeatIntervalMs,
   extractDeadLetters,
   parseRunnerStatusBody,
   type DeadLetterItem,
   type RunnerRow,
   type RunnerStatusBody,
 } from './runnerModel';
+
+/** How often the health row is re-derived from what is held (it fetches nothing). */
+const HEALTH_REDRAW_MS = 5_000;
 
 /**
  * Tree view for the Escurel Runner (SPEC §3.3, §3.9).
@@ -39,6 +44,8 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
   private deadLetters: DeadLetterItem[] = [];
   private lastRunsJson?: string;
   private refreshTimer?: NodeJS.Timeout;
+  private healthTimer?: NodeJS.Timeout;
+  private intervalMs = ESCUREL_RUNNER_STATUS_INTERVAL_MS;
   private readonly disposables: vscode.Disposable[] = [];
   private isDisposed = false;
   private isFetching = false;
@@ -58,12 +65,28 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
     // Rebuild socket when auth/connection state changes
     this.disposables.push(
       this.services.onDidChange(() => {
+        // A different gateway or tenant: nothing cached belongs to it. Left in place, the previous
+        // tenant's dead letters would show under the new runner whenever its run counts happened
+        // to match, because the dead letters are only refetched when the counts change.
+        this.statusEvent = undefined;
+        this.statusBody = undefined;
+        this.deadLetters = [];
+        this.lastRunsJson = undefined;
         this.rebuildSocket();
         void this.refresh();
       }),
     );
 
     this.rebuildSocket();
+
+    // Health is a function of NOW. A runner that dies after one good heartbeat sends nothing more,
+    // so without a redraw the row would say `ok` for ever. This only re-derives from what is
+    // already held; it fetches nothing.
+    this.healthTimer = setInterval(() => {
+      if (this.isDisposed || !this.statusEvent) return;
+      this.rebuildRows();
+      this.changed.fire(undefined);
+    }, HEALTH_REDRAW_MS);
   }
 
   bindView(treeView: vscode.TreeView<RunnerRow>): void {
@@ -203,6 +226,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
     this.cachedRows = buildRunnerRows(this.statusEvent ?? this.statusBody, this.deadLetters, {
       admin,
       quotas,
+      intervalMs: this.intervalMs,
     });
   }
 
@@ -227,13 +251,15 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
       // 1. Fetch newest runner status event
       let statusEvent: Event | undefined;
       try {
+        // Several rows, not one: the gaps between heartbeats show the runner's own interval.
         const page = await client.listEvents({
           label_skill: 'escurel:runner-status',
           newest_first: true,
           include_system: true,
-          limit: 1,
+          limit: 8,
         });
         statusEvent = page.events?.[0];
+        this.intervalMs = estimateHeartbeatIntervalMs(page.events ?? []);
       } catch (err) {
         log().debug(`runner view: error fetching runner status: ${describeError(err)}`);
       }
@@ -358,6 +384,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
   dispose(): void {
     this.isDisposed = true;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    if (this.healthTimer) clearInterval(this.healthTimer);
     this.socket?.close();
     this.socket = undefined;
     this.focusSubscription?.dispose();

@@ -99,6 +99,30 @@ export function parseRunnerStatusBody(
   }
 }
 
+/**
+ * The runner's heartbeat interval, OBSERVED. `ESCUREL_RUNNER_STATUS_INTERVAL` is configurable and
+ * the status body does not carry it, so the default alone would call a healthy runner with a
+ * longer heartbeat "stale". The rows show it: the gaps between consecutive `heartbeat` rows (a
+ * `changed` row arrives whenever something changes, so it says nothing about the interval). The
+ * median, so one late heartbeat does not move it. With fewer than two heartbeats to measure, the
+ * runner's default.
+ */
+export function estimateHeartbeatIntervalMs(
+  rows: readonly { at?: string | null; title?: string | null }[],
+): number {
+  const times = rows
+    .filter((r) => r.title === 'heartbeat' && r.at)
+    .map((r) => Date.parse(r.at as string))
+    .filter((t) => Number.isFinite(t))
+    .sort((a, b) => a - b);
+  const gaps: number[] = [];
+  for (let i = 1; i < times.length; i += 1) gaps.push(times[i]! - times[i - 1]!);
+  if (gaps.length === 0) return ESCUREL_RUNNER_STATUS_INTERVAL_MS;
+  gaps.sort((a, b) => a - b);
+  const mid = Math.floor(gaps.length / 2);
+  return gaps.length % 2 ? gaps[mid]! : (gaps[mid - 1]! + gaps[mid]!) / 2;
+}
+
 /** Formats age in seconds: "last heartbeat N s ago". */
 export function formatHeartbeatAge(ageMs: number): string {
   const sec = Math.max(0, Math.floor(ageMs / 1000));
@@ -116,7 +140,9 @@ export function formatHeartbeatAge(ageMs: number): string {
 export function deriveHealth(
   statusRow: { at?: string | null; body?: string | RunnerStatusBody | null } | null | undefined,
   now: Date | number | string = new Date(),
+  options: { intervalMs?: number } = {},
 ): HealthInfo {
+  const intervalMs = options.intervalMs ?? ESCUREL_RUNNER_STATUS_INTERVAL_MS;
   if (!statusRow) {
     return {
       status: 'none',
@@ -151,9 +177,8 @@ export function deriveHealth(
   }
 
   const ageMs = statusRow.at ? nowMs - new Date(statusRow.at).getTime() : 0;
-  const isHeartbeatStale = ageMs > 3 * ESCUREL_RUNNER_STATUS_INTERVAL_MS;
-  const isPollAgeStale =
-    (parsedBody?.last_poll_age_ms ?? 0) > 3 * ESCUREL_RUNNER_STATUS_INTERVAL_MS;
+  const isHeartbeatStale = ageMs > 3 * intervalMs;
+  const isPollAgeStale = (parsedBody?.last_poll_age_ms ?? 0) > 3 * intervalMs;
 
   if (isHeartbeatStale || isPollAgeStale) {
     return {
@@ -268,6 +293,8 @@ export function buildRunnerRows(
   opts: {
     admin: 'admin' | 'not-admin' | 'unknown';
     quotas?: Record<string, unknown>;
+    /** The observed heartbeat interval; see `estimateHeartbeatIntervalMs`. */
+    intervalMs?: number;
   },
   now: Date | number | string = new Date(),
 ): RunnerRow[] {
@@ -291,7 +318,9 @@ export function buildRunnerRows(
   const rows: RunnerRow[] = [];
 
   // 1. Health row
-  const health = deriveHealth(statusRow, now);
+  const health = deriveHealth(statusRow, now, {
+    ...(opts.intervalMs !== undefined ? { intervalMs: opts.intervalMs } : {}),
+  });
   const healthDesc = health.description ? `${health.label} · ${health.description}` : health.label;
   rows.push({
     kind: 'health',

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '../../src/client';
 import {
+  estimateHeartbeatIntervalMs,
   buildRunnerRows,
   deriveHealth,
   extractDeadLetters,
@@ -284,5 +285,55 @@ describe('runnerModel', () => {
         expect(rows.length).toBeGreaterThan(0);
       }).not.toThrow();
     });
+  });
+});
+
+describe('the heartbeat interval is observed, not assumed', () => {
+  // `ESCUREL_RUNNER_STATUS_INTERVAL` is configurable and the status body does not carry it, so a
+  // fixed 30 s would call a healthy runner with a 60 s heartbeat "stale". The rows themselves show
+  // it: the gaps between consecutive `heartbeat` rows.
+  const template = (runnerStatusFixture.events as Event[])[2]!; // a recorded heartbeat row
+  const heartbeatAt = (iso: string, title = 'heartbeat') => ({ ...template, at: iso, title });
+
+  it('is the median gap between heartbeat rows, newest first or not', () => {
+    const rows = [
+      heartbeatAt('2026-10-02T12:03:00Z'),
+      heartbeatAt('2026-10-02T12:02:00Z'),
+      heartbeatAt('2026-10-02T12:01:00Z'),
+      heartbeatAt('2026-10-02T12:00:00Z'),
+    ];
+    expect(estimateHeartbeatIntervalMs(rows)).toBe(60_000);
+  });
+
+  it('ignores `changed` rows: they arrive whenever something changes, not on the heartbeat', () => {
+    const rows = [
+      heartbeatAt('2026-10-02T12:01:00Z'),
+      heartbeatAt('2026-10-02T12:00:50Z', 'changed'),
+      heartbeatAt('2026-10-02T12:00:00Z'),
+    ];
+    expect(estimateHeartbeatIntervalMs(rows)).toBe(60_000);
+  });
+
+  it('falls back to the runner default (30 s) without two heartbeats to measure', () => {
+    expect(estimateHeartbeatIntervalMs([])).toBe(30_000);
+    expect(estimateHeartbeatIntervalMs([heartbeatAt('2026-10-02T12:00:00Z')])).toBe(30_000);
+  });
+
+  it('judges staleness by it: 100 s is fine for a 60 s heartbeat and stale for a 30 s one', () => {
+    const row = heartbeatAt('2026-10-02T12:00:00Z');
+    const now = Date.parse('2026-10-02T12:01:40Z');
+    expect(deriveHealth(row, now, { intervalMs: 60_000 }).status).toBe('ok');
+    expect(deriveHealth(row, now, { intervalMs: 30_000 }).status).toBe('stale');
+  });
+});
+
+describe('health ages with the clock', () => {
+  // A runner that dies after one good heartbeat sends nothing more. What the view shows must
+  // therefore be a function of NOW, so redrawing it on a timer is what turns "ok" into "stale".
+  it('is ok just after a heartbeat and stale once enough time has passed with none', () => {
+    const row = (runnerStatusFixture.events as Event[])[2]!;
+    const at = Date.parse(row.at as string);
+    expect(deriveHealth(row, at + 5_000).status).toBe('ok');
+    expect(deriveHealth(row, at + 10 * 60_000).status).toBe('stale');
   });
 });
