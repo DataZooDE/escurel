@@ -50,4 +50,10 @@ if grep -q '^editors/vscode/' <<<"$changed"; then
   steps+=(vscode)
 fi
 
+# Git exports GIT_DIR and friends to hooks. Tools that run git themselves
+# would then read THIS repo: Flutter, for one, derives its SDK version from
+# its own checkout and fails `pub get` as "0.0.0-unknown". Clear them.
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
+
 exec "$root/scripts/check.sh" "${steps[@]}"
