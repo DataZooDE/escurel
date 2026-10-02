@@ -175,6 +175,10 @@ there before the line is printed and replaces it (by rename; a reader never sees
 fresh ones every `--bearer-refresh-secs` (default 240), so whoever is signed in with it stays
 signed in. Nothing else is written.
 
+The gateway also holds a signing identity on the issuer's own key, so `mint_agent_token` works
+against it (starting a skill in a terminal under a governed run needs that); a gateway without one
+answers it `unsupported`.
+
 Why a verifying gateway matters, and a verifier-less one cannot stand in for it: **only a token
 can prove which run wrote something.** With no verifier the gateway has no claims at all, so a
 runner's per-run token is ignored, an agent's draft carries no `run_id`, `list_lineage` shows
