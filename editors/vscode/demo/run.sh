@@ -87,7 +87,7 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
   "window.restoreWindows": "none",
   "window.zoomLevel": 1,
   "chat.disableAIFeatures": true,
-  "workbench.secondarySideBar.defaultVisibility": "hidden",
+  "workbench.secondarySideBar.defaultVisibility": "visible",
   "workbench.layoutControl.enabled": false,
   "workbench.welcomePage.walkthroughs.openOnInstall": false
 }

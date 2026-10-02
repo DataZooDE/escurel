@@ -27,10 +27,13 @@ exports.activate = async () => {
     }
   };
   apply();
+  // The views were drawn BEFORE there was a token (they showed 'not signed in'), and applying a
+  // static token does not announce itself the way a real sign-in does. Ask them to load again.
+  await vscode.commands.executeCommand('escurel.refresh');
   setInterval(apply, 30_000);
 
-  // The right-hand sidebar is empty until the Runner view exists; a blank panel is distracting.
-  await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar');
+  // The Runner view lives in the right-hand (secondary) sidebar: show it, then the left one.
+  await vscode.commands.executeCommand('workbench.view.extension.escurel-runner');
   await vscode.commands.executeCommand('workbench.view.extension.escurel');
   if (storyFile) {
     try {
