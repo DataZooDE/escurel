@@ -10,11 +10,6 @@ export type ControlRequest =
   | { action: 'requeue'; eventId?: string | undefined; reason?: string | undefined }
   | { action: 'pause' | 'resume'; reason?: string | undefined };
 
-/** Tenant-wide, and the gateway answers a non-admin with the same "not yours" as a missing run. */
-export function isAdminAction(action: ControlRequest['action']): boolean {
-  return action === 'pause' || action === 'resume' || action === 'requeue';
-}
-
 const need = (value: string | undefined, what: string, action: string): string => {
   const v = value?.trim();
   if (!v) throw new Error(`${action} needs ${what}`);

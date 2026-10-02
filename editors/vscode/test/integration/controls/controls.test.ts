@@ -122,13 +122,29 @@ suite('real run controls', () => {
       assert.equal(await api.services.admin.get(), 'admin');
       await until(() => (api.canAdmin() === true ? true : undefined), 5000, 'admin context');
       await vscode.commands.executeCommand('escurel.requeue', trigger.event_id);
-      const rows = await results(api);
-      assert.ok(
-        rows.events.some((e) => {
-          const body = JSON.parse(e.body ?? '{}');
-          return body.action === 'requeue' && body.outcome === 'requeued';
-        }),
+      // THIS requeue: the control event naming our dead-lettered trigger, and the runner's answer to
+      // that very request. "Some requeue succeeded at some point" would pass on another test's.
+      const requests = await api.services.client.listEvents({
+        label_skill: 'escurel:run-control',
+        include_system: true,
+        newest_first: true,
+        limit: 20,
+      });
+      const mine = requests.events.find((e) => {
+        try {
+          return JSON.parse(e.body ?? '{}').event_id === trigger.event_id;
+        } catch {
+          return false;
+        }
+      });
+      assert.ok(mine, 'the requeue request for this dead letter was captured');
+      const answer = await until(
+        async () =>
+          matchResult((await results(api)).events, { eventId: mine.event_id, action: 'requeue' }),
+        30_000,
+        'the runner’s answer to this requeue',
       );
+      assert.equal(answer.outcome, 'requeued');
     } finally {
       back();
     }
@@ -137,19 +153,24 @@ suite('real run controls', () => {
   test('admin pauses and resumes dispatch', async function () {
     this.timeout(120_000);
     const back = signInAsAdmin(api);
+    // A failed assertion must not leave the tenant paused: every later suite would then time out
+    // waiting for a runner that is deliberately not dispatching.
+    let paused = false;
     try {
       // The modal is a real user confirmation; capture directly to verify the same gateway and runner path.
       const pause = await api.services.client.captureEvent(buildControlEvent({ action: 'pause' }));
-      const paused = await until(
+      paused = true;
+      const pausedResult = await until(
         async () =>
           matchResult((await results(api)).events, { eventId: pause.event_id, action: 'pause' }),
         30_000,
         'pause result',
       );
-      assert.equal(paused.outcome, 'paused');
+      assert.equal(pausedResult.outcome, 'paused');
       const resume = await api.services.client.captureEvent(
         buildControlEvent({ action: 'resume' }),
       );
+      paused = false;
       const resumed = await until(
         async () =>
           matchResult((await results(api)).events, { eventId: resume.event_id, action: 'resume' }),
@@ -158,6 +179,11 @@ suite('real run controls', () => {
       );
       assert.equal(resumed.outcome, 'resumed');
     } finally {
+      if (paused) {
+        await api.services.client
+          .captureEvent(buildControlEvent({ action: 'resume' }))
+          .catch(() => undefined);
+      }
       back();
     }
   });

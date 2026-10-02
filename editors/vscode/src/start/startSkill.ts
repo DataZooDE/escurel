@@ -250,9 +250,7 @@ export function registerStartSkill(
         try {
           await vscode.commands.executeCommand(action.command, action.args);
         } catch {
-          void vscode.window.showInformationMessage(
-            'Starting in a terminal is not available in this build.',
-          );
+          void vscode.window.showInformationMessage('Could not start in a terminal.');
         }
         return;
       }

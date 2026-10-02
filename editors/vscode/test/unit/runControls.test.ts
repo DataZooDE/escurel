@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildControlEvent, isAdminAction, runControls } from '../../src/runs/controls';
+import { buildControlEvent, runControls } from '../../src/runs/controls';
 
 // The contract is the gateway's (tools_control.rs): cancel/retry name a run, requeue names the
 // dead-lettered event, pause/resume are tenant-wide, and the last three are admin-only.
@@ -44,13 +44,6 @@ describe('buildControlEvent', () => {
     for (const forbidden of ['requested_by', 'instance_page_id', '"kind"', 'provenance']) {
       expect(text).not.toContain(forbidden);
     }
-  });
-});
-
-describe('isAdminAction', () => {
-  it('is true for the tenant-wide actions and false for the per-run ones', () => {
-    expect(['pause', 'resume', 'requeue'].every((a) => isAdminAction(a as 'pause'))).toBe(true);
-    expect(['cancel', 'retry'].some((a) => isAdminAction(a as 'cancel'))).toBe(false);
   });
 });
 

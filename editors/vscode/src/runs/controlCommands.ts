@@ -1,3 +1,4 @@
+import { inFlight, pollControlResult } from './controlWait';
 import * as vscode from 'vscode';
 import type { Services } from '../services';
 import { buildControlEvent, type ControlRequest } from './controls';
@@ -33,6 +34,7 @@ export function registerControlCommands(
   services: Services,
 ): void {
   registerAdminContext(context, services);
+  const once = inFlight();
   const register = (command: string, action: Action) =>
     vscode.commands.registerCommand(command, async (arg?: Argument) => {
       if (action === 'pause') {
@@ -43,9 +45,23 @@ export function registerControlCommands(
         );
         if (answer !== 'Pause dispatch') return;
       }
+      let request: ReturnType<typeof controlRequest>;
       try {
-        const request = controlRequest(action, arg);
-        const event = await services.client.captureEvent(buildControlEvent(request));
+        request = controlRequest(action, arg);
+      } catch (error) {
+        void vscode.window.showErrorMessage(describeControlRefusal(error));
+        return;
+      }
+      const key = `${action}:${'runId' in request ? (request.runId ?? '') : ''}:${'eventId' in request ? (request.eventId ?? '') : ''}`;
+      await once(key, async () => {
+        let eventId: string;
+        try {
+          eventId = (await services.client.captureEvent(buildControlEvent(request))).event_id;
+        } catch (error) {
+          // Only HERE is a refusal real: the gateway did not take the request.
+          void vscode.window.showErrorMessage(describeControlRefusal(error));
+          return;
+        }
         await vscode.window.withProgress(
           {
             location: vscode.ProgressLocation.Notification,
@@ -53,48 +69,41 @@ export function registerControlCommands(
             cancellable: true,
           },
           async (_progress, cancellation) => {
-            const deadline = Date.now() + 30_000;
-            while (!cancellation.isCancellationRequested && Date.now() < deadline) {
-              const result = await findControlResult(
-                (cursor) =>
-                  services.client.listEvents({
-                    label_skill: 'escurel:run-control-result',
-                    newest_first: true,
-                    include_system: true,
-                    limit: 50,
-                    ...(cursor ? { cursor } : {}),
-                  }),
-                {
-                  eventId: event.event_id,
-                  action,
-                  ...('runId' in request && request.runId ? { runId: request.runId } : {}),
-                },
-              );
-              if (result) {
-                void vscode.window.showInformationMessage(describeOutcome(result));
-                return;
-              }
-              await new Promise<void>((resolve) => {
-                const timer = setTimeout(() => {
-                  subscription.dispose();
-                  resolve();
-                }, 500);
-                const subscription = cancellation.onCancellationRequested(() => {
-                  clearTimeout(timer);
-                  subscription.dispose();
-                  resolve();
-                });
-              });
-            }
-            if (!cancellation.isCancellationRequested)
+            const outcome = await pollControlResult({
+              find: () =>
+                findControlResult(
+                  (cursor) =>
+                    services.client.listEvents({
+                      label_skill: 'escurel:run-control-result',
+                      newest_first: true,
+                      include_system: true,
+                      limit: 50,
+                      ...(cursor ? { cursor } : {}),
+                    }),
+                  {
+                    eventId,
+                    action,
+                    ...('runId' in request && request.runId ? { runId: request.runId } : {}),
+                  },
+                ),
+              now: Date.now,
+              sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+              timeoutMs: 30_000,
+              intervalMs: 500,
+              cancelled: () => cancellation.isCancellationRequested,
+            });
+            if (outcome.kind === 'result') {
+              void vscode.window.showInformationMessage(describeOutcome(outcome.result));
+            } else if (outcome.kind === 'timeout') {
               void vscode.window.showInformationMessage(
-                'The runner has not answered yet. It acts on requests as it polls.',
+                outcome.lookupFailed
+                  ? 'The request was sent, but the answer could not be read. Check the Runner view.'
+                  : 'The runner has not answered yet. It acts on requests as it polls.',
               );
+            }
           },
         );
-      } catch (error) {
-        void vscode.window.showErrorMessage(describeControlRefusal(error));
-      }
+      });
     });
   context.subscriptions.push(
     register('escurel.cancelRun', 'cancel'),

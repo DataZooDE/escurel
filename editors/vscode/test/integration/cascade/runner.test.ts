@@ -104,12 +104,8 @@ suite('runner view in cascade', () => {
         const rows = await api.runner.getChildren();
         const deadLettersGroup = rows.find((r) => r.kind === 'deadLetters');
         if (!deadLettersGroup || !deadLettersGroup.children) return undefined;
-        return deadLettersGroup.children.find(
-          (c) =>
-            c.description?.includes('permanent') ||
-            c.description?.includes('refusing') ||
-            c.description?.includes('no-such-harness'),
-        );
+        // This test's own dead letter, not whichever one an earlier test left behind.
+        return deadLettersGroup.children.find((c) => c.eventId === dlEvent.event_id);
       },
       90_000,
       'dead letter to show in runner tree under Dead letters',
