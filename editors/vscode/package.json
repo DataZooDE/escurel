@@ -60,6 +60,7 @@
         "escurel.shellHarness": {
           "type": "string",
           "default": "claude",
+          "scope": "application",
           "description": "Command started in the integrated terminal by \"Start in terminal\"."
         }
       }
@@ -145,6 +146,11 @@
         "title": "Resume dispatch",
         "category": "Escurel",
         "enablement": "escurel.canAdmin"
+      },
+      {
+        "command": "escurel.startInTerminal",
+        "title": "Start in terminal",
+        "category": "Escurel"
       },
       {
         "command": "escurel.openThread",
@@ -268,6 +274,10 @@
         },
         {
           "command": "escurel.viewSkill",
+          "when": "false"
+        },
+        {
+          "command": "escurel.startInTerminal",
           "when": "false"
         },
         {
