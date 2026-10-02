@@ -57,7 +57,7 @@ export const splitButton = css`
   }
   .split .primary,
   .split .chevron {
-    border: 1px solid transparent;
+    border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
     padding: 2px 10px;
     color: var(--vscode-button-foreground);
   }
@@ -109,7 +109,8 @@ export const splitButton = css`
   .split [role='menuitem']:focus-visible {
     background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
     color: var(--vscode-menu-selectionForeground, inherit);
-    outline: none;
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
   }
   .split .menu-header {
     padding: 2px 12px 6px;

@@ -640,7 +640,7 @@ export class EscurelThreadCanvas extends LitElement {
     const visibleLaidOutNodes = this.layout.nodes.filter((n) => !n.hidden);
 
     return html`
-      <div class="toolbar" role="toolbar" aria-label="Thread canvas controls">
+      <div class="toolbar" role="group" aria-label="Thread canvas controls">
         <button aria-label="Zoom out" @click=${() => this.zoomBy(0.8)}>−</button>
         <span class="zoom-level" aria-live="polite">${Math.round(this.viewport.zoom * 100)}%</span>
         <button aria-label="Zoom in" @click=${() => this.zoomBy(1.25)}>+</button>

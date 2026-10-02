@@ -154,17 +154,23 @@ describe('<escurel-thread-inspector>', () => {
 
     const retryBtn = controls[0] as HTMLButtonElement;
     expect(retryBtn.textContent?.trim()).to.equal('Retry');
-    expect(retryBtn.disabled).to.be.false;
+    expect(retryBtn.getAttribute('aria-disabled')).to.equal(null);
 
     const requeueBtn = controls[1] as HTMLButtonElement;
     expect(requeueBtn.textContent?.trim()).to.equal('Requeue');
-    expect(requeueBtn.disabled).to.be.true;
+    // aria-disabled, not `disabled`: the button stays in the tab order, so a keyboard or screen
+    // reader user can reach it and hear WHY it is deactivated (the hint it points at).
+    expect(requeueBtn.disabled).to.be.false;
+    expect(requeueBtn.getAttribute('aria-disabled')).to.equal('true');
     expect(requeueBtn.getAttribute('title')).to.equal('Only an admin can requeue a dead letter.');
 
     const sent: ThreadWebviewToHost[] = [];
     el.addEventListener('escurel-message', (e) =>
       sent.push((e as CustomEvent<ThreadWebviewToHost>).detail),
     );
+
+    requeueBtn.click();
+    expect(sent, 'a deactivated control does nothing when clicked').to.deep.equal([]);
 
     retryBtn.click();
     expect(sent).to.deep.equal([
@@ -226,5 +232,22 @@ describe('<escurel-thread-inspector>', () => {
     ) as HTMLButtonElement[];
     expect(approve!.classList.contains('primary')).to.equal(true);
     expect(retry!.classList.contains('primary')).to.equal(false);
+  });
+
+  it('groups its buttons instead of claiming a toolbar it has no arrow-key roving for', async () => {
+    const el = await render(
+      {
+        title: 'Echo run',
+        rows: [],
+        sideTitle: '',
+        side: [],
+        actions: { controls: [{ action: 'retry', label: 'Retry', enabled: true }], skill: 's' },
+      },
+      'run-1',
+    );
+    const roles = Array.from(el.shadowRoot!.querySelectorAll('.actions')).map((n) =>
+      n.getAttribute('role'),
+    );
+    expect(roles.every((r) => r === 'group')).to.equal(true);
   });
 });

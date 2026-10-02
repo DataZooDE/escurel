@@ -73,6 +73,11 @@ export class EscurelSplitButton extends LitElement {
     this.dispatchEvent(new CustomEvent('select', { detail: id, bubbles: true, composed: true }));
     this.close();
   }
+  private onChevronKey(e: KeyboardEvent): void {
+    if (e.key !== 'ArrowDown' || this.open) return;
+    e.preventDefault();
+    this.openMenu();
+  }
   private onMenuKey(e: KeyboardEvent): void {
     const items = Array.from(this.renderRoot.querySelectorAll<HTMLElement>('[role="menuitem"]'));
     const i = items.indexOf(e.target as HTMLElement);
@@ -110,8 +115,9 @@ export class EscurelSplitButton extends LitElement {
         class="chevron"
         aria-haspopup="menu"
         aria-expanded=${this.open ? 'true' : 'false'}
-        aria-label="More actions"
+        aria-label="More actions for ${this.label}"
         @click=${this.toggle}
+        @keydown=${this.onChevronKey}
       >
         ▾
       </button>

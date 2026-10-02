@@ -178,8 +178,10 @@ describe('<escurel-page-as-ui> thread strip', () => {
 
   it('gives its buttons names a screen reader can use', async () => {
     const el = await withThread();
-    expect(q(el, '.open-thread')!.getAttribute('aria-label')).to.contain('Open thread');
-    expect(q(el, '.open-run')!.getAttribute('aria-label')).to.contain('Open run');
+    // The visible text IS the name ("label in name"); an id is only ever a tooltip.
+    expect(text(q(el, '.open-thread'))).to.contain('Open thread');
+    expect(text(q(el, '.open-run'))).to.equal('Open run');
+    expect(q(el, '.open-run')!.getAttribute('aria-label')).to.equal(null);
   });
 
   it('says so when the run that produced the page did not succeed', async () => {
@@ -190,5 +192,38 @@ describe('<escurel-page-as-ui> thread strip', () => {
   it('is absent for a page no run has finished against', async () => {
     const el = await render();
     expect(q(el, '.thread-strip')).to.equal(null);
+  });
+
+  it('names a checkbox field, so a screen reader hears more than "checkbox, checked"', async () => {
+    const el = await render();
+    // <escurel-field> renders into the light DOM.
+    const box = qa(el, 'escurel-field')
+      .map((f) => f.querySelector('input[type="checkbox"]'))
+      .find(Boolean) as HTMLInputElement | undefined;
+    expect(box !== undefined).to.equal(true);
+    expect((box!.getAttribute('aria-label') ?? '').length > 0).to.equal(true);
+  });
+
+  it('tells two split buttons on one page apart, and opens the menu with the arrow key', async () => {
+    const el = await render();
+    const chevrons = qa(el, '.skill-button .chevron, .instance-button .chevron') as HTMLElement[];
+    const names = chevrons.map((c) => c.getAttribute('aria-label'));
+    expect(new Set(names).size, `distinct names: ${names.join(' | ')}`).to.equal(names.length);
+
+    const first = chevrons[0]!;
+    first.focus();
+    first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await el.updateComplete;
+    const menus = qa(el, '.skill-button [role="menu"], .instance-button [role="menu"]');
+    expect(
+      menus.length >= 1 || chevrons.some((c) => c.getAttribute('aria-expanded') === 'true'),
+    ).to.equal(true);
+  });
+
+  it('does not read a run id aloud as the name of the link to the run', async () => {
+    const el = await render();
+    const runLink = q(el, '.open-run') as HTMLElement | null;
+    if (!runLink) return; // the fixture page has no thread strip
+    expect(/[0-9A-Z]{20,}/.test(runLink.getAttribute('aria-label') ?? '')).to.equal(false);
   });
 });

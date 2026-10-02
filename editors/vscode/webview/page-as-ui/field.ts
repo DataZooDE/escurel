@@ -53,6 +53,7 @@ export class EscurelField extends LitElement {
       case 'bool':
         return html`<input
           type="checkbox"
+          aria-label=${f.label}
           .checked=${f.value === true}
           ?disabled=${!this.editable}
         />`;
