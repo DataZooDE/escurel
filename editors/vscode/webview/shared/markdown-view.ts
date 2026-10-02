@@ -26,9 +26,24 @@ function inline(nodes: Inline[]): TemplateResult[] {
         // A webview hands a click on an http(s) link to the system browser.
         return html`<a href=${n.href} rel="noopener noreferrer">${inline(n.c)}</a>`;
       case 'wikilink':
-        // Inert on purpose: a `[[skill::id]]` needs resolving against the gateway to find its page,
-        // and guessing a page id from it would open the wrong page for a nested corpus.
-        return html`<span class="wikilink" title=${n.target}>${n.label ?? n.target}</span>`;
+        // The webview cannot resolve `[[skill::id]]` (that needs the gateway, and guessing a page id
+        // would open the wrong page in a nested corpus), so it says which link was chosen and the
+        // host resolves it. A button, so it is reachable and operable from the keyboard.
+        return html`<button
+          type="button"
+          class="wikilink"
+          title=${n.target}
+          @click=${(e: Event) =>
+            (e.currentTarget as HTMLElement).dispatchEvent(
+              new CustomEvent<string>('escurel-wikilink', {
+                detail: `[[${n.target}]]`,
+                bubbles: true,
+                composed: true,
+              }),
+            )}
+        >
+          ${n.label ?? n.target}
+        </button>`;
     }
   });
 }
@@ -173,8 +188,17 @@ export const markdownStyles = css`
     outline: 1px solid var(--vscode-focusBorder);
   }
   .md .wikilink {
+    all: unset;
+    cursor: pointer;
     color: var(--vscode-textLink-foreground);
     border-bottom: 1px dotted currentColor;
+  }
+  .md .wikilink:hover {
+    color: var(--vscode-textLink-activeForeground);
+  }
+  .md .wikilink:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
   }
   .md .table-wrap {
     overflow-x: auto;
