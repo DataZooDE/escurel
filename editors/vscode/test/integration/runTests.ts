@@ -18,7 +18,7 @@
 // runner binary the cascade run is skipped, not failed.
 //
 //   ESCUREL_TEST_GREP=<regex>   narrow both runs to matching tests
-import type { GatewayInfo } from './gatewayInfo';
+import { parseGatewayInfo, type GatewayInfo } from './gatewayInfo';
 import { runnerEnv } from './runnerEnv';
 import { runTests } from '@vscode/test-electron';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -65,7 +65,7 @@ async function startVerifyingGateway(
       reject(new Error(`escurel-test-gateway exited with ${code} before it was ready`)),
     );
   });
-  return { child, info: JSON.parse(line) as GatewayInfo };
+  return { child, info: parseGatewayInfo(line) };
 }
 
 interface Gateway {
@@ -201,6 +201,7 @@ async function main(): Promise<void> {
         // The suite hands this to the extension through its API (`useStaticToken`); nothing in
         // the shipped extension reads it, so a running install cannot be given a credential.
         ESCUREL_TEST_BEARER: info?.bearer ?? '',
+        ESCUREL_TEST_ADMIN_BEARER: info?.admin_bearer ?? '',
         ESCUREL_TEST_SUBJECT: 'alice',
       },
     });

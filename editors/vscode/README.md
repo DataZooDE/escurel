@@ -22,6 +22,8 @@ npm run test:integration
 
 Two passes run: the corpus suite against `escurel-server` (no verifier, no runner), and the cascade suite against `escurel-test-gateway` (a gateway that verifies tokens, so a minted-mode runner can prove which run wrote what) plus a real runner. A missing binary skips the cascade pass with a warning. Override the paths with `ESCUREL_SERVER_BIN`, `ESCUREL_RUNNER_BIN` and `ESCUREL_TEST_GATEWAY_BIN`.
 
+The minimum VS Code is **1.104**: the Runner view lives in the secondary sidebar, which an extension can contribute to from that release (`docs/notes/discovered/2026-10-02-vscode-secondary-sidebar-floor.md`). `@types/vscode` is pinned to that version, so the typecheck rejects a newer API.
+
 The extension runs in Restricted Mode windows too; there its `escurel.*` settings are read from your user settings only (a folder cannot redirect you to another gateway).
 
 Press F5 in VS Code (`editors/vscode` as the workspace) for the Extension

@@ -64,6 +64,21 @@ export type HostToWebview =
 
 export type StartMode = 'background' | 'plan' | 'terminal';
 
+/**
+ * What can be done to a run from where it is shown (run detail, the thread inspector, the Runner
+ * view). `approve` and `fix-skill` are not run-control events: approving starts the skill again
+ * with the plan, and fixing opens the skill. They sit here so every surface renders one list.
+ */
+export type RunControlAction = 'cancel' | 'retry' | 'requeue' | 'approve' | 'fix-skill';
+
+export interface RunControl {
+  action: RunControlAction;
+  label: string;
+  /** Deactivated, not hidden: a control that is not yours still shows, with the reason. */
+  enabled: boolean;
+  disabledReason?: string;
+}
+
 export type WebviewToHost =
   | { type: 'ready' }
   | { type: 'open-page'; pageId: string }
@@ -200,8 +215,23 @@ export interface InspectorRow {
  * exposes — per-run token counts, what a run read and wrote — and an inspector that
  * invented them would be showing a design, not the thread. A row with no data is absent.
  */
+/**
+ * What a node offers, beyond reading it (M4). The host decides; the webview only renders and
+ * posts back. An instance offers its skill's `actions` as Skill split buttons; a run offers
+ * its controls; either may be absent.
+ */
+export interface InspectorActions {
+  /** An instance node: the same Skill split buttons page-as-UI shows. */
+  skills?: { pageId: string; actions: ActionView[] };
+  /** A run node: Cancel / Retry / Requeue / Approve plan / Fix skill, as the run's state allows. */
+  controls?: RunControl[];
+  /** The skill that produced a run, for Fix skill. */
+  skill?: string;
+}
+
 export interface InspectorView {
   title: string;
+  actions?: InspectorActions;
   rows: InspectorRow[];
   bodyTitle?: string;
   body?: string;
@@ -229,6 +259,10 @@ export type ThreadWebviewToHost =
   | { type: 'select-node'; nodeId: string }
   | { type: 'promote'; changesetId?: string; draftId?: string }
   | { type: 'discard'; changesetId?: string; draftId?: string }
+  | { type: 'start-skill'; skill: string; pageId: string; mode: StartMode }
+  | { type: 'view-skill'; skill: string }
+  /** `runId` for cancel/retry/approve/fix-skill; `eventId` for requeue. Checked against the thread. */
+  | { type: 'run-control'; action: RunControlAction; runId?: string; eventId?: string }
   | { type: 'toggle-collapse'; nodeId: string }
   /** The toolbar's "Expand all": the host owns which nodes are collapsed. */
   | { type: 'expand-all' }
@@ -288,6 +322,10 @@ export interface RunView {
   calls: ToolCallRow[];
   /** `null` when the last page has been read; pass back as `after`. */
   nextAfter: number | null;
+  /** What can be done to this run now. Filled by the host (it knows whether the caller is an admin). */
+  controls?: RunControl[];
+  /** The skill the run executes, for Fix skill and for approving a plan. */
+  skill?: string;
 }
 
 export type RunHostToWebview =
@@ -301,4 +339,6 @@ export type RunWebviewToHost =
   | { type: 'open-page'; pageId: string }
   | { type: 'open-thread'; rootEventId: string }
   | { type: 'copy-trace-id'; traceId: string }
+  | { type: 'run-control'; action: RunControlAction; runId: string; eventId?: string }
+  | { type: 'view-skill'; skill: string }
   | { type: 'refresh' };
