@@ -99,6 +99,13 @@ fn pages(seed: &Path) -> Result<Vec<(String, String)>, String> {
 
 #[tokio::main]
 async fn main() {
+    // FIRST, before anything slow: a parent that terminates this process the moment it has read
+    // the connection line (or earlier) must get a clean exit, not a process killed by the
+    // default SIGTERM action in the window before a handler exists. A signal that arrives while
+    // the gateway is still starting is remembered and ends the wait below at once.
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install SIGTERM handler");
+
     let args = match parse() {
         Ok(a) => a,
         Err(e) => {
@@ -148,8 +155,6 @@ async fn main() {
 
     // Stay up until signalled, then shut the gateway down cleanly rather than leave its
     // data directory and ports behind.
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("install SIGTERM handler");
     tokio::select! {
         _ = term.recv() => {}
         _ = tokio::signal::ctrl_c() => {}
