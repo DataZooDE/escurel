@@ -18,7 +18,7 @@ export function registerStartInTerminal(
       const arg = parseTerminalArgs(raw);
       if (!arg) {
         void vscode.window.showErrorMessage(
-          'escurel: cannot start in a terminal without a skill and a page.',
+          'Cannot start in a terminal without a skill and a page.',
         );
         return;
       }
@@ -66,7 +66,7 @@ export function registerStartInTerminal(
         // An error after mint may carry the bearer. Never surface it in a notice.
         const message = describeError(error);
         void vscode.window.showErrorMessage(
-          `escurel: could not start in terminal — ${token ? message.split(token).join('[redacted]') : message}`,
+          `Could not start in terminal — ${token ? message.split(token).join('[redacted]') : message}`,
         );
         return;
       }

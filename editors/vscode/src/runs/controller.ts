@@ -59,7 +59,7 @@ export class RunController implements vscode.Disposable {
   open(arg: unknown): void {
     const runId = runIdOf(arg);
     if (!runId) {
-      void vscode.window.showInformationMessage('escurel: pick a run to open its detail.');
+      void vscode.window.showInformationMessage('Pick a run to open its detail.');
       return;
     }
     const existing = this.panels.get(runId);
@@ -173,7 +173,7 @@ export class RunController implements vscode.Disposable {
           const traceId = traceIdToCopy(view);
           if (!traceId) return;
           await vscode.env.clipboard.writeText(traceId);
-          void vscode.window.showInformationMessage('escurel: trace id copied.');
+          void vscode.window.showInformationMessage('Trace id copied.');
           return;
         }
         case 'run-control':

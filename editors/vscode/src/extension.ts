@@ -138,20 +138,20 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     vscode.commands.registerCommand('escurel.signIn', async () => {
       if (!EscurelAuthProvider.configured()) {
         void vscode.window.showInformationMessage(
-          'escurel: no OIDC issuer is configured (escurel.auth.issuer), so this gateway is used without a token.',
+          'No OIDC issuer is configured (escurel.auth.issuer), so this gateway is used without a token.',
         );
         return;
       }
       try {
         const s = await vscode.authentication.getSession('escurel', [], { createIfNone: true });
-        void vscode.window.showInformationMessage(`escurel: signed in as ${s.account.label}`);
+        void vscode.window.showInformationMessage(`Signed in as ${s.account.label}`);
       } catch (e) {
-        void vscode.window.showErrorMessage(`escurel: sign-in failed — ${(e as Error).message}`);
+        void vscode.window.showErrorMessage(`Sign-in failed — ${(e as Error).message}`);
       }
     }),
     vscode.commands.registerCommand('escurel.signOut', async () => {
       await services.auth.removeSession();
-      void vscode.window.showInformationMessage('escurel: signed out');
+      void vscode.window.showInformationMessage('Signed out');
     }),
     vscode.commands.registerCommand('escurel.refresh', () => services.onDidChangeEmit()),
     vscode.commands.registerCommand('escurel.search', () => searchCommand(() => services.client)),

@@ -162,7 +162,7 @@ export class EscurelFileSystem implements vscode.FileSystemProvider {
         // same draft would be noise.
         if (res.created) {
           void vscode.window.showInformationMessage(
-            `escurel: held as draft ${res.draftId} — it is in "Awaiting you" until you promote it`,
+            `Held as draft ${res.draftId} — it is in "Awaiting you" until you promote it`,
           );
         }
         this.refreshAwaiting?.();

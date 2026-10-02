@@ -68,10 +68,10 @@ export async function resolveCommand(
   try {
     const r = await client().resolve({ wikilink: link });
     if (!r.exists || !r.page)
-      return void vscode.window.showWarningMessage(`escurel: ${link} resolves to no page`);
+      return void vscode.window.showWarningMessage(`${link} resolves to no page`);
     await vscode.commands.executeCommand('escurel.openPage', r.page.page_id);
   } catch (e) {
-    void vscode.window.showErrorMessage(`escurel: resolve failed — ${describeError(e)}`);
+    void vscode.window.showErrorMessage(`Resolve failed — ${describeError(e)}`);
   }
 }
 

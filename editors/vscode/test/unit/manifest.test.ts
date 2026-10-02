@@ -115,3 +115,21 @@ describe('settings that decide where a credential goes or what runs', () => {
     expect(prop.scope).toBe('application');
   });
 });
+
+describe('command titles', () => {
+  // The webviews, the Skill menu and the spec all use sentence case ("Start in background", "Cancel
+  // run"); the palette and the menus used to mix it with Title Case ("Open Page" next to "Open
+  // instance"). One style, so the same action reads the same on every surface.
+  it('are in sentence case: no word after the first starts with a capital, bar proper nouns', () => {
+    const proper = new Set(['Markdown', 'Escurel']);
+    const bad = (manifest.contributes.commands as unknown as { title: string }[])
+      .map((c) => c.title)
+      .filter((title: string) =>
+        title
+          .split(/\s+/)
+          .slice(1)
+          .some((w) => /^[A-Z][a-z]/.test(w) && !proper.has(w.replace(/[….]$/, ''))),
+      );
+    expect(bad).toEqual([]);
+  });
+});
