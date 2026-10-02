@@ -178,11 +178,11 @@ async fn main() {
     // A demo outlasts a ten-minute token. The file is written BEFORE the line is printed, so a
     // reader that waits for the line always finds a bearer, and then kept fresh. Only what the
     // flag asked for is written, and only to the path given.
-    if let Some(path) = &args.bearer_file {
-        if let Err(e) = write_bearers(&process, &args, path) {
-            eprintln!("cannot write {}: {e}", path.display());
-            std::process::exit(2);
-        }
+    if let Some(path) = &args.bearer_file
+        && let Err(e) = write_bearers(&process, &args, path)
+    {
+        eprintln!("cannot write {}: {e}", path.display());
+        std::process::exit(2);
     }
     // One line, flushed: the parent reads exactly this and nothing else from stdout.
     println!(
