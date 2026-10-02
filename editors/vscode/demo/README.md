@@ -15,12 +15,12 @@ exposes the window to a debugger for screenshots.
 
 ## The state it leaves
 
-| Where         | What you see                                                                                                    |
-| ------------- | --------------------------------------------------------------------------------------------------------------- |
-| Knowledge     | Skills `supplier-risk`, `customer-order`, `supplier`; five orders and a supplier                                |
-| Thread (open) | "Supplier risk: Meier-Guss downgraded" → run → changeset **promoted** → cascade event → the follow-on's own run |
-| Awaiting you  | One changeset, `order-4500131`, proposed by the agent for "Kessler delivery risk"                               |
-| Inbox         | Both signals, newest first                                                                                      |
+| Where         | What you see                                                                                                                                   |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Knowledge     | Skills `supplier-risk`, `customer-order`, `supplier`; five orders and a supplier                                                               |
+| Thread (open) | "Vendor 100234 Meier-Guss: PO 4500087412 confirmation moved +14 days" → run → changeset **promoted** → cascade event → the follow-on's own run |
+| Awaiting you  | One changeset, sales order `4500131`, proposed by the agent for "PO 4500087433 confirmed 120 of 200 PC"                                        |
+| Inbox         | Both signals, newest first                                                                                                                     |
 
 ## A walkthrough (about ten minutes)
 
@@ -28,7 +28,7 @@ exposes the window to a debugger for screenshots.
    shows what the gateway really said, and the Threads outline follows. Arrow keys walk the graph.
 2. **The outline.** Collapse the run's card on the canvas: its row collapses in the Threads view.
 3. **Run detail.** Double-click the run card: plan, attempts, and one row per tool call.
-4. **Awaiting you → review.** Open the Kessler changeset: a diff per draft (base ↔ proposed).
+4. **Awaiting you → review.** Open the sales order 4500131 changeset (Kessler): a diff per draft (base ↔ proposed).
    Leave a comment on a line. It is stored as an event, not in the editor.
 5. **Promote.** Promote the changeset. Watch the open thread of that event grow a cascade event
    and a follow-on run **without a reload**: nothing refreshes it; a live subscription does.

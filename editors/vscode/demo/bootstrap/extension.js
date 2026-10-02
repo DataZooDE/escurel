@@ -39,6 +39,13 @@ exports.activate = async () => {
     try {
       const story = JSON.parse(fs.readFileSync(storyFile, 'utf8'));
       if (story.rootA) await vscode.commands.executeCommand('escurel.openThread', story.rootA);
+      // Optional: also open one page, to land the walkthrough on it (or to look at it).
+      if (process.env.ESCUREL_DEMO_OPEN_PAGE) {
+        await vscode.commands.executeCommand(
+          'escurel.openInstance',
+          process.env.ESCUREL_DEMO_OPEN_PAGE,
+        );
+      }
     } catch {
       /* no story yet: the window is still usable */
     }

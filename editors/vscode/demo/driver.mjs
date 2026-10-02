@@ -1,10 +1,11 @@
 // Plays the story that leaves a demo window ready for a walkthrough, against a running demo
 // gateway and runner, and prints what it left behind as one line of JSON.
 //
-//   1. A supplier-risk signal about Meier-Guss arrives for order 4500123. The runner proposes a
+//   1. A supplier-risk signal about vendor Meier-Guss (a purchase-order confirmation moved by 14
+//      days) arrives for sales order 4500123. The runner proposes a
 //      change; it is PROMOTED here, which cascades: a follow-on event lands under the same run.
 //      That thread is complete, and the walkthrough opens on it.
-//   2. A second signal arrives for order 4500131. The runner proposes a change and it is LEFT
+//   2. A second signal (a partial confirmation, 120 of 200 PC) arrives for sales order 4500131. The runner proposes a change and it is LEFT
 //      OPEN, so Awaiting you has something to review live: diff, comment, promote.
 import { readFileSync } from 'node:fs';
 
@@ -48,8 +49,12 @@ const openChangesetOn = async (pageId) =>
 const a = await call('capture_event', {
   label_skill: 'supplier-risk',
   instance_page_id: page('order-4500123'),
-  title: 'Supplier risk: Meier-Guss downgraded',
-  body: 'Meier-Guss was downgraded from A to B. Deliveries of housing GH-4711 slip by 14 days.',
+  title: 'Vendor 100234 Meier-Guss: PO 4500087412 confirmation moved +14 days',
+  body:
+    'Purchasing (ME23N): vendor 100234 Meier-Guss GmbH, PO 4500087412 item 10, material GH-4711 ' +
+    '(gearbox housing), 240 PC. Confirmation date moved from 2026-10-12 to 2026-10-26 (+14 days); ' +
+    'vendor rating downgraded A to B. Affects sales order 4500123 item 10 ' +
+    '(Hoffmann Automotive GmbH, customer PO HA-2026-0917, requested delivery 2026-10-12).',
   mime: 'text/plain',
   source: 'demo',
 });
@@ -73,8 +78,12 @@ await until('the first thread to settle', async () => {
 const b = await call('capture_event', {
   label_skill: 'supplier-risk',
   instance_page_id: page('order-4500131'),
-  title: 'Kessler delivery risk',
-  body: 'Kessler Werkzeugbau: their logistics partner is insolvent. ETA for order 4500131 is unknown.',
+  title: 'Vendor 100234 Meier-Guss: PO 4500087433 confirmed 120 of 200 PC',
+  body:
+    'Purchasing (ME23N): vendor 100234 Meier-Guss GmbH, PO 4500087433 item 20, material GH-4711 ' +
+    '(gearbox housing). Confirmed 120 of 200 PC for 2026-10-19; the remaining 80 PC have no ' +
+    'confirmed date. Affects sales order 4500131 item 20 (Kessler Werkzeugbau GmbH, customer PO ' +
+    'KW-26-0443, requested delivery 2026-10-19).',
   mime: 'text/plain',
   source: 'demo',
 });
