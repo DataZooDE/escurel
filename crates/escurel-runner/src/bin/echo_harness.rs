@@ -258,6 +258,40 @@ fn derive_instance_frontmatter(page_id: &str, vote: Option<&VoteStamp>) -> Optio
     Some(fm)
 }
 
+/// The id of the event this run was triggered for: the `event_id:` line the packager renders at the
+/// start of the task input (under "## Triggering event"). `None` when the input names none.
+fn trigger_event_id(input: &str) -> Option<&str> {
+    input
+        .lines()
+        .find_map(|l| l.strip_prefix("event_id: "))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
+/// The inbox event to fold. When the run names its trigger, THAT event (and nothing else: if it is
+/// no longer in the inbox, or has no target instance, there is nothing to fold). Only a task that
+/// names none falls back to the oldest event that has a target.
+///
+/// The fallback used to be the only rule, and it made a run fold whatever sat longest in the inbox:
+/// an event waiting on a human's promotion, a plan's event, a dead-lettered one. A run started for a
+/// NEWER event then either did nothing for its own (a clean no-op) or tried to draft on a page that
+/// already held an open draft and dead-lettered.
+fn pick_event<'a>(events: &'a [Value], trigger: Option<&str>) -> Option<&'a Value> {
+    let has_target = |e: &&Value| {
+        e.get("instance_page_id")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty())
+    };
+    match trigger {
+        Some(id) => events
+            .iter()
+            .find(|e| e.get("event_id").and_then(Value::as_str) == Some(id))
+            .filter(|e| has_target(e)),
+        // list_inbox returns newest-first, so `rev` is oldest-first.
+        None => events.iter().rev().find(has_target),
+    }
+}
+
 /// Perform the deterministic fold; returns the structured outcome.
 fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     let mcp = Mcp::new(&task.mcp_endpoint, &task.token);
@@ -272,14 +306,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let target = events
-        .iter()
-        .rev() // oldest first (list_inbox returns newest-first)
-        .find(|e| {
-            e.get("instance_page_id")
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.is_empty())
-        });
+    let target = pick_event(&events, trigger_event_id(&task.input));
     let event = match target {
         Some(e) => e,
         None => {
@@ -1120,6 +1147,57 @@ fn improve_apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ev(id: &str, page: Option<&str>) -> Value {
+        match page {
+            Some(p) => json!({ "event_id": id, "instance_page_id": p }),
+            None => json!({ "event_id": id }),
+        }
+    }
+
+    #[test]
+    fn the_trigger_is_the_event_id_line_of_the_task_input() {
+        let input =
+            "event_id: 01EV2\nlabel_skill: supplier-risk\nsource: workbench\ntitle: t\nbody\n";
+        assert_eq!(trigger_event_id(input), Some("01EV2"));
+        assert_eq!(trigger_event_id("no id here"), None);
+        // Only a line that STARTS with it: an `event_id:` inside the body does not count.
+        assert_eq!(trigger_event_id("title: x\n  event_id: nope\n"), None);
+    }
+
+    #[test]
+    fn folds_the_event_it_was_triggered_for_not_the_oldest() {
+        // list_inbox is newest-first. The OLDER event (waiting on a human, say) is still in the
+        // inbox; a run triggered for the newer one must fold the newer one. Folding the oldest made
+        // that run a no-op for its own event, or a draft conflict dead-lettering it.
+        let inbox = vec![
+            ev("NEW", Some("markdown/instances/a__b.md")),
+            ev("OLD", Some("markdown/instances/c__d.md")),
+        ];
+        let picked = pick_event(&inbox, Some("NEW")).expect("an event");
+        assert_eq!(picked["event_id"], "NEW");
+    }
+
+    #[test]
+    fn falls_back_to_the_oldest_when_no_trigger_is_named() {
+        let inbox = vec![
+            ev("NEW", Some("markdown/instances/a__b.md")),
+            ev("OLD", Some("markdown/instances/c__d.md")),
+        ];
+        assert_eq!(pick_event(&inbox, None).unwrap()["event_id"], "OLD");
+    }
+
+    #[test]
+    fn does_nothing_when_the_trigger_is_not_in_the_inbox_or_has_no_target() {
+        let inbox = vec![
+            ev("OTHER", Some("markdown/instances/c__d.md")),
+            ev("NOTARGET", None),
+        ];
+        // Not there (already processed): a clean no-op, not somebody else's event.
+        assert!(pick_event(&inbox, Some("GONE")).is_none());
+        // There, but nothing to fold it into.
+        assert!(pick_event(&inbox, Some("NOTARGET")).is_none());
+    }
 
     #[test]
     fn stamp_inserts_a_new_key_before_the_closing_fence() {
