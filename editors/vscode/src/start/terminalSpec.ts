@@ -57,3 +57,17 @@ export function buildTerminalSpec(input: {
     command: input.command,
   };
 }
+
+/**
+ * `escurel.startInTerminal`'s argument, checked. The command is hidden from the palette but a
+ * command URI or another extension can still call it, and what it is given goes to a token mint.
+ */
+export function parseTerminalArgs(
+  arg: unknown,
+): { skill: string; pageId: string; rootEventId?: string } | undefined {
+  if (typeof arg !== 'object' || arg === null || Array.isArray(arg)) return undefined;
+  const { skill, pageId, rootEventId } = arg as Record<string, unknown>;
+  if (typeof skill !== 'string' || skill === '' || typeof pageId !== 'string') return undefined;
+  if (rootEventId !== undefined && typeof rootEventId !== 'string') return undefined;
+  return rootEventId ? { skill, pageId, rootEventId } : { skill, pageId };
+}

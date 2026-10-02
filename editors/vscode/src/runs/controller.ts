@@ -8,7 +8,13 @@ import { webviewHtml, webviewOptions } from '../shared/webviewHtml';
 import { carryCalls, loadRun } from './loadRun';
 import { mergeToolCallPage } from './runModel';
 import { runControls } from './controls';
-import { resolveRunAction, visibleRunControls, type ActionRunView } from './runActions';
+import {
+  acceptLoadMore,
+  resolveRunAction,
+  traceIdToCopy,
+  visibleRunControls,
+  type ActionRunView,
+} from './runActions';
 import { log } from '../log';
 
 const REFETCH_DEBOUNCE_MS = 300;
@@ -138,7 +144,8 @@ export class RunController implements vscode.Disposable {
         case 'refresh':
           return void load();
         case 'load-more-calls': {
-          if (!view) return;
+          // Only the cursor the host offered with the last page; anything else is a forgery.
+          if (!view || !acceptLoadMore(view, m.after)) return;
           try {
             const page = await this.services.client.getRunToolCalls({
               run_id: runId,
@@ -159,11 +166,16 @@ export class RunController implements vscode.Disposable {
             'escurel.openThread',
             m.rootEventId || rootEventId,
           );
-        case 'copy-trace-id':
-          // The host owns the clipboard, so only the host can say it worked.
-          await vscode.env.clipboard.writeText(m.traceId);
+        case 'copy-trace-id': {
+          // The host owns the clipboard, so only the host can say it worked. It copies ITS trace
+          // id, never the string the webview sent: a forged message must not be able to plant text
+          // on the user's clipboard.
+          const traceId = traceIdToCopy(view);
+          if (!traceId) return;
+          await vscode.env.clipboard.writeText(traceId);
           void vscode.window.showInformationMessage('escurel: trace id copied.');
           return;
+        }
         case 'run-control':
         case 'view-skill':
           return void this.handleWebviewMessage(runId, m);

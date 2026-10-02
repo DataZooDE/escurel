@@ -1,20 +1,27 @@
 import * as vscode from 'vscode';
 import { describeError } from '../errors';
 import type { Services } from '../services';
-import { buildTerminalSpec, canStartInTerminal, newSpanId, newTraceId } from './terminalSpec';
-
-interface StartInTerminalArgs {
-  skill: string;
-  pageId: string;
-  rootEventId?: string;
-}
+import {
+  buildTerminalSpec,
+  canStartInTerminal,
+  newSpanId,
+  newTraceId,
+  parseTerminalArgs,
+} from './terminalSpec';
 
 export function registerStartInTerminal(
   context: vscode.ExtensionContext,
   services: Services,
 ): void {
   context.subscriptions.push(
-    vscode.commands.registerCommand('escurel.startInTerminal', async (arg: StartInTerminalArgs) => {
+    vscode.commands.registerCommand('escurel.startInTerminal', async (raw: unknown) => {
+      const arg = parseTerminalArgs(raw);
+      if (!arg) {
+        void vscode.window.showErrorMessage(
+          'escurel: cannot start in a terminal without a skill and a page.',
+        );
+        return;
+      }
       const command =
         vscode.workspace.getConfiguration('escurel').get<string>('shellHarness') ?? '';
       const guard = canStartInTerminal({ trusted: vscode.workspace.isTrusted, command });
@@ -58,7 +65,7 @@ export function registerStartInTerminal(
       } catch (error) {
         // An error after mint may carry the bearer. Never surface it in a notice.
         const message = describeError(error);
-        void vscode.window.showInformationMessage(
+        void vscode.window.showErrorMessage(
           `escurel: could not start in terminal — ${token ? message.split(token).join('[redacted]') : message}`,
         );
         return;
