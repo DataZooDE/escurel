@@ -214,6 +214,13 @@
           "title": "Escurel",
           "icon": "media/icon.svg"
         }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "escurel-runner",
+          "title": "Runner",
+          "icon": "media/icon.svg"
+        }
       ]
     },
     "views": {
@@ -238,6 +245,12 @@
           "name": "Inbox",
           "contextualTitle": "Escurel"
         }
+      ],
+      "escurel-runner": [
+        {
+          "id": "escurel.runner",
+          "name": "Runner"
+        }
       ]
     },
     "viewsWelcome": [
@@ -253,6 +266,11 @@
       },
       {
         "view": "escurel.inbox",
+        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign In](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
+        "when": "escurel.connected == false"
+      },
+      {
+        "view": "escurel.runner",
         "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign In](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
         "when": "escurel.connected == false"
       }
