@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { AdminStateProvider } from './auth/adminProvider';
 import { EscurelAuthProvider } from './auth/provider';
 import { EscurelClient } from './client';
 import { onConfigChange, readConfig } from './config';
@@ -10,6 +11,8 @@ import { log } from './log';
  */
 export class Services implements vscode.Disposable {
   readonly auth: EscurelAuthProvider;
+  /** Whether the signed-in token is an admin's; forgotten whenever the token or gateway changes. */
+  readonly admin = new AdminStateProvider(() => this.client.listTools());
   private _client: EscurelClient;
   private readonly changed = new vscode.EventEmitter<void>();
   /** Fires when the client was rebuilt (gateway or auth settings changed): views refetch. */
@@ -25,11 +28,14 @@ export class Services implements vscode.Disposable {
       onConfigChange(() => {
         void this._client.close();
         this._client = this.build();
+        this.admin.invalidate();
         this.changed.fire();
       }),
+      this.auth.refresher.onDidRefresh(() => this.admin.invalidate()),
       vscode.authentication.onDidChangeSessions((e) => {
         if (e.provider.id === 'escurel') {
           void this._client.close();
+          this.admin.invalidate();
           this.changed.fire();
         }
       }),

@@ -17,19 +17,21 @@ suite('who is an admin', () => {
 
   test('the ordinary bearer is not an admin, and the admin bearer is', async function () {
     this.timeout(60_000);
-    assert.equal(detectAdminState(await api.services.client.listTools()), 'not-admin');
+    // Through the provider every surface will use, not the client: signing in as someone else
+    // must be noticed with nobody clearing a cache by hand.
+    assert.equal(await api.services.admin.get(), 'not-admin');
+    const tools = await api.services.client.listTools();
+    assert.equal(detectAdminState(tools), 'not-admin');
 
     const back = signInAsAdmin(api);
     try {
-      await api.services.client.close();
-      const tools = await api.services.client.listTools();
-      assert.equal(detectAdminState(tools), 'admin');
-      assert.ok(tools.some((t) => t.name === 'admin_quota' && t.scope === 'admin'));
+      assert.equal(await api.services.admin.get(), 'admin');
+      const asAdmin = await api.services.client.listTools();
+      assert.ok(asAdmin.some((t) => t.name === 'admin_quota' && t.scope === 'admin'));
     } finally {
       back();
-      await api.services.client.close();
     }
     // And back again: signing out of admin must leave nothing admin behind.
-    assert.equal(detectAdminState(await api.services.client.listTools()), 'not-admin');
+    assert.equal(await api.services.admin.get(), 'not-admin');
   });
 });
