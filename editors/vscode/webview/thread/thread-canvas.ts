@@ -712,6 +712,7 @@ export class EscurelThreadCanvas extends LitElement {
           this.selectedNodeId
             ? html`<div class="inspector-container">
                 <escurel-thread-inspector
+                  .nodeId=${this.selectedNodeId}
                   .detail=${this.details?.[this.selectedNodeId]}
                 ></escurel-thread-inspector>
               </div>`

@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import type { AdminState } from '../auth/adminState';
+import type { Skill } from '../client/types';
 import type { InspectorView, ThreadHostToWebview, ThreadWebviewToHost } from '../shared/protocol';
 import { safePost } from '../shared/safePost';
 import type { Services } from '../services';
@@ -6,6 +8,8 @@ import { describeError } from '../errors';
 import { LiveViewSocket } from '../liveView';
 import { log } from '../log';
 import { webviewHtml, webviewOptions } from '../shared/webviewHtml';
+import type { InspectorExtras } from './inspector';
+import { buildNodeActions, resolveThreadAction } from './inspectorActions';
 import { focusGraph, layoutThread } from './layout';
 import { loadThread, type LoadedThread } from './loadThread';
 import { commandForTarget, resolveGate, rootEventIdOf } from './nodeTarget';
@@ -15,11 +19,18 @@ import { toThreadView } from './threadModel';
 const REFETCH_DEBOUNCE_MS = 300;
 
 /** Builds the inspector for every node. Injected so the controller does not own its content. */
-export type DetailsBuilder = (loaded: LoadedThread) => Record<string, InspectorView>;
+export type DetailsBuilder = (
+  loaded: LoadedThread,
+  extras?: InspectorExtras,
+) => Record<string, InspectorView>;
 
 interface Open {
   panel: vscode.WebviewPanel;
+  getCurrent: () => LoadedThread | undefined;
+  getSkills: () => readonly Skill[] | undefined;
+  getAdmin: () => AdminState;
   reload: () => void;
+  render: () => void;
   select: (nodeId: string) => void;
   toggleCollapse: (nodeId: string) => void;
   expandAll: () => void;
@@ -90,6 +101,39 @@ export class ThreadController implements vscode.Disposable {
     this.panels.get(rootEventId)?.select(nodeId);
   }
 
+  /**
+   * Dispatches a message arriving from a thread panel webview to the appropriate host command.
+   * Host validates all arguments against the thread model and ignores forged parameters.
+   * Public so integration tests can exercise host message handling directly.
+   */
+  async handleWebviewMessage(rootEventId: string, message: ThreadWebviewToHost): Promise<boolean> {
+    const open = this.panels.get(rootEventId);
+    if (!open) {
+      log().warn(`thread: message for unknown panel ${rootEventId}`);
+      return false;
+    }
+    const current = open.getCurrent();
+    if (!current) {
+      log().warn(`thread: message before thread loaded for ${rootEventId}`);
+      return false;
+    }
+
+    const view = toThreadView(current);
+    const resolved = resolveThreadAction(view, message, {
+      admin: open.getAdmin(),
+      skills: open.getSkills(),
+      rawNodes: current.nodes,
+      warn: (msg) => log().warn(msg),
+    });
+
+    if (!resolved) {
+      return false;
+    }
+
+    await vscode.commands.executeCommand(resolved.command, ...resolved.args);
+    return true;
+  }
+
   open(arg: unknown): void {
     const rootEventId = rootEventIdOf(arg);
     if (!rootEventId) {
@@ -125,6 +169,8 @@ export class ThreadController implements vscode.Disposable {
   private wire(rootEventId: string, panel: vscode.WebviewPanel): Open {
     const collapsed = new Set<string>();
     let current: LoadedThread | undefined;
+    let cachedSkills: Skill[] | undefined;
+    let cachedAdmin: AdminState = 'unknown';
     let timer: NodeJS.Timeout | undefined;
     let disposed = false;
 
@@ -138,12 +184,42 @@ export class ThreadController implements vscode.Disposable {
       if (!current) return;
       const view = toThreadView(current);
       const layout = layoutThread(view, collapsed);
+      const extras: InspectorExtras = {
+        admin: cachedAdmin,
+        skills: cachedSkills,
+      };
+      const rawNodes = [...current.nodes.values()];
+      const details = this.details(current, extras);
+      for (const node of view.nodes) {
+        let d = details[node.id];
+        if (!d && node.target.open === 'page') {
+          d = {
+            title: node.title,
+            rows: [],
+            sideTitle: '',
+            side: [],
+          };
+          details[node.id] = d;
+        }
+        if (d && !d.actions) {
+          const raw = current.nodes.get(node.id);
+          const actions = buildNodeActions(node, raw, {
+            admin: extras.admin,
+            skills: extras.skills,
+            rawById: current.nodes,
+            lineageNodes: rawNodes,
+          });
+          if (actions) {
+            d.actions = actions;
+          }
+        }
+      }
       post({
         type: 'thread',
         view,
         layout,
         focus: focusGraph(view, layout),
-        details: this.details(current),
+        details,
       });
       const root = view.nodes.find((n) => n.id === view.rootEventId);
       // The event's own title when it has one. `title` is the skill label, which every thread
@@ -163,12 +239,20 @@ export class ThreadController implements vscode.Disposable {
     };
     const load = async () => {
       try {
-        const result = await loadThread(this.services.client, rootEventId);
+        const [result, skills, admin] = await Promise.all([
+          loadThread(this.services.client, rootEventId),
+          this.services.client.listSkills().catch(() => undefined),
+          this.services.admin.get().catch(() => 'unknown' as const),
+        ]);
         // The panel can be closed while a read is in flight. A result arriving after that
         // belongs to nobody, and announcing it would update listeners (the outline) with a
         // thread that is no longer open — or with a stale one, if the panel was reopened.
         if (disposed) return;
         current = result;
+        if (skills !== undefined) {
+          cachedSkills = skills;
+        }
+        cachedAdmin = admin;
         render();
         this.loaded.fire({ rootEventId, thread: current, collapsed: new Set(collapsed) });
       } catch (err) {
@@ -179,6 +263,11 @@ export class ThreadController implements vscode.Disposable {
       clearTimeout(timer);
       timer = setTimeout(() => void load(), REFETCH_DEBOUNCE_MS);
     };
+
+    const adminSub = this.services.admin.onDidChange(async () => {
+      cachedAdmin = await this.services.admin.get().catch(() => 'unknown' as const);
+      render();
+    });
 
     post({ type: 'thread-loading', rootEventId });
     const live = new LiveViewSocket(
@@ -216,6 +305,10 @@ export class ThreadController implements vscode.Disposable {
             gate,
           );
         }
+        case 'start-skill':
+        case 'run-control':
+        case 'view-skill':
+          return void this.handleWebviewMessage(rootEventId, m);
         case 'toggle-collapse':
           return toggleCollapse(m.nodeId);
         case 'expand-all':
@@ -225,13 +318,18 @@ export class ThreadController implements vscode.Disposable {
 
     return {
       panel,
+      getCurrent: () => current,
+      getSkills: () => cachedSkills,
+      getAdmin: () => cachedAdmin,
       reload: () => void load(),
+      render: () => render(),
       select: (nodeId) => post({ type: 'thread-select', nodeId }),
       toggleCollapse,
       expandAll,
       dispose: () => {
         disposed = true;
         clearTimeout(timer);
+        adminSub.dispose();
         live.dispose();
         sub.dispose();
       },

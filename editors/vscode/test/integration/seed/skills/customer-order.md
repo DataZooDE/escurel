@@ -3,6 +3,7 @@ type: skill
 id: customer-order
 description: A customer order. A change to one is announced.
 autonomy: review
+actions: [supplier-risk]
 cascade:
   target: produced
 ---

@@ -3,6 +3,7 @@ type: skill
 id: customer-order
 description: A customer sales order (SAP SD, transaction VA03) - header data, delivery status and the items behind it.
 autonomy: review
+actions: [supplier-risk]
 required_frontmatter: [sales_doc, order_type, sold_to, sold_to_name, sales_org, overall_status]
 fields:
   - {name: sales_doc, kind: int, required: true, label: "Sales document (VBELN)"}
