@@ -20,6 +20,7 @@ import { buildInspectors } from './thread/inspector';
 import { toThreadView } from './thread/threadModel';
 import { ThreadsTree } from './views/threads';
 import { expandableRows, type OutlineRow } from './views/threadsModel';
+import { registerStartInTerminal } from './start/terminal';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -43,6 +44,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi {
   const services = new Services(context);
   registerControlCommands(context, services);
   context.subscriptions.push(services);
+  registerStartInTerminal(context, services);
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);
