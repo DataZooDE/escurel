@@ -32,3 +32,4 @@ delivery_risk: low
 ## History
 
 - Order created from customer PO KW-26-0443 and confirmed.
+- The gearbox housings (GH-4711) are cast by [[supplier::meier-guss|Meier-Guss GmbH]].

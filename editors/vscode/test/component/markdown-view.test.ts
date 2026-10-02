@@ -58,11 +58,18 @@ describe('renderMarkdown', () => {
     expect((window as unknown as { __pwned?: number }).__pwned).to.equal(undefined);
   });
 
-  it('shows a wikilink as an inert chip, not a link it cannot resolve', () => {
+  it('shows a wikilink as a button that asks the host to open the page it names', () => {
     const host = mount('see [[supplier::meier-guss|the vendor]]');
-    const chip = host.querySelector('.wikilink');
-    expect(chip?.textContent).to.equal('the vendor');
-    expect(chip?.getAttribute('title')).to.equal('supplier::meier-guss');
+    const link = host.querySelector('button.wikilink') as HTMLButtonElement | null;
+    expect(link !== null, 'a focusable button, not an inert span').to.equal(true);
+    expect(link!.textContent?.trim()).to.equal('the vendor');
+    expect(link!.getAttribute('title')).to.equal('supplier::meier-guss');
     expect(host.querySelector('a')).to.equal(null);
+
+    // Resolving needs the gateway, so the webview only SAYS which link was chosen.
+    const heard: string[] = [];
+    host.addEventListener('escurel-wikilink', (e) => heard.push((e as CustomEvent<string>).detail));
+    link!.click();
+    expect(heard).to.deep.equal(['[[supplier::meier-guss]]']);
   });
 });

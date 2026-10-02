@@ -136,6 +136,16 @@ export class EscurelPageAsUi extends LitElement {
   @property({ attribute: false }) error?: string;
   @state() private view: 'page' | 'markdown' = 'page';
 
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // A wikilink anywhere in the page (body, a markdown field) bubbles up to here.
+    this.addEventListener('escurel-wikilink', (e) => this.onWikilink(e));
+  }
+
+  private onWikilink(e: Event): void {
+    this.send({ type: 'open-wikilink', wikilink: (e as CustomEvent<string>).detail });
+  }
+
   private send(message: WebviewToHost): void {
     this.dispatchEvent(
       new CustomEvent<WebviewToHost>('escurel-message', {

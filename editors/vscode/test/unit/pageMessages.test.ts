@@ -72,3 +72,18 @@ describe('resolvePageMessage: view-skill and the read-only opens', () => {
     expect(resolvePageMessage(model, { type: 'open-thread', rootEventId: '' })).toBeUndefined();
   });
 });
+
+describe('resolvePageMessage: open-wikilink', () => {
+  it('hands a wikilink to the resolver, and refuses an empty or non-string one', () => {
+    expect(
+      resolvePageMessage(model, { type: 'open-wikilink', wikilink: '[[supplier::meier-guss]]' }),
+    ).toEqual({
+      command: 'escurel.resolve',
+      args: ['[[supplier::meier-guss]]'],
+    });
+    expect(resolvePageMessage(model, { type: 'open-wikilink', wikilink: '' })).toBeUndefined();
+    expect(
+      resolvePageMessage(model, { type: 'open-wikilink', wikilink: 7 as never }),
+    ).toBeUndefined();
+  });
+});

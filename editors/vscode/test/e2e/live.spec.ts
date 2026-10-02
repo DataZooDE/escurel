@@ -84,6 +84,24 @@ test('a sales order opens as a real order page: SAP fields and an items table', 
   await stack.shot('06-order-page');
 });
 
+test('a wikilink in the order opens the page it names', async ({ stack }) => {
+  const { page } = stack;
+  const wv = await webviewWith(page, 'escurel-page-as-ui');
+  await wv.getByRole('button', { name: 'Meier-Guss GmbH' }).click();
+  // The supplier opens as its own page, in a tab of its own that becomes the active one.
+  await expect(page.getByRole('tab', { name: /supplier__meier-guss/, selected: true })).toBeVisible(
+    { timeout: 20_000 },
+  );
+  const supplier = await webviewWith(page, 'escurel-page-as-ui');
+  // The first h1 is the page's title (a body can carry its own h1 further down).
+  await expect(supplier.getByRole('heading', { level: 1 }).first()).toContainText('Meier-Guss');
+  await stack.shot('06b-wikilink-opened');
+  // Back to the order, as the following scenarios expect.
+  await pane(page, 'Knowledge')
+    .getByRole('treeitem', { name: /order-4500131/ })
+    .click();
+});
+
 test('the Skill menu works from the keyboard alone, and Escape gives the focus back', async ({
   stack,
 }) => {

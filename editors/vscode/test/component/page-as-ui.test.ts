@@ -226,4 +226,14 @@ describe('<escurel-page-as-ui> thread strip', () => {
     if (!runLink) return; // the fixture page has no thread strip
     expect(/[0-9A-Z]{20,}/.test(runLink.getAttribute('aria-label') ?? '')).to.equal(false);
   });
+
+  it('a wikilink in the body asks the host to open it', async () => {
+    const el = await render();
+    const sent: WebviewToHost[] = [];
+    el.addEventListener('escurel-message', (e) =>
+      sent.push((e as CustomEvent<WebviewToHost>).detail),
+    );
+    (q(el, '.body .wikilink') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([{ type: 'open-wikilink', wikilink: '[[supplier::stahl-ag]]' }]);
+  });
 });
