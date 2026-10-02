@@ -1,3 +1,4 @@
+import { latest } from '../shared/latest';
 import * as vscode from 'vscode';
 import type { AdminState } from '../auth/adminState';
 import type { Skill } from '../client/types';
@@ -237,7 +238,9 @@ export class ThreadController implements vscode.Disposable {
       render();
       this.collapseChanged.fire({ rootEventId, collapsed: new Set(collapsed) });
     };
+    const loads = latest();
     const load = async () => {
+      const mine = loads.begin();
       try {
         const [result, skills, admin] = await Promise.all([
           loadThread(this.services.client, rootEventId),
@@ -247,7 +250,8 @@ export class ThreadController implements vscode.Disposable {
         // The panel can be closed while a read is in flight. A result arriving after that
         // belongs to nobody, and announcing it would update listeners (the outline) with a
         // thread that is no longer open — or with a stale one, if the panel was reopened.
-        if (disposed) return;
+        // A slower, earlier read must not overwrite a newer one.
+        if (disposed || !loads.isCurrent(mine)) return;
         current = result;
         if (skills !== undefined) {
           cachedSkills = skills;
@@ -265,7 +269,9 @@ export class ThreadController implements vscode.Disposable {
     };
 
     const adminSub = this.services.admin.onDidChange(async () => {
-      cachedAdmin = await this.services.admin.get().catch(() => 'unknown' as const);
+      const admin = await this.services.admin.get().catch(() => 'unknown' as const);
+      if (disposed) return;
+      cachedAdmin = admin;
       render();
     });
 

@@ -1,3 +1,4 @@
+import { latest } from '../shared/latest';
 import * as vscode from 'vscode';
 import type { AdminState } from '../auth/adminState';
 import type { EscurelClient, Event, EventsPage } from '../client';
@@ -50,13 +51,15 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
   private isDisposed = false;
   private isFetching = false;
   private pendingRefetch = false;
+  /** Retires a fetch that was started for a gateway or tenant the user has since left. */
+  private readonly loads = latest();
   private cachedRows: RunnerRow[] = [];
 
   constructor(private readonly services: Services) {
     // Listen to admin status changes to re-render (e.g. Quotas row visibility)
     this.disposables.push(
       this.services.admin.onDidChange(async () => {
-        this.adminState = await this.services.admin.get();
+        this.adminState = await this.services.admin.get().catch(() => 'unknown' as const);
         this.rebuildRows();
         this.changed.fire(undefined);
       }),
@@ -72,6 +75,8 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
         this.statusBody = undefined;
         this.deadLetters = [];
         this.lastRunsJson = undefined;
+        // A fetch already in flight asked the PREVIOUS gateway; its answer must not land here.
+        this.loads.invalidate();
         this.rebuildSocket();
         void this.refresh();
       }),
@@ -237,6 +242,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
       return;
     }
     this.isFetching = true;
+    const mine = this.loads.begin();
 
     try {
       const client = this.services.client;
@@ -247,6 +253,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
       } catch (err) {
         log().debug(`runner view: error fetching admin state: ${describeError(err)}`);
       }
+      if (!this.loads.isCurrent(mine)) return;
 
       // 1. Fetch newest runner status event
       let statusEvent: Event | undefined;
@@ -263,6 +270,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
       } catch (err) {
         log().debug(`runner view: error fetching runner status: ${describeError(err)}`);
       }
+      if (!this.loads.isCurrent(mine)) return;
 
       this.statusEvent = statusEvent;
       this.statusBody = parseRunnerStatusBody(statusEvent);
@@ -274,7 +282,9 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
       if (runsChanged || this.deadLetters.length === 0) {
         this.lastRunsJson = currentRunsJson;
         try {
-          this.deadLetters = await this.fetchDeadLetters(client);
+          const deadLetters = await this.fetchDeadLetters(client);
+          if (!this.loads.isCurrent(mine)) return;
+          this.deadLetters = deadLetters;
         } catch (err) {
           log().debug(`runner view: error fetching dead letters: ${describeError(err)}`);
         }
@@ -427,9 +437,7 @@ export function registerRunnerView(
     context.subscriptions.push(runnerView, runnerTree);
   }
 
-  context.subscriptions.push(
-    vscode.commands.registerCommand('escurel.refreshRunner', () => runnerTree.refresh()),
-  );
+  context.subscriptions.push();
 
   return runnerTree;
 }
