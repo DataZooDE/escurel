@@ -172,3 +172,39 @@ fn it_refuses_a_missing_or_empty_seed() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("no skills/ or instances/"));
 }
+
+/// Requeue, pause and resume are admin-only run controls, so a harness that proves them needs an
+/// admin's token as well as a human's. The two must differ in exactly the way the gateway cares
+/// about: the admin can call an admin-scope tool, the other cannot.
+#[tokio::test]
+async fn it_prints_an_admin_bearer_beside_the_ordinary_one() {
+    let g = start(&[]);
+    let admin = g.info["admin_bearer"].as_str().expect("an admin_bearer");
+    let human = g.info["bearer"].as_str().expect("a bearer");
+    assert_ne!(admin, human, "two different credentials");
+
+    let refused: Value = call(&g, Some(human), "admin_quota", json!({}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        refused["error"]["data"]["code"],
+        json!("admin_required"),
+        "the ordinary bearer must not be an admin: {refused}"
+    );
+
+    let allowed: Value = call(&g, Some(admin), "admin_quota", json!({}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    // Past the admin gate is all that is being asked. This gateway wires no quota manager, so
+    // `admin_quota` itself answers with an unrelated error; what must NOT come back is the
+    // admin refusal.
+    assert_ne!(
+        allowed["error"]["data"]["code"],
+        json!("admin_required"),
+        "the admin bearer must pass the admin gate: {allowed}"
+    );
+}

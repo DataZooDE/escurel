@@ -8,7 +8,7 @@
 //! ```text
 //! escurel-test-gateway --tenant vsx --seed test/integration/seed [--subject alice]
 //! {"gateway_url":"http://127.0.0.1:…","issuer_url":"http://127.0.0.1:…","kid":"…",
-//!  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","tenant":"vsx"}
+//!  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","admin_bearer":"eyJ…","tenant":"vsx"}
 //! ```
 //!
 //! The seed directory holds `skills/*.md` and `instances/*.md`. Each file becomes the page
@@ -16,9 +16,11 @@
 //! `markdown/instances/<skill>__<id>.md`, which is how the shipped corpora lay them out.
 //!
 //! The `bearer` is a HUMAN's (role `agent`, the subject given by `--subject`): it can read,
-//! draft and promote, and it is what an editor under test signs in with. It expires in ten
-//! minutes, like every token this issuer mints; that is plenty for a test run and is not
-//! extended here, because a long-lived credential printed to stdout is the thing to avoid.
+//! draft and promote, and it is what an editor under test signs in with. The `admin_bearer` is
+//! the same subject with the admin role, for what only an admin may do (requeue, pause and
+//! resume the runner). Both expire in ten minutes, like every token this issuer mints; that is
+//! plenty for a test run and is not extended here, because a long-lived credential printed to
+//! stdout is the thing to avoid.
 
 use std::path::{Path, PathBuf};
 
@@ -129,6 +131,7 @@ async fn main() {
 
     let (signing_key, kid) = process.signing_material();
     let bearer = process.mint_token_with_sub(&args.tenant, Role::Agent, &args.subject);
+    let admin_bearer = process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject);
     // One line, flushed: the parent reads exactly this and nothing else from stdout.
     println!(
         "{}",
@@ -138,6 +141,7 @@ async fn main() {
             "kid": kid,
             "signing_key": signing_key,
             "bearer": bearer,
+            "admin_bearer": admin_bearer,
             "tenant": args.tenant,
         })
     );
