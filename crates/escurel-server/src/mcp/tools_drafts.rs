@@ -338,6 +338,24 @@ pub(super) async fn tool_create_draft(
         }
     }
 
+    // `instances: rows` guard (stage 3): an agent's proposal against a row page is refused when it is
+    // MADE — a draft that touches a source column could never be promoted.
+    if let Some(r) = indexer
+        .rows_write_rejection(&a.target_page_id, &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
+
     // **An empty base means "no page here yet". Check that it is true.**
     //
     // `base_sha256: ""` is the approve-CREATE sentinel: promotion passes it

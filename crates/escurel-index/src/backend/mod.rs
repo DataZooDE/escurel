@@ -38,6 +38,7 @@ pub mod contextualize_llm;
 pub mod document;
 mod markdown;
 pub mod remote;
+pub mod rows;
 mod sql_view;
 
 use std::collections::HashMap;
@@ -53,8 +54,8 @@ use crate::validate::Issue;
 use crate::{Indexer, IndexerError};
 
 pub use binding::{
-    BackendBinding, DocumentBinding, MimeClaim, RemoteBinding, RemoteKind, RemoteOp, SqlConnector,
-    SqlViewBinding, mime_claim,
+    BackendBinding, DocumentBinding, MimeClaim, RemoteBinding, RemoteKind, RemoteOp, RowsConfig,
+    SqlConnector, SqlViewBinding, mime_claim,
 };
 #[cfg(feature = "kreuzberg")]
 pub use document::KreuzbergExtractor;
@@ -68,6 +69,7 @@ pub use document::{
 };
 pub use markdown::MarkdownBackend;
 pub use remote::{RemoteError, fill_template, json_path_get, resolve_projection};
+pub use rows::{RowRecord, RowsPage, RowsSource};
 pub use sql_view::{
     BindingStatus, MAX_PROJECTION_ROWS, Materialized, SqlViewBackend, SqlViewError,
 };
@@ -503,7 +505,9 @@ impl Indexer {
             return Ok(None);
         }
         let binding = self.skill_backend(&skill).await?;
-        if Capabilities::for_kind(binding.kind).writable {
+        // A `rows` skill's pages are the rows' linked markdown: writable, under the finer
+        // field-level guard `rows_write_rejection`.
+        if binding.rows.is_some() || Capabilities::for_kind(binding.kind).writable {
             return Ok(None);
         }
         let kind = binding.kind.as_str();

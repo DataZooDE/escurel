@@ -486,7 +486,7 @@ fn view_name(skill: &str, id: &str) -> String {
     format!("vw_{}__{}", sanitize_ident(skill), sanitize_ident(id))
 }
 
-fn sanitize_ident(s: &str) -> String {
+pub(crate) fn sanitize_ident(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' {
@@ -511,7 +511,7 @@ pub(crate) fn is_managed_view(view: &str) -> bool {
 }
 
 /// Whether `s` is a safe unquoted DuckDB identifier (view name / alias).
-fn is_valid_identifier(s: &str) -> bool {
+pub(crate) fn is_valid_identifier(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .next()
@@ -846,7 +846,10 @@ fn hash_binding(b: &SqlViewBinding) -> String {
 
 /// The view's result schema as `(column_name, column_type)` in order.
 /// `DESCRIBE` returns one row per column.
-fn describe(conn: &duckdb::Connection, view: &str) -> Result<Vec<(String, String)>, SqlViewError> {
+pub(crate) fn describe(
+    conn: &duckdb::Connection,
+    view: &str,
+) -> Result<Vec<(String, String)>, SqlViewError> {
     let mut stmt = conn.prepare(&format!("DESCRIBE {view}"))?;
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();

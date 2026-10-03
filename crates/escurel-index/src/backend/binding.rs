@@ -35,6 +35,30 @@ pub struct BackendBinding {
     /// `sql_view` read cap: the maximum rows `expand` renders in the bounded
     /// projection (`backend.projection_limit`). `None` ⇒ the server default.
     pub projection_limit: Option<usize>,
+    /// Present when a `sql_view` skill declares `instances: rows`: every ROW
+    /// of the source relation is an instance (see [`RowsConfig`]).
+    pub rows: Option<RowsConfig>,
+}
+
+/// `backend.instances: rows` (stage 3 of the OKF/knowledge program): one
+/// instance per row of a `sql_view` source, instead of the whole relation
+/// as ONE instance (`instances: view`, the default and today's behaviour).
+///
+/// The rows are VIRTUAL — no stored page per row. A row's identity is its
+/// `key` column(s); the stored overlay page at the same page id (created
+/// lazily by the first write, when `linked`) is the row's optional linked
+/// markdown, merged into one instance on read.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RowsConfig {
+    /// Identity column(s). More than one ⇒ a composite key, joined by `-`
+    /// in declared order to form the instance id.
+    pub key: Vec<String>,
+    /// Whether a row may have a stored companion markdown page.
+    pub linked: bool,
+    /// Source columns the list filter may target (bound parameters only).
+    pub filterable: Vec<String>,
+    /// RESERVED for write-back (stage 4c); parsed, never acted on yet.
+    pub writable_columns: Vec<String>,
 }
 
 /// Which remote-proxy protocol a `RemoteBinding` speaks. Mirrors the
@@ -261,6 +285,7 @@ impl BackendBinding {
                 document: None,
                 remote: None,
                 projection_limit: read_usize("projection_limit"),
+                rows: parse_rows(block),
             },
             Some("document") => Self {
                 kind: BackendKind::Document,
@@ -268,6 +293,7 @@ impl BackendBinding {
                 document: Some(parse_document(block)),
                 remote: None,
                 projection_limit: None,
+                rows: None,
             },
             Some("openapi") => Self {
                 kind: BackendKind::OpenApi,
@@ -275,6 +301,7 @@ impl BackendBinding {
                 document: None,
                 remote: parse_remote(block, RemoteKind::OpenApi),
                 projection_limit: read_usize("projection_limit"),
+                rows: None,
             },
             Some("mcp") => Self {
                 kind: BackendKind::Mcp,
@@ -282,6 +309,7 @@ impl BackendBinding {
                 document: None,
                 remote: parse_remote(block, RemoteKind::Mcp),
                 projection_limit: read_usize("projection_limit"),
+                rows: None,
             },
             // A workflow plan skill is markdown-file-backed; the index only
             // records the kind. The `phases:`/`verify:` orchestration spec is
@@ -292,12 +320,45 @@ impl BackendBinding {
                 document: None,
                 remote: None,
                 projection_limit: None,
+                rows: None,
             },
             // Unknown kind: lenient on the read path (markdown); the
             // create/validate path is where a bad binding is rejected.
             Some(_) => Self::default(),
         }
     }
+}
+
+/// `instances: rows` + `key` / `linked` / `filterable` / `writable_columns`.
+/// `None` for the default (`instances: view` or absent). A rows skill with no
+/// usable `key` still parses (empty `key`), so the read path can say exactly
+/// what is missing instead of silently behaving as a whole-view skill.
+fn parse_rows(block: &serde_json::Map<String, serde_json::Value>) -> Option<RowsConfig> {
+    if block.get("instances").and_then(serde_json::Value::as_str) != Some("rows") {
+        return None;
+    }
+    let strings = |key: &str| -> Vec<String> {
+        match block.get(key) {
+            Some(serde_json::Value::String(s)) => vec![s.clone()],
+            Some(serde_json::Value::Array(a)) => a
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    let linked = match block.get("linked") {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::String(s)) => s == "markdown" || s == "true",
+        _ => false,
+    };
+    Some(RowsConfig {
+        key: strings("key"),
+        linked,
+        filterable: strings("filterable"),
+        writable_columns: strings("writable_columns"),
+    })
 }
 
 fn parse_document(block: &serde_json::Map<String, serde_json::Value>) -> DocumentBinding {

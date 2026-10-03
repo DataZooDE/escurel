@@ -6,6 +6,7 @@
 
 use super::backend_view::BackendView;
 use super::*;
+use escurel_index::backend::rows::split_instance_page_id;
 
 // --- per-tool handlers -----------------------------------------
 
@@ -176,6 +177,15 @@ pub(super) async fn tool_list_instances(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListInstancesArgs = parse_args(args, "list_instances")?;
+    // `instances: rows` skills (stage 3): every ROW of the source is an instance, listed lazily by
+    // keyset. Everything below is the stored-page path and is untouched.
+    if let Some(src) = indexer
+        .rows_source(&a.skill_id)
+        .await
+        .map_err(|e| rows_err("list_instances", e))?
+    {
+        return list_rows(indexer, caller, &src, &a).await;
+    }
     let order = match a.order_by.as_deref() {
         Some(s) => match s.to_ascii_lowercase().as_str() {
             "at asc" | "at_asc" => Some(OrderDir::Asc),
@@ -380,6 +390,33 @@ pub(super) async fn tool_resolve(
             resolved.page = None;
         }
     }
+    // A wikilink to a ROW of an `instances: rows` skill resolves to the row's page id even though no
+    // page is stored for it.
+    if resolved.page.is_none()
+        && let (Some(skill), Some(id)) = (
+            resolved.parsed.skill.as_deref(),
+            resolved.parsed.id.as_deref(),
+        )
+        && let Some(src) = indexer
+            .rows_source(skill)
+            .await
+            .map_err(|e| rows_err("resolve", e))?
+        && let Some(row) = indexer
+            .rows_get(&src, id)
+            .await
+            .map_err(|e| rows_err("resolve", e))?
+        && indexer
+            .may_read_instance(&caller, skill, &Value::Object(row.fields.clone()))
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("resolve acl: {e}")))?
+    {
+        resolved.page = Some(escurel_index::PageRef {
+            page_id: row.page_id,
+            slug: Some(row.id),
+            skill: skill.to_owned(),
+            page_kind: PageKind::Instance,
+        });
+    }
     let exists = resolved.exists();
     let parsed = &resolved.parsed;
     Ok(json!({
@@ -423,6 +460,26 @@ pub(super) struct ExpandArgs {
 }
 
 pub(super) async fn tool_expand(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    // A row of an `instances: rows` skill (stage 3) has no stored page of its own: the stored page
+    // at its id, if any, is the row's LINKED MARKDOWN, and the two read as ONE instance.
+    let a: ExpandArgs = parse_args(args.clone(), "expand")?;
+    if let Some((skill, id)) = split_instance_page_id(&a.page_id)
+        && let Some(src) = indexer
+            .rows_source(skill)
+            .await
+            .map_err(|e| rows_err("expand", e))?
+    {
+        return expand_row(state, indexer, caller, args, &src, id).await;
+    }
+    tool_expand_stored(state, indexer, caller, args).await
+}
+
+async fn tool_expand_stored(
     state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
@@ -777,6 +834,140 @@ pub(super) async fn sql_view_projection(
         "source": source,
         "truncated": truncated,
     }))
+}
+
+/// A typed error for a `rows` read: a bad cursor or a non-filterable field is the caller's mistake
+/// (`invalid_params`); anything else is ours.
+fn rows_err(ctx: &str, e: escurel_index::SqlViewError) -> JsonRpcError {
+    match e {
+        escurel_index::SqlViewError::InvalidBinding(m)
+            if m.contains("cursor") || m.contains("filterable") =>
+        {
+            JsonRpcError::invalid_params(format!("{ctx}: {m}"))
+        }
+        e => JsonRpcError::internal(format!("{ctx}: {e}")),
+    }
+}
+
+/// `list_instances` for an `instances: rows` skill: one keyset page of live rows, ACL-filtered AFTER
+/// the fetch (so a page may be short; only a null `next_cursor` means done).
+async fn list_rows(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    src: &escurel_index::backend::RowsSource,
+    a: &ListInstancesArgs,
+) -> Result<Value, JsonRpcError> {
+    let filter = match (a.frontmatter_key.as_deref(), a.frontmatter_value.as_deref()) {
+        (Some(k), Some(v)) if !k.is_empty() => Some((k, v)),
+        _ => None,
+    };
+    let page = indexer
+        .rows_list(
+            src,
+            a.cursor.as_deref(),
+            a.limit
+                .unwrap_or(escurel_index::backend::rows::ROWS_MAX_LIMIT),
+            filter,
+        )
+        .await
+        .map_err(|e| rows_err("list_instances", e))?;
+    let mut instances = Vec::with_capacity(page.rows.len());
+    for r in &page.rows {
+        let fm = Value::Object(r.fields.clone());
+        if indexer
+            .may_read_instance(&caller, &src.skill, &fm)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?
+        {
+            instances.push(json!({
+                "page_id": r.page_id,
+                "skill": src.skill,
+                "frontmatter": fm,
+                "at": Value::Null,
+                "row": true,
+            }));
+        }
+    }
+    Ok(json!({ "instances": instances, "next_cursor": page.next_cursor }))
+}
+
+/// `expand` of a row page: the live row (typed fields + a bounded read-only projection) merged with
+/// the stored linked markdown, when there is one.
+async fn expand_row(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+    src: &escurel_index::backend::RowsSource,
+    id: &str,
+) -> Result<Value, JsonRpcError> {
+    let page_id = format!("markdown/instances/{}/{id}.md", src.skill);
+    let stored = tool_expand_stored(state, indexer, caller, args).await?;
+    let has_stored = !stored["page"].is_null();
+    let row = indexer
+        .rows_get(src, id)
+        .await
+        .map_err(|e| rows_err("expand", e))?;
+    let fetched_at = escurel_index::now_rfc3339_micros();
+    let linked = |exists: bool, orphan: bool| json!({ "enabled": src.cfg.linked, "exists": exists, "orphan": orphan });
+
+    let Some(row) = row else {
+        // The row is gone from the source. The companion, if any, is KEPT and flagged: notes must
+        // not vanish with the row.
+        if !has_stored {
+            return Ok(json!({ "page": Value::Null }));
+        }
+        let mut out = stored;
+        out["backend_projection"] = json!({
+            "view": src.view, "instances": "rows", "read_only": true,
+            "fetched_at": fetched_at, "rows": [], "source": {}, "truncated": false,
+            "linked": linked(true, true),
+            "issue": { "code": "source_missing",
+                "message": "the source relation has no row with this key any more; \
+                            the linked notes are kept" },
+        });
+        return Ok(out);
+    };
+
+    let fields = Value::Object(row.fields.clone());
+    if !indexer
+        .may_read_instance(&caller, &src.skill, &fields)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("expand acl: {e}")))?
+    {
+        return Ok(json!({ "page": Value::Null }));
+    }
+    let projection = json!({
+        "view": src.view, "instances": "rows", "read_only": true,
+        "fetched_at": fetched_at, "rows": [row.columns], "source": fields,
+        "truncated": false,
+        "linked": linked(has_stored && src.cfg.linked, false),
+        // The DISCOVERED schema (DuckDB `DESCRIBE`); the skill's own `fields:` override kind and label.
+        "columns": row.types.iter().map(|(n, t)| json!({
+            "name": n, "type": t,
+            "kind": escurel_index::backend::rows::field_kind_for(t),
+        })).collect::<Vec<_>>(),
+    });
+    let mut out = if has_stored && src.cfg.linked {
+        stored
+    } else {
+        json!({
+            "page": {
+                "page_id": page_id, "slug": id, "skill": src.skill,
+                "page_kind": "instance", "last_written_by": Value::Null,
+            },
+            "frontmatter": {}, "body": "", "blocks": [], "wikilinks_out": [],
+        })
+    };
+    // ONE instance: the companion's own frontmatter, with the row's projected columns on top (the
+    // source of truth for those fields — the write guard keeps the companion from carrying them).
+    if let (Some(fm), Value::Object(cols)) = (out["frontmatter"].as_object_mut(), &fields) {
+        for (k, v) in cols {
+            fm.insert(k.clone(), v.clone());
+        }
+    }
+    out["backend_projection"] = projection;
+    Ok(out)
 }
 
 #[derive(Deserialize)]

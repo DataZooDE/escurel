@@ -310,6 +310,24 @@ pub(super) async fn tool_update_page(
         }));
     }
 
+    // `instances: rows` guard (stage 3): a row page is the row's linked markdown. The write may not
+    // touch a source column, smuggle a `backend_ref`, or invent a row.
+    if let Some(r) = indexer
+        .rows_write_rejection(&a.page_id, &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
+
     // Base-layer guard (REQ-LAYER-02): a page imported from a subscribed
     // pack (`layer: base@<pack>@<version>`) is read-only at this node, and
     // `update_page` may not fabricate one. Same dispatch seam as the

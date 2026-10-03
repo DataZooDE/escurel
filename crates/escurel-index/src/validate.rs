@@ -1177,8 +1177,14 @@ impl Indexer {
                     ));
                 }
                 Some(contract) => {
+                    // A ROW of an `instances: rows` skill gets its projected columns from the source, so its
+                    // linked markdown need not (and may not) carry them: they are never "missing".
+                    let source_supplied: Vec<String> = match self.rows_source(skill).await {
+                        Ok(Some(src)) => src.project.values().cloned().collect(),
+                        _ => Vec::new(),
+                    };
                     for key in &contract.required {
-                        if fields.get(key.as_str()).is_none() {
+                        if fields.get(key.as_str()).is_none() && !source_supplied.contains(key) {
                             issues.push(Issue::error(
                                 "frontmatter_required_key_missing",
                                 format!("frontmatter.{key}"),
@@ -1199,6 +1205,7 @@ impl Indexer {
                         match fields.get(field.name.as_str()) {
                             Some(value) => issues.extend(check_field_value(field, value)),
                             None if field.required
+                                && !source_supplied.contains(&field.name)
                                 && !contract.required.iter().any(|k| k == &field.name) =>
                             {
                                 issues.push(Issue::error(
