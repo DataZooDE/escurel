@@ -105,14 +105,17 @@ fn crm_with(n: usize) -> Crm {
     }
 }
 
-async fn start(crm: Crm) -> String {
+async fn start_stoppable(crm: Crm) -> (String, tokio::task::JoinHandle<()>) {
     let app = Router::new()
         .route("/customers", get(list))
         .route("/customers/{id}", get(one))
         .with_state(crm);
-    let (base, _h) = serve(app).await;
-    // Leak the server handle: it lives as long as the test process needs it.
-    base
+    serve(app).await
+}
+
+async fn start(crm: Crm) -> String {
+    // The server handle is dropped, not aborted: it keeps serving as long as the test process runs.
+    start_stoppable(crm).await.0
 }
 
 async fn gateway_over(
@@ -389,5 +392,87 @@ async fn upstream_text_is_data_marked_external_never_instructions() {
         listed["instances"][0]["trust"], "external",
         "list rows are external too: {listed}"
     );
+    p.shutdown().await;
+}
+
+/// A base URL nothing listens on: a port that was bound and released, so connecting is refused.
+async fn dead_base() -> String {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    drop(l);
+    format!("http://127.0.0.1:{port}")
+}
+
+#[tokio::test]
+async fn a_row_whose_source_is_down_still_opens_as_a_page_that_says_so() {
+    // The portal is unreachable. A person who opens a row must get a page that names the problem (and
+    // keeps whatever notes exist), not a raw transport error; and never a fabricated row.
+    let (p, _dirs) = gateway_over(&dead_base().await).await;
+    let page_id = "markdown/instances/customer/c-0001.md";
+
+    // No notes yet: the page is a shell, the source columns are absent, the failure is named.
+    let page = admin(&p, "expand", json!({ "page_id": page_id })).await;
+    assert!(
+        page.get("error").is_none() && !page["page"].is_null(),
+        "an unreachable source degrades, it does not error: {page}"
+    );
+    let proj = &page["backend_projection"];
+    assert_eq!(proj["issue"]["code"], "source_unavailable", "{page}");
+    assert_eq!(proj["trust"], "external", "{page}");
+    assert_eq!(proj["rows"], json!([]), "no row is invented: {page}");
+    assert_eq!(proj["source"], json!({}), "{page}");
+    assert!(
+        page["frontmatter"].get("display_name").is_none(),
+        "no source column is made up: {page}"
+    );
+    // The failure is worded for a person and does not leak the endpoint.
+    let text = proj["issue"]["message"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("could not be reached") && !text.contains("127.0.0.1"),
+        "{proj}"
+    );
+    // Nothing can be proposed against a row that could not be read: no etag, no writable columns.
+    assert!(
+        proj.get("etag").is_none() && proj.get("writable_columns").is_none(),
+        "{proj}"
+    );
+
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn notes_written_before_an_outage_are_still_there_when_the_source_goes_down() {
+    let (base, server) = start_stoppable(crm_with(3)).await;
+    let (p, _dirs) = gateway_over(&base).await;
+    let page_id = "markdown/instances/customer/c-0001.md";
+    let ok = call_as(
+        &p,
+        Role::Admin,
+        "update_page",
+        json!({ "page_id": page_id,
+                "content": "---\nkind: instance\nid: c-0001\nskill: customer\n---\nCalled about renewal.\n" }),
+    )
+    .await;
+    assert_eq!(ok["result"]["structuredContent"]["ok"], true, "{ok}");
+
+    // The CRM goes away: the listener is closed, so new connections are refused.
+    server.abort();
+    let _ = server.await;
+
+    let page = admin(&p, "expand", json!({ "page_id": page_id })).await;
+    assert!(
+        page["body"]
+            .as_str()
+            .unwrap()
+            .contains("Called about renewal"),
+        "the notes survive the outage: {page}"
+    );
+    assert_eq!(
+        page["backend_projection"]["issue"]["code"], "source_unavailable",
+        "{page}"
+    );
+    assert_eq!(page["backend_projection"]["rows"], json!([]), "{page}");
+    // And a change cannot be proposed against a row that cannot be read: no etag to base it on.
+    assert!(page["backend_projection"].get("etag").is_none(), "{page}");
     p.shutdown().await;
 }

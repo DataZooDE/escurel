@@ -991,16 +991,20 @@ async fn expand_remote_row(
     let row = match crate::remote_rows::get(&state.egress, src, id).await {
         Ok(r) => r,
         Err(e) => {
-            // The upstream cannot be read right now: the linked notes (if any) still come back, with
-            // the failure named. Never a fabricated row.
-            if !has_stored {
-                return Err(JsonRpcError::internal(format!("expand: {e}")));
-            }
-            let mut out = stored;
+            // The upstream cannot be read right now. The page still opens: the linked notes (if any)
+            // come back, or an empty shell when there are none, with the failure named in words. Never
+            // a fabricated row, and nothing to propose a change against (no etag, no writable columns).
+            let mut out = if has_stored {
+                stored
+            } else {
+                row_shell(&page_id, id, &src.skill)
+            };
             out["backend_projection"] = json!({
                 "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
                 "fetched_at": fetched_at, "rows": [], "source": {},
-                "linked": linked(true, false), "issue": e,
+                "linked": linked(has_stored, false),
+                "issue": { "code": "source_unavailable",
+                    "message": format!("the source could not be reached right now ({e}); showing what is known") },
             });
             return Ok(out);
         }
@@ -1041,13 +1045,7 @@ async fn expand_remote_row(
     let mut out = if has_stored && src.cfg.linked {
         stored
     } else {
-        json!({
-            "page": {
-                "page_id": page_id, "slug": id, "skill": src.skill,
-                "page_kind": "instance", "last_written_by": Value::Null,
-            },
-            "frontmatter": {}, "body": "", "blocks": [], "wikilinks_out": [],
-        })
+        row_shell(&page_id, id, &src.skill)
     };
     if let (Some(fm), Value::Object(cols)) = (out["frontmatter"].as_object_mut(), &fields) {
         for (k, v) in cols {
@@ -1056,6 +1054,17 @@ async fn expand_remote_row(
     }
     out["backend_projection"] = projection;
     Ok(out)
+}
+
+/// The page of a row that has no stored notes: identity only, no columns.
+fn row_shell(page_id: &str, id: &str, skill: &str) -> Value {
+    json!({
+        "page": {
+            "page_id": page_id, "slug": id, "skill": skill,
+            "page_kind": "instance", "last_written_by": Value::Null,
+        },
+        "frontmatter": {}, "body": "", "blocks": [], "wikilinks_out": [],
+    })
 }
 
 /// `expand` of a row page: the live row (typed fields + a bounded read-only projection) merged with
