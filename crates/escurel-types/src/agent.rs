@@ -463,6 +463,24 @@ pub struct Skill {
     /// runner honours it within its allow-list).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
+    /// `folder:` — where the skill sits in a knowledge tree, a `/`-separated path of slugs
+    /// (`sales/orders`). Absent = top level. OKF-style hierarchy for clients that render a tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// `role:` — what kind of thing this skill is: `record` | `process` | `report` | `helper`.
+    /// Typed as a string so a value a newer server adds still deserialises. Absent = undeclared
+    /// (a client may infer one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// `tags:` — OKF tags, free labels. Absent = none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// `title:` — OKF display title; a client falls back to the id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// `resource:` — OKF link to the external thing this skill describes (a table, an API).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
     /// `actions:` — what a reader may do from this skill's pages, in Peacock's
     /// object form. The `event` skills of the `kind: event` entries are also the
     /// skills a run may cascade into. Absent = none declared (no restriction).

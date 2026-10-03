@@ -4,6 +4,25 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.9.0 — skills can place and describe themselves: `folder`, `role`, `tags` and the OKF keys
+
+Additive (no consumer breaks). Aligns skill pages with the Open Knowledge Format's frontmatter vocabulary.
+
+- **New optional skill keys, reported on `list_skills`** (omitted when undeclared, so old rows are
+  unchanged): `folder` (a `/`-separated path of lowercase slugs, e.g. `sales/orders`; places the skill in
+  a tree), `role` (`record` | `process` | `report` | `helper`), `tags` (OKF tags, a list of strings),
+  `title` (display title) and `resource` (OKF link to the external thing the skill describes). The CLI's
+  `skill list` carries the same keys.
+- **`validate` errors:** `folder_invalid` (not a `/`-separated slug path) and `role_unknown` (not one of the
+  four roles).
+- **`validate` warnings only** (never an error, never a reason to refuse a write): `tags_invalid`,
+  `sources_invalid`, `generated_invalid`, `verified_invalid`, `stale_after_invalid`. `stale_after` accepts an
+  RFC 3339 instant or an ISO-8601 duration (`P90D`). `generated`, `verified`, `status` and `sources` are
+  recognised on skill pages but are not on the `list_skills` row yet. **Unknown keys are never rejected**
+  (OKF: "extra keys must not break consumers"); on instance pages `status`, `tags` etc. keep whatever
+  meaning the skill gives them and are not linted.
+- Consumers: nothing to do. A client that renders a tree should group by `folder` and sort by `role`.
+
 ## 0.8.0 — BREAKING: the page kind is `kind:` (was `type:`); the wire says `page_kind`; run boards use `run_status`
 
 Hard cut, no compatibility window, no environment switch. Aligns escurel with the Open Knowledge Format,

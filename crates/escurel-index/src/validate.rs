@@ -190,6 +190,169 @@ fn check_harness(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
     }
 }
 
+/// The roles a skill may declare (`role:`), as a knowledge tree sorts and icons them.
+pub const SKILL_ROLES: [&str; 4] = ["record", "process", "report", "helper"];
+
+/// `folder:` on a skill page: a `/`-separated path of slugs (`sales/orders`). A malformed one is an
+/// error: a tree cannot place the skill.
+fn check_folder(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_type != PageKind::Skill {
+        return None;
+    }
+    let raw = fields.get("folder")?;
+    let suggestion = "a `/`-separated path of lowercase slugs, e.g. `folder: sales/orders`";
+    let Some(path) = raw.as_str().map(str::trim) else {
+        return Some(
+            Issue::error(
+                "folder_invalid",
+                "frontmatter.folder",
+                "`folder:` must be a string path",
+            )
+            .with_suggestion(suggestion),
+        );
+    };
+    if path.is_empty() || !path.split('/').all(is_action_slug) {
+        return Some(
+            Issue::error(
+                "folder_invalid",
+                "frontmatter.folder",
+                format!("`folder: {path}` is not a `/`-separated path of lowercase slugs (letters, digits, `-`, `_`)"),
+            )
+            .with_suggestion(suggestion),
+        );
+    }
+    None
+}
+
+/// `role:` on a skill page: one of [`SKILL_ROLES`].
+fn check_role(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_type != PageKind::Skill {
+        return None;
+    }
+    let raw = fields.get("role")?;
+    match raw.as_str().map(str::trim) {
+        Some(role) if SKILL_ROLES.contains(&role) => None,
+        other => Some(
+            Issue::error(
+                "role_unknown",
+                "frontmatter.role",
+                format!(
+                    "`role: {}` is not a skill role",
+                    other.unwrap_or("<not a string>")
+                ),
+            )
+            .with_suggestion(format!("use one of: {}", SKILL_ROLES.join(" | "))),
+        ),
+    }
+}
+
+/// Whether `s` is an ISO-8601 duration such as `P90D`, `P1Y2M`, `PT36H` or `P1W`.
+fn is_iso_duration(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix('P') else {
+        return false;
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    let (date_part, time_part) = match rest.split_once('T') {
+        Some((d, t)) => (d, Some(t)),
+        None => (rest, None),
+    };
+    let units = |part: &str, allowed: &str| -> bool {
+        let mut digits = 0;
+        let mut seen = 0;
+        for c in part.chars() {
+            if c.is_ascii_digit() {
+                digits += 1;
+            } else if allowed.contains(c) && digits > 0 {
+                digits = 0;
+                seen += 1;
+            } else {
+                return false;
+            }
+        }
+        digits == 0 && (seen > 0 || part.is_empty())
+    };
+    if !units(date_part, "YMWD") {
+        return false;
+    }
+    match time_part {
+        Some(t) => !t.is_empty() && units(t, "HMS"),
+        None => !date_part.is_empty(),
+    }
+}
+
+/// The OKF keys on a SKILL page (`tags`, `generated`, `verified`, `stale_after`, `sources`): all
+/// optional, and a malformed one is a WARNING, never an error. Unknown keys are never looked at.
+/// (`title`, `resource` and `status` are free text; `status` keeps whatever meaning the skill gives it.)
+fn check_okf_keys(page_type: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    if page_type != PageKind::Skill {
+        return issues;
+    }
+    let warn = |code: &str, key: &str, msg: String, suggestion: &str| {
+        Issue::warning(code, format!("frontmatter.{key}"), msg).with_suggestion(suggestion)
+    };
+    if let Some(v) = fields.get("tags") {
+        let ok = v
+            .as_sequence()
+            .is_some_and(|seq| seq.iter().all(|t| t.as_str().is_some()));
+        if !ok {
+            issues.push(warn(
+                "tags_invalid",
+                "tags",
+                "`tags:` is a list of strings".to_owned(),
+                "write `tags: [sales, sap]`",
+            ));
+        }
+    }
+    if let Some(v) = fields.get("sources") {
+        let ok = v.as_sequence().is_some_and(|seq| {
+            seq.iter()
+                .all(|t| t.as_str().is_some() || t.as_mapping().is_some())
+        });
+        if !ok {
+            issues.push(warn(
+                "sources_invalid",
+                "sources",
+                "`sources:` is a list (of links or `{title, url}` entries)".to_owned(),
+                "write `sources: [https://example.com/doc]`",
+            ));
+        }
+    }
+    for key in ["generated", "verified"] {
+        if let Some(v) = fields.get(key) {
+            let ok = v
+                .as_str()
+                .map(str::trim)
+                .is_some_and(|t| is_date(t) || is_datetime(t));
+            if !ok {
+                issues.push(warn(
+                    &format!("{key}_invalid"),
+                    key,
+                    format!("`{key}:` is a date (`YYYY-MM-DD`) or an RFC 3339 timestamp"),
+                    "e.g. `2026-10-01T10:00:00Z`",
+                ));
+            }
+        }
+    }
+    if let Some(v) = fields.get("stale_after") {
+        let ok = v
+            .as_str()
+            .map(str::trim)
+            .is_some_and(|t| is_date(t) || is_datetime(t) || is_iso_duration(t));
+        if !ok {
+            issues.push(warn(
+                "stale_after_invalid",
+                "stale_after",
+                "`stale_after:` is an RFC 3339 instant or an ISO-8601 duration".to_owned(),
+                "e.g. `2027-01-01T00:00:00Z` or `P90D`",
+            ));
+        }
+    }
+    issues
+}
+
 /// A slug as an action `name` takes: lowercase letters, digits, `-` and `_`.
 fn is_action_slug(s: &str) -> bool {
     !s.is_empty()
@@ -848,6 +1011,10 @@ impl Indexer {
         // adapter, both local; the fan-out list needs the corpus (below).
         issues.extend(check_summary(parsed.frontmatter.page_kind, fields));
         issues.extend(check_harness(parsed.frontmatter.page_kind, fields));
+        // Where a skill sits and what it is (OKF-aligned tree vocabulary), then the optional OKF keys.
+        issues.extend(check_folder(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_role(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_okf_keys(parsed.frontmatter.page_kind, fields));
         if parsed.frontmatter.page_kind == PageKind::Skill
             && let Some(raw) = fields.get("actions")
         {
@@ -1437,5 +1604,30 @@ impl Indexer {
             out.insert(slug, contract);
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::is_iso_duration;
+
+    #[test]
+    fn accepts_iso_8601_durations_and_nothing_else() {
+        for ok in [
+            "P90D",
+            "P1Y",
+            "P1Y2M3D",
+            "P2W",
+            "PT36H",
+            "P1DT12H",
+            "PT1H30M5S",
+        ] {
+            assert!(is_iso_duration(ok), "{ok}");
+        }
+        for bad in [
+            "", "P", "90D", "P90", "PD", "PT", "P1H", "P1DT", "p90d", "P-1D", "P1.5D", "someday",
+        ] {
+            assert!(!is_iso_duration(bad), "{bad}");
+        }
     }
 }

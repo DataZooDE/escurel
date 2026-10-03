@@ -75,6 +75,16 @@ pub struct SkillInfo {
     /// `harness:` — the adapter this skill asks to run on. Advisory here;
     /// the runner honours it within its allow-list.
     pub harness: Option<String>,
+    /// `folder:` — the `/` path placing this skill in a tree. `None` when undeclared.
+    pub folder: Option<String>,
+    /// `role:` — `record` | `process` | `report` | `helper` as written. `None` when undeclared.
+    pub role: Option<String>,
+    /// `tags:` — the string entries of the OKF `tags:` list. Empty when undeclared.
+    pub tags: Vec<String>,
+    /// `title:` — OKF display title.
+    pub title: Option<String>,
+    /// `resource:` — OKF external resource link.
+    pub resource: Option<String>,
     /// `actions:` — the object-form actions this skill declares (see
     /// `escurel_types::SkillAction`). Empty when undeclared: no restriction on cascades.
     pub actions: Vec<escurel_types::SkillAction>,
@@ -739,6 +749,11 @@ impl Indexer {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned),
+                folder: trimmed_str(&fm, "folder"),
+                role: trimmed_str(&fm, "role"),
+                tags: string_array_field(&fm, "tags"),
+                title: trimmed_str(&fm, "title"),
+                resource: trimmed_str(&fm, "resource"),
                 actions: parse_actions(&fm),
                 cascade: parse_cascade(&fm),
                 params: parse_params(&fm),
@@ -1597,6 +1612,15 @@ fn page_ref_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<PageRef> {
 fn skill_id(fm: &serde_json::Value) -> Option<String> {
     fm.get("id")
         .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// A non-empty, trimmed string frontmatter value; `None` for absent, empty or a non-string.
+fn trimmed_str(fm: &serde_json::Value, key: &str) -> Option<String> {
+    fm.get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
 

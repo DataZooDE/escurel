@@ -120,6 +120,7 @@ mod skill_doc_parity;
 mod skill_fields;
 mod skill_params;
 mod skill_render_and_blocks;
+mod skill_vocabulary;
 mod snapshot_refresh;
 mod sql_creds;
 mod sql_validate;

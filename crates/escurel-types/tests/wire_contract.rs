@@ -284,6 +284,40 @@ fn skill_actions_are_peacock_style_objects_and_omitted_when_undeclared() {
 }
 
 #[test]
+fn skill_tree_vocabulary_round_trips_and_is_omitted_when_undeclared() {
+    // `folder` / `role` / `tags` / `title` / `resource` (OKF alignment): a skill that declares
+    // them carries them; one that declares none emits none (the rows of old skills stay as they were).
+    let wire = json!({
+        "id": "customer-order",
+        "description": "d",
+        "folder": "sales/orders",
+        "role": "record",
+        "tags": ["sap", "sd"],
+        "title": "Customer order",
+        "resource": "https://sap.example/vbak",
+    });
+    let skill: Skill = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(skill.folder.as_deref(), Some("sales/orders"));
+    assert_eq!(skill.role.as_deref(), Some("record"));
+    assert_eq!(skill.tags, ["sap", "sd"]);
+    assert_eq!(skill.title.as_deref(), Some("Customer order"));
+    assert_eq!(skill.resource.as_deref(), Some("https://sap.example/vbak"));
+    let back = serde_json::to_value(&skill).unwrap();
+    for key in ["folder", "role", "tags", "title", "resource"] {
+        assert_eq!(back[key], wire[key], "{key}");
+    }
+    // A role a newer server adds still deserialises: it is a string, not an enum.
+    let newer: Skill =
+        serde_json::from_value(json!({ "id": "n", "description": "d", "role": "agent" })).unwrap();
+    assert_eq!(newer.role.as_deref(), Some("agent"));
+    let bare: Skill = serde_json::from_value(json!({ "id": "n", "description": "d" })).unwrap();
+    let bare = serde_json::to_value(&bare).unwrap();
+    for key in ["folder", "role", "tags", "title", "resource"] {
+        assert!(bare.get(key).is_none(), "{key} on a bare skill");
+    }
+}
+
+#[test]
 fn skill_layer_defaults_to_overlay_on_old_servers() {
     // An old server that doesn't emit `layer` must parse to the overlay
     // default — pre-layer skills are tenant-authored and editable.

@@ -208,6 +208,62 @@ async fn skill_list_emits_autonomy_and_the_contract_keys() {
     h.process.shutdown().await;
 }
 
+/// The tree vocabulary a skill declares (`folder`, `role`, `tags`, `title`, `resource`) reaches the
+/// CLI's `skill list` as the wire carries it, and a skill declaring none emits none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skill_list_carries_the_tree_vocabulary() {
+    const PLACED: &str = "---\nkind: skill\nid: placed\ndescription: d.\nautonomy: review\n\
+        folder: sales/orders\nrole: record\ntags: [sap, sd]\ntitle: Placed\nresource: https://sap.example/t\n---\n# placed\n";
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("customer", CUSTOMER_SKILL)
+                .skill("placed", PLACED)
+                .done(),
+        ),
+        config_overrides: ConfigOverrides {
+            gateway_version: Some("1.0.0-test".to_owned()),
+            ..Default::default()
+        },
+    })
+    .await;
+    let http_addr = process
+        .base_url()
+        .strip_prefix("http://")
+        .unwrap()
+        .to_owned();
+    let bearer = process.mint_token(TENANT, Role::Agent);
+    let h = Harness {
+        process,
+        http_addr,
+        bearer,
+    };
+    let out = run_args(&h, v(&["skill", "list"])).await;
+    let val = json(&out);
+    let row = |id: &str| {
+        val["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id}: {val}"))
+    };
+    let placed = row("placed");
+    assert_eq!(placed["folder"], "sales/orders", "{placed}");
+    assert_eq!(placed["role"], "record", "{placed}");
+    assert_eq!(placed["tags"], serde_json::json!(["sap", "sd"]), "{placed}");
+    assert_eq!(placed["title"], "Placed", "{placed}");
+    assert_eq!(placed["resource"], "https://sap.example/t", "{placed}");
+    let plain = row("customer");
+    for key in ["folder", "role", "tags", "title", "resource"] {
+        assert!(plain.get(key).is_none(), "{key} on a plain skill: {plain}");
+    }
+    h.process.shutdown().await;
+}
+
 /// The typed shape keys (`params`, `fields` with `render`, `blocks`) reach
 /// the CLI's `skill list` as the wire carries them, present only when
 /// declared (live smoke of P3 found them dropped).

@@ -679,6 +679,22 @@ async fn list_skills(client: &Client) -> Result<Value> {
             if let Some(v) = s.harness {
                 skill["harness"] = json!(v);
             }
+            // The tree vocabulary (folder / role / tags / title / resource), as on the wire.
+            if let Some(v) = s.folder {
+                skill["folder"] = json!(v);
+            }
+            if let Some(v) = s.role {
+                skill["role"] = json!(v);
+            }
+            if !s.tags.is_empty() {
+                skill["tags"] = json!(s.tags);
+            }
+            if let Some(v) = s.title {
+                skill["title"] = json!(v);
+            }
+            if let Some(v) = s.resource {
+                skill["resource"] = json!(v);
+            }
             if !s.actions.is_empty() {
                 skill["actions"] = json!(s.actions);
             }

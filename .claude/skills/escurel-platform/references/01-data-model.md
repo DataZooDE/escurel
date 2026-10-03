@@ -39,6 +39,13 @@ optional; reported on `list_skills`, linted by `validate`):
 - `harness: echo | claude | codex | agy | muse | gemini | delegate` — the
   adapter the skill asks to run on; anything else is `harness_unknown`.
   The runner honours it within its own allow-list.
+- `folder:`, `role:`, `tags:` — where the skill sits and what it is (OKF-aligned), all optional.
+  `folder` is a `/`-separated path of lowercase slugs (`sales/orders`; anything else is `folder_invalid`);
+  `role` is `record` (business data), `process` (something a runner executes), `report` (a rendered view)
+  or `helper` (plumbing: queries, SQL views) — anything else is `role_unknown`; `tags` is a list of
+  strings. `list_skills` carries them when declared. Also recognised, as warnings only and unknown keys
+  never rejected: `title`, `resource`, `generated`, `verified`, `status`, `stale_after` (an RFC 3339
+  instant or a duration like `P90D`), `sources`. See the 0.9.0 changelog entry.
 - `actions:` — what a reader may do from this skill's pages, as a list of
   **objects** (Peacock's form; a bare skill id is `action_invalid`):
 

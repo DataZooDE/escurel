@@ -82,6 +82,11 @@ pub(super) async fn tool_list_skills(
                 autonomy: s.autonomy.map(|a| a.as_str().to_owned()),
                 summary: s.summary,
                 harness: s.harness,
+                folder: s.folder,
+                role: s.role,
+                tags: s.tags,
+                title: s.title,
+                resource: s.resource,
                 actions: s.actions,
                 cascade: s.cascade.map(|c| escurel_types::SkillCascade {
                     target: c.target,
