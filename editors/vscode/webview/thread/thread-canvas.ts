@@ -15,6 +15,9 @@ import './inspector';
 import { fitToBounds, panToReveal, zoomAboutPoint } from './viewport';
 import type { ViewportState } from './viewport';
 
+/** The smallest zoom a thread OPENS at; the Fit button still fits everything. */
+const MIN_FIRST_VIEW_ZOOM = 0.7;
+
 export class EscurelThreadCanvas extends LitElement {
   static override styles = [
     theme,
@@ -348,8 +351,17 @@ export class EscurelThreadCanvas extends LitElement {
     // cropped canvas (the third column cut off, nothing saying there is more) was the first thing
     // a reviewer saw in the live window.
     const { width, height } = this.layout.bounds;
-    if (width > area.clientWidth - 40 || (area.clientHeight > 0 && height > area.clientHeight - 40))
+    if (
+      width > area.clientWidth - 40 ||
+      (area.clientHeight > 0 && height > area.clientHeight - 40)
+    ) {
       this.fit();
+      // Fitting a big thread can mean 30-40%, where no card text is legible. Open at a readable
+      // size from the top-left and let the person pan or press Fit for the whole picture.
+      if (this.viewport.zoom < MIN_FIRST_VIEW_ZOOM) {
+        this.viewport = { x: 20, y: 20, zoom: MIN_FIRST_VIEW_ZOOM };
+      }
+    }
   }
 
   public selectNode(nodeId: string): void {

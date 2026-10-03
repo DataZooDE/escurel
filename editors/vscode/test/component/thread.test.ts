@@ -519,6 +519,13 @@ describe('<escurel-thread-canvas>', () => {
       expect(el.viewport.zoom < 1, `zoom ${el.viewport.zoom}`).to.equal(true);
     });
 
+    it('never opens smaller than a readable size: a big thread scrolls instead of shrinking to 30%', async () => {
+      // A nine-node thread fitted at 48% made every card unreadable.
+      const el = await inBox(300);
+      expect(el.viewport.zoom >= 0.7, `zoom ${el.viewport.zoom}`).to.equal(true);
+      expect(el.viewport.zoom < 1).to.equal(true);
+    });
+
     it('leaves a thread that fits at 100%', async () => {
       const el = await inBox(4000);
       expect(el.viewport.zoom).to.equal(1);
