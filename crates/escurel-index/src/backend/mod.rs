@@ -68,7 +68,10 @@ pub use document::{
     structural_context_prefix,
 };
 pub use markdown::MarkdownBackend;
-pub use remote::{RemoteError, fill_template, json_path_get, resolve_projection};
+pub use remote::{
+    RemoteError, encode_segment, fill_path_template, fill_template, json_path_get,
+    resolve_projection,
+};
 pub use rows::{RowRecord, RowsPage, RowsSource};
 pub use sql_view::{
     BindingStatus, MAX_PROJECTION_ROWS, Materialized, SqlViewBackend, SqlViewError,

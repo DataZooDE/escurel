@@ -55,6 +55,11 @@ async fn spawn_gateway(skill_id: &str, skill_md: &str) -> (EscurelProcess, Vec<T
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {
             indexer: Some(indexer),
+            // The upstreams here are real servers on loopback; the strict default would refuse them.
+            egress: Some(escurel_server::egress::EgressPolicy {
+                allow_loopback: true,
+                ..Default::default()
+            }),
             ..Default::default()
         },
         ..Default::default()

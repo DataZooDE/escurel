@@ -48,6 +48,7 @@ mod document_ingestion;
 mod draft_lineage;
 mod draft_sessions;
 mod drafts;
+mod egress_policy;
 mod empty_event_id;
 mod error_data;
 mod event_acl;

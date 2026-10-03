@@ -50,6 +50,10 @@ pub struct ConfigOverrides {
     /// `None` → `Off` (the production default): `validate` still reports an
     /// unrecognised value, `update_page` still writes it.
     pub autonomy_lint: Option<AutonomyLintMode>,
+    /// Outbound-call policy for remote (`openapi`/`mcp`) backends. `None` → the STRICT production
+    /// default (https, public addresses only); the many tests whose upstream is a loopback server
+    /// set `allow_loopback`.
+    pub egress: Option<escurel_server::egress::EgressPolicy>,
     /// Value returned by `GET /version`. Defaults to
     /// `"0.0.0-test"`.
     pub gateway_version: Option<String>,
@@ -448,6 +452,7 @@ impl EscurelProcess {
             write_acl: overrides.write_acl.unwrap_or_default(),
             event_acl: overrides.event_acl.unwrap_or_default(),
             autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),
+            egress: overrides.egress.unwrap_or_default(),
             listen: "127.0.0.1:0".to_owned(),
             version,
             readiness,

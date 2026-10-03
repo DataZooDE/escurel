@@ -624,6 +624,7 @@ async fn tool_expand_stored(
             if view == BackendView::RemoteProxy {
                 page["backend_projection"] = crate::remote_backend::fetch_projection(
                     indexer,
+                    &state.egress,
                     &e.page.skill,
                     e.page.slug.as_deref(),
                 )

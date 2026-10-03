@@ -187,6 +187,9 @@ pub struct ServerConfig {
     /// Write-time enforcement mode for the `autonomy:` lint
     /// (`ESCUREL_AUTONOMY_LINT`).
     pub autonomy_lint: AutonomyLintMode,
+    /// What outbound calls to registered remote endpoints may do (`ESCUREL_EGRESS_*`). Strict by
+    /// default: https only, public addresses only, no redirects, capped and rate-limited.
+    pub egress: crate::egress::EgressPolicy,
     /// HTTP listener — `0.0.0.0:8080` in production; tests pass
     /// `127.0.0.1:0` to let the OS pick a free port.
     pub listen: String,
@@ -421,6 +424,7 @@ pub(crate) struct AppState {
     pub(crate) write_acl: WriteAclMode,
     pub(crate) event_acl: EventAclMode,
     pub(crate) autonomy_lint: AutonomyLintMode,
+    pub(crate) egress: Arc<crate::egress::Egress>,
     pub(crate) version: String,
     pub(crate) readiness: Arc<dyn ReadinessProbe>,
     /// The single tenant this instance serves. The auth gate compares
@@ -541,6 +545,7 @@ pub async fn serve(
         write_acl: config.write_acl,
         event_acl: config.event_acl,
         autonomy_lint: config.autonomy_lint,
+        egress: Arc::new(crate::egress::Egress::new(config.egress.clone())),
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
         served_tenant,

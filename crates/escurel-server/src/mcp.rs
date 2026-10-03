@@ -1134,13 +1134,15 @@ async fn dispatch_tools_call(
         "register_endpoint" => tool_register_endpoint(indexer, subject, params.arguments).await,
         "list_endpoints" => tool_list_endpoints(indexer).await,
         "delete_endpoint" => tool_delete_endpoint(indexer, params.arguments).await,
-        "validate_endpoints" => tool_validate_endpoints(indexer).await,
+        "validate_endpoints" => tool_validate_endpoints(indexer, &state.egress).await,
         // Materialise a remote (openapi/mcp) overlay page from a skill that
         // declares a remote backend. Admin-only, mirroring create_sql_instance.
         "create_remote_instance" => tool_create_remote_instance(indexer, params.arguments).await,
         // Write-back to a remote instance's upstream. Agent tool, gated by the
         // target instance's acl.update (may_write_instance, fail-closed).
-        "write_instance" => tool_write_instance(indexer, caller, params.arguments).await,
+        "write_instance" => {
+            tool_write_instance(indexer, &state.egress, caller, params.arguments).await
+        }
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
         ))),

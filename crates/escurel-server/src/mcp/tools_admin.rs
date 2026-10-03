@@ -454,7 +454,12 @@ pub(super) struct RegisterEndpointArgs {
     /// Header name when `auth = api_key` (default `X-API-Key`).
     #[serde(default)]
     auth_header: Option<String>,
-    /// Bearer token / api-key material; stored server-side, never echoed.
+    /// A REFERENCE to the credential, resolved at call time: `env:NAME`, `gsm:NAME` (read from
+    /// `ESCUREL_SECRET_<NAME>`) or `file:/path`. Preferred: no secret material is stored.
+    #[serde(default)]
+    secret_ref: Option<String>,
+    /// DEPRECATED: bearer token / api-key MATERIAL stored in the registry (development only);
+    /// never echoed. Use `secret_ref`.
     #[serde(default)]
     secret: Option<String>,
 }
@@ -491,10 +496,26 @@ pub(super) async fn tool_register_endpoint(
             )));
         }
     };
-    let has_secret = a.secret.as_deref().is_some_and(|s| !s.is_empty());
-    if !matches!(auth, escurel_index::endpoints::EndpointAuth::None) && !has_secret {
+    let inline = a.secret.as_deref().filter(|s| !s.is_empty());
+    let reference = a.secret_ref.as_deref().filter(|s| !s.is_empty());
+    if inline.is_some() && reference.is_some() {
         return Err(JsonRpcError::invalid_params(
-            "secret is required for bearer/api_key auth".to_owned(),
+            "give either secret_ref or secret, not both".to_owned(),
+        ));
+    }
+    if let Some(r) = reference
+        && !(r.starts_with("env:") || r.starts_with("gsm:") || r.starts_with("file:"))
+    {
+        return Err(JsonRpcError::invalid_params(
+            "secret_ref must start with env:, gsm: or file:".to_owned(),
+        ));
+    }
+    if !matches!(auth, escurel_index::endpoints::EndpointAuth::None)
+        && inline.is_none()
+        && reference.is_none()
+    {
+        return Err(JsonRpcError::invalid_params(
+            "secret_ref (or, deprecated, secret) is required for bearer/api_key auth".to_owned(),
         ));
     }
     indexer
@@ -503,13 +524,21 @@ pub(super) async fn tool_register_endpoint(
             &a.kind,
             &a.base_url,
             &auth,
-            a.secret.as_deref(),
+            reference.or(inline),
             Some(created_by),
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("register_endpoint: {e}")))?;
+    let warning = inline.map(|_| {
+        "an inline `secret` is stored in the registry; it is deprecated and for development only \
+         - register a `secret_ref` (env:, gsm: or file:) instead"
+    });
     // Never echo the secret back.
-    Ok(json!({ "ok": true, "name": a.name }))
+    let mut out = json!({ "ok": true, "name": a.name });
+    if let Some(w) = warning {
+        out["warning"] = json!(w);
+    }
+    Ok(out)
 }
 
 pub(super) async fn tool_list_endpoints(indexer: &Indexer) -> Result<Value, JsonRpcError> {
@@ -528,6 +557,7 @@ pub(super) async fn tool_list_endpoints(indexer: &Indexer) -> Result<Value, Json
                 "auth_scheme": e.auth_scheme,
                 "created_at": e.created_at,
                 "created_by": e.created_by,
+                "secret_kind": e.secret_kind,
             })
         })
         .collect();
@@ -550,7 +580,10 @@ pub(super) async fn tool_delete_endpoint(
     Ok(json!({ "ok": true }))
 }
 
-pub(super) async fn tool_validate_endpoints(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+pub(super) async fn tool_validate_endpoints(
+    indexer: &Indexer,
+    egress: &crate::egress::Egress,
+) -> Result<Value, JsonRpcError> {
     let eps = indexer
         .list_endpoints()
         .await
@@ -563,7 +596,10 @@ pub(super) async fn tool_validate_endpoints(indexer: &Indexer) -> Result<Value, 
             .await
             .map_err(|err| JsonRpcError::internal(format!("validate_endpoints: {err}")))?;
         let (status, detail) = match rec {
-            Some(rec) => crate::remote_backend::probe(&rec).await,
+            Some(rec) => {
+                let key = format!("{}:{}", indexer.tenant(), rec.name);
+                crate::remote_backend::probe(egress, &key, &rec).await
+            }
             None => (
                 "unreachable".to_owned(),
                 Some("endpoint vanished".to_owned()),
@@ -663,6 +699,7 @@ pub(super) struct WriteInstanceArgs {
 /// binding declares no `write` op is refused.
 pub(super) async fn tool_write_instance(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -703,9 +740,15 @@ pub(super) async fn tool_write_instance(
             "not authorised to write this instance".to_owned(),
         ));
     }
-    crate::remote_backend::write_instance(indexer, &page.skill, page.slug.as_deref(), &a.payload)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))
+    crate::remote_backend::write_instance(
+        indexer,
+        egress,
+        &page.skill,
+        page.slug.as_deref(),
+        &a.payload,
+    )
+    .await
+    .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))
 }
 
 // --- admin tenant CRUD + long-ops (admin-role gated) -----------
