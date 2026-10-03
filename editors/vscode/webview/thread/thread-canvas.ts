@@ -307,6 +307,8 @@ export class EscurelThreadCanvas extends LitElement {
   @state() viewport: ViewportState = { x: 0, y: 0, zoom: 1.0 };
   @state() private isPanning = false;
 
+  /** The first view of a thread is fitted once; after that the viewport belongs to the person. */
+  private autoFitted = false;
   private panStart = { x: 0, y: 0 };
   private viewportStart = { x: 0, y: 0 };
 
@@ -331,6 +333,19 @@ export class EscurelThreadCanvas extends LitElement {
             : (visibleNodes[0]?.id ?? '');
       }
     }
+  }
+
+  protected override updated(changed: PropertyValues<this>): void {
+    if (this.autoFitted || !changed.has('layout') || !this.layout) return;
+    const area = this.shadowRoot?.querySelector('.canvas-area');
+    if (!area || !area.clientWidth) return;
+    this.autoFitted = true;
+    // Only when the graph overflows: a thread that fits stays at 100%, where text is readable. A
+    // cropped canvas (the third column cut off, nothing saying there is more) was the first thing
+    // a reviewer saw in the live window.
+    const { width, height } = this.layout.bounds;
+    if (width > area.clientWidth - 40 || (area.clientHeight > 0 && height > area.clientHeight - 40))
+      this.fit();
   }
 
   public selectNode(nodeId: string): void {

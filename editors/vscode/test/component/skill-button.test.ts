@@ -48,3 +48,50 @@ describe('<escurel-split-button> menu placement', () => {
     );
   });
 });
+
+// Relative luminance and contrast per WCAG 2.x.
+function channel(v: number): number {
+  const c = v / 255;
+  return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+function luminance(rgb: string): number {
+  const [r, g, b] = (rgb.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+  return 0.2126 * channel(r!) + 0.7152 * channel(g!) + 0.0722 * channel(b!);
+}
+function contrast(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi! + 0.05) / (lo! + 0.05);
+}
+
+describe('<escurel-split-button> legibility', () => {
+  // The Skill button is purple per the spec's colour roles. VS Code's dark and high-contrast themes
+  // define charts.purple as a LIGHT purple, and white text on it was about 2:1.
+  const themes: Record<string, string> = {
+    light:
+      '--escurel-skill:var(--vscode-charts-purple);--vscode-charts-purple:#652d90;--vscode-button-foreground:#ffffff',
+    dark: '--escurel-skill:var(--vscode-charts-purple);--vscode-charts-purple:#b180d7;--vscode-button-foreground:#ffffff',
+    'high contrast':
+      '--escurel-skill:var(--vscode-charts-purple);--vscode-charts-purple:#b180d7;--vscode-button-foreground:#ffffff',
+  };
+  for (const [name, tokens] of Object.entries(themes)) {
+    it(`keeps the label readable in ${name}`, async () => {
+      const host = await fixture<HTMLElement>(
+        html`<div style=${tokens}>
+          <escurel-split-button
+            class="skill-button"
+            noun="skill"
+            label="Reassess risk"
+            .items=${START_ITEMS}
+          ></escurel-split-button>
+        </div>`,
+      );
+      const primary = host.querySelector('.primary') as HTMLElement;
+      const cs = getComputedStyle(primary);
+      const ratio = contrast(cs.backgroundColor, cs.color);
+      expect(
+        ratio >= 4.5,
+        `${name}: ${cs.color} on ${cs.backgroundColor} = ${ratio.toFixed(2)}`,
+      ).to.equal(true);
+    });
+  }
+});

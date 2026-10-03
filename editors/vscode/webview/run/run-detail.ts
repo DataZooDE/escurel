@@ -1,3 +1,4 @@
+import { displayStepStatus, runHeading } from '../../src/runs/runTitle';
 import { LitElement, css, html, nothing } from 'lit';
 import type { PropertyValues } from 'lit';
 import { property, state } from 'lit/decorators.js';
@@ -5,7 +6,7 @@ import type { RunControl, RunView, RunWebviewToHost } from '../../src/shared/pro
 import { formatDateTime, formatDuration } from '../../src/shared/time';
 import { theme } from '../shared/theme.css';
 
-const glyphs = { completed: '✓', in_progress: '◐', pending: '○', blocked: '!' };
+const glyphs = { completed: '✓', in_progress: '◐', pending: '○', blocked: '!', unfinished: '◌' };
 
 export class EscurelRunDetail extends LitElement {
   static styles = [
@@ -84,8 +85,19 @@ export class EscurelRunDetail extends LitElement {
       }
       .link,
       .copy-trace {
+        /* Buttons that read as the links they are, not as boxed default buttons. */
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+        cursor: pointer;
         color: var(--vscode-textLink-foreground);
         text-decoration: underline;
+      }
+      .link:focus-visible,
+      .copy-trace:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 2px;
       }
       .link:hover,
       .copy-trace:hover {
@@ -130,6 +142,14 @@ export class EscurelRunDetail extends LitElement {
       }
       .plan-step.blocked .step-status {
         color: inherit;
+      }
+      .plan-step.unfinished {
+        color: var(--escurel-muted);
+      }
+      .run-id {
+        color: var(--escurel-muted);
+        font-size: 0.8em;
+        font-weight: normal;
       }
       .summary {
         white-space: pre-wrap;
@@ -231,7 +251,10 @@ export class EscurelRunDetail extends LitElement {
     if (!run) return html`<div class="status-message" role="status">Loading run…</div>`;
     return html`
       <header>
-        <h1>Run ${run.runId}</h1>
+        <h1>
+          ${runHeading(run).title}
+          <span class="run-id" title="Run id">${run.runId}</span>
+        </h1>
         <span class="chip status-chip ${run.tone}">${run.status.replaceAll('_', ' ')}</span>
         ${
           (run.controls ?? []).length > 0
@@ -317,15 +340,19 @@ export class EscurelRunDetail extends LitElement {
         <h2>Plan</h2>
         ${
           run.plan.length
-            ? run.plan.map(
-                (step) => html`
-                  <div class="plan-step ${step.status}">
-                    <span class="glyph" aria-hidden="true">${glyphs[step.status]}</span
+            ? run.plan.map((step) => {
+                // A finished run is not still doing a step.
+                const shown = displayStepStatus(step.status, run.status);
+                return html`
+                  <div class="plan-step ${shown}">
+                    <span class="glyph" aria-hidden="true">${glyphs[shown]}</span
                     ><span>${step.step}</span
-                    ><span class="step-status">${step.status.replace('_', ' ')}</span>
+                    ><span class="step-status"
+                      >${shown === 'unfinished' ? 'not finished' : shown.replace('_', ' ')}</span
+                    >
                   </div>
-                `,
-              )
+                `;
+              })
             : html`<p class="muted">No plan reported.</p>`
         }
       </section>
