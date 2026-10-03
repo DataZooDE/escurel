@@ -1,6 +1,7 @@
-import { typeIcon } from './node-icons';
+import { personIcon, typeIcon } from './node-icons';
+import { formatAge } from '../../src/shared/time';
 import { describeNodeType } from '../../src/thread/nodeStyle';
-import { MARGIN } from '../../src/thread/layout';
+import { MARGIN, MAX_LISTED_DRAFTS } from '../../src/thread/layout';
 import { LitElement, css, html, nothing, svg } from 'lit';
 import type { PropertyValues } from 'lit';
 import { property, state } from 'lit/decorators.js';
@@ -242,6 +243,111 @@ export class EscurelThreadCanvas extends LitElement {
         align-items: center;
         gap: 6px;
         min-width: 0;
+      }
+      /* Work that waits on a person: a strong accent in the warning colour, a halo (static, no
+         animation) and a badge. The badge and the reason are words, so it is not colour alone. */
+      .card.needs-you {
+        --accent: var(--vscode-editorWarning-foreground, var(--escurel-event));
+        border: 2px solid var(--accent);
+        border-left-width: 6px;
+        background: color-mix(
+          in srgb,
+          var(--accent) 8%,
+          var(--vscode-editorWidget-background, var(--vscode-editor-background))
+        );
+        box-shadow:
+          0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent),
+          0 2px 8px var(--vscode-widget-shadow, transparent);
+      }
+      .card.needs-you.selected {
+        border-color: var(--vscode-focusBorder);
+        box-shadow: 0 0 0 3px var(--vscode-focusBorder);
+      }
+      .needs-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .needs-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+        padding: 1px 8px 1px 6px;
+        border-radius: 10px;
+        border: 1px solid var(--accent);
+        background: color-mix(in srgb, var(--accent) 30%, transparent);
+        color: var(--vscode-foreground);
+        font-size: 0.75em;
+        font-weight: 700;
+      }
+      .needs-reason {
+        font-size: 0.85em;
+        color: var(--vscode-foreground);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .changeset-author {
+        font-size: 0.85em;
+        color: var(--escurel-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .draft-list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        margin: 2px 0;
+      }
+      .draft-entry {
+        all: unset;
+        box-sizing: border-box;
+        display: block;
+        height: 20px;
+        line-height: 20px;
+        padding: 0 4px;
+        font-size: 0.85em;
+        color: var(--vscode-textLink-foreground);
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .draft-entry:hover {
+        text-decoration: underline;
+      }
+      .draft-entry:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+      }
+      .draft-more {
+        font-size: 0.8em;
+        color: var(--escurel-muted);
+        height: 20px;
+        line-height: 20px;
+        padding: 0 4px;
+      }
+      .review-btn {
+        background: var(--vscode-button-secondaryBackground);
+        color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+        border: 1px solid var(--vscode-button-border, var(--escurel-border));
+        font-size: 0.75em;
+        padding: 1px 6px;
+        border-radius: 2px;
+      }
+      .gate-actions button[aria-disabled='true'] {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .gate-reason {
+        flex-basis: 100%;
+        font-size: 0.75em;
+        color: var(--escurel-muted);
+      }
+      .gate-actions {
+        flex-wrap: wrap;
       }
       .lane-divider {
         position: absolute;
@@ -623,12 +729,47 @@ export class EscurelThreadCanvas extends LitElement {
     return level;
   }
 
+  /** Who proposed an open changeset, when, and the pages it changes, each one openable. */
+  private renderChangesetDetails(node: ThreadNode) {
+    const details = node.changeset;
+    if (!details || node.emphasis !== 'needs-you') return nothing;
+    const age = formatAge(details.at);
+    const who = [details.author, age].filter(Boolean).join(' · ');
+    const listed = details.drafts.slice(0, MAX_LISTED_DRAFTS);
+    const more = details.drafts.length - listed.length;
+    return html`
+      ${who ? html`<div class="changeset-author" title="${details.at ?? ''}">${who}</div>` : nothing}
+      <div class="draft-list">
+        ${listed.map(
+          (draft) =>
+            html`<button
+              class="draft-entry"
+              title="Open ${draft.title}"
+              @click=${(e: Event) => {
+                e.stopPropagation();
+                this.send({ type: 'open-node', nodeId: draft.id });
+              }}
+            >
+              ${draft.title}
+            </button>`,
+        )}
+        ${more > 0 ? html`<div class="draft-more">+${more} more</div>` : nothing}
+      </div>
+    `;
+  }
+
   private renderCard(node: ThreadNode, layoutNode: LaidOutNode) {
     const isFocused = node.id === this.focusedNodeId;
     const isSelected = node.id === this.selectedNodeId;
     const described = describeNodeType(node, this.view?.rootEventId ?? '');
     const compact = node.emphasis === 'compact';
-    const accessibleName = [`${described.label}: ${node.title}`, node.subtitle, node.state]
+    const needs = node.needsYou;
+    const accessibleName = [
+      `${described.label}: ${node.title}`,
+      node.subtitle,
+      node.state,
+      needs ? `needs you: ${needs.text}` : undefined,
+    ]
       .filter(Boolean)
       .join(', ');
     // A small card hides its details; they stay on hover and in the inspector.
@@ -645,7 +786,7 @@ export class EscurelThreadCanvas extends LitElement {
 
     return html`
       <div
-        class="card type-${described.type} ${compact ? 'compact' : ''} ${isSelected ? 'selected' : ''}"
+        class="card type-${described.type} ${compact ? 'compact' : ''} ${needs ? 'needs-you' : ''} ${isSelected ? 'selected' : ''}"
         data-node-id="${node.id}"
         role="treeitem"
         aria-level="${this.treeLevel(node.id)}"
@@ -699,7 +840,16 @@ export class EscurelThreadCanvas extends LitElement {
                   }
                 </div>
                 ${
-                  node.meta.length
+                  needs
+                    ? html`<div class="needs-row">
+                        <span class="needs-badge">${personIcon()}Needs you</span>
+                        <span class="needs-reason" title="${needs.text}">${needs.text}</span>
+                      </div>`
+                    : nothing
+                }
+                ${this.renderChangesetDetails(node)}
+                ${
+                  node.meta.length && !node.changeset?.drafts.length
                     ? html`<div class="meta-lines">
                         ${node.meta
                           .slice(0, 4)
@@ -718,8 +868,10 @@ export class EscurelThreadCanvas extends LitElement {
                     ? html`<div class="gate-actions">
                         <button
                           class="promote-btn"
+                          aria-disabled=${node.gate.disabledReason ? 'true' : nothing}
                           @click=${(e: Event) => {
                             e.stopPropagation();
+                            if (node.gate?.disabledReason) return;
                             this.send({
                               type: 'promote',
                               changesetId: node.gate?.changesetId,
@@ -731,8 +883,10 @@ export class EscurelThreadCanvas extends LitElement {
                         </button>
                         <button
                           class="discard-btn"
+                          aria-disabled=${node.gate.disabledReason ? 'true' : nothing}
                           @click=${(e: Event) => {
                             e.stopPropagation();
+                            if (node.gate?.disabledReason) return;
                             this.send({
                               type: 'discard',
                               changesetId: node.gate?.changesetId,
@@ -742,6 +896,24 @@ export class EscurelThreadCanvas extends LitElement {
                         >
                           Discard
                         </button>
+                        ${
+                          node.kind === 'changeset'
+                            ? html`<button
+                                class="review-btn"
+                                @click=${(e: Event) => {
+                                  e.stopPropagation();
+                                  this.send({ type: 'open-node', nodeId: node.id });
+                                }}
+                              >
+                                Review changes
+                              </button>`
+                            : nothing
+                        }
+                        ${
+                          node.gate.disabledReason
+                            ? html`<span class="gate-reason">${node.gate.disabledReason}</span>`
+                            : nothing
+                        }
                       </div>`
                     : nothing
                 }

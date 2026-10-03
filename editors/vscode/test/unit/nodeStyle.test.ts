@@ -43,7 +43,7 @@ describe('emphasis', () => {
     expect(emphasis('event', 'inbox')).toBe('normal'); // the cascade event is waiting
   });
 
-  it('keeps a running, an open or a failed node at full size', () => {
+  it('keeps a running node at full size, and gives what waits on a person the strongest card', () => {
     const lineage = (type: string, state: string): ListLineageResponse => ({
       root_event_id: 'e',
       nodes: [
@@ -54,11 +54,11 @@ describe('emphasis', () => {
     const of = (type: string, state: string) =>
       toThreadView(foldLineage([lineage(type, state)])).nodes.find((n) => n.id === 'n')!.emphasis;
     expect(of('run', 'running')).toBe('normal');
-    expect(of('run', 'failed')).toBe('normal');
-    expect(of('run', 'dead_letter')).toBe('normal');
-    expect(of('run', 'planned')).toBe('normal');
-    expect(of('changeset', 'open')).toBe('normal');
-    expect(of('draft', 'open')).toBe('normal');
+    expect(of('run', 'failed')).toBe('needs-you');
+    expect(of('run', 'dead_letter')).toBe('needs-you');
+    expect(of('run', 'planned')).toBe('needs-you');
+    expect(of('changeset', 'open')).toBe('needs-you');
+    expect(of('draft', 'open')).toBe('needs-you');
     expect(of('changeset', 'discarded')).toBe('compact');
     expect(of('run', 'cancelled')).toBe('compact');
   });

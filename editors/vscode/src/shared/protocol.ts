@@ -140,13 +140,17 @@ export interface ThreadNode {
    * Present on a changeset or draft that a human can still decide, which is what
    * puts Promote and Discard on the card itself (SPEC §3.5 "Inline gate buttons").
    */
-  gate?: { drafts: number; changesetId?: string; draftId?: string };
+  gate?: { drafts: number; changesetId?: string; draftId?: string; disabledReason?: string };
   /**
    * How much room the card earns. `compact` is a node that is finished with nothing left to do (a
-   * processed event or run, a decided changeset or page); everything else is `normal`. Absent
-   * means `normal`.
+   * processed event or run, a decided changeset or page); `needs-you` waits on a person (see
+   * `needsYou`) and gets the strongest card; everything else is `normal`. Absent means `normal`.
    */
-  emphasis?: 'compact' | 'normal';
+  emphasis?: 'compact' | 'normal' | 'needs-you';
+  /** Present when the node waits on a person, and why. */
+  needsYou?: { reason: 'review' | 'approve-plan' | 'failed' | 'ask-human'; text: string };
+  /** An open or decided changeset: who proposed it, when, and the pages it changes. */
+  changeset?: { author?: string; at?: string; drafts: { id: string; title: string }[] };
   /** Collapsed subtrees render as the mock's "… collapsed. Click to expand." row. */
   collapsible: boolean;
 }

@@ -25,6 +25,29 @@ export function describeNodeType(node: ThreadNode, rootEventId: string): NodeTyp
 const DECIDED = new Set(['promoted', 'discarded']);
 
 /** Finished, with nothing left for anyone to do: it takes little room on the canvas. */
+export type NeedsYou = NonNullable<ThreadNode['needsYou']>;
+
+/**
+ * Why a node waits on a person, or undefined. An open changeset is decided as a whole, so the drafts
+ * inside it carry no mark of their own; a draft in no changeset (a live human draft) does.
+ */
+export function needsYouOf(
+  kind: ThreadNode['kind'],
+  state: string | null,
+  inChangeset: boolean,
+): NeedsYou | undefined {
+  if (kind === 'changeset' && state === 'open') return { reason: 'review', text: 'Review changes' };
+  if (kind === 'draft' && state === 'open' && !inChangeset)
+    return { reason: 'review', text: 'Review changes' };
+  if (kind !== 'run') return undefined;
+  if (state === 'planned') return { reason: 'approve-plan', text: 'Approve the plan' };
+  if (state === 'failed') return { reason: 'failed', text: 'Run failed' };
+  if (state === 'dead_letter') return { reason: 'failed', text: 'Run dead-lettered' };
+  // Not in the lineage today (it is a workflow operation status); kept so it lights up the day it is.
+  if (state === 'awaiting_human') return { reason: 'ask-human', text: 'Waiting for your answer' };
+  return undefined;
+}
+
 export function emphasisOf(kind: ThreadNode['kind'], state: string | null): 'compact' | 'normal' {
   if (state === null) return 'normal';
   if (kind === 'event') return state === 'processed' ? 'compact' : 'normal';

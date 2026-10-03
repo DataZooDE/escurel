@@ -72,6 +72,38 @@ test('run detail opens from the canvas with its plan and tool calls', async ({ s
   await stack.shot('05-run-detail');
 });
 
+test('work that waits on a person stands out: a Needs-you changeset with its drafts and buttons', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  // The story's second thread: a supplier-risk run proposed a changeset that nobody has decided.
+  await pane(page, 'Inbox')
+    .getByRole('treeitem', { name: /order-4500131/ })
+    .first()
+    .click();
+  const wv = await webviewWith(page, 'escurel-thread-canvas');
+  const canvas = wv.locator('escurel-thread-canvas');
+  await wv.getByRole('button', { name: 'Fit' }).click();
+  const card = canvas.locator('.card.type-changeset.needs-you');
+  await expect(card).toBeVisible();
+  await expect(card.locator('.needs-badge')).toContainText('Needs you');
+  await expect(card.locator('.changeset-author')).toContainText('agent:supplier-risk');
+  // The pages it changes are listed on the card, each one openable; the order and the new analysis.
+  await expect(card.locator('.draft-entry')).toHaveCount(2);
+  await expect(card.getByRole('button', { name: /Promote all 2/ })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Discard' })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Review changes' })).toBeVisible();
+  await stack.shot('02b-needs-you');
+  // Review changes opens the same changeset review as Awaiting You: its picker of what to decide.
+  await card.getByRole('button', { name: 'Review changes' }).click();
+  const picker = page.locator('.quick-input-widget');
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText('Promote all');
+  await stack.shot('02c-review-picker');
+  await page.keyboard.press('Escape');
+  await expect(picker).toBeHidden();
+});
+
 test('a sales order opens as a real order page: SAP fields and an items table', async ({
   stack,
 }) => {
