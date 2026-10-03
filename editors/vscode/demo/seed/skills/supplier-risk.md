@@ -8,10 +8,6 @@ actions:
     kind: event
     label: Update the order
     event: customer-order
-  - name: write-analysis
-    kind: event
-    label: Write the analysis
-    event: supplier-risk-analysis
 ---
 
 # supplier-risk
@@ -27,3 +23,7 @@ what makes the promotion a cascade hop. `actions` is an allow-list on top of tha
 The run also persists what it worked out as a `supplier-risk-analysis` instance, in the same
 changeset as its change to the order: the supplier, every order that uses the affected material, the
 net value at risk per order, and the follow-ups. The order links to it.
+
+The analysis is part of the run's own output, NOT a cascade hop: it is deliberately absent from
+`actions`, which is the cascade allow-list, so promoting the changeset announces ONE follow-on (the
+order's), as before.
