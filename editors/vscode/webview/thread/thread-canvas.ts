@@ -193,7 +193,7 @@ export class EscurelThreadCanvas extends LitElement {
         color: var(--accent, var(--escurel-muted));
       }
       .type-label {
-        font-size: 0.7em;
+        font-size: 0.75em;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
@@ -260,8 +260,11 @@ export class EscurelThreadCanvas extends LitElement {
           0 2px 8px var(--vscode-widget-shadow, transparent);
       }
       .card.needs-you.selected {
-        border-color: var(--vscode-focusBorder);
-        box-shadow: 0 0 0 3px var(--vscode-focusBorder);
+        /* Selection is a ring BEYOND the halo: the warning border and halo stay. */
+        border-color: var(--accent);
+        box-shadow:
+          0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent),
+          0 0 0 5px var(--vscode-focusBorder);
       }
       .needs-row {
         display: flex;
@@ -323,17 +326,27 @@ export class EscurelThreadCanvas extends LitElement {
         outline: 1px solid var(--vscode-focusBorder);
       }
       .draft-more {
-        font-size: 0.8em;
-        color: var(--escurel-muted);
+        all: unset;
+        box-sizing: border-box;
+        display: block;
         height: 20px;
         line-height: 20px;
         padding: 0 4px;
+        font-size: 0.8em;
+        color: var(--vscode-textLink-foreground);
+        cursor: pointer;
+      }
+      .draft-more:hover {
+        text-decoration: underline;
+      }
+      .draft-more:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
       }
       .review-btn {
         background: var(--vscode-button-secondaryBackground);
         color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
         border: 1px solid var(--vscode-button-border, var(--escurel-border));
-        font-size: 0.75em;
+        font-size: 0.8em;
         padding: 1px 6px;
         border-radius: 2px;
       }
@@ -424,18 +437,21 @@ export class EscurelThreadCanvas extends LitElement {
         gap: 4px;
       }
       .promote-btn {
-        background: var(--escurel-run);
+        /* charts.green is a LIGHT green in dark and high-contrast themes; white on it was 1.8:1. */
+        background: color-mix(in srgb, var(--escurel-run) 55%, black);
         color: var(--vscode-button-foreground);
         border: 1px solid transparent;
-        font-size: 0.75em;
+        font-size: 0.8em;
         padding: 1px 6px;
         border-radius: 2px;
       }
       .discard-btn {
-        background: var(--vscode-button-secondaryBackground);
+        /* Red text needs a background it was meant for: the card's own, not the secondary button
+           colour (dark grey in light themes). */
+        background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
         color: var(--vscode-errorForeground);
-        border: 1px solid var(--vscode-button-border, transparent);
-        font-size: 0.75em;
+        border: 1px solid var(--vscode-errorForeground);
+        font-size: 0.8em;
         padding: 1px 6px;
         border-radius: 2px;
       }
@@ -753,7 +769,20 @@ export class EscurelThreadCanvas extends LitElement {
               ${draft.title}
             </button>`,
         )}
-        ${more > 0 ? html`<div class="draft-more">+${more} more</div>` : nothing}
+        ${
+          more > 0
+            ? html`<button
+                class="draft-more"
+                title="Open the whole changeset"
+                @click=${(e: Event) => {
+                  e.stopPropagation();
+                  this.send({ type: 'open-node', nodeId: node.id });
+                }}
+              >
+                +${more} more
+              </button>`
+            : nothing
+        }
       </div>
     `;
   }
