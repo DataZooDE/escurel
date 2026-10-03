@@ -28,8 +28,8 @@
 //! [`Frontmatter::fields`] for the indexer to project as needed.
 //!
 //! `kind:` replaced the original `type:` key (OKF alignment, where `type` means the concept's
-//! own kind). While the migration window is open the parser still reads a legacy `type:`;
-//! see [`legacy::rewrite_legacy_type_key`] and `escurel admin migrate-kind`.
+//! own kind). The legacy key is rejected with [`ParseError::LegacyTypeKey`]; stored pages are
+//! rewritten by `escurel admin migrate-kind` (see [`legacy::rewrite_legacy_type_key`]).
 
 pub mod legacy;
 pub mod wikilink;
@@ -83,6 +83,13 @@ pub enum ParseError {
     /// Frontmatter parsed as YAML but was not a mapping at the top level.
     #[error("frontmatter must be a YAML mapping at the top level")]
     NotAMapping,
+    /// The page still carries the removed `type: skill|instance` page-kind key. Not a YAML error
+    /// and not "no kind at all": the page is fine, it needs migrating.
+    #[error(
+        "this page uses the removed `type:` page-kind key; it is `kind:` now \
+         (run `escurel admin migrate-kind` on the tenant to rewrite stored pages)"
+    )]
+    LegacyTypeKey,
     /// `kind:` was missing or not `skill` / `instance`.
     #[error("frontmatter missing or invalid 'kind' (expected 'skill' or 'instance')")]
     InvalidType,
@@ -115,20 +122,24 @@ pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
         _ => return Err(ParseError::NotAMapping),
     };
 
-    // `kind:` is the page-kind key. `type:` is the legacy spelling, still read while the migration
-    // window is open; `kind:` wins when a page carries both.
-    //
-    // A page may carry its OWN data field named `kind` (an `issue` page has `kind: lint_summary`),
-    // so the page kind is the first of the two keys whose value is actually `skill` or `instance`.
-    let page_type = ["kind", "type"]
-        .iter()
-        .filter_map(|key| mapping.get(*key).and_then(serde_yaml_ng::Value::as_str))
-        .find_map(|s| match s {
-            "skill" => Some(PageType::Skill),
-            "instance" => Some(PageType::Instance),
-            _ => None,
-        })
-        .ok_or(ParseError::InvalidType)?;
+    // `kind:` is the page-kind key. The legacy `type: skill|instance` spelling is REMOVED (OKF stage 1
+    // hard cut): a page that has it and no valid `kind:` is told so, instead of being reported as a
+    // page with no kind at all. A page's own data field named `type` (`type: invoice`) is just data.
+    let kind_of = |key: &str| {
+        mapping
+            .get(key)
+            .and_then(serde_yaml_ng::Value::as_str)
+            .and_then(|s| match s {
+                "skill" => Some(PageType::Skill),
+                "instance" => Some(PageType::Instance),
+                _ => None,
+            })
+    };
+    let page_type = match kind_of("kind") {
+        Some(kind) => kind,
+        None if kind_of("type").is_some() => return Err(ParseError::LegacyTypeKey),
+        None => return Err(ParseError::InvalidType),
+    };
 
     Ok(Page {
         frontmatter: Frontmatter {

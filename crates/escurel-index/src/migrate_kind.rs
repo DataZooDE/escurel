@@ -34,6 +34,40 @@ use crate::indexer::{Indexer, IndexerError, is_archived};
 /// Signed pack pages live here; they are never rewritten locally.
 const PACK_BASE_PREFIX: &str = "markdown/base/";
 
+/// How many offending pages an error message lists before saying "and N more".
+const LISTED: usize = 20;
+
+/// The refusal text: what is wrong, the exact command, and what cannot be migrated locally.
+#[must_use]
+pub fn legacy_kind_message(tenant: &str, pages: &[String]) -> String {
+    let shown: Vec<&str> = pages.iter().take(LISTED).map(String::as_str).collect();
+    let more = pages.len().saturating_sub(LISTED);
+    let tail = if more > 0 {
+        format!(" ... and {more} more")
+    } else {
+        String::new()
+    };
+    let base = pages
+        .iter()
+        .filter(|p| p.starts_with(PACK_BASE_PREFIX))
+        .count();
+    let pack_note = if base > 0 {
+        format!(
+            " {base} of them are signed pack pages (markdown/base/...): those cannot be rewritten \
+             locally; the pack publisher must re-export and re-sign the pack."
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "tenant `{tenant}` has {} page(s) that still use the removed `type:` page-kind key (it is \
+         `kind:` now): {}{tail}. Run `escurel admin migrate-kind --tenant {tenant}` (a dry run), then \
+         with `--apply`.{pack_note}",
+        pages.len(),
+        shown.join(", ")
+    )
+}
+
 /// The audit event's label.
 pub const KIND_MIGRATION_LABEL: &str = "escurel:kind-migration";
 
@@ -76,6 +110,54 @@ impl Indexer {
             report.audit_event_id = Some(event.event_id);
         }
         Ok(report)
+    }
+
+    /// Every lane page that still carries the removed `type:` page-kind key, sorted. A page that
+    /// does not parse for another reason is not listed here: it surfaces as drift or a parse error.
+    ///
+    /// # Errors
+    /// When listing or reading the lane store fails.
+    pub async fn legacy_kind_pages(&self) -> Result<Vec<String>, IndexerError> {
+        let mut paths: Vec<String> = self.list_markdown_paths().await?.into_iter().collect();
+        paths.sort();
+        self.legacy_kind_pages_in(&paths).await
+    }
+
+    /// [`Self::legacy_kind_pages`] over an already-listed set of lane paths.
+    pub(crate) async fn legacy_kind_pages_in(
+        &self,
+        paths: &[String],
+    ) -> Result<Vec<String>, IndexerError> {
+        let mut found = Vec::new();
+        for path in paths {
+            let key = Key::new(self.tenant(), path.clone())?;
+            let body = self.store.read(&key).await?;
+            let Ok(content) = std::str::from_utf8(&body) else {
+                continue;
+            };
+            if matches!(
+                escurel_md::parse(content),
+                Err(escurel_md::ParseError::LegacyTypeKey)
+            ) {
+                found.push(path.clone());
+            }
+        }
+        Ok(found)
+    }
+
+    /// Refuse (with [`IndexerError::LegacyKindPages`]) when [`Self::legacy_kind_pages`] is not empty.
+    ///
+    /// # Errors
+    /// [`IndexerError::LegacyKindPages`], or a store failure.
+    pub async fn refuse_legacy_kind_pages(&self) -> Result<(), IndexerError> {
+        let pages = self.legacy_kind_pages().await?;
+        if pages.is_empty() {
+            return Ok(());
+        }
+        Err(IndexerError::LegacyKindPages {
+            tenant: self.tenant().to_owned(),
+            pages,
+        })
     }
 
     async fn migrate_kind_pages(

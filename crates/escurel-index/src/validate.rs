@@ -811,6 +811,21 @@ impl Indexer {
     ) -> Result<Vec<Issue>, IndexerError> {
         let parsed = match parse(content) {
             Ok(p) => p,
+            Err(escurel_md::ParseError::LegacyTypeKey) => {
+                // Not a YAML error: the page is fine and uses the REMOVED page-kind key. Say which
+                // key, and how a tenant's stored pages are rewritten.
+                let mut issue = Issue::error(
+                    "frontmatter_type_removed",
+                    "frontmatter.type",
+                    "the `type: skill|instance` page-kind key was removed; the page kind is `kind:` now",
+                );
+                issue.suggestion = Some(
+                    "rename `type:` to `kind:` in this page; rewrite a tenant's stored pages with \
+                     `escurel admin migrate-kind`"
+                        .to_owned(),
+                );
+                return Ok(vec![issue]);
+            }
             Err(e) => {
                 // A parse failure short-circuits: there is no
                 // frontmatter / body to run the remaining checks

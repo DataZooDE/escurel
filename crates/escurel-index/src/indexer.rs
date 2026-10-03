@@ -244,6 +244,11 @@ pub enum IndexerError {
     )]
     RefusedEmptyRebuild { existing: i64 },
 
+    /// The tenant still holds pages that use the removed `type: skill|instance` page-kind key. It is
+    /// refused (not served degraded) so a search or a read is never silently incomplete.
+    #[error("{}", crate::migrate_kind::legacy_kind_message(tenant, pages))]
+    LegacyKindPages { tenant: String, pages: Vec<String> },
+
     /// `migrate_kind(apply)` found pages with CRDT ops newer than their newest snapshot. The live
     /// document would no longer line up with a rewritten snapshot, so nothing is written.
     #[error(
@@ -1767,6 +1772,17 @@ impl Indexer {
         // tooling) rely on this.
         sorted.sort();
         let total = sorted.len() as u64;
+        // The hard cut (`type:` -> `kind:`): a tenant that still holds legacy pages is REFUSED here,
+        // before anything is truncated, with ALL of them listed. Aborting at the first page that
+        // fails to parse (as the loop below would, after the truncate) would take the tenant offline
+        // one page at a time.
+        let legacy = self.legacy_kind_pages_in(&sorted).await?;
+        if !legacy.is_empty() {
+            return Err(IndexerError::LegacyKindPages {
+                tenant: self.tenant.clone(),
+                pages: legacy,
+            });
+        }
 
         // Attribution (escurel#357) is the one thing in `pages` that a
         // rebuild cannot re-derive: the markdown lane is the source of
@@ -2172,14 +2188,10 @@ fn collect_md(
     Ok(())
 }
 
-/// True if the markdown declares `kind: skill` (or the legacy `type: skill`, read during the
-/// migration window) in its frontmatter. Cheap scan of the leading lines — enough to order skills
-/// before instances during a seed.
+/// True if the markdown declares `kind: skill` in its frontmatter. Cheap scan of the leading
+/// lines — enough to order skills before instances during a seed.
 fn is_skill(content: &str) -> bool {
-    content
-        .lines()
-        .take(40)
-        .any(|l| matches!(l.trim(), "kind: skill" | "type: skill"))
+    content.lines().take(40).any(|l| l.trim() == "kind: skill")
 }
 
 fn hash_body(content: &str) -> String {
@@ -2333,11 +2345,11 @@ mod kind_scan_tests {
     use super::is_skill;
 
     #[test]
-    fn seed_ordering_recognises_both_spellings_of_a_skill_page() {
+    fn seed_ordering_recognises_a_skill_page_by_kind_only() {
         assert!(is_skill("---\nkind: skill\nid: a\n---\n"));
         assert!(
-            is_skill("---\ntype: skill\nid: a\n---\n"),
-            "legacy spelling, migration window"
+            !is_skill("---\ntype: skill\nid: a\n---\n"),
+            "the removed key is not a skill"
         );
         assert!(!is_skill("---\nkind: instance\nskill: a\nid: b\n---\n"));
     }

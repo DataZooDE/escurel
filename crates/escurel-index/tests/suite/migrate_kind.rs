@@ -50,14 +50,17 @@ fn key(path: &str) -> Key {
     Key::new(TENANT, path.to_owned()).unwrap()
 }
 
-/// Write a LEGACY page straight into the lane (as an old store holds it) and index it through the
-/// transitional parser, which still reads both spellings.
+/// Write a page straight into the lane, the way an OLD store holds it. After the hard cut a
+/// legacy page can no longer go through `update_page`; the lane is where it lives. Pages that
+/// already use `kind:` are indexed too, as they would be in a half-migrated tenant.
 async fn put(h: &Harness, path: &str, md: &str) {
     h.store
         .write(&key(path), Bytes::from(md.to_owned()))
         .await
         .unwrap();
-    h.indexer.update_page(path, md).await.unwrap();
+    if escurel_md::parse(md).is_ok() {
+        h.indexer.update_page(path, md).await.unwrap();
+    }
 }
 
 async fn lane(h: &Harness, path: &str) -> String {
@@ -167,12 +170,15 @@ async fn apply_rewrites_only_the_page_kind_key_and_a_second_run_is_a_no_op() {
 #[tokio::test]
 async fn apply_preserves_who_wrote_each_page() {
     let h = fresh();
-    h.store
-        .write(&key(C1), Bytes::from(c1_md().to_owned()))
+    // alice wrote the page when it was current (so the index knows who), then the lane came to
+    // hold the old spelling: an old store.
+    let current = c1_md().replace("type: instance", "kind: instance");
+    h.indexer
+        .update_page_as(C1, &current, Some("agent:alice"))
         .await
         .unwrap();
-    h.indexer
-        .update_page_as(C1, c1_md(), Some("agent:alice"))
+    h.store
+        .write(&key(C1), Bytes::from(c1_md().to_owned()))
         .await
         .unwrap();
 

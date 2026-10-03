@@ -112,7 +112,7 @@ fn input_without_leading_delimiter_errors() {
 
 #[test]
 fn unterminated_frontmatter_errors() {
-    let input = "---\ntype: skill\nid: customer\n\nstill no closing delimiter\n";
+    let input = "---\nkind: skill\nid: customer\n\nstill no closing delimiter\n";
     let err = parse(input).expect_err("unterminated frontmatter must fail");
     assert!(
         matches!(err, ParseError::UnterminatedFrontmatter),
@@ -143,7 +143,7 @@ fn missing_type_field_errors() {
 
 #[test]
 fn unknown_type_value_errors() {
-    let input = "---\ntype: gadget\nid: x\n---\n\nbody\n";
+    let input = "---\nkind: gadget\nid: x\n---\n\nbody\n";
     let err = parse(input).expect_err("unknown type must fail");
     assert!(
         matches!(err, ParseError::InvalidType),
@@ -155,7 +155,7 @@ fn unknown_type_value_errors() {
 fn set_frontmatter_bool_stamps_flag_and_preserves_body() {
     // #300: stamp `archived: true` onto an existing page; the flag round-trips
     // through parse and the body is preserved verbatim.
-    let input = "---\ntype: instance\nskill: customer\nid: acme\n---\n# Acme\n\nBody text.\n";
+    let input = "---\nkind: instance\nskill: customer\nid: acme\n---\n# Acme\n\nBody text.\n";
     let out =
         escurel_md::set_frontmatter_bool(input, "archived", true).expect("stamp archived flag");
 
@@ -190,18 +190,42 @@ fn parses_the_kind_key() {
 }
 
 #[test]
-fn kind_wins_over_a_legacy_type_during_the_transition() {
-    // The migration window reads both; a page that carries both says `kind:`.
-    let page = parse("---\nkind: skill\ntype: instance\nid: a\n---\n").expect("parses");
-    assert_eq!(page.frontmatter.page_type, PageType::Skill);
+fn a_legacy_type_page_kind_is_rejected_and_the_error_names_the_migration_tool() {
+    // The hard cut: `type: skill|instance` is no longer a page kind.
+    let err = parse("---\ntype: skill\nid: customer\n---\nbody\n")
+        .expect_err("the removed key must not parse");
+    assert!(matches!(err, ParseError::LegacyTypeKey), "{err:?}");
+    let msg = err.to_string();
+    assert!(msg.contains("kind:"), "names the replacement: {msg}");
+    assert!(
+        msg.contains("escurel admin migrate-kind"),
+        "names the tool: {msg}"
+    );
+
+    let err =
+        parse("---\ntype: instance\nskill: customer\nid: c1\n---\n").expect_err("instances too");
+    assert!(matches!(err, ParseError::LegacyTypeKey), "{err:?}");
 }
 
 #[test]
-fn a_data_field_named_kind_does_not_hide_the_legacy_page_kind() {
-    // The compile-first `issue` pages carry their OWN data field `kind: lint_summary` next to the
-    // legacy `type: instance`. During the migration window the page kind is the first of the two
-    // keys whose value is actually `skill` or `instance`.
-    let page = parse("---\ntype: instance\nskill: issue\nid: i1\nkind: lint_summary\n---\n")
-        .expect("legacy page kind still readable beside a kind data field");
+fn a_page_with_a_kind_data_field_and_a_legacy_type_is_still_rejected_as_legacy() {
+    // The compile-first `issue` pages used to carry `type: instance` AND their own `kind:` data.
+    let err = parse("---\ntype: instance\nskill: issue\nid: i1\nkind: lint_summary\n---\n")
+        .expect_err("legacy page kind");
+    assert!(matches!(err, ParseError::LegacyTypeKey), "{err:?}");
+}
+
+#[test]
+fn a_users_own_type_data_field_is_just_data() {
+    // `type: invoice` is not the page kind; the page kind is `kind:`.
+    let page = parse("---\nkind: instance\nskill: doc\nid: inv1\ntype: invoice\n---\n")
+        .expect("a type data field is fine");
     assert_eq!(page.frontmatter.page_type, PageType::Instance);
+    assert_eq!(page.frontmatter.fields["type"].as_str(), Some("invoice"));
+}
+
+#[test]
+fn a_page_with_neither_a_kind_nor_a_legacy_type_is_invalid() {
+    let err = parse("---\nid: a\ntype: invoice\n---\n").expect_err("no page kind");
+    assert!(matches!(err, ParseError::InvalidType), "{err:?}");
 }

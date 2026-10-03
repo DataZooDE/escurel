@@ -210,6 +210,10 @@ impl IndexStore for SingleFileStore {
         // first boot the store is empty and this is a fast no-op.
         if fresh {
             indexer.rebuild().await?;
+        } else {
+            // A surviving index with legacy `type:` pages still in the lane (the hard cut): refuse
+            // the tenant, naming the migration command. (The fresh path above refuses inside rebuild.)
+            indexer.refuse_legacy_kind_pages().await?;
         }
 
         // Optional seed: import a directory of markdown (e.g.

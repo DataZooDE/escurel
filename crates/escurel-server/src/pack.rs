@@ -123,8 +123,15 @@ pub fn stamp_layer(content: &str, layer: &str) -> Result<String, String> {
                 .to_owned(),
         );
     }
-    let parsed = escurel_md::parse(content)
-        .map_err(|e| format!("pack_malformed: page does not parse as escurel markdown: {e}"))?;
+    let parsed = escurel_md::parse(content).map_err(|e| match e {
+        // A signed pack cannot be rewritten locally (the signature pins its bytes), so the tenant
+        // migration command is the wrong advice here: the publisher has to re-export.
+        escurel_md::ParseError::LegacyTypeKey => "pack_malformed: page uses the removed `type:` \
+             page-kind key (it is `kind:` now); the pack publisher must re-export and re-sign the \
+             pack"
+            .to_owned(),
+        e => format!("pack_malformed: page does not parse as escurel markdown: {e}"),
+    })?;
     if parsed.frontmatter.fields.get("layer").is_some() {
         return Err(
             "pack_malformed: page already declares a `layer:` key — pack pages are \
@@ -319,6 +326,21 @@ mod tests {
         assert_eq!(
             build_tarball(&pages).unwrap(),
             build_tarball(&pages).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_pack_page_with_the_removed_type_key_is_refused_naming_the_re_export() {
+        let err = stamp_layer("---\ntype: skill\nid: a\n---\nbody\n", "base@p@v1")
+            .expect_err("a legacy pack page must not land");
+        assert!(err.starts_with("pack_malformed:"), "{err}");
+        assert!(
+            err.contains("re-export and re-sign"),
+            "names the publisher's step: {err}"
+        );
+        assert!(
+            !err.contains("migrate-kind"),
+            "a signed pack cannot be migrated locally, so the tenant command is the wrong advice: {err}"
         );
     }
 }

@@ -196,7 +196,7 @@ pub(super) fn blocking_issues<'a>(
             // Blocking it here also upgrades `update_page`'s answer for the
             // same content from that -32603 to `{ok:false, issues:[…]}` —
             // a refusal a client can act on, which an internal error is not.
-            "frontmatter_parse" => true,
+            "frontmatter_parse" | "frontmatter_type_removed" => true,
             // A link that names a type or a page that does not exist. This is
             // the hole being closed: an agent could cite
             // `[[customer::invented-gmbh]]` and the graph would carry it.

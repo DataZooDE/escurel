@@ -1,27 +1,62 @@
-//! The `migrate_kind` admin tool through the real gateway: dry run by default, admin-only, the
-//! tenant must match, `apply` rewrites the stored pages, and a second `apply` is a no-op.
-//! Real gateway, real DuckDB, real OIDC (TestIssuer), real reqwest. No mocks.
+//! The hard cut through the real gateway: the removed `type:` page-kind key is refused with a
+//! named error, `kind:` works end to end, and the `migrate_kind` admin tool (dry run by default,
+//! admin-only, tenant-checked) rewrites a genuinely LEGACY store.
+//!
+//! The legacy store is built the way an old one really is: pages in the lane that no index ever
+//! parsed. Real gateway, real DuckDB + file store, real OIDC (TestIssuer), real reqwest. No mocks.
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
+use std::sync::Arc;
+
+use bytes::Bytes;
+use duckdb::Connection;
+use escurel_embed::{Embedder, ZeroEmbedder};
+use escurel_index::{Indexer, Migrator};
+use escurel_storage::{FsStore, Key, LaneStore};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts, Role};
 use serde_json::{Value, json};
+use tempfile::TempDir;
 
 const TENANT: &str = "acme";
+const SKILL_PATH: &str = "markdown/skills/customer.md";
+const INSTANCE_PATH: &str = "markdown/instances/customer/acme-corp.md";
 const LEGACY_SKILL: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
 const LEGACY_INSTANCE: &str = "---\ntype: instance\nskill: customer\nid: acme-corp\n---\n# Acme\n";
 
-async fn start() -> EscurelProcess {
-    EscurelProcess::spawn(Opts {
+struct Harness {
+    process: EscurelProcess,
+    _store: TempDir,
+    _db: TempDir,
+}
+
+/// A gateway over a store whose lane holds LEGACY pages (written straight to the lane).
+async fn start_with_legacy_lane() -> Harness {
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    for (path, md) in [(SKILL_PATH, LEGACY_SKILL), (INSTANCE_PATH, LEGACY_INSTANCE)] {
+        store
+            .write(&Key::new(TENANT, path.to_owned()).unwrap(), Bytes::from(md))
+            .await
+            .unwrap();
+    }
+    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    Migrator::up(&conn).unwrap();
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+    let indexer = Arc::new(Indexer::new(store, embedder, conn, TENANT).unwrap());
+    let process = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
-        fixtures: Some(
-            FixtureBuilder::new()
-                .tenant(TENANT)
-                .skill("customer", LEGACY_SKILL)
-                .instance("customer", "acme-corp", LEGACY_INSTANCE)
-                .done(),
-        ),
-        ..Default::default()
+        fixtures: None,
+        config_overrides: ConfigOverrides {
+            indexer: Some(indexer),
+            ..Default::default()
+        },
     })
-    .await
+    .await;
+    Harness {
+        process,
+        _store: store_dir,
+        _db: db_dir,
+    }
 }
 
 async fn call(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value {
@@ -41,8 +76,8 @@ async fn call(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value 
         .expect("json")
 }
 
-fn report(body: &Value) -> &Value {
-    assert!(body.get("error").is_none(), "migrate_kind error: {body}");
+fn structured(body: &Value) -> &Value {
+    assert!(body.get("error").is_none(), "tool error: {body}");
     &body["result"]["structuredContent"]
 }
 
@@ -56,24 +91,22 @@ fn pages(v: &Value) -> Vec<String> {
 
 #[tokio::test]
 async fn migrate_kind_is_a_dry_run_unless_apply_is_set_and_apply_is_idempotent() {
-    let p = start().await;
+    let h = start_with_legacy_lane().await;
+    let p = &h.process;
 
     // No `apply`: a dry run. It reports the legacy pages and writes nothing.
     let dry = call(
-        &p,
+        p,
         Role::Admin,
         "migrate_kind",
         json!({ "tenant_id": TENANT }),
     )
     .await;
-    let r = report(&dry);
+    let r = structured(&dry);
     assert_eq!(r["applied"], false);
-    let would = pages(&r["pages_to_migrate"]);
-    assert!(
-        would.iter().any(|p| p.ends_with("customer.md"))
-            && would.iter().any(|p| p.ends_with("acme-corp.md")),
-        "the seeded legacy pages are reported: {would:?}"
-    );
+    let mut would = pages(&r["pages_to_migrate"]);
+    would.sort();
+    assert_eq!(would, vec![INSTANCE_PATH.to_owned(), SKILL_PATH.to_owned()]);
     assert!(
         r["audit_event_id"].is_null(),
         "a dry run records no audit event"
@@ -81,36 +114,38 @@ async fn migrate_kind_is_a_dry_run_unless_apply_is_set_and_apply_is_idempotent()
 
     // A second dry run reports exactly the same: nothing was written.
     let dry2 = call(
-        &p,
+        p,
         Role::Admin,
         "migrate_kind",
         json!({ "tenant_id": TENANT }),
     )
     .await;
-    assert_eq!(pages(&report(&dry2)["pages_to_migrate"]), would);
+    assert_eq!(pages(&structured(&dry2)["pages_to_migrate"]), would);
 
-    // apply: rewritten, audited.
+    // apply: rewritten and audited.
     let done = call(
-        &p,
+        p,
         Role::Admin,
         "migrate_kind",
         json!({ "tenant_id": TENANT, "apply": true }),
     )
     .await;
-    let r = report(&done);
+    let r = structured(&done);
     assert_eq!(r["applied"], true);
-    assert_eq!(pages(&r["pages_to_migrate"]), would);
+    let mut migrated = pages(&r["pages_to_migrate"]);
+    migrated.sort();
+    assert_eq!(migrated, would);
     assert!(
         r["audit_event_id"].is_string(),
         "an applied migration is audited"
     );
 
-    // The migrated page is still served: reads go through the rewritten lane + index.
+    // The migrated pages are served: reads go through the rewritten lane and index.
     let page = call(
-        &p,
+        p,
         Role::Agent,
         "expand",
-        json!({ "page_id": would.iter().find(|p| p.ends_with("acme-corp.md")).unwrap() }),
+        json!({ "page_id": INSTANCE_PATH }),
     )
     .await;
     assert!(
@@ -120,21 +155,21 @@ async fn migrate_kind_is_a_dry_run_unless_apply_is_set_and_apply_is_idempotent()
 
     // Idempotent: nothing left to migrate.
     let again = call(
-        &p,
+        p,
         Role::Admin,
         "migrate_kind",
         json!({ "tenant_id": TENANT, "apply": true }),
     )
     .await;
-    assert!(pages(&report(&again)["pages_to_migrate"]).is_empty());
-    p.shutdown().await;
+    assert!(pages(&structured(&again)["pages_to_migrate"]).is_empty());
 }
 
 #[tokio::test]
 async fn migrate_kind_needs_the_admin_role_and_the_right_tenant() {
-    let p = start().await;
+    let h = start_with_legacy_lane().await;
+    let p = &h.process;
     let agent = call(
-        &p,
+        p,
         Role::Agent,
         "migrate_kind",
         json!({ "tenant_id": TENANT }),
@@ -145,7 +180,7 @@ async fn migrate_kind_needs_the_admin_role_and_the_right_tenant() {
         "a non-admin is refused: {agent}"
     );
     let foreign = call(
-        &p,
+        p,
         Role::Admin,
         "migrate_kind",
         json!({ "tenant_id": "globex" }),
@@ -155,5 +190,77 @@ async fn migrate_kind_needs_the_admin_role_and_the_right_tenant() {
         foreign["error"]["code"], -32002,
         "a foreign tenant is refused: {foreign}"
     );
-    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_removed_type_key_is_refused_with_a_named_error_and_kind_works_end_to_end() {
+    let h = start_with_legacy_lane().await;
+    let p = &h.process;
+
+    // validate: a structured issue, not a generic parse failure.
+    let v = call(
+        p,
+        Role::Agent,
+        "validate",
+        json!({ "content": "---\ntype: instance\nskill: customer\nid: c9\n---\n# c9\n" }),
+    )
+    .await;
+    let issues = structured(&v)["issues"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let issue = issues
+        .iter()
+        .find(|i| i["code"] == "frontmatter_type_removed")
+        .unwrap_or_else(|| panic!("expected frontmatter_type_removed in {issues:?}"));
+    assert_eq!(issue["location"], "frontmatter.type");
+    assert!(
+        issue["suggestion"]
+            .as_str()
+            .unwrap_or("")
+            .contains("escurel admin migrate-kind")
+    );
+
+    // update_page with the removed key: refused as an actionable `{ok:false, issues}`, nothing lands.
+    let w = call(
+        p,
+        Role::Agent,
+        "update_page",
+        json!({
+            "page_id": "markdown/instances/customer/c9.md",
+            "content": "---\ntype: instance\nskill: customer\nid: c9\n---\n# c9\n",
+        }),
+    )
+    .await;
+    let text = w.to_string();
+    assert!(text.contains("frontmatter_type_removed"), "{w}");
+
+    // Migrate, then the SAME page with `kind:` is written and read back.
+    let applied = call(
+        p,
+        Role::Admin,
+        "migrate_kind",
+        json!({ "tenant_id": TENANT, "apply": true }),
+    )
+    .await;
+    structured(&applied);
+    let ok = call(
+        p,
+        Role::Agent,
+        "update_page",
+        json!({
+            "page_id": "markdown/instances/customer/c9.md",
+            "content": "---\nkind: instance\nskill: customer\nid: c9\n---\n# c9\n",
+        }),
+    )
+    .await;
+    assert!(ok.get("error").is_none(), "kind: is written: {ok}");
+    let back = call(
+        p,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": "markdown/instances/customer/c9.md" }),
+    )
+    .await;
+    assert!(back.get("error").is_none(), "and read back: {back}");
 }

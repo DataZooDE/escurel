@@ -37,6 +37,7 @@ mod frontmatter_links;
 mod historical_expand;
 mod index_roundtrip;
 mod kreuzberg_extract;
+mod legacy_kind_refusal;
 mod live_inspect;
 mod merge_from_attached;
 mod migrate;
