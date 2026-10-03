@@ -83,8 +83,42 @@ primary_contact: "[[contact::we-coyote]]"
 Acme Corp is a long-standing customer … primary contact is W. E. Coyote.
 ```
 
+### The page kind is `kind:` (was `type:`)
+
+Every page's first frontmatter key says what kind of page it is:
+
+```yaml
+---
+kind: skill        # or: kind: instance
+id: customer
+---
+```
+
+`type: skill|instance` was **removed** (OKF alignment: in the Open Knowledge Format `type` is the
+concept's own kind, e.g. `customer`). There is no compatibility window and no environment switch:
+
+- `validate` / `update_page` / `create_draft` refuse the old key with the structured finding
+  `frontmatter_type_removed` (location `frontmatter.type`, suggestion: the migration command).
+- A tenant whose stored pages still use it is **refused at boot and at `rebuild`**, naming every
+  offending page (not just the first) and the exact command. Nothing is served degraded.
+- Rewrite a tenant's stored pages with `escurel admin migrate-kind --tenant <t>` (a **dry run**;
+  add `--apply` to write). It rewrites pages, **open** drafts (their `content_sha256` changes, so
+  the migration records an `escurel:kind-migration` audit event) and historical CRDT snapshots. It
+  refuses `--apply` while a page has a live CRDT session, never touches signed pack pages
+  (`markdown/base/...`: the publisher re-exports and re-signs), reports a page that has **both**
+  keys as a conflict, and never renames a user's own data field named `type`.
+- A page may carry its **own** data field named `kind` only if it does not also need the old
+  `type:` rewritten (the migration reports that as a conflict). The built-in compile-first `issue`
+  skill's data field is `issue_kind` for exactly this reason.
+- The wire follows: `search` takes `page_kind` (a caller still sending `page_type` is refused, not
+  silently unfiltered), and `search`/`resolve`/`expand` answer `page_kind`. The derived SQL column
+  keeps its old name.
+- The engine-owned `workflow-run` board page records its lifecycle as `run_status` (not `status`,
+  an OKF key); `migrate_kind` renames existing boards. A tenant's own `status` data is untouched.
+
 Frontmatter rules the indexer enforces at write time:
-- `type:` is `skill` or `instance`.
+- `kind:` is `skill` or `instance`. (It was `type:` until skill 0.8.0 — see *The page kind is `kind:`*
+  below; a page that still says `type: skill|instance` is refused with `frontmatter_type_removed`.)
 - A skill declares `id`, `description`, and the
   `required_frontmatter` / `optional_frontmatter` lists.
 - An instance declares `skill:` (the skill it conforms to), `id`, and

@@ -4,6 +4,59 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.8.0 — BREAKING: the page kind is `kind:` (was `type:`); the wire says `page_kind`; run boards use `run_status`
+
+Hard cut, no compatibility window, no environment switch. Aligns escurel with the Open Knowledge Format,
+where `type` means the concept's own kind. Read references/01 ("The page kind is `kind:`").
+
+- **`type: skill|instance` is removed.** The page-kind key is `kind: skill|instance`. A page with the old
+  key is refused: `validate` / `update_page` / `create_draft` return `frontmatter_type_removed`
+  (location `frontmatter.type`, suggestion = the migration command); a tenant whose lane still holds such
+  pages is **refused at boot and at `rebuild`**, listing every offending page and the exact command; a signed
+  pack page with the old key is refused with an error naming the publisher's re-export. A page's own data
+  field named `type` (`type: invoice`) is just data. A page that needs the old key rewritten AND has its
+  own `kind:` data field is a migration **conflict** (never auto-fixed); the built-in compile-first `issue`
+  skill's data field `kind` is now `issue_kind` for this reason (`list_instances(issue,
+  {frontmatter_key: issue_kind})`).
+- **New admin tool `migrate_kind`** (CLI: `escurel admin migrate-kind --tenant <t> [--apply]`; client:
+  `AdminClient::migrate_kind`). Dry run unless `apply`. Rewrites stored pages (text edit of the one key),
+  OPEN drafts in place (new `content_sha256`, recorded in an `escurel:kind-migration` audit event) and
+  historical CRDT snapshots; skips signed pack pages (`markdown/base/**`); reports conflicts; refuses
+  `apply` while a page has a live CRDT session (close it or `compact-lanes`); never touches a user's own
+  `type` data field; idempotent. The lane store has no compare-and-swap: each page is re-read right
+  before it is written and reported as a conflict if it moved.
+- **Wire: `page_type` is `page_kind`.** `search`'s argument and the `page_kind` field on `search` / `resolve`
+  / `expand` (PageRef) answers; the Rust types are `PageKind` / `page_kind`; the CLI flag is
+  `--page-kind`. A caller still sending `page_type` to `search` is refused ("renamed `page_kind`"), not
+  silently searched unfiltered. The derived `pages.page_type` SQL column keeps its name (ADR-0001).
+- **The `workflow-run` board's `status` is `run_status`** (OKF's `status` has its own meaning). `migrate_kind`
+  renames existing boards (only pages whose skill is `workflow-run`); a tenant's own `status` data and the
+  DB/API `status` fields are untouched. `last_verified` keeps its name.
+- `Frontmatter.page_type` / `PageType` in `escurel-md` are `page_kind` / `PageKind`; the Dart explorer kit's
+  `PageType` is `PageKind`.
+
+**Consumer checklist (the release is a hard cut: every consumer moves in the same window):**
+1. Run `escurel admin migrate-kind --tenant <t>` (dry run), review the conflicts, then `--apply`, on every
+   store BEFORE deploying the new engine to it (an un-migrated tenant refuses to boot). Seeds, fixtures and
+   examples in your repo: rewrite `type: skill|instance` to `kind:` (the same rule; a `sed` on the
+   frontmatter line is enough when you have no data field named `kind`).
+2. Change every writer: templates, scaffolds, page-writing code, and **agent prompts and skills that teach
+   an agent to write `type: instance`** — an un-updated agent's writes are refused with
+   `frontmatter_type_removed`.
+3. Wire clients: send `page_kind` to `search`; read `page_kind` from answers (`resolve`, `expand`, `search`).
+4. Pages with their own `kind:` data field: rename that field first (`migrate_kind` reports them).
+5. Signed packs: re-export and re-sign every pack (the importer refuses legacy pages; the migration cannot
+   rewrite `markdown/base/**`), then `escurel admin pack rebase`.
+6. Workflow run boards: nothing to do by hand (`migrate_kind` renames `status` -> `run_status`); code that
+   reads a board's `status` frontmatter reads `run_status`.
+7. Bump the pin / submodule to this release and smoke one write + read through the gateway.
+
+Repos known to need step 1-2 (counts of `type: skill|instance` files at the time of writing): peacock (8:
+the report scaffold, saved reports, test corpora, its skill docs), heron (55 + a `page_type` wire read),
+datazoo-loops (149 skill/instance pages), datazoo-agent-template (29), datazoo-ai-engineering (44),
+hetzner-agent-substrate (61), agt-wt-tenant (23), anofox-evolve (5). The herkules backend repo was not
+found next to these checkouts: locate it before the cut. triton and herkules-ui have none.
+
 ## 0.7.0 — BREAKING: a skill's `actions:` is a list of objects (Peacock's form)
 
 - `actions:` entries are `{name, kind: event|prompt, label, event|prompt}` objects; a bare skill id is

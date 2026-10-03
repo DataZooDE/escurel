@@ -434,6 +434,6 @@ submit-promotion` (`references/04`).
 ## Not exposed (by design)
 
 No direct SQL, no raw vector/embedding access, no cross-tenant calls.
-Ops-only tools (`audit`, `rebuild`, `attach_external`, `export`/`import`)
+Ops-only tools (`audit`, `rebuild`, `migrate_kind`, `attach_external`, `export`/`import`)
 and admin tools (`admin_*`, gated by the `escurel:admin` role) are not part
 of the normal app surface — see `references/08` and `references/10`.

@@ -57,7 +57,7 @@ These are referenced from every tool, expressed as JSON Schema.
   page_id: string,        // ULID, canonical id
   slug:    string | null, // mutable human-friendly slug
   skill:   string,        // the skill id this page declares or is an instance of
-  page_type: "skill" | "instance"
+  page_kind: "skill" | "instance"
 }
 ```
 
@@ -68,7 +68,7 @@ These are referenced from every tool, expressed as JSON Schema.
   page_id: string,
   slug:    string | null,
   skill:   string,
-  page_type: "skill" | "instance",
+  page_kind: "skill" | "instance",
   anchor?: string,        // only for granularity=block
   snippet: string,
   score:   number,        // RRF-fused (or rerank score when reranking is on)
@@ -168,7 +168,7 @@ Several read tools share two optional overlay/time-travel params:
                                      // fused (RRF) into one ranking
   "k": 10,
   "granularity": "block",            // "block" | "page", default "block"
-  "page_type": "any",                // "skill" | "instance" | "any"
+  "page_kind": "any",                // "skill" | "instance" | "any"
   "skill": "customer",               // optional filter; pushes link_skill predicate to DuckDB
   "filter": { "at": { ">=": "2026-04-01" } },  // optional frontmatter filter (FilterClause)
                                                // (events use this to time-window)

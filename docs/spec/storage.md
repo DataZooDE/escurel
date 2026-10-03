@@ -400,7 +400,7 @@ CREATE TABLE pages (
   page_id        VARCHAR PRIMARY KEY,    -- ULID
   slug           VARCHAR,                 -- mutable, indexed but not unique
   skill          VARCHAR NOT NULL,
-  page_type      VARCHAR NOT NULL,       -- 'skill' | 'instance'
+  page_type      VARCHAR NOT NULL,       -- 'skill' | 'instance' (the wire and frontmatter say `kind`/`page_kind`; this derived-index column keeps its name)
   frontmatter    JSON NOT NULL,
   body_hash      VARCHAR NOT NULL,       -- WHAT changed (audit); see last_written_by for WHO
   at_ts          TIMESTAMP,              -- mirrored from frontmatter.at (NULL for non-events)

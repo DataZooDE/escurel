@@ -90,6 +90,8 @@ escurel admin health
 escurel admin tenant create --id acme --name "Acme Corp"
 escurel admin quota  --tenant acme
 escurel admin rebuild --tenant acme
+escurel admin migrate-kind --tenant acme            # DRY RUN: rewrite legacy `type:` -> `kind:` (references/01)
+escurel admin migrate-kind --tenant acme --apply    # write; refuses while a page has a live CRDT session
 
 # skill packs (admin-role token; references/02 §Skill packs)
 escurel admin pack export --tenant hub --id logistics --version 3 \

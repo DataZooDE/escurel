@@ -59,11 +59,11 @@ the skill/instance model.
 
 | tool | inputs | output | axis | notes |
 |---|---|---|---|---|
-| `search` | `q: str`, `k: int = 10`, `granularity: 'block'\|'page' = 'block'`, `page_type?: 'skill'\|'instance'\|'any' = 'any'`, `skill?: str` | list of hits (shape depends on granularity — see §"`search` granularity in detail") | kind | natural-language vector + FTS hybrid; optional `skill=` filter pushes a `link_skill` predicate to DuckDB |
-| `resolve` | `wikilink: str` | `{page_id, skill, page_type, description, exists: bool, error?}` | kind | parses `[[skill::id#anchor@version\|alias]]`; reports validation errors without raising |
+| `search` | `q: str`, `k: int = 10`, `granularity: 'block'\|'page' = 'block'`, `page_kind?: 'skill'\|'instance'\|'any' = 'any'`, `skill?: str` | list of hits (shape depends on granularity — see §"`search` granularity in detail") | kind | natural-language vector + FTS hybrid; optional `skill=` filter pushes a `link_skill` predicate to DuckDB |
+| `resolve` | `wikilink: str` | `{page_id, skill, page_kind, description, exists: bool, error?}` | kind | parses `[[skill::id#anchor@version\|alias]]`; reports validation errors without raising |
 | `expand` | `page_id: str`, `anchor?: str`, `version?: str` | `{frontmatter, body, blocks: [{anchor, content}], wikilinks_out: [...]}` | kind / time | the body fetch; `version` is honoured only for instances whose backing store is versioned |
 | `neighbours` | `page_id: str`, `direction: 'in'\|'out'\|'both' = 'both'`, `link_skill?: str` | list of `{src, dst, link_skill, link_version?, anchor?}` | kind / time | the link-graph primitive; covers both backlinks and forward-links; time-axis traversal (`prev_review`, `supersedes`) uses the appropriate `link_skill` |
-| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter}` | kind | the Tier 1 catalogue; semantically a `search(*, page_type='skill')` shortcut |
+| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter}` | kind | the Tier 1 catalogue; semantically a `search(*, page_kind='skill')` shortcut |
 | `list_instances` | `skill_id: str`, `filter?: {frontmatter clauses}`, `order_by?: str`, `limit?: int` | list of `{id, frontmatter}` | kind / time | `search`-shaped shortcut over `neighbours(skill, link_skill=skill)`; supports e.g. `{status: open}` to enumerate open decisions, `{prev_review: null}` to find the head of an append-only chain, or `{at: '>= 2026-04-01'}` plus `order_by='at desc'` to scan an event-typed skill's recent log |
 | `query_instance` | `ref: str` (`query_id` accepted as an alias), `params?: {…}` | `{rows: [...], schema: [...], truncated}` | origin | resolves `[[query::<ref>]]` and executes it; parameters bound as typed values per the query's `params:` schema (see §"Query parameters in detail"). The one query surface — the legacy admin-gated `run_stored_query` was removed (2026-08-14 surface consolidation). A page whose `target:` is the literal `corpus` instead of a `[[skill::id]]` declares a **traversal** over the markdown corpus rather than SQL over a view — see §"Stored corpus traversals" |
 | `validate` | `content: str`, `as_page_id?: str` | `{issues: [...]}` | write | dry run; same issue list as `update_page`/`apply_op` but no commit. Used for authoring feedback. |
@@ -426,7 +426,7 @@ real-LLM driver `agent_tools.py`):
 
 | prototype today | this design | reason |
 |---|---|---|
-| `vector_search(q, k)` | `search(q, k, page_type?, skill?)` | needs `page_type` filter for the search-first cold-start path; needs `skill` filter for typed retrieval |
+| `vector_search(q, k)` | `search(q, k, page_kind?, skill?)` | needs `page_kind` filter for the search-first cold-start path; needs `skill` filter for typed retrieval |
 | no `resolve` | `resolve(wikilink)` | the agent needs to programmatically check whether a link is valid before traversing |
 | `read_page` | `expand(page_id, anchor?, version?)` | rename for clarity (matches §3) and add the time-axis `version?` argument |
 | no `neighbours` (only `backlinks` + `forward_links`) | `neighbours(page_id, direction, link_skill)` | unify into one symmetric primitive |
@@ -589,11 +589,11 @@ follow-up call to guarantee the same data.
 Two granularities, same `search` tool:
 
 ```
-search(q, k=10, granularity='block', page_type?, skill?)
-  → [{page_id, anchor, snippet, skill, page_type, score}, ...]
+search(q, k=10, granularity='block', page_kind?, skill?)
+  → [{page_id, anchor, snippet, skill, page_kind, score}, ...]
 
-search(q, k=10, granularity='page', page_type?, skill?)
-  → [{page_id, best_anchor, snippet, skill, page_type, score,
+search(q, k=10, granularity='page', page_kind?, skill?)
+  → [{page_id, best_anchor, snippet, skill, page_kind, score,
       block_count}, ...]
 ```
 
