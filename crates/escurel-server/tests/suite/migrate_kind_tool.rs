@@ -30,6 +30,11 @@ struct Harness {
 
 /// A gateway over a store whose lane holds LEGACY pages (written straight to the lane).
 async fn start_with_legacy_lane() -> Harness {
+    start_with_legacy_lane_quarantined(false).await
+}
+
+/// `quarantine`: boot the tenant the way the server does when its lane holds legacy pages.
+async fn start_with_legacy_lane_quarantined(quarantine: bool) -> Harness {
     let store_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
     let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
@@ -43,6 +48,9 @@ async fn start_with_legacy_lane() -> Harness {
     Migrator::up(&conn).unwrap();
     let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
     let indexer = Arc::new(Indexer::new(store, embedder, conn, TENANT).unwrap());
+    if quarantine {
+        assert!(indexer.quarantine_legacy_kind_pages().await.unwrap());
+    }
     let process = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: None,
@@ -263,4 +271,66 @@ async fn the_removed_type_key_is_refused_with_a_named_error_and_kind_works_end_t
     )
     .await;
     assert!(back.get("error").is_none(), "and read back: {back}");
+}
+
+#[tokio::test]
+async fn a_quarantined_tenant_serves_nothing_but_the_migration_until_it_is_migrated() {
+    let h = start_with_legacy_lane_quarantined(true).await;
+    let p = &h.process;
+
+    // Everything else is refused with a named error that carries the command.
+    let search = call(p, Role::Agent, "search", json!({ "q": "acme" })).await;
+    let err = &search["error"];
+    assert!(
+        !err.is_null(),
+        "a quarantined tenant must not serve: {search}"
+    );
+    assert_eq!(err["data"]["code"], "tenant_quarantined", "{search}");
+    let msg = err["message"].as_str().unwrap_or_default();
+    assert!(msg.contains("escurel admin migrate-kind"), "{msg}");
+    let expand = call(
+        p,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": INSTANCE_PATH }),
+    )
+    .await;
+    assert_eq!(
+        expand["error"]["data"]["code"], "tenant_quarantined",
+        "{expand}"
+    );
+
+    // The migration itself still runs, and reports the quarantine.
+    let dry = call(
+        p,
+        Role::Admin,
+        "migrate_kind",
+        json!({ "tenant_id": TENANT }),
+    )
+    .await;
+    assert_eq!(structured(&dry)["tenant_quarantined"], true);
+
+    let done = call(
+        p,
+        Role::Admin,
+        "migrate_kind",
+        json!({ "tenant_id": TENANT, "apply": true }),
+    )
+    .await;
+    assert_eq!(structured(&done)["tenant_quarantined"], false, "{done}");
+
+    // Lifted: the tenant serves, from a freshly rebuilt index.
+    let page = call(
+        p,
+        Role::Agent,
+        "expand",
+        json!({ "page_id": INSTANCE_PATH }),
+    )
+    .await;
+    assert!(
+        page.get("error").is_none(),
+        "served after migration: {page}"
+    );
+    let found = call(p, Role::Agent, "search", json!({ "q": "Acme" })).await;
+    assert!(found.get("error").is_none(), "{found}");
 }

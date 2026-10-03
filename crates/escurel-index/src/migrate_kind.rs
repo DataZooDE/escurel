@@ -91,9 +91,24 @@ impl Indexer {
             });
         }
 
-        self.migrate_kind_pages(apply, &mut report).await?;
+        let quarantined_before = self.legacy_quarantine().is_some();
+        self.migrate_kind_pages(apply, quarantined_before, &mut report)
+            .await?;
         self.migrate_kind_drafts(apply, &mut report).await?;
         self.migrate_kind_snapshots(apply, &mut report).await?;
+
+        if apply && quarantined_before {
+            // A quarantined tenant's index was never (or only partly) built from its lane: the
+            // pages were rewritten lane-only, so re-derive the whole index from the migrated lane
+            // (with the real embedder) and lift the quarantine, unless something legacy remains
+            // (a signed pack page, a conflict), in which case the tenant stays quarantined.
+            if self.quarantine_legacy_kind_pages().await? {
+                // Still legacy pages (a signed pack page, a conflict): stay quarantined.
+            } else {
+                self.rebuild().await?;
+            }
+        }
+        report.tenant_quarantined = self.legacy_quarantine().is_some();
 
         if apply {
             let body = serde_json::to_string(&report)?;
@@ -146,6 +161,34 @@ impl Indexer {
         Ok(found)
     }
 
+    /// The legacy pages this tenant is quarantined for, or `None` when it serves normally.
+    #[must_use]
+    pub fn legacy_quarantine(&self) -> Option<Vec<String>> {
+        self.kind_quarantine
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().cloned())
+    }
+
+    fn set_quarantine(&self, pages: Option<Vec<String>>) {
+        if let Ok(mut g) = self.kind_quarantine.write() {
+            *g = pages;
+        }
+    }
+
+    /// Scan the lane and QUARANTINE the tenant when it still holds legacy `type:` pages. Returns
+    /// whether it is quarantined. Called at boot (the tenant stays up for `migrate_kind`) and by
+    /// `migrate_kind` itself to re-check.
+    ///
+    /// # Errors
+    /// When listing or reading the lane store fails.
+    pub async fn quarantine_legacy_kind_pages(&self) -> Result<bool, IndexerError> {
+        let pages = self.legacy_kind_pages().await?;
+        let quarantined = !pages.is_empty();
+        self.set_quarantine(quarantined.then_some(pages));
+        Ok(quarantined)
+    }
+
     /// Refuse (with [`IndexerError::LegacyKindPages`]) when [`Self::legacy_kind_pages`] is not empty.
     ///
     /// # Errors
@@ -164,6 +207,7 @@ impl Indexer {
     async fn migrate_kind_pages(
         &self,
         apply: bool,
+        lane_only: bool,
         report: &mut MigrateKindReport,
     ) -> Result<(), IndexerError> {
         let mut paths: Vec<String> = self.list_markdown_paths().await?.into_iter().collect();
@@ -215,8 +259,9 @@ impl Indexer {
                     report.conflicts.push(path);
                     continue;
                 }
-                if is_archived(content) {
-                    // Retained for audit, kept out of the derived index (#300).
+                if lane_only || is_archived(content) {
+                    // Quarantined: the index is rebuilt from the lane afterwards. Archived pages
+                    // are retained for audit and kept out of the derived index (#300).
                     self.store.write(&key, Bytes::from(next)).await?;
                 } else {
                     self.update_page_as(&path, &next, attribution.get(&path).map(String::as_str))

@@ -99,8 +99,10 @@ concept's own kind, e.g. `customer`). There is no compatibility window and no en
 
 - `validate` / `update_page` / `create_draft` refuse the old key with the structured finding
   `frontmatter_type_removed` (location `frontmatter.type`, suggestion: the migration command).
-- A tenant whose stored pages still use it is **refused at boot and at `rebuild`**, naming every
-  offending page (not just the first) and the exact command. Nothing is served degraded.
+- A tenant whose stored pages still use it is **quarantined at boot** and **refused at `rebuild`**,
+  naming every offending page (not just the first) and the exact command. A quarantined tenant is up
+  (so the migration can run against it) but serves nothing: every MCP tool except `migrate_kind` and
+  `compact_lanes` answers `tenant_quarantined`. Nothing is served degraded.
 - Rewrite a tenant's stored pages with `escurel admin migrate-kind --tenant <t>` (a **dry run**;
   add `--apply` to write). It rewrites pages, **open** drafts (their `content_sha256` changes, so
   the migration records an `escurel:kind-migration` audit event) and historical CRDT snapshots. It

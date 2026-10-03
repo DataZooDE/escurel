@@ -1790,6 +1790,17 @@ impl EscurelConfig {
                 (backend, _writer_role) => {
                     let opened = single_file.open().await?;
                     let indexer = opened.indexer;
+                    if let Some(pages) = indexer.legacy_quarantine() {
+                        tracing::error!(
+                            target: "escurel",
+                            tenant = %indexer.tenant(),
+                            legacy_pages = pages.len(),
+                            "tenant QUARANTINED: it holds pages with the removed `type:` page-kind key \
+                             and serves nothing but `migrate_kind`; run `escurel admin migrate-kind \
+                             --tenant {} --apply`",
+                            indexer.tenant()
+                        );
+                    }
                     let crdt_conn = opened
                         .crdt_conn
                         .expect("SingleFileStore::open always returns a CRDT connection");

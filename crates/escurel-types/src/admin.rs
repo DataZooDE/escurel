@@ -421,6 +421,10 @@ pub struct MigrateKindReport {
     pub snapshots_rewritten: u64,
     /// Pages with CRDT ops newer than their newest snapshot (a live session): `apply` refuses.
     pub crdt_pages_with_live_ops: Vec<String>,
+    /// `true` while the tenant is still QUARANTINED (it booted with legacy pages and some remain: a
+    /// conflict, or a signed pack page the publisher has to re-export). A quarantined tenant serves
+    /// nothing but `migrate_kind` and `compact_lanes`.
+    pub tenant_quarantined: bool,
     /// The `escurel:kind-migration` audit event, once applied.
     pub audit_event_id: Option<String>,
 }

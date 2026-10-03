@@ -1,10 +1,13 @@
 # Runbook: migrating a tenant from `type:` to `kind:` (escurel skill 0.8.0)
 
 The page-kind frontmatter key `type: skill|instance` was **removed**; it is `kind:` now. A tenant that still
-holds pages with the old key is **refused at boot and at `rebuild`**. Migrate every tenant BEFORE deploying
-this release to it.
+holds pages with the old key boots **QUARANTINED**: the server is up, but every MCP tool except
+`migrate_kind` and `compact_lanes` answers `tenant_quarantined`, and `rebuild` refuses. The migration runs
+against that running, quarantined tenant.
 
 ## 0. Before
+
+Deploy the new engine first: each un-migrated tenant comes up quarantined. Then:
 
 - Stop (or quiet) writers: the lane store has no compare-and-swap; the tool re-reads each page before
   writing and reports one that moved as a conflict.
@@ -36,10 +39,15 @@ escurel admin migrate-kind --tenant acme --apply
 Idempotent: a second run reports nothing to migrate. It records an `escurel:kind-migration` system event
 (the audit trail for the rewritten drafts) and returns its id.
 
-## 3. Deploy the new engine
+## 3. What "done" looks like
 
-Boot scans the lane. A tenant that still has a legacy page is refused with the full list and this command;
-fix and restart. There is no environment switch that accepts the old key.
+Boot scans the lane (every boot). `--apply` rewrites the lane, REBUILDS the index with the real embedder and
+lifts the quarantine: the response says `tenant_quarantined: false`. If it says `true`, something legacy is
+left (a conflict, or a signed pack page): fix it (or have the publisher re-export) and rerun. There is no
+environment switch that accepts the old key.
+
+The gate covers MCP `tools/call`. `/ws` and `/ingest` are not gated; the `/readyz` probe does not yet report
+quarantine, so watch the boot log line `tenant QUARANTINED` (and the `tenant_quarantined` answers) instead.
 
 ## 4. Consumers
 

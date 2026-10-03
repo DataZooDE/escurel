@@ -12,7 +12,8 @@ where `type` means the concept's own kind. Read references/01 ("The page kind is
 - **`type: skill|instance` is removed.** The page-kind key is `kind: skill|instance`. A page with the old
   key is refused: `validate` / `update_page` / `create_draft` return `frontmatter_type_removed`
   (location `frontmatter.type`, suggestion = the migration command); a tenant whose lane still holds such
-  pages is **refused at boot and at `rebuild`**, listing every offending page and the exact command; a signed
+  pages is **QUARANTINED at boot** (up, but every MCP tool except `migrate_kind` / `compact_lanes` answers
+  `tenant_quarantined` with the command) and `rebuild` refuses, listing every offending page; a signed
   pack page with the old key is refused with an error naming the publisher's re-export. A page's own data
   field named `type` (`type: invoice`) is just data. A page that needs the old key rewritten AND has its
   own `kind:` data field is a migration **conflict** (never auto-fixed); the built-in compile-first `issue`
@@ -36,8 +37,9 @@ where `type` means the concept's own kind. Read references/01 ("The page kind is
   `PageType` is `PageKind`.
 
 **Consumer checklist (the release is a hard cut: every consumer moves in the same window):**
-1. Run `escurel admin migrate-kind --tenant <t>` (dry run), review the conflicts, then `--apply`, on every
-   store BEFORE deploying the new engine to it (an un-migrated tenant refuses to boot). Seeds, fixtures and
+1. Deploy the new engine; each un-migrated tenant boots QUARANTINED. Run `escurel admin migrate-kind --tenant
+   <t>` (dry run), review the conflicts, then `--apply`: it rewrites the lane, rebuilds the index and lifts the
+   quarantine. (Do not wait for traffic to tell you: a quarantined tenant answers `tenant_quarantined`.) Seeds, fixtures and
    examples in your repo: rewrite `type: skill|instance` to `kind:` (the same rule; a `sed` on the
    frontmatter line is enough when you have no data field named `kind`).
 2. Change every writer: templates, scaffolds, page-writing code, and **agent prompts and skills that teach

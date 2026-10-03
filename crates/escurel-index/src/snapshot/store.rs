@@ -208,12 +208,12 @@ impl IndexStore for SingleFileStore {
         // that markdown so the server doesn't serve an empty corpus
         // until an operator runs the admin rebuild. On a genuine
         // first boot the store is empty and this is a fast no-op.
-        if fresh {
+        // The hard cut: a tenant whose lane still holds legacy `type:` pages is QUARANTINED. It boots
+        // (so an operator can run `migrate_kind` against it) but serves nothing else, and the
+        // fresh-boot rebuild cannot run until it is migrated.
+        let quarantined = indexer.quarantine_legacy_kind_pages().await?;
+        if !quarantined && fresh {
             indexer.rebuild().await?;
-        } else {
-            // A surviving index with legacy `type:` pages still in the lane (the hard cut): refuse
-            // the tenant, naming the migration command. (The fresh path above refuses inside rebuild.)
-            indexer.refuse_legacy_kind_pages().await?;
         }
 
         // Optional seed: import a directory of markdown (e.g.

@@ -137,6 +137,10 @@ pub struct Indexer {
     /// boot step, so they always agree on which physical table is "the"
     /// shared CRDT store.
     crdt_pg_backend: std::sync::OnceLock<CrdtPgBackend>,
+    /// The legacy `type:` pages this tenant booted with (the hard cut), or `None`. While `Some`
+    /// the tenant is QUARANTINED: it must not serve, but it must stay up so an operator can run
+    /// `migrate_kind` against it (a boot that exits would make the migration unrunnable).
+    pub(crate) kind_quarantine: std::sync::RwLock<Option<Vec<String>>>,
 }
 
 /// Which physical tables [`Indexer::list_snapshots`] /
@@ -394,6 +398,7 @@ impl Indexer {
             events_backend: std::sync::OnceLock::new(),
             drafts_backend: std::sync::OnceLock::new(),
             crdt_pg_backend: std::sync::OnceLock::new(),
+            kind_quarantine: std::sync::RwLock::new(None),
         })
     }
 

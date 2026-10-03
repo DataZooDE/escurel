@@ -56,7 +56,16 @@ Before the cut a legacy page would have taken a whole tenant down one page at a 
 the `DELETE`s). `rebuild` now scans every lane page FIRST, collects all legacy pages and refuses once, before
 anything is truncated; boot does the same scan for a surviving index.
 
-## 8. The pre-push hook flakes under load
+## 8. A refuse-to-boot gate makes its own migration unrunnable
+
+**Symptom.** The first design refused to boot a tenant with legacy pages and shipped the migration as an
+admin tool of the NEW engine, so the tool could never run on the tenants that need it.
+
+**Fix.** Quarantine instead of failing: the tenant boots, serves only `migrate_kind` / `compact_lanes`, and
+`migrate_kind --apply` rewrites the lane, rebuilds the index and lifts it. Any "refuse" gate on a state that
+only an in-engine tool can repair must leave that tool reachable.
+
+## 9. The pre-push hook flakes under load
 
 `escurel-runner`'s suite (`run_control_subscriber`, workflow tests) fails intermittently when the hook runs
 alongside other builds; it passes alone. Rerun the push.

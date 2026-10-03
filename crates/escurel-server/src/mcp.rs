@@ -841,6 +841,25 @@ async fn dispatch_tools_call(
         require_admin(role)?;
     }
 
+    // The hard cut (`type:` -> `kind:`): a tenant that booted with legacy pages is QUARANTINED. It
+    // is up, so an operator can run `migrate_kind` against it (and clear live sessions with
+    // `compact_lanes`), but it serves nothing else: a search or a read over a half-readable corpus
+    // would be silently incomplete.
+    if !matches!(params.name.as_str(), "migrate_kind" | "compact_lanes")
+        && let Some(pages) = current_indexer
+            .as_deref()
+            .and_then(escurel_index::Indexer::legacy_quarantine)
+    {
+        return Err(JsonRpcError::invalid_params(format!(
+            "tenant_quarantined: {}",
+            escurel_index::migrate_kind::legacy_kind_message(
+                current_indexer.as_deref().map_or("", |i| i.tenant()),
+                &pages,
+            )
+        ))
+        .with_code("tenant_quarantined", false));
+    }
+
     // Session tools depend on `crdt_backend` + `sessions`, not on
     // the indexer. Route them before the indexer gate.
     match params.name.as_str() {

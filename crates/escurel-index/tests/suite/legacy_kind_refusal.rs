@@ -166,45 +166,134 @@ async fn validate_reports_frontmatter_type_removed_with_the_tool_as_the_suggesti
     );
 }
 
-#[tokio::test]
-async fn boot_refuses_a_tenant_with_legacy_pages_fresh_or_not() {
-    let store_dir = TempDir::new().unwrap();
-    let tenant_dir = TempDir::new().unwrap();
-    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
-    for i in 0..3 {
-        let (path, md) = legacy(i);
-        let key = Key::new(TENANT, path).unwrap();
-        store.write(&key, Bytes::from(md)).await.unwrap();
-    }
-    let opener = |rebuild_on_boot: bool| SingleFileStore {
+/// A tenant opened with legacy pages in its lane is QUARANTINED, not failed: the server must be up
+/// for the operator to run `migrate_kind` against it (a boot that exits would make the migration
+/// unrunnable). Quarantine is the "refuse to serve" of the hard cut: every other tool is refused.
+fn opener(
+    store: &Arc<dyn LaneStore>,
+    tenant_dir: &TempDir,
+    rebuild_on_boot: bool,
+) -> SingleFileStore {
+    SingleFileStore {
         tenant_dir: tenant_dir.path().to_path_buf(),
         rebuild_on_boot,
-        store: Arc::clone(&store),
+        store: Arc::clone(store),
         embedder: Arc::new(ZeroEmbedder::default()),
         tenant: TENANT.to_owned(),
         contextualize: Default::default(),
         attach_retrieval: None,
         seed_dir: None,
-    };
+    }
+}
 
-    // Fresh database: the cattle-node-loss rebuild refuses.
-    let err = opener(false)
+async fn legacy_store(n: usize) -> (Arc<dyn LaneStore>, TempDir, TempDir) {
+    let store_dir = TempDir::new().unwrap();
+    let tenant_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    for i in 0..n {
+        let (path, md) = legacy(i);
+        store
+            .write(&Key::new(TENANT, path).unwrap(), Bytes::from(md))
+            .await
+            .unwrap();
+    }
+    (store, store_dir, tenant_dir)
+}
+
+#[tokio::test]
+async fn boot_quarantines_a_tenant_with_legacy_pages_fresh_or_not() {
+    let (store, _s, tenant_dir) = legacy_store(3).await;
+
+    // Fresh database: the cattle-node-loss rebuild cannot run, so the tenant boots QUARANTINED.
+    let opened = opener(&store, &tenant_dir, false)
         .open()
         .await
-        .err()
-        .expect("fresh boot refuses");
-    assert!(
-        err.to_string().contains("escurel admin migrate-kind"),
-        "{err}"
-    );
+        .expect("boots");
+    let q = opened.indexer.legacy_quarantine().expect("quarantined");
+    assert_eq!(q.len(), 3, "every legacy page is listed: {q:?}");
+    drop(opened);
 
-    // The refused fresh boot left the database it created behind, so this is now an EXISTING
-    // index (the derived index survived) with legacy pages still in the lane: the lane scan refuses.
-    let err = opener(false).open().await.err().expect("warm boot refuses");
+    // An EXISTING database (the derived index survived): same.
+    let opened = opener(&store, &tenant_dir, false)
+        .open()
+        .await
+        .expect("boots");
     assert!(
-        err.to_string().contains("escurel admin migrate-kind"),
-        "{err}"
+        opened.indexer.legacy_quarantine().is_some(),
+        "warm boot quarantines too"
     );
+}
+
+#[tokio::test]
+async fn migrating_a_quarantined_tenant_rebuilds_the_index_and_lifts_the_quarantine() {
+    let (store, _s, tenant_dir) = legacy_store(2).await;
+    store
+        .write(
+            &Key::new(TENANT, "markdown/skills/note.md".to_owned()).unwrap(),
+            Bytes::from("---\ntype: skill\nid: note\n---\n# note\n".to_owned()),
+        )
+        .await
+        .unwrap();
+    let opened = opener(&store, &tenant_dir, false)
+        .open()
+        .await
+        .expect("boots");
+    let indexer = opened.indexer;
+    assert!(indexer.legacy_quarantine().is_some());
+
+    // A dry run changes nothing and does not lift the quarantine.
+    let dry = indexer.migrate_kind(false).await.unwrap();
+    assert!(dry.tenant_quarantined && !dry.applied);
+    assert!(indexer.legacy_quarantine().is_some());
+
+    let report = indexer.migrate_kind(true).await.unwrap();
+    assert!(
+        !report.tenant_quarantined,
+        "everything migrated: the quarantine is lifted: {report:?}"
+    );
+    assert!(indexer.legacy_quarantine().is_none());
+
+    // The index was (re)built from the migrated lane: every page is readable.
+    let page = indexer
+        .expand("markdown/instances/note/legacy-00.md", None, None)
+        .await
+        .unwrap();
+    assert!(page.is_some(), "the migrated page is indexed");
+    assert!(
+        indexer
+            .expand("markdown/skills/note.md", None, None)
+            .await
+            .unwrap()
+            .is_some(),
+        "so is the skill"
+    );
+}
+
+#[tokio::test]
+async fn a_signed_pack_page_keeps_the_tenant_quarantined_until_the_publisher_re_exports() {
+    let (store, _s, tenant_dir) = legacy_store(1).await;
+    store
+        .write(
+            &Key::new(TENANT, "markdown/base/pack/skills/shared.md".to_owned()).unwrap(),
+            Bytes::from("---\ntype: skill\nid: shared\n---\n# shared\n".to_owned()),
+        )
+        .await
+        .unwrap();
+    let opened = opener(&store, &tenant_dir, false)
+        .open()
+        .await
+        .expect("boots");
+    let indexer = opened.indexer;
+
+    let report = indexer.migrate_kind(true).await.unwrap();
+
+    assert!(
+        report.tenant_quarantined,
+        "the pack page cannot be migrated here: {report:?}"
+    );
+    assert_eq!(report.skipped_pack_base.len(), 1);
+    let q = indexer.legacy_quarantine().expect("still quarantined");
+    assert_eq!(q, vec!["markdown/base/pack/skills/shared.md".to_owned()]);
 }
 
 #[tokio::test]
