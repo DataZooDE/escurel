@@ -57,7 +57,7 @@ escurel provenance abandoned                # nodes retired by supersession/aban
 # workflows (against a `kind: workflow` plan skill)
 escurel workflow run    <skill>             # create the run board + capture the run event
 escurel workflow status <run>               # per-phase progress (produced instances)
-escurel workflow stop   <run>               # mark the board `status: stopped`
+escurel workflow stop   <run>               # mark the board `run_status: stopped`
 
 # interactive
 escurel ui                                  # k9s-style terminal browser

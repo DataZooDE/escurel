@@ -328,3 +328,63 @@ async fn apply_refuses_while_a_page_has_crdt_ops_newer_than_its_newest_snapshot(
     // Nothing was written by the refused run.
     assert_eq!(lane(&h, page).await, old);
 }
+
+const RUN_PAGE: &str = "markdown/instances/workflow-run/r1.md";
+const LEAD_PAGE: &str = "markdown/instances/lead/l1.md";
+
+#[tokio::test]
+async fn a_workflow_run_boards_status_is_renamed_run_status_and_a_tenants_status_is_not() {
+    let h = fresh();
+    // A run board from before the rename: legacy page kind AND the old `status:` key.
+    put(
+        &h,
+        RUN_PAGE,
+        "---\ntype: instance\nskill: workflow-run\nid: r1\nwf_skill: deep-research\nstatus: stopped\n---\n# run\n",
+    )
+    .await;
+    // A board that already uses `kind:` but still the old status key.
+    put(
+        &h,
+        "markdown/instances/workflow-run/r2.md",
+        "---\nkind: instance\nskill: workflow-run\nid: r2\nstatus: running\n---\n# run\n",
+    )
+    .await;
+    // A tenant's own `status` data must never be renamed.
+    let lead = "---\nkind: instance\nskill: lead\nid: l1\nstatus: qualified\n---\n# l1\n";
+    put(&h, LEAD_PAGE, lead).await;
+
+    let dry = h.indexer.migrate_kind(false).await.unwrap();
+    let mut would = dry.run_status_renamed.clone();
+    would.sort();
+    assert_eq!(
+        would,
+        vec![
+            RUN_PAGE.to_owned(),
+            "markdown/instances/workflow-run/r2.md".to_owned()
+        ]
+    );
+    assert!(
+        lane(&h, RUN_PAGE).await.contains("\nstatus: stopped\n"),
+        "a dry run writes nothing"
+    );
+
+    h.indexer.migrate_kind(true).await.unwrap();
+
+    assert_eq!(
+        lane(&h, RUN_PAGE).await,
+        "---\nkind: instance\nskill: workflow-run\nid: r1\nwf_skill: deep-research\nrun_status: stopped\n---\n# run\n"
+    );
+    assert!(
+        lane(&h, "markdown/instances/workflow-run/r2.md")
+            .await
+            .contains("\nrun_status: running\n")
+    );
+    assert_eq!(
+        lane(&h, LEAD_PAGE).await,
+        lead,
+        "tenant status data untouched"
+    );
+    let again = h.indexer.migrate_kind(true).await.unwrap();
+    assert!(again.run_status_renamed.is_empty(), "idempotent");
+    assert!(again.pages_to_migrate.is_empty());
+}

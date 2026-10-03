@@ -84,6 +84,56 @@ fn page_kind_value(rest: &str) -> bool {
     value == "skill" || value == "instance"
 }
 
+/// The workflow-run page's `status:` -> `run_status:` (OKF alignment: `status` is an OKF key with
+/// its own meaning, and the engine-owned run board must not collide with it).
+///
+/// Only a page whose top-level `skill:` is `workflow-run` is touched, and only its top-level
+/// `status:` line; a tenant's own `status:` data on any other page is never renamed. A page that
+/// already has `run_status:` is left alone (it was migrated, or has both: not auto-fixed).
+/// Returns the rewritten page, or `None` when there is nothing to do.
+#[must_use]
+pub fn rewrite_workflow_run_status(input: &str) -> Option<String> {
+    let first = input.split_inclusive('\n').next()?;
+    if first != "---\n" {
+        return None;
+    }
+    let mut offset = first.len();
+    let mut status_at: Option<usize> = None;
+    let mut is_run_page = false;
+    let mut has_run_status = false;
+    let mut closed = false;
+    for line in input[offset..].split_inclusive('\n') {
+        let content = line.trim_end_matches(['\r', '\n']);
+        if content == "---" {
+            closed = true;
+            break;
+        }
+        if let Some(rest) = content.strip_prefix("skill:") {
+            let v = rest
+                .split('#')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_matches(['"', '\'']);
+            is_run_page = v == "workflow-run";
+        } else if content.starts_with("status:") {
+            status_at = Some(offset);
+        } else if content.starts_with("run_status:") {
+            has_run_status = true;
+        }
+        offset += line.len();
+    }
+    let at = status_at?;
+    if !closed || !is_run_page || has_run_status {
+        return None;
+    }
+    let mut out = String::with_capacity(input.len() + 4);
+    out.push_str(&input[..at]);
+    out.push_str("run_status");
+    out.push_str(&input[at + "status".len()..]);
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +245,43 @@ mod tests {
             rewrite_legacy_type_key("---\ntype: skill\nid: a\n"),
             KindRewrite::NotAPageKind
         );
+    }
+
+    #[test]
+    fn a_workflow_run_boards_status_becomes_run_status() {
+        let input = "---\nkind: instance\nskill: workflow-run\nid: r1\nwf_skill: deep-research\nstatus: stopped\n---\n# run\n\nstatus: stopped in prose\n";
+        assert_eq!(
+            rewrite_workflow_run_status(input).as_deref(),
+            Some(
+                "---\nkind: instance\nskill: workflow-run\nid: r1\nwf_skill: deep-research\nrun_status: stopped\n---\n# run\n\nstatus: stopped in prose\n"
+            )
+        );
+    }
+
+    #[test]
+    fn a_tenants_own_status_field_on_another_skill_is_never_renamed() {
+        let lead = "---\nkind: instance\nskill: lead\nid: l1\nstatus: qualified\n---\n";
+        assert_eq!(rewrite_workflow_run_status(lead), None);
+    }
+
+    #[test]
+    fn run_status_already_present_or_no_status_means_nothing_to_do() {
+        let done = "---\nkind: instance\nskill: workflow-run\nid: r1\nrun_status: stopped\n---\n";
+        assert_eq!(rewrite_workflow_run_status(done), None);
+        let both =
+            "---\nkind: instance\nskill: workflow-run\nid: r1\nstatus: a\nrun_status: b\n---\n";
+        assert_eq!(
+            rewrite_workflow_run_status(both),
+            None,
+            "both keys: not auto-fixed"
+        );
+        let none = "---\nkind: instance\nskill: workflow-run\nid: r1\n---\n";
+        assert_eq!(rewrite_workflow_run_status(none), None);
+    }
+
+    #[test]
+    fn a_nested_status_line_is_not_the_top_level_key() {
+        let nested = "---\nkind: instance\nskill: workflow-run\nid: r1\nextra:\n  status: x\n---\n";
+        assert_eq!(rewrite_workflow_run_status(nested), None);
     }
 }

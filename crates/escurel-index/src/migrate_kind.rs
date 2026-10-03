@@ -5,6 +5,7 @@
 //!
 //! * **Pages** (`markdown/**` in the lane store, and the derived index through `update_page_as`,
 //!   which keeps who-wrote-it attribution): rewritten by a text edit of the one top-level key.
+//!   A workflow-run board's `status:` becomes `run_status:` in the same write.
 //!   A page with BOTH keys is a conflict and is left alone; a user data field named `type:` is
 //!   never the page kind; signed pack pages (`markdown/base/**`) are skipped, because rewriting
 //!   them breaks the pack signature, and the publisher re-exports a new signed pack instead.
@@ -24,7 +25,7 @@ use std::collections::HashMap;
 
 use bytes::Bytes;
 use duckdb::params;
-use escurel_md::{KindRewrite, rewrite_legacy_type_key};
+use escurel_md::{KindRewrite, rewrite_legacy_type_key, rewrite_workflow_run_status};
 use escurel_storage::Key;
 use escurel_types::{DraftKindMigration, MigrateKindReport};
 
@@ -181,34 +182,48 @@ impl Indexer {
                 report.not_a_page_kind.push(path);
                 continue;
             };
-            match rewrite_legacy_type_key(content) {
-                KindRewrite::AlreadyKind => report.already_kind += 1,
-                KindRewrite::Conflict => report.conflicts.push(path),
-                KindRewrite::NotAPageKind => report.not_a_page_kind.push(path),
-                KindRewrite::Rewritten(new) => {
-                    if apply {
-                        // No conditional write exists: re-read right before writing and leave the
-                        // page alone (it is reported as a conflict) if it moved underneath us.
-                        let again = self.store.read(&key).await?;
-                        if again[..] != body[..] {
-                            report.conflicts.push(path);
-                            continue;
-                        }
-                        if is_archived(content) {
-                            // Retained for audit, kept out of the derived index (#300).
-                            self.store.write(&key, Bytes::from(new)).await?;
-                        } else {
-                            self.update_page_as(
-                                &path,
-                                &new,
-                                attribution.get(&path).map(String::as_str),
-                            )
-                            .await?;
-                        }
-                    }
-                    report.pages_to_migrate.push(path);
+            // Page kind first: a conflict or a page with no kind is reported and left exactly as is.
+            let (mut next, kind_changed) = match rewrite_legacy_type_key(content) {
+                KindRewrite::Conflict => {
+                    report.conflicts.push(path);
+                    continue;
+                }
+                KindRewrite::NotAPageKind => {
+                    report.not_a_page_kind.push(path);
+                    continue;
+                }
+                KindRewrite::Rewritten(new) => (new, true),
+                KindRewrite::AlreadyKind => (content.to_owned(), false),
+            };
+            // The engine-owned run board's `status:` -> `run_status:` rides along (same page, one
+            // write): a tenant's own `status` data is never touched (the rule checks the skill).
+            let mut status_changed = false;
+            if let Some(renamed) = rewrite_workflow_run_status(&next) {
+                next = renamed;
+                status_changed = true;
+                report.run_status_renamed.push(path.clone());
+            }
+            if !kind_changed && !status_changed {
+                report.already_kind += 1;
+                continue;
+            }
+            if apply {
+                // No conditional write exists: re-read right before writing and leave the page
+                // alone (it is reported as a conflict) if it moved underneath us.
+                let again = self.store.read(&key).await?;
+                if again[..] != body[..] {
+                    report.conflicts.push(path);
+                    continue;
+                }
+                if is_archived(content) {
+                    // Retained for audit, kept out of the derived index (#300).
+                    self.store.write(&key, Bytes::from(next)).await?;
+                } else {
+                    self.update_page_as(&path, &next, attribution.get(&path).map(String::as_str))
+                        .await?;
                 }
             }
+            report.pages_to_migrate.push(path);
         }
         Ok(())
     }

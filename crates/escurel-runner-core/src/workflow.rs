@@ -727,7 +727,7 @@ pub async fn recover_workflows(
             continue;
         };
         // A stopped run (via `escurel workflow stop`) is left alone.
-        if run.frontmatter.get("status").and_then(|v| v.as_str()) == Some("stopped") {
+        if run.frontmatter.get("run_status").and_then(|v| v.as_str()) == Some("stopped") {
             continue;
         }
         let wf = WorkflowProvenance {

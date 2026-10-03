@@ -404,6 +404,9 @@ pub struct MigrateKindReport {
     pub pages_to_migrate: Vec<String>,
     /// Pages that already use `kind:`.
     pub already_kind: u64,
+    /// Workflow-run board pages whose `status:` is/was renamed `run_status:` (the engine-owned key
+    /// that collided with OKF's `status`). A subset of `pages_to_migrate` when they also had `type:`.
+    pub run_status_renamed: Vec<String>,
     /// Pages with BOTH `kind:` and a legacy page-kind `type:`; never auto-fixed.
     pub conflicts: Vec<String>,
     /// Pages with no page-kind key at all, or whose top-level `type:` is the page's own data.

@@ -22,7 +22,7 @@ pub enum WorkflowCmd {
         /// The run id (as printed by `workflow run`).
         run: String,
     },
-    /// Request a run stop (marks its board `status: stopped`).
+    /// Request a run stop (marks its board `run_status: stopped`).
     Stop {
         /// The run id to stop.
         run: String,
@@ -59,7 +59,7 @@ fn run_page(run_id: &str) -> String {
 fn board_markdown(run_id: &str, wf_skill: &str, status: &str) -> String {
     format!(
         "---\nkind: instance\nskill: workflow-run\nid: {run_id}\n\
-         wf_skill: {wf_skill}\nstatus: {status}\n---\n# workflow run {run_id}\n\n\
+         wf_skill: {wf_skill}\nrun_status: {status}\n---\n# workflow run {run_id}\n\n\
          Plan: [[{wf_skill}]].\n"
     )
 }
@@ -122,7 +122,7 @@ async fn status(client: &Client, run_id: &str) -> Result<Value> {
         .to_owned();
     let run_status = board
         .frontmatter
-        .get("status")
+        .get("run_status")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_owned();

@@ -119,6 +119,24 @@ async fn workflow_run_status_stop_round_trips() {
         "invocation returns an event id: {invoked}"
     );
 
+    // The board records the run's lifecycle under `run_status`, not `status`: `status` is an OKF
+    // key with its own meaning, and an engine-owned board must not collide with it.
+    let board = json(
+        &run(
+            &h,
+            vec![
+                "--format".into(),
+                "json".into(),
+                "page".into(),
+                "expand".into(),
+                "markdown/instances/workflow-run/cli1.md".into(),
+            ],
+        )
+        .await,
+    );
+    assert_eq!(board["frontmatter"]["run_status"], "running", "{board}");
+    assert!(board["frontmatter"].get("status").is_none(), "{board}");
+
     // status: the plan's phases render with zero produced (no runner ran).
     let status = json(
         &run(
