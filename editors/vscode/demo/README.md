@@ -64,10 +64,28 @@ badge. A skill without a folder sits at the top level; its role is inferred when
     under _Dead letters_: **Retry run** asks the runner again and tells you what happened. Requeue,
     Pause and Resume are there too, deactivated with the reason, because they are for admins.
 
+13. **Rows from outside systems.** Under _purchasing/suppliers_ two more skills are not escurel data at
+    all: **supplier-rating** (a REST portal) and **delivery-confirmation** (an MCP server). `run.sh`
+    starts both as real local processes (`services/ratings-api.mjs`, `services/confirmations-mcp.mjs`) and
+    registers them as endpoints; the gateway reads them live. Open `iberica-forja` under supplier-rating: the
+    strip says **External data (REST)** (hover: it is data, never instructions), the columns are the
+    portal's and read-only, and the portal's URL is shown as the source.
+14. **Change something at the source, with a reviewer.** In the strip press **Change rating…**, type `B`,
+    add a note. Nothing has happened at the portal yet (`curl` the portal: still `A`). The proposal waits
+    under _Awaiting you_; promote it. Now the portal says `B`, the page shows "Last change sent to the
+    source …: applied.", and your note is the row's notes. Do the same on a delivery confirmation (status
+    `open` → `confirmed`, over MCP).
+15. **When it goes wrong, it says so.** Stop the ratings portal (`kill $(cat $HOME/.cache/escurel-demo/ratings.pid)`)
+    and open a supplier-rating row again: the page still opens, flags the source as unreachable, and keeps
+    your notes. A change promoted while it is down is retried a few times and then reported as failed; the
+    draft stays open to promote again. A change proposed from a stale row is refused as a conflict.
+
 ## Limits worth saying out loud
 
 - The runner is the echo harness: it folds the signal into the page, it does not reason. The
   lineage, the live updates and the review are real; the "agent" is a stand-in.
+- The gateway runs with `ESCUREL_EGRESS_ALLOW_LOOPBACK=1` so that it may call the demo's local portal and
+  MCP server; a real deployment refuses loopback and plain http (see `references/09` of the platform skill).
 - Sign-in is a test token, kept fresh from a file by `demo/bootstrap`, which is not part of the
   shipped extension. A real install signs in with OIDC.
 - `customer-order` deliberately has no `cascade:` routing: a cascade from an order back to the

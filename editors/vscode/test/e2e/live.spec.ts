@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Page } from '@playwright/test';
-import { expect, test, webviewWith } from './fixtures';
+import { expect, test, webviewWith, type Stack } from './fixtures';
 
 // One window for the whole file, played in order: each scenario leaves the stack as the next one can
 // use it. Every one asserts what a person would SEE and leaves a screenshot in artifacts/ for a human
@@ -14,18 +16,31 @@ const pane = (page: Page, title: string) =>
  * holds folders, so a row may not exist until it is scrolled to. Scroll from the top, a step at a time,
  * until the row is rendered; no test depends on how tall the window happens to be.
  */
-async function knowledgeRow(page: Page, name: RegExp) {
+async function scanForRow(page: Page, name: RegExp) {
   const k = pane(page, 'Knowledge');
   const row = k.getByRole('treeitem', { name });
   const list = k.locator('.monaco-list').first();
   await list.hover();
+  // To the top by the list's own keyboard handling: Home focuses the first row and scrolls it into
+  // view. A mouse wheel does it too, but animated, and a taller tree lost the race against the
+  // downward steps below, which then walked past the first rows.
+  await list.focus();
+  await page.keyboard.press('Home');
   await page.mouse.wheel(0, -10_000);
+  await page.waitForTimeout(700);
   for (let i = 0; i < 40 && (await row.count()) === 0; i += 1) {
     await page.mouse.wheel(0, 120);
     await page.waitForTimeout(120);
   }
-  await expect(row.first()).toBeVisible();
-  return row.first();
+  return (await row.count()) > 0 ? row.first() : undefined;
+}
+
+async function knowledgeRow(page: Page, name: RegExp) {
+  const row =
+    (await scanForRow(page, name)) ??
+    pane(page, 'Knowledge').getByRole('treeitem', { name }).first();
+  await expect(row).toBeVisible();
+  return row;
 }
 
 /** A skill row by what a screen reader hears: its role, then its id. */
@@ -283,8 +298,7 @@ test('a supplier-risk run leaves an analysis: fields, a text alternative for its
   // id is the supplier and the day: meier-guss-YYYY-MM-DD).
   const orders = await skillRow(page, 'customer-order');
   if ((await orders.getAttribute('aria-expanded')) === 'true') await orders.click();
-  await (await skillRow(page, 'supplier-risk-analysis')).click();
-  await (await knowledgeRow(page, /^meier-guss-\d{4}-\d{2}-\d{2}/)).click();
+  await openRow(page, 'supplier-risk-analysis', /^meier-guss-\d{4}-\d{2}-\d{2}/);
   const wv = await webviewWith(page, 'escurel-page-as-ui');
   const analysis = wv.locator('escurel-page-as-ui');
   await expect(analysis.locator('.field[data-name="risk_level"]')).toContainText('high');
@@ -403,6 +417,206 @@ test('a live run can be cancelled from its run detail', async ({ stack }) => {
   await cancel.click();
   await expect(run.locator('.status-chip')).toContainText('cancelled', { timeout: 30_000 });
   await stack.shot('09-cancelled');
+});
+
+// --- outside systems: a REST portal and an MCP server, real processes the demo started -------------
+
+/** The base URL of one of the demo's outside systems (the launcher wrote its port next to its pid). */
+const outside = (home: string, name: 'ratings' | 'confirmations'): string => {
+  const port = JSON.parse(readFileSync(join(home, `${name}.json`), 'utf8').split('\n')[0]!).port;
+  return `http://127.0.0.1:${port}`;
+};
+
+/**
+ * Open one row of a skill. The tree refreshes whenever something live happens (the runner is still
+ * settling right after the window opens), and a refresh collapses what was just expanded, so the skill
+ * is re-expanded and the row looked for again rather than trusting a single click.
+ */
+async function openRow(page: Page, skill: string, row: RegExp) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const skillItem = await skillRow(page, skill);
+    if ((await skillItem.getAttribute('aria-expanded')) !== 'true') await skillItem.click();
+    await page.waitForTimeout(1_200); // the children are fetched from the outside system
+    const item = await scanForRow(page, row);
+    if (item) {
+      await item.click();
+      return;
+    }
+  }
+  throw new Error(`the row ${row} never appeared under ${skill}`);
+}
+
+type DraftRef = { draft_id: string; target_page_id: string };
+
+/** The proposal for a page, once it exists: a toast from an earlier step may still be on screen. */
+async function waitForDraft(stack: Stack, targetSuffix: string): Promise<DraftRef> {
+  let found: DraftRef | undefined;
+  await expect
+    .poll(
+      async () => {
+        const out = (await stack.call('list_drafts', {})) as { drafts: DraftRef[] };
+        found = out.drafts.find((d) => d.target_page_id.includes(targetSuffix));
+        return found?.draft_id;
+      },
+      { message: `a proposal for ${targetSuffix} is waiting for a reviewer`, timeout: 20_000 },
+    )
+    .toBeTruthy();
+  return found!;
+}
+
+async function answerQuickInput(page: Page, title: RegExp, text: string) {
+  // Wait for THIS prompt: the next one opens as the previous closes, and typing too early answers the
+  // wrong one.
+  await expect(page.locator('.quick-input-title')).toHaveText(title);
+  const input = page.locator('.quick-input-widget input.input');
+  await input.fill(text);
+  await page.keyboard.press('Enter');
+}
+
+test('the two outside systems are in the tree, and a REST row says it is external data', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  await expect(await skillRow(page, 'supplier-rating')).toBeVisible();
+  await expect(await skillRow(page, 'delivery-confirmation')).toBeVisible();
+
+  await openRow(page, 'supplier-rating', /iberica-forja/);
+  const wv = await webviewWith(page, 'escurel-page-as-ui', 'iberica-forja');
+  const strip = wv.locator('.source-strip');
+  await expect(strip).toContainText('External data (REST)');
+  await expect(strip).toContainText('read-only');
+  // The portal's own columns, live from the real service.
+  await expect(wv.locator('.field[data-name="display_name"]')).toContainText('Ibérica Forja S.L.');
+  await expect(wv.locator('.field[data-name="rating"]')).toContainText('A');
+  await expect(strip.getByRole('button', { name: 'Change rating…' })).toBeVisible();
+  await stack.shot('10-rest-row');
+});
+
+test('a rating change is proposed from the page, approved by a reviewer, and then the portal changes', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  const wv = await webviewWith(page, 'escurel-page-as-ui', 'iberica-forja');
+  await wv.getByRole('button', { name: 'Change rating…' }).click();
+  await answerQuickInput(page, /^Change \w+ in the source$/, 'B');
+  await answerQuickInput(page, /^Note for the reviewer/, 'Three late deliveries in Q3.');
+  await expect(
+    page.locator('.notification-toast', { hasText: /Proposed: rating to B/ }),
+  ).toBeVisible({ timeout: 20_000 });
+
+  // Proposing touched nothing: the portal still says A.
+  const base = outside(stack.home, 'ratings');
+  expect((await (await fetch(`${base}/ratings/iberica-forja`)).json()).rating).toBe('A');
+
+  // The reviewer promotes it (the same call the review UI makes).
+  const mine = await waitForDraft(stack, 'iberica-forja.md');
+  const done = await stack.call('promote_draft', { draft_id: mine.draft_id });
+  expect(done.ok, JSON.stringify(done)).toBe(true);
+
+  // NOW the real service has the change, and the page reads it back and says what happened.
+  expect((await (await fetch(`${base}/ratings/iberica-forja`)).json()).rating).toBe('B');
+  await openRow(page, 'supplier-rating', /nordform/);
+  await openRow(page, 'supplier-rating', /iberica-forja/);
+  const again = await webviewWith(page, 'escurel-page-as-ui', 'iberica-forja');
+  await expect(again.locator('.field[data-name="rating"]')).toContainText('B', { timeout: 20_000 });
+  await expect(again.locator('.write-back')).toContainText('applied');
+  await stack.shot('11-write-back-applied');
+});
+
+test('an MCP row works the same way: external data, a proposed change, applied only after approval', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  await openRow(page, 'delivery-confirmation', /PO-4500087433-10/);
+  const wv = await webviewWith(page, 'escurel-page-as-ui', 'PO-4500087433-10');
+  await expect(wv.locator('.source-strip')).toContainText('External data (MCP)');
+  await expect(wv.locator('.field[data-name="status"]')).toContainText('open');
+  await wv.getByRole('button', { name: 'Change status…' }).click();
+  await answerQuickInput(page, /^Change \w+ in the source$/, 'confirmed');
+  await answerQuickInput(page, /^Note for the reviewer/, 'Supplier confirmed by phone.');
+  await expect(
+    page.locator('.notification-toast', { hasText: /Proposed: status to confirmed/ }),
+  ).toBeVisible({ timeout: 20_000 });
+  const mine = await waitForDraft(stack, 'delivery-confirmation');
+  const done = await stack.call('promote_draft', { draft_id: mine.draft_id });
+  expect(done.ok, JSON.stringify(done)).toBe(true);
+  // Read back through the MCP server: the status is what the reviewer approved.
+  const page2 = (await stack.call('expand', {
+    page_id: 'markdown/instances/delivery-confirmation/PO-4500087433-10.md',
+  })) as { frontmatter: { status: string } };
+  expect(page2.frontmatter.status).toBe('confirmed');
+  await stack.shot('12-mcp-write-back');
+});
+
+test('a change based on a row that has moved is refused, and the portal is not touched', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  await openRow(page, 'supplier-rating', /stahl-ag/);
+  const wv = await webviewWith(page, 'escurel-page-as-ui', 'stahl-ag');
+  await wv.getByRole('button', { name: 'Change rating…' }).click();
+  await answerQuickInput(page, /^Change \w+ in the source$/, 'A');
+  await answerQuickInput(page, /^Note for the reviewer/, 'Upgrade after the audit.');
+  await expect(
+    page.locator('.notification-toast', { hasText: /Proposed: rating to A/ }),
+  ).toBeVisible({ timeout: 20_000 });
+
+  // Someone else changes the supplier at the portal while the proposal waits for a reviewer.
+  const base = outside(stack.home, 'ratings');
+  const head = await fetch(`${base}/ratings/stahl-ag`);
+  const patched = await fetch(`${base}/ratings/stahl-ag`, {
+    method: 'PATCH',
+    headers: { 'if-match': head.headers.get('etag')!, 'idempotency-key': 'someone-else' },
+    body: JSON.stringify({ rating: 'C' }),
+  });
+  expect(patched.status).toBe(200);
+
+  const mine = await waitForDraft(stack, 'stahl-ag.md');
+  const refused = (await stack.call('promote_draft', { draft_id: mine.draft_id })) as {
+    ok: boolean;
+    issues: { code: string }[];
+  };
+  expect(refused.ok).toBe(false);
+  expect(refused.issues.map((i) => i.code)).toContain('write_back_conflict');
+  expect((await (await fetch(`${base}/ratings/stahl-ag`)).json()).rating).toBe('C'); // theirs, not ours
+});
+
+test('when the portal is down a promoted change is refused, recorded as failed, and the page says so', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  await openRow(page, 'supplier-rating', /nordform/);
+  const wv = await webviewWith(page, 'escurel-page-as-ui', 'nordform');
+  await wv.getByRole('button', { name: 'Change rating…' }).click();
+  await answerQuickInput(page, /^Change \w+ in the source$/, 'A');
+  await answerQuickInput(page, /^Note for the reviewer/, 'Strong quarter.');
+  await expect(
+    page.locator('.notification-toast', { hasText: /Proposed: rating to A/ }),
+  ).toBeVisible({ timeout: 20_000 });
+
+  // The portal goes away (a real process, killed): nothing can be sent.
+  const mine = await waitForDraft(stack, 'nordform.md');
+  process.kill(Number(readFileSync(join(stack.home, 'ratings.pid'), 'utf8').trim()), 'SIGKILL');
+  const failed = (await stack.call('promote_draft', { draft_id: mine.draft_id })) as {
+    ok: boolean;
+    issues: { code: string }[];
+  };
+  expect(failed.ok).toBe(false);
+  expect(failed.issues.map((i) => i.code)).toContain('write_back_failed');
+  // The draft is still waiting, so promoting again is the retry once the portal is back.
+  const still = (await stack.call('list_drafts', {})) as { drafts: { draft_id: string }[] };
+  expect(still.drafts.some((d) => d.draft_id === mine.draft_id)).toBe(true);
+  // The page tells the person, in words: the source is unreachable (the portal is down), and the last
+  // change did not go through. It keeps the page; it does not go blank or show a stack trace.
+  // Its tab is still open; the tree cannot list a dead source's rows, so the person goes back to it.
+  // (Switching away and back is what reloads a page; it is already the active tab.)
+  await page.getByRole('tab', { name: /^stahl-ag\.md/ }).click();
+  await page.getByRole('tab', { name: /^nordform\.md/ }).click();
+  const down = await webviewWith(page, 'escurel-page-as-ui', 'nordform');
+  await expect(down.locator('.source-strip')).toBeVisible({ timeout: 20_000 });
+  await expect(down.locator('.source-strip.problem')).toBeVisible();
+  await expect(down.locator('.write-back.problem')).toContainText('did not go through');
+  await stack.shot('13-write-back-failed');
 });
 
 test('nothing in the extension threw while all of that happened', async ({ stack }) => {

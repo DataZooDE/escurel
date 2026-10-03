@@ -30,7 +30,7 @@ stop() {
   sleep 2
   # A window that has been up for hours ignores SIGTERM.
   pkill -9 -f -- "${HOME_DIR}/[p]rofile" 2>/dev/null || true
-  for f in code runner gateway; do
+  for f in code runner gateway ratings confirmations; do
     if [ -f "$HOME_DIR/$f.pid" ]; then
       kill "$(cat "$HOME_DIR/$f.pid")" 2>/dev/null || true
       rm -f "$HOME_DIR/$f.pid"
@@ -41,7 +41,7 @@ stop() {
 case "${1:-start}" in
   stop) stop; echo "demo stopped"; exit 0 ;;
   status)
-    for f in gateway runner code; do
+    for f in gateway runner code ratings confirmations; do
       if [ -f "$HOME_DIR/$f.pid" ] && kill -0 "$(cat "$HOME_DIR/$f.pid")" 2>/dev/null; then echo "$f: running"; else echo "$f: not running"; fi
     done
     exit 0 ;;
@@ -67,8 +67,24 @@ sed -i "s|@ORDER_LINES_DIR@|$HERE/sources/order-lines|" "$HOME_DIR/seed/skills/o
 sed -i "s|@VBAK_DIR@|$HERE/sources/vbak|" "$HOME_DIR/seed/skills/customer-order.md"
 sed -i "s|@LFA1_DIR@|$HERE/sources/lfa1|" "$HOME_DIR/seed/skills/supplier.md"
 
-# The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token).
-setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
+# Two outside systems, as real local processes on real sockets: a REST portal (supplier ratings) and
+# an MCP server (delivery confirmations). escurel reads them like any external system.
+service() { # name script
+  setsid nohup node "$HERE/services/$2" > "$HOME_DIR/$1.json" 2> "$HOME_DIR/$1.log" < /dev/null &
+  echo $! > "$HOME_DIR/$1.pid"
+  for _ in $(seq 1 40); do [ -s "$HOME_DIR/$1.json" ] && break; sleep 0.25; done
+  [ -s "$HOME_DIR/$1.json" ] || { echo "$1 printed nothing; see $HOME_DIR/$1.log" >&2; exit 1; }
+}
+service ratings ratings-api.mjs
+service confirmations confirmations-mcp.mjs
+svc_port() { python3 -c "import json; print(json.loads(open('$HOME_DIR/$1.json').readline())['port'])"; }
+export ESCUREL_DEMO_RATINGS_URL="http://127.0.0.1:$(svc_port ratings)"
+export ESCUREL_DEMO_CONFIRMATIONS_URL="http://127.0.0.1:$(svc_port confirmations)/mcp"
+
+# The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token). Its
+# outbound policy is strict by default (https, public addresses only); the demo's outside systems are
+# local, so loopback is opened for THIS process only.
+ESCUREL_EGRESS_ALLOW_LOOPBACK=1 setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
   --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
 echo $! > "$HOME_DIR/gateway.pid"
 for _ in $(seq 1 120); do [ -s "$HOME_DIR/gateway.json" ] && break; sleep 0.5; done

@@ -49,6 +49,8 @@ export interface Stack {
   /** What the demo driver left behind: the root events and changesets of the story. */
   story: { rootA: string; rootB: string; promoted: string; awaiting: string };
   gatewayUrl: string;
+  /** The demo's home directory: pid files and the ports of the demo's outside systems. */
+  home: string;
   /** Call a gateway tool as the signed-in human (alice), for setting up or checking state. */
   call: (name: string, args: Record<string, unknown>, admin?: boolean) => Promise<ToolResult>;
   /** Console and page errors collected since the window opened. */
@@ -126,6 +128,7 @@ export const test = base.extend<object, { stack: Stack }>({
         page,
         story,
         gatewayUrl: info.gateway_url,
+        home,
         errors,
         call: async (name, args, admin = false) => {
           const tok = bearer();
@@ -178,26 +181,38 @@ export { expect };
  * `visibility: hidden`, so a plain `iframe.webview` also matches the tab you are not looking at,
  * and a click on it lands on whatever is on top.
  */
-export async function webviewWith(page: Page, selector: string): Promise<FrameLocator> {
+export async function webviewWith(
+  page: Page,
+  selector: string,
+  /** Text the wanted page shows (its page id): tells two page webviews apart. */
+  contains?: string,
+): Promise<FrameLocator> {
   const outer = page.locator('iframe.webview:visible');
   let found: FrameLocator | undefined;
   await expect
     .poll(
       async () => {
+        // While VS Code switches editor tabs the outgoing webview is still visible for a moment, and
+        // an index-based locator picked it (and shifted as webviews came and went). Take the most
+        // recent matching webview and pin it by its own name, which does not move.
         const n = await outer.count();
-        for (let i = 0; i < n; i += 1) {
+        for (let i = n - 1; i >= 0; i -= 1) {
+          const name = await outer.nth(i).getAttribute('name');
+          if (!name) continue;
           const inner = page
-            .frameLocator('iframe.webview:visible')
-            .nth(i)
+            .frameLocator(`iframe.webview[name="${name}"]`)
             .frameLocator('iframe#active-frame');
-          if ((await inner.locator(selector).count()) > 0) {
+          const wanted = contains
+            ? inner.locator(selector).filter({ hasText: contains })
+            : inner.locator(selector);
+          if ((await wanted.count()) > 0) {
             found = inner;
             return true;
           }
         }
         return false;
       },
-      { message: `a webview containing ${selector}` },
+      { message: `a webview containing ${selector}${contains ? ` with ${contains}` : ''}` },
     )
     .toBe(true);
   return found!;
