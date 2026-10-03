@@ -1,6 +1,6 @@
 import type { AdminState } from '../auth/adminState';
 import type { LineageNode, Skill } from '../client/types';
-import { runControls } from '../runs/controls';
+import { factsFromLineage, offeredControls, resolveControl, type RunFacts } from '../runs/runFacts';
 import { actionLabel } from '../shared/page';
 import { pageSlug } from '../shared/pageId';
 import type {
@@ -53,41 +53,21 @@ function toRawMap(
 }
 
 /**
- * Finds the skill that produced a run from the lineage (never guesses).
- * As used by `src/start/approvePlan.ts`: checks parent event or root event's `label_skill`.
+ * The run's facts from the thread's lineage, in the same shape the run page builds them, so both
+ * surfaces offer and resolve the same controls. Nothing is guessed: a trigger event that lineage
+ * pruned leaves `triggerEventId` and `skill` unknown, and the controls that need them are not
+ * offered (see `visibleControls`). `ThreadNode.parent` is NOT used: the thread view hangs a node
+ * whose parent was pruned off the root, which is not its trigger.
  */
-export function resolveRunSkill(
-  runNode: ThreadNode,
-  rawRunNode: LineageNode | undefined,
+function threadRunFacts(
+  node: ThreadNode,
+  rawNode: LineageNode | undefined,
   rawById: Map<string, LineageNode> | undefined,
-): string | undefined {
-  const parentId = runNode.parent ?? rawRunNode?.parent;
-  if (parentId && rawById) {
-    const parentNode = rawById.get(parentId);
-    if (typeof parentNode?.label_skill === 'string') {
-      return parentNode.label_skill;
-    }
-  }
-
-  if (rawById) {
-    // Check root event node
-    for (const node of rawById.values()) {
-      if (node.type === 'event' && node.parent === null) {
-        if (typeof node.label_skill === 'string') {
-          return node.label_skill;
-        }
-      }
-    }
-  }
-
-  if (typeof rawRunNode?.label_skill === 'string') {
-    return rawRunNode.label_skill;
-  }
-  if (typeof (rawRunNode as unknown as { skill?: unknown })?.skill === 'string') {
-    return (rawRunNode as unknown as { skill: string }).skill;
-  }
-
-  return undefined;
+  admin: AdminState,
+): RunFacts {
+  const byId = new Map(rawById ?? []);
+  if (rawNode) byId.set(node.id, rawNode);
+  return factsFromLineage(node.id, byId, admin, node.state ?? rawNode?.state ?? '');
 }
 
 /**
@@ -139,14 +119,10 @@ export function buildNodeActions(
 
   // 2. Run node
   if (node.kind === 'run') {
-    const status = node.state ?? rawNode?.state ?? '';
-    const admin = ctx.admin ?? 'unknown';
-    const controls = runControls(status, admin);
-    const skill = resolveRunSkill(node, rawNode, rawById);
-
+    const facts = threadRunFacts(node, rawNode, rawById, ctx.admin ?? 'unknown');
     return {
-      controls,
-      ...(skill ? { skill } : {}),
+      controls: offeredControls(facts),
+      ...(facts.skill ? { skill: facts.skill } : {}),
       ...({ runId: node.id } as Record<string, unknown>),
     };
   }
@@ -243,81 +219,27 @@ export function resolveThreadAction(
       return undefined;
     }
 
-    const actions = getActionsForNode(runNode);
-    const controls = actions?.controls ?? runControls(runNode.state ?? '', ctx.admin ?? 'unknown');
-    const offered = controls.find((c) => c.action === message.action);
+    // Recomputed from the host's lineage, not read back from what was sent to the webview.
+    const facts = threadRunFacts(
+      runNode,
+      rawById?.get(runNode.id),
+      rawById,
+      ctx.admin ?? 'unknown',
+    );
+    const offered = offeredControls(facts).find((c) => c.action === message.action);
     if (!offered || !offered.enabled) {
       ctx.warn?.(
         `thread: refused run-control: run ${runNode.id} does not offer enabled action ${message.action}`,
       );
       return undefined;
     }
-
-    switch (message.action) {
-      case 'cancel':
-        return {
-          command: 'escurel.cancelRun',
-          args: [{ runId: runNode.id }],
-        };
-
-      case 'retry':
-        return {
-          command: 'escurel.retryRun',
-          args: [{ runId: runNode.id }],
-        };
-
-      case 'requeue': {
-        // Derived BY THE HOST from the run node's parent event in the thread
-        // (the webview's eventId is ignored).
-        const parentEventId = runNode.parent ?? rawById?.get(runNode.id)?.parent;
-        if (!parentEventId) {
-          ctx.warn?.(`thread: refused requeue: run ${runNode.id} has no parent event`);
-          return undefined;
-        }
-        return {
-          command: 'escurel.requeue',
-          args: [{ eventId: parentEventId }],
-        };
-      }
-
-      case 'approve': {
-        // approve -> escurel.approvePlan {runId, skill, pageId} with skill and page resolved from thread
-        const rawRun = rawById?.get(runNode.id);
-        const skill = actions?.skill ?? resolveRunSkill(runNode, rawRun, rawById);
-        const pageId =
-          (rawRun as { target_page_id?: string })?.target_page_id ??
-          (rawRun as { produced_instance?: string })?.produced_instance ??
-          (rawById?.get(runNode.parent ?? '') as { instance_page_id?: string })?.instance_page_id;
-
-        if (!skill || !pageId) {
-          ctx.warn?.(
-            `thread: refused approve: could not resolve skill or pageId for run ${runNode.id}`,
-          );
-          return undefined;
-        }
-
-        return {
-          command: 'escurel.approvePlan',
-          args: [{ runId: runNode.id, skill, pageId }],
-        };
-      }
-
-      case 'fix-skill': {
-        const rawRun = rawById?.get(runNode.id);
-        const skill = actions?.skill ?? resolveRunSkill(runNode, rawRun, rawById);
-        if (!skill) {
-          ctx.warn?.(`thread: refused fix-skill: no skill resolved for run ${runNode.id}`);
-          return undefined;
-        }
-        return {
-          command: 'escurel.viewSkill',
-          args: [skill],
-        };
-      }
-
-      default:
-        return undefined;
+    // The webview's own eventId, skill or page (if it sent any) are never read.
+    const resolved = resolveControl(facts, offered.action);
+    if (!resolved) {
+      ctx.warn?.(`thread: refused ${message.action}: run ${runNode.id} lacks what it needs`);
+      return undefined;
     }
+    return { command: resolved.command, args: [resolved.arg] };
   }
 
   if (message.type === 'view-skill') {
