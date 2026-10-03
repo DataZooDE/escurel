@@ -31,6 +31,15 @@ if (new URLSearchParams(location.search).get('view') !== 'first') {
   });
 }
 
+// `?zoom=0.4` pins the zoom (top-left), for the lowest-zoom baseline: the words must stay legible
+// even when the picture is at 40%.
+const zoomParam = new URLSearchParams(location.search).get('zoom');
+if (zoomParam) {
+  void el.updateComplete.then(() => {
+    el.viewport = { x: 10, y: 40, zoom: Number(zoomParam) };
+  });
+}
+
 // `?select=run` / `?select=draft` selects a node that offers actions, so the inspector's buttons are
 // in the baseline: the run as a NON-admin sees a dead letter (Requeue deactivated, with its reason),
 // and the instance a draft proposes a change to (the skill's actions as Skill split buttons).

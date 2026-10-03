@@ -108,7 +108,9 @@ test('work that waits on a person stands out: a Needs-you changeset with its dra
   await expect(picker).toBeHidden();
 });
 
-test('zoomed out, cards keep icon, accent and state but drop their words', async ({ stack }) => {
+test('zoomed out, cards keep icon, type, title and state but drop their body', async ({
+  stack,
+}) => {
   const { page } = stack;
   const wv = await webviewWith(page, 'escurel-thread-canvas');
   const canvas = wv.locator('escurel-thread-canvas');
@@ -118,7 +120,17 @@ test('zoomed out, cards keep icon, accent and state but drop their words', async
   const card = canvas.locator('.card.type-changeset.needs-you');
   await expect(card.locator('.type-icon svg')).toBeVisible();
   await expect(card.locator('.needs-badge svg')).toBeVisible();
-  await expect(card.locator('.card-title')).toBeHidden();
+  // The words stay, at a readable size: type word and title are visible, the body is not.
+  await expect(card.locator('.card-title')).toBeVisible();
+  await expect(card.locator('.type-label')).toBeVisible();
+  await expect(card.locator('.draft-list')).toBeHidden();
+  const rendered = await card
+    .locator('.card-title')
+    .evaluate(
+      (el, z) => parseFloat(getComputedStyle(el).fontSize) * z,
+      await canvas.evaluate((c) => (c as unknown as { viewport: { zoom: number } }).viewport.zoom),
+    );
+  expect(rendered).toBeGreaterThanOrEqual(9.5);
   // The accessible name still carries everything.
   await expect(card).toHaveAttribute('aria-label', /changeset.*needs you/i);
   await stack.shot('02d-overview');
