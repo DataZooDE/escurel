@@ -386,7 +386,14 @@ async fn write_instance_round_trips_typed() {
                 .skill("customer", REMOTE_CUSTOMER_SKILL)
                 .done(),
         ),
-        config_overrides: ConfigOverrides::default(),
+        config_overrides: ConfigOverrides {
+            // The CRM upstream below is a real server on loopback; the strict default refuses it.
+            egress: Some(escurel_test_support::EgressPolicy {
+                allow_loopback: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
     })
     .await;
     let admin = client_as(&p, Role::Admin).await;

@@ -51,6 +51,11 @@ async fn spawn_demo_gateway() -> (EscurelProcess, Vec<TempDir>) {
     let process = EscurelProcess::spawn(Opts {
         auth: AuthMode::Disabled, // the demo server runs without a verifier
         config_overrides: ConfigOverrides {
+            // The demo upstreams (and the deliberately dead one) are on loopback.
+            egress: Some(escurel_server::egress::EgressPolicy {
+                allow_loopback: true,
+                ..Default::default()
+            }),
             indexer: Some(indexer),
             ..Default::default()
         },

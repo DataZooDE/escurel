@@ -202,6 +202,9 @@ async fn main() {
             // A signing identity on the issuer's own key, so `mint_agent_token` works: starting
             // a skill in a terminal under a governed run needs it.
             signing: true,
+            // The demo's REST and MCP upstreams are local processes; `ESCUREL_EGRESS_*` (notably
+            // `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`) opens loopback for them, strict otherwise.
+            egress: Some(escurel_test_support::EgressPolicy::from_env()),
             ..Default::default()
         },
     })
