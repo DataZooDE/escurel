@@ -63,14 +63,45 @@ const base = preview
     }
   : orderPage;
 // `?variant=row`: the same order as ONE ROW of an `instances: rows` skill (read-only source + its notes).
+// `?variant=external` / `external-down`: a row from a REST source, with a change that was applied / a
+// source that cannot be reached and a change that did not go through.
+const variant = params.get('variant');
+const rowSource = {
+  fetchedAt: '2026-10-03T12:03:44.000000Z',
+  sourceFields: ['status', 'customer'],
+  linked: { enabled: true, exists: true, orphan: false },
+};
 el.model =
-  params.get('variant') === 'row'
-    ? {
-        ...base,
-        source: {
-          fetchedAt: '2026-10-03T12:03:44.000000Z',
-          sourceFields: ['status', 'customer'],
-          linked: { enabled: true, exists: true, orphan: false },
-        },
-      }
-    : base;
+  variant === 'row'
+    ? { ...base, source: rowSource }
+    : variant === 'external'
+      ? {
+          ...base,
+          source: { ...rowSource, external: 'REST', etag: 'w1:abc', writableColumns: ['status'] },
+          writeBack: {
+            outcome: 'applied',
+            at: '2026-10-03T12:05:00.000000Z',
+            draftId: 'd1',
+            attempts: 1,
+          },
+        }
+      : variant === 'external-down'
+        ? {
+            ...base,
+            source: {
+              ...rowSource,
+              external: 'MCP',
+              issue: {
+                code: 'source_unavailable',
+                message:
+                  'the source could not be reached right now (transport error); showing what is known',
+              },
+            },
+            writeBack: {
+              outcome: 'failed',
+              at: '2026-10-03T12:05:00.000000Z',
+              draftId: 'd1',
+              attempts: 0,
+            },
+          }
+        : base;
