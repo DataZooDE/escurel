@@ -315,4 +315,40 @@ describe('<escurel-run-detail>', () => {
       );
     }
   });
+
+  it('heads the page with the skill and the page it ran on; the id is secondary', async () => {
+    const el = await render({
+      ...recordedRunView,
+      skill: 'supplier-risk',
+      targetPageId: 'markdown/instances/customer-order__order-4500123.md',
+    } as RunView);
+    const h1 = q(el, 'h1')!;
+    expect(text(h1)).to.contain('supplier-risk on order-4500123');
+    expect(text(q(el, 'h1 .run-id'))).to.equal(recordedRunView.runId);
+  });
+
+  it('does not show a step as in progress under a finished run', async () => {
+    const el = await render({
+      ...recordedRunView,
+      status: 'processed',
+      plan: [
+        { step: 'read the order', status: 'completed' },
+        { step: 'draft the fold', status: 'in_progress' },
+      ],
+    });
+    const steps = qa(el, '.plan-step').map(text);
+    expect(steps.some((t) => t.includes('in progress'))).to.equal(false);
+    expect(steps.some((t) => t.includes('draft the fold') && t.includes('not finished'))).to.equal(
+      true,
+    );
+  });
+
+  it('keeps a live run’s step in progress', async () => {
+    const el = await render({
+      ...recordedRunView,
+      status: 'running',
+      plan: [{ step: 'draft the fold', status: 'in_progress' }],
+    });
+    expect(qa(el, '.plan-step').map(text).join(' ')).to.contain('in progress');
+  });
 });

@@ -71,7 +71,9 @@ export const splitButton = css`
   }
   .skill-button .primary,
   .skill-button .chevron {
-    background: var(--escurel-skill);
+    /* Dark and high-contrast themes define charts.purple as a LIGHT purple, which made the white
+       label about 3:1. Mixing in black keeps the hue and the label above 4.5:1 in every theme. */
+    background: color-mix(in srgb, var(--escurel-skill) 62%, black);
   }
   .instance-button .primary {
     background: var(--vscode-button-secondaryBackground);

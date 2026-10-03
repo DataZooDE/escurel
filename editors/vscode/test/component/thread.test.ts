@@ -492,4 +492,45 @@ describe('<escurel-thread-canvas>', () => {
     expect(right).to.be.at.most(area.clientWidth);
     expect(last.x * el.viewport.zoom + el.viewport.x).to.be.at.least(0);
   });
+
+  describe('first view', () => {
+    async function inBox(width: number): Promise<EscurelThreadCanvas> {
+      const host = await fixture<HTMLElement>(html`
+        <div style="width:${width}px;height:700px;position:relative">
+          <escurel-thread-canvas
+            style="display:block;width:100%;height:100%"
+            .view=${recordedThreadView}
+            .layout=${recordedLayout}
+            .focus=${recordedFocus}
+            .details=${recordedDetails}
+          ></escurel-thread-canvas>
+        </div>
+      `);
+      const el = host.querySelector('escurel-thread-canvas') as EscurelThreadCanvas;
+      await el.updateComplete;
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      await el.updateComplete;
+      return el;
+    }
+
+    it('fits a thread that is wider than the window, instead of cropping it at 100%', async () => {
+      // Seen in the live window: the third column was cut off with no cue that more existed.
+      const el = await inBox(420);
+      expect(el.viewport.zoom < 1, `zoom ${el.viewport.zoom}`).to.equal(true);
+    });
+
+    it('leaves a thread that fits at 100%', async () => {
+      const el = await inBox(4000);
+      expect(el.viewport.zoom).to.equal(1);
+    });
+
+    it('does not pull the view back when the thread reloads after the person moved it', async () => {
+      const el = await inBox(420);
+      el.viewport = { x: 10, y: 20, zoom: 0.5 };
+      el.layout = { ...recordedLayout };
+      await el.updateComplete;
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      expect(el.viewport).to.deep.equal({ x: 10, y: 20, zoom: 0.5 });
+    });
+  });
 });

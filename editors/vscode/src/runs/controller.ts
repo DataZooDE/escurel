@@ -1,3 +1,4 @@
+import { runTabTitle } from './runTitle';
 import * as vscode from 'vscode';
 import type { RunHostToWebview, RunView, RunWebviewToHost } from '../shared/protocol';
 import { safePost } from '../shared/safePost';
@@ -123,6 +124,8 @@ export class RunController implements vscode.Disposable {
         view = next;
         this.views.set(runId, next);
         rootEventId = loaded.rootEventId;
+        // The tab names the run by skill and page once the load knows them.
+        panel.title = runTabTitle(next);
         post({ type: 'run', view });
         this.loaded.fire({ runId, view });
       } catch (err) {
