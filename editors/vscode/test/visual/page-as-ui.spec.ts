@@ -25,3 +25,17 @@ for (const kind of ['rows', 'fields', 'document', 'issue']) {
     });
   });
 }
+
+// A row of an `instances: rows` skill: the strip that says it is a read-only source row with its own
+// notes, and the quiet accent on the columns that belong to the source.
+test('a row instance says it is read-only source data with its own notes', async ({
+  page,
+}, testInfo) => {
+  const theme = (testInfo.project.metadata as { theme: string }).theme;
+  await page.goto(`/test/visual/harness/index.html?theme=${theme}&variant=row`);
+  await page.locator('escurel-page-as-ui .source-strip').waitFor();
+  await expect(page).toHaveScreenshot('page-as-ui-row.png', {
+    maxDiffPixelRatio: 0.01,
+    fullPage: true,
+  });
+});

@@ -80,8 +80,8 @@ export class EscurelField extends LitElement {
       <span class="name"
         >${f.label}${f.required ? html`<span class="required" title="required"> *</span>` : nothing}${
           this.source
-            ? html`<span class="source-tag" title="A column of the source row: read-only">
-                source</span
+            ? html`<span class="source-tag" title="A column of the source row: read-only"
+                ><span class="visually-hidden"> (source column, read-only)</span></span
               >`
             : nothing
         }</span

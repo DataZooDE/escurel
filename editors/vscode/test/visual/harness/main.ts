@@ -52,8 +52,9 @@ const PREVIEWS: Record<string, PreviewModel> = {
 };
 
 const el = document.querySelector('escurel-page-as-ui') as EscurelPageAsUi;
-const preview = PREVIEWS[new URLSearchParams(location.search).get('preview') ?? ''];
-el.model = preview
+const params = new URLSearchParams(location.search);
+const preview = PREVIEWS[params.get('preview') ?? ''];
+const base = preview
   ? {
       ...orderPage,
       skill: { ...orderPage.skill, backend: 'sql_view', readOnly: true },
@@ -61,3 +62,15 @@ el.model = preview
       preview,
     }
   : orderPage;
+// `?variant=row`: the same order as ONE ROW of an `instances: rows` skill (read-only source + its notes).
+el.model =
+  params.get('variant') === 'row'
+    ? {
+        ...base,
+        source: {
+          fetchedAt: '2026-10-03T12:03:44.000000Z',
+          sourceFields: ['status', 'customer'],
+          linked: { enabled: true, exists: true, orphan: false },
+        },
+      }
+    : base;

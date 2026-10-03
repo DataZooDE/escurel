@@ -103,9 +103,18 @@ export class EscurelPageAsUi extends LitElement {
         display: block;
         color: var(--vscode-editorWarning-foreground);
       }
-      .source-tag {
-        color: var(--escurel-muted);
-        font-size: 0.8em;
+      /* A column of the source row: a quiet accent on its label, and the words for a screen reader. */
+      .field[data-source='true'] .name {
+        border-left: 2px solid var(--vscode-textLink-foreground);
+        padding-left: 6px;
+      }
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
       }
       .thread-strip {
         display: flex;

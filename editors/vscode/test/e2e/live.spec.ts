@@ -185,7 +185,33 @@ test('a sales order opens as a real order page: SAP fields and an items table', 
   await expect(order.getByText('Customer PO (BSTNK)')).toBeVisible();
   await expect(order.locator('table thead th', { hasText: 'Material' })).toBeVisible();
   await expect(order.locator('table tbody tr')).toHaveCount(2);
+  // The order is ONE ROW of the SAP extract (read-only) plus the person's own notes, and says so.
+  const strip = order.locator('.source-strip');
+  await expect(strip).toContainText('Source row');
+  await expect(strip).toContainText('read-only');
+  await expect(order.locator('.field[data-source="true"]')).not.toHaveCount(0);
+  // The delivery risk is the notes' own field, not a source column.
+  await expect(order.locator('.field[data-name="delivery_risk"]')).not.toHaveAttribute(
+    'data-source',
+    'true',
+  );
   await stack.shot('06-order-page');
+});
+
+test('the Markdown view of an order is its notes only, never the SAP columns', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  const wv = await webviewWith(page, 'escurel-page-as-ui');
+  await wv.getByRole('button', { name: 'Markdown' }).click();
+  // The raw editor opens on the notes: the companion's frontmatter and body, with no row column in it.
+  const editor = page.locator('.monaco-editor').first();
+  await expect(editor).toBeVisible({ timeout: 20_000 });
+  await expect(editor).toContainText('delivery_risk');
+  await expect(editor).not.toContainText('sold_to_name');
+  await stack.shot('06a-order-notes-markdown');
+  // Back to the page view for the scenarios that follow.
+  await page.keyboard.press('Control+w');
 });
 
 test('a wikilink in the order opens the page it names', async ({ stack }) => {
@@ -193,9 +219,9 @@ test('a wikilink in the order opens the page it names', async ({ stack }) => {
   const wv = await webviewWith(page, 'escurel-page-as-ui');
   await wv.getByRole('button', { name: 'Meier-Guss GmbH' }).click();
   // The supplier opens as its own page, in a tab of its own that becomes the active one.
-  await expect(page.getByRole('tab', { name: /meier-guss/, selected: true })).toBeVisible(
-    { timeout: 20_000 },
-  );
+  await expect(page.getByRole('tab', { name: /meier-guss/, selected: true })).toBeVisible({
+    timeout: 20_000,
+  });
   const supplier = await webviewWith(page, 'escurel-page-as-ui');
   // The first h1 is the page's title (a body can carry its own h1 further down).
   await expect(supplier.getByRole('heading', { level: 1 }).first()).toContainText('Meier-Guss');
@@ -324,7 +350,7 @@ test('a failed run is listed under Dead letters, and Requeue is there but deacti
     provenance: { manual: { mode: 'run', harness: 'no-such-harness' } },
   });
   const runner = pane(page, 'Runner');
-  const dead = runner.getByRole('treeitem', { name: /order-4500152/ });
+  const dead = runner.getByRole('treeitem', { name: /order-4500152.*permanent/ });
   await expect(dead).toBeVisible({ timeout: 60_000 });
   await dead.click({ button: 'right' });
   const requeue = page.getByRole('menuitem', { name: /Requeue/ });
@@ -339,7 +365,7 @@ test('a failed run can be retried from the Runner view, and the person is told w
   stack,
 }) => {
   const { page } = stack;
-  const dead = pane(page, 'Runner').getByRole('treeitem', { name: /order-4500152/ });
+  const dead = pane(page, 'Runner').getByRole('treeitem', { name: /order-4500152.*permanent/ });
   await dead.click({ button: 'right' });
   // VS Code's own context menu acts on Enter; a synthetic click on its item is not reliable.
   await page.getByRole('menuitem', { name: /Retry run/ }).hover();
