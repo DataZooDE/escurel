@@ -1,16 +1,23 @@
 import type { RunControl, RunView } from '../shared/protocol';
+import { resolveControl, visibleControls, type RunFacts } from './runFacts';
 
 export type ActionRunView = RunView & { triggerEventId?: string };
 export type ResolvedRunAction = { command: string; args: string | Record<string, string> };
 
-/** Suppress actions whose identifiers cannot be read from this run. */
+/** Suppress actions whose identifiers cannot be read from this run (see `visibleControls`). */
 export function visibleRunControls(view: ActionRunView): RunControl[] {
-  return (view.controls ?? []).filter((control) => {
-    if (control.action === 'approve') return !!view.skill && view.targetPageId !== undefined;
-    if (control.action === 'fix-skill') return !!view.skill;
-    if (control.action === 'requeue') return !!view.triggerEventId;
-    return true;
-  });
+  return visibleControls(view.controls ?? [], factsOf(view));
+}
+
+function factsOf(view: ActionRunView): RunFacts {
+  return {
+    runId: view.runId,
+    status: view.status,
+    admin: 'unknown',
+    skill: view.skill,
+    targetPageId: view.targetPageId,
+    triggerEventId: view.triggerEventId,
+  };
 }
 
 /** The panel message is untrusted. Every argument comes from the host's loaded view. */
@@ -33,25 +40,8 @@ export function resolveRunAction(
   if (Object.keys(m).some((key) => !['type', 'action', 'runId'].includes(key))) return undefined;
   const control = visibleRunControls(view).find((c) => c.action === m.action && c.enabled);
   if (!control) return undefined;
-  switch (control.action) {
-    case 'cancel':
-      return { command: 'escurel.cancelRun', args: { runId: view.runId } };
-    case 'retry':
-      return { command: 'escurel.retryRun', args: { runId: view.runId } };
-    case 'requeue':
-      return view.triggerEventId
-        ? { command: 'escurel.requeue', args: { eventId: view.triggerEventId } }
-        : undefined;
-    case 'approve':
-      return view.skill && view.targetPageId !== undefined
-        ? {
-            command: 'escurel.approvePlan',
-            args: { runId: view.runId, skill: view.skill, pageId: view.targetPageId },
-          }
-        : undefined;
-    case 'fix-skill':
-      return view.skill ? { command: 'escurel.viewSkill', args: view.skill } : undefined;
-  }
+  const resolved = resolveControl(factsOf(view), control.action);
+  return resolved ? { command: resolved.command, args: resolved.arg } : undefined;
 }
 
 /** The trace id to copy: the one the HOST holds for this run, never a string the webview sends. */
