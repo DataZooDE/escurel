@@ -1,0 +1,11 @@
+{
+  "order_id": "order-4500131",
+  "item": 20,
+  "customer": "Kessler Werkzeugbau GmbH",
+  "supplier": "meier-guss",
+  "material": "GH-4711",
+  "description": "Gearbox housing, cast, 14 kg",
+  "qty": 200,
+  "net_value": 66200.0,
+  "currency": "EUR"
+}

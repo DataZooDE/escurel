@@ -1,0 +1,11 @@
+{
+  "order_id": "order-4500131",
+  "item": 10,
+  "customer": "Kessler Werkzeugbau GmbH",
+  "supplier": "stahl-ag",
+  "material": "TH-0815",
+  "description": "Tool holder, hardened",
+  "qty": 80,
+  "net_value": 31100.0,
+  "currency": "EUR"
+}
