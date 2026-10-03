@@ -123,22 +123,56 @@ fn money(v: f64) -> String {
     format!("{out}.{frac}")
 }
 
+/// The UTC day (`YYYY-MM-DD`) an event ULID was minted: its first ten characters are a millisecond
+/// timestamp in Crockford base32. `None` for anything that is not a ULID.
+pub fn ulid_date(event_id: &str) -> Option<String> {
+    const ALPHABET: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    if event_id.len() != 26 {
+        return None;
+    }
+    let mut ms: u64 = 0;
+    for c in event_id.chars().take(10) {
+        let v = ALPHABET.find(c.to_ascii_uppercase())? as u64;
+        ms = ms.checked_mul(32)?.checked_add(v)?;
+    }
+    // Days since 1970-01-01 to a civil date (Hinnant's algorithm).
+    let z = (ms / 86_400_000) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    Some(format!("{y:04}-{m:02}-{d:02}"))
+}
+
+/// A human id for the analysis: the supplier and the day, with a counter when that day already has
+/// one (`-2`, `-3`, ...). Stable (the same event on the same day gives the same id), readable, and
+/// ids of one supplier sort by date. `taken` says whether a candidate id already exists.
+pub fn analysis_id(supplier_id: &str, event_id: &str, taken: impl Fn(&str) -> bool) -> String {
+    let base = match ulid_date(event_id) {
+        Some(day) => format!("{supplier_id}-{day}"),
+        None => supplier_id.to_owned(),
+    };
+    if !taken(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|c| !taken(c))
+        .expect("an unbounded counter always finds a free id")
+}
+
 pub fn build_analysis(
     supplier: &Supplier,
     signal: &Signal,
     lines: &[OrderLine],
     event_id: &str,
+    id: &str,
+    trigger_title: &str,
 ) -> Built {
-    let tail: String = event_id
-        .chars()
-        .rev()
-        .take(5)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<String>()
-        .to_lowercase();
-    let id = format!("{}-{tail}", supplier.id);
     let page_id = format!("markdown/instances/supplier-risk-analysis__{id}.md");
     let (level, score) = risk(signal.days_moved, signal.downgraded);
     let currency = lines.first().map_or("EUR", |l| l.currency.as_str());
@@ -191,7 +225,8 @@ pub fn build_analysis(
     if let Some(m) = &signal.material {
         body.push_str(&format!(" · material {m}"));
     }
-    body.push_str("\n\n## Findings\n\n");
+    body.push_str(&format!("\n\n**Triggered by** {trigger_title}\n"));
+    body.push_str("\n## Findings\n\n");
     body.push_str(&format!("- Risk **{level}** (score {score} of 100).\n"));
     if signal.days_moved > 0 {
         body.push_str(&format!(
@@ -224,7 +259,7 @@ pub fn build_analysis(
 
     Built {
         page_id,
-        id,
+        id: id.to_owned(),
         content: format!("{fm}{body}"),
     }
 }
@@ -308,22 +343,74 @@ mod tests {
         assert_eq!(risk(0, false), ("low", 0));
     }
 
+    // ULID 01M3YS0X30T80HN5HEH5J73X56: its first ten characters are a millisecond timestamp.
+    const EVENT: &str = "01M3YS0X30T80HN5HEH5J73X56";
+
     #[test]
-    fn the_analysis_is_a_flat_instance_named_after_supplier_and_event() {
+    fn the_day_comes_out_of_the_event_ulid() {
+        // 2026-10-03T00:00:00Z is 1_790_985_600_000 ms; 01K... style ids of that day start 01M3Y/01M3Z.
+        assert_eq!(
+            ulid_date("01ARZ3NDEKTSV4RRFFQ69G5FAV").as_deref(),
+            Some("2016-07-30")
+        );
+        assert_eq!(ulid_date("not-a-ulid"), None);
+        assert_eq!(ulid_date("01ARZ3NDE"), None);
+    }
+
+    #[test]
+    fn a_human_id_is_the_supplier_and_the_day_not_a_random_tail() {
+        assert_eq!(
+            analysis_id("meier-guss", "01ARZ3NDEKTSV4RRFFQ69G5FAV", |_| false),
+            "meier-guss-2016-07-30"
+        );
+    }
+
+    #[test]
+    fn a_second_analysis_the_same_day_gets_a_counter_and_ids_sort() {
+        let taken = ["meier-guss-2016-07-30", "meier-guss-2016-07-30-2"];
+        let id = analysis_id("meier-guss", "01ARZ3NDEKTSV4RRFFQ69G5FAV", |c| {
+            taken.contains(&c)
+        });
+        assert_eq!(id, "meier-guss-2016-07-30-3");
+        assert!("meier-guss-2016-07-30" < "meier-guss-2016-07-31");
+    }
+
+    #[test]
+    fn the_analysis_is_a_flat_instance_with_the_given_id() {
         let b = build_analysis(
             &supplier(),
             &parse_signal(TITLE, BODY).unwrap(),
             &lines(),
-            "01M3YS0X30T80HN5HEH5J73X56",
+            EVENT,
+            "meier-guss-2026-10-03",
+            TITLE,
         );
-        assert_eq!(b.id, "meier-guss-73x56");
+        assert_eq!(b.id, "meier-guss-2026-10-03");
         assert_eq!(
             b.page_id,
-            "markdown/instances/supplier-risk-analysis__meier-guss-73x56.md"
+            "markdown/instances/supplier-risk-analysis__meier-guss-2026-10-03.md"
         );
         assert!(b.content.starts_with(
-            "---\ntype: instance\nskill: supplier-risk-analysis\nid: meier-guss-73x56\n"
+            "---\ntype: instance\nskill: supplier-risk-analysis\nid: meier-guss-2026-10-03\n"
         ));
+    }
+
+    #[test]
+    fn the_body_says_which_signal_it_answers_in_words_and_keeps_the_event_id_as_provenance() {
+        let b = build_analysis(
+            &supplier(),
+            &parse_signal(TITLE, BODY).unwrap(),
+            &lines(),
+            EVENT,
+            "meier-guss-2026-10-03",
+            TITLE,
+        );
+        assert!(
+            b.content.contains(&format!("**Triggered by** {TITLE}")),
+            "{}",
+            b.content
+        );
+        assert!(b.content.contains(&format!("source_event: {EVENT}\n")));
     }
 
     #[test]
@@ -332,7 +419,9 @@ mod tests {
             &supplier(),
             &parse_signal(TITLE, BODY).unwrap(),
             &lines(),
-            "01M3YS0X30T80HN5HEH5J73X56",
+            EVENT,
+            "meier-guss-2026-10-03",
+            TITLE,
         );
         for line in [
             "supplier: \"[[supplier::meier-guss]]\"",
@@ -359,7 +448,9 @@ mod tests {
             &supplier(),
             &parse_signal(TITLE, BODY).unwrap(),
             &lines(),
-            "01M3YS0X30T80HN5HEH5J73X56",
+            EVENT,
+            "meier-guss-2026-10-03",
+            TITLE,
         );
         // The takeaway, in words an agent that never renders a chart can use.
         assert!(
@@ -383,8 +474,22 @@ mod tests {
     #[test]
     fn it_links_the_supplier_and_is_deterministic() {
         let s = parse_signal(TITLE, BODY).unwrap();
-        let a = build_analysis(&supplier(), &s, &lines(), "01M3YS0X30T80HN5HEH5J73X56");
-        let b = build_analysis(&supplier(), &s, &lines(), "01M3YS0X30T80HN5HEH5J73X56");
+        let a = build_analysis(
+            &supplier(),
+            &s,
+            &lines(),
+            EVENT,
+            "meier-guss-2026-10-03",
+            TITLE,
+        );
+        let b = build_analysis(
+            &supplier(),
+            &s,
+            &lines(),
+            EVENT,
+            "meier-guss-2026-10-03",
+            TITLE,
+        );
         assert_eq!(a.content, b.content);
         assert!(a.content.contains("[[supplier::meier-guss]]"));
     }

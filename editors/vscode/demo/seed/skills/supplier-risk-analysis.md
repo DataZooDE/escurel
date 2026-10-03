@@ -14,7 +14,6 @@ fields:
   - {name: orders_affected, kind: int, min: 0, required: true, label: "Orders affected"}
   - {name: net_value_at_risk, kind: float, min: 0, required: true, label: "Net value at risk", render: money}
   - {name: currency, kind: string, required: true, label: "Currency"}
-  - {name: source_event, kind: string, label: "Signal (event)"}
 actions:
   - name: notify-customer
     kind: event
