@@ -51,11 +51,25 @@ export interface Skill {
   autonomy?: string;
   summary?: string;
   harness?: string;
-  actions?: string[];
+  /** What a follow-up from this skill can be: see `SkillAction`. Absent when none are declared. */
+  actions?: SkillAction[];
   cascade?: { target?: string; max_depth?: number };
   params?: SkillParam[];
   fields?: SkillField[];
   blocks?: SkillBlock[];
+}
+
+/**
+ * One entry of a skill's `actions:` (Peacock's object form). `event` actions name the skill an event
+ * is filed under; `prompt` actions are a chat turn in another app. The title/body templates are not
+ * on the wire.
+ */
+export interface SkillAction {
+  name: string;
+  kind: 'event' | 'prompt';
+  label: string;
+  event?: string;
+  prompt?: string;
 }
 
 export interface ListInstancesRequest {

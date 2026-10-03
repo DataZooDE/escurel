@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { ListLineageResponse, Skill } from '../../src/client/types';
 import { foldLineage, toThreadView } from '../../src/thread/threadModel';
 import type { ThreadNode } from '../../src/shared/protocol';
-import { actionLabel } from '../../src/shared/page';
 import { buildInspectors } from '../../src/thread/inspector';
 import { buildNodeActions, resolveThreadAction } from '../../src/thread/inspectorActions';
 import fixtureEventRunChangesetDraft from './fixtures/lineage/lineage-event-run-changeset-draft.json';
@@ -10,18 +9,21 @@ import fixtureEventRunChangesetDraft from './fixtures/lineage/lineage-event-run-
 const orderSkill: Skill = {
   id: 'order',
   description: 'Manage customer orders',
-  actions: ['reassess-risk', 'cancel-order'],
+  actions: [
+    { name: 'reassess', kind: 'event', label: 'Reassess risk', event: 'reassess-risk' },
+    { name: 'cancel', kind: 'event', label: 'Cancel order', event: 'cancel-order' },
+  ],
 } as unknown as Skill;
 
 const noteSkill: Skill = {
   id: 'note',
   description: 'Manage notes',
-  actions: ['summarize-note'],
+  actions: [{ name: 'summarize', kind: 'event', label: 'Summarize', event: 'summarize-note' }],
 } as unknown as Skill;
 
 describe('inspectorActions', () => {
   describe('buildNodeActions', () => {
-    it('instance nodes get the skill actions with page-as-UI derived labels', () => {
+    it('instance nodes get the skill actions with the skill author’s labels', () => {
       const instanceNode: ThreadNode = {
         id: 'inst-1',
         kind: 'draft',
@@ -46,11 +48,11 @@ describe('inspectorActions', () => {
       expect(actions?.skills?.actions).toEqual([
         {
           skill: 'reassess-risk',
-          label: actionLabel('reassess-risk', 'PO-1001'),
+          label: 'Reassess risk',
         },
         {
           skill: 'cancel-order',
-          label: actionLabel('cancel-order', 'PO-1001'),
+          label: 'Cancel order',
         },
       ]);
     });
@@ -228,8 +230,8 @@ describe('inspectorActions', () => {
       expect(details['inst-node-1']?.actions?.skills).toEqual({
         pageId: 'markdown/instances/order__PO-1001.md',
         actions: [
-          { skill: 'reassess-risk', label: actionLabel('reassess-risk', 'PO-1001') },
-          { skill: 'cancel-order', label: actionLabel('cancel-order', 'PO-1001') },
+          { skill: 'reassess-risk', label: 'Reassess risk' },
+          { skill: 'cancel-order', label: 'Cancel order' },
         ],
       });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { actionLabel, buildPageModel, fieldView } from '../../src/shared/page';
+import { buildPageModel, fieldView } from '../../src/shared/page';
 import type { ExpandResponse, Skill } from '../../src/client';
 
 const skill: Skill = {
@@ -15,7 +15,11 @@ const skill: Skill = {
   capabilities: { writable: true, granularity: 'block', search: 'hybrid', supports_crdt: false },
   layer: 'overlay',
   autonomy: 'review',
-  actions: ['supplier-risk', 'customer-notice'],
+  actions: [
+    { name: 'reassess', kind: 'event', label: 'Reassess risk', event: 'supplier-risk' },
+    { name: 'notify', kind: 'event', label: 'Notify customer', event: 'customer-notice' },
+    { name: 'ask', kind: 'prompt', label: 'Ask why', prompt: 'why?' },
+  ],
   fields: [
     { name: 'status', kind: 'enum', required: true, values: ['open', 'closed'], render: 'badge' },
     { name: 'customer', kind: 'link', required: true, target_skill: 'customer', label: 'Customer' },
@@ -80,11 +84,10 @@ describe('page model', () => {
     expect(m.body).toBe('# Order\n\nBody text.');
     expect(m.lastWrittenBy).toBe('agent:supplier-risk');
     expect(m.editable).toBe(false);
-    expect(m.actions.map((a) => a.skill)).toEqual(['supplier-risk', 'customer-notice']);
-  });
-
-  it('derives the action label until PR-2: "<Skill title> for <instance title> with an agent"', () => {
-    expect(actionLabel('supplier-risk', '4500123')).toBe('Supplier risk for 4500123 with an agent');
+    expect(m.actions).toEqual([
+      { skill: 'supplier-risk', label: 'Reassess risk' },
+      { skill: 'customer-notice', label: 'Notify customer' },
+    ]);
   });
 
   it('reads wikilinks out of every shape YAML produces', () => {
