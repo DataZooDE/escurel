@@ -65,7 +65,7 @@ final rightCollapsedProvider = StateProvider<bool>((ref) => false);
 /// reactively from the expanded current page.
 final currentPageIsSkillProvider = Provider<bool>((ref) {
   final page = ref.watch(currentPageProvider).valueOrNull;
-  return page?.pageType == PageType.skill;
+  return page?.pageKind == PageKind.skill;
 });
 
 /// The left event pane's *effective* collapsed state: the user's explicit

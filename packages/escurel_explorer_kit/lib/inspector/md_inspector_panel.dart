@@ -147,7 +147,7 @@ class _ParsedView extends StatelessWidget {
         children: [
           Text('Frontmatter', style: text.titleSmall),
           const SizedBox(height: 6),
-          _kv('kind', p.frontmatter.pageType.name),
+          _kv('kind', p.frontmatter.pageKind.name),
           for (final entry in p.frontmatter.fields.entries)
             if (entry.key != 'kind') _kv(entry.key, entry.value?.toString() ?? ''),
           const SizedBox(height: 16),

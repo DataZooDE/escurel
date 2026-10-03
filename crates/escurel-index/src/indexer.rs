@@ -18,7 +18,7 @@ use escurel_embed::{EmbedError, Embedder, NoopReranker, Reranker};
 use crate::retrieval::RetrievalConfig;
 use crate::schema::Migrator;
 use escurel_md::wikilink::parse_wikilinks;
-use escurel_md::{PageType, parse};
+use escurel_md::{PageKind, parse};
 use escurel_storage::{Key, LaneStore};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -904,9 +904,9 @@ impl Indexer {
 
         let frontmatter_json = mapping_to_json(&parsed.frontmatter.fields)?;
         let body_hash = hash_body(content);
-        let page_type_str = match parsed.frontmatter.page_type {
-            PageType::Skill => "skill",
-            PageType::Instance => "instance",
+        let page_type_str = match parsed.frontmatter.page_kind {
+            PageKind::Skill => "skill",
+            PageKind::Instance => "instance",
         };
         let skill = parsed
             .frontmatter

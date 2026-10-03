@@ -98,7 +98,7 @@ export interface PageRef {
   page_id: string;
   slug: string | null;
   skill: string;
-  page_type: 'skill' | 'instance' | string;
+  page_kind: 'skill' | 'instance' | string;
   last_written_by?: string | null;
 }
 
@@ -176,7 +176,7 @@ export interface SearchRequest {
   q: string;
   k?: number;
   granularity?: 'block' | 'page';
-  page_type?: 'skill' | 'instance' | 'any';
+  page_kind?: 'skill' | 'instance' | 'any';
   skill?: string;
   filter?: Record<string, unknown>;
 }
@@ -185,7 +185,7 @@ export interface SearchHit {
   page_id: string;
   slug: string | null;
   skill: string;
-  page_type: string;
+  page_kind: string;
   anchor: string | null;
   snippet: string;
   score: number;

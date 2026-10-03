@@ -13,7 +13,7 @@ use bytes::Bytes;
 use duckdb::Connection;
 use escurel_embed::{Embedder, HashEmbedder};
 use escurel_index::{Granularity, Indexer, Migrator};
-use escurel_md::PageType;
+use escurel_md::PageKind;
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
 
@@ -180,20 +180,20 @@ async fn search_filters_by_page_type() {
 
     let only_skills = h
         .indexer
-        .search("customer", 10, Some(PageType::Skill), None, None, None)
+        .search("customer", 10, Some(PageKind::Skill), None, None, None)
         .await
         .unwrap();
     for hit in &only_skills {
-        assert_eq!(hit.page_type, PageType::Skill);
+        assert_eq!(hit.page_kind, PageKind::Skill);
     }
 
     let only_instances = h
         .indexer
-        .search("customer", 10, Some(PageType::Instance), None, None, None)
+        .search("customer", 10, Some(PageKind::Instance), None, None, None)
         .await
         .unwrap();
     for hit in &only_instances {
-        assert_eq!(hit.page_type, PageType::Instance);
+        assert_eq!(hit.page_kind, PageKind::Instance);
     }
 
     // And the two together cover what the unfiltered call returns.

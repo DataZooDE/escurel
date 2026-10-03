@@ -177,8 +177,8 @@ impl Client {
         if !req.granularity.is_empty() {
             args["granularity"] = json!(req.granularity);
         }
-        if !req.page_type.is_empty() {
-            args["page_type"] = json!(req.page_type);
+        if !req.page_kind.is_empty() {
+            args["page_kind"] = json!(req.page_kind);
         }
         if !req.skill.is_empty() {
             args["skill"] = json!(req.skill);

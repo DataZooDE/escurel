@@ -22,7 +22,7 @@ section below.
 
 | tool | inputs (key ones) | output | what for |
 |---|---|---|---|
-| `search` | `q`, `k=10`, `granularity='block'\|'page'`, `page_type?`, `skill?` | ranked hits `{page_id, anchor, snippet, skill, page_type, score}` | natural-language vector + FTS hybrid; the cold-start primitive |
+| `search` | `q`, `k=10`, `granularity='block'\|'page'`, `page_kind?`, `skill?` | ranked hits `{page_id, anchor, snippet, skill, page_kind, score}` | natural-language vector + FTS hybrid; the cold-start primitive |
 | `resolve` | `wikilink` | `{parsed, page (PageRef), exists}` | parse + look up a `[[wikilink]]`; reports validity without raising |
 | `expand` | `page_id`, `as_of?`, `scenario?`, `full?` (all chunks of a document instance), `raw?` (also return the stored markdown) | `{page, frontmatter, body, blocks[], wikilinks_out[], content_sha256?, content?}` (`content_sha256` = the stored-bytes hash, i.e. the value `update_page.base_sha256` guards against; `content` = those bytes verbatim, only with `raw: true` — for an editor that must show and re-save the author's own text; both plain reads only) (+ `shadow` on an overlay that shadows a base skill: `{base_page_id, pack, base: {…base frontmatter…}}`) | the body fetch — the **most expensive** primitive; use sparingly |
 | `neighbours` | `page_id`, `direction='in'\|'out'\|'both'`, `link_skill?` | list of `Edge {src_page, dst_page, link_skill, link_version?, dst_anchor?}` | typed link-graph traversal (backlinks + forward links) |

@@ -31,7 +31,7 @@ pub struct SearchArgs {
     pub k: u32,
     /// "skill" | "instance" | "any" (default).
     #[arg(long, default_value = "any")]
-    pub page_type: String,
+    pub page_kind: String,
     /// Restrict to one skill.
     #[arg(long)]
     pub skill: Option<String>,
@@ -603,7 +603,7 @@ async fn search(client: &Client, a: SearchArgs) -> Result<Value> {
         .search(SearchRequest {
             q: a.q,
             k: a.k,
-            page_type: a.page_type,
+            page_kind: a.page_kind,
             skill: a.skill.unwrap_or_default(),
             ..Default::default()
         })
@@ -616,7 +616,7 @@ async fn search(client: &Client, a: SearchArgs) -> Result<Value> {
                 "page_id": h.page_id,
                 "slug": opt(&h.slug),
                 "skill": h.skill,
-                "page_type": h.page_type,
+                "page_kind": h.page_kind,
                 "anchor": opt(&h.anchor),
                 "snippet": h.snippet,
                 "score": h.score,

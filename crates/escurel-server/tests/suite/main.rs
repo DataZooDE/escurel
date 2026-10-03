@@ -87,6 +87,7 @@ mod pack_import;
 mod pack_rebase;
 mod pack_rebase_resumable;
 mod pack_unsubscribe;
+mod page_kind_wire;
 mod page_write_events;
 mod project_memory_pack;
 mod project_memory_subprojects;

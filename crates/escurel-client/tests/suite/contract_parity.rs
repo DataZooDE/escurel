@@ -221,7 +221,7 @@ async fn search_forwards_as_of() {
     let past = client
         .search(SearchRequest {
             q: "acme".to_owned(),
-            page_type: "instance".to_owned(),
+            page_kind: "instance".to_owned(),
             as_of: BEFORE_EVERYTHING.to_owned(),
             ..Default::default()
         })

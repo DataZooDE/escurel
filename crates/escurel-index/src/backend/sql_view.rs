@@ -270,7 +270,7 @@ pub(crate) async fn search_candidates(
     q: &str,
     skill_filter: Option<&str>,
 ) -> Result<Vec<crate::search::SearchHit>, crate::IndexerError> {
-    use escurel_md::PageType;
+    use escurel_md::PageKind;
 
     // 1. Enumerate sql_view overlay pages (release the lock before the
     //    per-instance work, which re-locks for skill_backend + the match
@@ -360,7 +360,7 @@ pub(crate) async fn search_candidates(
                 page_id: row.page_id,
                 slug: row.slug,
                 skill: row.skill,
-                page_type: PageType::Instance,
+                page_kind: PageKind::Instance,
                 anchor: None,
                 snippet: format!("[sql_view {}] matched {count} row(s)", row.view),
                 score: count as f64,

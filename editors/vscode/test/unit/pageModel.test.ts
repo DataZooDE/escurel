@@ -35,7 +35,7 @@ const expanded: ExpandResponse = {
     page_id: 'markdown/instances/customer-order/4500123.md',
     slug: '4500123',
     skill: 'customer-order',
-    page_type: 'instance',
+    page_kind: 'instance',
     last_written_by: 'agent:supplier-risk',
   },
   frontmatter: {

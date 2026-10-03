@@ -13,7 +13,7 @@
 //! (operators may *append* tenant-specific guidance, never remove the
 //! standard sections).
 
-use escurel_md::{PageType, parse};
+use escurel_md::{PageKind, parse};
 
 /// Skill id (and slug) of the meta-skill.
 pub const META_SKILL_ID: &str = "escurel";
@@ -59,7 +59,7 @@ pub fn meta_skill_violation(content: &str, existing_sections: &[String]) -> Opti
     let Ok(parsed) = parse(content) else {
         return Some("the `escurel` meta-skill must remain valid markdown".to_owned());
     };
-    if parsed.frontmatter.page_type != PageType::Skill {
+    if parsed.frontmatter.page_kind != PageKind::Skill {
         return Some("the `escurel` meta-skill must remain a skill page".to_owned());
     }
     let id = parsed
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn canonical_markdown_declares_the_escurel_skill() {
         let parsed = parse(META_SKILL_MD).expect("meta-skill parses");
-        assert_eq!(parsed.frontmatter.page_type, PageType::Skill);
+        assert_eq!(parsed.frontmatter.page_kind, PageKind::Skill);
         assert_eq!(
             parsed
                 .frontmatter

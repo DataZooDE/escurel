@@ -369,7 +369,7 @@ async fn link_neighbours_traverses() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_honours_switches_and_table_format() {
     let h = start().await;
-    // --k + --page-type + --skill.
+    // --k + --page-kind + --skill.
     let out = run_args(
         &h,
         v(&[
@@ -377,7 +377,7 @@ async fn search_honours_switches_and_table_format() {
             "Acme",
             "--k",
             "5",
-            "--page-type",
+            "--page-kind",
             "any",
             "--skill",
             "customer",

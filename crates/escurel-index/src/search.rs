@@ -39,7 +39,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use escurel_md::PageType;
+use escurel_md::PageKind;
 
 use crate::indexer::BLOCKS_DENSE_VEC_DIM;
 use crate::{Indexer, IndexerError};
@@ -84,7 +84,7 @@ pub struct SearchHit {
     pub page_id: String,
     pub slug: Option<String>,
     pub skill: String,
-    pub page_type: PageType,
+    pub page_kind: PageKind,
     pub anchor: Option<String>,
     pub snippet: String,
     /// RRF-fused score.
@@ -422,7 +422,7 @@ impl Indexer {
         &self,
         q: &str,
         k: usize,
-        page_type: Option<PageType>,
+        page_type: Option<PageKind>,
         skill: Option<&str>,
         as_of: Option<&str>,
         scenario: Option<&str>,
@@ -454,7 +454,7 @@ impl Indexer {
         &self,
         q: &str,
         k: usize,
-        page_type: Option<PageType>,
+        page_type: Option<PageKind>,
         skill: Option<&str>,
         as_of: Option<&str>,
         scenario: Option<&str>,
@@ -619,7 +619,7 @@ impl Indexer {
 /// drop out of search. `scenario` keeps base blocks (and the overlay's
 /// when set); base-only when `None`.
 fn build_filters(
-    page_type: Option<PageType>,
+    page_type: Option<PageKind>,
     skill: Option<&str>,
     as_of: Option<&str>,
     scenario: Option<&str>,
@@ -638,8 +638,8 @@ fn build_filters(
         sql.push_str(" AND blocks.page_type = ?");
         params.push(
             match pt {
-                PageType::Skill => "skill",
-                PageType::Instance => "instance",
+                PageKind::Skill => "skill",
+                PageKind::Instance => "instance",
             }
             .to_owned(),
         );
@@ -781,7 +781,7 @@ struct HydratedBlock {
     page_id: String,
     slug: Option<String>,
     skill: String,
-    page_type: PageType,
+    page_kind: PageKind,
     anchor: Option<String>,
     snippet: String,
     frontmatter_excerpt: serde_json::Value,
@@ -793,7 +793,7 @@ impl HydratedBlock {
             page_id: self.page_id,
             slug: self.slug,
             skill: self.skill,
-            page_type: self.page_type,
+            page_kind: self.page_kind,
             anchor: self.anchor,
             snippet: self.snippet,
             score,
@@ -836,8 +836,8 @@ fn hydrate_blocks(
         let page_type_str: String = r.get(6)?;
         let fm_json: String = r.get(7)?;
         let page_type = match page_type_str.as_str() {
-            "skill" => PageType::Skill,
-            _ => PageType::Instance,
+            "skill" => PageKind::Skill,
+            _ => PageKind::Instance,
         };
         let frontmatter_excerpt: serde_json::Value = serde_json::from_str(&fm_json)?;
         out.insert(
@@ -846,7 +846,7 @@ fn hydrate_blocks(
                 page_id,
                 slug,
                 skill,
-                page_type,
+                page_kind: page_type,
                 anchor: anchor.filter(|a| !a.is_empty()),
                 snippet: snippet_from_body(&body),
                 frontmatter_excerpt,

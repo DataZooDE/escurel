@@ -11,7 +11,7 @@
 //! those three registries is R2 of the same plan; this split is what makes
 //! that change reviewable.
 
-use escurel_md::PageType;
+use escurel_md::PageKind;
 use serde_json::{Value, json};
 
 /// Every advertised tool, with the facts dispatch needs about it.
@@ -192,7 +192,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "queries": { "type": "array", "items": { "type": "string" }, "description": "Multiple query variants fused into one ranking (RRF across all variants × lanes). Provide this OR `q`." },
                     "k": { "type": "integer", "minimum": 0, "maximum": 1000 },
                     "granularity": { "type": "string", "enum": ["block", "page"], "description": "Result granularity; `page` collapses block hits to one per page. Default `block`." },
-                    "page_type": { "type": "string", "enum": ["skill", "instance", "any"] },
+                    "page_kind": { "type": "string", "enum": ["skill", "instance", "any"] },
                     "skill": { "type": "string" },
                     "filter": { "type": "object", "description": "Frontmatter post-filter; clauses are ANDed, e.g. {\"tier\": \"gold\", \"at\": {\">=\": \"2026-04-01\"}}." },
                     "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; blocks born after it are excluded." },
@@ -2207,9 +2207,9 @@ pub(crate) fn openapi_document(version: &str) -> Value {
 
 // --- helpers ---------------------------------------------------
 
-pub(super) fn page_type_str(pt: PageType) -> &'static str {
+pub(super) fn page_kind_str(pt: PageKind) -> &'static str {
     match pt {
-        PageType::Skill => "skill",
-        PageType::Instance => "instance",
+        PageKind::Skill => "skill",
+        PageKind::Instance => "instance",
     }
 }

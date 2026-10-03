@@ -367,7 +367,7 @@ pub(super) async fn tool_update_page(
     // identical on every side of a merge).
     if !caller.is_admin
         && let Ok(parsed) = escurel_md::parse(&a.content)
-        && parsed.frontmatter.page_type == PageType::Skill
+        && parsed.frontmatter.page_kind == PageKind::Skill
     {
         let skill_id = parsed
             .frontmatter
@@ -2552,7 +2552,7 @@ pub(super) async fn tool_list_snapshots(
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_snapshots acl: {e}")))?
     {
-        Some(e) if e.page.page_type == PageType::Instance => indexer
+        Some(e) if e.page.page_kind == PageKind::Instance => indexer
             .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
             .await
             .map_err(|e| JsonRpcError::internal(format!("list_snapshots acl: {e}")))?,

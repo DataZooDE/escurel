@@ -35,7 +35,7 @@
 use std::collections::{HashMap, HashSet};
 
 use escurel_md::wikilink::{WikilinkParsed, parse_wikilinks};
-use escurel_md::{PageType, YamlMapping, YamlValue, parse};
+use escurel_md::{PageKind, YamlMapping, YamlValue, parse};
 
 use crate::{Indexer, IndexerError};
 
@@ -131,8 +131,8 @@ pub const KNOWN_HARNESSES: [&str; 7] = [
 /// `summary:` on a skill page (workbench backend P2-7): absent is a
 /// warning (the workbench falls back to `description`), over
 /// [`SUMMARY_MAX_CHARS`] is an error.
-fn check_summary(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageType::Skill {
+fn check_summary(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_type != PageKind::Skill {
         return None;
     }
     let text = fields
@@ -163,8 +163,8 @@ fn check_summary(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
 }
 
 /// `harness:` on a skill page names an adapter the runner has.
-fn check_harness(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageType::Skill {
+fn check_harness(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_type != PageKind::Skill {
         return None;
     }
     let raw = fields.get("harness")?;
@@ -279,8 +279,8 @@ fn check_actions(raw: &YamlValue) -> (Vec<Issue>, Vec<(usize, String)>) {
     (issues, events)
 }
 
-fn check_autonomy(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageType::Skill {
+fn check_autonomy(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_type != PageKind::Skill {
         return None;
     }
     let raw = fields.get("autonomy")?;
@@ -338,8 +338,8 @@ fn check_autonomy(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
 ///   form still works, so failing the write would be a behaviour change for
 ///   a key that has never been validated. Compare `autonomy:`, which is
 ///   error-severity because there the failure mode is an ungated write.
-fn check_params(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
-    if page_type != PageType::Skill {
+fn check_params(page_type: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_type != PageKind::Skill {
         return Vec::new();
     }
     let Some(raw) = fields.get("params") else {
@@ -434,8 +434,8 @@ fn check_params(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
 /// unknown `kind:` is a WARNING and the field degrades to `string`, because an
 /// over-permissive field under-validates while a dropped one silently deletes
 /// a constraint the author believes is in force.
-fn check_fields(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
-    if page_type != PageType::Skill {
+fn check_fields(page_type: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_type != PageKind::Skill {
         return Vec::new();
     }
     let Some(raw) = fields.get("fields") else {
@@ -578,8 +578,8 @@ const KNOWN_RENDERS: &[&str] = &[
 /// mappings (workbench backend P3-5). A block without an anchor has nowhere
 /// to render, so that — and a `blocks:` that is not a sequence — is an error
 /// at the offending location.
-fn check_blocks(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
-    if page_type != PageType::Skill {
+fn check_blocks(page_type: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_type != PageKind::Skill {
         return Vec::new();
     }
     let Some(raw) = fields.get("blocks") else {
@@ -843,12 +843,12 @@ impl Indexer {
 
         // The human-in-the-loop policy a skill declares (heron#5 / CR-1).
         // Cheap, local, and independent of every skill lookup below.
-        issues.extend(check_autonomy(parsed.frontmatter.page_type, fields));
+        issues.extend(check_autonomy(parsed.frontmatter.page_kind, fields));
         // The workbench's skill-contract keys (P2-7): the one-liner and the
         // adapter, both local; the fan-out list needs the corpus (below).
-        issues.extend(check_summary(parsed.frontmatter.page_type, fields));
-        issues.extend(check_harness(parsed.frontmatter.page_type, fields));
-        if parsed.frontmatter.page_type == PageType::Skill
+        issues.extend(check_summary(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_harness(parsed.frontmatter.page_kind, fields));
+        if parsed.frontmatter.page_kind == PageKind::Skill
             && let Some(raw) = fields.get("actions")
         {
             let (action_issues, events) = check_actions(raw);
@@ -866,13 +866,13 @@ impl Indexer {
             }
         }
         // The invocation-parameter block a skill declares (heron#11 / CR-7).
-        issues.extend(check_params(parsed.frontmatter.page_type, fields));
+        issues.extend(check_params(parsed.frontmatter.page_kind, fields));
         // The instance-shape block a skill declares (#508). Checked on the
         // SKILL page, so a malformed schema reaches its author once rather
         // than every instance's author repeatedly.
-        issues.extend(check_fields(parsed.frontmatter.page_type, fields));
+        issues.extend(check_fields(parsed.frontmatter.page_kind, fields));
         // The instance-body layout a skill declares (workbench P3-5).
-        issues.extend(check_blocks(parsed.frontmatter.page_type, fields));
+        issues.extend(check_blocks(parsed.frontmatter.page_kind, fields));
         // A stored corpus traversal (#511). Checked HERE rather than at query
         // time: a bound that is only enforced when someone runs the query is a
         // bound that ships broken, and the author finds out from a stranger.
@@ -880,9 +880,9 @@ impl Indexer {
 
         // Skill pages declare themselves via `id:`; instance pages
         // via `skill:`.
-        let declared_skill = match parsed.frontmatter.page_type {
-            PageType::Instance => fields.get("skill").and_then(YamlValue::as_str),
-            PageType::Skill => fields.get("id").and_then(YamlValue::as_str),
+        let declared_skill = match parsed.frontmatter.page_kind {
+            PageKind::Instance => fields.get("skill").and_then(YamlValue::as_str),
+            PageKind::Skill => fields.get("id").and_then(YamlValue::as_str),
         };
 
         // Collect every skill slug we need to resolve up front — the
@@ -923,7 +923,7 @@ impl Indexer {
         // lists, but `expand` fails with `invalid type: null, expected a
         // string` and `resolve` cannot find it — a page that exists and is
         // unreachable. Observed on a real tenant.
-        if parsed.frontmatter.page_type == PageType::Instance
+        if parsed.frontmatter.page_kind == PageKind::Instance
             && fields
                 .get("id")
                 .and_then(YamlValue::as_str)
@@ -952,7 +952,7 @@ impl Indexer {
         //
         // Symmetric with the `id` rule above, and for the same reason: both
         // are identity failures rather than completeness ones.
-        if parsed.frontmatter.page_type == PageType::Instance
+        if parsed.frontmatter.page_kind == PageKind::Instance
             && fields
                 .get("skill")
                 .and_then(YamlValue::as_str)
@@ -997,12 +997,12 @@ impl Indexer {
         // the real thing is worse than no dry run, because it teaches people
         // to ignore it.
         if let Some(skill) = declared_skill
-            && parsed.frontmatter.page_type == PageType::Instance
+            && parsed.frontmatter.page_kind == PageKind::Instance
         {
             match skills.get(skill) {
                 // A `skill:` on an instance that names a non-existent
                 // skill is itself an unknown-skill error.
-                None if parsed.frontmatter.page_type == PageType::Instance => {
+                None if parsed.frontmatter.page_kind == PageKind::Instance => {
                     issues.push(Issue::error(
                         "unknown_skill",
                         "frontmatter.skill",
@@ -1280,7 +1280,7 @@ impl Indexer {
         &self,
         frontmatter: &escurel_md::Frontmatter,
     ) -> Result<Vec<Issue>, IndexerError> {
-        if frontmatter.page_type != PageType::Instance
+        if frontmatter.page_kind != PageKind::Instance
             || frontmatter.fields.get("skill").and_then(YamlValue::as_str) != Some("query")
         {
             return Ok(Vec::new());

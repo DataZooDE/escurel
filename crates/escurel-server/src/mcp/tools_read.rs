@@ -257,7 +257,7 @@ pub(super) async fn tool_get_operation(
         .await
         .map_err(|e| JsonRpcError::internal(format!("get_operation acl: {e}")))?
     {
-        Some(e) if e.page.page_type == PageType::Instance => indexer
+        Some(e) if e.page.page_kind == PageKind::Instance => indexer
             .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
             .await
             .map_err(|e| JsonRpcError::internal(format!("get_operation acl: {e}")))?,
@@ -358,7 +358,7 @@ pub(super) async fn tool_resolve(
     // existence / page_id of an owner-private instance the caller cannot
     // read — resolve it to "not found", exactly as `expand` returns null.
     if let Some(p) = &resolved.page
-        && p.page_type == PageType::Instance
+        && p.page_kind == PageKind::Instance
     {
         let readable = match indexer
             .expand(&p.page_id, None, None)
@@ -389,7 +389,7 @@ pub(super) async fn tool_resolve(
             "page_id": p.page_id,
             "slug": p.slug,
             "skill": p.skill,
-            "page_type": page_type_str(p.page_type),
+            "page_kind": page_kind_str(p.page_kind),
         })),
         "exists": exists,
     }))
@@ -432,7 +432,7 @@ pub(super) async fn tool_expand(
     // reads as absent (null) — same shape as a missing page, so existence
     // is not leaked. Skill pages are the public catalogue, never gated.
     if let Some(e) = &out
-        && e.page.page_type == PageType::Instance
+        && e.page.page_kind == PageKind::Instance
         && !indexer
             .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
             .await
@@ -449,7 +449,7 @@ pub(super) async fn tool_expand(
                     "page_id": e.page.page_id,
                     "slug": e.page.slug,
                     "skill": e.page.skill,
-                    "page_type": page_type_str(e.page.page_type),
+                    "page_kind": page_kind_str(e.page.page_kind),
                     // #357 (CR-6): the verified principal behind the page's
                     // most recent write. `null` for a page last written
                     // before the gateway recorded one, and on an `as_of`
@@ -503,7 +503,7 @@ pub(super) async fn tool_expand(
             // the same drift-visibility discipline as the sql_view `source`
             // namespace: the overlay wins for display, the base value stays
             // visible, never silently masked.
-            if e.page.page_type == PageType::Skill
+            if e.page.page_kind == PageKind::Skill
                 && !e_page_id.starts_with(escurel_index::pack::RESERVED_BASE_PREFIX)
                 && let Some(slug) = e.page.slug.as_deref()
                 && let Some((base_page_id, pin, base_fm)) = indexer
@@ -604,7 +604,7 @@ pub(super) async fn resolve_readable_blob(
     let Some(e) = out else {
         return Ok(None);
     };
-    if e.page.page_type == PageType::Instance
+    if e.page.page_kind == PageKind::Instance
         && !indexer
             .may_read_instance(caller, &e.page.skill, &e.frontmatter)
             .await
@@ -830,7 +830,7 @@ pub(super) async fn tool_neighbours(
             .await
             .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?
         {
-            Some(ex) if ex.page.page_type == PageType::Instance => indexer
+            Some(ex) if ex.page.page_kind == PageKind::Instance => indexer
                 .may_read_instance(&caller, &ex.page.skill, &ex.frontmatter)
                 .await
                 .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?,
@@ -944,7 +944,7 @@ pub(super) async fn tool_provenance_ancestry(
                     match indexer.expand(pid, None, None).await.map_err(|e| {
                         JsonRpcError::internal(format!("provenance_ancestry acl: {e}"))
                     })? {
-                        Some(ex) if ex.page.page_type == PageType::Instance => indexer
+                        Some(ex) if ex.page.page_kind == PageKind::Instance => indexer
                             .may_read_instance(&caller, &ex.page.skill, &ex.frontmatter)
                             .await
                             .map_err(|e| {
@@ -995,7 +995,7 @@ pub(super) async fn provenance_page_readable(
         .await
         .map_err(|e| JsonRpcError::internal(format!("provenance acl: {e}")))?
     {
-        Some(ex) if ex.page.page_type == PageType::Instance => indexer
+        Some(ex) if ex.page.page_kind == PageKind::Instance => indexer
             .may_read_instance(caller, &ex.page.skill, &ex.frontmatter)
             .await
             .map_err(|e| JsonRpcError::internal(format!("provenance acl: {e}"))),
@@ -1089,7 +1089,7 @@ pub(super) struct SearchArgs {
     #[serde(default = "default_k")]
     pub(super) k: usize,
     #[serde(default)]
-    pub(super) page_type: Option<String>,
+    pub(super) page_kind: Option<String>,
     #[serde(default, alias = "skill_id")]
     pub(super) skill: Option<String>,
     /// RFC 3339 time-travel cut; blocks born after it are excluded.
@@ -1153,14 +1153,21 @@ pub(crate) async fn tool_search(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
+    // The hard cut renamed the filter. `SearchArgs` ignores unknown keys, so a caller still sending
+    // the removed `page_type` would silently search every page instead of the kind it asked for.
+    if args.get("page_type").is_some() {
+        return Err(JsonRpcError::invalid_params(
+            "search: `page_type` was renamed `page_kind` (skill | instance | any)".to_owned(),
+        ));
+    }
     let a: SearchArgs = parse_args(args, "search")?;
-    let pt = match a.page_type.as_deref() {
+    let pt = match a.page_kind.as_deref() {
         None | Some("any") => None,
-        Some("skill") => Some(PageType::Skill),
-        Some("instance") => Some(PageType::Instance),
+        Some("skill") => Some(PageKind::Skill),
+        Some("instance") => Some(PageKind::Instance),
         Some(other) => {
             return Err(JsonRpcError::invalid_params(format!(
-                "search page_type `{other}`; expected skill|instance|any"
+                "search page_kind `{other}`; expected skill|instance|any"
             )));
         }
     };
@@ -1186,7 +1193,7 @@ pub(crate) async fn tool_search(
     // the constraints.
     let constrained =
         a.as_of.is_some() || a.scenario.is_some() || filter.is_some() || a.page_id.is_some();
-    let sql_lane_enabled = !matches!(pt, Some(PageType::Skill)) && !constrained;
+    let sql_lane_enabled = !matches!(pt, Some(PageKind::Skill)) && !constrained;
     let page_id = a.page_id.as_deref().filter(|s| !s.is_empty());
 
     // Run every variant through both lanes. INV-ACL-FUSION (spike S3):
@@ -1251,7 +1258,7 @@ pub(crate) async fn tool_search(
                 "page_id": h.page_id,
                 "slug": h.slug,
                 "skill": h.skill,
-                "page_type": page_type_str(h.page_type),
+                "page_kind": page_kind_str(h.page_kind),
                 "anchor": h.anchor,
                 "snippet": h.snippet,
                 "score": h.score,
@@ -1277,7 +1284,7 @@ pub(super) async fn acl_filter_hits(
 ) -> Result<Vec<escurel_index::SearchHit>, JsonRpcError> {
     let mut out = Vec::with_capacity(hits.len());
     for h in hits {
-        if h.page_type == PageType::Instance
+        if h.page_kind == PageKind::Instance
             && !indexer
                 .may_read_instance(caller, &h.skill, &h.frontmatter_excerpt)
                 .await

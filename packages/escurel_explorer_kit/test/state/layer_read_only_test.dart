@@ -19,12 +19,12 @@ import 'package:flutter_test/flutter_test.dart';
 ExpandResult _page({
   required String pageId,
   required String skill,
-  required PageType pageType,
+  required PageKind pageKind,
   Map<String, dynamic> frontmatter = const {},
 }) => ExpandResult(
   pageId: pageId,
   skill: skill,
-  pageType: pageType,
+  pageKind: pageKind,
   frontmatter: frontmatter,
   body: '',
   blocks: const [],
@@ -62,7 +62,7 @@ void main() {
       _page(
         pageId: 'markdown/skills/pallet-consolidation.md',
         skill: 'pallet-consolidation',
-        pageType: PageType.skill,
+        pageKind: PageKind.skill,
         frontmatter: const {'layer': 'base@logistics-midmarket@v7'},
       ),
       layer: 'base@logistics-midmarket@v7',
@@ -77,7 +77,7 @@ void main() {
       _page(
         pageId: 'markdown/instances/pallet-consolidation/edge.md',
         skill: 'pallet-consolidation',
-        pageType: PageType.instance,
+        pageKind: PageKind.instance,
         frontmatter: const {'layer': 'base@logistics-midmarket@v7'},
       ),
       layer: 'base@logistics-midmarket@v7',
@@ -94,7 +94,7 @@ void main() {
       _page(
         pageId: 'markdown/instances/pallet-consolidation/my-note.md',
         skill: 'pallet-consolidation',
-        pageType: PageType.instance,
+        pageKind: PageKind.instance,
       ),
       layer: 'base@logistics-midmarket@v7',
     );

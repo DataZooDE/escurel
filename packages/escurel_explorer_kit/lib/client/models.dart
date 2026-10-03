@@ -91,7 +91,7 @@ class ResolveResult {
   const ResolveResult({
     required this.pageId,
     required this.skill,
-    required this.pageType,
+    required this.pageKind,
     required this.exists,
     this.description,
     this.error,
@@ -99,7 +99,7 @@ class ResolveResult {
 
   final String pageId;
   final String skill;
-  final PageType pageType;
+  final PageKind pageKind;
   final bool exists;
   final String? description;
   final String? error;
@@ -117,7 +117,7 @@ class ExpandResult {
   const ExpandResult({
     required this.pageId,
     required this.skill,
-    required this.pageType,
+    required this.pageKind,
     required this.frontmatter,
     required this.body,
     required this.blocks,
@@ -131,7 +131,7 @@ class ExpandResult {
 
   final String pageId;
   final String skill;
-  final PageType pageType;
+  final PageKind pageKind;
   final Map<String, dynamic> frontmatter;
   final String body;
   final List<Block> blocks;

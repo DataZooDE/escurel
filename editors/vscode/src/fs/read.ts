@@ -69,7 +69,7 @@ export async function readPageMarkdown(
     degraded,
     frontmatter: e.frontmatter,
     skill: e.page.skill,
-    pageType: e.page.page_type,
+    pageType: e.page.page_kind,
     lastWrittenBy: e.page.last_written_by,
   };
 }

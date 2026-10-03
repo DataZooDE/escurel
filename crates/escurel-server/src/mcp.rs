@@ -44,7 +44,7 @@ use escurel_index::{
     GraphDir, Indexer, IndexerError, IndexerHandle, Issue, ListChatMessages, NewEvent, OrderDir,
     Severity, Visibility, derive_attach_alias, is_safe_attach_source,
 };
-use escurel_md::PageType;
+use escurel_md::PageKind;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
 use escurel_storage::{Key, StoreError};
 use escurel_types::{
@@ -78,7 +78,7 @@ mod tools_read;
 mod tools_write;
 pub(crate) use ingest::{blob_get, ingest, ingest_upload};
 pub(crate) use schema::openapi_document;
-use schema::page_type_str;
+use schema::page_kind_str;
 use tools_admin::*;
 use tools_branches::*;
 use tools_drafts::*;
@@ -1606,7 +1606,7 @@ async fn tool_list_op_authors(
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_op_authors acl: {e}")))?
     {
-        Some(e) if e.page.page_type == PageType::Instance => indexer
+        Some(e) if e.page.page_kind == PageKind::Instance => indexer
             .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
             .await
             .map_err(|e| JsonRpcError::internal(format!("list_op_authors acl: {e}")))?,
@@ -2034,7 +2034,7 @@ mod search_fusion_tests {
             q: q.map(str::to_owned),
             queries: queries.map(|v| v.into_iter().map(str::to_owned).collect()),
             k: 10,
-            page_type: None,
+            page_kind: None,
             skill: None,
             as_of: None,
             scenario: None,
@@ -2080,7 +2080,7 @@ mod search_fusion_tests {
             page_id: page_id.to_owned(),
             slug: None,
             skill: "note".to_owned(),
-            page_type: PageType::Instance,
+            page_kind: PageKind::Instance,
             anchor: None,
             snippet: String::new(),
             score: 0.0,

@@ -1143,7 +1143,7 @@ pub(super) async fn tool_import_pack(state: &AppState, args: Value) -> Result<Va
         let Ok(parsed) = escurel_md::parse(stamped) else {
             continue; // stamp_layer already parsed; defensive only
         };
-        if parsed.frontmatter.page_type != PageType::Skill {
+        if parsed.frontmatter.page_kind != PageKind::Skill {
             continue;
         }
         let skill_id = parsed
@@ -1478,7 +1478,7 @@ async fn check_skill_collisions(
         let Ok(parsed) = escurel_md::parse(stamped) else {
             continue;
         };
-        if parsed.frontmatter.page_type != PageType::Skill {
+        if parsed.frontmatter.page_kind != PageKind::Skill {
             continue;
         }
         let skill_id = parsed
@@ -1532,7 +1532,7 @@ async fn detect_shadow_conflicts(
         let Ok(new_page) = escurel_md::parse(stamped) else {
             continue;
         };
-        if new_page.frontmatter.page_type != PageType::Skill {
+        if new_page.frontmatter.page_kind != PageKind::Skill {
             continue;
         }
         let skill_id = new_page
@@ -1663,7 +1663,7 @@ async fn detect_orphaned_shadows(
         let Ok(orphan) = escurel_md::parse(&content) else {
             continue;
         };
-        if orphan.frontmatter.page_type != PageType::Skill {
+        if orphan.frontmatter.page_kind != PageKind::Skill {
             continue;
         }
         let skill_id = orphan

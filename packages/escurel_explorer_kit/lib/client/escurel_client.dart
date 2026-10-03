@@ -29,7 +29,7 @@ abstract class EscurelClient {
     required String q,
     int k = 10,
     SearchGranularity granularity = SearchGranularity.block,
-    PageTypeFilter pageType = PageTypeFilter.any,
+    PageTypeFilter pageKind = PageTypeFilter.any,
     String? skill,
     String? asOf,
   });

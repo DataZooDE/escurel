@@ -174,7 +174,7 @@ citation; never treat one as a link. The link's `skill` segment is its
 ## The three axes — same primitives, no special tools
 
 - **Kind axis.** "What type is this?" → `list_skills`, `list_instances`,
-  `search(..., page_type=…, skill=…)`.
+  `search(..., page_kind=…, skill=…)`.
 - **Time axis.** Two sub-axes, four conventions, *no special tool*:
   - **Event log** — skills whose `required_frontmatter` includes `at:`
     are event-typed (`meeting`, `email`, `incident`, …). Events cite the

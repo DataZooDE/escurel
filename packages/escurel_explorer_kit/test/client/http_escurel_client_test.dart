@@ -214,7 +214,7 @@ void main() {
           'q': 'hoffmann',
           'k': 5,
           'granularity': 'block',
-          'page_type': 'any',
+          'page_kind': 'any',
           'skill': 'contact',
         });
         expect(r.hits.map((h) => h.pageId).toList(), [
@@ -225,18 +225,18 @@ void main() {
       },
     );
 
-    test('resolve unmarshals page_type into the md.PageType enum', () async {
+    test('resolve unmarshals page_kind into the md.PageKind enum', () async {
       mock.toolHandlers['resolve'] = (args) => {
         'page_id': args['wikilink'],
         'skill': 'opportunity',
-        'page_type': 'instance',
+        'page_kind': 'instance',
         'exists': true,
         'description': 'pilot opportunity',
       };
 
       final r = await client.resolve('[[opportunity::hoffmann-pilot]]');
       expect(r.exists, isTrue);
-      expect(r.pageType, md.PageType.instance);
+      expect(r.pageKind, md.PageKind.instance);
       expect(r.description, 'pilot opportunity');
     });
 
@@ -246,7 +246,7 @@ void main() {
         mock.toolHandlers['expand'] = (args) => {
           'page_id': args['page_id'],
           'skill': 'opportunity',
-          'page_type': 'instance',
+          'page_kind': 'instance',
           'frontmatter': {'value_eur': 60000, 'status': 'negotiating'},
           'body': '# Pilot\n\nMünchner Pharma',
           'blocks': [
@@ -419,7 +419,7 @@ void main() {
           'page': {
             'page_id': 'markdown/skills/pallet-consolidation.md',
             'skill': 'pallet-consolidation',
-            'page_type': 'skill',
+            'page_kind': 'skill',
           },
           'frontmatter': {
             'id': 'pallet-consolidation',
@@ -456,7 +456,7 @@ void main() {
           'page': {
             'page_id': 'markdown/skills/local-notes.md',
             'skill': 'local-notes',
-            'page_type': 'skill',
+            'page_kind': 'skill',
           },
           'frontmatter': {'id': 'local-notes'},
           'body': '',
@@ -1019,7 +1019,7 @@ void main() {
         'page': {
           'page_id': 'customers__eu',
           'skill': 'customers',
-          'page_type': 'instance',
+          'page_kind': 'instance',
         },
         'frontmatter': {
           'backend_ref': {'kind': 'sql_view', 'view': 'vw_customers__eu'},
@@ -1048,7 +1048,7 @@ void main() {
         'page': {
           'page_id': 'customers__eu',
           'skill': 'customers',
-          'page_type': 'instance',
+          'page_kind': 'instance',
         },
         'frontmatter': {
           'backend_ref': {'kind': 'sql_view', 'view': 'vw_customers__eu'},
@@ -1076,7 +1076,7 @@ void main() {
         'page': {
           'page_id': 'quote__aapl',
           'skill': 'quote',
-          'page_type': 'instance',
+          'page_kind': 'instance',
         },
         'frontmatter': {
           'backend_ref': {'kind': 'openapi', 'endpoint': 'yahoo_finance'},
@@ -1109,7 +1109,7 @@ void main() {
         'page': {
           'page_id': 'quote__aapl',
           'skill': 'quote',
-          'page_type': 'instance',
+          'page_kind': 'instance',
         },
         'frontmatter': {
           'backend_ref': {'kind': 'openapi', 'endpoint': 'yahoo_finance'},

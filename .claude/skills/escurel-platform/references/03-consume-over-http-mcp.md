@@ -17,7 +17,7 @@ Standard **JSON-RPC 2.0** envelope; each tool call is `tools/call`:
   "method": "tools/call",
   "params": {
     "name": "search",
-    "arguments": { "q": "acme churn", "k": 5, "page_type": "instance" }
+    "arguments": { "q": "acme churn", "k": 5, "page_kind": "instance" }
   }
 }
 ```

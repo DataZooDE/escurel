@@ -20,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use escurel_md::{PageType, YamlValue, parse};
+use escurel_md::{PageKind, YamlValue, parse};
 use serde_json::Value;
 
 use crate::meta_skill::META_SKILL_PAGE_ID;
@@ -251,7 +251,7 @@ impl Indexer {
             return Ok(true);
         }
         let parsed = parse(content)?;
-        if parsed.frontmatter.page_type != PageType::Instance {
+        if parsed.frontmatter.page_kind != PageKind::Instance {
             return Ok(true); // P1: gate instance writes only
         }
         // Async-ops: a workflow STEP runs under a caller-scoped (non-admin)

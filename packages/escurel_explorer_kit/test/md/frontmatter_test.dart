@@ -16,7 +16,7 @@ required_frontmatter: [name, country]
 Body here.
 ''';
       final page = parse(input);
-      expect(page.frontmatter.pageType, PageType.skill);
+      expect(page.frontmatter.pageKind, PageKind.skill);
       expect(page.frontmatter.fields['id'], 'customer');
       expect(page.frontmatter.fields['description'], 'A buying entity.');
       expect(page.frontmatter.fields['required_frontmatter'], ['name', 'country']);
@@ -33,7 +33,7 @@ name: Dr. Hoffmann
 body
 ''';
       final page = parse(input);
-      expect(page.frontmatter.pageType, PageType.instance);
+      expect(page.frontmatter.pageKind, PageKind.instance);
       expect(page.frontmatter.fields['skill'], 'contact');
       expect(page.body, 'body\n');
     });

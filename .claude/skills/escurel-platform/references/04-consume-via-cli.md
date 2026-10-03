@@ -30,7 +30,7 @@ Commands are grouped **gh/aws-style by resource noun** (`escurel <noun>
 
 ```sh
 # search + resolve (top-level verbs)
-escurel search "acme churn" --k 5 --page-type instance --skill customer
+escurel search "acme churn" --k 5 --page-kind instance --skill customer
 escurel resolve '[[customer::acme-corp]]'
 
 # skills + instances
@@ -153,7 +153,7 @@ drive them over MCP/gRPC or the BFF.
   ```
 - `--params` for `query instance` is a JSON object string
   (default `{}`).
-- `--page-type` is `skill` | `instance` | `any` (default `any`);
+- `--page-kind` is `skill` | `instance` | `any` (default `any`);
   `--direction` is `in` | `out` | `both` (default `both`); `limit 0`
   means no limit.
 - `ingest --skill <id>` pins a specific `document`-backend skill and

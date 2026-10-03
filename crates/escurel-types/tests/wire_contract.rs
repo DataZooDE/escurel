@@ -22,7 +22,7 @@ fn search_hit_wire_shape() {
         "page_id": "instances/customer/acme",
         "slug": "acme",
         "skill": "customer",
-        "page_type": "instance",
+        "page_kind": "instance",
         "anchor": "overview",
         "snippet": "Acme is a customer",
         "score": 0.87,
@@ -31,7 +31,7 @@ fn search_hit_wire_shape() {
     });
     let hit: SearchHit = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(hit.page_id, "instances/customer/acme");
-    assert_eq!(hit.page_type, "instance");
+    assert_eq!(hit.page_kind, "instance");
     assert_eq!(hit.score, 0.87);
     // frontmatter_excerpt is a real JSON object, not a string
     assert_eq!(hit.frontmatter_excerpt["tier"], "gold");
@@ -57,7 +57,7 @@ fn expand_response_frontmatter_is_object() {
             "page_id": "instances/customer/acme",
             "slug": "acme",
             "skill": "customer",
-            "page_type": "instance"
+            "page_kind": "instance"
         },
         "frontmatter": { "tier": "gold", "at": "2026-01-01" },
         "body": "# Acme",
@@ -121,7 +121,7 @@ fn resolve_response_wire_shape() {
             "page_id": "instances/customer/acme",
             "slug": "acme",
             "skill": "customer",
-            "page_type": "instance"
+            "page_kind": "instance"
         },
         "exists": true
     });
@@ -587,7 +587,7 @@ fn search_hit_tolerates_null_anchor() {
         "page_id": "markdown/instances/customers/eu.md",
         "slug": "eu",
         "skill": "customers",
-        "page_type": "instance",
+        "page_kind": "instance",
         "anchor": null,
         "snippet": "matched 2 rows",
         "score": 0.5,
@@ -616,7 +616,7 @@ fn roundtrip_core() {
         page_id: "p".into(),
         slug: "s".into(),
         skill: "sk".into(),
-        page_type: "instance".into(),
+        page_kind: "instance".into(),
         last_written_by: Some("agent:sk".into()),
     });
     // Absent on the wire (every non-`expand` PageRef) decodes to None and
@@ -914,7 +914,7 @@ fn expand_response_guard_fields_wire_shape() {
     let wire = json!({
         "page": {
             "page_id": "p", "slug": "s", "skill": "sk",
-            "page_type": "instance", "last_written_by": null,
+            "page_kind": "instance", "last_written_by": null,
         },
         "frontmatter": {},
         "body": "b",

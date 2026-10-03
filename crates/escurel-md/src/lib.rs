@@ -44,7 +44,7 @@ use thiserror::Error;
 
 /// The two kinds of pages an Escurel tenant carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PageType {
+pub enum PageKind {
     /// A type declaration. Defines what its instances look like.
     Skill,
     /// A memory of some skill type.
@@ -55,7 +55,7 @@ pub enum PageType {
 #[derive(Debug, Clone)]
 pub struct Frontmatter {
     /// Convenience projection of the page-kind key (`kind:`).
-    pub page_type: PageType,
+    pub page_kind: PageKind,
     /// Raw frontmatter mapping (includes `kind` and every other key).
     /// Callers project skill-specific fields from here.
     pub fields: serde_yaml_ng::Mapping,
@@ -130,8 +130,8 @@ pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
             .get(key)
             .and_then(serde_yaml_ng::Value::as_str)
             .and_then(|s| match s {
-                "skill" => Some(PageType::Skill),
-                "instance" => Some(PageType::Instance),
+                "skill" => Some(PageKind::Skill),
+                "instance" => Some(PageKind::Instance),
                 _ => None,
             })
     };
@@ -143,7 +143,7 @@ pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
 
     Ok(Page {
         frontmatter: Frontmatter {
-            page_type,
+            page_kind: page_type,
             fields: mapping,
         },
         body,

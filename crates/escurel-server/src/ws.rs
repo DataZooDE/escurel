@@ -51,7 +51,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use escurel_auth::Role;
 use escurel_crdt::Op;
 use escurel_index::{AclCaller, IndexerHandle};
-use escurel_md::PageType;
+use escurel_md::PageKind;
 use escurel_quota::{Dimension, QuotaError, SessionGuard};
 use serde_json::{Value, json};
 
@@ -746,7 +746,7 @@ async fn may_attach(state: &AppState, caller: &WsCaller, page_id: &str) -> bool 
         );
     }
     match indexer.expand(page_id, None, None).await {
-        Ok(Some(e)) if e.page.page_type == PageType::Instance => indexer
+        Ok(Some(e)) if e.page.page_kind == PageKind::Instance => indexer
             .may_read_instance(&caller.acl(), &e.page.skill, &e.frontmatter)
             .await
             .unwrap_or(false),

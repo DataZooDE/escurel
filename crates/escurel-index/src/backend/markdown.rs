@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use escurel_md::PageType;
+use escurel_md::PageKind;
 
 use super::{BackendCtx, BackendKind, Capabilities, InstanceBackend};
 use crate::read::{Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, ResolvedWikilink};
@@ -91,7 +91,7 @@ impl InstanceBackend for MarkdownBackend {
         ctx: BackendCtx<'_>,
         q: &str,
         k: usize,
-        page_type: Option<PageType>,
+        page_type: Option<PageKind>,
         skill: Option<&str>,
         granularity: Granularity,
         filter: Option<&serde_json::Value>,

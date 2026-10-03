@@ -23,8 +23,8 @@ export async function searchCommand(client: () => EscurelClient): Promise<void> 
       const res = await client().search({ q, k: 20, granularity: 'page' });
       if (my !== seq) return;
       qp.items = res.hits.map((h) => ({
-        label: `$(${h.page_type === 'skill' ? 'symbol-class' : 'symbol-field'}) ${h.slug ?? h.page_id}`,
-        description: `${h.skill} · ${h.page_type}`,
+        label: `$(${h.page_kind === 'skill' ? 'symbol-class' : 'symbol-field'}) ${h.slug ?? h.page_id}`,
+        description: `${h.skill} · ${h.page_kind}`,
         detail: h.snippet.replace(/\s+/g, ' ').slice(0, 160),
         pageId: h.page_id,
       }));

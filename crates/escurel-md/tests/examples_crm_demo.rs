@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use escurel_md::{PageType, parse};
+use escurel_md::{PageKind, parse};
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `<root>/crates/escurel-md`; go up two.
@@ -47,8 +47,8 @@ fn every_skill_page_parses_with_type_skill() {
             panic!("parse {}: {e}", path.display());
         });
         assert_eq!(
-            page.frontmatter.page_type,
-            PageType::Skill,
+            page.frontmatter.page_kind,
+            PageKind::Skill,
             "{}: expected kind: skill",
             path.display(),
         );
@@ -71,8 +71,8 @@ fn every_instance_page_parses_with_type_instance() {
             panic!("parse {}: {e}", path.display());
         });
         assert_eq!(
-            page.frontmatter.page_type,
-            PageType::Instance,
+            page.frontmatter.page_kind,
+            PageKind::Instance,
             "{}: expected kind: instance",
             path.display(),
         );

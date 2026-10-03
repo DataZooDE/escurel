@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use escurel_md::{PageType, ParseError, parse};
+use escurel_md::{PageKind, ParseError, parse};
 
 fn fixture(name: &str) -> String {
     let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name]
@@ -20,7 +20,7 @@ fn parses_skill_page() {
     let input = fixture("skill_customer.md");
     let page = parse(&input).expect("skill fixture must parse");
 
-    assert_eq!(page.frontmatter.page_type, PageType::Skill);
+    assert_eq!(page.frontmatter.page_kind, PageKind::Skill);
 
     let fields = &page.frontmatter.fields;
     assert_eq!(fields["id"].as_str(), Some("customer"));
@@ -54,7 +54,7 @@ fn parses_instance_page() {
     let input = fixture("instance_acme.md");
     let page = parse(&input).expect("instance fixture must parse");
 
-    assert_eq!(page.frontmatter.page_type, PageType::Instance);
+    assert_eq!(page.frontmatter.page_kind, PageKind::Instance);
 
     let fields = &page.frontmatter.fields;
     assert_eq!(fields["skill"].as_str(), Some("customer"));
@@ -71,7 +71,7 @@ fn parses_event_typed_instance() {
     let input = fixture("event_meeting.md");
     let page = parse(&input).expect("event fixture must parse");
 
-    assert_eq!(page.frontmatter.page_type, PageType::Instance);
+    assert_eq!(page.frontmatter.page_kind, PageKind::Instance);
 
     let fields = &page.frontmatter.fields;
     assert_eq!(fields["skill"].as_str(), Some("meeting"));
@@ -160,7 +160,7 @@ fn set_frontmatter_bool_stamps_flag_and_preserves_body() {
         escurel_md::set_frontmatter_bool(input, "archived", true).expect("stamp archived flag");
 
     let page = parse(&out).expect("re-parse stamped page");
-    assert_eq!(page.frontmatter.page_type, PageType::Instance);
+    assert_eq!(page.frontmatter.page_kind, PageKind::Instance);
     assert_eq!(
         page.frontmatter.fields["archived"].as_bool(),
         Some(true),
@@ -183,10 +183,10 @@ fn set_frontmatter_bool_rejects_malformed_input() {
 #[test]
 fn parses_the_kind_key() {
     let skill = parse("---\nkind: skill\nid: customer\n---\nbody\n").expect("kind: skill parses");
-    assert_eq!(skill.frontmatter.page_type, PageType::Skill);
+    assert_eq!(skill.frontmatter.page_kind, PageKind::Skill);
     let instance = parse("---\nkind: instance\nskill: customer\nid: c1\n---\n")
         .expect("kind: instance parses");
-    assert_eq!(instance.frontmatter.page_type, PageType::Instance);
+    assert_eq!(instance.frontmatter.page_kind, PageKind::Instance);
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn a_users_own_type_data_field_is_just_data() {
     // `type: invoice` is not the page kind; the page kind is `kind:`.
     let page = parse("---\nkind: instance\nskill: doc\nid: inv1\ntype: invoice\n---\n")
         .expect("a type data field is fine");
-    assert_eq!(page.frontmatter.page_type, PageType::Instance);
+    assert_eq!(page.frontmatter.page_kind, PageKind::Instance);
     assert_eq!(page.frontmatter.fields["type"].as_str(), Some("invoice"));
 }
 

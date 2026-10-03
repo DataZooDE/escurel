@@ -44,7 +44,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use escurel_md::{PageType, parse};
+use escurel_md::{PageKind, parse};
 
 use crate::acl::AclCaller;
 use crate::read::{Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, ResolvedWikilink};
@@ -305,7 +305,7 @@ pub trait InstanceBackend: Send + Sync {
         ctx: BackendCtx<'_>,
         q: &str,
         k: usize,
-        page_type: Option<PageType>,
+        page_type: Option<PageKind>,
         skill: Option<&str>,
         granularity: Granularity,
         filter: Option<&serde_json::Value>,
@@ -489,7 +489,7 @@ impl Indexer {
         let Ok(parsed) = parse(content) else {
             return Ok(None);
         };
-        if parsed.frontmatter.page_type != PageType::Instance {
+        if parsed.frontmatter.page_kind != PageKind::Instance {
             return Ok(None);
         }
         let skill = parsed

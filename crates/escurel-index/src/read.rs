@@ -16,7 +16,7 @@
 //! `neighbours` land in later M2 PRs.
 
 use duckdb::params;
-use escurel_md::PageType;
+use escurel_md::PageKind;
 use escurel_md::wikilink::{WikilinkParsed, parse_wikilinks};
 
 use crate::{Indexer, IndexerError};
@@ -1079,7 +1079,7 @@ pub struct PageRef {
     /// pages whose frontmatter doesn't declare one.
     pub slug: Option<String>,
     pub skill: String,
-    pub page_type: PageType,
+    pub page_kind: PageKind,
 }
 
 /// Result of [`Indexer::resolve`].
@@ -1357,8 +1357,8 @@ impl Indexer {
             return Ok(None);
         };
         let page_type = match page_type_str.as_str() {
-            "skill" => PageType::Skill,
-            _ => PageType::Instance,
+            "skill" => PageKind::Skill,
+            _ => PageKind::Instance,
         };
         let frontmatter: serde_json::Value = serde_json::from_str(&fm_json)?;
 
@@ -1390,7 +1390,7 @@ impl Indexer {
                 page_id,
                 slug,
                 skill,
-                page_type,
+                page_kind: page_type,
             },
             frontmatter,
             body,
@@ -1583,14 +1583,14 @@ fn page_ref_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<PageRef> {
     let skill: String = row.get(2)?;
     let page_type_str: String = row.get(3)?;
     let page_type = match page_type_str.as_str() {
-        "skill" => PageType::Skill,
-        _ => PageType::Instance,
+        "skill" => PageKind::Skill,
+        _ => PageKind::Instance,
     };
     Ok(PageRef {
         page_id,
         slug,
         skill,
-        page_type,
+        page_kind: page_type,
     })
 }
 

@@ -108,7 +108,7 @@ class HttpEscurelClient implements EscurelClient {
     required String q,
     int k = 10,
     SearchGranularity granularity = SearchGranularity.block,
-    PageTypeFilter pageType = PageTypeFilter.any,
+    PageTypeFilter pageKind = PageTypeFilter.any,
     String? skill,
     String? asOf,
   }) async {
@@ -116,7 +116,7 @@ class HttpEscurelClient implements EscurelClient {
       'q': q,
       'k': k,
       'granularity': granularity.name,
-      'page_type': pageType.name,
+      'page_kind': pageKind.name,
       'skill': ?skill,
       'as_of': ?asOf,
     });
@@ -148,8 +148,8 @@ class HttpEscurelClient implements EscurelClient {
       pageId:
           (page?['page_id'] as String?) ?? (result['page_id'] as String?) ?? '',
       skill: (page?['skill'] as String?) ?? (result['skill'] as String?) ?? '',
-      pageType: _pageTypeFromString(
-        (page?['page_type'] ?? result['page_type']) as String?,
+      pageKind: _pageTypeFromString(
+        (page?['page_kind'] ?? result['page_kind']) as String?,
       ),
       exists: (result['exists'] as bool?) ?? false,
       description: result['description'] as String?,
@@ -180,7 +180,7 @@ class HttpEscurelClient implements EscurelClient {
       return ExpandResult(
         pageId: '',
         skill: '',
-        pageType: _pageTypeFromString(null),
+        pageKind: _pageTypeFromString(null),
         frontmatter: const {},
         body: '',
         blocks: const [],
@@ -202,8 +202,8 @@ class HttpEscurelClient implements EscurelClient {
           (result['page_id'] as String?) ??
           pageId,
       skill: (page?['skill'] as String?) ?? (result['skill'] as String?) ?? '',
-      pageType: _pageTypeFromString(
-        (page?['page_type'] ?? result['page_type']) as String?,
+      pageKind: _pageTypeFromString(
+        (page?['page_kind'] ?? result['page_kind']) as String?,
       ),
       frontmatter: Map<String, dynamic>.from(
         result['frontmatter'] as Map? ?? const {},
@@ -1072,6 +1072,6 @@ class HttpEscurelClient implements EscurelClient {
   @override
   void close() => _dio.close(force: true);
 
-  static md.PageType _pageTypeFromString(String? s) =>
-      s == 'skill' ? md.PageType.skill : md.PageType.instance;
+  static md.PageKind _pageTypeFromString(String? s) =>
+      s == 'skill' ? md.PageKind.skill : md.PageKind.instance;
 }

@@ -22,7 +22,7 @@ import '../client/http_escurel_client.dart';
 import '../client/models.dart';
 import '../config/env.dart';
 import '../config/feature_flags.dart';
-import '../md/frontmatter.dart' show PageType;
+import '../md/frontmatter.dart' show PageKind;
 
 /// Widths (px) of the catalogue (left) and right-rail panes in the editor
 /// shell. Drag-resizable via the dividers; the drag handlers clamp these
@@ -354,7 +354,7 @@ final currentPageEditableProvider = Provider<bool>((ref) {
   // authorable (that is the specialisation story).
   final layer = page.frontmatter['layer'];
   if (layer is String && layer.startsWith('base@')) return false;
-  if (page.pageType == PageType.skill) {
+  if (page.pageKind == PageKind.skill) {
     if (!ref.watch(writeEnabledProvider)) return false;
     final pages = ref.watch(editableSkillPagesProvider);
     return pages != null && pages.contains(skill);

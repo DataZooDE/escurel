@@ -13,7 +13,7 @@ use crate::null::null_as_default;
 
 // ── search ────────────────────────────────────────────────────────
 
-/// `search` tool arguments. MCP wire keys: `q`, `k`, `page_type`,
+/// `search` tool arguments. MCP wire keys: `q`, `k`, `page_kind`,
 /// `skill`, `granularity`, `filter`, `as_of`, `scenario`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -21,7 +21,7 @@ pub struct SearchRequest {
     pub q: String,
     pub k: u32,
     pub granularity: String,
-    pub page_type: String,
+    pub page_kind: String,
     pub skill: String,
     /// Frontmatter post-filter (MCP `filter` object). Proto carried a
     /// `filter_json` string; the wire is a real JSON object.
@@ -34,7 +34,7 @@ pub struct SearchRequest {
 }
 
 /// One block-granularity hit. MCP wire keys: `page_id`, `slug`,
-/// `skill`, `page_type`, `anchor`, `snippet`, `score`,
+/// `skill`, `page_kind`, `anchor`, `snippet`, `score`,
 /// `frontmatter_excerpt`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -42,7 +42,7 @@ pub struct SearchHit {
     pub page_id: String,
     pub slug: String,
     pub skill: String,
-    pub page_type: String,
+    pub page_kind: String,
     /// Block anchor of the hit. A page-grain hit (e.g. a `sql_view`
     /// candidate) has none — the wire emits an explicit `null`, which
     /// decodes to `""` here.

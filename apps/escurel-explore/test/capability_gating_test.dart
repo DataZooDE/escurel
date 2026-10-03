@@ -65,14 +65,14 @@ class _CapStubClient implements EscurelClient {
     required String q,
     int k = 10,
     SearchGranularity granularity = SearchGranularity.block,
-    PageTypeFilter pageType = PageTypeFilter.any,
+    PageTypeFilter pageKind = PageTypeFilter.any,
     String? skill,
     String? asOf,
   }) => inner.search(
     q: q,
     k: k,
     granularity: granularity,
-    pageType: pageType,
+    pageKind: pageKind,
     skill: skill,
     asOf: asOf,
   );
