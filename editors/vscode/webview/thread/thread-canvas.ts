@@ -611,9 +611,13 @@ export class EscurelThreadCanvas extends LitElement {
     // first that needs you, else the newest active) centred, and a scrollbar to reach the rest.
     // Fitting everything used to shrink big threads to 40-50%, where no card text was legible; Fit
     // still gives that overview on request.
-    this.viewport = firstViewport(this.layout, pickTarget(this.view, this.layout), {
+    const viewport = firstViewport(this.layout, pickTarget(this.view, this.layout), {
       width: area.clientWidth,
       height: area.clientHeight,
+    });
+    // After this update: changing state inside `updated` is a Lit dev-mode warning.
+    queueMicrotask(() => {
+      this.viewport = viewport;
     });
   }
 
