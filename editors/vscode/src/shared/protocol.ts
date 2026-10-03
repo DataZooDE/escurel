@@ -1,3 +1,4 @@
+import type { RowSource } from './rowSource';
 // The host ↔ webview contract (SPEC §5): typed postMessage both ways.
 // Shared by both tsconfigs, so nothing here may import `vscode` or Node.
 
@@ -64,6 +65,8 @@ export interface PageModel {
   actions: ActionView[];
   /** Absent when no run has finished against this page. */
   thread?: ThreadStrip;
+  /** Present when the page is a ROW of an `instances: rows` skill: read-only source data plus notes. */
+  source?: RowSource;
 }
 
 export type HostToWebview =

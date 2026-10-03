@@ -1,7 +1,7 @@
 import { expect, fixture, html, oneEvent } from '@open-wc/testing';
 import '../../webview/page-as-ui/main';
 import type { EscurelPageAsUi } from '../../webview/page-as-ui/page-as-ui';
-import type { WebviewToHost } from '../../src/shared/protocol';
+import type { PageModel, WebviewToHost } from '../../src/shared/protocol';
 import { orderPage } from './fixtures';
 
 async function render(): Promise<EscurelPageAsUi> {
@@ -332,5 +332,66 @@ describe('<escurel-page-as-ui> thread strip', () => {
       ) as HTMLButtonElement
     ).click();
     expect(sent).to.deep.equal([{ type: 'open-original' }]);
+  });
+
+  describe('a row of an instances: rows skill', () => {
+    const withSource = async (source: PageModel['source']) => {
+      const el = await fixture<EscurelPageAsUi>(
+        html`<escurel-page-as-ui .model=${{ ...orderPage, source }}></escurel-page-as-ui>`,
+      );
+      await el.updateComplete;
+      return el;
+    };
+
+    it('says the data is a read-only row of the source, and how fresh it is', async () => {
+      const el = await withSource({
+        fetchedAt: '2026-10-03T12:03:44.000000Z',
+        sourceFields: ['status'],
+        linked: { enabled: true, exists: true, orphan: false },
+      });
+      const strip = q(el, '.source-strip')!;
+      expect(strip !== null).to.equal(true);
+      expect(text(strip)).to.contain('Source row');
+      expect(text(strip)).to.contain('read-only');
+      expect(text(strip)).to.contain('12:03');
+      expect(text(strip)).to.contain('notes');
+      expect(strip.getAttribute('role')).to.equal('note');
+    });
+
+    it('invites notes when there are none yet, and says where to write them', async () => {
+      const el = await withSource({
+        sourceFields: [],
+        linked: { enabled: true, exists: false, orphan: false },
+      });
+      expect(text(q(el, '.source-strip'))).to.contain('No notes yet');
+    });
+
+    it('flags an orphan: the source row is gone but the notes are kept', async () => {
+      const el = await withSource({
+        sourceFields: [],
+        linked: { enabled: true, exists: true, orphan: true },
+        issue: { code: 'source_missing', message: 'the source has no such row' },
+      });
+      const strip = q(el, '.source-strip')!;
+      expect(text(strip)).to.contain('no longer in the source');
+      expect(strip.classList.contains('problem')).to.equal(true);
+    });
+
+    it('marks the source fields read-only in the form, and not the others', async () => {
+      const el = await withSource({
+        sourceFields: ['status'],
+        linked: { enabled: true, exists: true, orphan: false },
+      });
+      const rows = qa(el, '.field');
+      const status = rows.find((r) => r.getAttribute('data-name') === 'status')!;
+      const notes = rows.find((r) => r.getAttribute('data-name') === 'notes')!;
+      expect(status.getAttribute('data-source')).to.equal('true');
+      expect(notes.getAttribute('data-source')).to.equal(null);
+    });
+
+    it('has no strip for an ordinary page', async () => {
+      const el = await render();
+      expect(q(el, '.source-strip')).to.equal(null);
+    });
   });
 });

@@ -87,6 +87,26 @@ export class EscurelPageAsUi extends LitElement {
         border-color: var(--escurel-run);
         color: var(--escurel-run);
       }
+      .source-strip {
+        margin: 8px 0;
+        padding: 6px 10px;
+        border: 1px solid var(--escurel-border);
+        border-left: 3px solid var(--vscode-textLink-foreground);
+        border-radius: 3px;
+        color: var(--vscode-foreground);
+        background: var(--vscode-textBlockQuote-background, transparent);
+      }
+      .source-strip.problem {
+        border-left-color: var(--vscode-editorWarning-foreground);
+      }
+      .source-strip .issue {
+        display: block;
+        color: var(--vscode-editorWarning-foreground);
+      }
+      .source-tag {
+        color: var(--escurel-muted);
+        font-size: 0.8em;
+      }
       .thread-strip {
         display: flex;
         flex-wrap: wrap;
@@ -170,6 +190,22 @@ export class EscurelPageAsUi extends LitElement {
     this.send({ type: 'start-skill', skill, mode: id as StartMode });
   }
 
+  /** What a row of an `instances: rows` skill is: read-only data from a source, plus the person's notes. */
+  private sourceStrip(source: NonNullable<PageModel['source']>) {
+    const { linked, issue, fetchedAt } = source;
+    const fetched = fetchedAt ? ` · fetched ${fetchedAt.slice(11, 16)} UTC` : '';
+    let notes: string;
+    if (linked.orphan) notes = 'This row is no longer in the source; your notes are kept.';
+    else if (!linked.enabled) notes = 'This skill has no notes: its rows are read-only.';
+    else if (linked.exists)
+      notes = 'Your notes are the Markdown view; the source columns are not editable.';
+    else notes = 'No notes yet. Switch to Markdown to write some; the first save creates them.';
+    return html`<div class="source-strip ${linked.orphan || issue ? 'problem' : ''}" role="note">
+      <strong>Source row</strong> · read-only${fetched} · ${notes}
+      ${issue ? html`<span class="issue">${issue.message}</span>` : nothing}
+    </div>`;
+  }
+
   override render() {
     if (this.error) return html`<div class="status error">${this.error}</div>`;
     const m = this.model;
@@ -239,9 +275,10 @@ export class EscurelPageAsUi extends LitElement {
             </div>`
           : nothing
       }
+      ${m.source ? this.sourceStrip(m.source) : nothing}
 
       <section class="fields">
-        ${m.fields.map((f) => html`<escurel-field .field=${f} ?editable=${m.editable}></escurel-field>`)}
+        ${m.fields.map((f) => html`<escurel-field .field=${f} ?editable=${m.editable} ?source=${m.source?.sourceFields.includes(f.name) ?? false}></escurel-field>`)}
         <p class="muted readonly-note">
           ${
             m.editable

@@ -193,7 +193,7 @@ test('a wikilink in the order opens the page it names', async ({ stack }) => {
   const wv = await webviewWith(page, 'escurel-page-as-ui');
   await wv.getByRole('button', { name: 'Meier-Guss GmbH' }).click();
   // The supplier opens as its own page, in a tab of its own that becomes the active one.
-  await expect(page.getByRole('tab', { name: /supplier__meier-guss/, selected: true })).toBeVisible(
+  await expect(page.getByRole('tab', { name: /meier-guss/, selected: true })).toBeVisible(
     { timeout: 20_000 },
   );
   const supplier = await webviewWith(page, 'escurel-page-as-ui');
@@ -316,7 +316,7 @@ test('a failed run is listed under Dead letters, and Requeue is there but deacti
   const { page } = stack;
   await stack.call('capture_event', {
     label_skill: 'supplier-risk',
-    instance_page_id: 'markdown/instances/customer-order__order-4500152.md',
+    instance_page_id: 'markdown/instances/customer-order/order-4500152.md',
     title: 'Provoked failure',
     body: 'a harness the runner does not allow',
     mime: 'text/plain',
@@ -359,7 +359,7 @@ test('a live run can be cancelled from its run detail', async ({ stack }) => {
   const { page } = stack;
   await stack.call('capture_event', {
     label_skill: 'supplier-risk',
-    instance_page_id: 'markdown/instances/customer-order__order-4500140.md',
+    instance_page_id: 'markdown/instances/customer-order/order-4500140.md',
     title: 'Cancel me',
     body: 'a run that idles long enough to be cancelled',
     mime: 'text/plain',

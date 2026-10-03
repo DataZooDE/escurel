@@ -39,7 +39,7 @@ async function until(what, f, ms = 120_000) {
   }
 }
 
-const page = (id) => `markdown/instances/customer-order__${id}.md`;
+const page = (id) => `markdown/instances/customer-order/${id}.md`;
 const openChangesetOn = async (pageId) =>
   (await call('list_changesets', {})).changesets.find(
     (c) => c.status === 'open' && c.target_page_ids.includes(pageId),

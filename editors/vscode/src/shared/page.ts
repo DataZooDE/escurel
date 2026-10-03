@@ -3,6 +3,7 @@ import { skillActionViews } from './actions';
 import type { ExpandResponse, Skill, SkillField } from '../client/types';
 import { buildPreview } from './preview';
 import type { ActionView, FieldView, PageModel } from './protocol';
+import { rowSourceOf } from './rowSource';
 
 /** Bookkeeping, not data: the page kind (and its retired name), the skill, the id, a backend binding. */
 const HIDDEN = new Set(['kind', 'type', 'skill', 'id', 'backend_ref']);
@@ -29,6 +30,7 @@ export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
   const autonomy =
     skill.autonomy === 'auto' || skill.autonomy === 'confirm' ? skill.autonomy : 'review';
   const actions: ActionView[] = skillActionViews(skill.actions);
+  const source = rowSourceOf(e.backend_projection);
   return {
     pageId: e.page?.page_id ?? '',
     title,
@@ -48,6 +50,7 @@ export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
     lastWrittenBy: e.page?.last_written_by,
     editable: false,
     actions,
+    ...(source ? { source } : {}),
   };
 }
 

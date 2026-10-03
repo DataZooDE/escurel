@@ -158,3 +158,60 @@ describe('buildPageModel: the form shows data, not bookkeeping', () => {
     expect(model.fields.map((f) => f.name)).toEqual(['customer']);
   });
 });
+
+describe('buildPageModel on a row instance', () => {
+  it('says the page is a read-only row with notes, and when it was fetched', () => {
+    const e = {
+      page: {
+        page_id: 'markdown/instances/customer-order/order-4500131.md',
+        slug: 'order-4500131',
+        skill: 'customer-order',
+        page_kind: 'instance',
+      },
+      frontmatter: { sales_doc: 4500131, delivery_risk: 'low' },
+      body: 'Notes',
+      blocks: [],
+      wikilinks_out: [],
+      backend_projection: {
+        instances: 'rows',
+        read_only: true,
+        fetched_at: '2026-10-03T12:03:44.000000Z',
+        source: { sales_doc: 4500131 },
+        linked: { enabled: true, exists: true, orphan: false },
+      },
+    } as unknown as Parameters<typeof buildPageModel>[0];
+    const skill = {
+      id: 'customer-order',
+      description: '',
+      fields: [],
+      backend: { kind: 'sql_view' },
+      layer: 'overlay',
+      actions: [],
+    } as unknown as Parameters<typeof buildPageModel>[1];
+    const model = buildPageModel(e, skill);
+    expect(model.source).toEqual({
+      fetchedAt: '2026-10-03T12:03:44.000000Z',
+      sourceFields: ['sales_doc'],
+      linked: { enabled: true, exists: true, orphan: false },
+    });
+  });
+
+  it('has no source for an ordinary page', () => {
+    const e = {
+      page: { page_id: 'markdown/instances/x/y.md', skill: 'x', page_kind: 'instance' },
+      frontmatter: {},
+      body: '',
+      blocks: [],
+      wikilinks_out: [],
+    } as unknown as Parameters<typeof buildPageModel>[0];
+    const skill = {
+      id: 'x',
+      description: '',
+      fields: [],
+      backend: { kind: 'markdown' },
+      layer: 'overlay',
+      actions: [],
+    } as unknown as Parameters<typeof buildPageModel>[1];
+    expect(buildPageModel(e, skill).source).toBeUndefined();
+  });
+});

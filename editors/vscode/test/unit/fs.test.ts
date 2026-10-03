@@ -84,3 +84,57 @@ describe('writeSkill', () => {
     expect(typeof err.head_content).toBe('string');
   });
 });
+
+describe('readPageMarkdown on a row instance', () => {
+  const projection = {
+    instances: 'rows',
+    source: { sales_doc: 4500131, sold_to_name: 'Kessler' },
+    linked: { enabled: true, exists: false, orphan: false },
+  };
+  const client = (e: Record<string, unknown>) =>
+    ({ expand: async () => e }) as unknown as Parameters<typeof readPageMarkdown>[0];
+
+  it('without notes yet, the Markdown view is an empty skeleton to write notes into, not the row', async () => {
+    const r = await readPageMarkdown(
+      client({
+        page: {
+          page_id: 'markdown/instances/customer-order/order-4500131.md',
+          skill: 'customer-order',
+          page_kind: 'instance',
+        },
+        frontmatter: { sales_doc: 4500131, sold_to_name: 'Kessler' },
+        body: '',
+        backend_projection: projection,
+      }),
+      'markdown/instances/customer-order/order-4500131.md',
+    );
+    expect(r?.text).toBe('---\nkind: instance\nid: order-4500131\nskill: customer-order\n---\n');
+    expect(r?.degraded).toBe(false);
+    expect(r?.sha256).toBeUndefined();
+  });
+
+  it('with notes, the stored bytes ARE the Markdown (they never carry the source columns)', async () => {
+    const stored =
+      '---\nkind: instance\nid: order-4500131\nskill: customer-order\ndelivery_risk: low\n---\nNotes.\n';
+    const r = await readPageMarkdown(
+      client({
+        page: {
+          page_id: 'markdown/instances/customer-order/order-4500131.md',
+          skill: 'customer-order',
+          page_kind: 'instance',
+        },
+        frontmatter: { delivery_risk: 'low', sales_doc: 4500131 },
+        body: 'Notes.\n',
+        content: stored,
+        content_sha256: 'abc',
+        backend_projection: {
+          ...projection,
+          linked: { enabled: true, exists: true, orphan: false },
+        },
+      }),
+      'markdown/instances/customer-order/order-4500131.md',
+    );
+    expect(r?.text).toBe(stored);
+    expect(r?.sha256).toBe('abc');
+  });
+});
