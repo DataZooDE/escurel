@@ -158,14 +158,17 @@ test('a supplier-risk run leaves an analysis: fields, a text alternative for its
   if ((await orders.getAttribute('aria-expanded')) === 'true') await orders.click();
   await knowledge.getByRole('treeitem', { name: /^supplier-risk-analysis/ }).click();
   // The analysis the first run wrote and the demo promoted together with its change to the order
-  // (its id is the supplier plus the tail of the signal's event id; the supplier itself has none).
-  await knowledge.getByRole('treeitem', { name: /^meier-guss-/ }).click();
+  // (its id is the supplier and the day: meier-guss-YYYY-MM-DD).
+  await knowledge.getByRole('treeitem', { name: /^meier-guss-\d{4}-\d{2}-\d{2}/ }).click();
   const wv = await webviewWith(page, 'escurel-page-as-ui');
   const analysis = wv.locator('escurel-page-as-ui');
   await expect(analysis.locator('.field[data-name="risk_level"]')).toContainText('high');
   await expect(analysis.locator('.field[data-name="net_value_at_risk"]')).toContainText(
     '128,600.00',
   );
+  // No raw event id in the form; the page says in words which signal it answers.
+  await expect(analysis.locator('.field[data-name="source_event"]')).toHaveCount(0);
+  await expect(analysis.getByText(/Triggered by/)).toBeVisible();
   // The chart's text alternative: a plain sentence with the takeaway, and the table behind the chart.
   await expect(analysis.getByText(/2 orders are affected and carry 128,600\.00 EUR/)).toBeVisible();
   await expect(analysis.locator('table thead th', { hasText: 'Net value (EUR)' })).toBeVisible();

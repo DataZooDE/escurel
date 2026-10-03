@@ -368,7 +368,19 @@ fn analyse(mcp: &Mcp, event: &Value, event_id: &str) -> Option<analysis::Built> 
         ));
     }
     lines.sort_by(|a, b| a.order_id.cmp(&b.order_id));
-    (!lines.is_empty()).then(|| analysis::build_analysis(&supplier, &signal, &lines, event_id))
+    if lines.is_empty() {
+        return None;
+    }
+    // A human id: supplier and day, with a counter when that day already has an analysis.
+    let id = analysis::analysis_id(&supplier.id, event_id, |candidate| {
+        let page = format!("markdown/instances/supplier-risk-analysis__{candidate}.md");
+        mcp.call("expand", json!({ "page_id": page }))
+            .ok()
+            .is_some_and(|r| r.get("page").is_some_and(|p| !p.is_null()))
+    });
+    Some(analysis::build_analysis(
+        &supplier, &signal, &lines, event_id, &id, title,
+    ))
 }
 
 /// Perform the deterministic fold; returns the structured outcome.

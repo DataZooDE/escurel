@@ -156,6 +156,23 @@ async fn a_supplier_risk_run_drafts_an_analysis_in_the_same_changeset_as_its_fol
         .next()
         .unwrap()
         .trim_end_matches(".md");
+    // A human id: the supplier and the day the signal arrived, not a random tail of an event id.
+    let day_id = id.strip_prefix("meier-guss-").unwrap_or_default();
+    assert!(
+        day_id.len() == 10
+            && day_id
+                .chars()
+                .enumerate()
+                .all(|(i, c)| if i == 4 || i == 7 {
+                    c == '-'
+                } else {
+                    c.is_ascii_digit()
+                }),
+        "expected meier-guss-YYYY-MM-DD, got {id}"
+    );
+    // The page says which signal it answers in words; the event id stays as provenance only.
+    assert!(content.contains("**Triggered by** "), "{content}");
+    assert!(content.contains("source_event: "), "{content}");
     assert!(
         fold["content"]
             .as_str()
