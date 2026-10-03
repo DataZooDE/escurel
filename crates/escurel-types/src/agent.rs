@@ -154,7 +154,12 @@ pub struct ExpandResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// Backend overlay projection: for a `sql_view` instance the bounded
-    /// rows + projected source columns (REQ-SQL-06/REQ-OV-02); for a
+    /// rows + projected source columns (REQ-SQL-06/REQ-OV-02); for a ROW of
+    /// an `instances: rows` skill `{view, instances: "rows", read_only,
+    /// fetched_at, rows: [the row's columns], source: {projected fields},
+    /// columns: [{name, type, kind}], linked: {enabled, exists, orphan},
+    /// issue?}` (`issue.code = source_missing` when the row is gone but its
+    /// linked markdown is kept); for a
     /// remote (openapi/mcp) instance the LIVE upstream projection
     /// `{source, fields}` — or `{issue}` when the upstream failed.
     /// Absent for plain markdown pages.
@@ -634,6 +639,14 @@ pub struct InstanceInfo {
     /// `null` on the wire when the instance carries no `at` timestamp.
     #[serde(deserialize_with = "null_as_default")]
     pub at: String,
+    /// `true` for a ROW of an `instances: rows` skill (a live read of the source, no stored page of its
+    /// own; its `frontmatter` is the projected columns). Absent on the wire for a stored page.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub row: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

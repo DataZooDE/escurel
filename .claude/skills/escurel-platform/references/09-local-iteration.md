@@ -162,6 +162,10 @@ escurel-test-gateway --tenant vsx --seed path/to/seed [--subject alice]
 #  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","admin_bearer":"eyJ…","tenant":"vsx"}
 ```
 
+The seed holds `skills/*.md` and `instances/*.md` (a FLAT page id, `markdown/instances/<name>.md`) and, one level
+down, `instances/<skill>/<id>.md`, which becomes the NESTED page id `markdown/instances/<skill>/<id>.md` — the
+id of a row of an `instances: rows` skill and of its linked markdown.
+
 It is the same in-process gateway and OIDC issuer the Rust suites use, so the claims cannot
 drift from what the gateway expects. `--seed` is a directory of `skills/*.md` and
 `instances/*.md`; each becomes `markdown/skills/<name>.md` / `markdown/instances/<name>.md`

@@ -252,6 +252,37 @@ citation; never treat one as a link. The link's `skill` segment is its
     source; `expand` returns the overlay + a bounded row projection
     (`backend_projection`). Created with `create_sql_instance`; secrets via
     `register_credential`; drift checked with `validate_bindings`.
+  - **`sql_view` with `instances: rows`** — ONE INSTANCE PER ROW of the source instead of the whole
+    relation as one instance (`instances: view`, the default). The rows are **virtual**: nothing is
+    stored per row, there is no `create_sql_instance` step, and the view is created on first read.
+    ```yaml
+    backend:
+      kind: sql_view
+      instances: rows            # view (default) | rows
+      key: order_id              # identity column(s); [a, b] = composite, joined by `-`
+      linked: markdown           # optional: a row may have its own notes page (see below)
+      filterable: [kunnr]        # source columns `list_instances` may filter on (bound params only)
+      source: {connector: json_dir, relation: /data/vbak}
+      project: {vbeln: sales_doc, netwr: net_value}   # source column -> frontmatter field
+    ```
+    A row's page id is `markdown/instances/<skill>/<id>.md`, where `<id>` is the key value (bytes
+    outside `[A-Za-z0-9._-]` become `~XX`, and `-` too inside a composite key), so `[[<skill>::<key>]]`
+    resolves. `list_instances` pages by keyset on the key (a null `next_cursor` is the only "done": an ACL
+    filter runs AFTER the fetch, so a page can be short); each entry carries `row: true` and the projected
+    columns as `frontmatter`, typed from the source (`DESCRIBE`; the skill's own `fields:` give labels and
+    override kinds). `expand` returns the row's projected fields as `frontmatter` and a read-only
+    `backend_projection` (`instances: "rows"`, `read_only`, `fetched_at`, `rows`, `columns[{name,type,
+    kind}]`, `linked`). **Reads are live** — `fetched_at` says when. The source's own row-level security is
+    not honoured; escurel's ACL is the only row gate.
+    **Linked markdown** (`linked: markdown`): the STORED page at the row's page id is the row's notes.
+    It is created lazily by the first write (`update_page` / `create_draft`) and merged into `expand` as
+    ONE instance (the row's columns win for projected fields). It is an ordinary page: drafts, changesets
+    and promotion apply to it only, never to the row. A write whose frontmatter carries a projected
+    source column is refused `backend_read_only_field`; one carrying `backend_ref` is refused
+    `backend_read_only`; a row that does not exist is `row_not_found`. If the row disappears upstream the
+    notes are kept and `expand` flags `backend_projection.issue.code = source_missing` (and
+    `linked.orphan`); `list_instances` lists live rows only. Validation treats projected fields as
+    supplied by the source (`required:` is not reported for them).
   - `document` — an uploaded PDF/DOCX/PPTX/XLSX/text file, extracted + chunked +
     embedded into a page-with-chunks. Uploaded via `POST /ingest` /
     `POST /ingest/upload`; `expand` returns the overlay + top-k chunks

@@ -167,6 +167,39 @@ fn instance_info_frontmatter_is_object() {
     assert_eq!(serde_json::to_value(&info).unwrap(), wire);
 }
 
+/// An `instances: rows` skill's list entry is a live ROW, not a stored page: it says so (`row: true`)
+/// and has no `at` timestamp. The typed client must keep that flag (a field it drops is one a
+/// consumer can never see), and an ordinary stored instance must not grow one.
+#[test]
+fn instance_info_row_flag_round_trips_and_is_absent_for_stored_pages() {
+    let row = json!({
+        "page_id": "markdown/instances/customer-order/order-4500131.md",
+        "skill": "customer-order",
+        "frontmatter": { "sales_doc": 4500131 },
+        "at": null,
+        "row": true
+    });
+    let info: InstanceInfo = serde_json::from_value(row.clone()).unwrap();
+    assert!(info.row, "the typed client keeps `row`");
+    assert_eq!(info.at, "");
+    let back = serde_json::to_value(&info).unwrap();
+    assert_eq!(back["row"], true, "{back}");
+
+    let stored = json!({
+        "page_id": "instances/customer/acme",
+        "skill": "customer",
+        "frontmatter": {},
+        "at": "2026-01-01"
+    });
+    let info: InstanceInfo = serde_json::from_value(stored.clone()).unwrap();
+    assert!(!info.row);
+    assert_eq!(
+        serde_json::to_value(&info).unwrap(),
+        stored,
+        "a stored page's wire shape is unchanged: no `row` key"
+    );
+}
+
 #[test]
 fn list_instances_request_skill_id_rename() {
     // The MCP wire takes the skill under `skill_id`, not `skill`.

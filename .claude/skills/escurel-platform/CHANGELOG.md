@@ -4,6 +4,26 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.10.0 — `backend.instances: rows`: one instance per row of a `sql_view`, with optional linked markdown
+
+Additive (no break): a `sql_view` skill without `instances:` behaves exactly as before.
+
+- **New skill frontmatter** `backend: {instances: rows, key, linked, filterable, writable_columns}` (the last
+  is reserved for write-back and ignored). Read `references/01` §backend axis for the full contract.
+- **Every row is an instance**, virtual (nothing stored per row, no `create_sql_instance`): page id
+  `markdown/instances/<skill>/<id>.md` with the key as the id; `[[<skill>::<key>]]` resolves.
+- **`list_instances`** on such a skill pages by keyset over the key (ACL after the fetch: pages can be
+  short, only a null `next_cursor` is done); entries carry `row: true` (the typed `InstanceInfo` gains
+  `row`) and the projected, typed columns as `frontmatter`; a `frontmatter_key` filter works on
+  `filterable:` columns only (bound parameter; anything else is `invalid_params`).
+- **`expand`** returns the row's fields plus `backend_projection {instances: "rows", read_only, fetched_at,
+  rows, columns, linked{enabled,exists,orphan}, issue?}`; reads are live.
+- **Linked markdown**: the stored page at the row's id is the notes, created by the first write and merged
+  into one instance on read; drafts/promotion apply to it only. New write refusals:
+  `backend_read_only_field` (the write carries a source column), `row_not_found`; `backend_ref` in a
+  companion is `backend_read_only`. A vanished row keeps its notes (`source_missing`).
+- `validate` no longer reports a projected field as missing on a row's companion.
+- **Test gateway**: `escurel-test-gateway --seed` now seeds `instances/<skill>/<id>.md` as the nested page id.
 ## 0.9.0 — skills can place and describe themselves: `folder`, `role`, `tags` and the OKF keys
 
 Additive (no consumer breaks). Aligns skill pages with the Open Knowledge Format's frontmatter vocabulary.
