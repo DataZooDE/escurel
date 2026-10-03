@@ -41,12 +41,20 @@ describe('<escurel-thread-canvas>', () => {
     const cards = qa(el, '.card');
     expect(cards.length).to.equal(visibleNodes.length);
 
-    // Each visible card is placed in the DOM with treeitem role and column-derived aria-level.
+    // Each visible card is placed in the DOM with treeitem role and a lineage-depth aria-level.
+    const parentOf = new Map(recordedThreadView.nodes.map((n) => [n.id, n.parent]));
+    const depthOf = (id: string): number => {
+      let depth = 1;
+      for (let p = parentOf.get(id); p; p = parentOf.get(p)) depth += 1;
+      return depth;
+    };
     for (const node of visibleNodes) {
       const card = q(el, `.card[data-node-id="${node.id}"]`);
       expect(card).to.exist;
       expect(card?.getAttribute('role')).to.equal('treeitem');
-      expect(card?.getAttribute('aria-level')).to.equal(String(node.column + 1));
+      // The tree level is the depth in the lineage, not the stage column: a changeset shares its run's
+      // column and a follow-on event skips one.
+      expect(card?.getAttribute('aria-level')).to.equal(String(depthOf(node.id)));
     }
 
     const wires = qa(el, '.wire');
@@ -648,5 +656,14 @@ describe('<escurel-thread-canvas>', () => {
     await el.updateComplete;
     // Below the pinned header strip, not centred in a tall box.
     expect(el.viewport.y <= 48, `y ${el.viewport.y}`).to.equal(true);
+  });
+
+  it('says which card is selected, for a screen reader', async () => {
+    const el = await renderCanvas();
+    const card = qa(el, '.card')[1] as HTMLElement;
+    expect(card.getAttribute('aria-selected')).to.equal('false');
+    el.selectNode(card.getAttribute('data-node-id')!);
+    await el.updateComplete;
+    expect(card.getAttribute('aria-selected')).to.equal('true');
   });
 });

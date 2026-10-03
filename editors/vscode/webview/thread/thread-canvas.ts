@@ -129,7 +129,11 @@ export class EscurelThreadCanvas extends LitElement {
       }
       .wire {
         fill: none;
-        stroke: var(--escurel-border);
+        /* The theme's widget border nearly vanished on the canvas once the cards had real borders. */
+        stroke: var(
+          --vscode-contrastBorder,
+          color-mix(in srgb, var(--vscode-foreground) 40%, transparent)
+        );
         stroke-width: 1.5px;
       }
       .wire.solid {
@@ -243,7 +247,11 @@ export class EscurelThreadCanvas extends LitElement {
         position: absolute;
         left: 0;
         height: 0;
-        border-top: 1px dashed var(--escurel-border);
+        border-top: 1px dashed
+          var(
+            --vscode-contrastBorder,
+            color-mix(in srgb, var(--vscode-foreground) 30%, transparent)
+          );
         pointer-events: none;
       }
       .lane-caption {
@@ -603,6 +611,18 @@ export class EscurelThreadCanvas extends LitElement {
     }
   }
 
+  /** The level in the lineage tree (the root is 1), not the stage column. */
+  private treeLevel(nodeId: string): number {
+    const parentOf = new Map(this.view?.nodes.map((n) => [n.id, n.parent]));
+    let level = 1;
+    const seen = new Set<string>();
+    for (let p = parentOf.get(nodeId); p && !seen.has(p); p = parentOf.get(p)) {
+      seen.add(p);
+      level += 1;
+    }
+    return level;
+  }
+
   private renderCard(node: ThreadNode, layoutNode: LaidOutNode) {
     const isFocused = node.id === this.focusedNodeId;
     const isSelected = node.id === this.selectedNodeId;
@@ -628,7 +648,8 @@ export class EscurelThreadCanvas extends LitElement {
         class="card type-${described.type} ${compact ? 'compact' : ''} ${isSelected ? 'selected' : ''}"
         data-node-id="${node.id}"
         role="treeitem"
-        aria-level="${layoutNode.column + 1}"
+        aria-level="${this.treeLevel(node.id)}"
+        aria-selected="${isSelected ? 'true' : 'false'}"
         aria-label="${accessibleName}"
         title=${tooltip}
         aria-expanded="${node.collapsible ? (isCollapsed ? 'false' : 'true') : nothing}"

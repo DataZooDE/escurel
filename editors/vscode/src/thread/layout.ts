@@ -111,6 +111,24 @@ function cubicBezierPath(x1: number, y1: number, x2: number, y2: number): string
 }
 
 /**
+ * A wire that skips columns runs out into the gap beside its parent, along the gap to the child's
+ * row, then across the (kept clear) corridor to the child. A curve would bend through the pages that
+ * sit in the columns between.
+ */
+function corridorPath(
+  parent: { x: number; y: number; width: number; height: number },
+  child: { x: number; y: number; height: number },
+): string {
+  const x1 = parent.x + parent.width;
+  const y1 = parent.y + parent.height / 2;
+  const x2 = child.x;
+  const y2 = child.y + child.height / 2;
+  if (Math.abs(y1 - y2) < 1) return `M ${x1} ${y1} L ${x2} ${y2}`;
+  const xa = x1 + GAP_X / 2;
+  return `M ${x1} ${y1} L ${xa} ${y1} L ${xa} ${y2} L ${x2} ${y2}`;
+}
+
+/**
  * A wire into another lane runs through space that holds no card: out of the parent's right edge
  * into the gap beside its column, down into the gap between the lanes, along it, then into the
  * gap before the child's column and across to the child. A straight or curved wire would cut
@@ -251,14 +269,45 @@ export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): 
     const node = nodeMap.get(nodeId);
     if (!node) return;
     const col = colOf(node.id);
+    const parentPlaced = node.parent ? nodeMap.get(node.parent) : undefined;
+    const parentCol = parentPlaced ? colOf(parentPlaced.id) : col;
+    if (
+      !placedY.has(node.id) &&
+      parentPlaced &&
+      placedY.has(parentPlaced.id) &&
+      laneOf.get(parentPlaced.id) === lane &&
+      Math.abs(col - parentCol) >= 2
+    ) {
+      // A child that skips columns (a follow-on event, past the pages of the changeset): its wire
+      // runs along a corridor through the columns between, so it is placed below everything those
+      // columns already hold, and they are kept clear beside it.
+      const lo = Math.min(col, parentCol);
+      const hi = Math.max(col, parentCol);
+      // The parent's own column is already past the parent; only the columns it passes and the
+      // child's own column can hold something in the way.
+      let y = placedY.get(parentPlaced.id) ?? laneTop;
+      for (let c = lo + 1; c <= hi; c += 1) y = Math.max(y, cursorAt(c));
+      placedY.set(node.id, y);
+      const band = y + heightOf(node.id) + GAP_Y;
+      for (let c = lo + 1; c < hi; c += 1) cursor[c] = Math.max(cursorAt(c), band);
+      cursor[col] = band;
+    }
     if (!placedY.has(node.id)) {
       const first = laneChildren(node.id, lane)[0];
       const childCol = first ? colOf(first.id) : col;
       if (first && childCol !== col) {
-        // Align the parent with its first child across columns where both are clear at that offset.
-        const y = Math.max(cursorAt(col), cursorAt(childCol));
+        // Align the parent with its first child across columns where both are clear at that
+        // offset. Every column BETWEEN them is part of the corridor the wire runs through, so it
+        // counts too: pages stacked there from an earlier run reach further down than either end,
+        // and the wire cut straight through them.
+        const lo = Math.min(col, childCol);
+        const hi = Math.max(col, childCol);
+        let y = 0;
+        for (let c = lo; c <= hi; c += 1) y = Math.max(y, cursorAt(c));
         placedY.set(node.id, y);
         placedY.set(first.id, y);
+        const band = y + Math.max(heightOf(node.id), heightOf(first.id)) + GAP_Y;
+        for (let c = lo + 1; c < hi; c += 1) cursor[c] = Math.max(cursorAt(c), band);
         cursor[col] = y + heightOf(node.id) + GAP_Y;
         cursor[childCol] = y + heightOf(first.id) + GAP_Y;
       } else {
@@ -337,16 +386,19 @@ export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): 
     const sameColumn = parentLayout.column === childLayout.column;
     const childLane = lanes.find((lane) => lane.index === laneOf.get(child.id));
     const crossesLanes = laneOf.get(child.id) !== laneOf.get(child.parent) && childLane;
+    const skipsColumns = Math.abs(childLayout.column - parentLayout.column) >= 2;
     const path = crossesLanes
       ? branchPath(parentLayout, childLayout, childLane.y - LANE_GAP / 2)
-      : sameColumn
-        ? `M ${parentLayout.x + parentLayout.width / 2} ${parentLayout.y + parentLayout.height} L ${childLayout.x + childLayout.width / 2} ${childLayout.y}`
-        : cubicBezierPath(
-            parentLayout.x + parentLayout.width,
-            parentLayout.y + parentLayout.height / 2,
-            childLayout.x,
-            childLayout.y + childLayout.height / 2,
-          );
+      : skipsColumns
+        ? corridorPath(parentLayout, childLayout)
+        : sameColumn
+          ? `M ${parentLayout.x + parentLayout.width / 2} ${parentLayout.y + parentLayout.height} L ${childLayout.x + childLayout.width / 2} ${childLayout.y}`
+          : cubicBezierPath(
+              parentLayout.x + parentLayout.width,
+              parentLayout.y + parentLayout.height / 2,
+              childLayout.x,
+              childLayout.y + childLayout.height / 2,
+            );
 
     wires.push({ from: child.parent, to: child.id, path, style: wireStyle(child) });
   }
@@ -382,8 +434,11 @@ export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): 
     return `${role} · depth ${depth}`;
   }
 
+  // The mock's five labels fit the standard shape; beyond them a fixed list drifts (it put
+  // "cascade · depth 3" over a column of pages), so deeper columns are named from their occupants.
+  const MOCK_COLUMNS = 5;
   const columnHeaders = usedColumns.map((col) => ({
-    label: view.columns[col]?.trim() || derivedHeader(col),
+    label: (col < MOCK_COLUMNS && view.columns[col]?.trim()) || derivedHeader(col),
     x: MARGIN + col * (CARD_WIDTH + GAP_X),
   }));
 

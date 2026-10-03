@@ -247,3 +247,81 @@ describe.each([
     }
   });
 });
+
+// Found in an external review: two runs under one event, each with a changeset and a follow-on, put the
+// second run's wire through a page of the first run's changeset, because the pages below the first run
+// reached further down than the column the second run was placed in.
+describe('wires when sibling runs each have a changeset and a follow-on', () => {
+  const twoRuns = view('e0', [
+    node('e0', 'event', null, ['r1', 'r2'], 'compact'),
+    node('r1', 'run', 'e0', ['c1', 'x1'], 'compact'),
+    node('c1', 'changeset', 'r1', ['d1', 'd2', 'd3', 'd4'], 'compact'),
+    node('d1', 'draft', 'c1', [], 'compact'),
+    node('d2', 'draft', 'c1', [], 'compact'),
+    node('d3', 'draft', 'c1', [], 'compact'),
+    node('d4', 'draft', 'c1', [], 'compact'),
+    node('x1', 'event', 'r1', ['r3'], 'normal'),
+    node('r3', 'run', 'x1', [], 'normal'),
+    node('r2', 'run', 'e0', ['c2', 'x2'], 'compact'),
+    node('c2', 'changeset', 'r2', ['d5'], 'compact'),
+    node('d5', 'draft', 'c2', [], 'compact'),
+    node('x2', 'event', 'r2', ['r4'], 'normal'),
+    node('r4', 'run', 'x2', [], 'normal'),
+  ]);
+
+  it('never routes a wire through a card it does not connect', () => {
+    const layout = layoutThread(twoRuns, new Set());
+    for (const wire of layout.wires) {
+      for (const p of samplePath(wire.path)) {
+        for (const card of layout.nodes) {
+          if (card.hidden || card.id === wire.from || card.id === wire.to) continue;
+          const inside =
+            p.x > card.x + 1 &&
+            p.x < card.x + card.width - 1 &&
+            p.y > card.y + 1 &&
+            p.y < card.y + card.height - 1;
+          expect(inside, `${wire.from}→${wire.to} crosses ${card.id}`).toBe(false);
+        }
+      }
+    }
+  });
+});
+
+// The headings come from what is really in each column. With a deeper cascade the fixed list of mock
+// labels put "cascade · depth 3" over a column of pages.
+describe('column headings in a deep cascade', () => {
+  const deep = view('e0', [
+    node('e0', 'event', null, ['r1']),
+    node('r1', 'run', 'e0', ['c1', 'x1']),
+    node('c1', 'changeset', 'r1', ['d1']),
+    node('d1', 'draft', 'c1', []),
+    node('x1', 'event', 'r1', ['r2']),
+    node('r2', 'run', 'x1', ['c2', 'x2']),
+    node('c2', 'changeset', 'r2', ['d2']),
+    node('d2', 'draft', 'c2', []),
+    node('x2', 'event', 'r2', ['r3']),
+    node('r3', 'run', 'x2', []),
+  ]);
+  const withFixedMockLabels = {
+    ...deep,
+    columns: [
+      'root event',
+      'run · changeset',
+      'instances · drafts',
+      'cascade · depth 1',
+      'outbound · depth 2',
+      'cascade · depth 3',
+      'cascade · depth 4',
+      'cascade · depth 5',
+    ],
+  };
+
+  it('never calls a column of pages, or of runs, a cascade column', () => {
+    const layout = layoutThread(withFixedMockLabels, new Set());
+    const headerAt = (id: string) =>
+      layout.columnHeaders.find((h) => h.x === at(layout, id).x)!.label;
+    expect(headerAt('d2')).not.toContain('cascade');
+    expect(headerAt('r3')).not.toContain('cascade');
+    expect(headerAt('x2')).toContain('cascade');
+  });
+});
